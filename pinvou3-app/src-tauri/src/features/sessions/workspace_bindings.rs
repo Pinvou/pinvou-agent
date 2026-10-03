@@ -332,9 +332,15 @@ impl SessionStore {
     /// The in-memory cache is scanned as well: entries whose sidecar write has
     /// not succeeded yet (legacy migration leftovers) live only there and are
     /// still what resolution reads. Session ids without a durable record are
-    /// skipped — their binding is inert (see
-    /// [`Self::workspace_binding_owner_exists`]).
-    pub(crate) fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
+    /// skipped — their binding is inert (see the private
+    /// `workspace_binding_owner_exists` helper).
+    ///
+    /// `pub` (crate-internal by origin) because the headless `projects rebind`
+    /// lane runs the same to-prefix retry pass the GUI command does: a binding
+    /// already under the destination whose SavedSession metadata still names
+    /// the source is an earlier run's unfinished half, and the CLI has no
+    /// pre-rewrite snapshot to fold it into.
+    pub fn workspace_bindings_under(&self, from: &Path) -> Vec<(String, PathBuf)> {
         // Lossy form (review #463 round-21 SF-1): a sessions-root read
         // failure degrades to the cache-only matches, disclosed via the log.
         // The SNAPSHOT and PLAN callers use `try_workspace_bindings_under`

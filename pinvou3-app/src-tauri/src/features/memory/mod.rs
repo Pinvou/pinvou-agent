@@ -54,6 +54,11 @@ pub use self::io::{
     update_preference, update_profile, update_timed_memory, update_work_context,
 };
 
+// ---- cross-process organize busy marker (io) ----
+// The CLI maps this marker BY VALUE to `memory_organize_busy`; a local copy
+// would let the two surfaces' busy codes drift apart.
+pub use self::io::ORGANIZE_LOCK_BUSY;
+
 // ---- Stored text length cap (io) ----
 // The CLI's `memory add` validation must use the same cap constant as the
 // write side; a local copy would reintroduce a spurious
@@ -66,6 +71,11 @@ pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 // with this function, so a local copy would drift into false
 // "not materialized" failures.
 pub use self::util::clean_candidate_sentence;
+// The CLI `memory add` rejects profile-shaped preference text before
+// enqueueing (the confirm path marks it confirmed but writes nothing), and
+// `memory pending confirm` reports that no-op instead of printing success.
+pub use self::io::confirmed_pending_memory_is_materialized;
+pub use self::types::looks_like_profile_preference_text;
 
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;

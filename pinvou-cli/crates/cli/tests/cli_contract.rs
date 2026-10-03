@@ -1,24 +1,46 @@
+//! CLI contract tests for the benchmark command surface.
+//!
+//! Every test in this file compiles and runs under the default feature set
+//! (`product-backend`), because the local-only GAIA operations they exercise
+//! (fetch/verify/score) share one unconditional implementation in `lib.rs`
+//! regardless of the feature. The single exception is
+//! `gaia_run_requires_product_backend_without_exposing_error_chains`, which
+//! asserts the no-default-features refusal (`product_backend_not_enabled`)
+//! and therefore stays behind `#[cfg(not(feature = "product-backend"))]`;
+//! that configuration is compile-checked by the `cli-lint` featureless step
+//! in `.github/workflows/pr-check.yml` (which builds `--all-targets`), but
+//! no CI leg RUNS it — the refusal itself can only be exercised by a local
+//! `cargo test --no-default-features` (disclosed in docs/pinvou-cli.md,
+//! Known limitations).
+
 use pinvou_cli::{
     BenchmarkAvailability, BenchmarkCommand, CliCommand, ExitCode, OutputMode, benchmark_registry,
     execute, parse_args, render_list,
 };
 use std::path::PathBuf;
-#[cfg(not(feature = "product-backend"))]
 use std::sync::Mutex;
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
 /// variable, preventing data races when the parallel test runner executes them
 /// concurrently.
-#[cfg(not(feature = "product-backend"))]
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Restores the previous `PINVOU3_HOME` on drop, so the restore survives a
 /// panicking assertion instead of leaking the polluted value into every later
 /// test in the process.
-#[cfg(not(feature = "product-backend"))]
 struct RestoreHome(Option<std::ffi::OsString>);
 
-#[cfg(not(feature = "product-backend"))]
+/// RAII restore for tests that change the process cwd: a failing assert
+/// panics before a manual restore line runs, leaving the binary's cwd in the
+/// fixture dir for every later test in this target.
+struct RestoreCwd(std::path::PathBuf);
+
+impl Drop for RestoreCwd {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
 impl Drop for RestoreHome {
     fn drop(&mut self) {
         match self.0.take() {
@@ -30,7 +52,6 @@ impl Drop for RestoreHome {
     }
 }
 
-#[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
@@ -246,7 +267,6 @@ fn gaia_output_mode_remains_global_without_stealing_submission_destination() {
     );
 }
 
-#[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -260,6 +280,7 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     ));
     std::fs::create_dir(&home).unwrap();
     let previous_dir = std::env::current_dir().unwrap();
+    let _restore_cwd = RestoreCwd(previous_dir);
     let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
     std::env::set_current_dir(&home).unwrap();
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
@@ -276,12 +297,11 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     let error = execute(parsed).unwrap_err();
     assert_ne!(error.to_string(), "gaia_worktree_unavailable");
 
-    std::env::set_current_dir(previous_dir).unwrap();
+    drop(_restore_cwd);
     drop(_restore);
     std::fs::remove_dir_all(home).unwrap();
 }
 
-#[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -407,6 +427,13 @@ fn gaia_registry_is_available_while_other_official_adapters_remain_planned() {
     }
 }
 
+// Kept feature-gated on purpose: this test asserts the no-default-features
+// refusal (`product_backend_not_enabled`) of `benchmark run gaia`, which can
+// never fire when the default `product-backend` feature is compiled in. CI
+// compile-checks this configuration (`cli-lint` builds `--no-default-features
+// --all-targets`, see docs/pinvou-cli.md, Known limitations) but never RUNS
+// it, so the test stays dead in CI rather than failing everywhere;
+// do NOT remove this `cfg` to "revive" it.
 #[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_run_requires_product_backend_without_exposing_error_chains() {
@@ -513,12 +540,32 @@ fn invalid_usage_maps_to_exit_code_two() {
 fn unrecognized_output_value_falls_through_to_usage_error() {
     // Outside `benchmark submission gaia` (which consumes `--output <file>` as
     // a legacy alias of `--destination`), an unrecognized `--output` value
-    // stays in argv and surfaces as the standard usage error.
+    // stays in argv — so the token lands in the FAMILY position and the
+    // round-27 flag-position hint names it and states the placement rule,
+    // instead of the bare usage line.
     let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = error.to_string();
+    assert!(message.contains("unknown family --output"), "{message}");
+    assert!(
+        message.contains("before the family or after the subcommand"),
+        "{message}"
+    );
+    assert!(
+        message.contains("usage: pinvou benchmark <command>"),
+        "the usage line still follows the hint: {message}"
+    );
+
+    // A NON-flag unknown token keeps the exact bare usage line (the drift
+    // pin lives on the constant; this pins the behavior).
+    let generic = parse_args(["pinvou", "bogus", "list"]).unwrap_err();
+    assert_eq!(generic.exit_code(), ExitCode::Usage);
     assert_eq!(
-        error.to_string(),
-        "usage: pinvou benchmark <command> | pinvou agent run"
+        generic.to_string(),
+        "usage: pinvou benchmark <command> | pinvou agent run | pinvou \
+         sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
+         projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou \
+         --help|--version|version"
     );
 }
 
@@ -531,7 +578,8 @@ fn output_without_value_points_at_destination() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert_eq!(
         error.to_string(),
-        "--output requires human or json (submission files use --destination)"
+        "--output requires human or json (subcommands that export to a file take \
+         `--output PATH` instead — see their usage line)"
     );
 }
 

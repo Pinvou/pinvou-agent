@@ -44,6 +44,11 @@ pub struct ImportJobState {
     pub job_id: Option<String>,
     pub running: bool,
     pub resumable: bool,
+    /// The job was explicitly cancelled. Without this flag a cancelled job
+    /// is indistinguishable from a finished one (running=false with a
+    /// job_id), which made the CLI's phase derivation report `done` right
+    /// after a successful cancel.
+    pub cancelled: bool,
     pub collection_id: i64,
     /// 已处理文件数（成功、跳过和失败）。
     pub done: u64,
@@ -134,6 +139,18 @@ impl ImportJobStore {
             return Ok(());
         }
         let now = now();
+        // The promotion carries the same state guard as `resume`: a job that a
+        // concurrent interrupt (e.g. the CLI's stall timeout) or cancel pulled
+        // out of the pre-item walk must never be resurrected to `running`.
+        let promoted = tx.execute(
+            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2 \
+             WHERE id=?1 AND state IN ('preparing','running')",
+            params![job_id, now],
+        )?;
+        if promoted == 0 {
+            tx.commit()?;
+            return Ok(());
+        }
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO knowledge_import_items(job_id,path,name,state,updated_at) \
@@ -148,10 +165,6 @@ impl ImportJobStore {
                 stmt.execute(params![job_id, path_str.as_ref(), name, now])?;
             }
         }
-        tx.execute(
-            "UPDATE knowledge_import_jobs SET state='running',updated_at=?2 WHERE id=?1",
-            params![job_id, now],
-        )?;
         tx.commit()
     }
 
@@ -246,21 +259,33 @@ impl ImportJobStore {
         );
     }
 
-    pub fn interrupt(&self, job_id: &str) {
+    /// Park a running job at `interrupted` and return whether the transition
+    /// APPLIED. A `false` return means the job was already terminal (the
+    /// last item finished between the caller's state read and this call),
+    /// so the caller must not park its collection at `pending` — a
+    /// fully-indexed collection must not read as needing work with no
+    /// self-healing path (`index resume` refuses a non-interrupted job).
+    pub fn interrupt(&self, job_id: &str) -> bool {
         let mut c = self.conn.lock();
-        let Ok(tx) = c.transaction() else { return };
+        let Ok(tx) = c.transaction() else {
+            return false;
+        };
         let now = now();
         let _ = tx.execute(
             "UPDATE knowledge_import_items SET state='pending',updated_at=?2 \
              WHERE job_id=?1 AND state='running'",
             params![job_id, now],
         );
-        let _ = tx.execute(
-            "UPDATE knowledge_import_jobs SET state='interrupted',updated_at=?2 \
-             WHERE id=?1 AND state IN ('preparing','running')",
-            params![job_id, now],
-        );
+        let applied = tx
+            .execute(
+                "UPDATE knowledge_import_jobs SET state='interrupted',updated_at=?2 \
+                 WHERE id=?1 AND state IN ('preparing','running')",
+                params![job_id, now],
+            )
+            .map(|rows| rows > 0)
+            .unwrap_or(false);
         let _ = tx.commit();
+        applied
     }
 
     pub fn cancel(&self, job_id: &str) -> rusqlite::Result<()> {
@@ -284,13 +309,22 @@ impl ImportJobStore {
         tx.commit()
     }
 
-    pub fn is_cancelled(&self, job_id: &str) -> bool {
+    /// Whether the job has LEFT its runnable states (`preparing`/`running`)
+    /// — an external `interrupt` or `cancel` landed mid-import. The ingest
+    /// loop stops on this, not just on its in-memory `cancel` flag: a thread
+    /// that is merely slow must not keep claiming the items `interrupt()`
+    /// moved back to pending and end the job fully-ingested yet
+    /// `interrupted`, which would force a no-op `index resume` purely to
+    /// reconcile the state. A read error keeps the loop's fail-safe
+    /// direction (assume stopped).
+    pub fn is_stopped(&self, job_id: &str) -> bool {
         self.conn
             .lock()
             .query_row(
-                "SELECT state='cancelled' FROM knowledge_import_jobs WHERE id=?1",
+                "SELECT state NOT IN ('preparing','running') \
+                 FROM knowledge_import_jobs WHERE id=?1",
                 params![job_id],
-                |r| r.get(0),
+                |r| r.get::<_, bool>(0),
             )
             .unwrap_or(true)
     }
@@ -321,10 +355,21 @@ impl ImportJobStore {
             "done"
         };
         let now = now();
-        c.execute(
-            "UPDATE knowledge_import_jobs SET state=?2,updated_at=?3,finished_at=?3 WHERE id=?1",
+        // The same state guard `prepare_items`/`resume` carry: an interrupted
+        // or cancelled job must never be promoted to a terminal success by a
+        // `finish` that lands after the interruption. The window is real —
+        // the CLI's stall timeout can interrupt during a >300s
+        // `expand_import_roots` walk, the guarded prepare then stages zero
+        // items, and this finish (called by the import loop's ordinary
+        // exit) would otherwise overwrite `interrupted` with `done`,
+        // turning "zero sources ingested, resumable" into an exit-0
+        // success whose promised remedy never materializes.
+        let promoted = c.execute(
+            "UPDATE knowledge_import_jobs SET state=?2,updated_at=?3,finished_at=?3 \
+             WHERE id=?1 AND state IN ('preparing','running')",
             params![job_id, state, now],
         )?;
+        let _ = promoted;
         Ok(())
     }
 
@@ -353,6 +398,17 @@ impl ImportJobStore {
         if !exists {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
+        // SQLite's OFFSET is i64 and treats a negative value as 0, so a raw
+        // `offset as i64` would wrap a >i64::MAX usize negative and silently
+        // serve page 0 again. Nothing exists at such an offset anyway, so
+        // answer an honest empty page (`next_offset: None`) instead of a
+        // wrong one.
+        if offset > i64::MAX as usize {
+            return Ok(FailedImportFilePage {
+                files: Vec::new(),
+                next_offset: None,
+            });
+        }
         let mut stmt = c.prepare(
             "SELECT id,name,path,COALESCE(error,'') FROM knowledge_import_items \
              WHERE job_id=?1 AND state='failed' ORDER BY id LIMIT ?2 OFFSET ?3",
@@ -370,7 +426,14 @@ impl ImportJobStore {
         let has_more = files.len() > limit;
         Ok(FailedImportFilePage {
             files: files.into_iter().take(limit).collect(),
-            next_offset: has_more.then_some((offset + limit) as u64),
+            // Only compute the next page offset when a next page exists: an
+            // offset near usize::MAX plus `limit` would panic in debug and
+            // wrap in release, long before SQLite could refuse it.
+            next_offset: if has_more {
+                offset.checked_add(limit).map(|next| next as u64)
+            } else {
+                None
+            },
         })
     }
 
@@ -446,6 +509,7 @@ impl ImportJobStore {
             job_id: Some(id),
             running: matches!(phase.as_str(), "preparing" | "running"),
             resumable: phase == "interrupted",
+            cancelled: phase == "cancelled",
             collection_id,
             done: (completed + skipped + failed) as u64,
             total: total as u64,
@@ -614,6 +678,28 @@ mod tests {
         assert_eq!(third.next_offset, None);
     }
 
+    /// An offset past i64::MAX cannot be a SQLite OFFSET (negative there
+    /// means page 0), and `offset + limit` near usize::MAX would overflow
+    /// before SQL ever ran. The page must come back honestly empty instead
+    /// of wrapping to page 0.
+    #[test]
+    fn huge_offset_answers_an_empty_page_without_wrapping() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(&job_id, &[PathBuf::from("/tmp/a.md")])
+            .unwrap();
+        let item = jobs.claim_next(&job_id).unwrap().unwrap();
+        jobs.mark_failed(&job_id, item.id, "失败 A");
+        jobs.finish(&job_id).unwrap();
+
+        let page = jobs.failed_files_page(&job_id, usize::MAX, 50).unwrap();
+        assert!(
+            page.files.is_empty(),
+            "an offset past i64::MAX must not serve page 0 again"
+        );
+        assert_eq!(page.next_offset, None);
+    }
+
     #[test]
     fn late_failure_does_not_revive_cancelled_item() {
         let (jobs, _l1, collection_id) = setup();
@@ -683,5 +769,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item_state, "failed", "重试被拒时失败项状态不得变动");
+    }
+
+    #[test]
+    fn interrupt_landing_during_prepare_is_not_promoted_back() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        // The CLI's stall-timeout interrupt can land while the import thread
+        // is still in the pre-item walk: the job is already `interrupted` by
+        // the time the prepare transaction runs.
+        jobs.interrupt(&job_id);
+        jobs.prepare_items(
+            &job_id,
+            &[PathBuf::from("/tmp/a.md"), PathBuf::from("/tmp/b.md")],
+        )
+        .unwrap();
+
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "prepare must not resurrect an interrupted job to running"
+        );
+        assert_eq!(
+            jobs.item_count(&job_id).unwrap(),
+            0,
+            "the refused prepare must not stage any items"
+        );
+
+        // Round-21 review finding (finish's missing state guard): the
+        // import thread continues past the refused prepare, its loop sees
+        // zero staged items, and its exit calls finish() — which must not
+        // overwrite `interrupted` with a terminal success, or the CLI
+        // reports "index completed" (exit 0) for a job that ingested
+        // nothing and whose promised `index resume` remedy never comes.
+        jobs.finish(&job_id).unwrap();
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "finish must not promote an interrupted job to done: state is {state:?}"
+        );
+    }
+
+    #[test]
+    fn finish_does_not_promote_an_interrupted_job_to_done() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        // The direct shape of the finding: a job the stall timeout pulled
+        // out of its walk (interrupted, zero pending items) is finished by
+        // the thread's ordinary exit. Pre-fix this flipped it to `done`.
+        jobs.interrupt(&job_id);
+        jobs.finish(&job_id).unwrap();
+        let state = jobs.state(&job_id).unwrap();
+        assert!(
+            !state.running && state.resumable,
+            "an interrupted job must stay resumable, not become done: {state:?}"
+        );
     }
 }

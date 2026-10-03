@@ -289,6 +289,23 @@ impl EnginePoolRuntime {
             .await
     }
 
+    /// One-shot falsy delete for the teardown arms: the durable delete
+    /// re-checks the adoption marker UNDER the turn gate — the disposition
+    /// sampled it outside the gate, and a live turn can hold the gate for
+    /// the turn's whole wall clock, so a rename landing during the wait
+    /// makes the record an adopted (GUI-owned) session that must be kept.
+    /// No late sweep is pre-armed: the guarded delete schedules it itself
+    /// on the delete outcome only.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) async fn delete_headless_session_unless_adopted(
+        &self,
+        session_id: &str,
+    ) -> Result<()> {
+        self.pool
+            .delete_chat_session_unless_adopted(session_id)
+            .await
+    }
+
     pub(crate) fn eval_session_execution_root(
         &self,
         session_id: &str,
@@ -428,9 +445,21 @@ impl EnginePoolRuntime {
     /// 删除本次评测的临时会话（释放引擎资源且不污染用户历史）
     pub(crate) async fn close(&self, session_id: &str) {
         if let Err(error) = self.pool.delete_chat_session(session_id).await {
-            eprintln!("[eval] failed to delete temporary session {session_id}: {error:#}");
+            note_stderr(&format!(
+                "[eval] failed to delete the temporary session {session_id}: {}",
+                error.root_cause()
+            ));
         }
     }
+}
+
+/// Best-effort note on stderr: Rust ignores SIGPIPE, so a closed stderr
+/// (the headless CLI's `2>&1 | head`) turns a plain `eprintln!` into a
+/// panic (exit 101) that also loses the run report these diagnostics
+/// accompany. A failed note is dropped and the run carries on.
+pub(crate) fn note_stderr(message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "{message}");
 }
 
 #[cfg(test)]

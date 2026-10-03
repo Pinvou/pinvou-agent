@@ -44,7 +44,7 @@ use crate::features::assistant::product_runtime::{
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
     ExecutionRootResolver, MAX_HEADLESS_SESSIONS, RetentionEvictionRecord, SessionKind,
-    SessionStore, validate_user_workspace_path,
+    SessionStore, transcript_revision, validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -63,9 +63,16 @@ use crate::platform::prefs::UserPrefs;
 /// - `teardown_delete` → `EnginePoolRuntime::close_eval_session_result`
 ///   (turn gate → engine evict → `store.delete` → forget; the durable delete
 ///   happens INSIDE this call)
-/// - `teardown_schedule_delete` → `schedule_eval_cleanup` (timing unregister
-///   + background late sweeps) followed by the same awaited durable delete
-///   the runner's `log_cleanup_delete` performed
+/// - `teardown_schedule_delete` → the timing unregister followed by the
+///   adoption-guarded durable delete: under the turn gate the record's
+///   factory title is RE-CHECKED, and a record renamed between the
+///   disposition's outside-the-gate sample and the delete (a live turn can
+///   hold the gate for the turn's whole wall clock) is kept as an adopted
+///   session — only the engine is reclaimed. Like the stub twin, the late
+///   sweep must NOT be pre-armed here: when the guard keeps the record, a
+///   pre-armed sweep would delete `sessions/<id>/` under the kept session.
+///   The guarded delete schedules the sweep itself on its own delete and
+///   failed-delete outcomes.
 /// - `teardown_delete_stub_if_still_empty` → the timing unregister followed
 ///   by the guarded stub delete: under the turn gate the record's emptiness
 ///   is RE-CHECKED, and a record that gained messages (a turn admitted
@@ -83,11 +90,22 @@ pub(crate) trait AgenticTeardownExecutor {
     /// Whether an engine turn is running for the session right now.
     fn teardown_turn_active(&self, session_id: &str) -> bool;
     /// Delete the session (record + directory), returning best-effort errors.
+    ///
+    /// UNCONDITIONAL by design: no adoption or stub guard. Only the test
+    /// executor calls this (the production lifecycle routes every lane
+    /// through [`Self::teardown_schedule_delete`] /
+    /// [`Self::teardown_delete_stub_if_still_empty`], whose gates ARE the
+    /// adoption contract). Wiring this into a production lane would silently
+    /// regress the round-24/25 adoption guarantees — the trait requires the
+    /// method, so the footgun is documented here instead.
     async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error>;
-    /// Delete the session through the cleanup lane (scheduled sweeps plus the
-    /// awaited durable delete), returning best-effort errors. Unconditional:
-    /// the legacy one-shot contract and the submitted-falsy arm delete
-    /// started transcripts deliberately.
+    /// Delete the session through the one-shot lane, returning best-effort
+    /// errors. Delete-on-entry is deliberate: the caller has already
+    /// consulted the adoption and unreadable-record guards, so a transcript
+    /// that still wears the factory title is the legacy one-shot contract's
+    /// to delete. The gate re-checks the adoption marker under the turn
+    /// lock, because a live turn can hold that lock long enough for a GUI
+    /// rename to land after the sample.
     async fn teardown_schedule_delete(
         &self,
         session_id: &str,
@@ -118,8 +136,13 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
         &self,
         session_id: &str,
     ) -> std::result::Result<(), anyhow::Error> {
-        self.schedule_eval_cleanup(session_id);
-        self.close_eval_session_result(session_id).await
+        // Timing teardown only — no pre-armed late sweep. The guarded delete
+        // schedules the sweep itself when it deletes (or fails to); on the
+        // keep outcome a pre-armed sweep would delete `sessions/<id>/`
+        // (timeline, staged attachments, workspace) under the kept session.
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
+        self.delete_headless_session_unless_adopted(session_id)
+            .await
     }
 
     async fn teardown_delete_stub_if_still_empty(
@@ -137,7 +160,7 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
     async fn teardown_evict(&self, session_id: &str) {
         if !self
             .pool
-            .evict_bounded(session_id, Duration::from_secs(CANCEL_SETTLE_SECS))
+            .evict_bounded(session_id, Duration::from_secs(TEARDOWN_GATE_WAIT_SECS))
             .await
         {
             // No session id here (CodeQL cleartext-logging gate, same as the
@@ -145,10 +168,10 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
             // `evict_bounded` reports a failure to acquire the session's turn
             // gate, not necessarily a live turn — a long in-flight submit
             // holds it too.
-            eprintln!(
+            super::note_stderr(&format!(
                 "[agent-task] engine reclaim skipped: the session's turn gate did not \
-                 free up within {CANCEL_SETTLE_SECS}s; the session stays inspectable"
-            );
+                 free up within {TEARDOWN_GATE_WAIT_SECS}s; the session stays inspectable"
+            ));
         }
     }
 }
@@ -161,6 +184,12 @@ pub const MAX_TIMEOUT_SECS: u64 = 7 * 24 * 60 * 60;
 /// Settle window after cancel: give the engine time to finish persisting;
 /// past the window, give up waiting for a full turn result.
 const CANCEL_SETTLE_SECS: u64 = 30;
+
+/// The teardown evict's turn-gate wait bound. Same value as
+/// `CANCEL_SETTLE_SECS`, but a distinct constant: one bounds how long an
+/// interrupt's settle path waits, the other how long a teardown's engine
+/// reclaim may hold the turn gate — they move independently.
+const TEARDOWN_GATE_WAIT_SECS: u64 = 30;
 /// Period of the stderr liveness heartbeat while the turn is running, so
 /// harnesses with an output-inactivity watchdog do not kill long tasks.
 const HEARTBEAT_SECS: u64 = 10;
@@ -257,12 +286,15 @@ pub struct AgenticTaskRequest {
     /// divergence).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<AgenticTaskMode>,
-    /// Pin the session's model for this run, like the GUI per-session model
-    /// switch: validated against the configured model list
+    /// Pin the session's model, like the GUI per-session model switch:
+    /// validated against the configured model list
     /// (`UserPrefs::model_by_id`, the same check the `set_session_model`
     /// command performs), then bound through the eval model-selection route
-    /// for a fresh session or the GUI chip-switch path (sidecar write +
-    /// engine evict) for an existing session. Unknown model →
+    /// for a fresh session or the GUI chip-switch path (per-session sidecar
+    /// write + engine evict) for an existing session. The chip-switch
+    /// binding is written during setup; a setup that fails, or times out
+    /// before the submit, puts the session's previous model back, while a
+    /// submitted run leaves the pin in force. Unknown model →
     /// `agent_model_not_found`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
@@ -315,6 +347,19 @@ pub struct AgenticTaskReport {
     /// can use this to tell "finished, but past the line" from "cancelled".
     #[serde(default)]
     pub completed_after_deadline: bool,
+    /// Whether the turn was durably submitted to the engine. The only `Ok`
+    /// report that can carry `false` is the setup-timeout arm, and only when
+    /// the deadline fired BEFORE the submit was entered — there the turn
+    /// provably never ran and the CLI's one-shot persona consume skips, so a
+    /// staged body survives for the next run. Once the submit was entered the
+    /// outcome is genuinely ambiguous (the awaited future includes the lazy
+    /// engine spawn, and the turn may have been durably admitted and keep
+    /// running), so the report carries `submitted: true`: the one-shot
+    /// consume spends the staged body rather than risking a double injection
+    /// on the next run, the same at-least-once direction as every submitted
+    /// run.
+    #[serde(default)]
+    pub submitted: bool,
     pub assistant_text: String,
     pub tool_events: Vec<AgenticToolEvent>,
     pub usage: Option<AgenticUsageReport>,
@@ -340,7 +385,17 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// turn is submitted, a report is
 /// always returned (internal failures land in the `error` field); setup faults
 /// (request validation, model pin, session prepare, submit) propagate as `Err`
-/// instead — the CLI surfaces those as exit 1 without a report.
+/// instead — the CLI surfaces those as exit 1 without a report. A session
+/// freshly created by such a failed run is deleted best-effort with the same
+/// eval cleanup as `KEEP_SESSION=0`, so no empty placeholder-titled chat is
+/// left behind — unless the record was adopted meanwhile (a rename, an
+/// admitted user message, or a turn the engine is still running), which
+/// keeps. The setup TIMEOUT is not a failed run in this sense: it is the one
+/// never-submitted path that still returns an `Ok` report, and a reported
+/// `session_id` must stay resolvable — so under the default keep contract
+/// its session is kept, and only the explicit one-shot opt-in deletes it
+/// (under the same adoption rule as a submitted run).
+/// Caller-provided sessions are never auto-deleted.
 ///
 /// Persisting counts against the headless 50-session retention budget — a
 /// bucket separate from the GUI chat budget — so a fresh run's prepare-time
@@ -393,7 +448,10 @@ pub async fn run_agentic_task(
     // (fresh or caller-provided); resolution for every other session stays
     // unchanged. A caller-provided session is bound to `workspace` only when
     // the request carries one — an unset workspace keeps the session's own
-    // resolution (its private scratch) instead of overriding it.
+    // resolution chain instead of overriding it: the session's stored
+    // working-directory binding when it has one (the GUI bind), else its
+    // private scratch. A CLI resume of a GUI-bound session therefore runs
+    // in the bound directory.
     //
     // Normalize ONCE and feed the same string to the run-scoped resolver and
     // the durable binding below: a raw `--workspace` and its normalized form
@@ -454,14 +512,26 @@ pub async fn run_agentic_task(
     .await;
 
     // Session lifecycle after the turn — full contract documented on
-    // [`run_session_lifecycle`].
-    run_session_lifecycle(&runtime, &store, &session_id, existing_session, submitted).await;
+    // [`run_session_lifecycle`]. The setup timeout is the one
+    // never-submitted outcome that produces a report, so it is named at this
+    // boundary: its printed `session_id` must stay resolvable (see
+    // [`run_session_lifecycle`]).
+    let setup_timed_out = !submitted && outcome.is_ok();
+    run_session_lifecycle(
+        &runtime,
+        &store,
+        &session_id,
+        existing_session,
+        submitted,
+        setup_timed_out,
+    )
+    .await;
     // Disarm before reporting: the prepare-time save happened before any setup
     // fault could surface, so the evictions are real regardless of the final
     // outcome — the report may carry an error, and the run may have cleaned
     // its own session up afterwards.
     if let Some(warning) = disarm_retention_eviction_observer(&store, &evictions) {
-        eprintln!("{warning}");
+        super::note_stderr(&warning);
     }
     outcome
 }
@@ -476,16 +546,24 @@ pub async fn run_agentic_task(
 /// cleanup for harnesses that want a clean sandbox (the legacy truthy values
 /// "1"/"true"/"yes"/"on" keep meaning keep).
 ///
-/// A fresh session whose turn never started (attachment staging, submit, a
-/// post-prepare setup fault such as the workspace-binding persist or the
-/// fresh Plan-mode persist, or the setup timeout) carries no transcript to
+/// A fresh session whose turn never started through a setup FAULT (an `Err`
+/// outcome: no report was produced, so nothing ever handed this id to the
+/// caller) carries no transcript to
 /// inspect: keeping it would
 /// litter the shared store — and the GUI history — with zero-message stubs,
 /// one eviction apiece in a failing batch. Those runs clean up after
 /// themselves regardless of `KEEP_SESSION` — where "never started" is decided
 /// on the durable record: a stub that already carries admitted messages is a
 /// started transcript and stays inspectable instead (see
-/// [`never_started_disposition`]).
+/// [`never_started_disposition`]), and a record a GUI user renamed is
+/// adopted and keeps on every path (a rename is ownership).
+///
+/// The setup TIMEOUT is different: it is the one never-submitted path that
+/// returns an `Ok` report, and that report carries the run's `session_id` —
+/// so under the default keep contract its session is kept and the reported
+/// id stays resolvable (no silent stub cleanup). Only the explicit one-shot
+/// opt-in may still clean it up, under the same adoption rule as every
+/// submitted run.
 ///
 /// A caller-provided `session_id` (existing_session) is never auto-deleted by
 /// THIS run, but it is an ordinary chat session in the store: the 50-session
@@ -502,6 +580,7 @@ async fn run_session_lifecycle(
     session_id: &str,
     existing_session: bool,
     submitted: bool,
+    setup_timed_out: bool,
 ) {
     let keep_session = keep_session_from_env();
     if existing_session {
@@ -516,6 +595,35 @@ async fn run_session_lifecycle(
         executor.teardown_evict(session_id).await;
         return;
     }
+    // The setup timeout produced a report that names this session: under the
+    // default keep contract the record must stay resolvable, so the engine
+    // alone is reclaimed. Under the one-shot opt-in the caller asked for a
+    // clean sandbox and `one_shot_cleanup_decision` applies unchanged — the
+    // same adoption and unreadable-record guards as for a submitted run.
+    if setup_timed_out {
+        crate::features::assistant::timing::unregister_eval_observation(session_id);
+        if keep_session {
+            executor.teardown_evict(session_id).await;
+            return;
+        }
+        match one_shot_cleanup_decision(
+            store.chat_session_has_messages(session_id).map_err(|_| ()),
+            store
+                .chat_session_factory_titled(session_id)
+                .map_err(|_| ()),
+        ) {
+            FreshSessionDisposition::Cleanup => {
+                if let Err(error) = executor.teardown_schedule_delete(session_id).await {
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
+                }
+            }
+            FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
+        }
+        return;
+    }
     // The submit boundary is not atomic with transcript admission: the engine
     // lazily spawns on submit and can durably admit the user message before
     // the fault surfaces (a submit error, or the setup timeout landing right
@@ -527,10 +635,17 @@ async fn run_session_lifecycle(
     // on unknown state is the unsafe direction).
     if !submitted {
         crate::features::assistant::timing::unregister_eval_observation(session_id);
+        // A rename away from the factory title is adoption — the one-shot
+        // lane must not delete a record a GUI user took over. An unreadable
+        // record is not proven factory-titled and keeps for the same reason.
+        let factory_titled = store
+            .chat_session_factory_titled(session_id)
+            .map_err(|_| ());
         match never_started_disposition(
             store.chat_session_has_messages(session_id).map_err(|_| ()),
             executor.teardown_turn_active(session_id),
             keep_session,
+            factory_titled,
         ) {
             NeverStartedDisposition::CleanupStub => {
                 // Best-effort delete: a failure must not mask the run's own
@@ -547,15 +662,22 @@ async fn run_session_lifecycle(
                     .teardown_delete_stub_if_still_empty(session_id)
                     .await
                 {
-                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
                 }
             }
             NeverStartedDisposition::LegacyCleanupStarted => {
                 // The legacy one-shot contract deletes a started transcript
-                // deliberately — the disposition has already classified the
-                // record as started, so the unconditional delete is correct.
+                // deliberately — but only one that still wears the factory
+                // title: the disposition has already classified a renamed
+                // record as adopted and kept it.
                 if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
                 }
             }
             NeverStartedDisposition::KeepInspectable => {
@@ -567,8 +689,27 @@ async fn run_session_lifecycle(
     crate::features::assistant::timing::unregister_eval_observation(session_id);
     if keep_session {
         executor.teardown_evict(session_id).await;
-    } else if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-        eprintln!("[agent-task] cleanup delete failed: {}", error.root_cause());
+    } else {
+        // One-shot opt-in on a submitted run: the legacy contract deletes the
+        // run's session — unless it was adopted (renamed away from the
+        // factory title, which means a GUI user owns it now) or its state is
+        // unreadable (deleting on unknown state is the unsafe direction).
+        match one_shot_cleanup_decision(
+            store.chat_session_has_messages(session_id).map_err(|_| ()),
+            store
+                .chat_session_factory_titled(session_id)
+                .map_err(|_| ()),
+        ) {
+            FreshSessionDisposition::Cleanup => {
+                if let Err(error) = executor.teardown_schedule_delete(session_id).await {
+                    super::note_stderr(&format!(
+                        "[agent-task] cleanup delete failed: {}",
+                        error.root_cause()
+                    ));
+                }
+            }
+            FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
+        }
     }
 }
 
@@ -629,11 +770,54 @@ fn keep_session_from_env() -> bool {
 ///
 /// `keep_session` only splits the started case: with the legacy one-shot
 /// opt-in (`KEEP_SESSION=0|false|no|off`), a started-but-unsubmitted run is
-/// still cleaned up per the old contract.
+/// still cleaned up per the old contract — but only if the record still
+/// wears the factory title. A rename is ownership: a GUI user who renamed
+/// the session (or whose first send already triggered the auto-rename)
+/// adopted it, and `factory_titled != Ok(true)` keeps it on the delete lane
+/// too — the stub arm above applies the same rule, so an adopted record
+/// keeps on EVERY never-started path. An unreadable record is not proven
+/// factory-titled and keeps for the same reason.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NeverStartedDisposition {
     CleanupStub,
     KeepInspectable,
     LegacyCleanupStarted,
+}
+
+fn never_started_disposition(
+    has_messages: Result<bool, ()>,
+    engine_active: bool,
+    keep_session: bool,
+    factory_titled: Result<bool, ()>,
+) -> NeverStartedDisposition {
+    let started = match has_messages {
+        Ok(has) => has || engine_active,
+        // Unloadable record: keep (deleting on unknown state is the unsafe
+        // direction), and the legacy opt-in must not override that.
+        Err(_) => return NeverStartedDisposition::KeepInspectable,
+    };
+    match (started, keep_session) {
+        // A stub is the run's to delete only while it still wears the
+        // factory title: a rename is ownership on this lane too, the same
+        // rule the started lane below and the one-shot decision apply. An
+        // unreadable title is not proven factory-titled and keeps. Both
+        // facts are re-checked UNDER the turn gate at the guarded delete
+        // (`DeleteGateRecheck::StillAStub`), so a rename or a first message
+        // landing in the sample→delete window keeps the record; the
+        // residual window is only the store read racing the rename inside
+        // the gate, the same cross-process store race the delete lane's
+        // docs already disclose.
+        (false, _) if factory_titled == Ok(true) => NeverStartedDisposition::CleanupStub,
+        (false, _) => NeverStartedDisposition::KeepInspectable,
+        (true, true) => NeverStartedDisposition::KeepInspectable,
+        // The one-shot lane deletes a started transcript only while it still
+        // wears the factory title; adopted (renamed) and unreadable records
+        // are not the run's to delete.
+        (true, false) if factory_titled == Ok(true) => {
+            NeverStartedDisposition::LegacyCleanupStarted
+        }
+        (true, false) => NeverStartedDisposition::KeepInspectable,
+    }
 }
 
 /// The pre-run mode state a failed setup must put back: either the durable
@@ -653,25 +837,161 @@ impl PlanModeRestore {
     }
 }
 
-fn never_started_disposition(
-    has_messages: Result<bool, ()>,
-    engine_active: bool,
-    keep_session: bool,
-) -> NeverStartedDisposition {
-    let started = match has_messages {
-        Ok(has) => has || engine_active,
-        // Unloadable record: keep (deleting on unknown state is the unsafe
-        // direction), and the legacy opt-in must not override that.
-        Err(_) => return NeverStartedDisposition::KeepInspectable,
-    };
-    match (started, keep_session) {
-        (false, _) => NeverStartedDisposition::CleanupStub,
-        (true, true) => NeverStartedDisposition::KeepInspectable,
-        (true, false) => NeverStartedDisposition::LegacyCleanupStarted,
+/// The disposition of the one-shot delete lane: a run-owned session is
+/// deleted, everything else (adopted, unreadable) is kept.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FreshSessionDisposition {
+    Cleanup,
+    Keep,
+}
+
+/// Lifecycle decision for the one-shot opt-in
+/// (`PINVOU3_AGENT_TASK_KEEP_SESSION=0|false|no|off`) on a FRESH session whose
+/// run produced a report — a completed turn, an in-turn error, or the setup
+/// timeout. The legacy contract deletes the run's session, with two keeps:
+///
+/// - `factory_titled != Ok(true)` — a rename is ownership (the adoption
+///   exception, the same rule the never-started path applies): a record a
+///   GUI user took over mid-run is not the run's to delete, and an
+///   unreadable title is not proven factory-titled.
+/// - `Err(_)` — unknown state: keep, because deleting on unknown state is
+///   the unsafe direction.
+///
+/// Kept as a named decision rather than an inline `if` so the cases that are
+/// NOT a delete stay pinned by a test; they are the whole reason the caller
+/// spends store reads it otherwise has no use for.
+fn one_shot_cleanup_decision(
+    record_readable: Result<bool, ()>,
+    factory_titled: Result<bool, ()>,
+) -> FreshSessionDisposition {
+    match (record_readable, factory_titled) {
+        (Ok(_), Ok(true)) => FreshSessionDisposition::Cleanup,
+        _ => FreshSessionDisposition::Keep,
     }
 }
 
-/// The retention-eviction warning for a run's recorded sweep deletions:
+/// The panic arm of the setup await, extracted verbatim so its SEQUENCING —
+/// gate on `submit_entered`, run BOTH pin restores to completion, and only
+/// then resume the unwind — is pinned by a test that drives a real panicking
+/// future through it (round-25 review: the previous test called the restore
+/// helper directly, so deleting this arm or dropping its gate left the whole
+/// suite green). A panic past the submit boundary must NOT roll the pins
+/// back: the turn may already be admitted, and a mid-turn pin rollback would
+/// evict the engine under it — there the pins stay, like those of any
+/// submitted run.
+async fn resume_unwind_after_pinned_restore<Fut>(
+    submit_entered: &AtomicBool,
+    panic_payload: Box<dyn std::any::Any + Send>,
+    restore: impl FnOnce(&'static str) -> Fut,
+) -> !
+where
+    Fut: std::future::Future<Output = ()>,
+{
+    if !submit_entered.load(Ordering::SeqCst) {
+        // Best-effort: a failing restore must not mask the panic (the
+        // unwind is resumed regardless).
+        restore("panic").await;
+    }
+    std::panic::resume_unwind(panic_payload)
+}
+
+/// Put a caller-provided session's `--mode plan` and `--model` pins back after
+/// a setup that provably never reached the turn: a setup failure, or a setup
+/// timeout that fired before the submit was entered. Nothing ran, so leaving
+/// the user's GUI session repinned would be a permanent change made by a run
+/// that did no work. Best-effort — a failed restore must not mask the setup
+/// error or timeout report being returned, but it is worth a stderr note.
+/// `phase` names the setup outcome in that note.
+async fn restore_pre_run_pins(
+    runtime: &EnginePoolRuntime,
+    store: &SessionStore,
+    session_id: &str,
+    plan: Option<PlanModeRestore>,
+    model: Option<Option<String>>,
+    phase: &str,
+) {
+    restore_plan_mode(store, session_id, plan, phase);
+    let Some(previous) = model else {
+        return;
+    };
+    if let Err(error) = runtime
+        .pool
+        .switch_session_model(session_id, previous)
+        .await
+    {
+        super::note_stderr(&format!(
+            "[pinvou agent run] warning: failed to restore the pre-run session model \
+             after the setup {phase}: {}",
+            error.root_cause()
+        ));
+    }
+}
+
+/// Whether a failed submit may have durably admitted the user message: the
+/// caller-provided session's pins must then stay (the turn owns the session,
+/// like the timeout arm past `submit_entered`), and only a provably
+/// pre-append failure restores them. A failure before `submit_entered` was
+/// set (attachment staging, session roots — the slow, commonly failing setup
+/// steps) provably never polled the submit, so nothing can have been
+/// admitted and the pins restore even though no pre-submit snapshot exists
+/// yet. Past that gate the decision comes from record facts — the transcript
+/// revision snapshotted just before the submit against the record read after
+/// the error — because the submit boundary itself is not atomic with the
+/// append: the engine lazily spawns on submit and appends the user message
+/// before several later fallible steps (reservation liveness, engine spawn,
+/// the send itself). A missing snapshot or an unloadable record means
+/// unknown, and unknown keeps the pins: restoring over an admitted turn is
+/// the unsafe direction.
+///
+/// The `run_turn` Err arm is the only production caller; this helper is split
+/// out (like the panic arm's `resume_unwind_after_pinned_restore`) so the
+/// decision is unit-pinnable against a real store without an
+/// `EnginePoolRuntime`.
+fn submit_err_admitted_turn(
+    store: &SessionStore,
+    session_id: &str,
+    submit_entered: bool,
+    pre_submit_revision: Option<&str>,
+) -> bool {
+    if !submit_entered {
+        // The setup failed before the submit was ever polled, so no turn can
+        // have been admitted — regardless of the missing snapshot.
+        return false;
+    }
+    let Some(pre) = pre_submit_revision else {
+        return true;
+    };
+    match store.load(session_id) {
+        Ok(record) => transcript_revision(&record.messages)
+            .map(|now| now != pre)
+            .unwrap_or(true),
+        // Unloadable record: unknown state; restoring pins over a possibly
+        // admitted turn is the unsafe direction (the same rule the
+        // never-started disposition applies to deletes).
+        Err(_) => true,
+    }
+}
+
+/// The mode half of [`restore_pre_run_pins`], split out because it needs no
+/// engine and is pinned by a store-level test.
+fn restore_plan_mode(
+    store: &SessionStore,
+    session_id: &str,
+    restore: Option<PlanModeRestore>,
+    phase: &str,
+) {
+    let Some(restore) = restore else {
+        return;
+    };
+    if let Err(error) = restore.apply(store, session_id) {
+        super::note_stderr(&format!(
+            "[pinvou agent run] warning: failed to restore the pre-run session mode \
+             after the setup {phase}: {}",
+            error.root_cause()
+        ));
+    }
+}
+
 /// `Some` copy when the prepare-time save evicted unpinned headless sessions
 /// at the retention cap — whether through the save itself or the host's
 /// boot-time sweep — and `None` when nothing was evicted (stay silent). The
@@ -717,10 +1037,10 @@ fn arm_retention_eviction_observer(store: &SessionStore) -> Arc<Mutex<RetentionE
         // arm and disarm would do it). Its record was never reported (and may
         // be empty) — say so instead of silently adopting a dead receiver.
         drop(stale);
-        eprintln!(
+        super::note_stderr(
             "[pinvou agent run] warning: replaced a stale retention-eviction \
              observer; any eviction record the previous run left unreported \
-             was discarded"
+             was discarded",
         );
     }
     evictions
@@ -916,6 +1236,34 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
 /// a post-prepare setup fault, setup timeout) the caller's lifecycle handling
 /// cleans up as stubs.
 #[allow(clippy::too_many_arguments)]
+/// The setup-timeout report. `submit_entered` decides `submitted` AND the
+/// error text: before the submit the turn provably never ran (setup-only
+/// wording); past that boundary the submit was in flight when the deadline
+/// fired — the turn may have been durably admitted and keep running — so the
+/// report claims submitted and names the ambiguity instead of the provable
+/// never-ran wording. Extracted so the flag-derivation (the field the CLI's
+/// one-shot persona consume keys off) is unit-pinned rather than buried in
+/// the deadline arm.
+fn setup_timeout_report(session_id: &str, submit_entered: bool) -> AgenticTaskReport {
+    let error = if submit_entered {
+        "agentic run did not finish within the timeout; the turn was being submitted when the \
+         deadline fired and its outcome is unknown"
+    } else {
+        "agentic session setup did not finish within the timeout"
+    };
+    AgenticTaskReport {
+        session_id: session_id.to_owned(),
+        status: "timeout".to_string(),
+        timed_out: true,
+        completed_after_deadline: false,
+        submitted: submit_entered,
+        assistant_text: String::new(),
+        tool_events: Vec::new(),
+        usage: None,
+        error: Some(error.to_string()),
+    }
+}
+
 async fn run_turn(
     runtime: &EnginePoolRuntime,
     store: &SessionStore,
@@ -969,40 +1317,57 @@ async fn run_turn(
     // a hang in either phase must still produce a timeout report, never an
     // unbounded wait.
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    // Round-12 review: the Plan flip below persists BEFORE the turn
-    // exists. If the setup then fails (attachment staging, submit), the
-    // turn never started, so a caller-provided session must keep its
-    // pre-run mode — the restore happens on the setup-error arm. The
-    // timeout arm deliberately never restores: at the deadline edge the
-    // submit may already have landed, so the pre-run mode is no longer
-    // known to be the truth. Fresh sessions need no restore (the stub
-    // cleanup deletes the whole record, mode sidecar included).
+    // The mode and model pins below persist BEFORE the turn exists, so a
+    // caller-provided session must get back the values the user left it with
+    // when the setup then fails (attachment staging, or a submit that failed
+    // before its durable append — [`submit_err_admitted_turn`] tells the two
+    // apart) or times out before the submit. Once the submit is entered the
+    // turn may own the session and the pins stay, exactly like a GUI Plan
+    // send. Fresh sessions arm neither: the record was created by this run,
+    // so there is no pre-run state a user chose (and on the `Err` paths the
+    // stub cleanup deletes the whole record, mode sidecar included).
     let mut plan_restore: Option<PlanModeRestore> = None;
-    // Same reasoning as `plan_restore`, for the model pin: `--model` on a
-    // caller-provided session rewrites that session's durable model sidecar
-    // before the turn exists, and the field is documented as pinning the
-    // model "for this run". A setup failure must therefore put the user's
-    // model back, or a run that never happened leaves their session
-    // permanently repinned. Restored on the same arm as the mode, and
-    // likewise never on the timeout arm (the submit may already have landed).
+    // The model half: `--model` rewrites the session's durable model sidecar
+    // before the turn exists, and a run that never happened must not leave
+    // the session permanently repinned.
     let mut model_restore: Option<Option<String>> = None;
     // The staged attachment copies, filled by the setup future once staging
     // lands. Read by the failure arms after the future is dropped: an
     // existing session's copies must be swept when the turn provably never
     // started, or they orphan under the caller's workspace.
     let mut staged_attachment_copies: Vec<std::path::PathBuf> = Vec::new();
+    // The staging task's join handle, owned HERE — outside the deadline-
+    // scoped setup future — and parked by `prompt_with_attachments` through
+    // the mutable borrow below. A deadline firing while staging is in flight
+    // drops the setup future at its staging await; a handle owned by that
+    // future would detach the blocking task, whose writes then land AFTER
+    // the teardown disposition (re-creating a deleted session directory, or
+    // stranding unreferenced copies inside a kept one). With the handle
+    // parked here, the arms that drop the setup join the task first (see
+    // `join_staged_attachments`), so the sweep sees the real copies and no
+    // write outlives the disposition.
+    let mut staging_in_flight: Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>> = None;
     // Set immediately before `runtime.submit`; read by the timeout arm to tell
     // "the deadline hit while staging attachments" (nothing ran, restore the
     // pins) from "the deadline hit around the submit" (a turn may have been
     // admitted, leave them).
     let submit_entered = AtomicBool::new(false);
+    // Transcript revision of a caller-provided session, captured inside the
+    // setup just before the submit. The Err arm compares it against the
+    // post-error record: the durable user-message append inside the submit is
+    // the only write this run can put on the messages between the two reads,
+    // so a changed revision proves the turn was admitted. `None` (fresh
+    // session, or the pre-submit read failed) means "no snapshot" — the Err
+    // arm must then assume admission.
+    let mut pre_submit_revision: Option<String> = None;
     let setup = async {
         if existing_session {
             // Continue the caller's chat session: never re-create it (session
             // creation would overwrite the transcript). A model pin goes
             // through the GUI chip-switch path (per-session sidecar write +
             // engine evict); the engine itself lazily spawns on submit,
-            // exactly like a GUI send.
+            // exactly like a GUI send. The sidecar write lands during this
+            // setup, so the previous model is remembered for the restore.
             if let Some(model_id) = request.model_id.as_deref() {
                 // The DURABLE sidecar, not the boot-time cache: the cache is
                 // this process's startup view, so a GUI model switch that
@@ -1024,8 +1389,9 @@ async fn run_turn(
             // persist on a caller-provided session too, or the session
             // reopens in its stale mode (the unbound default is Yolo) — the
             // same unsafe divergence the fresh branch refuses. Failure is
-            // fatal like the fresh branch; an existing session is never
-            // cleaned up, so the caller's record stays untouched.
+            // fatal like the fresh branch. The previous mode is remembered so
+            // a setup that never reaches the turn can put the caller's
+            // session back the way they left it.
             if matches!(request.mode, Some(AgenticTaskMode::Plan)) {
                 // Capture the DURABLE entry, not `mode_state`'s resolved
                 // fallback: the fallback is process-relative (this headless
@@ -1092,8 +1458,14 @@ async fn run_turn(
                     .context("persist session mode")?;
             }
         }
-        let (content, consumed_sources, staged_copies) =
-            prompt_with_attachments(store, session_id, request, existing_session).await?;
+        let (content, consumed_sources, staged_copies) = prompt_with_attachments(
+            store,
+            session_id,
+            request,
+            existing_session,
+            &mut staging_in_flight,
+        )
+        .await?;
         staged_attachment_copies = staged_copies;
         // Marks the point past which a deadline hit is genuinely ambiguous:
         // the submit may already have admitted the turn, so the timeout arm
@@ -1101,6 +1473,17 @@ async fn run_turn(
         // the pins themselves, the bind, and attachment staging, which is the
         // slow part and the usual reason a small timeout fires — provably
         // never reached the submit, and there the pins must be restored.
+        // Snapshot the admission fact at the same boundary: from here on, the
+        // submit's own durable append is the only transcript write this run
+        // can make.
+        pre_submit_revision = if existing_session {
+            store
+                .load(session_id)
+                .ok()
+                .and_then(|record| transcript_revision(&record.messages).ok())
+        } else {
+            None
+        };
         submit_entered.store(true, Ordering::SeqCst);
         let handle = runtime
             .submit(&TurnInput {
@@ -1115,37 +1498,114 @@ async fn run_turn(
         // Only now: the turn is admitted, so the staged copies belong to a
         // transcript that outlives this function. Consuming the caller's
         // originals any earlier can leave the user with neither copy when the
-        // submit fails and the never-started stub is cleaned up.
+        // submit fails and the unadopted stub is cleaned up.
         remove_consumed_sources(&consumed_sources);
         Ok(handle)
     };
-    // Bound separately: a match scrutinee temporary would keep the future
-    // (and its mutable borrow of `plan_restore`) alive into the arms.
-    let setup_result =
-        tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup).await;
+    // Bound separately: a match scrutinee temporary would keep the future —
+    // and its mutable borrow of `plan_restore` — alive into the arms.
+    //
+    // Panic safety for the pins (round-21 review finding): a panic inside
+    // the setup future (staging, ingest, prepare, submit) propagated at the
+    // await and skipped every arm of the match below — the Err and timeout
+    // restores never ran, so a caller-provided session stayed repinned in
+    // a mode/model the user never asked to keep: the exact
+    // permanent-change-made-by-a-run-that-did-no-work this block exists to
+    // prevent. The pins are NOT moved across the await — they are restored
+    // from the unwind arm after it — and the awaited future is wrapped in
+    // futures_util::FutureExt::catch_unwind
+    // (AssertUnwindSafe is sound here: this frame is not being unwound —
+    // an unwind drops only the polled future's own state, and the borrowed
+    // locals stay valid for the restores below), and the panic arm
+    // restores both pins exactly like the pre-submit arms — under the same
+    // `submit_entered` gate, so a panic in the post-submit window cannot
+    // roll pins back under an admitted turn — before re-raising into this
+    // task.
+    //
+    // Round-22 review finding: the first cut restored the model half with
+    // `Handle::current().block_on` inside the unwind closure. This task only
+    // ever runs on `run_windowless_host`'s multi-thread runtime worker, where
+    // `block_on` panics ("Cannot start a runtime from within a runtime") — so
+    // the model pin was never restored and the tokio panic masked the real
+    // one. The panic case is now diverted out of the closure and handled as
+    // ordinary async code after the await: the SAME
+    // [`restore_pre_run_pins`] the Err and timeout arms use, then
+    // `resume_unwind`. `resume_unwind` from this frame unwinds through the
+    // poll exactly as the closure's re-raise did.
+    //
+    // The setup coroutine mutably borrows the pin locals until the future
+    // is dropped; a panicked future is dropped inside catch_unwind, which
+    // ENDS those borrows before the match below runs — so the pin values
+    // it recorded (set inside the coroutine before the panic) are readable
+    // exactly there, and only there. Neither pin is moved before the await.
+    let setup_result: Result<Result<TurnHandle, anyhow::Error>, tokio::time::error::Elapsed> =
+        match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), setup),
+        ))
+        .await
+        {
+            Ok(setup_result) => setup_result,
+            Err(panic) => {
+                // The setup panicked. Under the same gate as the timeout arm:
+                // before the submit boundary nothing ran that could own the
+                // session — the same proof the Err arm relies on — so both
+                // pins go back before the panic is resumed into this task.
+                // Past the boundary (a panic between submit and report
+                // construction) the turn may already be admitted, and rolling
+                // the pins back mid-turn would evict the engine under it —
+                // there the pins stay, like those of any submitted run. The
+                // sequencing itself is extracted (and pinned) in
+                // [`resume_unwind_after_pinned_restore`]. The staging task,
+                // if the panic caught it mid-flight, is joined first so no
+                // staged write outlives the unwind (the handle is owned
+                // outside the dropped setup future — see
+                // `staging_in_flight`).
+                join_staged_attachments(&mut staging_in_flight).await;
+                resume_unwind_after_pinned_restore(&submit_entered, panic, |reason| {
+                    restore_pre_run_pins(
+                        runtime,
+                        store,
+                        session_id,
+                        plan_restore.take(),
+                        model_restore.take(),
+                        reason,
+                    )
+                })
+                .await
+            }
+        };
     let handle = match setup_result {
         Ok(submitted) => match submitted {
             Ok(handle) => handle,
             Err(error) => {
-                if let Some(restore) = plan_restore.take() {
-                    if let Err(restore_error) = restore.apply(&store, session_id) {
-                        eprintln!(
-                            "[pinvou agent run] warning: failed to restore the \
-                                 pre-run session mode after the setup failure: {restore_error:#}"
-                        );
-                    }
-                }
-                if let Some(previous) = model_restore.take() {
-                    if let Err(restore_error) = runtime
-                        .pool
-                        .switch_session_model(session_id, previous)
-                        .await
-                    {
-                        eprintln!(
-                            "[pinvou agent run] warning: failed to restore the \
-                                 pre-run session model after the setup failure: {restore_error:#}"
-                        );
-                    }
+                // The submit boundary is not atomic with transcript admission
+                // (the `!submitted` lifecycle lane below documents the same
+                // fact): the engine lazily spawns on submit and can durably
+                // admit the user message before the fault surfaces. Rolling a
+                // caller-provided session's pins back over an admitted
+                // transcript would reopen it in the run's transient
+                // mode/model — the exact unsafe divergence the timeout arm
+                // gates on `submit_entered`. Failures before that flag was
+                // set (staging) provably never polled the submit, so they
+                // restore without a snapshot; past the flag, decide from
+                // record facts instead: the pins restore only when the
+                // transcript revision is unchanged since the pre-submit
+                // snapshot (nothing landed); unknown keeps them.
+                if !submit_err_admitted_turn(
+                    store,
+                    session_id,
+                    submit_entered.load(Ordering::SeqCst),
+                    pre_submit_revision.as_deref(),
+                ) {
+                    restore_pre_run_pins(
+                        runtime,
+                        store,
+                        session_id,
+                        plan_restore.take(),
+                        model_restore.take(),
+                        "failure",
+                    )
+                    .await;
                 }
                 sweep_unreferenced_staged_copies(
                     store,
@@ -1158,32 +1618,33 @@ async fn run_turn(
         },
         Err(_elapsed) => {
             // A deadline that fired BEFORE the submit was entered provably
-            // never ran a turn, so leaving the caller's session durably
-            // repinned to this run's mode and model would be wrong — that is
-            // the user's session, permanently altered by a run that did
-            // nothing. Past the submit the outcome is genuinely ambiguous
-            // (the turn may have been admitted), and there the pins stay.
-            if !submit_entered.load(Ordering::SeqCst) {
-                if let Some(restore) = plan_restore.take() {
-                    if let Err(restore_error) = restore.apply(&store, session_id) {
-                        eprintln!(
-                            "[pinvou agent run] warning: failed to restore the pre-run \
-                             session mode after the setup timeout: {restore_error:#}"
-                        );
-                    }
-                }
-                if let Some(previous) = model_restore.take() {
-                    if let Err(restore_error) = runtime
-                        .pool
-                        .switch_session_model(session_id, previous)
-                        .await
-                    {
-                        eprintln!(
-                            "[pinvou agent run] warning: failed to restore the pre-run \
-                                 session model after the setup timeout: {restore_error:#}"
-                        );
-                    }
-                }
+            // never ran a turn, so the pins are put back exactly like on a
+            // setup failure, and the report says submitted: false. Past that
+            // point the outcome is genuinely ambiguous (the turn may have
+            // been admitted and keep running — nothing here cancels it), so
+            // the pins stay, like those of any submitted run, and the report
+            // carries submitted: true so consumers keying side effects off
+            // it take the at-least-once direction instead of re-injecting a
+            // staged body next run. Either way, the staging task the dropped
+            // setup future left joinable is joined first (bounded): its
+            // batch either lands with its copies adopted into the sweep
+            // below, or the note names the detachment — the old shape, where
+            // an in-flight staging detached immediately and wrote after the
+            // teardown, is gone.
+            if let Some(copies) = join_staged_attachments(&mut staging_in_flight).await {
+                staged_attachment_copies = copies;
+            }
+            let submit_entered = submit_entered.load(Ordering::SeqCst);
+            if !submit_entered {
+                restore_pre_run_pins(
+                    runtime,
+                    store,
+                    session_id,
+                    plan_restore.take(),
+                    model_restore.take(),
+                    "timeout",
+                )
+                .await;
                 sweep_unreferenced_staged_copies(
                     store,
                     session_id,
@@ -1191,21 +1652,7 @@ async fn run_turn(
                     &staged_attachment_copies,
                 );
             }
-            return (
-                false,
-                Ok(AgenticTaskReport {
-                    session_id: session_id.to_owned(),
-                    status: "timeout".to_string(),
-                    timed_out: true,
-                    completed_after_deadline: false,
-                    assistant_text: String::new(),
-                    tool_events: Vec::new(),
-                    usage: None,
-                    error: Some(
-                        "agentic session setup did not finish within the timeout".to_string(),
-                    ),
-                }),
-            );
+            return (false, Ok(setup_timeout_report(session_id, submit_entered)));
         }
     };
     drop(suite_guard);
@@ -1224,10 +1671,10 @@ async fn run_turn(
             break;
         }
         if heartbeat.elapsed() >= Duration::from_secs(HEARTBEAT_SECS) {
-            eprintln!(
+            super::note_stderr(&format!(
                 "[pinvou agent run] turn still active, {}s elapsed",
                 started.elapsed().as_secs()
-            );
+            ));
             heartbeat = Instant::now();
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1278,6 +1725,7 @@ async fn run_turn(
                     status,
                     timed_out,
                     completed_after_deadline,
+                    submitted: true,
                     assistant_text: turn.assistant_text,
                     tool_events: turn
                         .tool_events
@@ -1312,6 +1760,7 @@ async fn run_turn(
                     status: "timeout".to_string(),
                     timed_out: true,
                     completed_after_deadline: false,
+                    submitted: true,
                     assistant_text,
                     tool_events,
                     usage: None,
@@ -1346,6 +1795,7 @@ async fn run_turn(
                     },
                     timed_out,
                     completed_after_deadline: false,
+                    submitted: true,
                     assistant_text,
                     tool_events,
                     usage: None,
@@ -1368,11 +1818,57 @@ async fn run_turn(
 /// by absolute path. Images get the `image_analyze` hard-rule text, which the
 /// product tool allowlist always provides, so no model image-capability probe
 /// is needed.
+/// One staging batch's output: the ingested attachments for the prompt, the
+/// consumed sources, and the staged workspace copies the failure arms sweep.
+type StagedBatch = (
+    Vec<IngestResult>,
+    Vec<std::path::PathBuf>,
+    Vec<std::path::PathBuf>,
+);
+
+/// Upper bound on how long the failure arms wait for a staging task that was
+/// still running when the deadline (or a panic) dropped the setup future.
+/// Staging is capped at 16 × 20 MiB plus bounded ingest work, so this grace
+/// covers every real completion; expiring it degrades to the pre-fix
+/// behavior (detached task) rather than hanging the report on a wedged
+/// filesystem read.
+const STAGING_JOIN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Joins a staging task whose setup future was dropped before its staging
+/// await completed (deadline or panic arm). On a clean join the copies list
+/// is returned for the caller's sweep; a staging failure self-swept its own
+/// partials and yields `None`; a grace expiry leaves the task detached with
+/// a stderr note — the outcome a dropped handle used to produce instantly,
+/// now only after a grace that real staging always fits inside.
+async fn join_staged_attachments(
+    staging_in_flight: &mut Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>>,
+) -> Option<Vec<std::path::PathBuf>> {
+    let join = staging_in_flight.as_mut()?;
+    match tokio::time::timeout(STAGING_JOIN_GRACE, &mut *join).await {
+        Ok(Ok(Ok((_, _, copies)))) => Some(copies),
+        Ok(Ok(Err(_))) => None,
+        Ok(Err(join_error)) => {
+            super::note_stderr(&format!(
+                "agentic staging task ended abnormally after the deadline: {join_error}"
+            ));
+            None
+        }
+        Err(_elapsed) => {
+            super::note_stderr(
+                "agentic staging task did not finish within the post-deadline grace; \
+                 its copies may land unreferenced",
+            );
+            None
+        }
+    }
+}
+
 async fn prompt_with_attachments(
     store: &SessionStore,
     session_id: &str,
     request: &AgenticTaskRequest,
     existing_session: bool,
+    staging_in_flight: &mut Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>>,
 ) -> Result<(String, Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
     if request.attachments.is_empty() {
         return Ok((request.prompt.clone(), Vec::new(), Vec::new()));
@@ -1393,10 +1889,18 @@ async fn prompt_with_attachments(
     let attachments = request.attachments.clone();
     let prompt = request.prompt.clone();
     let staging_root = ledger_root.clone();
-    let staged =
-        tokio::task::spawn_blocking(move || stage_and_ingest_batch(&attachments, &staging_root))
-            .await
-            .context("attachment staging task")??;
+    let join =
+        tokio::task::spawn_blocking(move || stage_and_ingest_batch(&attachments, &staging_root));
+    // Park the handle in the caller's slot BEFORE awaiting, then await by
+    // mutable borrow of the parked handle: a deadline firing at this await
+    // drops only the borrow (and with it the setup future) — the blocking
+    // task stays joinable for the failure arms instead of detaching
+    // mid-write.
+    *staging_in_flight = Some(join);
+    let staged = match staging_in_flight.as_mut() {
+        Some(join) => (&mut *join).await.context("attachment staging task")??,
+        None => unreachable!("the staging handle was parked above"),
+    };
     let (ingested, consumed_sources, staged_copies) = staged;
     Ok((
         build_message_with_attachments_in_dir(
@@ -1595,10 +2099,10 @@ fn stage_refusal_means_cap_growth(source: &std::path::Path) -> bool {
 fn remove_consumed_sources(sources: &[std::path::PathBuf]) {
     for source in sources {
         if let Err(error) = std::fs::remove_file(source) {
-            eprintln!(
+            super::note_stderr(&format!(
                 "[pinvou agent run] remove_after_ingest could not delete {}: {error}",
                 source.display()
-            );
+            ));
         }
     }
 }
@@ -1637,18 +2141,33 @@ fn partial_turn_analysis(
     )
 }
 
-/// Mints the id for a fresh headless run.
+/// Fresh session id for one agentic run:
+/// `{HEADLESS_SESSION_PREFIX}{pid}_{unix_millis}_{counter}`.
 ///
 /// The prefix comes from `HEADLESS_SESSION_PREFIX` rather than a literal:
 /// retention keys the separate headless eviction budget on it, so changing the
 /// format here without changing the sweep would silently put these sessions
 /// back in competition with the user's GUI chats.
+///
+/// The pid alone is not unique across time: OS pid reuse can hand a later
+/// process the same pid while the per-process counter restarts at 0, so a
+/// `{pid}_{counter}` shape could reproduce an id that is still persisted weeks
+/// later. The unix-millisecond component bounds a collision to
+/// same-millisecond reuse of both the pid and the counter (and the caller
+/// still regenerates while the record exists). The id stays inside the
+/// session id alphabet `[A-Za-z0-9_-]` (see `features/sessions/validators.rs`),
+/// so the store accepts it unchanged.
 fn fresh_session_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    let unix_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     format!(
-        "{}{}_{}",
+        "{}{}_{}_{}",
         crate::features::sessions::HEADLESS_SESSION_PREFIX,
         std::process::id(),
+        unix_millis,
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -1658,9 +2177,11 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, arm_retention_eviction_observer,
-        ensure_existing_chat_session, ensure_model_exists, ensure_stage_size, fresh_session_id,
-        keep_session_from_env, refuse_ingest_without_a_surviving_copy, retention_eviction_warning,
+        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, NeverStartedDisposition, PlanModeRestore,
+        arm_retention_eviction_observer, ensure_existing_chat_session, ensure_model_exists,
+        ensure_stage_size, fresh_session_id, keep_session_from_env, never_started_disposition,
+        one_shot_cleanup_decision, refuse_ingest_without_a_surviving_copy, restore_plan_mode,
+        resume_unwind_after_pinned_restore, retention_eviction_warning, setup_timeout_report,
         stage_and_ingest_batch, stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies,
         validate_attachments,
     };
@@ -1668,12 +2189,32 @@ mod tests {
         copy_bounded, stage_file_in_workspace_with_copier,
     };
     use crate::features::sessions::{
-        MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND, RetentionEvictionRecord, ScheduledRunMode,
-        ScheduledRunProfile, SessionStore,
+        MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND, NEW_CHAT_TITLE, RetentionEvictionRecord,
+        ScheduledRunMode, ScheduledRunProfile, SerializableMode, SessionStore,
     };
     use crate::platform::test_support::locked_env;
     use deepseek_tui::models::{ContentBlock, Message};
     use std::path::PathBuf;
+
+    /// RAII cleanup for a test scratch directory under `std::env::temp_dir()`:
+    /// removed best-effort on drop (normal return or panic unwind). Removal
+    /// failures are ignored on purpose — a leaked temp dir must never fail a
+    /// test, and an OS that still holds the directory open simply skips it.
+    struct TempDirGuard {
+        path: PathBuf,
+    }
+
+    impl TempDirGuard {
+        fn new(path: PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn default_request(prompt: &str) -> AgenticTaskRequest {
         AgenticTaskRequest {
@@ -1687,64 +2228,166 @@ mod tests {
         }
     }
 
-    /// Sessions persist by default; only the explicit falsy values restore
-    /// the legacy one-shot cleanup, and the legacy truthy values still mean
-    /// keep.
+    /// The one-shot opt-in on a fresh session that produced a report:
+    /// the caller owns the run's own record, so a readable
+    /// factory-titled record is deleted. Two keeps: an adopted record
+    /// (renamed away from the factory title — a GUI user owns it now) and an
+    /// unreadable one, because deleting on unknown state is the unsafe
+    /// direction.
     #[test]
-    fn never_started_disposition_branch_order_is_pinned() {
-        use super::{NeverStartedDisposition::*, never_started_disposition};
-        // Zero-message stub with a dead engine: cleanup-eligible regardless
-        // of KEEP_SESSION.
+    fn one_shot_cleanup_deletes_only_the_runs_own_factory_titled_record() {
+        use super::FreshSessionDisposition::*;
         assert!(matches!(
-            never_started_disposition(Ok(false), false, true),
-            CleanupStub
+            one_shot_cleanup_decision(Ok(true), Ok(true)),
+            Cleanup
         ));
         assert!(matches!(
-            never_started_disposition(Ok(false), false, false),
-            CleanupStub
+            one_shot_cleanup_decision(Ok(false), Ok(true)),
+            Cleanup
         ));
-        // Started transcript (durable record carries admitted messages):
-        // stays inspectable under the default, legacy-cleanup only on the
-        // explicit falsy opt-in.
-        assert!(matches!(
-            never_started_disposition(Ok(true), false, true),
-            KeepInspectable
-        ));
-        assert!(matches!(
-            never_started_disposition(Ok(true), false, false),
-            LegacyCleanupStarted
-        ));
-        // Unloadable record: keep — deleting on unknown state is the unsafe
-        // direction, regardless of KEEP_SESSION.
-        assert!(matches!(
-            never_started_disposition(Err(()), false, true),
-            KeepInspectable
-        ));
-        assert!(matches!(
-            never_started_disposition(Err(()), false, false),
-            KeepInspectable
-        ));
+        assert!(
+            matches!(one_shot_cleanup_decision(Ok(true), Ok(false)), Keep),
+            "a renamed record is adopted — the one-shot lane must not delete it"
+        );
+        assert!(
+            matches!(one_shot_cleanup_decision(Ok(false), Err(())), Keep),
+            "an unreadable title is not proven factory-titled and must keep"
+        );
+        assert!(
+            matches!(one_shot_cleanup_decision(Err(()), Ok(true)), Keep),
+            "an unreadable record is unknown state and must not be deleted"
+        );
+        assert!(matches!(one_shot_cleanup_decision(Err(()), Err(())), Keep));
     }
 
-    /// A live engine outranks a "no messages yet" disk sample: the forwarder
-    /// writes the admitted prompt asynchronously, so a submit that failed
-    /// late (or a setup deadline that fired after the op was queued) can read
-    /// zero messages for a turn the engine is running and billing right now.
-    /// Deleting that record destroys the only copy of a started turn.
+    /// The never-started decision, pinned over the branch order that is the
+    /// contract: a zero-message FACTORY-TITLED stub cleans up regardless of
+    /// `KEEP_SESSION`, a renamed (adopted) zero-message record keeps — the
+    /// rename is ownership on this lane too — a started transcript keeps
+    /// under the default contract, the one-shot opt-in deletes it — but only
+    /// while the record still wears the factory title — and an unloadable
+    /// record keeps on every path.
     #[test]
-    fn never_started_disposition_keeps_a_record_whose_engine_is_still_running() {
-        use super::{NeverStartedDisposition::*, never_started_disposition};
-        assert!(matches!(
-            never_started_disposition(Ok(false), true, true),
-            KeepInspectable
-        ));
-        // The legacy one-shot opt-in still cleans up a started turn, but it
-        // is classified as STARTED (LegacyCleanupStarted), not as a stub —
-        // the two arms differ for `KEEP_SESSION` unset, which is the default.
-        assert!(matches!(
-            never_started_disposition(Ok(false), true, false),
-            LegacyCleanupStarted
-        ));
+    fn never_started_disposition_matrix_is_pinned() {
+        // (has_messages, engine_active, keep_session, factory_titled).
+        let matrix = [
+            // Zero-message factory-titled stub: cleanup-eligible regardless
+            // of KEEP_SESSION (it would litter the shared store with
+            // eviction bait).
+            (
+                Ok(false),
+                false,
+                true,
+                Ok(true),
+                NeverStartedDisposition::CleanupStub,
+            ),
+            (
+                Ok(false),
+                false,
+                false,
+                Ok(true),
+                NeverStartedDisposition::CleanupStub,
+            ),
+            // Zero-message + adopted (renamed): the rename is ownership on
+            // the stub lane too — the record keeps.
+            (
+                Ok(false),
+                false,
+                true,
+                Ok(false),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            (
+                Ok(false),
+                false,
+                false,
+                Ok(false),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Zero-message + unreadable title: not proven factory-titled,
+            // keep (deleting on unknown state is the unsafe direction).
+            (
+                Ok(false),
+                false,
+                true,
+                Err(()),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Zero-message + engine ACTIVE + one-shot + factory title: a
+            // live engine outranks the stale zero-message disk sample, so
+            // the record takes the legacy delete arm — the row the replaced
+            // test pinned ("the two arms differ for KEEP_SESSION unset").
+            (
+                Ok(false),
+                true,
+                false,
+                Ok(true),
+                NeverStartedDisposition::LegacyCleanupStarted,
+            ),
+            // Started (durable messages) + default keep: inspectable.
+            (
+                Ok(true),
+                false,
+                true,
+                Ok(true),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Started + one-shot + factory title: the legacy delete.
+            (
+                Ok(true),
+                false,
+                false,
+                Ok(true),
+                NeverStartedDisposition::LegacyCleanupStarted,
+            ),
+            // Started + one-shot + adopted (renamed): the rename is
+            // ownership, the one-shot lane does not own this record.
+            (
+                Ok(true),
+                false,
+                false,
+                Ok(false),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Started + one-shot + unreadable title: not proven
+            // factory-titled, keep.
+            (
+                Ok(true),
+                false,
+                false,
+                Err(()),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Engine liveness overrides a stale zero-message sample.
+            (
+                Ok(false),
+                true,
+                true,
+                Ok(true),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+            // Unloadable record keeps even under the one-shot opt-in.
+            (
+                Err(()),
+                false,
+                false,
+                Ok(true),
+                NeverStartedDisposition::KeepInspectable,
+            ),
+        ];
+        for (has_messages, engine_active, keep_session, factory_titled, expected) in matrix {
+            assert_eq!(
+                never_started_disposition(
+                    has_messages,
+                    engine_active,
+                    keep_session,
+                    factory_titled
+                ),
+                expected,
+                "has_messages={has_messages:?} engine_active={engine_active} \
+                 keep_session={keep_session} factory_titled={factory_titled:?}"
+            );
+        }
     }
 
     #[test]
@@ -2085,11 +2728,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let error = ensure_model_exists("definitely-missing-model").unwrap_err();
         assert!(error.to_string().contains("agent_model_not_found"));
-        // `_env` restores the captured PINVOU3_HOME on return or panic.
+        // `_tmp_cleanup` removes the scratch dir on return or panic;
+        // `_env` restores the captured PINVOU3_HOME.
     }
 
     #[test]
@@ -2171,6 +2816,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
@@ -2230,6 +2876,85 @@ mod tests {
         // `_env` restores the captured PINVOU3_HOME on return or panic.
     }
 
+    /// A `--mode plan` run that never reaches the turn must leave a
+    /// caller-provided session in the mode the user left it in: the run did no
+    /// work, so it may not permanently flip their GUI session into Plan. Both
+    /// captured shapes are restored — a durable value is written back, and a
+    /// session that had no durable entry gets its entry removed again rather
+    /// than a frozen copy of the resolved default. The restore is skipped when
+    /// nothing was captured (a fresh session, or one already in Plan).
+    #[test]
+    fn setup_failure_restores_a_caller_sessions_pre_run_mode() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-plan-restore-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+        let chat = store
+            .create_new("test-model".to_string(), None, tmp.clone())
+            .unwrap();
+        let id = chat.metadata.id.clone();
+
+        // No durable entry: the session follows its resolved default, and the
+        // restore must put the absence back.
+        assert_eq!(store.durable_mode_entry(&id), None);
+        let resolved = store.mode_state(&id).mode;
+        assert_ne!(
+            resolved,
+            SerializableMode::Plan,
+            "fixture must start outside Plan or the restore is vacuous"
+        );
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(&store, &id, Some(PlanModeRestore::Absent), "failure");
+        assert_eq!(
+            store.durable_mode_entry(&id),
+            None,
+            "the entry the failed run added must be gone"
+        );
+        assert_eq!(store.mode_state(&id).mode, resolved);
+
+        // A durable value is written back as that value.
+        store
+            .set_mode_and_persist(&id, SerializableMode::Yolo)
+            .unwrap();
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(
+            &store,
+            &id,
+            Some(PlanModeRestore::Value(SerializableMode::Yolo)),
+            "failure",
+        );
+        assert_eq!(
+            store.durable_mode_entry(&id),
+            Some(SerializableMode::Yolo),
+            "a setup failure must put the caller's session back"
+        );
+
+        // No captured mode means nothing to restore.
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(&store, &id, None, "timeout");
+        assert_eq!(
+            store.mode_state(&id).mode,
+            SerializableMode::Plan,
+            "an unarmed restore must not touch the session"
+        );
+        // `_tmp_cleanup` removes the scratch dir; `_env` restores
+        // PINVOU3_HOME.
+    }
+
     /// The store-side half of the eviction-warning contract: retention sweep
     /// deletions are recorded as real eviction events and a save below the
     /// cap records nothing. The runner's own arm/report half is pinned by
@@ -2251,6 +2976,7 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
         // SAFETY: ENV_LOCK held; env writes are serialized across tests.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
@@ -2313,10 +3039,8 @@ mod tests {
             "a save below the cap must not be reported as an eviction"
         );
         store.take_retention_eviction_observer();
-        // `_env` restores the captured PINVOU3_HOME on return or panic; the
-        // scratch home itself is removed here so repeated runs don't litter
-        // the shared temp dir.
-        let _ = std::fs::remove_dir_all(&tmp);
+        // `_tmp_cleanup` removes the scratch dir; `_env` restores
+        // PINVOU3_HOME.
     }
 
     /// Re-arming over an observer a previous run left behind (an unwind
@@ -2732,6 +3456,7 @@ mod tests {
             status: "Completed".to_string(),
             timed_out: true,
             completed_after_deadline: true,
+            submitted: true,
             assistant_text: "done".to_string(),
             tool_events: vec![AgenticToolEvent {
                 name: "Bash".to_string(),
@@ -2770,7 +3495,10 @@ mod tests {
     #[test]
     fn report_deserializes_without_new_marker_field() {
         // Older reports (without completed_after_deadline) must still parse,
-        // defaulting the marker to false.
+        // defaulting the marker to false — and `submitted` to false too:
+        // the CLI's one-shot persona consume gates on that default, so a
+        // flipped default would silently spend a staged persona body on a
+        // timed-out setup.
         let json = r#"{
             "session_id":"agentic_1_0",
             "status":"timeout",
@@ -2782,6 +3510,7 @@ mod tests {
         }"#;
         let parsed: AgenticTaskReport = serde_json::from_str(json).unwrap();
         assert!(!parsed.completed_after_deadline);
+        assert!(!parsed.submitted, "the serde default must stay false");
         assert_eq!(parsed.status, "timeout");
     }
 
@@ -2790,6 +3519,38 @@ mod tests {
         // 7 days; the CLI parse cap and the library clamp must stay in lockstep
         // so `Instant + Duration` can never overflow.
         assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
+    }
+
+    /// The setup-timeout report's `submitted` flag must be derived from the
+    /// submit admission boundary, not hard-coded: before the submit the turn
+    /// provably never ran (`false`, setup-only wording); past it the submit
+    /// was in flight and the turn may have been admitted (`true`, ambiguous
+    /// wording) — the CLI's one-shot persona consume keys off this flag, so
+    /// a hard `false` would stage a double injection on the next run.
+    #[test]
+    fn setup_timeout_report_carries_the_submit_boundary() {
+        let before = setup_timeout_report("s-1", false);
+        assert!(!before.submitted);
+        assert_eq!(before.status, "timeout");
+        assert!(before.timed_out);
+        assert_eq!(
+            before.error.as_deref(),
+            Some("agentic session setup did not finish within the timeout"),
+            "the provably-never-ran case keeps the setup-only wording"
+        );
+
+        let entered = setup_timeout_report("s-1", true);
+        assert!(
+            entered.submitted,
+            "once the submit was entered the report must claim submitted — \
+             the one-shot consume takes the at-least-once direction"
+        );
+        assert_eq!(entered.status, "timeout");
+        let error = entered.error.as_deref().expect("error text present");
+        assert!(
+            error.contains("outcome is unknown"),
+            "the entered case must name the ambiguity, not claim setup never finished: {error}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2845,9 +3606,13 @@ mod tests {
         }
 
         async fn teardown_schedule_delete(&self, session_id: &str) -> anyhow::Result<()> {
-            // schedule_eval_cleanup only unregisters timing and schedules
-            // background sweeps in production; the durable delete is the
-            // awaited half, so mirroring it here is faithful.
+            // Covers the DISPOSITION half only (this double performs the
+            // unconditional store delete). Production `teardown_schedule_delete`
+            // routes the durable delete through the adoption-gated
+            // `delete_headless_session_unless_adopted` under the turn lock;
+            // that gate half is pinned by
+            // `one_shot_delete_gate_rechecks_the_adoption_marker` in
+            // engine_pool, not here.
             self.teardown_delete(session_id).await
         }
 
@@ -2855,11 +3620,13 @@ mod tests {
             &self,
             session_id: &str,
         ) -> anyhow::Result<()> {
-            // Mirrors the production guard in
-            // `EnginePool::delete_chat_session_if_still_empty`: the stub
-            // delete fires only for a record that is still message-free; a
-            // record with messages (or an unloadable one) is kept with just
-            // the engine reclaimed.
+            // Covers the message-free half of the production guard in
+            // `EnginePool::delete_chat_session_if_still_empty`; the
+            // production DeleteGateRecheck also requires the record to still
+            // read factory-titled, which this test double deliberately does
+            // not reproduce — production is strictly more conservative, so
+            // every directory this double deletes is one production may
+            // delete too.
             let store = self.store.lock().as_ref().expect("store present").clone();
             if !matches!(store.chat_session_has_messages(session_id), Ok(false)) {
                 self.evictions.lock().push(session_id.to_owned());
@@ -2918,6 +3685,76 @@ mod tests {
         }
     }
 
+    /// The Err-arm admission decision, pinned against a real store: a
+    /// pre-`submit_entered` failure restores even without a snapshot; only
+    /// an unchanged transcript revision (nothing landed) is otherwise
+    /// restore-eligible; a landed append (the late-fault submit), a missing
+    /// pre-submit snapshot past the gate, or an unreadable record all count
+    /// as admitted — restoring pins over a possibly admitted turn is the
+    /// unsafe direction.
+    #[test]
+    fn submit_err_admission_decides_from_the_transcript_revision() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let (store, tmp) = lifecycle_home("submit-admission");
+        // The scratch home must not leak per CI run (every sibling wraps it
+        // in the guard; this test's binding was the one that didn't).
+        let _tmp_cleanup = TempDirGuard::new(tmp);
+
+        seed_record(&store, "adm_probe", &[user_text("first")]);
+        let pre = super::transcript_revision(&store.load("adm_probe").unwrap().messages).unwrap();
+
+        // Failure before the submit was polled (staging/roots — no snapshot
+        // exists yet) → provably nothing admitted, the pins restore.
+        assert!(!super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            false,
+            None
+        ));
+
+        // Submit failed before the durable append (nothing landed) → the
+        // caller-provided session's pins restore.
+        assert!(!super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            true,
+            Some(&pre)
+        ));
+
+        // Submit admitted the message and only then faulted (the engine can
+        // append before its spawn/send fails) → the pins stay.
+        seed_record(
+            &store,
+            "adm_probe",
+            &[user_text("first"), user_text("second")],
+        );
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            true,
+            Some(&pre)
+        ));
+
+        // No pre-submit snapshot (fresh session, or the snapshot read
+        // failed) past the gate → assume admission.
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            true,
+            None
+        ));
+
+        // Record unreadable after the error → unknown ⇒ keep.
+        seed_record(&store, "adm_probe", &[user_text("first")]);
+        store.delete("adm_probe").unwrap();
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            true,
+            Some(&pre)
+        ));
+    }
+
     fn set_keep_session(value: Option<&str>) {
         // SAFETY: ENV_LOCK held via locked_env in the caller; env writes are
         // serialized across tests.
@@ -2940,9 +3777,21 @@ mod tests {
         // Default (unset) → keep: engine reclaimed, record survives.
         set_keep_session(None);
         seed_record(&store, "agentic_matrix_default", &[user_text("hi")]);
+        // Production mints a fresh run session with the factory title; the
+        // seeder derives a prompt title, so restore the run's own state.
+        store
+            .set_title("agentic_matrix_default", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         let executor = RecordingTeardown::new(&store);
-        super::run_session_lifecycle(&executor, &store, "agentic_matrix_default", false, true)
-            .await;
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_matrix_default",
+            false,
+            true,
+            false,
+        )
+        .await;
         assert!(
             store.chat_session_record_exists("agentic_matrix_default"),
             "default keep: the run's session record must stay for continuation"
@@ -2959,9 +3808,19 @@ mod tests {
         for falsy in ["0", "false", "no", "off", "FALSE"] {
             set_keep_session(Some(falsy));
             seed_record(&store, "agentic_matrix_falsy", &[user_text("hi")]);
+            store
+                .set_title("agentic_matrix_falsy", NEW_CHAT_TITLE.to_string())
+                .unwrap();
             let executor = RecordingTeardown::new(&store);
-            super::run_session_lifecycle(&executor, &store, "agentic_matrix_falsy", false, true)
-                .await;
+            super::run_session_lifecycle(
+                &executor,
+                &store,
+                "agentic_matrix_falsy",
+                false,
+                true,
+                false,
+            )
+            .await;
             assert!(
                 !store.chat_session_record_exists("agentic_matrix_falsy"),
                 "KEEP_SESSION={falsy}: the legacy one-shot cleanup must delete the record"
@@ -2976,8 +3835,19 @@ mod tests {
         // Truthy legacy values still mean keep.
         set_keep_session(Some("0-nope"));
         seed_record(&store, "agentic_matrix_truthy", &[user_text("hi")]);
+        store
+            .set_title("agentic_matrix_truthy", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         let executor = RecordingTeardown::new(&store);
-        super::run_session_lifecycle(&executor, &store, "agentic_matrix_truthy", false, true).await;
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_matrix_truthy",
+            false,
+            true,
+            false,
+        )
+        .await;
         assert!(
             store.chat_session_record_exists("agentic_matrix_truthy"),
             "a non-falsy KEEP_SESSION keeps the session"
@@ -2995,34 +3865,79 @@ mod tests {
         let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
         let (store, tmp) = lifecycle_home("unsubmitted");
 
-        // Zero-message stub + default keep → deleted anyway (CleanupStub):
-        // a stub has no transcript to inspect and becomes eviction bait.
+        // Zero-message FACTORY-TITLED stub + default keep → deleted anyway
+        // (CleanupStub): a stub has no transcript to inspect and becomes
+        // eviction bait. (The factory title is what makes it the run's to
+        // delete — see the adopted-stub row below.)
         set_keep_session(None);
         seed_record(&store, "agentic_stub_keep", &[]);
+        store
+            .set_title("agentic_stub_keep", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         let executor = RecordingTeardown::new(&store);
-        super::run_session_lifecycle(&executor, &store, "agentic_stub_keep", false, false).await;
+        super::run_session_lifecycle(&executor, &store, "agentic_stub_keep", false, false, false)
+            .await;
         assert!(
             !store.chat_session_record_exists("agentic_stub_keep"),
-            "a zero-message stub must clean up after itself even under default keep"
+            "a zero-message factory-titled stub must clean up even under default keep"
         );
 
-        // Zero-message stub + falsy → same delete (already covered by
-        // CleanupStub before KEEP_SESSION is even consulted).
+        // Zero-message factory-titled stub + falsy → same delete (already
+        // covered by CleanupStub before KEEP_SESSION is even consulted).
         seed_record(&store, "agentic_stub_falsy", &[]);
+        store
+            .set_title("agentic_stub_falsy", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         set_keep_session(Some("0"));
         let executor = RecordingTeardown::new(&store);
-        super::run_session_lifecycle(&executor, &store, "agentic_stub_falsy", false, false).await;
+        super::run_session_lifecycle(&executor, &store, "agentic_stub_falsy", false, false, false)
+            .await;
         assert!(
             !store.chat_session_record_exists("agentic_stub_falsy"),
             "a zero-message stub is cleanup-eligible regardless of KEEP_SESSION"
         );
 
+        // Zero-message ADOPTED stub (renamed before the run faults) + falsy →
+        // KEEPS: the rename is ownership on the never-started lane too — the
+        // round-25 review hole, pinned end-to-end (the pure matrix pins the
+        // decision; this pins the whole lifecycle path).
+        seed_record(&store, "agentic_stub_adopted", &[]);
+        store
+            .set_title("agentic_stub_adopted", "User renamed this".to_string())
+            .unwrap();
+        set_keep_session(Some("0"));
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_stub_adopted",
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            store.chat_session_record_exists("agentic_stub_adopted"),
+            "a renamed zero-message stub keeps even under the falsy opt-in"
+        );
+
         // Started transcript (durable record carries admitted messages) +
         // default → stays inspectable.
         seed_record(&store, "agentic_started_keep", &[user_text("hi")]);
+        store
+            .set_title("agentic_started_keep", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         set_keep_session(None);
         let executor = RecordingTeardown::new(&store);
-        super::run_session_lifecycle(&executor, &store, "agentic_started_keep", false, false).await;
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_started_keep",
+            false,
+            false,
+            false,
+        )
+        .await;
         assert!(
             store.chat_session_record_exists("agentic_started_keep"),
             "a started-but-unsubmitted transcript is the only copy — it stays"
@@ -3031,10 +3946,20 @@ mod tests {
 
         // Same started transcript + falsy → legacy cleanup deletes it.
         seed_record(&store, "agentic_started_falsy", &[user_text("hi")]);
+        store
+            .set_title("agentic_started_falsy", NEW_CHAT_TITLE.to_string())
+            .unwrap();
         set_keep_session(Some("off"));
         let executor = RecordingTeardown::new(&store);
-        super::run_session_lifecycle(&executor, &store, "agentic_started_falsy", false, false)
-            .await;
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_started_falsy",
+            false,
+            false,
+            false,
+        )
+        .await;
         assert!(
             !store.chat_session_record_exists("agentic_started_falsy"),
             "the falsy opt-in restores legacy cleanup for started-but-unsubmitted runs"
@@ -3046,7 +3971,15 @@ mod tests {
         set_keep_session(None);
         let executor = RecordingTeardown::new(&store);
         *executor.turn_active.lock() = true;
-        super::run_session_lifecycle(&executor, &store, "agentic_engine_live", false, false).await;
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_engine_live",
+            false,
+            false,
+            false,
+        )
+        .await;
         assert!(
             store.chat_session_record_exists("agentic_engine_live"),
             "engine liveness overrides a stale zero-message snapshot"
@@ -3062,11 +3995,169 @@ mod tests {
             "agentic_ghost_never_seeded",
             false,
             false,
+            false,
         )
         .await;
         assert!(
             executor.deletes.lock().is_empty(),
             "an unloadable/missing record must keep — deleting on unknown state is unsafe"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The setup timeout is the one never-submitted path that produces a
+    /// report, and that report names the run's `session_id`: under the
+    /// default keep contract the session must stay resolvable — no silent
+    /// stub cleanup behind an id the caller was just handed. Only the
+    /// explicit one-shot opt-in may still clean it up, under the same
+    /// adoption rule as every submitted run.
+    #[tokio::test]
+    async fn a_setup_timeout_keeps_the_reported_session_resolvable() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
+        let (store, tmp) = lifecycle_home("setup-timeout");
+
+        // Default keep: the reported id stays resolvable.
+        set_keep_session(None);
+        seed_record(&store, "agentic_timeout_keep", &[]);
+        store
+            .set_title("agentic_timeout_keep", NEW_CHAT_TITLE.to_string())
+            .unwrap();
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_timeout_keep",
+            false,
+            false,
+            true, // setup timeout: the report carries this session_id
+        )
+        .await;
+        assert!(
+            store.chat_session_record_exists("agentic_timeout_keep"),
+            "the setup timeout's session_id was reported — the session must stay resolvable"
+        );
+        assert_eq!(executor.evictions.lock().len(), 1, "engine reclaimed");
+        assert!(
+            executor.deletes.lock().is_empty(),
+            "no silent stub cleanup behind a reported session id"
+        );
+
+        // One-shot opt-in + factory title: the caller asked for a clean
+        // sandbox, and the timeout session is still the run's own.
+        set_keep_session(Some("0"));
+        seed_record(&store, "agentic_timeout_falsy", &[]);
+        store
+            .set_title("agentic_timeout_falsy", NEW_CHAT_TITLE.to_string())
+            .unwrap();
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_timeout_falsy",
+            false,
+            false,
+            true,
+        )
+        .await;
+        assert!(
+            !store.chat_session_record_exists("agentic_timeout_falsy"),
+            "the one-shot opt-in owns the run's own timeout session too"
+        );
+
+        // One-shot opt-in + adopted (renamed): the rename is ownership.
+        set_keep_session(Some("0"));
+        seed_record(&store, "agentic_timeout_adopted", &[user_text("hi")]);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_timeout_adopted",
+            false,
+            false,
+            true,
+        )
+        .await;
+        assert!(
+            store.chat_session_record_exists("agentic_timeout_adopted"),
+            "KEEP_SESSION=0 must not delete an adopted session record"
+        );
+        assert!(
+            executor.deletes.lock().is_empty(),
+            "an adopted record must not reach the delete lane"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The adoption exception on the submitted and started one-shot lanes:
+    /// `KEEP_SESSION=0` restores the legacy cleanup for the run's own
+    /// factory-titled session, but a record a GUI user renamed away from the
+    /// placeholder is adopted and keeps — only the engine is reclaimed.
+    #[tokio::test]
+    async fn the_one_shot_opt_in_preserves_an_adopted_session() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_AGENT_TASK_KEEP_SESSION"]);
+        let (store, tmp) = lifecycle_home("adopted");
+        set_keep_session(Some("0"));
+
+        // Submitted run + renamed record: kept.
+        seed_record(&store, "agentic_adopted_submitted", &[user_text("hi")]);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_adopted_submitted",
+            false,
+            true,
+            false,
+        )
+        .await;
+        assert!(
+            store.chat_session_record_exists("agentic_adopted_submitted"),
+            "KEEP_SESSION=0 must not delete a renamed (adopted) session"
+        );
+        assert_eq!(executor.evictions.lock().len(), 1, "engine reclaimed");
+        assert!(executor.deletes.lock().is_empty());
+
+        // Started-never-submitted run + renamed record: kept too.
+        seed_record(&store, "agentic_adopted_started", &[user_text("hi")]);
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_adopted_started",
+            false,
+            false,
+            false,
+        )
+        .await;
+        assert!(
+            store.chat_session_record_exists("agentic_adopted_started"),
+            "the started one-shot lane respects adoption the same way"
+        );
+        assert!(executor.deletes.lock().is_empty());
+
+        // Control: the same lane still deletes the factory-titled record
+        // (the legacy contract for the run's own session — pinned above by
+        // the falsy arms of the matrix tests; this assert documents the
+        // pairing with the adopted cases).
+        seed_record(&store, "agentic_adopted_control", &[user_text("hi")]);
+        store
+            .set_title("agentic_adopted_control", NEW_CHAT_TITLE.to_string())
+            .unwrap();
+        let executor = RecordingTeardown::new(&store);
+        super::run_session_lifecycle(
+            &executor,
+            &store,
+            "agentic_adopted_control",
+            false,
+            true,
+            false,
+        )
+        .await;
+        assert!(
+            !store.chat_session_record_exists("agentic_adopted_control"),
+            "the factory-titled counterpart is still the run's own record"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3089,7 +4180,8 @@ mod tests {
         // Simulates the transcript landing after the disposition's message
         // sample (injected at the liveness sample, which runs second).
         *executor.late_admission.lock() = Some("agentic_stub_race".to_owned());
-        super::run_session_lifecycle(&executor, &store, "agentic_stub_race", false, false).await;
+        super::run_session_lifecycle(&executor, &store, "agentic_stub_race", false, false, false)
+            .await;
         assert!(
             store.chat_session_record_exists("agentic_stub_race"),
             "a transcript admitted between the samples and the delete must \
@@ -3119,6 +4211,7 @@ mod tests {
                 "agentic_caller_session",
                 true,  // existing (caller-provided) session
                 false, // and even a never-started outcome must not delete it
+                false, // and a setup timeout is no different for this arm
             )
             .await;
             assert!(
@@ -3152,5 +4245,224 @@ mod tests {
         let free = "agentic_free_seed_0";
         let minted = super::mint_fresh_session_id(|_| false, free.to_owned());
         assert_eq!(minted, free);
+    }
+
+    #[test]
+    fn fresh_session_id_keeps_store_alphabet_and_components() {
+        let first = fresh_session_id();
+        let second = fresh_session_id();
+        let prefix = crate::features::sessions::HEADLESS_SESSION_PREFIX;
+        for id in [&first, &second] {
+            assert!(
+                id.starts_with(crate::features::sessions::HEADLESS_SESSION_PREFIX),
+                "{id} must keep the headless prefix"
+            );
+            assert!(
+                id.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "{id} must stay inside the session id alphabet [A-Za-z0-9_-]"
+            );
+            // pid + unix-millis + counter: all three components must be
+            // numeric so ids stay inspectable and sortable, and the millis
+            // component keeps cross-restart collisions in one process rare.
+            let parts: Vec<&str> = id
+                .strip_prefix(prefix)
+                .unwrap_or_else(|| panic!("{id} must carry the {prefix} prefix"))
+                .split('_')
+                .collect();
+            assert_eq!(
+                parts.len(),
+                3,
+                "{id} must be <prefix><pid>_<unix_millis>_<counter>"
+            );
+            assert!(
+                parts[0].parse::<u32>().is_ok(),
+                "{id} pid component must be numeric"
+            );
+            assert!(
+                parts[1].parse::<u64>().is_ok(),
+                "{id} unix-millis component must be numeric"
+            );
+            assert!(
+                parts[2].parse::<u64>().is_ok(),
+                "{id} counter component must be numeric"
+            );
+        }
+        // The per-process counter keeps consecutive ids distinct even within
+        // the same millisecond; cross-restart and cross-process collisions
+        // are mint_fresh_session_id's job (see its pins above).
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_panic_inside_setup_restores_the_caller_session_pins() {
+        // Round-21 review finding (panic-unsafe restore arms): a panic
+        // inside the setup future — anywhere between the pin writes and the
+        // submit — used to skip the Err and timeout restore arms entirely,
+        // so a caller-provided session stayed repinned in Plan / the new
+        // model by a run that never did any work. The catch_unwind arm
+        // restores both pins before re-raising; this test pins the arm's
+        // restore composition on the store side, plus the unarmed case.
+        //
+        // Round-22 review finding: the arm's model half used an inline
+        // `Handle::block_on`, which panics inside the runtime worker that
+        // always drives this code — the model pin was never restored and the
+        // original panic was masked. The arm now diverts the panic payload
+        // out of the closure and calls the SAME async
+        // `restore_pre_run_pins` the Err and timeout arms use, so the model
+        // half is the already-covered pool path. The arm's own sequencing
+        // (gate → restore → resume) is pinned separately by
+        // `the_panic_arm_restores_before_resuming_and_gates_on_submit_entered`,
+        // which drives a real panicking setup future.
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-panic-restore-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+        let chat = store
+            .create_new("test-model".to_string(), None, tmp.clone())
+            .unwrap();
+        let id = chat.metadata.id.clone();
+
+        // Armed: the user left the session in Yolo with a durable entry.
+        // After a "panic" — the arm sequenced exactly as the code sequences
+        // it — the entry the run added (Plan) is gone and Yolo is back.
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(
+            &store,
+            &id,
+            Some(PlanModeRestore::Value(SerializableMode::Yolo)),
+            "panic",
+        );
+        assert_eq!(
+            store.durable_mode_entry(&id),
+            Some(SerializableMode::Yolo),
+            "the panic arm must put the caller's durable mode back"
+        );
+        assert_eq!(store.mode_state(&id).mode, SerializableMode::Yolo);
+
+        // Absent-pre-state variant: a session with no durable entry before
+        // the run returns to no entry, not to a resolved default.
+        store.clear_mode_and_persist(&id).unwrap();
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(&store, &id, Some(PlanModeRestore::Absent), "panic");
+        assert_eq!(
+            store.durable_mode_entry(&id),
+            None,
+            "the panic arm must return the session to no entry, the pre-run state"
+        );
+
+        // Unarmed: a panic whose setup never armed a restore changes nothing.
+        store
+            .set_mode_and_persist(&id, SerializableMode::Plan)
+            .unwrap();
+        restore_plan_mode(&store, &id, None, "panic");
+        assert_eq!(
+            store.mode_state(&id).mode,
+            SerializableMode::Plan,
+            "an unarmed panic restore must not touch the session"
+        );
+    }
+
+    /// Round-25 review finding: the store-side test above calls the restore
+    /// helper directly, so nothing pinned the arm's own sequencing — a
+    /// deleted `catch_unwind` arm, a dropped `submit_entered` gate, or a
+    /// `resume_unwind` moved ahead of the restore would all have left the
+    /// suite green. This test drives a REAL panicking setup future through
+    /// the extracted arm ([`resume_unwind_after_pinned_restore`]) and
+    /// observes the gate, the restore-before-resume ordering, and the
+    /// resumed payload.
+    #[test]
+    fn the_panic_arm_restores_before_resuming_and_gates_on_submit_entered() {
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        // The quiet hook is installed around EACH block_on and restored
+        // IMMEDIATELY after it, before any assert runs: a leaked silencing
+        // hook would blind every LATER test's panic output. (The restore
+        // type is deliberately not named — the hook type moved across
+        // toolchains, so the save/restore relies on inference only.)
+
+        // Pre-submit (gate clear): the restore must COMPLETE before the
+        // payload surfaces, and the payload must be the original one — not
+        // masked by a restore failure or replaced by a synthetic error.
+        let gate = std::sync::atomic::AtomicBool::new(false);
+        let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = restored.clone();
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let first = runtime.block_on(futures_util::FutureExt::catch_unwind(
+            std::panic::AssertUnwindSafe(async move {
+                let inner =
+                    futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+                        panic!("setup exploded before the submit");
+                    }))
+                    .await;
+                let payload = inner.expect_err("the setup future must panic");
+                resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
+                    let flag = flag.clone();
+                    async move {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+                .await
+            }),
+        ));
+        std::panic::set_hook(quiet);
+        let resumed = first.expect_err("the resumed panic must surface after the restore");
+        assert!(
+            restored.load(std::sync::atomic::Ordering::SeqCst),
+            "the panic arm must run the restore to completion BEFORE resuming the unwind"
+        );
+        assert_eq!(
+            resumed.downcast_ref::<&'static str>(),
+            Some(&"setup exploded before the submit"),
+            "the original panic payload must be resumed, not masked"
+        );
+
+        // Past the submit boundary (gate set): the pins stay — no restore —
+        // and the payload still resumes untouched.
+        let gate = std::sync::atomic::AtomicBool::new(true);
+        let restored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = restored.clone();
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let second = runtime.block_on(futures_util::FutureExt::catch_unwind(
+            std::panic::AssertUnwindSafe(async move {
+                let inner =
+                    futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+                        panic!("setup exploded past the submit");
+                    }))
+                    .await;
+                let payload = inner.expect_err("the setup future must panic");
+                resume_unwind_after_pinned_restore(&gate, payload, move |_phase| {
+                    let flag = flag.clone();
+                    async move {
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                })
+                .await
+            }),
+        ));
+        std::panic::set_hook(quiet);
+        let resumed = second
+            .expect_err("the resumed panic must surface even when the gate holds the restore");
+        assert!(
+            !restored.load(std::sync::atomic::Ordering::SeqCst),
+            "a panic past the submit boundary must NOT roll the pins back"
+        );
+        assert_eq!(
+            resumed.downcast_ref::<&'static str>(),
+            Some(&"setup exploded past the submit"),
+        );
     }
 }

@@ -572,8 +572,7 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 /// `skill_gate_consent_failure_message_keeps_the_frontend_marker` in
 /// skill_gate.rs). Every connector shares the exact string so a backend
 /// rewording cannot silently degrade the localized guidance to generic copy.
-pub(crate) const CONSENT_SYNC_FAILURE_MARKER: &str =
-    "persisting their default-off consent state failed";
+pub const CONSENT_SYNC_FAILURE_MARKER: &str = "persisting their default-off consent state failed";
 
 pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
@@ -637,6 +636,14 @@ pub fn resolve_pack_owner_id(raw_id: &str) -> String {
 /// abort migrating the rest of the file.
 fn migration_keeps_id(id: &str) -> bool {
     !crate::features::marketplace::builtin::is_builtin_tool(id)
+}
+
+/// Maps a user-supplied raw id to the package id the persisted list stores,
+/// for headless callers (the CLI's toggle read-back verification). A raw
+/// skill id is conditionally re-claimed to its owner package, so verifying
+/// against the raw id yields false positives.
+pub fn package_id_for(raw: &str) -> String {
+    to_package_id(raw)
 }
 
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。

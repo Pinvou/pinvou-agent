@@ -605,6 +605,31 @@ pub fn redact_secret(input: &str) -> String {
     output
 }
 
+/// AWS key shapes (`AKIA`/`ASIA` + 16 uppercase alphanumerics, 20 chars):
+/// the prefix matches case-insensitively, the 16-byte body is uppercase or
+/// digits, and any remainder is non-alphanumeric. The tail clause is what an
+/// exact-length gate could not say: a key at the end of a clause
+/// (`…credentials: AKIA…EXAMPLE.`) keeps its trailing punctuation and must
+/// still match, while a longer alphanumeric word (`akia-notes.txt` minus the
+/// dash, a brand) must not.
+fn aws_key_shape(trimmed: &str, prefix: &str) -> bool {
+    if trimmed.len() < 20 {
+        return false;
+    }
+    let Some(body) = trimmed.get(4..20) else {
+        return false;
+    };
+    trimmed
+        .get(..4)
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        && body
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && trimmed
+            .get(20..)
+            .is_some_and(|tail| tail.chars().all(|c| !c.is_ascii_alphanumeric()))
+}
+
 fn is_secret_like(value: &str) -> bool {
     let trimmed = value.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
     if trimmed.len() < 8 {
@@ -616,6 +641,35 @@ fn is_secret_like(value: &str) -> bool {
         || lower.starts_with("bce-v3/")
         || lower.starts_with("tvly-")
         || lower.starts_with("mgp")
+        // Token shapes with fixed, low-false-positive prefixes (GitHub
+        // PATs/app tokens, GitLab PATs, AWS access keys, Slack tokens). A
+        // glued `?api_key=sk-...` in a URL is still missed — the tokenizer
+        // only splits on whitespace transitions — but a bare leaked token
+        // in an error chain is now caught regardless of length.
+        || lower.starts_with("ghp_")
+        || lower.starts_with("gho_")
+        || lower.starts_with("ghs_")
+        || lower.starts_with("ghu_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("glpat-")
+        // AWS access keys are AKIA + 16 uppercase alphanumerics (20 chars):
+        // the shape gate keeps the family without redacting every
+        // whitespace-delimited word that merely begins with "akia"
+        // (`akia-notes.txt`, the bird, a brand). The shape is checked on the
+        // FIRST 20 bytes with any remainder confined to non-alphanumerics:
+        // an exact-20 gate is defeated by trailing punctuation, and a key at
+        // the end of a clause (`…credentials: AKIA…EXAMPLE.`) is the most
+        // common leak rendering. `ASIA` (STS temporary credentials) shares
+        // the shape.
+        || (aws_key_shape(trimmed, "akia"))
+        || (aws_key_shape(trimmed, "asia"))
+        || lower.starts_with("ghr_")
+        || lower.starts_with("xoxb-")
+        || lower.starts_with("xoxp-")
+        || lower.starts_with("xoxa-")
+        || lower.starts_with("xoxs-")
+        || lower.starts_with("xoxe-")
+        || lower.starts_with("xapp-")
         || (trimmed.len() >= 24
             && trimmed.chars().any(|c| c.is_ascii_digit())
             && trimmed.chars().any(|c| c.is_ascii_alphabetic()))
@@ -989,6 +1043,79 @@ mod tests {
         let err = CredentialError::new("write failed for sk-test-secret-1234567890");
         assert!(!err.user_message().contains("sk-test-secret"));
         assert!(err.user_message().contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn fixed_prefix_token_shapes_are_redacted() {
+        // The fixed low-false-positive prefixes (GitHub/GitLab/AWS/Slack
+        // token shapes): a bare leaked token in an error chain is caught
+        // regardless of its length, unlike the length-plus-alnum heuristic.
+        // Bare tokens: the redactor tokenizes on whitespace, so a glued
+        // `token=…` prefix would take the length heuristic instead of the
+        // fixed-prefix rule this test owns. Tails are short on purpose —
+        // the rule is prefix-only (the <8-char floor is the only length
+        // gate) — and realistic full-length shapes would trip the secret
+        // scanner on synthetic values.
+        for token in [
+            "ghp_shortexample",
+            "ghr_shortexample",
+            "github_pat_shortexample",
+            "glpat-shortexample",
+            // The canonical AWS docs example key: the akia family is
+            // shape-gated (AKIA + 16 uppercase alphanumerics), so the
+            // fixture must carry the real 20-char shape.
+            "AKIAIOSFODNN7EXAMPLE",
+            // STS temporary credentials share the 20-char shape.
+            "ASIAIOSFODNN7EXAMPLE",
+            "xoxb-shortexample",
+            "xoxe-shortexample",
+            "xapp-shortexample",
+        ] {
+            let redacted = super::redact_secret(token);
+            assert_ne!(
+                redacted, token,
+                "fixed-prefix token must be redacted: {redacted}"
+            );
+            assert!(redacted.contains("[REDACTED]"), "{redacted}");
+        }
+        // Ordinary words must not trip the fixed prefixes.
+        assert_eq!(
+            super::redact_secret("ghp is an abbreviation"),
+            "ghp is an abbreviation"
+        );
+        // The akia shape gate: a word that merely begins with "akia" (a
+        // filename, a brand, the bird) stays visible — over-redacting every
+        // akia-prefixed word made GUI error strings unusable.
+        for benign in ["akia-notes.txt", "akiapolaau", "AkiaCorp-v2"] {
+            assert_eq!(
+                super::redact_secret(benign),
+                benign,
+                "an akia-shaped non-key must stay visible: {benign}"
+            );
+        }
+        // The shape gate checks the first 20 bytes and lets trailing
+        // punctuation through: keys at the end of a clause are the most
+        // common leak rendering, and an exact-length gate missed them.
+        for leaked in [
+            "AKIAIOSFODNN7EXAMPLE.",
+            "AKIAIOSFODNN7EXAMPLE:",
+            "invalid credentials: AKIAIOSFODNN7EXAMPLE: signature mismatch",
+            "ASIAIOSFODNN7EXAMPLE.",
+        ] {
+            let redacted = super::redact_secret(leaked);
+            assert_ne!(
+                redacted, leaked,
+                "a punctuation-trailed AWS key must be redacted: {redacted}"
+            );
+        }
+        // A longer alphanumeric word is not a key even with the prefix
+        // (22 chars, so the >=24 generic heuristic cannot catch it either —
+        // the shape gate itself must reject the alphanumeric tail).
+        assert_eq!(
+            super::redact_secret("akiaIOSFODNN7EXAMPLExy"),
+            "akiaIOSFODNN7EXAMPLExy",
+            "an alphanumeric tail past the 20-char shape is not a key"
+        );
     }
 
     #[test]

@@ -300,7 +300,8 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
 }
 
 /// Appends one stage marker line to `cli-install.log`. The log is
-/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// append-only (see the module's `run_with_timeout`, which rotates and
+/// drives vendor children under the same budget); each stage's output of a
 /// multi-stage install (mirror retry after the default registry fails) is
 /// attributed via its marker line. Write failures are likewise silently
 /// dropped and never block the install flow.
@@ -326,7 +327,11 @@ pub fn append_cli_install_log(line: &str) {
 /// still fully preserved.
 const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-fn rotate_cli_install_log_if_oversized(log_path: &Path) {
+/// Rotates `cli-install.log` to `.old` once it exceeds the 8 MiB budget.
+/// `pub` for the headless CLI's ensure-cli lane, which redirects npm stdio
+/// into the same log directly (`connectors.rs::run_npm_attempt`) and must
+/// enforce the same bound the GUI's `run_with_timeout` enforces here.
+pub fn rotate_cli_install_log_if_oversized(log_path: &Path) {
     rotate_cli_install_log_if_oversized_with(log_path, CLI_INSTALL_LOG_MAX_BYTES);
 }
 
@@ -760,10 +765,17 @@ pub fn bundle_store_on_connected(id: &str) {
 /// 删掉 companion 技能目录，包内容不完整，故按 §3.2 的 Degraded（登记在、资源缺）
 /// 标记；修复动作 = 重新连接（重解包技能），与预置重装/上传重导入同构。
 /// 记录不存在（从未连接成功过）时 mark_degraded 返回 false，天然无操作。
+///
+/// The reason copy written comes from the marketplace side's
+/// `CLI_DISCONNECTED_DEGRADED_REASON` (prefix-match judgment in
+/// `bundle.rs`), eliminating the two-literal drift; the connectors →
+/// marketplace dependency direction matches the standing boundary (see the
+/// comment in `bundle.rs`).
 pub fn bundle_store_on_disconnected(id: &str) {
-    if let Err(e) = crate::features::marketplace::store::BundleStore::new()
-        .mark_degraded(id, "已断开授权：配套技能已随断开移除，重新连接即可恢复")
-    {
+    if let Err(e) = crate::features::marketplace::store::BundleStore::new().mark_degraded(
+        id,
+        crate::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON,
+    ) {
         log::warn!("[connectors] bundles.json 镜像写入失败（disconnect {id}）: {e}");
     }
 }

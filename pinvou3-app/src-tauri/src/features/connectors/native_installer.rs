@@ -20,7 +20,7 @@ const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 /// the download order for artifacts whose official source is github.com
 /// becomes "acceleration prefix URL → lock-table reviewed mirror → official
 /// source"; it does not apply to other sites.
-const GITHUB_ASSET_MIRROR_PREFIX_ENV: &str = "PINVOU3_GITHUB_ASSET_MIRROR_PREFIX";
+pub const GITHUB_ASSET_MIRROR_PREFIX_ENV: &str = "PINVOU3_GITHUB_ASSET_MIRROR_PREFIX";
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 const DWS_LICENSE: &str =
     include_str!("../../../resources/common/bundle/dingtalk-skills/dws/LICENSE");

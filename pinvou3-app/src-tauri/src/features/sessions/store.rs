@@ -57,7 +57,9 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 /// language.
 pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
 
-/// Id prefix minted by the headless `agent run` path (`agentic_{pid}_{n}`).
+/// Id prefix minted by the headless `agent run` path (the fresh ids are
+/// `agentic_{pid}_{unix_millis}_{counter}`; retention keys on the prefix
+/// only).
 ///
 /// Retention keys the headless budget on it, so the prefix is a durable
 /// contract between the runner and the sweep rather than a formatting detail;
@@ -78,9 +80,16 @@ pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
-/// it per UI language and the first send triggers the auto-rename. Sessions
-/// created headlessly share the same sentinel so they behave identically in
-/// the history list.
+/// it per UI language and the first send triggers the auto-rename. Headless
+/// sessions persist by default and surface in the GUI history, so they carry
+/// the same sentinel — an eval-internal label would leak untranslated into
+/// every UI language, and because the command layer's auto-rename triggers on
+/// exactly this value it would also freeze an adopted session's title forever.
+///
+/// It doubles as the agentic runner's adoption marker: a session still wearing
+/// the sentinel is untouched factory state that a failed run may delete, while
+/// any other title means a GUI user renamed it (or their first send triggered
+/// the auto-rename) and now owns it.
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 
 /// Marker file the code-session feature writes inside a session's directory
@@ -1271,6 +1280,25 @@ impl SessionStore {
                 .unwrap_or(false)
     }
 
+    /// Three-state record probe for callers whose wrong-"absent" answer is
+    /// destructive (the failed-delete backstop sweep): `Some(false)` is a
+    /// CONFIRMED absence (invalid id, no chat path, NotFound), `Some(true)` a
+    /// present record, and `None` an unreadable answer (metadata failed with
+    /// anything but NotFound) the caller must treat as "keep". The plain
+    /// `exists()` probe folds a permission fault or EIO into "absent", which
+    /// would sweep a live session's directory under its surviving record.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_record_present(&self, id: &str) -> Option<bool> {
+        let path = validate_session_id(id)
+            .ok()
+            .and_then(|_| chat_session_file(&self.manager, id).ok())?;
+        match std::fs::metadata(&path) {
+            Ok(_) => Some(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+            Err(_) => None,
+        }
+    }
+
     /// Whether the durable chat record for `id` carries any messages. The
     /// headless runner uses this to tell a zero-message stub (safe to clean
     /// up) from a ran-and-errored transcript (the only copy — keep it
@@ -1284,6 +1312,21 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for stub classification"))?;
         Ok(!session.messages.is_empty())
+    }
+
+    /// Whether the session still wears the factory title ([`NEW_CHAT_TITLE`]).
+    /// A rename away from the placeholder is ownership — the adoption marker
+    /// the agentic teardown decisions consult before deleting a run's own
+    /// session. An unreadable record reports `Err` and is NOT proven
+    /// factory-titled: callers must treat unknown state as "keep".
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_factory_titled(&self, id: &str) -> Result<bool> {
+        validate_session_id(id)?;
+        let session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load chat session {id} for adoption classification"))?;
+        Ok(session.metadata.title == NEW_CHAT_TITLE)
     }
 
     /// Create an empty session with a caller-provided ID, for internal runtimes that need the isolation ID determined before startup.

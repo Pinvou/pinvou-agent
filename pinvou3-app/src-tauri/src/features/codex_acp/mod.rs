@@ -88,7 +88,11 @@ use crate::core::reaper::{
 use attachments::prepare_codex_prompt;
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
-pub(crate) use events::translate_acp_state_workspace;
+// `pub` for the headless CLI (`pinvou projects rebind`): the GUI's rebind
+// runs this storage pass per session, and the CLI's mirror must run the same
+// half or an untranslated acp-state workspace resurrects the vanished root
+// on boot recovery.
+pub use events::translate_acp_state_workspace;
 pub use events::{
     AcpEventEnvelope, project_acp_elicitation_request_for_web,
     project_acp_permission_request_for_web,
@@ -101,9 +105,31 @@ use operation_gate::admit_prompt_turn;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
-use runtime::{
-    MIN_CODEX_VERSION, ResolvedCodex, codex_version, probe_codex_runtime, version_at_least,
-};
+// `CLAUDE_MODEL_SLOTS` 通过本 facade 公开再导出：同仓 `pinvou-cli` 的
+// `providers add` 预检与 `ProviderManager::save` 共用同一 claude 模型槽位
+// 列表，消除手工副本漂移；行为不变。
+pub use providers::CLAUDE_MODEL_SLOTS;
+// `GIT_OVERRIDE_KEYS` (from `platform::process`) is published through this
+// facade re-export: the workspace git env scrubbing in the same-repo
+// `pinvou-cli` shares the exact key list with `strip_git_override_env`,
+// eliminating hand-copied drift (the CLI-side copy had drifted by three
+// keys); behavior is unchanged.
+pub use crate::platform::process::GIT_OVERRIDE_KEYS;
+// `GIT_IDENTITY_KEYS` (from `platform::process`) is published through this
+// facade re-export for the same reason: the CLI's `--mode commit` lane strips
+// the exact identity list the GUI's commit lane strips, eliminating the
+// hand-copied drift window; behavior is unchanged.
+pub use crate::platform::process::GIT_IDENTITY_KEYS;
+// `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
+// 同一最低版本约束，消除手工副本漂移；行为不变。
+pub use runtime::MIN_CODEX_VERSION;
+/// The comparison itself, not only the constants: `pinvou-cli`'s `code`
+/// gates (`agents status`, override resolution) consume this so a
+/// comparison-semantics change app-side cannot drift behind a CLI-local
+/// copy (round-27 review; the fn's module stays private — the re-export is
+/// the sanctioned surface, same as the constants beside it).
+pub use runtime::version_at_least;
+use runtime::{ResolvedCodex, codex_version, probe_codex_runtime};
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 pub use store::{
     AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
@@ -129,7 +155,9 @@ const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
 const KIMI_ACP_PACKAGE: &str = "kimi acp";
 const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 /// claude-agent-acp 要求的最低 claude CLI 版本（输出形如 `2.1.163 (Claude Code)`）。
-const MIN_CLAUDE_VERSION: &str = "2.0.0";
+/// `pub` 导出供同仓 `pinvou-cli` 直接引用：CLI 的 `agents status/login` 与本
+/// 运行时使用同一最低版本，消除手工副本漂移；GUI 语义不变。
+pub const MIN_CLAUDE_VERSION: &str = "2.0.0";
 /// npm China mirror registry (Alibaba npmmirror, a syncing mirror of the
 /// official registry). Defined in [`crate::platform::download`] (the
 /// connector-side tmeet uses it too; platform is the shared downward
@@ -140,7 +168,8 @@ const MIN_CLAUDE_VERSION: &str = "2.0.0";
 /// change the user's npm configuration.
 pub(crate) use crate::platform::download::NPM_MIRROR_REGISTRY;
 /// Kimi ACP 要求的最低 kimi CLI 版本（裸 semver；旧 Python 版 kimi-cli 已废弃）。
-const MIN_KIMI_VERSION: &str = "0.9.0";
+/// `pub` 导出理由同 `MIN_CLAUDE_VERSION`。
+pub const MIN_KIMI_VERSION: &str = "0.9.0";
 const CODEX_INSTALL_SCRIPT_UNIX: &str = "https://chatgpt.com/codex/install.sh";
 const CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https://chatgpt.com/codex/install.ps1";
 const CLAUDE_INSTALL_SCRIPT_UNIX: &str = "https://claude.ai/install.sh";
@@ -3013,7 +3042,16 @@ impl AcpPool {
         )?;
         // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
         // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
-        if self.providers.store().current(agent).as_deref() == Some(record.id.as_str()) {
+        // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
+        // 可以在本 GUI 启动后改写 current，读内存会把「当前 Provider」判错，
+        // 该重启的会话不重启（或反之）。
+        if self
+            .providers
+            .store()
+            .current_after_reload(agent)
+            .as_deref()
+            == Some(record.id.as_str())
+        {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
         }
@@ -3028,7 +3066,14 @@ impl AcpPool {
         provider_id: &str,
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        let was_current = self.providers.store().current(agent).as_deref() == Some(provider_id);
+        // 与 save 同一 fresh-read 纪律：CLI 在本 GUI 背后的 switch 不得让
+        // 重启判定沿用启动时的内存值。
+        let was_current = self
+            .providers
+            .store()
+            .current_after_reload(agent)
+            .as_deref()
+            == Some(provider_id);
         self.providers.delete(agent, provider_id)?;
         if was_current {
             self.invalidate_auth_cache(backend);

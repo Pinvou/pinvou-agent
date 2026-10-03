@@ -11,7 +11,7 @@ mod kimi;
 pub(crate) mod lifecycle;
 
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -296,54 +296,153 @@ impl AcpProvidersStore {
             .cloned()
     }
 
+    /// The GUI holds this store for the whole app lifetime, so a write the
+    /// CLI made after boot would otherwise be silently reverted by the next
+    /// whole-table persist — a delayed rollback minutes later, not a
+    /// same-instant race. Every mutator therefore re-reads the disk state,
+    /// mutates, and persists inside ONE write-guard critical section (see
+    /// `persist_locked`): at any quiescent point the file is the latest
+    /// truth, and re-reading it can only pull in the other surface's writes.
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        if let Some(existing) = state
+            .providers
+            .iter_mut()
+            .find(|candidate| candidate.id == record.id)
         {
-            let mut agents = self.agents.write();
-            let state = agents.entry(agent.to_string()).or_default();
-            if let Some(existing) = state
-                .providers
-                .iter_mut()
-                .find(|candidate| candidate.id == record.id)
-            {
-                *existing = record;
-            } else {
-                state.providers.push(record);
-            }
+            *existing = record;
+        } else {
+            state.providers.push(record);
         }
-        self.persist()
+        Self::persist_locked(&agents, &self.path)
     }
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
-        let removed = {
-            let mut agents = self.agents.write();
-            let Some(state) = agents.get_mut(agent) else {
-                return Ok(None);
-            };
-            match state
-                .providers
-                .iter()
-                .position(|candidate| candidate.id == provider_id)
-            {
-                Some(index) => Some(state.providers.remove(index)),
-                None => None,
-            }
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let Some(state) = agents.get_mut(agent) else {
+            return Ok(None);
         };
-        self.persist()?;
+        let removed = match state
+            .providers
+            .iter()
+            .position(|candidate| candidate.id == provider_id)
+        {
+            Some(index) => Some(state.providers.remove(index)),
+            None => None,
+        };
+        Self::persist_locked(&agents, &self.path)?;
         Ok(removed)
     }
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
-        {
-            let mut agents = self.agents.write();
-            let state = agents.entry(agent.to_string()).or_default();
-            state.current_provider_id = provider_id.map(str::to_string);
-        }
-        self.persist()
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        state.current_provider_id = provider_id.map(str::to_string);
+        Self::persist_locked(&agents, &self.path)
+    }
+
+    /// Fresh read of `current` for the decision paths that gate a CLI-config
+    /// rewrite (`save`'s active-provider arm, `delete`'s revert arm). The
+    /// plain `current()` reads only the in-memory map, which a CLI process
+    /// can have stale-dated: deciding from the stale value rewrites (or
+    /// fails to revert) the config for a provider that is no longer current
+    /// — the config/store split-brain the reload-on-mutator fix closed for
+    /// writes. Reloads under the write guard so every later reader sees the
+    /// adopted state, exactly like the mutators. `pub(crate)`: the module
+    /// is private and even app callers sit behind `save`/`delete`/`switch`
+    /// — the CLI consumes the decision paths, never this raw read.
+    pub(crate) fn current_after_reload(&self, agent: &str) -> Option<String> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
+            .get(agent)
+            .and_then(|state| state.current_provider_id.clone())
+    }
+
+    /// Fresh read of the whole per-agent state — the display/export input
+    /// `list`/`export` render. The plain `state` reads only the in-memory
+    /// map, which a CLI process can have stale-dated: a settings card or an
+    /// export taken after a concurrent CLI switch would contradict the
+    /// fresh `effective()` attribution rendered beside it. Reloads under
+    /// the write guard so every later reader sees the adopted state,
+    /// exactly like the mutators.
+    pub(crate) fn state_after_reload(&self, agent: &str) -> AgentProvidersState {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents.get(agent).cloned().unwrap_or_default()
+    }
+
+    /// Fresh read of one provider record — the decision input `switch`
+    /// applies to the CLI config file. The plain `get` reads only the
+    /// in-memory map, which a CLI process can have stale-dated: applying a
+    /// removed provider's endpoint is the same config/store split-brain
+    /// `current_after_reload` closed for `save`/`delete`.
+    fn record_after_reload(&self, agent: &str, provider_id: &str) -> Option<ProviderRecord> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents.get(agent).and_then(|state| {
+            state
+                .providers
+                .iter()
+                .find(|candidate| candidate.id == provider_id)
+                .cloned()
+        })
+    }
+
+    /// Fresh read of the current id AND its record in one critical section —
+    /// the shape `switch_official_locked` needs: deriving the revert target
+    /// from a stale `current`/record pair rewrites the config for a provider
+    /// a peer already removed or un-currented.
+    fn current_and_record_after_reload(
+        &self,
+        agent: &str,
+    ) -> (Option<String>, Option<ProviderRecord>) {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.get(agent);
+        let current = state.and_then(|state| state.current_provider_id.clone());
+        let record = current.as_deref().and_then(|id| {
+            state.and_then(|state| {
+                state
+                    .providers
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+                    .cloned()
+            })
+        });
+        (current, record)
     }
 
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
         self.agents
             .read()
+            .get(agent)
+            .and_then(|state| state.official_default_model.clone())
+    }
+
+    /// Fresh read of the recorded official `default_model` — the value
+    /// `switch` writes back verbatim through `set_switch_state`. The plain
+    /// read is stale-datable the same way as `current_after_reload`: a
+    /// long-lived GUI whose in-memory copy predates a CLI switch would
+    /// decide "not recorded" from memory and persist that `None` over the
+    /// CLI-written value, breaking the later official-login restore the
+    /// field exists for (kimi's `default_model` is the concrete casualty).
+    pub(crate) fn official_default_model_after_reload(&self, agent: &str) -> Option<String> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
             .get(agent)
             .and_then(|state| state.official_default_model.clone())
     }
@@ -356,27 +455,123 @@ impl AcpProvidersStore {
         provider_id: Option<&str>,
         official_default_model: Option<&str>,
     ) -> Result<()> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        // 上面的 reload 可能带回并发方对目标 Provider 的 remove：把 current
+        // 钉到一个表里已不存在的 id（而 CLI 配置文件已写入它的 endpoint），
+        // 正是本 store 拒绝的配置/表分裂态。在此报错会走 switch 既有的
+        // 回滚臂还原配置写入——「失败 = 什么都没发生」。
+        if let Some(id) = provider_id
+            && !state.providers.iter().any(|candidate| candidate.id == id)
         {
-            let mut agents = self.agents.write();
-            let state = agents.entry(agent.to_string()).or_default();
-            state.current_provider_id = provider_id.map(str::to_string);
-            state.official_default_model = official_default_model.map(str::to_string);
+            anyhow::bail!("切换目标 Provider 已在切换期间被移除: {id}");
         }
-        self.persist()
+        state.current_provider_id = provider_id.map(str::to_string);
+        state.official_default_model = official_default_model.map(str::to_string);
+        Self::persist_locked(&agents, &self.path)
     }
 
-    fn persist(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
+    /// The GUI holds this store for the whole app lifetime, so a write the
+    /// CLI made after boot would otherwise be silently reverted by the next
+    /// whole-table persist — a delayed rollback minutes later, not a
+    /// same-instant race. Every mutator therefore runs reload → mutate →
+    /// persist inside ONE write-guard critical section.
+    /// Reload the disk state into an ALREADY-HELD write guard. Callers run
+    /// this inside the same critical section as their mutation AND their
+    /// persist, so a peer mutator (which needs the same guard) can neither
+    /// interleave between the read and the swap nor discard this thread's
+    /// committed-but-unpersisted change with a stale-disk reload — with the
+    /// persist outside the guard, that exact discard was possible. Best-
+    /// effort: an unreadable or unparsable file keeps the in-memory state
+    /// (the same stance `load_or_empty` takes, with its first-boot backup).
+    fn reload_into(agents: &mut HashMap<String, AgentProvidersState>, path: &Path) {
+        let Ok(raw) = fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(file) = serde_json::from_str::<AcpProvidersFile>(&raw) else {
+            // A file that turned corrupt AFTER boot (holding the other
+            // surface's writes this process never saw) would otherwise be
+            // destroyed by this process's next persist with no recoverable
+            // copy — `load_or_empty`'s `.pinvou3-bak` was taken at boot, or
+            // not at all in a CLI one-shot. Preserve it once, same shape as
+            // the boot backup: fixed `.invalid` sibling, never overwritten.
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(".invalid");
+            let quarantine = path.with_file_name(name);
+            if !quarantine.exists() {
+                let _ = fs::copy(path, &quarantine);
+            }
+            return;
+        };
+        *agents = file.agents;
+    }
+
+    /// Persist under the ALREADY-HELD write guard, so a mutator's committed
+    /// change is always part of its own persist: a peer mutator cannot run
+    /// between the mutation and the write (it needs the same guard), and its
+    /// later `reload_into` therefore always re-reads a file that already
+    /// contains every earlier commit. Persisting after the guard (the
+    /// previous shape) let a peer's reload replace the shared map from a
+    /// stale disk snapshot and discard the not-yet-persisted mutation
+    /// entirely. The file is small and mutations are human-frequency, so the
+    /// write under the lock costs readers (state()/get()) a sub-millisecond
+    /// wait on the paths that change anything.
+    fn persist_locked(agents: &HashMap<String, AgentProvidersState>, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
+        // The tmp name carries the pid: a fixed name let two surfaces
+        // rename each other's half-written file into place (the loser's
+        // rename then ENOENTs and the winner's content was the loser's).
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
         let value = AcpProvidersFile {
             version: STORE_VERSION,
-            agents: self.agents.read().clone(),
+            agents: agents.clone(),
         };
-        fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
-        fs::rename(&tmp, &self.path)?;
+        if let Err(error) = fs::write(&tmp, serde_json::to_vec_pretty(&value)?) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
+        if let Err(error) = fs::rename(&tmp, path) {
+            // Same litter rule as the write arm: a rename failure (cross-
+            // device, permission) must not strand the pid tmp file — the
+            // next persist of this process reuses the name, but a failed
+            // command should not leave half-written provider state behind.
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
         Ok(())
+    }
+
+    /// Cross-process lock serializing the reload→mutate→persist section
+    /// against the other surface's mutators (the GUI holds this store for
+    /// its whole lifetime; every `pinvou code providers` command is another
+    /// process mutating the same file). The in-process write guard alone
+    /// left the read-write-rename window open: a peer process could commit
+    /// between this process's reload and rename and be silently erased.
+    /// The lock file carries no state and the OS releases it when the
+    /// holder dies, so a crash cannot wedge the store. Best-effort: if the
+    /// lock file itself cannot be opened (permissions), the caller proceeds
+    /// unlocked — the pre-lock behavior — rather than refusing provider
+    /// writes on a settings-adjacent edge.
+    fn section_lock(&self) -> Option<fs::File> {
+        let lock_path = self.path.with_extension("json.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .ok()?;
+        // Blocking by design: mutators are human-frequency and the section
+        // is a read + a small rename, so contention costs milliseconds; the
+        // GUI's alternative — a refusal on a busy store — would surface as
+        // a settings error for a transient cross-process race.
+        match file.lock() {
+            Ok(()) => Some(file),
+            Err(_) => None,
+        }
     }
 }
 
@@ -390,7 +585,9 @@ fn validate_agent(agent: &str) -> Result<()> {
 /// Claude Code 细化模型槽位：槽位 id → 写入 settings.json env 的变量名。
 /// 槽位不填时 CC 的子 agent/辅助调用会回落官方模型（走官方流量），因此
 /// 保存 claude Provider 时以下槽位全部必填。
-pub(crate) const CLAUDE_MODEL_SLOTS: [(&str, &str); 5] = [
+/// `pub` 导出供同仓 `pinvou-cli` 直接引用：CLI 的 `providers add` 英文预检
+/// 与本保存逻辑使用同一槽位列表，消除手工副本漂移；GUI 语义不变。
+pub const CLAUDE_MODEL_SLOTS: [(&str, &str); 5] = [
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
@@ -453,7 +650,13 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     backup_once(path)?;
-    let tmp = path.with_extension("tmp");
+    // The staging name carries the pid, exactly like `persist_locked`:
+    // a fixed `.tmp` name let two surfaces rename each other's half-written
+    // file into place — and unlike the store file, this helper writes the
+    // user's REAL claude/codex/kimi CLI config, now from two processes
+    // (GUI + the CLI's `providers add/switch`) since this diff made the
+    // mutators cross-surface.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     // 直接以 0600 创建临时文件（配置含明文 key，kimi/claude 的 CLI 配置），
     // 避免默认 umask 0644 让同机其他用户可读，也无「先 0644 写、后收紧」的
     // 暴露窗口（评审中危项 + 复审低危 4）。平台细节在 platform/filesystem.rs，
@@ -465,7 +668,10 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         file.write_all(content)
             .with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
     }
-    fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error).with_context(|| format!("替换 {} 失败", path.display()));
+    }
     Ok(())
 }
 
@@ -578,7 +784,10 @@ impl ProviderManager {
 
     pub fn list(&self, agent: &str) -> Result<AcpProvidersView> {
         validate_agent(agent)?;
-        let state = self.store.state(agent);
+        // Fresh read: this view is rendered beside `effective()`'s live
+        // config attribution, so a stale store card ("current: A" next to
+        // "active: B" after a CLI switch) is a self-contradicting UI.
+        let state = self.store.state_after_reload(agent);
         let (effective, config_unreadable) = self.effective(agent);
         // 配置文件的 relay 配置归因：codex/kimi 可反推 id 精确匹配；claude 的 env
         // 无法反推，只要 store 有当前 provider 且文件有 relay 配置即归因 App 写入。
@@ -682,7 +891,7 @@ impl ProviderManager {
         let existing = match provider_id {
             Some(id) => Some(
                 self.store
-                    .get(agent, id)
+                    .record_after_reload(agent, id)
                     .with_context(|| format!("Provider 不存在: {id}"))?,
             ),
             None => None,
@@ -738,7 +947,7 @@ impl ProviderManager {
         // store.current=B」的分裂态。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        if self.store.current(agent).as_deref() == Some(record.id.as_str()) {
+        if self.store.current_after_reload(agent).as_deref() == Some(record.id.as_str()) {
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
@@ -752,7 +961,12 @@ impl ProviderManager {
                     }
                     _ => {
                         if let Err(rollback) = writer.restore_default_model(
-                            self.store.official_default_model(agent).as_deref(),
+                            // Fresh read: the rollback restores the official
+                            // login state, which is whatever the disk holds
+                            // now, not what this process booted with.
+                            self.store
+                                .official_default_model_after_reload(agent)
+                                .as_deref(),
                         ) {
                             context =
                                 format!("{context}；写回官方 default_model 也失败: {rollback:#}");
@@ -775,8 +989,14 @@ impl ProviderManager {
         // 删除当前 Provider 会回退 CLI 配置：与 switch/save 同锁，防交错。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        let was_current = self.store.current(agent).as_deref() == Some(provider_id);
-        let removed = self.store.get(agent, provider_id);
+        let was_current = self.store.current_after_reload(agent).as_deref() == Some(provider_id);
+        // Fresh read under the section lock, like `was_current`: the revert
+        // input must describe the record on disk, not the one at boot. A
+        // stale record survives the codex revert's equality gate (the top
+        // level `model` is only removed when it equals the reverted
+        // record's), leaving a removed provider's model name pointed at
+        // official auth.
+        let removed = self.store.record_after_reload(agent, provider_id);
         if was_current {
             match removed.as_ref() {
                 Some(record) => self.switch_official_after_removal(agent, record)?,
@@ -803,9 +1023,13 @@ impl ProviderManager {
         // 交错（评审中危项）。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
+        // Fresh read under the section lock: a stale in-memory record could
+        // apply a provider a peer process already removed (the CLI's boot
+        // can be hours old); the persist-side existence re-check below is
+        // the second half of the same guard.
         let record = self
             .store
-            .get(agent, provider_id)
+            .record_after_reload(agent, provider_id)
             .with_context(|| format!("Provider 不存在: {provider_id}"))?;
         let key = self
             .api_key(agent, provider_id)?
@@ -816,7 +1040,13 @@ impl ProviderManager {
         // 否则恢复官方时登录态断裂（N5）。
         let official_default_model = match writer.current_default_model()? {
             Some(value) => Some(value),
-            None => self.store.official_default_model(agent),
+            // Fresh read: this value is persisted verbatim by
+            // `set_switch_state` below, so a stale in-memory `None` (the
+            // GUI booted before a CLI switch recorded the official model)
+            // would overwrite the disk value and break the later
+            // official-login restore — kimi's `default_model` is the
+            // concrete casualty.
+            None => self.store.official_default_model_after_reload(agent),
         };
         writer.apply(&ProviderTarget::from_record(&record, Some(key)))?;
         // 单次持久化写入切换状态（低危 3：两步 persist 会留下半切换态）。
@@ -859,13 +1089,15 @@ impl ProviderManager {
     }
 
     /// 无锁内部实现：调用方必须已持 per-agent 切换锁（delete 持锁后调用）。
+    /// store 读取走 reload 后的 fresh read（配置/表分裂态的同一纪律）。
     fn switch_official_locked(&self, agent: &str) -> Result<()> {
-        let current = self.store.current(agent);
-        let reverted = current
-            .as_deref()
-            .and_then(|id| self.store.get(agent, id))
-            .map(|record| ProviderTarget::from_record(&record, None));
-        let official_default_model = self.store.official_default_model(agent);
+        let (_current, record) = self.store.current_and_record_after_reload(agent);
+        let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
+        // Same fresh-read discipline as the revert target: this value is
+        // written back verbatim by `restore_default_model`, so deciding it
+        // from a stale memory copy would silently skip the restore (or, via
+        // `switch`, persist the stale `None` over a CLI-written value).
+        let official_default_model = self.store.official_default_model_after_reload(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(reverted.as_ref())?;
         writer.restore_default_model(official_default_model.as_deref())?;
@@ -882,7 +1114,9 @@ impl ProviderManager {
         removed: &ProviderRecord,
     ) -> Result<()> {
         validate_agent(agent)?;
-        let official_default_model = self.store.official_default_model(agent);
+        // Fresh read: this restore decides the official login state the same
+        // way `switch_official_locked` does.
+        let official_default_model = self.store.official_default_model_after_reload(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(Some(&ProviderTarget::from_record(removed, None)))?;
         writer.restore_default_model(official_default_model.as_deref())?;
@@ -909,7 +1143,7 @@ impl ProviderManager {
             api_key: Option<String>,
         }
         let mut entries = Vec::new();
-        for record in &self.store.state(agent).providers {
+        for record in &self.store.state_after_reload(agent).providers {
             entries.push(ExportEntry {
                 id: record.id.clone(),
                 name: record.name.clone(),
@@ -960,14 +1194,16 @@ impl ProviderManager {
                 continue;
             }
             // id 冲突（已存在或格式非法——仅前缀匹配不够，非法字符会写进 TOML
-            // 表名）时重新生成并告警。
+            // 表名）时重新生成并告警。冲突判定走 reload 后的 fresh read：仅读
+            // 内存会让本进程启动后对端（CLI/GUI 另一侧）新增的同 id 条目被
+            // upsert 静默覆盖，而不计入 id_conflicts。
             let id = if entry.id.starts_with(PROVIDER_ID_PREFIX)
                 && entry.id.len() <= 64
                 && entry
                     .id
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && self.store.get(agent, &entry.id).is_none()
+                && self.store.record_after_reload(agent, &entry.id).is_none()
             {
                 entry.id.clone()
             } else {
@@ -1111,6 +1347,7 @@ fn fixture_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     fn tmp_store(dir: &Path) -> AcpProvidersStore {
         let path = dir.join("acp-providers.json");
@@ -1118,6 +1355,298 @@ mod tests {
             path,
             agents: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// The reload→mutate→persist section is serialized ACROSS processes:
+    /// while another process holds the section lock, a mutator here waits
+    /// instead of renaming its own snapshot over the peer's just-committed
+    /// write (the lost-update window the in-process write guard left open).
+    #[test]
+    fn mutators_wait_for_another_process_holding_the_section_lock() {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cli = tmp_store(&dir);
+
+        // An external "process" (any holder of the same lock file) owns the
+        // section.
+        let lock_path = dir.join("acp-providers.json.lock");
+        let holder = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        holder.lock().unwrap();
+
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let done_in = done.clone();
+        let worker = std::thread::spawn(move || {
+            let cli = cli;
+            cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
+            done_in.store(true, Ordering::SeqCst);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "the mutator must wait while the section lock is held elsewhere"
+        );
+        holder.unlock().unwrap();
+        worker.join().unwrap();
+        assert!(done.load(Ordering::SeqCst));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file that turned corrupt after boot (holding writes this process
+    /// never saw) must be preserved before this process's persist replaces
+    /// it — `load_or_empty`'s boot-time `.pinvou3-bak` never saw it either.
+    #[test]
+    fn reload_into_quarantines_a_file_that_turned_corrupt_after_boot() {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acp-providers.json");
+        let store = tmp_store(&dir);
+
+        let corrupt = b"{ this never parses";
+        fs::write(&path, corrupt).unwrap();
+
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        store.upsert("codex", record("pv-a", "A")).unwrap();
+
+        let quarantine = dir.join("acp-providers.json.invalid");
+        assert_eq!(
+            fs::read(&quarantine).unwrap(),
+            corrupt,
+            "the pre-persist corrupt bytes must survive in the .invalid sibling"
+        );
+        // The store itself heals forward: the file now parses and carries
+        // the mutation.
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("\"pv-a\""),
+            "the persist landed: {on_disk}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The decision primitive behind `save`'s active-provider arm and
+    /// `delete`'s revert arm: a long-lived side whose in-memory `current`
+    /// was stale-dated by a CLI process's `set_current` must answer the
+    /// disk's value, not its own stale one — deciding from the stale value
+    /// rewrote the CLI config for a provider that was no longer current
+    /// (the config/store split-brain).
+    #[test]
+    fn current_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        gui.set_current("codex", Some("pv-a")).unwrap();
+        // Both sides saw the same state so far; the memory answer agrees.
+        assert_eq!(cli.current_after_reload("codex").as_deref(), Some("pv-a"));
+
+        // The CLI process switches behind the GUI's back: disk now says
+        // pv-b while the GUI's memory still says pv-a.
+        cli.set_current("codex", Some("pv-b")).unwrap();
+        assert_eq!(
+            gui.current("codex").as_deref(),
+            Some("pv-a"),
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "the decision read must adopt the disk state"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The `official_default_model` decision primitive behind `switch` (and
+    /// the official revert arms): the value read here is persisted verbatim
+    /// by `set_switch_state` / `restore_default_model`, so a long-lived side
+    /// whose in-memory copy was stale-dated by a CLI switch would persist
+    /// its stale `None` over the CLI-written value — erasing the recorded
+    /// official default model and breaking the later official-login restore
+    /// (kimi's `default_model` is the concrete casualty).
+    #[test]
+    fn official_default_model_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-10-03T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+
+        // A CLI process switches behind the GUI's back AFTER the GUI booted:
+        // its switch decided the official default model from its own fresh
+        // read and recorded it on disk, while the long-lived GUI's memory
+        // still holds the boot-time None.
+        cli.set_switch_state("codex", Some("pv-b"), Some("kimi-code/k3"))
+            .unwrap();
+        assert_eq!(
+            gui.official_default_model("codex"),
+            None,
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.official_default_model_after_reload("codex").as_deref(),
+            Some("kimi-code/k3"),
+            "the decision read must adopt the disk state, not the stale memory"
+        );
+        // The mutator persists the decision value verbatim — which is why
+        // the decision read above must be fresh: a stale-None decision
+        // through the same mutator erases the recorded model.
+        cli.set_switch_state("codex", Some("pv-a"), None).unwrap();
+        assert_eq!(
+            cli.official_default_model_after_reload("codex"),
+            None,
+            "a None decision persists None — so the decision must be fresh-read"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The switch paths' half of the same split-brain discipline: a record
+    /// resolved for `switch` must come from the disk state (a peer may have
+    /// upserted after this process booted), and `set_switch_state` must
+    /// refuse to pin `current` to an id a concurrent `remove` erased between
+    /// the config write and the persist — that state (config carries the
+    /// provider, table does not) is exactly what the store refuses; the
+    /// error routes `switch` into its rollback arm.
+    #[test]
+    fn switch_decisions_read_the_disk_state_and_refuse_a_removed_target() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        // A CLI process that booted BEFORE the table landed must still
+        // resolve its records: the plain `get` answers None from the empty
+        // boot memory.
+        assert!(
+            cli.get("codex", "pv-b").is_none(),
+            "precondition: the plain read is the stale memory view"
+        );
+        assert!(
+            cli.record_after_reload("codex", "pv-b").is_some(),
+            "the switch decision read must adopt the disk state"
+        );
+
+        // The switch persist itself: a peer remove landing between the config
+        // write and `set_switch_state` must refuse, not pin a dangling id.
+        gui.remove("codex", "pv-b").unwrap();
+        let error = cli
+            .set_switch_state("codex", Some("pv-b"), None)
+            .expect_err("a provider removed mid-switch must fail the persist");
+        assert!(
+            error.to_string().contains("pv-b"),
+            "the refusal names the removed id: {error}"
+        );
+        // The store must not carry the dangling current either.
+        assert_ne!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "no refused switch may leave current pointing at the removed id"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Shared behavior contracts of the three CLI ConfigWriters, locked in one
@@ -1253,8 +1782,15 @@ mod tests {
             "我的中转"
         );
         assert_eq!(store.current("codex").unwrap(), "pv-1234567890ab");
-        // 原子写：无残留 .tmp 文件
-        assert!(!store.path.with_extension("json.tmp").exists());
+        // 原子写：无残留 .tmp 文件。断言必须匹配 persist 实际写的 pid tmp
+        // 名（`acp-providers.json.<pid>.tmp`）——固定名 `json.tmp` 从未
+        // 被写过，旧断言恒真、钉不住泄漏。
+        assert!(
+            !store
+                .path
+                .with_extension(format!("json.{}.tmp", std::process::id()))
+                .exists()
+        );
         // 从同一路径重新加载验证往返
         let reloaded = load_from_path(&store.path);
         assert_eq!(reloaded.state("codex").providers.len(), 1);
@@ -1262,6 +1798,153 @@ mod tests {
         let raw = fs::read_to_string(&store.path).unwrap();
         assert!(!raw.contains("api_key"));
         assert!(raw.contains("pinvou3-acp-provider-key"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The GUI holds one store for the app lifetime while the CLI builds a
+    /// fresh one per process; the long-lived side must pull the fresh
+    /// side's write in before its next whole-table persist, or that persist
+    /// silently reverts it minutes later.
+    /// Two in-process mutators racing through the same store: whichever
+    /// mutation commits, its own persist must carry it — the reload inside
+    /// the shared write guard can only see a file that already contains
+    /// every earlier commit, so no commit may vanish from the final disk
+    /// state (this is the discard the post-guard persist shape allowed).
+    #[test]
+    fn racing_mutators_never_lose_a_committed_write() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let store = std::sync::Arc::new(tmp_store(&dir));
+
+        let upserter = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                for round in 0..64 {
+                    store
+                        .upsert("codex", record("pv-a", &format!("upsert-{round}")))
+                        .unwrap();
+                }
+            })
+        };
+        let switcher = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                for round in 0..64 {
+                    store
+                        .set_current("codex", Some(if round % 2 == 0 { "pv-a" } else { "pv-b" }))
+                        .unwrap();
+                }
+            })
+        };
+        upserter.join().unwrap();
+        switcher.join().unwrap();
+
+        {
+            let committed = load_from_path(&dir.join("acp-providers.json"));
+            let names: Vec<String> = committed
+                .state("codex")
+                .providers
+                .iter()
+                .map(|r| r.name.clone())
+                .collect();
+            assert!(
+                names.contains(&"upsert-63".to_string()),
+                "the last committed upsert must be on disk: {names:?}"
+            );
+        }
+        store.upsert("codex", record("pv-b", "late")).unwrap();
+        let final_state = load_from_path(&dir.join("acp-providers.json"));
+        let state = final_state.state("codex");
+        let names: Vec<String> = state.providers.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.contains(&"late".to_string()),
+            "the last upsert must survive: {names:?}"
+        );
+        let current = state.current_provider_id.as_deref();
+        assert!(
+            current == Some("pv-a") || current == Some("pv-b"),
+            "a committed current must survive: {current:?}"
+        );
+    }
+
+    #[test]
+    fn mutators_reload_the_disk_state_the_other_surface_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acp-providers.json");
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-gui", "GUI record")).unwrap();
+        // The CLI-side store never saw the GUI record; its own write must
+        // not wipe it.
+        cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
+        let on_disk = load_from_path(&path);
+        let names: Vec<String> = on_disk
+            .state("codex")
+            .providers
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert!(
+            names.contains(&"GUI record".to_string()) && names.contains(&"CLI record".to_string()),
+            "the CLI write must not revert the GUI record: {names:?}"
+        );
+
+        // A removal is equally authoritative: the long-lived side's next
+        // mutation reloads the removal instead of resurrecting the id.
+        cli.remove("codex", "pv-gui").unwrap();
+        gui.set_current("codex", Some("pv-cli")).unwrap();
+        let on_disk = load_from_path(&path);
+        let names: Vec<String> = on_disk
+            .state("codex")
+            .providers
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["CLI record".to_string()],
+            "the removed provider must stay removed: {names:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -1358,40 +1358,145 @@ where
     // _EMBED_INFO_PLIST (embed_plist) link errors on macOS.
     let mut context = crate::build_tauri_context();
     context.config_mut().app.windows.clear();
-    let app = tauri::Builder::default()
-        .setup(move |app| {
-            // Same order as the GUI host (the lib.rs
-            // `disabled_bundles_migration` marks): the fresh-vs-upgrade
-            // verdict must be read and frozen before first-startup writes
-            // such as SessionStore boot / engine spawn (sessions/, default
-            // settings.json) — otherwise a brand-new home directory first
-            // touched by a windowless host freezes a polluted "upgrade"
-            // verdict, plain flips back to fully open, and later GUI starts
-            // respect the already-frozen marker (review #455 blocking item 3).
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                crate::platform::paths::set_runtime_resource_dir(resource_dir);
-            }
-            let store = SessionStore::boot().context("boot headless session store")?;
-            store.load_session_models();
-            store.load_pinned_sessions();
-            store.load_hidden_sessions();
-            app.manage(store.clone());
-            let pool = build_pool(app.handle().clone(), store.clone())?;
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let result = work(pool, store).await;
-                let _ = result_tx.send(result);
-                handle.exit(0);
-            });
-            Ok(())
-        })
-        .build(context)
-        .context("build windowless Pinvou host")?;
-    app.run_return(|_, _| {});
-    result_rx
-        .blocking_recv()
-        .context("headless host exited before work completed")?
+    // The bootstrap and the event loop run on the caller's MAIN thread. In
+    // embedded environments where tauri's EventLoop refuses a non-main
+    // thread — and on any other bootstrap fault — the unwind used to take
+    // the whole process down with exit 101, outside the 0/1/2 exit-code
+    // contract every pinvou-cli family documents. Contained here at the
+    // single shared bootstrap, so EVERY host lane (monitor, knowledge,
+    // voice, agent task, benchmarks, the organize lanes) degrades to an
+    // ordinary Err; the two per-call-site catch_unwind wraps this replaces
+    // covered only their own lanes.
+    let host_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<T> {
+        let app = tauri::Builder::default()
+            .setup(move |app| {
+                // Same order as the GUI host (the lib.rs
+                // `disabled_bundles_migration` marks): the fresh-vs-upgrade
+                // verdict must be read and frozen before first-startup writes
+                // such as SessionStore boot / engine spawn (sessions/, default
+                // settings.json) — otherwise a brand-new home directory first
+                // touched by a windowless host freezes a polluted "upgrade"
+                // verdict, plain flips back to fully open, and later GUI starts
+                // respect the already-frozen marker (review #455 blocking item 3).
+                let _ = crate::features::marketplace::scope::load_disabled_bundles();
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    crate::platform::paths::set_runtime_resource_dir(resource_dir);
+                }
+                let store = SessionStore::boot().context("boot headless session store")?;
+                store.load_session_models();
+                store.load_pinned_sessions();
+                store.load_hidden_sessions();
+                app.manage(store.clone());
+                // The kb tools' visibility predicate consults these two
+                // services (same single source as the GUI, lib.rs); without
+                // managing them here the headless policy saw `None` on every
+                // spawn and denied kb_search/kb_open_source even with a fully
+                // indexed local KB or mounted remote collections. Both
+                // constructions are best-effort, exactly like the GUI's:
+                // a failed init logs and leaves the tools denied.
+                match knowledge::KnowledgeService::new(&knowledge::default_db_path()) {
+                    Ok(service) => {
+                        app.manage(service);
+                    }
+                    Err(error) => eprintln!("[headless] knowledge service init failed: {error:#}"),
+                }
+                match crate::features::remote_knowledge::RemoteKnowledgeService::load(
+                    crate::features::remote_knowledge::RemoteKnowledgeService::default_path(),
+                ) {
+                    Ok(service) => {
+                        app.manage(service);
+                    }
+                    Err(error) => {
+                        eprintln!("[headless] remote knowledge service init failed: {error}")
+                    }
+                }
+                let pool = build_pool(app.handle().clone(), store.clone())?;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // The work future runs on a nested task so a panic inside
+                    // it surfaces as a JoinError instead of being swallowed
+                    // by tokio: an unguarded panic would skip the send and
+                    // the exit below, and the caller would block on
+                    // `run_return`'s windowless event loop forever, outside
+                    // the 0/1/2 exit contract. The teardown's deliberate
+                    // re-raise after a pinned restore lands here too and
+                    // degrades to an ordinary Err like any other fault.
+                    let joined = tauri::async_runtime::spawn(work(pool, store));
+                    let result = match joined.await {
+                        Ok(result) => result,
+                        Err(join_error) => {
+                            Err(anyhow::anyhow!("windowless work failed: {join_error}"))
+                        }
+                    };
+                    let _ = result_tx.send(result);
+                    handle.exit(0);
+                });
+                Ok(())
+            })
+            .build(context)
+            .context("build windowless Pinvou host")?;
+        app.run_return(|_, _| {});
+        Ok(result_rx
+            .blocking_recv()
+            .context("headless host exited before work completed")??)
+    }));
+    match host_outcome {
+        Ok(result) => result,
+        Err(panic) => {
+            let detail = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic
+                        .downcast_ref::<&str>()
+                        .map(|reason| (*reason).to_owned())
+                })
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            Err(anyhow::anyhow!("windowless host panicked: {detail}"))
+        }
+    }
+}
+
+/// Bare async host for lanes that need the app crate's runtime environment
+/// (rustls, release env, the shared multi-thread tokio runtime with
+/// `tauri::async_runtime` wired) but touch neither the engine pool nor the
+/// session store: the remote-knowledge network lanes and the monitor
+/// probes. Booting the full windowless product host for these built a whole
+/// Tauri context and ran `SessionStore::boot` — whose retention sweep can
+/// evict the user's oldest sessions, a destructive side effect a status
+/// command must not carry — for closures that ignore both handles, and it
+/// made the lanes need a display on headless Linux (the Tauri event loop).
+/// No event loop and no app context here: the work future runs on the
+/// runtime directly, with the same nested-task panic containment as the
+/// product host's spawn site.
+pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+where
+    T: Send + 'static,
+    Work: FnOnce() -> WorkFuture + Send + 'static,
+    WorkFuture: Future<Output = Result<T>> + Send + 'static,
+{
+    crate::install_rustls_provider();
+    crate::ensure_release_env();
+    crate::startup_process_env();
+    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .context("build headless async runtime")?;
+    tauri::async_runtime::set(async_runtime.handle().clone());
+    let joined = async_runtime.spawn(async move {
+        // Same shape as the product host's spawn site: the work future runs
+        // on a nested task so a panic inside it surfaces as a JoinError
+        // instead of being swallowed by tokio.
+        match tokio::task::spawn(work()).await {
+            Ok(result) => result,
+            Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),
+        }
+    });
+    match async_runtime.block_on(joined) {
+        Ok(result) => result,
+        Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),
+    }
 }
 
 pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
@@ -1407,8 +1512,11 @@ where
     })
 }
 
-/// Build an EnginePool with the same tool_policy combination as the GUI. The
-/// tool_factory intentionally stays narrower than the GUI's: computer_use is
+/// Build an EnginePool with the same tool_policy combination as the GUI:
+/// `unavailable_tool_names` plus the kb pair gated by the same
+/// `KnowledgeService::kb_tools_usable` predicate over the services the
+/// windowless setup manages above. The tool_factory intentionally stays
+/// narrower than the GUI's: computer_use is
 /// not constructed here because headless hosts have no consent UI to answer
 /// its grant/confirm prompts (the tool would be unusable and unsupervised).
 /// The `agentic_task` headless host reuses this constructor so agentic turns
@@ -1428,10 +1536,22 @@ pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<E
     });
     let tool_policy: ToolPolicy = Arc::new(|app| {
         let mut tools = crate::features::marketplace::unavailable_tool_names();
-        let kb_usable = app
-            .try_state::<knowledge::KnowledgeService>()
-            .map(|service| service.has_indexed_content() && service.semantic_ready())
-            .unwrap_or(false);
+        // The GUI's single-source predicate (KnowledgeService::kb_tools_usable
+        // via lib.rs): visibility tracks CONTENT/CONNECTIONS, deliberately not
+        // the embedding model's load state — a visibility that fluctuates with
+        // the model makes the snapshot recalc write kb_search into disallowed
+        // and the tool's on-demand self-heal reload unreachable. The old
+        // headless formula (`has_indexed_content() && semantic_ready()`) was
+        // both a different rule and moot: no service was managed here, so kb
+        // tools were denied on every headless run.
+        let kb_usable = knowledge::KnowledgeService::kb_tools_usable(
+            app.try_state::<knowledge::KnowledgeService>()
+                .map(|service| service.has_indexed_content())
+                .unwrap_or(false),
+            app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
+                .map(|service| service.has_connections())
+                .unwrap_or(false),
+        );
         if !kb_usable {
             tools.extend(["kb_search".to_owned(), "kb_open_source".to_owned()]);
         }
