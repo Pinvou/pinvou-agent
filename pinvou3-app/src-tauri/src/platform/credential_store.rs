@@ -627,11 +627,22 @@ fn is_secret_like(value: &str) -> bool {
         || lower.starts_with("ghu_")
         || lower.starts_with("github_pat_")
         || lower.starts_with("glpat-")
-        || lower.starts_with("akia")
+        // AWS access keys are AKIA + 16 uppercase alphanumerics (20 chars):
+        // the shape gate keeps the family without redacting every
+        // whitespace-delimited word that merely begins with "akia"
+        // (`akia-notes.txt`, the bird, a brand).
+        || (lower.starts_with("akia")
+            && trimmed.len() == 20
+            && trimmed[4..]
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || lower.starts_with("ghr_")
         || lower.starts_with("xoxb-")
         || lower.starts_with("xoxp-")
         || lower.starts_with("xoxa-")
         || lower.starts_with("xoxs-")
+        || lower.starts_with("xoxe-")
+        || lower.starts_with("xapp-")
         || (trimmed.len() >= 24
             && trimmed.chars().any(|c| c.is_ascii_digit())
             && trimmed.chars().any(|c| c.is_ascii_alphabetic()))
@@ -1020,10 +1031,16 @@ mod tests {
         // scanner on synthetic values.
         for token in [
             "ghp_shortexample",
+            "ghr_shortexample",
             "github_pat_shortexample",
             "glpat-shortexample",
-            "AKIAShortExample",
+            // The canonical AWS docs example key: the akia family is
+            // shape-gated (AKIA + 16 uppercase alphanumerics), so the
+            // fixture must carry the real 20-char shape.
+            "AKIAIOSFODNN7EXAMPLE",
             "xoxb-shortexample",
+            "xoxe-shortexample",
+            "xapp-shortexample",
         ] {
             let redacted = super::redact_secret(token);
             assert_ne!(
@@ -1037,6 +1054,16 @@ mod tests {
             super::redact_secret("ghp is an abbreviation"),
             "ghp is an abbreviation"
         );
+        // The akia shape gate: a word that merely begins with "akia" (a
+        // filename, a brand, the bird) stays visible — over-redacting every
+        // akia-prefixed word made GUI error strings unusable.
+        for benign in ["akia-notes.txt", "akiapolaau", "AkiaCorp-v2"] {
+            assert_eq!(
+                super::redact_secret(benign),
+                benign,
+                "an akia-shaped non-key must stay visible: {benign}"
+            );
+        }
     }
 
     #[test]
