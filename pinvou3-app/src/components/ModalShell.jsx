@@ -1,16 +1,22 @@
-// Shared shell for the Codex-family confirm dialogs: portal to <body> (same as the shared
-// YoloConfirmCard — keeps the composer container's backdrop-blur from becoming the containing
-// block for fixed descendants), focus capture/restore (useDialogFocusRestore), Escape to close
-// (disabled while busy), and backdrop buttons disabled together with busy (an in-flight confirmation cannot be dismissed by clicking the backdrop).
-// Title/error row/footer are all optional nodes composed by callers: the Rewind confirm/undo dialog
-// (RewindChip.jsx) uses the full set, while CodexAcpView's branch-switch dialog uses only the shell + its own panel.
+// Shared centered-dialog shell: portal to <body> (same as the shared YoloConfirmCard — keeps
+// a composer container's backdrop-blur from becoming the containing block for fixed descendants),
+// focus capture/restore (useDialogFocusRestore), Escape to close (disabled while busy), and
+// backdrop buttons disabled together with busy (an in-flight confirmation cannot be dismissed by
+// clicking the backdrop). The panel is pinned `relative` so it always stacks above the
+// positioned backdrop regardless of caller classes. Title/error row/footer are all optional
+// nodes composed by callers: the
+// rewind confirm/undo dialogs (codex/RewindChip.jsx) use the full set, CodexAcpView's
+// branch-switch dialog uses only the shell + its own panel, and the settings provider
+// delete/uninstall/transfer dialogs keep their local wrappers on top of it. Promoted out of
+// features/codex/ModalDialogShell.jsx per the 2026-10 reuse audit (its header already said it
+// was meant to be shared); keep the prop surface minimal until a second shape actually needs it.
 
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useDialogFocusRestore } from '../../hooks/useDialogFocusRestore.js';
+import { useDialogFocusRestore } from '../hooks/useDialogFocusRestore.js';
 
 // Escape to close (disabled while busy). Shared by the confirm dialogs built
-// on ModalDialogShell and CodexAcpView's branch-switch dialog.
+// on ModalShell and CodexAcpView's branch-switch dialog.
 function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {
     const onKey = (event) => {
@@ -24,7 +30,7 @@ function useDialogEscapeKey(busy, onCancel) {
   }, [busy, onCancel]);
 }
 
-export function ModalDialogShell({
+export function ModalShell({
   testid,
   zIndexClass = 'z-50',
   backdropClass,
@@ -57,7 +63,7 @@ export function ModalDialogShell({
         aria-modal="true"
         aria-labelledby={labelledBy}
         tabIndex={-1}
-        className={panelClass}
+        className={`relative ${panelClass}`}
       >
         {title}
         {children}
