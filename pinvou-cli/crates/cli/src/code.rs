@@ -60,9 +60,10 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace;
 use pinvou3_lib::features::codex_acp::{
-    AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS, CodexWorkspaceKind,
-    GIT_IDENTITY_KEYS, GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION, MIN_CODEX_VERSION, MIN_KIMI_VERSION,
-    ProviderManager, ProviderWireApi, SessionAgentStore, version_at_least,
+    AcpAgentDescriptor, AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS,
+    CodexWorkspaceKind, GIT_IDENTITY_KEYS, GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION,
+    MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi, SessionAgentStore,
+    version_at_least,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
 use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
@@ -1482,14 +1483,12 @@ fn command_output_with_timeout(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    for variable in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-    ] {
-        command.env_remove(variable);
-    }
+    // The full override list, not a probe-specific subset: the probes never
+    // run git, but strip_git_redirection_env is the file's single source of
+    // truth for "no ambient git redirection reaches a spawned child", and a
+    // hand-rolled subset here was re-seeding the exact drift the imported
+    // list exists to prevent.
+    strip_git_redirection_env(&mut command);
     crate::support::set_process_group(&mut command);
     // Spawn + register with the SIGINT supervisor in one step, the same
     // bracket `login`/`logout` use: the probe's kill loop dies with this
@@ -1955,38 +1954,47 @@ fn probe_all_agents() -> Vec<AgentProbe> {
     // the first output line. The probes are independent, so run them
     // concurrently and join in catalog order — the output stays
     // deterministic, only the wall clock shrinks to the slowest probe.
+    // One degraded-row constructor for both failure modes below (spawn
+    // refusal, panicked thread): the dead probe keeps its catalog identity
+    // while reading as `version_probe_failed` instead of aborting the whole
+    // listing or fabricating an installed/authenticated fact.
+    let degraded = |descriptor: &AcpAgentDescriptor| AgentProbe {
+        min_version: MIN_VERSIONS
+            .iter()
+            .find(|(id, _)| *id == descriptor.agent_id)
+            .map(|(_, min)| *min)
+            .unwrap_or("0.0.0"),
+        agent_id: descriptor.agent_id.to_owned(),
+        agent_name: descriptor.agent_name.to_owned(),
+        cli_path: None,
+        version: None,
+        version_probe_failed: true,
+        version_supported: false,
+        authenticated: false,
+    };
     AcpPool::agent_catalog()
         .into_iter()
-        .map(|descriptor| {
-            let handle = std::thread::Builder::new()
+        .filter_map(|descriptor| {
+            // Same degrade doctrine as the join below: a failed spawn
+            // (fd/memory exhaustion) is one degraded row, not an abort of
+            // the whole listing.
+            let spawned = std::thread::Builder::new()
                 .name(format!("agent-probe-{}", descriptor.agent_id))
-                .spawn(move || probe_agent(descriptor.agent_id, descriptor.agent_name))
-                .expect("spawn agent probe thread");
-            (descriptor, handle)
+                .spawn(move || probe_agent(descriptor.agent_id, descriptor.agent_name));
+            match spawned {
+                Ok(handle) => Some((descriptor, Some(handle))),
+                Err(_) => Some((descriptor, None)),
+            }
         })
         .collect::<Vec<_>>()
         .into_iter()
-        .map(|(descriptor, handle)| {
+        .map(|(descriptor, handle)| match handle {
             // A panicking probe thread degrades to a failed probe instead
             // of aborting the whole listing (the same doctrine the models
             // probe-local round applies): the other agents' rows still
-            // render, and the dead probe keeps its catalog identity while
-            // reading as `version_probe_failed` rather than fabricating an
-            // installed/authenticated fact.
-            handle.join().unwrap_or_else(|_| AgentProbe {
-                min_version: MIN_VERSIONS
-                    .iter()
-                    .find(|(id, _)| *id == descriptor.agent_id)
-                    .map(|(_, min)| *min)
-                    .unwrap_or("0.0.0"),
-                agent_id: descriptor.agent_id.to_owned(),
-                agent_name: descriptor.agent_name.to_owned(),
-                cli_path: None,
-                version: None,
-                version_probe_failed: true,
-                version_supported: false,
-                authenticated: false,
-            })
+            // render.
+            Some(handle) => handle.join().unwrap_or_else(|_| degraded(&descriptor)),
+            None => degraded(&descriptor),
         })
         .collect()
 }
