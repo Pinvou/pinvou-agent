@@ -1069,6 +1069,16 @@ pub fn run() {
                     // marketplace / knowledge changes) recompute against the
                     // same current flag state.
                     computer_use_shared.add_to_disallow_list_when_disabled(&mut tools);
+                    // Base automation tools are dead in app sessions: the
+                    // foundation `automation`/`send_later` tools are registered
+                    // in the engine's tool catalog but their AutomationManager
+                    // is never attached here, so every call fails with
+                    // "AutomationManager is not attached". Leaving them visible
+                    // only invites the model to retry the dead path instead of
+                    // the working app-automations MCP tool. (`tasks`/`github`
+                    // stay untouched — out of scope.)
+                    tools.push("automation".to_string());
+                    tools.push("send_later".to_string());
                     tools
                 })
             };
@@ -1158,6 +1168,7 @@ pub fn run() {
                             &pool.bridge,
                             pool.clone(),
                             store_for_engine.clone(),
+                            &handle,
                         ),
                     );
                     match scheduled_state {
@@ -1174,6 +1185,24 @@ pub fn run() {
                     // （回到 lazy spawn 语义，下次发消息重建 + 注水历史）。
                     pool.start_idle_reaper();
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
+                    // Cross-session messaging delivery watcher (features::messaging):
+                    // drains the spool backlog written by the session-reader MCP
+                    // server (send_message_to_session), then polls. The app
+                    // lifetime is the watcher lifetime.
+                    features::messaging::spawn_delivery_watcher(
+                        pool.clone(),
+                        store_for_engine.clone(),
+                    );
+                    // Session-creation request watcher (features::sessions):
+                    // drains the spool written by the session-reader MCP server
+                    // (create_session), creating each requested session through
+                    // the store's own pipeline (never stealing focus) and
+                    // emitting session:list_changed. Same app-lifetime form.
+                    features::session_creation::spawn_session_creation_watcher(
+                        pool.clone(),
+                        store_for_engine.clone(),
+                        handle.clone(),
+                    );
                     match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
                         Ok(false) => {}

@@ -256,6 +256,14 @@ const expectedProtocolHashes = {
   // before degrading to []; same two commands, no new invoke or listen
   // entries (the switch-path occurrences now pass sessionId: sid like the
   // hydration ones).
+  // Recomputed for the merge of the landed builtin-plugin framework
+  // (#585's sidecar read-failure surfacing and builtin toggles) with the
+  // session-mention/aux-chat and cross-session messaging chain (bridge
+  // bodies only; the invoke/listen set is main's).
+  // loadPinvouReviewsForSession helpers so a corrupt sidecar is reported
+  // before degrading to []; same two commands, no new invoke or listen
+  // entries (the switch-path occurrences now pass sessionId: sid like the
+  // hydration ones).
   sessions: '36c11f39253fce71a49a220ff36e544b8af22b7e2358b1fec7eda85701a880b7',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production

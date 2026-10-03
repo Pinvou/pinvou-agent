@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex as SyncMutex, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -21,6 +21,7 @@ use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::scheduled::executor::{ScheduledChatExecutor, current_yolo_allow_shell};
 use crate::features::sessions::SessionStore;
+use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
 use crate::platform::prefs::UserPrefs;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -38,6 +39,15 @@ const SCHEDULED_EXECUTION_MODE: &str = "yolo";
 /// Only supported task kind for now: runs app-side memory organization instead of an
 /// engine conversation turn.
 pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
+/// Scheduled-message kind: each fire delivers the task's prompt into the
+/// stored target session (steer / new turn) instead of starting a new
+/// conversation. Same execution family, different run body.
+pub(crate) const SCHEDULED_TASK_KIND_SESSION_MESSAGE: &str = "session_message";
+/// Message body cap for scheduled messages — same bound as the messaging
+/// channel (a delivered message becomes a user turn in the target session).
+/// Enforced at create and update; the executor re-checks it as a belt before
+/// every delivery.
+pub(crate) const SCHEDULED_MESSAGE_MAX_CHARS: usize = 32 * 1024;
 const SCHEDULED_WALL_TIME: Duration = Duration::from_secs(30 * 60);
 // Pinvou's embedded Engine does not currently project every model delta/tool
 // heartbeat into TaskExecutionEvent. An idle deadline shorter than the hard
@@ -57,6 +67,8 @@ fn scheduled_execution_limits() -> TaskExecutionLimits {
     }
 }
 
+#[path = "creation_requests.rs"]
+pub(crate) mod creation_requests;
 #[path = "stores.rs"]
 mod stores;
 
@@ -88,6 +100,13 @@ impl ScheduledConversationDeleter for EnginePool {
     }
 }
 
+/// Clone: the creation-request watcher (features/scheduled/creation_requests)
+/// runs on a clone of the state while the panel-facing managed state stays the
+/// original. All heavy handles are Arc-shared; the two scheduler JoinHandles
+/// live in `Arc<SyncMutex<Option<_>>>` slots (EnginePool idle-reaper pattern)
+/// so Drop still owns the single abort, and the watcher guard sits in its own
+/// slot (`creation_watch`).
+#[derive(Clone)]
 pub struct ScheduledTaskState {
     automations: SharedAutomationManager,
     task_manager: Option<SharedTaskManager>,
@@ -97,15 +116,17 @@ pub struct ScheduledTaskState {
     task_kinds: ScheduledTaskKindStore,
     ui_metadata: ScheduledTaskUiMetadataStore,
     history_archive: ScheduledHistoryArchiveStore,
-    operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    operation_locks: Arc<ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
     pool: Option<EnginePool>,
     fallback_model: String,
     #[allow(dead_code)]
     scheduler_cancel: Option<CancellationToken>,
     #[allow(dead_code)]
-    scheduler_handle: Option<tokio::task::JoinHandle<()>>,
+    scheduler_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
     #[allow(dead_code)]
-    retention_handle: Option<tokio::task::JoinHandle<()>>,
+    retention_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
+    #[allow(dead_code)]
+    creation_watch: Arc<SyncMutex<Option<creation_requests::CreationWatchGuard>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -122,8 +143,10 @@ pub struct ScheduledTaskDto {
     pub model: Option<String>,
     pub model_id: Option<String>,
     /// Task kind; None = ordinary chat task, `memory_organize` = app-side memory
-    /// organize run.
+    /// organize run, `session_message` = recurring delivery into a session.
     pub kind: Option<String>,
+    /// `session_message` delivery target (None for every other kind).
+    pub target_session: Option<String>,
     pub has_unread_runs: bool,
     pub is_running: bool,
     pub pinned: bool,
@@ -163,6 +186,12 @@ pub struct CreateScheduledTaskInput {
     pub auto_approve: Option<bool>,
     #[serde(default)]
     pub paused: Option<bool>,
+    /// Scheduled-message mode: when present, the task delivers `prompt` into
+    /// this session at each fire instead of starting new conversations. Its
+    /// presence decides the kind (`session_message`); the panel has no way to
+    /// set it yet, so an absent field keeps every existing caller unchanged.
+    #[serde(default)]
+    pub target_session: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -190,6 +219,11 @@ pub struct UpdateScheduledTaskInput {
     pub auto_approve: Option<bool>,
     #[serde(default)]
     pub paused: Option<bool>,
+    /// See [`CreateScheduledTaskInput::target_session`]. Only applied when
+    /// the task already is a `session_message` task (the kind is a one-time
+    /// creation property).
+    #[serde(default)]
+    pub target_session: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -279,6 +313,7 @@ impl ScheduledTaskState {
         bridge: &Pinvou3Bridge,
         pool: EnginePool,
         sessions: SessionStore,
+        app: &tauri::AppHandle,
     ) -> Result<Self> {
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
@@ -337,7 +372,7 @@ impl ScheduledTaskState {
             read_state.clone(),
             cancel.clone(),
         );
-        Ok(Self {
+        let mut state = Self {
             automations,
             task_manager: Some(task_manager),
             sessions,
@@ -346,13 +381,18 @@ impl ScheduledTaskState {
             task_kinds,
             ui_metadata,
             history_archive,
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: Some(pool),
             fallback_model,
             scheduler_cancel: Some(cancel),
-            scheduler_handle: Some(scheduler_handle),
-            retention_handle: Some(retention_handle),
-        })
+            scheduler_handle: Arc::new(SyncMutex::new(Some(scheduler_handle))),
+            retention_handle: Arc::new(SyncMutex::new(Some(retention_handle))),
+            creation_watch: Arc::new(SyncMutex::new(None)),
+        };
+        // 会话创建定时任务的 spool 排水（features/scheduled/creation_requests）：
+        // 随运行时启动一次，生命周期跟随 state（Drop 取消）。
+        state.start_creation_watcher(app.clone());
+        Ok(state)
     }
 
     fn operation_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -379,7 +419,24 @@ impl ScheduledTaskState {
         let requires_model_binding = requested_model_id.is_some();
         // The kind is validated before any persistence/normalization; junk values are
         // rejected outright (same style as the mode check).
-        let requested_kind = canonical_scheduled_kind(input.kind.clone())?;
+        let mut requested_kind = canonical_scheduled_kind(input.kind.clone())?;
+        // Scheduled-message mode is derived from the target's presence (the tool
+        // and the panel both express it that way): a target means the run body
+        // is "deliver the prompt into that session", not a new conversation.
+        let requested_target =
+            canonical_message_target(&self.sessions, input.target_session.as_deref())?;
+        if requested_target.is_some() {
+            if requested_kind.is_some() {
+                return Err("an explicit kind cannot be combined with target_session".to_string());
+            }
+            let prompt_chars = input.prompt.trim().chars().count();
+            if prompt_chars > SCHEDULED_MESSAGE_MAX_CHARS {
+                return Err(format!(
+                    "scheduled message exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
+                ));
+            }
+            requested_kind = Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE.to_string());
+        }
         // Memory organize tasks follow the same rule as the settings-page manual entry:
         // refuse creation while memory is disabled (off by default, force-off for en-ja),
         // or the task is created fine but every run logs a "memory disabled" failure.
@@ -413,7 +470,16 @@ impl ScheduledTaskState {
             );
         }
         if let Some(kind) = requested_kind {
-            if let Err(error) = self.task_kinds.set_kind(&created.id, Some(kind)) {
+            let saved = match requested_target.as_deref() {
+                // The session_message kind carries its delivery target in the
+                // same sidecar entry (one write, one rollback path).
+                Some(target) if kind == SCHEDULED_TASK_KIND_SESSION_MESSAGE => self
+                    .task_kinds
+                    .set_kind_with_target(&created.id, &kind, target)
+                    .map(|_| ()),
+                _ => self.task_kinds.set_kind(&created.id, Some(kind)),
+            };
+            if let Err(error) = saved {
                 // Roll back the just-created automation so no kind-less task lingers;
                 // a failed rollback must stay diagnosable in the logs. The workspace
                 // directory created moments ago is removed best-effort as well — a
@@ -452,17 +518,69 @@ impl ScheduledTaskState {
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
+        // The 32k message-body cap also guards the panel/update path: a
+        // session-message task must never persist a body the delivery belt
+        // would then reject on every fire (same bound as create).
+        if let Some(prompt) = input.prompt.as_deref().map(str::trim) {
+            if self.task_kinds.kind_for(&id).as_deref() == Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE)
+                && prompt.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS
+            {
+                return Err(format!(
+                    "Scheduled message exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
+                ));
+            }
+        }
+        // The kind is a one-time creation property, so a target change is only
+        // meaningful for an existing session_message task; a chat/memory task
+        // cannot be converted into one (and vice versa) through an update.
+        // Validate the retarget up front but persist it only after the
+        // automation update succeeded — writing the sidecar first would let a
+        // later validation failure (invalid rrule/mode, IO) leave the old
+        // prompt firing into the new session.
+        let retarget = match input.target_session.as_deref() {
+            Some(target) => {
+                let current_kind = self.task_kinds.kind_for(&id);
+                if current_kind.as_deref() != Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE) {
+                    return Err(
+                        "only scheduled-message tasks can change their target session".to_string(),
+                    );
+                }
+                Some(
+                    canonical_message_target(&self.sessions, Some(target))?
+                        .ok_or_else(|| "target session cannot be empty".to_string())?,
+                )
+            }
+            None => None,
+        };
         let updated = manager
             .update_automation(&id, build_update_request(input)?)
             .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
         let updated = ensure_automation_workspace(&manager, updated)
             .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
+        if let Some(target) = retarget {
+            self.task_kinds
+                .set_kind_with_target(&id, SCHEDULED_TASK_KIND_SESSION_MESSAGE, &target)
+                .map_err(|error| format!("Failed to save scheduled task target: {error:#}"))?;
+        }
         if requested_model_update.is_some() || requested_model_id.is_some() {
+            let previous_binding = self.model_bindings.binding_for(&id);
             if let Err(error) =
                 self.model_bindings
                     .set(&id, requested_model_id, updated.model.clone())
             {
                 if requires_model_binding {
+                    // Roll the binding back so the reported failure is not a
+                    // half-applied state that a retried update would stack on
+                    // top of (same discipline as create's rollback).
+                    let rollback = match previous_binding {
+                        Some((model_id, model)) => self.model_bindings.set(&id, model_id, model),
+                        None => self.model_bindings.remove(&id),
+                    };
+                    if let Err(rollback_error) = rollback {
+                        log::warn!(
+                            "Failed to roll back the model binding of scheduled task {id}: {rollback_error:#}"
+                        );
+                    }
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));
@@ -1005,12 +1123,27 @@ impl Drop for ScheduledTaskState {
         if let Some(cancel) = &self.scheduler_cancel {
             cancel.cancel();
         }
-        if let Some(handle) = self.scheduler_handle.take() {
+        if let Some(handle) = self
+            .scheduler_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handle.abort();
         }
-        if let Some(handle) = self.retention_handle.take() {
+        if let Some(handle) = self
+            .retention_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handle.abort();
         }
+        // CreationWatchGuard's own Drop cancels the token and aborts the task.
+        self.creation_watch
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
 }
 
@@ -1101,6 +1234,7 @@ fn map_scheduled_task_with_run_state(
         .as_deref()
         .and_then(|model| model_bindings.model_id_for(&record.id, model));
     let kind = task_kinds.kind_for(&record.id);
+    let target_session = task_kinds.target_session_for(&record.id);
     let (pinned, pinned_at) = ui_metadata.metadata_for(&record.id);
     ScheduledTaskDto {
         id: record.id,
@@ -1114,6 +1248,7 @@ fn map_scheduled_task_with_run_state(
         model: record.model,
         model_id,
         kind,
+        target_session,
         has_unread_runs,
         is_running,
         pinned,
@@ -1433,9 +1568,63 @@ fn canonical_scheduled_mode(mode: Option<String>) -> Result<(), String> {
     }
 }
 
-/// Kind allow-list: missing means an ordinary chat task; only `memory_organize` is
-/// accepted for now. Same style as [`canonical_scheduled_mode`]: exact match after
-/// trimming, everything else is rejected.
+/// Delivery-target validation for the `session_message` kind (None = not a
+/// scheduled message). The target must be an existing ordinary session:
+/// charset discipline keeps storage paths safe, isolated prefixes are
+/// rejected because waking an unattended session on a schedule is the
+/// recursion direction, and existence is probed so a typo fails at creation
+/// instead of failing every future run. The executor re-checks isolation
+/// before each delivery (the spool/store is not trusted).
+fn canonical_message_target(
+    sessions: &SessionStore,
+    target: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if target.len() > 128
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("invalid target_session: use the session's id".to_string());
+    }
+    if is_sched_session_id(target)
+        || is_aux_session_id(target)
+        || target.to_ascii_lowercase().starts_with("eval_")
+    {
+        return Err(format!(
+            "invalid target_session: {target} is an isolated or unattended session and cannot receive scheduled messages"
+        ));
+    }
+    if let Err(error) = sessions.manager.load_session_snapshot(target) {
+        // A missing file and a corrupt/newer-schema file both land here:
+        // name the distinction instead of blaming "not found" for every
+        // load failure.
+        if target_file_missing(target) {
+            return Err(format!("target_session not found: {target}"));
+        }
+        return Err(format!(
+            "target_session {target} could not be loaded: {error:#}"
+        ));
+    }
+    Ok(Some(target.to_string()))
+}
+
+/// Whether a session snapshot file is simply absent (vs present but
+/// unreadable/corrupt) so the caller-facing error can distinguish the two.
+fn target_file_missing(target: &str) -> bool {
+    !crate::platform::paths::sessions_root()
+        .join(format!("{target}.json"))
+        .is_file()
+}
+
+/// Kind allow-list: missing means an ordinary chat task; `memory_organize` is
+/// the only explicitly nameable kind. A `session_message` task is created by
+/// passing `target_session` (the kind is implied, never named) so the kind
+/// and its delivery target cannot drift apart. Same style as
+/// [`canonical_scheduled_mode`]: exact match after trimming, everything else
+/// is rejected.
 fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, String> {
     let Some(kind) = kind else {
         return Ok(None);
@@ -1443,8 +1632,12 @@ fn canonical_scheduled_kind(kind: Option<String>) -> Result<Option<String>, Stri
     let kind = kind.trim();
     match kind {
         SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => Ok(Some(kind.to_string())),
+        SCHEDULED_TASK_KIND_SESSION_MESSAGE => Err(
+            "pass target_session to create a scheduled-message task; the kind itself is implied"
+                .to_string(),
+        ),
         _ => Err(format!(
-            "Unsupported scheduled task kind '{kind}'; the only supported kind is 'memory_organize'"
+            "Unsupported scheduled task kind '{kind}'; supported: 'memory_organize', or pass target_session for a scheduled-message task"
         )),
     }
 }
@@ -2047,6 +2240,7 @@ mod tests {
             "automation-legacy".to_string(),
             ScheduledTaskKindEntry {
                 kind: "legacy_kind".to_string(),
+                target_session: None,
                 updated_at: "2026-01-01T00:00:00Z".to_string(),
             },
         );
@@ -2453,12 +2647,13 @@ mod tests {
                     scheduled_history_archive_path(),
                 )
                 .expect("history archive"),
-                operation_locks: ParkingMutex::new(HashMap::new()),
+                operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
                 pool: None,
                 fallback_model: "cascade-model".to_string(),
                 scheduler_cancel: None,
-                scheduler_handle: None,
-                retention_handle: None,
+                scheduler_handle: Arc::new(SyncMutex::new(None)),
+                retention_handle: Arc::new(SyncMutex::new(None)),
+                creation_watch: Arc::new(SyncMutex::new(None)),
             },
             task_manager,
             automation_id: automation.id,
@@ -2978,12 +3173,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -2999,6 +3195,7 @@ mod tests {
                 trust_mode: Some(false),
                 auto_approve: Some(false),
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create");
@@ -3059,12 +3256,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         // 无 cwds 的任务是一等公民并直接激活；工作间由 automation_id 自动分配。
@@ -3082,6 +3280,7 @@ mod tests {
                 trust_mode: Some(false),
                 auto_approve: Some(false),
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create without workspace");
@@ -3157,12 +3356,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         let created = state
@@ -3179,6 +3379,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create model-bound task");
@@ -3207,6 +3408,7 @@ mod tests {
                     trust_mode: None,
                     auto_approve: None,
                     paused: None,
+                    target_session: None,
                 },
             )
             .await
@@ -3293,12 +3495,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         // Junk kind: the rejection error matches the mode-check style, and nothing is
@@ -3317,6 +3520,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect_err("unknown kind must be rejected");
@@ -3351,6 +3555,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create memory organize task");
@@ -3445,12 +3650,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         let created = state
@@ -3467,6 +3673,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create task");
@@ -3551,12 +3758,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let expected_allow_shell = current_yolo_allow_shell();
 
@@ -3574,6 +3782,7 @@ mod tests {
                 trust_mode: Some(false),
                 auto_approve: Some(false),
                 paused: Some(true),
+                target_session: None,
             })
             .await
             .expect("create");
@@ -3587,6 +3796,7 @@ mod tests {
                     prompt: Some("检查夜间任务".to_string()),
                     rrule: Some("FREQ=HOURLY;INTERVAL=4".to_string()),
                     cwds: Some(vec!["/tmp/workspace-b".to_string()]),
+                    target_session: None,
                     model: None,
                     model_id: None,
                     mode: Some("yolo".to_string()),
@@ -3736,6 +3946,252 @@ mod tests {
         ]));
     }
 
+    /// Scheduled-message targets: an existing ordinary session lands the
+    /// `session_message` kind + delivery target in the sidecar and the DTO;
+    /// isolated prefixes, junk ids and unknown sessions are rejected. The
+    /// target session is a plain session JSON the store can load (same shape
+    /// the app persists).
+    #[tokio::test]
+    async fn session_message_target_validation_and_persistence() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let sessions = SessionStore::boot_for_process_startup().expect("sessions store");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(
+                AutomationManager::open(scheduled_automation_root()).expect("automations"),
+            )),
+            task_manager: None,
+            sessions: sessions.clone(),
+            read_state: ScheduledRunReadStore::open(
+                crate::platform::paths::scheduled_run_read_state_path(),
+            )
+            .expect("read state"),
+            model_bindings: ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+                .expect("model bindings"),
+            task_kinds: ScheduledTaskKindStore::open(scheduled_task_kinds_path())
+                .expect("task kinds"),
+            ui_metadata: ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+                .expect("ui metadata"),
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
+            pool: None,
+            fallback_model: "fallback-model".to_string(),
+            scheduler_cancel: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
+        };
+        let session_file = crate::platform::paths::sessions_root().join("target001.json");
+        std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
+        std::fs::write(
+            &session_file,
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+
+        // Isolated / junk / unknown targets are rejected before anything persists.
+        for (bad_target, expected) in [
+            ("sched-run1", "isolated or unattended"),
+            ("aux-side1", "isolated or unattended"),
+            ("eval_b1", "isolated or unattended"),
+            ("../escape", "invalid target_session"),
+            ("a".repeat(300).as_str(), "invalid target_session"),
+            ("no-such-target", "not found"),
+        ] {
+            let error = state
+                .create_for_test(CreateScheduledTaskInput {
+                    name: "定时询问".to_string(),
+                    prompt: "问一下进展".to_string(),
+                    rrule: "FREQ=HOURLY;INTERVAL=6".to_string(),
+                    cwds: Vec::new(),
+                    kind: None,
+                    target_session: Some(bad_target.to_string()),
+                    model: None,
+                    model_id: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    paused: Some(false),
+                })
+                .await
+                .expect_err("must reject");
+            assert!(
+                error.contains(expected),
+                "{bad_target}: expected a '{expected}' rejection, got: {error}"
+            );
+        }
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "no task may persist for a rejected target"
+        );
+
+        // A valid target lands kind + delivery target in the sidecar and DTO.
+        let created = state
+            .create_for_test(CreateScheduledTaskInput {
+                name: "定时询问".to_string(),
+                prompt: "问一下进展".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=6".to_string(),
+                cwds: Vec::new(),
+                kind: None,
+                target_session: Some("target001".to_string()),
+                model: None,
+                model_id: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(false),
+            })
+            .await
+            .expect("create");
+        assert_eq!(
+            created.kind.as_deref(),
+            Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE)
+        );
+        assert_eq!(created.target_session.as_deref(), Some("target001"));
+
+        // The kind is a one-time property: a chat task cannot gain a target.
+        let chat_task = state
+            .create_for_test(CreateScheduledTaskInput {
+                name: "普通任务".to_string(),
+                prompt: "建个对话干活".to_string(),
+                rrule: "FREQ=HOURLY;INTERVAL=6".to_string(),
+                cwds: Vec::new(),
+                kind: None,
+                target_session: None,
+                model: None,
+                model_id: None,
+                mode: None,
+                allow_shell: None,
+                trust_mode: None,
+                auto_approve: None,
+                paused: Some(true),
+            })
+            .await
+            .expect("create chat task");
+        let error = state
+            .update_for_test(
+                chat_task.id.clone(),
+                UpdateScheduledTaskInput {
+                    name: None,
+                    prompt: None,
+                    rrule: None,
+                    cwds: None,
+                    model: None,
+                    model_id: None,
+                    target_session: Some("target001".to_string()),
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    paused: None,
+                },
+            )
+            .await
+            .expect_err("conversion must be rejected");
+        assert!(error.contains("only scheduled-message tasks"), "{error}");
+
+        // The 32k message-body cap also guards the update path: a
+        // session-message task cannot persist a body the delivery belt would
+        // reject on every fire (same bound as create).
+        let oversized = state
+            .update_for_test(
+                created.id.clone(),
+                UpdateScheduledTaskInput {
+                    name: None,
+                    prompt: Some("x".repeat(SCHEDULED_MESSAGE_MAX_CHARS + 1)),
+                    rrule: None,
+                    cwds: None,
+                    model: None,
+                    model_id: None,
+                    target_session: None,
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    paused: None,
+                },
+            )
+            .await
+            .expect_err("oversized scheduled message must be rejected");
+        assert!(oversized.contains("character limit"), "{oversized}");
+
+        // Retargeting re-validates existence: an unknown target fails, a real
+        // one lands in the sidecar and the DTO.
+        let missing = state
+            .update_for_test(
+                created.id.clone(),
+                UpdateScheduledTaskInput {
+                    name: None,
+                    prompt: None,
+                    rrule: None,
+                    cwds: None,
+                    model: None,
+                    model_id: None,
+                    target_session: Some("target002".to_string()),
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    paused: None,
+                },
+            )
+            .await
+            .expect_err("unknown target must fail");
+        assert!(missing.contains("not found"), "{missing}");
+
+        std::fs::write(
+            crate::platform::paths::sessions_root().join("target002.json"),
+            std::fs::read_to_string(&session_file)
+                .unwrap()
+                .replace("target001", "target002"),
+        )
+        .unwrap();
+        let retargeted = state
+            .update_for_test(
+                created.id.clone(),
+                UpdateScheduledTaskInput {
+                    name: None,
+                    prompt: None,
+                    rrule: None,
+                    cwds: None,
+                    model: None,
+                    model_id: None,
+                    target_session: Some("target002".to_string()),
+                    mode: None,
+                    allow_shell: None,
+                    trust_mode: None,
+                    auto_approve: None,
+                    paused: None,
+                },
+            )
+            .await
+            .expect("retarget");
+        assert_eq!(retargeted.target_session.as_deref(), Some("target002"));
+
+        match &previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn forkguard_create_request_persists_model_and_global_yolo_permissions() {
         let request = build_create_request(
@@ -3745,6 +4201,7 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=1".to_string(),
                 cwds: Vec::new(),
                 kind: None,
+                target_session: None,
                 model: None,
                 model_id: None,
                 mode: Some("yolo".to_string()),
@@ -3803,12 +4260,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
 
         let error = state
@@ -3825,6 +4283,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect_err("planner is not a canonical scheduled mode");
@@ -3881,12 +4340,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -3902,6 +4362,7 @@ mod tests {
                 trust_mode: None,
                 auto_approve: None,
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create valid task");
@@ -3921,6 +4382,7 @@ mod tests {
                     trust_mode: None,
                     auto_approve: None,
                     paused: None,
+                    target_session: None,
                 },
             )
             .await
@@ -4288,12 +4750,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -4309,6 +4772,7 @@ mod tests {
                 trust_mode: Some(false),
                 auto_approve: Some(false),
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create task");
@@ -4376,12 +4840,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -4397,6 +4862,7 @@ mod tests {
                 trust_mode: Some(false),
                 auto_approve: Some(false),
                 paused: Some(false),
+                target_session: None,
             })
             .await
             .expect("create task");
@@ -4472,12 +4938,13 @@ mod tests {
             ui_metadata,
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         };
         let input = |kind: Option<String>| CreateScheduledTaskInput {
             name: "记忆整理".to_string(),
@@ -4485,6 +4952,7 @@ mod tests {
             rrule: "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=30".to_string(),
             cwds: vec![dir.join("workspace").to_string_lossy().into_owned()],
             kind,
+            target_session: None,
             model: None,
             model_id: None,
             mode: Some("yolo".to_string()),

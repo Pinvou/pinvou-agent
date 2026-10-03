@@ -610,7 +610,7 @@ pub fn install_mcp_secret_resolver() {
 /// plugins cannot be uninstalled or disabled — the attempt is rejected
 /// server-side (docs/builtin-toolset-contract.md §3.1) — so a missing
 /// BundleStore record only ever means "not seeded yet".
-pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader"];
+pub const DEFAULT_INSTALLED_MCP_TOOLS: &[&str] = &["session-reader", "app-automations"];
 
 /// 当前(plain)会话侧不可用包/native 工具 → 模型可见工具全名(喂给引擎
 /// disallowed_tools 的)。
@@ -5380,14 +5380,18 @@ mod tests {
                 variant.builtin,
                 "the folded membership probe must recognize the variant as builtin"
             );
+            // The catalog values track the builtin manifest's current shape:
+            // L1 + read/write since the cross-session messaging tool joined
+            // the family (the fake disk manifest's L2/evil.write must still
+            // never leak through).
             assert_eq!(
                 variant.security_level.as_deref(),
-                Some("L0"),
+                Some("L1"),
                 "audit values must come from the embedded catalog, not the disk manifest"
             );
             assert_eq!(
                 variant.data_access,
-                vec!["sessions.read".to_string()],
+                vec!["sessions.read".to_string(), "sessions.write".to_string()],
                 "data access must come from the embedded catalog"
             );
         });

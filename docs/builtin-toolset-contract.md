@@ -26,10 +26,14 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 1. **Unified toolset**: one capability family = one MCP server = one semantically
    coherent group of tools. Never create a parallel server or a loose single-tool
    plugin for an individual feature.
-2. **Current member registry**: `session-reader` (`server.py`, shipped as a
-   marketplace package with built-in registration in #585) is the carrier server
-   of the "session memory & reference" family. New members are registered in §9
-   of this document.
+2. **Current member registry**: `session-reader` (`server.py`, originally commit
+   `d93457d9a`) is the carrier server of the "session memory & reference" family.
+   `app-automations` (`server.py`, landed 2026-09, design
+   `docs/app-automations-定时任务创建工具-设计与验收.md`) is the carrier server of the
+   "scheduled task automation" family — a genuinely separate capability family
+   (future run-now / memory-tidy automation tools belong there), which is why it is
+   a second server rather than growth of session-reader.
+   New members are registered in §9 of this document.
 3. **Bundle built-in = bootstrap form**; the toolset's structure (manifest, tool list,
    enabled state) is organized to plugin-center listing standards; marketplace listing
    support follows separately.
@@ -96,8 +100,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   (settings.json / admin policy), never inside the plugin-center section.
 - **Shipped scope (this cycle)**: the deny/registry layer (layer 3), the
   per-turn inventory signal, and the server-side `feature_disabled` fallback.
-  Layers 1/2/4 arrive with the first feature's UI; until then the switch is
-  settings.json-only.
+  Layers 1/2/4 ship with the first feature (session mention: the gated @
+  group, the injection-block gate, and the historical-card degradation),
+  while the switch itself is still settings.json-only — the feature's own
+  settings UI is a later cycle.
 
 ## 4. Tool design rules
 
@@ -172,8 +178,50 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - **Write-semantics decision template**: when writing a message into a running session,
   the design must declare queue (wait for the current turn) vs steer (inject into the
   current turn); do not reinvent.
+- **Inter-session delivery semantics** (session-reader `send_message_to_session`,
+  landed 2026-09): a target that is mid-turn gets the message **steered** into its
+  current turn; an idle or not-yet-loaded target gets a **new turn dispatched
+  immediately** (the scheduled-task wake precedent — the receiving session's model
+  sees the message at once and may reply by calling the same tool). Delivery never
+  writes the target's session file directly: the MCP server validates and spools
+  (`~/.pinvou3/messaging/spool/<uuid>.json`), and an app-side Rust watcher performs
+  the steer/dispatch through the engine pool, so the persistence actor's
+  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  carries a machine-readable sender header block (the session-mention block pattern
+  mirrored on receive) that the timeline renders as a sender card and all three
+  auto-title paths strip.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
-  idempotency key or be naturally idempotent.
+  idempotency key or be naturally idempotent. `send_message_to_session` takes an
+  optional `idempotency_key` (requires `from_session`, so the namespace is
+  never global); the spool file is named by the sender+target-scoped sha256 of
+  `"<from_session>|<to_session>|<key>"`, so a retried call replaces its own
+  pending message and can never clobber another session's (transient delivery
+  failures retry with backoff; poison files are quarantined under
+  `messaging/spool/failed/`).
+- **Result-marker short synchronous wait** (app-automations
+  `create_scheduled_task`, landed 2026-09): an L1 spool-then-consume tool whose
+  result is quick to produce may close the loop for the model instead of always
+  answering "pending". The server polls a `.done/<spool-id>.json` result marker
+  written by the app-side watcher for a bounded window (5s, 0.2s interval);
+  marker hit → the created ids are returned so the model can confirm to the
+  user and the UI can link; timeout → an explicit `delivery:"pending"` payload
+  (never an error — the watcher may merely be busy). Constraints: the wait must
+  be short enough not to stall the model's turn; the marker namespace is keyed
+  by the spool file stem (the JSON `id` field is never trusted); a failed
+  creation writes `{ok:false,error}` so a waiting call receives the failure
+  instead of hanging.
+- **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
+  model-supplied and unauthenticated — the working gates are the app's
+  mutating-tool approval posture at call time and the watcher-side isolated
+  sender/target validation, plus the audit log; the registered typed Ask rule
+  is the enforcement point awaiting the approval-mode split, not the
+  `from_session` field; delivery is at-least-once (a crash between delivery and the done-marker write replays on
+  next boot); a steer accepted against a mid-turn target can still be dropped
+  by the foundation when that turn is cancelled (the `chat:steer_dropped`
+  window is not yet correlated); receive-side historical sender cards have no
+  "feature off" degradation yet and the `session-messaging` switch is
+  settings.json-only (no UI) — both follow the session-mention precedent and
+  land with the feature's own settings page.
 
 ## 7. Presentation to the model
 
@@ -207,11 +255,19 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 
 | Tool | Server | Level | Status |
 |---|---|---|---|
-| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (#585) |
-| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (#585) |
+| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
+| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| Inter-session messaging (`send_message_to_session`-like) | session-reader | L1 | not initiated; mind sched- ownership and queue/steer semantics in design |
-| Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; gated by the app's mutating-tool approval posture at call time + audit log; a typed execpolicy Ask rule is registered for the approval-mode split but does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
+| `create_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — session-domain writes stay in the session family, completing the delegation pair "create a session, then message it"; design `docs/session-reader-会话创建工具-设计与验收.md`. Same spool + app-side watcher + result-marker short-wait machinery as the app-automations family (watcher: features/session_creation/mod.rs); creation goes through the panel's own `create_session_record` semantics — app-default model and workspace unless `model_id`/`workspace_path` pin them, explicit title, **never `set_active`** (a tool-created session must not steal focus) — and `first_message` is delivered as the opening plain user turn via `deliver_messaging_turn`; defaults inherit the app's new-session config, never the calling session's runtime state; typed Ask rule registered + audit kinds `session_create`/`session_create_failed` + `session:list_changed` emit; sched-/eval_/aux- rejected as requesters (recursion shield)) |
+| `create_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; own family server per §2 — scheduling is an independent capability family; design `docs/app-automations-定时任务创建工具-设计与验收.md`. Spool + app-side watcher reusing the messaging skeleton; rrule restricted to the product subset HOURLY/WEEKLY/ONCE (CRON and minute-granular rejected at the tool layer — deliberately stricter than the domain parser); audit log + timeline result card; a typed execpolicy Ask rule is registered (the product currently approves every session full-auto, so it does not prompt yet — the panel and audit log are the review surface); the watcher rejects sched-/eval_/aux- senders (recursion shield)) |
+| `read_scheduled_task` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; full detail of one task by id, including the prompt — the pre-update inspection companion; ungated) |
+| `list_scheduled_tasks` | app-automations (marketplace package, built-in) | L0 | landed (2026-09; id/name/rrule/status/nextRunAt/model only — the prompt is never projected; de-dup companion of the create tool) |
+| `update_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; partial update by id — name/prompt/rrule/model_id/paused, or a `target_session` retarget for session-message tasks; same product-subset rrule gate and spool/watcher pipeline; typed Ask rule registered + audit with changed fields) |
+| `delete_scheduled_task` | app-automations (marketplace package, built-in) | L1 | landed (2026-09; destructive archive-then-delete through the panel's own delete pipeline, applied immediately; a typed Ask rule is registered but does not prompt under the current full-auto approval — the audit log and the panel are the review surface; audit kinds `scheduled_task_delete` / `scheduled_task_failed`) |
+| Scheduled messages (`session_message` kind) | app-automations (marketplace package, built-in) | L1 | landed (2026-09; a task kind, not new tools: `create_scheduled_task` with `target_session` delivers the prompt into that session on schedule; `update_scheduled_task` retargets an existing session-message task — steer into its current turn, or a new turn when idle, reusing features/messaging's delivery semantics. Isolated/unattended sessions (sched-/aux-/eval_) are rejected as targets in every layer — creation, watcher, and the delivery gate; waking an unattended session on a schedule is the recursion direction; the Ask rule, audit, and result-marker machinery are shared with the CRUD family) |
+
+Granularity note (§4.2 deviation, deliberate): the family ships five `verb_noun` tools instead of one mode-enum tool. The mode-enum preference optimizes against tool bloat, but here read and write carry different approval semantics — a mode-enum tool would either put every read behind the L1 Ask gate (nagging) or leave writes ungated. session-reader's landed shape (three tools at the time, now four with `create_session`) is the same trade-off; approval semantics, not resource identity, is what decides tool boundaries in this contract.
 
 ---
 

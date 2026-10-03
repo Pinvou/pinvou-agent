@@ -14,6 +14,14 @@ import {
 } from '../../shared/user-input-shared.js';
 import { useShellTaskCancel } from '../chat/shell-task-cancel.js';
 import { extractComputerUseScreenshotPath } from '../computer-use/computer-use-logic.js';
+import {
+  SCHEDULED_TASK_CREATE_TOOL,
+  SCHEDULED_TASK_DELETE_TOOL,
+  SCHEDULED_TASK_UPDATE_TOOL,
+  parseScheduledTaskToolOutput,
+  scheduledTaskPromptExcerpt,
+} from './scheduled-task-tool-logic.js';
+
 import { DiffView, GrepView, ListDirView, OutputError, OutputPre, ReceiptBlock, ShellTextView, ShellView, StockQuoteCard, TODO_TOOLS, TodoView, WeatherCard, isQuietTool, isReceipt, isStockQuoteTool, isWeatherTool, looksDiff, toolSummary, tryParseJson, tryTailJson, unwrapMcpTextEnvelope } from './tool-common.jsx';
 
 // P1-C：专家卡是桌面能力。Web 构建没有 multiAgent bridge（capability 关闭），
@@ -176,11 +184,55 @@ const ComputerUseScreenshotCard = ({ item, path, t }) => {
   );
 };
 
+/**
+ * app-automations result card (docs/builtin-toolset-contract.md §3.2
+ * execution visibility): the full draft of every L1 write (name/rrule/prompt
+ * excerpt) and the app-side outcome (created/updated/deleted/pending, or the
+ * recorded result of an idempotent replay) lands on the timeline; parse
+ * drift falls back to the default raw view.
+ */
+const SCHEDULED_TASK_TOOL_OPS = {
+  [SCHEDULED_TASK_CREATE_TOOL]: 'created',
+  [SCHEDULED_TASK_UPDATE_TOOL]: 'updated',
+  [SCHEDULED_TASK_DELETE_TOOL]: 'deleted',
+};
+const ScheduledTaskToolCard = ({ op, parsed, args, t }) => {
+  const copy = t.uiScheduledTaskTool;
+  const rrule = typeof args?.rrule === 'string' ? args.rrule.trim() : '';
+  const excerpt = scheduledTaskPromptExcerpt(args);
+  const doneLine = parsed.kind === 'pending' ? null : (
+    <div className={parsed.kind === 'deleted' ? 'text-[#C5221F] dark:text-[#F28B82]' : 'text-[#137333] dark:text-[#93D5A6]'}>
+      {copy[parsed.kind]}
+      {parsed.taskId ? <span className="ml-1 font-mono text-[11px] opacity-70">{parsed.taskId}</span> : null}
+    </div>
+  );
+  return (
+    <div data-testid="scheduled-task-tool-card" className="my-1 text-[12px] leading-relaxed">
+      {doneLine}
+      {parsed.kind === 'pending' ? <div className="text-[#757575] dark:text-[#8E8E8E]">{copy.pending}</div> : null}
+      {parsed.duplicate ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.duplicateNote}</div> : null}
+      {rrule ? <div className="mt-0.5 break-all font-mono text-[11px] text-[#757575] dark:text-[#8E8E8E]">{rrule}</div> : null}
+      {excerpt ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.promptLabel}: {excerpt}</div> : null}
+      {op === 'deleted' && parsed.kind !== 'pending'
+        ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.deletedNote}</div> : null}
+    </div>
+  );
+};
+
 // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool output view routing; splitting by tool has low payoff;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {
       const computerUseEnabled = useComputerUseToolCardEnabled();
       const out = item.output;
       if (item.success === false) return <OutputError text={out} />;
+      // app-automations result card: take over only on a parse hit; any
+      // structural drift falls back to the default raw view.
+      const scheduledTaskOp = SCHEDULED_TASK_TOOL_OPS[item.name];
+      if (scheduledTaskOp && item.state === 'done') {
+        const parsed = parseScheduledTaskToolOutput(out);
+        if (parsed) {
+          return <ScheduledTaskToolCard op={scheduledTaskOp} parsed={parsed} args={item.args} t={t} />;
+        }
+      }
       // computer_use: render the screenshot card when the output references
       // attachments/computer_use/*.png; with no screenshot or the feature off, fall back to
       // the default <OutputPre>.

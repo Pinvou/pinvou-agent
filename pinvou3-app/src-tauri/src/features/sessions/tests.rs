@@ -53,6 +53,10 @@ fn isolated_store() -> (SessionStore, TestHomeGuard) {
     // lock only serializes in-process) — a collision shares the dir, and
     // the other process's boot reconcile can reclaim this test's records.
     let tmp = std::env::temp_dir().join(format!(
+        // pid + in-process counter: paths::tests::ENV_LOCK doc warns nanos-only
+        // names can collide across two concurrent cargo test processes (the
+        // lock only serializes in-process) — a collision shares the dir, and
+        // the other process's boot reconcile can reclaim this test's records.
         "pinvou3-sessions-test-{}-{}",
         std::process::id(),
         paths::tests::unique_suffix()

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -176,8 +177,9 @@ def main():
         "wecom-bot",
         "tencent-docs",
         "session-reader",
+        "app-automations",
     }
-    print("✅ manifest: 12 个可安装 MCP 清单完整且目录 ID 一致")
+    print("✅ manifest: 13 个可安装 MCP 清单完整且目录 ID 一致")
 
     expected = {
         "weather": {"get_weather"},
@@ -191,7 +193,11 @@ def main():
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
-        "session-reader": {"read_session", "list_sessions"},
+        "session-reader": {"read_session", "list_sessions", "send_message_to_session", "create_session"},
+        "app-automations": {
+            "create_scheduled_task", "read_scheduled_task", "list_scheduled_tasks",
+            "update_scheduled_task", "delete_scheduled_task",
+        },
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
@@ -226,6 +232,204 @@ def main():
             deleted = content_json(rpc.call("tools/call", {"name": "delete_note", "arguments": {"path": "测试/自动化", "confirm": True}}))
             assert deleted.get("type") == "obsidian_deleted" and not Path(vault, "测试", "自动化.md").exists()
     print("✅ obsidian: 创建/读取/搜索/人在环删除全旅程")
+
+    with tempfile.TemporaryDirectory(prefix="pinvou-session-reader-send-") as home:
+        sessions = Path(home, "sessions")
+        sessions.mkdir(parents=True)
+        for sid, title in (("src0001", "源会话"), ("tgt0001", "目标会话")):
+            (sessions / f"{sid}.json").write_text(json.dumps({
+                "metadata": {"id": sid, "title": title, "updated_at": "2026-09-28T00:00:00Z", "message_count": 1},
+                "messages": [],
+            }, ensure_ascii=False), encoding="utf-8")
+        with RpcServer(MCP_ROOT / "session-reader", {"PINVOU3_HOME": home}) as rpc:
+            sent = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "tgt0001", "text": "跨会话交接", "from_session": "src0001", "idempotency_key": "k1"},
+            }))
+            assert sent.get("delivery") == "pending" and sent.get("toSession") == "tgt0001", sent
+            duplicate = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "tgt0001", "text": "跨会话交接", "from_session": "src0001", "idempotency_key": "k1"},
+            }))
+            assert duplicate.get("duplicate") is True, duplicate
+            spooled = sorted(Path(home, "messaging", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            record = json.loads(spooled[0].read_text(encoding="utf-8"))
+            assert record["to_session"] == "tgt0001" and record["from_session"] == "src0001", record
+            assert record["from_title"] == "源会话" and record["text"] == "跨会话交接", record
+            isolated = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "sched-run1", "text": "hi"},
+            }))
+            assert "not readable" in isolated.get("error", ""), isolated
+            # create_session：隔离前缀请求者拒绝 + 无 watcher 短等待超时回 pending
+            # + spool 落盘 + 同幂等键重试 duplicate。
+            rejected = content_json(rpc.call("tools/call", {
+                "name": "create_session",
+                "arguments": {"title": "早报", "from_session": "sched-run1"},
+            }))
+            assert "cannot request session creation" in rejected.get("error", ""), rejected
+            pending = content_json(rpc.call("tools/call", {
+                "name": "create_session",
+                "arguments": {
+                    "title": "重构会话", "first_message": "重构解析器",
+                    "from_session": "src0001", "idempotency_key": "k1",
+                },
+            }))
+            assert pending.get("ok") is True and pending.get("sessionId") is None, pending
+            assert pending.get("delivery") == "pending", pending
+            spooled = sorted(Path(home, "session-requests", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            record = json.loads(spooled[0].read_text(encoding="utf-8"))
+            assert record["title"] == "重构会话" and record["first_message"] == "重构解析器", record
+            duplicate = content_json(rpc.call("tools/call", {
+                "name": "create_session",
+                "arguments": {
+                    "title": "重构会话", "first_message": "重构解析器",
+                    "from_session": "src0001", "idempotency_key": "k1",
+                },
+            }))
+            assert duplicate.get("duplicate") is True, duplicate
+    print("✅ session-reader: 跨会话消息/会话创建校验/幂等/隔离前缀全旅程")
+
+    with tempfile.TemporaryDirectory(prefix="pinvou-app-automations-") as home:
+        # A plain session file for the scheduled-message target check.
+        Path(home, "sessions").mkdir(parents=True)
+        Path(home, "sessions", "tgt0001.json").write_text(
+            json.dumps({"metadata": {"id": "tgt0001", "title": "目标"}, "messages": []}),
+            encoding="utf-8",
+        )
+        with RpcServer(MCP_ROOT / "app-automations", {"PINVOU3_HOME": home}) as rpc:
+            # CRON/分钟级是产品子集外的硬拒（B2/B3）。
+            cron = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {"name": "x", "prompt": "y", "rrule": "FREQ=CRON;EXPR=*/5 * * * *"},
+            }))
+            assert "CRON" in cron.get("error", ""), cron
+            # 无 watcher：短等待超时回 pending（A3），spool 留存（C3 重启恢复前置）。
+            pending = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "早报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
+                    "idempotency_key": "k1",
+                },
+            }))
+            assert pending.get("ok") is True and pending.get("taskId") is None, pending
+            assert pending.get("delivery") == "pending", pending
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            record = json.loads(spooled[0].read_text(encoding="utf-8"))
+            assert record["rrule"].startswith("FREQ=WEEKLY;") and record["schema_version"] == 1, record
+            # 同幂等键重试：同一 spool 文件、duplicate 标记（C1）。
+            duplicate = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "早报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
+                    "idempotency_key": "k1",
+                },
+            }))
+            assert duplicate.get("duplicate") is True, duplicate
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            # 模拟应用侧 watcher（features/scheduled/creation_requests）：持续排水，
+            # 逐条写结果标记并删 spool——积压的 k1 请求与在途请求都拿到同步回执
+            # （A2 短等待同步返回 + C3 积压恢复）。
+            import threading as _threading
+
+            stop = _threading.Event()
+
+            def watcher():
+                while not stop.is_set():
+                    for path in sorted(Path(home, "task-requests", "spool").glob("*.json")):
+                        try:
+                            request = json.loads(path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            continue
+                        spool_id = path.stem
+                        done_dir = Path(home, "task-requests", "spool", ".done")
+                        done_dir.mkdir(parents=True, exist_ok=True)
+                        (done_dir / f"{spool_id}.json").write_text(json.dumps({
+                            "ok": True,
+                            "task_id": "sim-%s" % spool_id[:8],
+                            "task_name": request.get("name"),
+                        }, ensure_ascii=False), encoding="utf-8")
+                        path.unlink()
+                    time.sleep(0.05)
+
+            _threading.Thread(target=watcher, daemon=True).start()
+            confirmed = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "晚报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=HOURLY;INTERVAL=6;BYHOUR=20;BYMINUTE=30",
+                },
+            }))
+            assert confirmed.get("ok") is True, confirmed
+            assert confirmed.get("taskId", "").startswith("sim-"), confirmed
+            assert confirmed.get("taskName") == "晚报", confirmed
+            assert confirmed.get("duplicate") is False, confirmed
+            stop.set()
+            # 积压与在途都被排水，spool 清空、.done 留有两条标记。
+            assert not list(Path(home, "task-requests", "spool").glob("*.json"))
+            assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
+            # Scheduled-message mode: isolated targets are hard-rejected
+            # (self-wake = the recursion direction); a valid target carries
+            # target_session into the spool record.
+            isolated = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "自唤醒", "prompt": "x", "rrule": "FREQ=ONCE;AT=2099-06-01T09:30",
+                    "target_session": "sched-run1",
+                },
+            }))
+            assert "isolated" in isolated.get("error", ""), isolated
+            timeout2 = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "定时询问", "prompt": "问一下进展",
+                    "rrule": "FREQ=HOURLY;INTERVAL=6",
+                    "target_session": "tgt0001",
+                },
+            }))
+            assert timeout2.get("delivery") == "pending", timeout2
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            targets = []
+            for path in spooled:
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if record.get("target_session"):
+                    targets.append(record["target_session"])
+            assert targets == ["tgt0001"], (spooled, targets)
+            # list：只投影安全字段，绝不带 prompt（§3.1）；watcher 未真建任务，store 为空。
+            listed = content_json(rpc.call("tools/call", {"name": "list_scheduled_tasks"}))
+            assert listed.get("ok") is True and listed.get("total") == 0, listed
+            # 读详情：未知 id 显式 not found（I3）；update/delete 校验路径（I4/I5）。
+            missing = content_json(rpc.call("tools/call", {
+                "name": "read_scheduled_task", "arguments": {"task_id": "nosuch"},
+            }))
+            assert "not found" in missing.get("error", ""), missing
+            no_fields = content_json(rpc.call("tools/call", {
+                "name": "update_scheduled_task", "arguments": {"task_id": "nosuch"},
+            }))
+            assert "at least one field" in no_fields.get("error", ""), no_fields
+            bad_target = content_json(rpc.call("tools/call", {
+                "name": "update_scheduled_task",
+                "arguments": {"task_id": "nosuch", "name": "x"},
+            }))
+            assert "not found" in bad_target.get("error", ""), bad_target
+            no_target = content_json(rpc.call("tools/call", {
+                "name": "delete_scheduled_task", "arguments": {},
+            }))
+            assert "invalid task_id" in no_target.get("error", ""), no_target
+            extra = content_json(rpc.call("tools/call", {
+                "name": "delete_scheduled_task",
+                "arguments": {"task_id": "nosuch", "name": "x"},
+            }))
+            assert "no extra fields" in extra.get("error", ""), extra
+    print("✅ app-automations: rrule 子集硬拒/幂等/短等待同步返回/CRUD 校验全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-artifacts-") as artifacts:
         env = {"PINVOU3_SESSION_ARTIFACTS": artifacts}
