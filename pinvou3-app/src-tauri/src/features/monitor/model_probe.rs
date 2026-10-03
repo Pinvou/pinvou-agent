@@ -788,7 +788,7 @@ pub async fn resolve_served_model(
 /// (vLLM, whose name is usually corrected to the entry itself) may always
 /// adopt; routes that do not rename adopt only when the configured name
 /// exactly hits the list, or its Ollama canonical form does
-/// ([`ollama_canonical_name`]: a hand-typed tagless name on a
+/// (`ollama_canonical_name`: a hand-typed tagless name on a
 /// single-entry Ollama roster *is* the listed model under Ollama's
 /// `name:latest` canonicalization, not a borrowed one — without the fold
 /// the whole native adoption is skipped there and the 8192-fallback
