@@ -135,7 +135,7 @@ fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> 
         };
     }
     let payload = serde_json::to_vec_pretty(map).context("序列化回退备份失败")?;
-    deepseek_tui::utils::write_atomic(&path, &payload)
+    crate::platform::filesystem::atomic_write_private(&path, &payload)
         .with_context(|| format!("写入回退备份失败: {}", path.display()))
 }
 

@@ -62,15 +62,16 @@ pub(crate) fn mcp_json_lock() -> MutexGuard<'static, ()> {
 
 /// 把 JSON 值以 pretty 形式写盘(迁移与 connector 注册共用)。
 /// 写前创建父目录：全新 PINVOU3_HOME 下 `bundle/` 尚不存在，直接写会 ENOENT。
-/// tmp + rename 原子落盘（底座 `write_atomic`，与 store.rs 同一做法）——安装
-/// 中途崩溃不得留下半写的 mcp.json（幽灵 server，四轮评审 M-8）。
+/// tmp + rename 原子落盘（`platform::filesystem::atomic_write_private`，与
+/// store.rs 同一做法）——安装中途崩溃不得留下半写的 mcp.json（幽灵 server，
+/// 四轮评审 M-8）。
 pub(crate) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-    deepseek_tui::utils::write_atomic(path, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(path, json.as_bytes())
         .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 

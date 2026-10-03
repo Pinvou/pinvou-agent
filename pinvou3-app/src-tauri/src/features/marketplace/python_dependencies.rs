@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use crate::platform::hashing::sha256_file;
@@ -534,7 +535,7 @@ fn write_repair_cooldown(entries: &std::collections::HashMap<String, u64>) {
     }
     match serde_json::to_vec(entries) {
         Ok(bytes) => {
-            if let Err(error) = deepseek_tui::utils::write_atomic(&path, &bytes) {
+            if let Err(error) = crate::platform::filesystem::atomic_write_private(&path, &bytes) {
                 log::warn!("[marketplace] failed to persist Python repair cooldown state: {error}");
             }
         }
