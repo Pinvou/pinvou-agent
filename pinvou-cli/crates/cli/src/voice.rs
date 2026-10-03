@@ -14,8 +14,7 @@
 //!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
 //!   "no speech" convention.
 //! - the app verifies downloaded models by size **and** sha256; the CLI
-//!   mirrors both (sha256 through the shared
-//!   `platform::connector_lock::file_sha256_hex`).
+//!   mirrors both (sha256 through the shared `platform::sha256_file`).
 //! - the app's transcript parser (`features::voice::transcript`) is shared
 //!   verbatim: the CLI calls `parse_asr_transcript` so engine protocols and
 //!   noise filters cannot drift between the two surfaces.
@@ -1026,7 +1025,20 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
         })?;
     let result = (|| -> Result<(), CliError> {
         use std::io::Read as _;
-        let mut file = std::fs::File::create(&part).map_err(|error| {
+        // `create_new`, not `create`: `File::create` follows a symlink
+        // pre-planted at the fully predictable `.part` name and would
+        // truncate its target, then publish the renamed symlink — the
+        // exclusive reservation `write_temp_wav` below already uses for the
+        // same reason. 0600 at create, matching the module's staged-file
+        // convention (the mode must be set on the SAME open, not after).
+        let mut open_options = std::fs::OpenOptions::new();
+        open_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            open_options.mode(0o600);
+        }
+        let mut file = open_options.open(&part).map_err(|error| {
             CliError::failed(format!("voice asr-install: {}: {error}", part.display()))
         })?;
         let mut reader = response.take(MAX_DOWNLOAD_BYTES + 1);
