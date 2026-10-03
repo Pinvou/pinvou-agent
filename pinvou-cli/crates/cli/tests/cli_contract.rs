@@ -566,7 +566,8 @@ fn output_without_value_points_at_destination() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert_eq!(
         error.to_string(),
-        "--output requires human or json (submission files use --destination)"
+        "--output requires human or json (subcommands that export to a file take \
+         `--output PATH` instead — see their usage line)"
     );
 }
 

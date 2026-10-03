@@ -597,8 +597,8 @@ fn external_asr_command() -> Option<PathBuf> {
         "PADDLESPEECH_BIN",
     ] {
         if let Ok(path) = std::env::var(name) {
-            // Mirror `asr_tool_exists` exactly (`platform/*/asr_tool_path`
-            // availability): a configured value counts when it exists as a
+            // Availability parity with `asr_tool_exists` (`platform/*/
+            // asr_tool_path`): a configured value counts when it exists as a
             // file OR resolves on PATH as a bare name — the app's probe
             // accepts both shapes, and the spawn side drives bare names
             // through `build_command`. A file-only probe here would strand
@@ -606,6 +606,13 @@ fn external_asr_command() -> Option<PathBuf> {
             // the remediation note tells the user to set the variable they
             // already set. Anything unresolvable stays unconfigured, so
             // asr-status still refuses to report ready for a missing tool.
+            // One disclosed deviation from the app's first-non-empty rule:
+            // an unresolvable variable here falls through to the NEXT
+            // candidate instead of ending the search (the app tests only
+            // the first non-empty var, then the managed engine). This side
+            // is the more permissive one — it can never strand a working
+            // tool — but a broken first var with a valid second one answers
+            // "configured" here and "missing" in the GUI.
             if !path.trim().is_empty() {
                 let configured = PathBuf::from(path.trim());
                 if configured.is_file() || command_exists(&configured) {

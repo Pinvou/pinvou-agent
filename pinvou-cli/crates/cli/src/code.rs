@@ -1501,6 +1501,11 @@ fn command_output_with_timeout(
     // is never left registered for the OS to recycle onto an unrelated
     // process.
     let mut child = crate::support::supervise::spawn_supervised(&mut command)?;
+    // Drop covers every exit below (the kill arms kill BEFORE the drop's
+    // forget), so a panic can no longer leave the group registered. The
+    // underscore-prefixed binding keeps the guard alive to scope end — a
+    // bare `let _` would drop (and forget) immediately.
+    let _group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout = child.stdout.take();
     // The reader hands its buffer back through a channel so the wait stays
     // bounded: a vendor CLI's grandchild can inherit the pipe and outlive
@@ -1519,7 +1524,6 @@ fn command_output_with_timeout(
                 // Straggler descendants are deliberately left alone: killing
                 // a reaped child's group would race pid reuse, and this
                 // one-shot process exits right after the probe anyway.
-                crate::support::supervise::forget_child_group(child.id());
                 let text = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
                 return Ok(Some((status.success(), text.trim().to_string())));
             }
@@ -1529,7 +1533,6 @@ fn command_output_with_timeout(
                 // into `Ok(None)` misreported the enum (the JSON verdict is
                 // the same either way, the classification was not).
                 crate::support::kill_process_tree(&mut child);
-                crate::support::supervise::forget_child_group(child.id());
                 return Err(error);
             }
         }
@@ -1538,7 +1541,6 @@ fn command_output_with_timeout(
             // descendants; every other spawn site goes through the tree kill.
             crate::support::kill_process_tree(&mut child);
             let _ = child.wait();
-            crate::support::supervise::forget_child_group(child.id());
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -1958,7 +1960,7 @@ fn probe_all_agents() -> Vec<AgentProbe> {
         .map(|descriptor| {
             let handle = std::thread::Builder::new()
                 .name(format!("agent-probe-{}", descriptor.agent_id))
-                .spawn(move || probe_agent(descriptor.agent_id.clone(), descriptor.agent_name))
+                .spawn(move || probe_agent(descriptor.agent_id, descriptor.agent_name))
                 .expect("spawn agent probe thread");
             (descriptor, handle)
         })
@@ -2516,6 +2518,10 @@ fn login(
     let mut child = crate::support::supervise::spawn_supervised(&mut command).map_err(|error| {
         CliError::failed(format!("code login({agent}): cannot spawn CLI: {error}"))
     })?;
+    // Drop covers every exit the explicit pairs below miss (including a
+    // panic mid-lane); the wait-error arm kills BEFORE the drop's forget,
+    // and the pre-grace release below stays explicitly ordered.
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     // The drains report through a channel instead of join handles: a
@@ -2647,7 +2653,6 @@ fn login(
                 // The wait itself failed; the child may still be running, so
                 // it goes down with the group like every other exit path.
                 crate::support::kill_process_tree(&mut child);
-                crate::support::supervise::forget_child_group(child.id());
                 return Err(CliError::failed(format!("code login({agent}): {error}")));
             }
         }
@@ -2712,7 +2717,7 @@ fn login(
     // the registration is released BEFORE the drain grace, which can hold
     // for seconds — an interrupt in that window must not forward-signal a
     // pgid the OS may already have recycled.
-    crate::support::supervise::forget_child_group(child.id());
+    group.release();
     let grace = Instant::now() + Duration::from_secs(5);
     while finished_streams < 2 {
         let remaining = grace.saturating_duration_since(Instant::now());
@@ -2882,13 +2887,15 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
         .stderr(std::process::Stdio::null());
     let mut child = crate::support::supervise::spawn_supervised(&mut command)
         .map_err(|error| CliError::failed(format!("code logout({agent}): {error}")))?;
+    // Drop covers every exit below (the kill arms kill BEFORE the drop's
+    // forget), so the pairing survives a panic mid-lane too.
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     let status = match child.wait_timeout(Duration::from_secs(LOGOUT_TIMEOUT_SECS)) {
         Ok(status) => status,
         Err(error) => {
             // The wait itself failed; the child may still be running, so it
             // goes down with the group like every other exit path.
             crate::support::kill_process_tree(&mut child);
-            crate::support::supervise::forget_child_group(child.id());
             return Err(CliError::failed(format!("code logout({agent}): {error}")));
         }
     };
@@ -2896,7 +2903,6 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
         // `kill_process_tree` signals the group and then reaps the child
         // itself, so no zombie survives this path.
         crate::support::kill_process_tree(&mut child);
-        crate::support::supervise::forget_child_group(child.id());
         return Err(CliError::failed(format!(
             "code_logout_failed: {agent} logout did not finish within \
              {LOGOUT_TIMEOUT_SECS}s (killed)"
@@ -2904,7 +2910,7 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
     };
     // The child has exited and the wait has reaped it, so an interrupt from
     // here on must not signal a group the OS may have already recycled.
-    crate::support::supervise::forget_child_group(child.id());
+    group.release();
     if !status.success() {
         return Err(CliError::failed(format!(
             "code_logout_failed: {agent} logout command exited with {}",
@@ -4418,7 +4424,8 @@ struct GitCapture {
 /// Supervised bounded capture for the non-diff git lanes — the same
 /// process-group supervision every vendor child in this CLI runs under:
 /// `set_process_group` + `spawn_supervised` (which closes the spawn→register
-/// window) with a paired `forget_child_group` on every exit, so an interrupt
+/// window) with a `GroupGuard` pairing the forget on every exit — including
+/// unwind — so an interrupt
 /// that targets the CLI alone (CI timeout, process manager, `kill $pid`)
 /// takes in-flight git — and any user hook it is running on the real working
 /// tree — down with it instead of orphaning it. A wait error kills too: the
@@ -4466,6 +4473,10 @@ fn run_git_captured_capped(
             arguments.join(" ")
         ))
     })?;
+    // Drop pairs the forget on every exit (the kill arm kills BEFORE the
+    // drop's forget), so the registration cannot outlive the call even on a
+    // panic between the pipes.
+    let _group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout_pipe = child.stdout.take().expect("git stdout is piped");
     let stderr_pipe = child.stderr.take().expect("git stderr is piped");
     let stderr_thread = std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
@@ -4477,16 +4488,12 @@ fn run_git_captured_capped(
             // Fate unknown: down with the group, like every wait-error path
             // (the child was never reaped by us, so the kill is safe).
             crate::support::kill_process_tree(&mut child);
-            crate::support::supervise::forget_child_group(child.id());
             return Err(CliError::failed(format!(
                 "code workspace: git {}: {error}",
                 arguments.join(" ")
             )));
         }
     };
-    // Reaped by the wait (or the kill above reaps before forgetting), so the
-    // registration must not outlive this call.
-    crate::support::supervise::forget_child_group(child.id());
     Ok((status, stdout_bytes, stderr_bytes, stdout_total))
 }
 

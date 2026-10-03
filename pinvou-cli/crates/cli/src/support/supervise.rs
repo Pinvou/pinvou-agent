@@ -162,10 +162,10 @@ pub fn park_while_interrupt_cleanup_concludes() {
 ///
 /// DISCIPLINE: registration is automatic inside [`spawn_supervised`], but
 /// the release half is per-site — a missed `forget` leaves a stale pgid the
-/// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Every
-/// current site pairs the forget on all exits (several via RAII guards);
-/// keep it that way, or give the registry a shared RAII handle instead of
-/// a new manual pair.
+/// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Prefer the
+/// RAII [`GroupGuard`] over a new manual pair: the manual pairs answer the
+/// ordinary return paths only, and a panic between spawn and the paired
+/// forget used to leave the group registered.
 pub fn forget_child_group(pgid: u32) {
     #[cfg(unix)]
     {
@@ -174,6 +174,41 @@ pub fn forget_child_group(pgid: u32) {
     #[cfg(not(unix))]
     {
         let _ = pgid;
+    }
+}
+
+/// RAII handle over one registered child group: releases the registration on
+/// drop, so every exit — ordinary return AND unwind — is paired, and a panic
+/// between spawn and the explicit forget cannot leave the pgid registered
+/// for the OS to recycle onto an unrelated process. Sites that must release
+/// EARLY (before a drain grace, so an interrupt inside the grace window
+/// cannot forward-signal a recycled pgid) call [`GroupGuard::release`]
+/// explicitly; every other exit forgets at scope end, after whatever kill
+/// the arm performed.
+pub(crate) struct GroupGuard {
+    pgid: u32,
+    armed: bool,
+}
+
+impl GroupGuard {
+    /// Wrap a pgid that `spawn_supervised` just registered.
+    pub(crate) fn arm(pgid: u32) -> Self {
+        Self { pgid, armed: true }
+    }
+
+    /// Immediate paired release — the reaped-or-dead case where the forget
+    /// must happen NOW rather than at scope end.
+    pub(crate) fn release(mut self) {
+        self.armed = false;
+        forget_child_group(self.pgid);
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            forget_child_group(self.pgid);
+        }
     }
 }
 
