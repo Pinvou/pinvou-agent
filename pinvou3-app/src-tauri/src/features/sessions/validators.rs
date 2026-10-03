@@ -14,12 +14,18 @@ use deepseek_tui::session_manager::SessionManager;
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
 pub(crate) fn validate_session_id(id: &str) -> Result<()> {
+    validate_id_charset(id, "session")
+}
+
+/// The URL-safe charset check shared by every id kind in this store: non-empty
+/// and `[A-Za-z0-9_-]` only (ids resolve to filenames, so no separators).
+fn validate_id_charset(id: &str, kind: &str) -> Result<()> {
     if id.trim().is_empty()
         || !id.chars().all(|character| {
             character.is_ascii_alphanumeric() || character == '-' || character == '_'
         })
     {
-        bail!("Invalid session id '{id}'");
+        bail!("Invalid {kind} id '{id}'");
     }
     Ok(())
 }
@@ -80,14 +86,7 @@ pub(crate) fn is_sched_session_id(id: &str) -> bool {
 }
 
 pub(crate) fn validate_scheduled_task_id(id: &str) -> Result<()> {
-    if id.trim().is_empty()
-        || !id.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '-' || character == '_'
-        })
-    {
-        bail!("Invalid scheduled task id '{id}'");
-    }
-    Ok(())
+    validate_id_charset(id, "scheduled task")
 }
 
 pub(crate) fn validate_scheduled_workspace_path(root: &Path, workspace: &Path) -> Result<()> {
@@ -187,4 +186,33 @@ pub(crate) fn generate_session_id() -> String {
         n /= 36;
     }
     buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_scheduled_task_id, validate_session_id};
+
+    /// Pins the two public error messages byte-for-byte: the shared charset
+    /// helper interpolates the id kind, and callers surface these strings.
+    #[test]
+    fn id_charset_rejects_bad_ids_with_kind_verbatim_messages() {
+        assert_eq!(
+            validate_session_id("../escape").unwrap_err().to_string(),
+            "Invalid session id '../escape'"
+        );
+        assert_eq!(
+            validate_scheduled_task_id("has space")
+                .unwrap_err()
+                .to_string(),
+            "Invalid scheduled task id 'has space'"
+        );
+    }
+
+    #[test]
+    fn id_charset_accepts_url_safe_and_rejects_blank_ids() {
+        assert!(validate_session_id("Ab_09-z").is_ok());
+        assert!(validate_scheduled_task_id("task_1").is_ok());
+        assert!(validate_session_id("   ").is_err());
+        assert!(validate_scheduled_task_id("").is_err());
+    }
 }
