@@ -117,11 +117,12 @@ pub(crate) fn organize_lock_path() -> PathBuf {
 /// is running" from real lock failures.
 /// Cross-surface busy marker: carried in the anyhow message
 /// `organize_memory_with_llm` fails with while `.organize.lock` is held, so
-/// the CLI (`pinvou memory organize`) and the scheduled lane can map the
-/// feature-layer lock contention onto their documented `*_organize_busy`
-/// refusals by value instead of a duplicated literal. `pub` (not
-/// `pub(crate)`) exactly for that consumer; the GUI itself never matches on
-/// the text.
+/// the CLI (`pinvou memory organize`) can map the feature-layer lock
+/// contention onto its documented `memory_organize_busy` refusal by value
+/// instead of a duplicated literal. `pub` (not `pub(crate)`) exactly for
+/// that consumer; the GUI and the scheduled lane never match on the text
+/// (a scheduled organize records the busy failure as an ordinary failed
+/// run, with the message preserved in the run record).
 pub const ORGANIZE_LOCK_BUSY: &str = "another organize pass is already running";
 
 /// Guard for an acquired organize pass lock. `Drop` releases the OS advisory

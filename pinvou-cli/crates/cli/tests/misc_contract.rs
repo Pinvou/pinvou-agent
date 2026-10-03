@@ -8,10 +8,11 @@
 //! `files ingest` additionally stages its fixture under `$HOME` because the
 //! feature's upload-location policy (validate_path) requires it.
 //!
-//! Paths that need a display host (`monitor status|snapshot`, `voice
-//! postprocess`), a model endpoint, a local ASR engine, or a system package
-//! manager are `#[ignore]` opt-in tests; each names its opt-in command in a
-//! comment.
+//! Paths that need a display host (`voice postprocess`), a model endpoint,
+//! a local ASR engine, GPU probing, or a system package manager are
+//! `#[ignore]` opt-in tests; each names its opt-in command in a comment.
+//! (`monitor status|snapshot` run on `run_bare_host` — no display — but
+//! still probe a live endpoint/GPU, so they stay opt-in.)
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -1815,9 +1816,9 @@ fn monitor_rejects_invalid_usage_with_exit_two() {
     }
 }
 
-/// OPT-IN: `monitor status` boots the windowless host (display required) and
-/// probes the configured model endpoint; without a model it must report a
-/// clean offline zero state. Run with: cargo test -p pinvou-cli --test
+/// OPT-IN: `monitor status` (run_bare_host — no display needed) probes the
+/// configured model endpoint; without a model it must report a clean offline
+/// zero state. Run with: cargo test -p pinvou-cli --test
 /// misc_contract -- --ignored monitor_status
 ///
 /// Only the *probe* needs the opt-in. The stable-shape guard this test used to
@@ -1827,7 +1828,7 @@ fn monitor_rejects_invalid_usage_with_exit_two() {
 /// drifts out of shape fails on every run instead of only when someone
 /// remembers `--ignored` on a machine with a display.
 #[test]
-#[ignore = "needs display host + model endpoint probe: cargo test --test misc_contract -- --ignored"]
+#[ignore = "needs a model endpoint probe: cargo test --test misc_contract -- --ignored"]
 fn monitor_status_reports_clean_zero_state_without_a_model() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("monitor-status");
@@ -1887,12 +1888,12 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
     );
 }
 
-/// OPT-IN: `monitor snapshot` boots the windowless host (display required),
-/// queries nvidia-smi/local resources and probes the model endpoint.
+/// OPT-IN: `monitor snapshot` (run_bare_host — no display needed) queries
+/// nvidia-smi/local resources and probes the model endpoint.
 /// Run with: cargo test -p pinvou-cli --test misc_contract -- --ignored
 ///   monitor_snapshot
 #[test]
-#[ignore = "needs display host + GPU/endpoint probing: cargo test --test misc_contract -- --ignored"]
+#[ignore = "needs GPU/endpoint probing: cargo test --test misc_contract -- --ignored"]
 fn monitor_snapshot_produces_a_one_shot_sample() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("monitor-snapshot");

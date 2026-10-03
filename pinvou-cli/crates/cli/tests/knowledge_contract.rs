@@ -2022,7 +2022,8 @@ fn remote_connections_answer_offline_without_configured_servers() {
 
 #[test]
 #[ignore = "opt-in: cargo test -p pinvou-cli --test knowledge_contract -- --ignored — \
-           boots the windowless product host (needs a display/xvfb); \
+           dials the local shared-knowledge-host endpoint (run_bare_host: no \
+           display needed, but the endpoint must be up); \
            command: pinvou knowledge host status"]
 fn host_status_reports_the_shared_host_snapshot() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2038,8 +2039,8 @@ fn host_status_reports_the_shared_host_snapshot() {
 
 #[test]
 #[ignore = "opt-in: cargo test -p pinvou-cli --test knowledge_contract -- --ignored — \
-           boots the windowless product host (needs a display/xvfb) and dials the \
-           endpoint; command: pinvou knowledge remote probe <url>"]
+           dials a real endpoint over the network (run_bare_host: no display \
+           needed); command: pinvou knowledge remote probe <url>"]
 fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::new("remote-probe-dead");
@@ -2057,7 +2058,8 @@ fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
 }
 
 #[test]
-#[ignore = "opt-in: needs a display (windowless host boot) plus real network; \
+#[ignore = "opt-in: needs a configured remote endpoint and real network \
+            (run_bare_host: no display needed); \
             command: pinvou knowledge remote connections (configured server)"]
 fn remote_connections_probe_a_configured_server() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
