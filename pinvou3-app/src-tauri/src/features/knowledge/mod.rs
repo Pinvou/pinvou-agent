@@ -810,15 +810,19 @@ pub fn model_dir() -> PathBuf {
 ///
 /// A distinct phase instead of reusing done/cancelled: the scan neither
 /// finished (`last_scan_finished_at` is not recorded, so the next visit still
-/// treats it as never-scanned; the in-memory finished_at only records the
-/// moment of the abort) nor was it user-cancelled. The frontend refreshes L0
-/// only on `done`, so `interrupted` cannot be mistaken for success; the
-/// blocking CLI caller uses it to report an error instead of announcing the
-/// scan complete.
+/// treats it as never-scanned) nor was it user-cancelled. The frontend
+/// refreshes L0 only on `done`, so `interrupted` cannot be mistaken for
+/// success; the blocking CLI caller uses it to report an error instead of
+/// announcing the scan complete.
+///
+/// `finished_at` is deliberately left at the previous COMPLETED scan's value:
+/// the GUI's lazy-autoscan cooldown gates on `finishedAt` regardless of
+/// phase (`KnowledgeView`), so stamping the abort here would suppress
+/// autoscan for a full cooldown window even though the round produced
+/// nothing — an aborted scan must not spend the budget of a finished one.
 fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
     let mut st = scan_state.lock();
     st.running = false;
-    st.finished_at = now();
     st.phase = "interrupted".into();
 }
 
@@ -1636,7 +1640,11 @@ mod tests {
             st.phase, "interrupted",
             "neither done (the frontend refreshes L0 only on done) nor cancelled (no user cancel)"
         );
-        assert!(st.finished_at > 0);
+        // finished_at stays at the previous COMPLETED scan's value: the
+        // GUI's autoscan cooldown gates on it regardless of phase, so an
+        // abort must not spend a cooldown window (the seed above is 0 and
+        // must still be 0).
+        assert_eq!(st.finished_at, 0);
     }
 
     /// Headless read contract (stats / type_counts / search): zero-state

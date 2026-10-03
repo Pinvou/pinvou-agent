@@ -850,11 +850,29 @@ fn write(
     // and only then hit the size check. Reading one byte past the cap
     // distinguishes "at the cap" from "over it".
     let content = match (file, stdin) {
-        (Some(file), false) => crate::support::read_text_file_capped(
-            file,
-            MAX_EDITABLE_MARKDOWN_BYTES,
-            "artifacts write",
-        )?,
+        (Some(file), false) => {
+            // Same wire code as the stdin lane for the same over-cap
+            // failure: the shared reader answers a generic
+            // `{action}: {path} exceeds …` message, and a script keying on
+            // the GUI-derived wire code (the one the stdin lane and the
+            // post-read re-check below answer) would miss the file lane —
+            // the lane scripts are more likely to drive. Pre-sized here so
+            // the reader never sees the over-cap file; an unreadable or
+            // vanished file still falls to the reader's own error, and a
+            // file that grows between this stat and the read is caught by
+            // the reader's cap (rare, same honest failure either way).
+            if std::fs::metadata(file)
+                .map(|metadata| metadata.len() > MAX_EDITABLE_MARKDOWN_BYTES as u64)
+                .unwrap_or(false)
+            {
+                return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
+            }
+            crate::support::read_text_file_capped(
+                file,
+                MAX_EDITABLE_MARKDOWN_BYTES,
+                "artifacts write",
+            )?
+        }
         (None, true) => {
             let mut content = String::new();
             std::io::Read::read_to_string(

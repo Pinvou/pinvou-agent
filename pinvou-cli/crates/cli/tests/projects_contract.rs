@@ -704,6 +704,17 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         .create_new("test-model".to_owned(), None, from.clone())
         .expect("create code session");
     let code_id = code_session.metadata.id;
+    // Seed the ACP state the GUI's spawn path writes (boot recovery reads
+    // `workspace.path` BEFORE the workspace baseline, so an untranslated
+    // state file resurrects the vanished root if the agent index is later
+    // lost). A regression deleting the rebind's storage-half translate call
+    // strands this at the old path.
+    std::fs::create_dir_all(home.sessions_root().join(&code_id)).unwrap();
+    std::fs::write(
+        home.sessions_root().join(&code_id).join("acp-state.json"),
+        serde_json::json!({ "workspace": { "path": from.to_string_lossy() } }).to_string(),
+    )
+    .unwrap();
     drop(sessions);
     let agents = SessionAgentStore::load_or_empty();
     agents
@@ -782,6 +793,14 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     assert!(
         code_sidecar.contains(to.to_str().unwrap()),
         "the authoritative sidecar must move: {code_sidecar}"
+    );
+    // ACP state translated (GUI parity, `translate_acp_state_workspace`).
+    let acp_state =
+        std::fs::read_to_string(home.sessions_root().join(&code_id).join("acp-state.json"))
+            .expect("acp-state file still on disk");
+    assert!(
+        acp_state.contains(to.to_str().unwrap()),
+        "the acp-state workspace.path must move: {acp_state}"
     );
 
     // Idempotent rerun: nothing is left under `from`, so a rerun converges

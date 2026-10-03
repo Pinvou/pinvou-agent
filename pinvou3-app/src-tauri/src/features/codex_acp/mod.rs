@@ -88,7 +88,11 @@ use crate::core::reaper::{
 use attachments::prepare_codex_prompt;
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
-pub(crate) use events::translate_acp_state_workspace;
+// `pub` for the headless CLI (`pinvou projects rebind`): the GUI's rebind
+// runs this storage pass per session, and the CLI's mirror must run the same
+// half or an untranslated acp-state workspace resurrects the vanished root
+// on boot recovery.
+pub use events::translate_acp_state_workspace;
 pub use events::{
     AcpEventEnvelope, project_acp_elicitation_request_for_web,
     project_acp_permission_request_for_web,
@@ -3038,7 +3042,16 @@ impl AcpPool {
         )?;
         // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
         // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
-        if self.providers.store().current(agent).as_deref() == Some(record.id.as_str()) {
+        // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
+        // 可以在本 GUI 启动后改写 current，读内存会把「当前 Provider」判错，
+        // 该重启的会话不重启（或反之）。
+        if self
+            .providers
+            .store()
+            .current_after_reload(agent)
+            .as_deref()
+            == Some(record.id.as_str())
+        {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
         }
@@ -3053,7 +3066,14 @@ impl AcpPool {
         provider_id: &str,
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        let was_current = self.providers.store().current(agent).as_deref() == Some(provider_id);
+        // 与 save 同一 fresh-read 纪律：CLI 在本 GUI 背后的 switch 不得让
+        // 重启判定沿用启动时的内存值。
+        let was_current = self
+            .providers
+            .store()
+            .current_after_reload(agent)
+            .as_deref()
+            == Some(provider_id);
         self.providers.delete(agent, provider_id)?;
         if was_current {
             self.invalidate_auth_cache(backend);

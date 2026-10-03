@@ -1411,13 +1411,23 @@ impl AcpConfigDefaultsStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
+        // Pid-carrying staging name, same cross-process rule as the
+        // providers store's `persist_locked`/`atomic_write`: the CLI's
+        // `code` family mutates this store from a second process, and a
+        // fixed `.tmp` name lets two surfaces rename each other's
+        // half-written file into place.
+        let tmp = self
+            .path
+            .with_extension(format!("json.tmp.{}", std::process::id()));
         let value = AcpConfigDefaultsFile {
             version: CONFIG_DEFAULTS_VERSION,
             agents: self.records.read().clone(),
         };
         fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
-        fs::rename(&tmp, &self.path)?;
+        if let Err(error) = fs::rename(&tmp, &self.path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
         Ok(())
     }
 }

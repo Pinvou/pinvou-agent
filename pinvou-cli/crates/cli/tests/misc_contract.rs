@@ -259,7 +259,18 @@ fn files_ingest_refuses_a_file_outside_the_home_directory() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("files-outside-home");
     // `HomeGuard` roots live under the system temp dir, which is outside the
-    // real `$HOME` on every platform this crate builds for.
+    // real `$HOME` on unix — but on Windows `%TEMP%` normally sits under
+    // `%USERPROFILE%`, which would turn the fixture into a false negative.
+    // This test pins the CLI's refusal wording, not the platform predicate,
+    // so skip when the temp root is home-confined on whatever platform.
+    let temp = std::env::temp_dir();
+    let real_home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    if let Some(home) = real_home
+        && temp.starts_with(std::path::PathBuf::from(home))
+    {
+        eprintln!("skipping: the system temp dir lives under the real home on this machine");
+        return;
+    }
     let outside = home.root.join("outside.md");
     std::fs::write(&outside, "# Outside\n").unwrap();
 
