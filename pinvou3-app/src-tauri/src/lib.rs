@@ -647,6 +647,19 @@ fn startup_probe_plugin(name: &'static str) -> tauri::plugin::TauriPlugin<tauri:
         .build()
 }
 
+/// The startup-timeline signature of a failed knowledge init. The state is
+/// never managed on failure and nothing retries it in-process (whether the
+/// store was refused as too-new or the open failed transiently), so the
+/// `:error` line carrying the cause is the failure's only durable mark —
+/// stderr alone is lost on windowed Windows builds, and
+/// `knowledge_service:done` is reserved for a successful init so the
+/// timeline cannot read a dead service as "finished fine".
+fn mark_knowledge_service_failed(error: impl std::fmt::Display) {
+    let detail = format!("{error:#}");
+    crate::platform::startup::mark_with_detail("rust", "knowledge_service:error", &detail);
+    eprintln!("[pinvou3-app] knowledge service init failed: {detail}");
+}
+
 pub fn run() {
     // WebKitGTK reads its RemoteInspector endpoint while constructing the first
     // WebContext, so the browser feature must reserve it before Tauri starts.
@@ -1249,10 +1262,10 @@ pub fn run() {
                 Ok(svc) => {
                     app.handle().manage(svc);
                     eprintln!("[pinvou3-app] knowledge service ready");
+                    startup::mark("knowledge_service:done");
                 }
-                Err(e) => eprintln!("[pinvou3-app] knowledge service init failed: {e:#}"),
+                Err(e) => mark_knowledge_service_failed(&e),
             }
-            startup::mark("knowledge_service:done");
 
             match RemoteKnowledgeService::load(RemoteKnowledgeService::default_path()) {
                 Ok(service) => {
@@ -2530,6 +2543,48 @@ mod release_env_defaults_guard {
             std::env::var("PINVOU3_SESSION_ARTIFACTS").as_deref(),
             Ok(expected.to_str().expect("isolated home path must be UTF-8")),
             "startup_process_env must inject PINVOU3_SESSION_ARTIFACTS"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod knowledge_service_failure_tests {
+    /// A failed knowledge init must leave an `:error` line carrying the cause
+    /// on the real `startup.log` — the failure previously reached stderr only
+    /// (lost on windowed Windows builds) — and must not be bookkept as
+    /// `knowledge_service:done`, which is reserved for a successful init.
+    /// Swapping the stage name back to a success-looking or retry-promising
+    /// one, dropping the cause, or re-sharing `:done` across both arms turns
+    /// this red.
+    #[test]
+    fn failed_knowledge_init_marks_the_timeline_with_the_cause() {
+        use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard, unique_suffix};
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Restores the host's PINVOU3_HOME (present or absent) on drop, panic paths included.
+        let _env = EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-kb-fail-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create isolated PINVOU3_HOME");
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line of this test); env writes serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        // Re-init re-points the sink at this test's own log (see `init` docs).
+        crate::platform::startup::init();
+
+        super::mark_knowledge_service_failed(&anyhow::anyhow!("store too new: schema 9 > 4"));
+
+        let log = std::fs::read_to_string(root.join("logs").join("startup.log"))
+            .expect("the failure mark must be persisted");
+        assert!(log.contains("knowledge_service:error"), "{log}");
+        assert!(log.contains("store too new: schema 9 > 4"), "{log}");
+        assert!(
+            !log.contains("knowledge_service:done"),
+            "a failed init must not be bookkept as finished: {log}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
