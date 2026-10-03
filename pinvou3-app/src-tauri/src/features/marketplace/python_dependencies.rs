@@ -478,9 +478,7 @@ fn wheel_download_urls(wheel: &PythonWheel) -> Vec<String> {
 fn environment_key(target: &PythonDependencyTarget) -> Result<String, String> {
     let serialized = serde_json::to_vec(target)
         .map_err(|e| format!("failed to serialize MCP Python dependency lock: {e}"))?;
-    Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
-        serialized,
-    )))
+    Ok(crate::platform::hashing::sha256_hex(&serialized))
 }
 
 fn environments_root() -> PathBuf {
@@ -577,9 +575,7 @@ fn clear_repair_cooldown(environment_key: &str) {
 fn fallback_cooldown_key(lock: &PythonDependencyLock) -> Result<String, String> {
     let serialized = serde_json::to_vec(lock)
         .map_err(|e| format!("failed to serialize MCP Python dependency lock: {e}"))?;
-    Ok(crate::platform::encoding::hex_lower(&Sha256::digest(
-        serialized,
-    )))
+    Ok(crate::platform::hashing::sha256_hex(&serialized))
 }
 
 /// Cooldown plumbing for the legacy pip fallback taken when the lock has no
