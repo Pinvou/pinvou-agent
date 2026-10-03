@@ -1,8 +1,9 @@
-# 锁定构建工具链具体版本，保证本地与 CI 完全可复现（不写 floating "stable",
-# 避免 stable 自动滚动导致本地/CI 编译器版本漂移）。
-# 版本要求:>= Cargo.toml 的 rust-version(MSRV 1.89);选当前 stable 具体版。
-# 升级方式:改这里一个数字即可,CI(dtolnay/rust-toolchain 读取本文件)与本地自动一致。
-# 带上 clippy / rustfmt 组件，配合 lint 门禁。
+# Build on whatever `stable` currently resolves to, matching
+# CodeWhale/rust-toolchain.toml so every workspace in the repo compiles
+# with the same floating rustc. The MSRV floor stays in Cargo.toml
+# (rust-version = 1.89); API renames newer than the MSRV are handled at
+# the call site with a targeted allow (see the fetch_update notes).
+# clippy / rustfmt components back the lint gates.
 [toolchain]
-channel = "1.98.0"
+channel = "stable"
 components = ["clippy", "rustfmt"]

@@ -291,7 +291,6 @@ impl SessionStore {
             hidden_sessions: Arc::new(RwLock::new(HashMap::new())),
             execution_root_resolver: Arc::new(RwLock::new(None)),
             session_workspaces: Arc::new(RwLock::new(HashMap::new())),
-            legacy_session_workspaces_parse_failed: Arc::new(AtomicBool::new(false)),
             code_session_predicate: Arc::new(RwLock::new(None)),
             session_mode_states: Arc::new(RwLock::new(HashMap::new())),
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
@@ -846,8 +845,55 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| "load_session for workspace rebind".to_string())?;
         session.metadata.workspace = workspace;
-        self.persist_then_reconcile(&session, "workspace rebind")?;
+        // In-place workspace rewrite: no session created or removed, so the
+        // post-persist retention rescan is skipped (round-18 MAJOR-4).
+        self.persist_in_place(&session, "workspace rebind")?;
         Ok(())
+    }
+
+    /// Artifact-path rebase for directory rebind (review #463 round-10
+    /// Major 2): `SavedSession.artifacts[].storage_path` persists absolute
+    /// workspace paths for deliverables, and without this pass every
+    /// pre-rebind deliverable keeps rendering with the vanished root — fails
+    /// to open, never healed by the frontend reconcile (its relative→absolute
+    /// escape hatch is spent on an already-absolute stale entry), and dropped
+    /// from the cross-session deliverables index. Same load→patch→persist
+    /// pattern as [`Self::set_workspace`]; only the `storage_path` fields the
+    /// caller's `translate` closure maps are rewritten, so record ids,
+    /// timestamps and byte sizes survive intact. The path math lives with the
+    /// caller (the command layer's `rebind_target_path`, single-sourced with
+    /// the binding lanes) rather than in a sessions→codex_acp dependency.
+    /// Returns the number of rebased entries; 0 persists nothing.
+    ///
+    /// The load context deliberately does not embed the session id (same
+    /// CodeQL cleartext-logging constraint as `set_workspace`).
+    pub fn rebase_workspace_artifact_paths(
+        &self,
+        id: &str,
+        translate: &dyn Fn(&Path) -> Option<PathBuf>,
+    ) -> Result<usize> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| "load_session for artifact-path rebase".to_string())?;
+        let mut rebased = 0;
+        for artifact in &mut session.artifacts {
+            if let Some(next) = translate(&artifact.storage_path) {
+                // The translate closure's `to`-side arm returns candidates
+                // already under the target unchanged (retry semantics); skip
+                // those so an already-converged session persists nothing.
+                if next != artifact.storage_path {
+                    artifact.storage_path = next;
+                    rebased += 1;
+                }
+            }
+        }
+        if rebased > 0 {
+            // In-place artifact-path rewrite: see persist_in_place (round-18 MAJOR-4).
+            self.persist_in_place(&session, "artifact-path rebase")?;
+        }
+        Ok(rebased)
     }
 
     pub fn touch_activity(&self, id: &str) -> Result<()> {

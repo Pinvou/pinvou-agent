@@ -21,9 +21,9 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
-import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
+import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, unavailableProjectRootPaths, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { ProjectGroupHeader } from '../features/projects/ProjectGroupHeader.jsx';
-import { classifyRebindError } from '../features/projects/rebindErrors.js';
+import { classifyRebindError, mergeRebindCarryoverIds } from '../features/projects/rebindErrors.js';
 import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
 import { can, isWeb } from '../shared/platform.js';
@@ -1572,6 +1572,16 @@ const NAV_PREFETCH = {
       // 引用,击穿 RecentItem 的 memo,重渲染全部侧栏行。
       const clearDropTarget = useCallback(() => setDropTargetGroupKey(null), []);
       const [rebindDraft, setRebindDraft] = useState(null);
+      // Close-time focus resolver for the rebind dialog (review #463 round-10
+      // T7): filled with a `() => Element | null` targeting the project header
+      // row that opened it, which survives the refresh that removes the badge.
+      const rebindRestoreRef = useRef(null);
+      // Re-entry guard for the folder-picker window (review #463 round-10
+      // minor 7): `rebindDraft` stays null until the picker resolves, so the
+      // existing guard cannot see a second badge click in that window — two
+      // pickers would race, and a successful A-rebind could open B's draft.
+      // Held from pick start to settle (pick, empty pick, failure).
+      const rebindPickingRef = useRef(false);
       // 桥完成首次状态同步(bs 就绪)后拉一次项目快照;后续变更由
       // projects:list_changed 事件驱动桥内刷新(bridge/projects.js)。
       const projectsBootstrapReady = !!bs;
@@ -2463,11 +2473,23 @@ const NAV_PREFETCH = {
       // dialog. Two-phase confirmation: the first call omits confirmExisting,
       // the backend rejects when the old folder still exists, and the dialog
       // escalates to the strong warning for the user to confirm again.
-      const startRebindWorkspace = async (fromPath) => {
+      const startRebindWorkspace = async (fromPath, headerEl) => {
         // Do not reopen while rebindDraft is already open: with focus left on
         // the badge, pressing Enter re-triggers onRebind (review #463 minor),
-        // and the projectOpsBusy guard does not cover that window.
-        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft) return;
+        // and the projectOpsBusy guard does not cover that window. The
+        // pickingRef arm covers the picker window itself, which rebindDraft
+        // cannot see (round-10 minor 7).
+        if (!bridge.files || !bridge.files.pickRebindFolder || projectOpsBusy || rebindDraft || rebindPickingRef.current) return;
+        rebindPickingRef.current = true;
+        // Focus destination for the dialog's close (review #463 round-10 T7):
+        // the badge that opened it is removed by the very operation it starts,
+        // so the hook's default restore target would be detached. Resolved at
+        // close time via the surviving project header row.
+        rebindRestoreRef.current = headerEl
+          ? () => headerEl.querySelector('button')
+          : null;
+        // Warm the lazy dialog chunk during the picker window (#606): the
+        // pick round-trip hides the load.
         prefetchView('rebindFolderDialog');
         try {
           // Single folder, with a title matching the rebind semantics
@@ -2486,6 +2508,8 @@ const NAV_PREFETCH = {
           // class, and the warn keeps the detail available for diagnostics.
           console.warn('pick rebind folder failed', error);
           setSettingsToast(t.uiProjects.opFailed);
+        } finally {
+          rebindPickingRef.current = false;
         }
       };
       const confirmRebindWorkspace = async (confirmExisting) => {
@@ -2514,13 +2538,20 @@ const NAV_PREFETCH = {
           // runtime the idle gate refused (round-8 MAJOR-2: closing on the
           // post-busy-only case left "retry once when idle" with no entry
           // point, because the unavailable-root badge disappears once the root
-          // has moved). Rerunning the backend with the same from/to converges
+          // has moved — the badge renders strictly off the `available` wire
+          // field, the backend's per-root is_dir() stat; review #463 round-14
+          // B1 restored it after main #566 dropped it and badged every root).
+          // Rerunning the backend with the same from/to converges
           // (the snapshot includes unsynced sessions; already-rebound ones are
           // no-ops). The post-busy ids are kept for the next retry's
           // feed-back (F-Major).
           if (failed > 0 || postBusy > 0) {
             setRebindDraft(prev => prev && {
               ...prev,
+              // The run proceeded past the fence: the old-root warning is
+              // consumed (review #463 round-14 should-fix 3) — a later
+              // reappearance of the old root must re-arm the strong confirm.
+              warnExisting: false,
               partial: {
                 rebound,
                 failed,
@@ -2554,26 +2585,104 @@ const NAV_PREFETCH = {
           // lives in a pure helper so both halves of the contract are unit
           // tested (review #463 round-8 minor 10).
           const classified = classifyRebindError(error, t);
+          // Carryover honesty (review #463 round-14 should-fix 1): a
+          // roots-commit failure carries this run's moved ids as an error
+          // suffix — the session lanes were already durable at `to`. Feed
+          // them into the retry's post-busy carryover, or a refused eviction
+          // of an already-rebound session is dropped (untouched this run,
+          // carryover empty) and the dialog closes "up to date" with an
+          // old-cwd runtime still resident.
+          // The suffix ids UNION with the previous carryover (review #463
+          // round-15 Major 1): replacing would drop a still-busy carryover
+          // session from a prior run — it can never re-enter
+          // rebound_session_ids (a converged to-lane session routes to
+          // retry_evict_candidates only), so the next retry would close the
+          // dialog "up to date" while its old-cwd runtime stays resident.
+          // The backend honors only the intersection with its own retry
+          // population, so the union cannot widen the eviction set.
+          const carryoverPartial = (classified.reboundIds && classified.reboundIds.length > 0)
+            ? (prev) => {
+                // Full partial shape (the dialog reads failedIds.length
+                // unconditionally): the moved sessions are conservatively
+                // reported as post-busy — their runtime reclaim never ran on
+                // the error path, so "retry when idle" is the honest state.
+                const mergedIds = mergeRebindCarryoverIds(
+                  prev.partial && prev.partial.postBusyIds,
+                  classified.reboundIds,
+                );
+                // Spread first, counts after (review #463 round-17 SF-4): a
+                // trailing spread dragged the PREVIOUS run's rebound/failed
+                // counts into this error state — a mixed-run report where
+                // the same id could appear in two contradicting rows. This
+                // arm's only honest counts are the merged carryover. The
+                // spread tolerates a null partial natively (object spread
+                // ignores null/undefined; round-18 Blocker 1 — the explicit
+                // `|| {}` fallback trips unicorn/no-useless-fallback-in-spread).
+                return {
+                  ...prev.partial,
+                  rebound: 0,
+                  failed: 0,
+                  failedIds: [],
+                  postBusy: mergedIds.length,
+                  postBusyIds: mergedIds,
+                  // Round-18 minor 1: the post-busy recheck never ran on an
+                  // error path, so the "started a new turn during the rebind"
+                  // diagnosis would be fabricated — the dialog renders the
+                  // neutral carryover copy for this shape.
+                  carryover: true,
+                };
+              }
+            : null;
           if (classified.kind === 'old-root-exists') {
             setRebindDraft(prev => prev && { ...prev, warnExisting: true, error: null });
           } else if (classified.kind === 'sessions-busy') {
             // Busy rejection is the fence's high-frequency happy path
             // (Minor 7): map it to i18n copy; only session ids follow the
             // marker, and they are shown verbatim for troubleshooting.
+            // warnExisting is kept as-is out of deliberate conservatism
+            // (round-20 minor 14): both busy emission sites actually fire
+            // AFTER the old-root check, so the flag is already consumed —
+            // keeping it costs ZERO extra confirm round-trips (the comment
+            // previously claimed one; inverted per round-24 minor 18).
             setRebindDraft(prev => prev && {
               ...prev,
               busySessionIds: classified.busySessionIds,
               error: null,
+              ...(carryoverPartial ? { partial: carryoverPartial(prev) } : {}),
             });
           } else if (classified.kind === 'copy') {
-            setRebindDraft(prev => prev && { ...prev, error: classified.message });
+            // Consume the old-root warning ONLY when the run actually
+            // proceeded past the old-root check (round-17 SF-4): IN_PROGRESS
+            // / TO_ROOT / TO_NESTED / TO_UNUSABLE all classify as `copy` and
+            // all fire BEFORE require_confirm_existing, and clearing on them
+            // would let a re-appeared old root ride the stale flag silently.
+            // Clearing on a genuine post-fence failure (review #463 round-14
+            // should-fix 3) still re-arms the strong confirm on a later
+            // reappearance of the old root.
+            setRebindDraft(prev => prev && {
+              ...prev,
+              warnExisting: classified.passedFence ? false : prev.warnExisting,
+              error: classified.message,
+              ...(carryoverPartial ? { partial: carryoverPartial(prev) } : {}),
+            });
           } else {
-            console.warn('rebind workspace failed', error);
+            // Log hygiene (review #463 round-14 should-fix 5): the raw error
+            // chain embeds host paths; it is shown in the dialog verbatim by
+            // design, but stays out of the console. The classified kind is
+            // the path-free diagnostic.
+            console.warn('rebind workspace failed:', classified.kind);
             // On failure keep the dialog open with the error inline
             // (review #463 M7): in-place display persists and sits next to
             // the retry; an unmapped backend error is shown verbatim as a
-            // diagnostic detail rather than guessed at.
-            setRebindDraft(prev => prev && { ...prev, error: classified.message });
+            // diagnostic detail rather than guessed at. Its provenance is
+            // unknown (round-17 SF-4), so the strong-confirm flag is kept:
+            // an extra confirm round-trip at worst, never a skipped one.
+            setRebindDraft(prev => prev && {
+              ...prev,
+              warnExisting: prev.warnExisting,
+              error: classified.message,
+              ...(carryoverPartial ? { partial: carryoverPartial(prev) } : {}),
+            });
           }
         } finally {
           setProjectOpsBusy(false);
@@ -2911,6 +3020,7 @@ const NAV_PREFETCH = {
         isCompactShell && isSidebarOpen ? 'mobile-sidebar' : '',
         isCompactShell && mobileMoreOpen ? 'mobile-more' : '',
         moveToProjectSession ? 'move-picker' : '',
+        rebindDraft ? 'rebind' : '',
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
@@ -3105,7 +3215,7 @@ const NAV_PREFETCH = {
             document.body
           )}
 
-          {rebindDraft && (
+          {rebindDraft && browserOverlayPublicationReady && (
             <ViewErrorBoundary t={t}>
               <Suspense fallback={null}>
                 <LazyRebindFolderDialog
@@ -3117,6 +3227,7 @@ const NAV_PREFETCH = {
                   busySessionIds={rebindDraft.busySessionIds || null}
                   t={t}
                   busy={projectOpsBusy}
+                  restoreTargetRef={rebindRestoreRef}
                   onCancel={() => setRebindDraft(null)}
                   onConfirm={confirmRebindWorkspace}
                 />
@@ -3533,12 +3644,8 @@ const NAV_PREFETCH = {
                                   onRename={group.kind === 'project' ? (name) => handleRenameProject(group.projectId, name) : undefined}
                                   onDelete={group.kind === 'project' ? () => handleDeleteProject(group.projectId) : undefined}
                                   onDropSession={bridge.projects && group.kind === 'project' ? (sessionId) => handleDropSessionOnProject(sessionId, group.projectId) : undefined}
-                                  unavailableRoots={group.kind === 'project'
-                                    ? (group.roots || [])
-                                        .filter(root => !(root && typeof root === 'object' ? root.available : root))
-                                        .map(root => String(typeof root === 'object' ? root.path : root))
-                                    : []}
-                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath) => startRebindWorkspace(rootPath) : undefined}
+                                  unavailableRoots={group.kind === 'project' ? unavailableProjectRootPaths(group.roots) : []}
+                                  onRebind={bridge.projects && group.kind === 'project' ? (rootPath, headerEl) => startRebindWorkspace(rootPath, headerEl) : undefined}
                                   dropActive={dropTargetGroupKey === group.key}
                                   onDropActive={(active) => setDropTargetGroupKey(active ? group.key : null)}
                                 />

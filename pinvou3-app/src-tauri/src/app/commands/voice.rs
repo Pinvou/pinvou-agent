@@ -1324,7 +1324,10 @@ pub async fn reset_microphone_permission(window: tauri::WebviewWindow) -> Result
     crate::features::voice::reset_microphone_permission(window).await
 }
 async_command_passthrough!(voice_asr_domain, voice_asr_status() -> VoiceAsrStatus);
-async_command_passthrough!(voice_asr_domain, install_voice_asr(app: AppHandle) -> Result<VoiceAsrStatus, String>);
+async_command_passthrough!(
+    voice_asr_domain,
+    install_voice_asr(app: AppHandle) -> Result<VoiceAsrStatus, String>
+);
 sync_command_passthrough!(voice_asr_domain, cancel_voice_asr());
 
 #[cfg(test)]

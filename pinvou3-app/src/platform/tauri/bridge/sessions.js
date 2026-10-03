@@ -1078,6 +1078,8 @@ function leaveSessionView(id) { return pinvouSharedtauriSessions().leaveSessionV
 
 function applyDeletedSession(id) { return pinvouSharedtauriSessions().applyDeletedSession(id); }
 
+function applyWorkspaceReboundMark(payload) { return pinvouSharedtauriSessions().applyWorkspaceReboundMark(payload); }
+
 function onSessionDeleted(listener) { return pinvouSharedtauriSessions().onSessionDeleted(listener); }
 
   if (typeof listen === "function") {
@@ -1087,10 +1089,51 @@ function onSessionDeleted(listener) { return pinvouSharedtauriSessions().onSessi
     }).catch(function (error) {
       console.error("[sessions] session:deleted listener failed", error);
     });
-    listen("session:list_changed", function () {
-      refreshHistoryList().catch(function (error) {
-        console.error("[sessions] session:list_changed refresh failed", error);
-      });
+    // Burst coalescing (review #463 round-20 R3): the rebind command emits one
+    // session:list_changed per affected id, and each undebounced refresh costs
+    // an IPC round trip + an O(n) backend list_sessions + a React commit — a
+    // large rebind burst translated into hundreds of full history refreshes
+    // exactly while the report dialog opens. Leading + trailing: the first
+    // event refreshes immediately (single-event semantics unchanged), events
+    // inside the window set a pending flag collapsed into ONE trailing
+    // refresh. Harnesses without timers fall back to the immediate refresh.
+    let historyRefreshTimer = null;
+    let historyRefreshPending = false;
+    function scheduleHistoryRefresh() {
+      function runRefresh() {
+        refreshHistoryList().catch(function (error) {
+          console.error("[sessions] session:list_changed refresh failed", error);
+        });
+      }
+      if (typeof setTimeout !== "function") {
+        runRefresh();
+        return;
+      }
+      if (historyRefreshTimer) {
+        historyRefreshPending = true;
+        return;
+      }
+      runRefresh();
+      historyRefreshTimer = setTimeout(function () {
+        historyRefreshTimer = null;
+        if (historyRefreshPending) {
+          historyRefreshPending = false;
+          scheduleHistoryRefresh();
+        }
+      }, 200);
+    }
+    listen("session:list_changed", function (event) {
+      const payload = event && event.payload || {};
+      // The rebind command stamps the sessions whose persisted artifact paths
+      // its lanes rebased (rebound, failed AND post-busy ids — review #463
+      // round-10 Major 2 + round-B Major 1). The mark carries the rebind
+      // geometry as an ordered segment chain consumed by
+      // bridge/artifact-tracker.js (rebaseArtifactPathsForRebind /
+      // sessionRecentlyRebound); the stamp/append/refresh semantics live in
+      // the shared applyWorkspaceReboundMark (round-13 — previously
+      // byte-duplicated with the web lane).
+      applyWorkspaceReboundMark(payload);
+      scheduleHistoryRefresh();
     }).catch(function (error) {
       console.error("[sessions] session:list_changed listener failed", error);
     });

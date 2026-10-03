@@ -1493,7 +1493,7 @@ function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSes
     if (buf) buf.artifacts = arts;
     else state.artifacts = arts;
     try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: arts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block session switching */ }
+      try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
         const firstUser = msgs.find(function (m) { return m.role === "user"; });
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
@@ -3255,6 +3255,9 @@ function hasUnresolvedItem(type) { return pinvouSharedweb().hasUnresolvedItem(ty
 function basename(p) { return pinvouSharedweb().basename(p); }
 function isAbsPath(p) { return pinvouSharedweb().isAbsPath(p); }
 function normalizedPath(p) { return pinvouSharedweb().normalizedPath(p); }
+function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedweb().rebaseArtifactPathsForRebind(sid, paths); }
+function sessionRecentlyRebound(sid) { return pinvouSharedweb().sessionRecentlyRebound(sid); }
+function pathIsRebindStale(sid, path) { return pinvouSharedweb().pathIsRebindStale(sid, path); }
 function noteArtifactChange(path, event, sessionId) { return pinvouSharedweb().noteArtifactChange(path, event, sessionId); }
 function isSharedMcpArtifactPath(path) { return pinvouSharedweb().isSharedMcpArtifactPath(path); }
 function artifactBelongsToSession(path, sid) { return pinvouSharedweb().artifactBelongsToSession(path, sid); }
@@ -3323,11 +3326,19 @@ function updatePresentedArtifact(card) { return pinvouSharedweb().updatePresente
           if (!isDeliverable(p)) return;
           const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
         }
-        else if (isAbsPath(p) && !isAbsPath(ex.path)) { ex.path = p; added = true; } // 相对→绝对,open 可靠
+        // Relative→absolute opens reliably; an absolute stale entry may
+        // take over the same-basename live workspace file ONLY inside the
+        // sessionRecentlyRebound window AND only when the stored entry is
+        // real stale rebind geometry (pathIsRebindStale — round-24 minor 3,
+        // the tauri artifact-tracker's identical heal arm: the mark alone
+        // let an unrelated live absolute entry whose basename collides be
+        // taken over and the wrong path persisted; review #463 round-20
+        // minor 9 records the never-called-condition history).
+        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid) && pathIsRebindStale(sid, ex.path)))) { ex.path = p; added = true; }
       });
       if (added) {
         notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: state.artifacts.map(function (a) { return a.path; }) }); } catch { /* persistence failure must not block frontend updates */ }
+        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block frontend updates */ }
       }
     } catch { /* workspace 不存在(新 session)等,忽略 */ }
   }
@@ -4328,6 +4339,7 @@ function recordPinvouReview(review) { return pinvouSharedweb().recordPinvouRevie
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
 function dismissPinvouReview() { return pinvouSharedweb().dismissPinvouReview(); }
+function applyWorkspaceReboundMark(payload) { return pinvouSharedweb().applyWorkspaceReboundMark(payload); }
   // 把当前 session 的审查时间线(含勾选写回的 resolution)重新落盘。返回 promise 供 await。
 function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(); }
 
@@ -4363,10 +4375,51 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
   listen("session:deleted", function (e) {
     applyDeletedSession(e && e.payload && e.payload.id);
   });
-  listen("session:list_changed", function () {
-    refreshHistoryList().catch(function (error) {
-      console.error("[sessions] session:list_changed refresh failed", error);
-    });
+  // Burst coalescing (review #463 round-20 R3): the rebind command emits one
+  // session:list_changed per affected id, and each undebounced refresh costs
+  // an IPC round trip + an O(n) backend list_sessions + a React commit — a
+  // large rebind burst translated into hundreds of full history refreshes
+  // exactly while the report dialog opens. Leading + trailing: the first
+  // event refreshes immediately (single-event semantics unchanged), events
+  // inside the window set a pending flag collapsed into ONE trailing
+  // refresh. Harnesses without timers fall back to the immediate refresh.
+  let historyRefreshTimer = null;
+  let historyRefreshPending = false;
+  function scheduleHistoryRefresh() {
+    function runRefresh() {
+      refreshHistoryList().catch(function (error) {
+        console.error("[sessions] session:list_changed refresh failed", error);
+      });
+    }
+    if (typeof setTimeout !== "function") {
+      runRefresh();
+      return;
+    }
+    if (historyRefreshTimer) {
+      historyRefreshPending = true;
+      return;
+    }
+    runRefresh();
+    historyRefreshTimer = setTimeout(function () {
+      historyRefreshTimer = null;
+      if (historyRefreshPending) {
+        historyRefreshPending = false;
+        scheduleHistoryRefresh();
+      }
+    }, 200);
+  }
+  listen("session:list_changed", function (e) {
+    const payload = e && e.payload || {};
+    // The rebind command's mark (review #463 round-B Major 1 + round-C
+    // Major 1): consumed by rebaseArtifactPathsForRebind so the wholesale
+    // artifact saves of THIS host cannot durably revert the backend lane's
+    // rebase while a resident web-client buffer holds stale paths. Segment
+    // chain with append-on-chain / refresh-on-identical-retry semantics,
+    // memory-only and never pruned — the shared applyWorkspaceReboundMark
+    // owns the stamp (round-13 — previously byte-duplicated with the tauri
+    // listener).
+    applyWorkspaceReboundMark(payload);
+    scheduleHistoryRefresh();
   });
   listen("session:model_changed", function (e) {
     const payload = e && e.payload || {};

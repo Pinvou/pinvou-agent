@@ -68,4 +68,34 @@ assert.match(
   'the retry must pass the carryover ids to the bridge',
 );
 
+// 3. Round-15 Major 1: the roots-error carryover UNIONS with the previous
+//    post-busy list instead of replacing it. The three-run shape: run 1
+//    reports x post-busy; run 2 feeds [x] back but fails at the roots commit
+//    with suffix ids [y]; if the merge replaced, run 3 would feed only [y]
+//    and — x being a converged to-lane session that can never re-enter
+//    rebound_session_ids — close "up to date" while x's old-cwd runtime
+//    stays resident. Union + dedupe keeps both; the backend narrows by
+//    intersection, so the union cannot widen the eviction set.
+{
+  const { mergeRebindCarryoverIds } = await import('../src/features/projects/rebindErrors.js');
+  assert.deepEqual(
+    mergeRebindCarryoverIds(['x'], ['y']),
+    ['x', 'y'],
+    'the error carryover must union with the previous post-busy list',
+  );
+  assert.deepEqual(mergeRebindCarryoverIds(['x'], ['x']), ['x'], 'dedupe');
+  assert.deepEqual(mergeRebindCarryoverIds(undefined, ['y']), ['y'], 'no previous list');
+  // The dialog must route all three error arms through the union helper.
+  assert.match(
+    mainSource,
+    /mergeRebindCarryoverIds\(/,
+    'main.jsx must build the error carryover via the union helper',
+  );
+  assert.match(
+    mainSource,
+    /mergeRebindCarryoverIds\([\s\S]{0,120}prev\.partial\.postBusyIds[\s\S]{0,80}classified\.reboundIds/,
+    'the union must merge the previous carryover with the error suffix ids',
+  );
+}
+
 console.log('rebind carryover feed-back contract passed');

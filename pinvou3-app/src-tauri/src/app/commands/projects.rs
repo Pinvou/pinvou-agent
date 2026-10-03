@@ -7,16 +7,41 @@
 //! recheck, idle-gated runtime eviction, baseline recapture).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::features::codex_acp::{AcpPool, CodexWorkspaceKind, SessionAgentStore};
+use crate::features::codex_acp::{
+    AcpPool, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
+};
+
+/// Wall-clock budget for the whole idle-gated runtime reclaim tail of a rebind
+/// (review #463 round-10 T13). The tail walks every rebound, failed and to-lane
+/// retry candidate; each pool call is individually bounded, but a contended pool
+/// still charges its bound once per candidate — up to ~6s for a single candidate
+/// (the ACP lane's REBIND_ACP_LOCK_TIMEOUT plus the engine lane's two
+/// REBIND_EVICT_GATE_TIMEOUT waits). The deadline is checked only BETWEEN
+/// candidates, so one in-flight candidate can overrun the budget: a concurrent
+/// rebind can be refused REBIND_IN_PROGRESS for up to ~16s in the worst case
+/// (review #463 round-13) — a figure that covers ONLY this eviction tail
+/// (round-24 review M4; the realistic tail ceiling is ~20s with the ≤5s
+/// shell-finalize join, perf minor 10). The PRE-TAIL phases hold the same
+/// process-wide gate with no deadline: the metadata loop has no per-candidate
+/// bound and the baseline drain's final join loop is only
+/// concurrency-bounded, so a large run (hundreds of sessions, multi-MB
+/// transcripts, big destination baselines) can hold the gate — disabled
+/// dialog, no interim feedback — for minutes while concurrent attempts are
+/// refused. Remedy on record: a wall-clock deadline on the drain (baselines
+/// are best-effort/self-healing) or interim progress events. Ten seconds is
+/// far above the normal tail cost (idle sessions are reclaimed without
+/// waiting) and far below a user-visible hang.
+const REBIND_EVICT_TAIL_BUDGET: Duration = Duration::from_secs(10);
 use crate::features::projects::{
     DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, RebindRootsError,
     SessionAssignments,
 };
-use crate::features::sessions::SessionStore;
+use crate::features::sessions::{RebindBindingsOutcome, SessionStore};
 
 use super::sessions::ensure_chat_session;
 
@@ -32,12 +57,17 @@ fn emit_project_event(app: &AppHandle, event: &str, action: &str) {
     let _ = app.emit(event, serde_json::json!({ "action": action }));
 }
 
-/// 项目 root 的 wire 形态（仅路径）。曾带有 `available`（root 是否仍在磁盘上，
-/// 供"文件夹不可用·重新绑定"渲染），但该 UI 从未落地、前端也从未读取该字段，
-/// 连带省去列表路径的逐个 is_dir() stat。
+/// Wire shape of a project root: path + availability (whether the root is
+/// still on disk). `available` drives the sidebar's "Folder unavailable ·
+/// Rebind" badge — main.jsx's unavailableRoots filter reads exactly this
+/// field, and without it every healthy root classifies as unavailable and
+/// the badge renders unconditionally (review #463 round-14 R3; main #566
+/// removed the field before this PR's badge UI landed, and its "the
+/// frontend never reads it" rationale stopped being true at that point).
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectRootStatus {
     pub path: PathBuf,
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,7 +88,10 @@ impl ProjectListItem {
             roots: project
                 .roots
                 .iter()
-                .map(|path| ProjectRootStatus { path: path.clone() })
+                .map(|path| ProjectRootStatus {
+                    path: path.clone(),
+                    available: path.is_dir(),
+                })
                 .collect(),
             position: project.position,
             // created_at/updated_at 只留在持久化的 Project 结构上（排期/审计均
@@ -325,6 +358,26 @@ fn reject_nested_rebind_target(from: &Path, to_display: &Path) -> Result<(), Str
             "REBIND_TO_NESTED: the destination cannot sit inside the original folder".to_string(),
         );
     }
+    // Mirror geometry (review #463 round-17 MAJOR-2): `from` strictly inside
+    // `to`. Reachable through the supported strong-confirm flow — the old
+    // root is required to exist only up to `require_confirm_existing`, and a
+    // root recreated between badge and pick (or a Windows traverse-ACL shape
+    // where `is_dir(from)` fails while `from/B` resolves) admits it. Fatal
+    // there: the metadata's `rebind_target_path` has a to-arm but the plain
+    // and codex lane scans do not, so a binding at `from/sub` deepens one
+    // level per rerun (`from/B/sub` → `from/B/B/sub`) and no rerun converges
+    // — while run 1 is even false-failed by the plain fence rescan in this
+    // geometry. Equality is already handled above (same-or-nested includes
+    // it), so this arm fires only for the strict mirror. Same typed marker:
+    // the trilingual copy stays direction-neutral.
+    if crate::platform::os::path_identity_is_same_or_nested(
+        from_key.trim_end_matches('/'),
+        to_display_str.trim_end_matches('/'),
+    ) {
+        return Err(
+            "REBIND_TO_NESTED: the original folder cannot sit inside the destination".to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -361,8 +414,12 @@ fn require_confirm_existing(from: &Path, confirm_existing: Option<bool>) -> Resu
 /// - project roots must not end up overlapping other projects, or the whole
 ///   rebind fails and rolls back.
 /// Historical paths in transcripts are not rewritten; the workspace baseline
-/// is recaptured per session (failures are only logged — the baseline is
-/// derivable again).
+/// is recaptured per session (failures are only logged). Precision (review
+/// #463 round-21 SF-8): "derivable again" means a LATER run whose geometry
+/// reaches the session recaptures it — a session whose baseline capture
+/// fails after set_workspace succeeded, and that no rerun re-admits, keeps
+/// the stale baseline until then (load_baseline self-invalidates, so
+/// nothing resurrects; the residual is on record).
 ///
 /// Write order: session bindings (codex lane, then the plain-chat binding
 /// sidecars) → SavedSession metadata (+ baseline) → project roots LAST
@@ -413,14 +470,35 @@ pub async fn rebind_workspace_root(
     let _rebind_gate = store.begin_rebind()?;
     validate_rebind_from(&from)?;
     validate_rebind_to(&to)?;
-    let to_display = crate::features::codex_acp::validate_codex_project_workspace(&to)
-        .map_err(|e| format!("REBIND_TO_UNUSABLE: {e:#}"))?;
+    let to_display =
+        crate::features::codex_acp::validate_codex_project_workspace(&to).map_err(|e| {
+            // Marker hygiene (review #463 round-19 SF-1): the wrapped validator's
+            // bail messages are Chinese; the marker tail crosses logs and the
+            // remote bridge, where the project rule requires English. The dialog
+            // renders typed copy, so the static prose is all the user ever sees.
+            // Round-24 minor 2: unlike every sibling arm, the cause used to be
+            // discarded entirely — log the root cause (path-free per the
+            // CodeQL rule) before replacing the chain with the marker.
+            eprintln!(
+                "[projects] rebind destination validation failed: {}",
+                e.root_cause()
+            );
+            "REBIND_TO_UNUSABLE: the destination folder cannot be used".to_string()
+        })?;
     // Normalize `from` once for all three storage lanes (review #463 B1, see
     // the docblock). Resolved through the deepest existing ancestor, so a
     // vanished directory behind a symlinked ancestor (macOS /var) still
     // resolves into the stored key domain.
     let from = crate::features::projects::rebind_source_display(&from);
-    if from == to_display {
+    // Alias-equal display forms are the same no-op (review #463 round-20
+    // minor 7): the raw compare let a case-only alias destination reach the
+    // folded nesting rejection and die on a misleading "inside the original
+    // folder" copy for the same directory.
+    if crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy())
+        .trim_end_matches('/')
+        == crate::platform::os::filesystem_path_identity_key(&to_display.to_string_lossy())
+            .trim_end_matches('/')
+    {
         return Ok(RebindWorkspaceReport::default());
     }
     reject_nested_rebind_target(&from, &to_display)?;
@@ -431,9 +509,26 @@ pub async fn rebind_workspace_root(
     // has been translated. Reachable from the picker (choosing a folder that
     // is or contains another project's root), hence the typed marker so the
     // copy is localized (round-8 M4).
-    store
-        .plan_rebind_roots(&from, &to_display)
-        .map_err(|e| format!("REBIND_ROOTS_CONFLICT: {e:#}"))?;
+    store.plan_rebind_roots(&from, &to_display).map_err(|e| {
+        // Same partition as the commit path (review #463 round-19 SF-6):
+        // only the overlap family wears the conflict copy — a corrupt
+        // store holding a relative root would otherwise surface the
+        // re-pick dialog for an unrelated failure. Anything else falls
+        // through as a raw diagnostic (shown verbatim by the dialog).
+        let cause = e.root_cause().to_string();
+        // Round-24 minor 7: the prefixes are single-sourced with the
+        // validator's bail! texts and pinned against real production errors
+        // (features/projects tests) — a wording change now fails the pin
+        // instead of silently degrading this conflict copy.
+        if crate::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES
+            .iter()
+            .any(|prefix| cause.starts_with(prefix))
+        {
+            format!("REBIND_ROOTS_CONFLICT: {e:#}")
+        } else {
+            format!("rebind_workspace_root: {e:#}")
+        }
+    })?;
 
     // Affected-set snapshot (shared by the active-turn fence and the
     // metadata replay), taken BEFORE any rewrite (review #463 M1): the
@@ -450,7 +545,19 @@ pub async fn rebind_workspace_root(
     // codex index record and no code-session sidecar — and the execution-root
     // resolver reads its cwd from exactly that binding. Without this lane the
     // next turn would keep using the vanished folder and recreate it.
-    let plain_bindings_under_from = sessions.workspace_bindings_under(&from);
+    // Round-21 SF-1: the snapshot gates the run on a READABLE sessions root —
+    // a transient EACCES during a cold-cache, post-restart run would
+    // otherwise translate nothing while the run reported success, and the
+    // roots-last order would then remove the only re-entry. Aborting here is
+    // clean: nothing has moved yet, and the retry redoes the run.
+    let plain_bindings_under_from = sessions
+        .try_workspace_bindings_under(&from)
+        .map_err(|error| {
+            format!(
+                "rebind_workspace_root: the sessions directory is unreadable ({}); nothing was moved — retry once it is accessible",
+                error.kind()
+            )
+        })?;
     for (session_id, path) in &plain_bindings_under_from {
         if !affected.iter().any(|(sid, _)| sid == session_id) {
             affected.push((session_id.clone(), path.clone()));
@@ -481,16 +588,32 @@ pub async fn rebind_workspace_root(
     // (see carryover_post_busy_candidates), so the fed-back list cannot
     // widen the eviction or report sets.
     let mut retry_evict_candidates: Vec<String> = Vec::new();
-    for (session_id, path) in acp_pool.agents().sessions_under_workspace(&to_display) {
+    // Captured for the stranded-index repair below (review #463 round-10
+    // Major 1): the codex to-lane hits carry the sidecar-authoritative path
+    // each session surfaced at, which the repair compares against the index.
+    let codex_to_lane_hits = acp_pool.agents().sessions_under_workspace(&to_display);
+    for (session_id, path) in &codex_to_lane_hits {
         admit_rebind_retry_candidate(
-            session_id,
-            path,
+            session_id.clone(),
+            path.clone(),
             &sessions,
             &mut affected,
             &mut retry_evict_candidates,
         );
     }
-    for (session_id, path) in sessions.workspace_bindings_under(&to_display) {
+    // Round-22 minor 7: the checked form — this scan runs milliseconds
+    // after the snapshot's, which already proved the root readable, but a
+    // transient failure here would silently miss a metadata-behind admittee
+    // that no badge or prefix scan can ever reach after the roots commit.
+    let to_lane_admittees = sessions
+        .try_workspace_bindings_under(&to_display)
+        .map_err(|error| {
+            format!(
+                "rebind_workspace_root: the sessions directory became unreadable ({}); nothing was moved — retry",
+                error.kind()
+            )
+        })?;
+    for (session_id, path) in to_lane_admittees {
         admit_rebind_retry_candidate(
             session_id,
             path,
@@ -515,14 +638,44 @@ pub async fn rebind_workspace_root(
     // is_turn_active folds in configuring, so the config-sync window is also
     // covered by the rejection. There is deliberately no stale escape hatch,
     // to avoid reclaiming a session with an in-flight turn by mistake.
+    // The ACP side is decided in ONE bounded acquisition of the pool's
+    // sessions lock (restored, review #463 round-11 B2/T13): `get_or_spawn`
+    // holds that lock across a whole cold spawn, so a per-session unbounded
+    // wait would stall this command — and the process-wide rebind gate it
+    // holds — for as long as some unrelated session takes to start,
+    // multiplied by the affected count. `None` = the state could not be read
+    // inside the bound: reject with a dedicated marker.
+    let fenced_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
+    let acp_busy_state = acp_pool.rebind_blocking_sessions(&fenced_ids).await;
+    let acp_busy_unknown = acp_busy_state.is_none();
+    let acp_busy = acp_busy_state.unwrap_or_default();
     let mut busy_ids = Vec::new();
     for (session_id, _) in &affected {
-        if acp_pool.is_turn_active(session_id).await
+        if acp_busy.iter().any(|id| id == session_id)
             || engines.is_turn_active(session_id)
             || engines.is_scheduled_turn_running(session_id)
         {
             busy_ids.push(session_id.clone());
         }
+    }
+    if acp_busy_unknown {
+        // Round-19 R1 (the round-18 minor-3 behavior, now actually in the
+        // tree): when the ACP half could not be read (an unrelated cold
+        // spawn holds the pool lock), the engine-half `busy_ids` are still
+        // known — a known-busy session must ride the id-bearing
+        // REBIND_SESSIONS_BUSY marker rather than be discarded for the
+        // vaguer starting-up copy. Only a fully empty known set falls back
+        // to REBIND_RUNTIME_STARTING: the dedicated marker rather than an
+        // id-less REBIND_SESSIONS_BUSY, because the frontend renders the
+        // busy copy only when it has ids to list, so an empty list would
+        // make this rejection completely silent — and the marker is honest
+        // about what is unknown.
+        if !busy_ids.is_empty() {
+            return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
+        }
+        return Err(
+            "REBIND_RUNTIME_STARTING: an ACP runtime is starting up; retry in a moment".to_string(),
+        );
     }
     if !busy_ids.is_empty() {
         // Typed marker (Minor 7): a busy rejection is the fence's normal
@@ -532,33 +685,57 @@ pub async fn rebind_workspace_root(
         return Err(format!("REBIND_SESSIONS_BUSY: {}", busy_ids.join(", ")));
     }
 
-    // Order: session bindings (index + code-session sidecars) → plain-chat
-    // binding sidecars → metadata → baseline → project roots LAST. Every step
-    // is idempotent; a failed retry only completes the unfinished parts. The
-    // metadata loop is driven by the snapshot UNION the plain lane's rebound
-    // set (round-7 should-fix): entries the pre-rewrite snapshot never
-    // contained but this run's plain batch just moved must get the
+    // Order: plain-lane plan + legacy-table sync → session bindings (index +
+    // code-session sidecars) → plain-chat binding sidecars → metadata →
+    // baseline → project roots LAST. Every step is idempotent; a failed retry
+    // only completes the unfinished parts. The legacy-table sync goes FIRST
+    // (review #463 round-13 M1): its abort copy says "nothing was moved", so
+    // it must run before the codex lane persists anything — and publishing
+    // the plan's translations first is also the phase order that makes every
+    // later crash window heal forward (see workspace_bindings.rs). A codex
+    // lane failure after a successful sync leaves table@to over sidecars@from
+    // — the same state the between-phases crash window leaves — so the next
+    // boot heals the plain lane forward and the retry converges the rest.
+    // The metadata loop is driven by the snapshot UNION the plain lane's
+    // rebound set (round-7 should-fix): entries the pre-rewrite snapshot
+    // never contained but this run's plain batch just moved must get the
     // metadata.workspace replay and a report entry too, not silently wait for
     // a rerun to converge them. `rebind_target_path` returns the rebound path
     // as-is (to-prefix arm), so the same per-candidate logic serves both;
     // metadata_rebind_targets dedupes the union by session id against the
     // full snapshot (see its doc for why the codex rebound set would be the
     // wrong key).
+    let plain_plan = sessions
+        .plan_rebind_workspace_bindings(&from, &to_display)
+        .map_err(|e| {
+            // Typed markers (REBIND_LEGACY_TABLE_UNWRITABLE /
+            // REBIND_LEGACY_TABLE_CORRUPT) must reach the frontend with the
+            // marker as the message prefix, so the stable-prefix mapping in
+            // rebindErrors.js can classify them; only untyped infrastructure
+            // failures get the function prefix.
+            let msg = e.to_string();
+            if msg.starts_with("REBIND_") {
+                msg
+            } else {
+                format!("rebind_workspace_root: {msg}")
+            }
+        })?;
     let prefix_outcome = acp_pool
         .agents()
         .rebind_workspace_prefix(&from, &to_display)
         .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
-    // Plain-chat binding sidecars (review #463 round-8 B1) via the unified
-    // batch (#464): it moves the sidecars AND the in-memory cache in one pass,
-    // translates the legacy global table BEFORE the sidecars move so every
-    // crash window heals forward, and names the sessions a surviving table
-    // would resurrect at the next boot. A sidecar whose write failed stays on
-    // disk with the old path, is reported below, and the next run's `from`
-    // scan still matches it.
-    let plain_rebind = sessions
-        .rebind_workspace_bindings(&from, &to_display)
-        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
+    // of the batch planned above — the legacy table already carries the
+    // plan's translations, so a fault here heals forward at the next boot. A
+    // sidecar whose write failed stays on disk with the old path, is reported
+    // below, and the next run's `from` scan still matches it.
+    let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
+    // Round-20 minor 2: plain chats whose sidecar move FAILED must not
+    // capture a codex-lane baseline when their metadata sync succeeds —
+    // the plain lane never reads one, and the stray file plus the wasted
+    // walk contradict the gate's own comment below.
+    let plain_lane_failed = binding_final_stale.clone();
     // Finally-stale sidecar list (Major 2): an orphan rewrite failure, or an
     // indexed session whose rewrite + retry passes both failed — no
     // self-healing path remains in this run (backfill only fills missing
@@ -586,6 +763,93 @@ pub async fn rebind_workspace_root(
     // reported as failed (hence also eviction candidates), and a rerun
     // converges them via the same on-disk scan.
     plain_lane_fence_rescan(&sessions, &from, &mut final_stale);
+    // Codex twin of the plain-lane rescan (review #463 round-15 disclosure
+    // gap): the lane's post-pass fence is a point-in-time read, so a codex
+    // session created+bound under `from` between that fence and this rescan
+    // was in no guard at all — the run would report success while a full
+    // binding still sits under `from` (no badge once `from` vanishes, no
+    // repair entry). The scan is owner-gated (round-15 SF-B), so deleted
+    // sessions cannot surface as failures here either. The residual window
+    // after this rescan matches the plain lane's disclosed one.
+    for (session_id, _) in acp_pool.agents().sessions_under_workspace(&from) {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
+        }
+    }
+    // Stranded-index repair (review #463 round-10 Major 1): a divergence
+    // repair whose persist failed leaves index@intermediate-target while the
+    // sidecar sits on the run's real target, and that record matches NEITHER
+    // prefix scan of any rerun — the lane above returns an empty success and
+    // the index keeps resurrecting the vanished folder across restarts. The
+    // to-lane admission is what still reaches it: the sidecar surfaces the
+    // session under `to`, the metadata mismatch admits it into `affected`,
+    // and the index disagrees with both. Re-key it onto the sidecar's target
+    // here, BEFORE the metadata loop — a persist failure then returns with
+    // the metadata still stale, so the dialog's own retry re-admits (and
+    // re-repairs) the session instead of reporting a hollow success. The
+    // detection is not scoped to `affected` (round-11 B3): a strand whose
+    // metadata already synced never enters `affected`, and a rerun would
+    // otherwise report full success forever while the index stays at the
+    // vanished intermediate target.
+    let lane_moved_ids: Vec<String> = prefix_outcome
+        .affected
+        .iter()
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
+    let stranded: Vec<(String, PathBuf)> = detect_stranded_index_records(
+        &codex_to_lane_hits,
+        &lane_moved_ids,
+        &prefix_outcome.sidecar_final_stale,
+        |session_id| acp_pool.agents().code_project_workspace(session_id),
+        |session_id| acp_pool.agents().code_sidecar_workspace(session_id),
+    )
+    .into_iter()
+    // Belt-and-braces complement to the detector's stale-sidecar exclusion
+    // (review #463 round-17 MAJOR-1): refuse any repair whose AUTHORITY
+    // still sits under the run's `from`. A sidecar this run never moved is
+    // the stale side by definition, and re-keying the index onto it would
+    // point the resurrection-class lanes at the vanished root. Never a
+    // legitimate target: with both nesting rejections in place `to` is
+    // disjoint from `from`, so a translated sidecar at `to` can never fall
+    // under this predicate. Such sessions are already in
+    // `sidecar_final_stale` and reported failed.
+    .filter(|(_, target)| !repair_target_is_backward(target, &from))
+    .collect();
+    let mut repaired_targets_folded: Vec<(String, PathBuf)> = Vec::new();
+    if !stranded.is_empty() {
+        let repaired_ids = acp_pool
+            .agents()
+            .repair_stranded_index_records(&stranded)
+            .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+        // SF-C (review #463 round-15): the repair re-keys the index onto the
+        // sidecar's target, but the metadata loop computes its set_workspace
+        // targets from the scan-time snapshot — and the repaired session was
+        // admitted as a pure eviction candidate (metadata == surfaced path),
+        // so without this fold its metadata would stay divergent forever and
+        // the dialog's retry could never converge it (the repaired record
+        // matches neither prefix scan). Move the repaired ids into the
+        // metadata sync set with the sidecar's target verbatim — it predates
+        // this run's from→to geometry, so rebind_target_path cannot map it.
+        // Trade-off (round-24 minor 3): the repaired ids join `affected`
+        // AFTER the entry fence has already admitted the run's population —
+        // a fence-hit landing exactly on a repaired id relies on the
+        // serialized writes + the honest failure tail rather than a fence
+        // re-check; recorded rather than re-fenced late-cycle.
+        repaired_targets_folded = repaired_ids
+            .into_iter()
+            .filter_map(|repaired_id| {
+                stranded
+                    .iter()
+                    .find(|(sid, _)| *sid == repaired_id)
+                    .map(|(_, target)| (repaired_id, target.clone()))
+            })
+            .collect();
+        fold_repaired_index_targets(
+            &mut affected,
+            &mut retry_evict_candidates,
+            &repaired_targets_folded,
+        );
+    }
     // Code-lane rebound set: only these consume workspace baselines, so the
     // recapture below is gated to them (#464 unify).
     let code_rebound_ids: std::collections::HashSet<String> = prefix_outcome
@@ -595,30 +859,299 @@ pub async fn rebind_workspace_root(
         .collect();
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
+    // Baseline recaptures deferred out of the loop (review #463 round-18
+    // MAJOR-3): each recapture is a `spawn_blocking` walk of up to
+    // WALK_LIMIT entries (or a SHA-256 pass over a git tree), and awaiting
+    // one per session serially inside the loop held the dialog busy for tens
+    // of seconds to minutes on large destinations with no progress. They are
+    // best-effort and order-independent — the walk reads only the destination
+    // directory written by set_workspace above — so the loop collects them
+    // and the bounded pool below drains them.
+    let mut deferred_baselines: Vec<(String, PathBuf)> = Vec::new();
+    // Per-session event geometry for strand-repaired sessions (review #463
+    // round-20 R4): their target predates this run's from→to pair, so the
+    // events must carry the id's ACTUAL (per-session from, new_path) —
+    // otherwise the FE chain has no segment matching a repaired session's
+    // buffered vintage and a live stale buffer durably reverts the rebase.
+    let mut per_id_event_geometry: Vec<(String, PathBuf, PathBuf)> = Vec::new();
     for (session_id, bound_path) in
         metadata_rebind_targets(&affected, &prefix_outcome.affected, &plain_rebind.rebound).iter()
     {
-        let Some(new_path) = SessionAgentStore::rebind_target_path(bound_path, &from, &to_display)
-        else {
+        // A session whose index the stranded repair just re-keyed carries the
+        // sidecar's target verbatim (SF-C): that path predates this run's
+        // from→to geometry, so the from/to translation cannot map it.
+        let repaired_target = repaired_index_target(&repaired_targets_folded, session_id);
+        // Round-18 MAJOR-2: an out-of-geometry target needs the session's
+        // PRE-sync metadata workspace as the per-session rebase `from` — its
+        // artifacts/acp-state/baseline already sit on an EARLIER run's target
+        // (that is the strand shape), which the run-global from→to map cannot
+        // see. Loaded once here, before set_workspace overwrites it.
+        let mut per_session_from: Option<PathBuf> = None;
+        let new_path = match repaired_target
+            .clone()
+            .or_else(|| SessionAgentStore::rebind_target_path(bound_path, &from, &to_display))
+        {
+            Some(path) => {
+                // Round-26 MAJOR-1: the repair arm is not the only
+                // metadata-behind-binding shape. A prior run can move the
+                // binding lanes durably and still fail the metadata pass —
+                // artifacts, acp-state and metadata all stranded on THAT
+                // run's target. When a later run admits the session, the
+                // binding maps through the current geometry, but the
+                // stranded earlier-era artifact and acp-state paths match
+                // neither prefix: translating with the run-global map
+                // persists nothing, `set_workspace` moves the metadata to
+                // the new target, and the run claims Rebound over dead
+                // deliverable paths (the round-14 B2 resurrection class,
+                // reintroduced through the multi-run path). Load the
+                // pre-sync metadata for EVERY admitted session and key the
+                // per-session `from` on the actual condition — metadata
+                // identity ≠ the binding the scan admitted — instead of on
+                // the repair arm alone.
+                match sessions.load(session_id) {
+                    Ok(session) => {
+                        let pre_sync = session.metadata.workspace.clone();
+                        if metadata_behind_binding(&pre_sync, bound_path)
+                            || repaired_target.is_some()
+                        {
+                            per_session_from = Some(pre_sync);
+                        }
+                    }
+                    // Round-24 minor-1 class: no silent swallow (the error
+                    // chain embeds the session path — root cause only). A
+                    // failed pre-sync load leaves `per_session_from` None:
+                    // the global map still translates in-geometry lanes and
+                    // `set_workspace` below fails honestly on the same
+                    // unreadable record.
+                    Err(error) => {
+                        eprintln!(
+                            "[projects] rebind pre-sync metadata load failed: {}",
+                            error.root_cause()
+                        );
+                    }
+                }
+                Some(path)
+            }
+            None => {
+                // No geometry maps the binding: the index and sidecar agree on
+                // a path from an earlier run (a prior repair's target). The
+                // binding is authoritative — sync the metadata onto it rather
+                // than dropping the session from the run, but only when the
+                // metadata is actually behind (otherwise this is the
+                // healthy-eviction-candidate shape and `continue` is right).
+                // Reachability (round-26 minor 1): every feed into
+                // `metadata_rebind_targets` is provably under this run's
+                // from/to/repaired geometry, so this arm is structurally
+                // unreachable at this head — it stays as the late-arm
+                // backstop, with its known limits on record: a repaired
+                // session whose ARTIFACT rebase failed is invisible to a
+                // same-geometry rerun (index == sidecar at the repair target
+                // matches neither prefix scan), the shape this arm's
+                // failed_session_ids push was believed to cover; and the
+                // round-18 MAJOR-2 "additionally" wording described a
+                // convergence this arm cannot engage. Recorded, not
+                // re-fenced late-cycle.
+                match sessions.load(session_id) {
+                    Ok(session) => {
+                        let identity = |value: &str| {
+                            crate::platform::os::filesystem_path_identity_key(value)
+                                .trim_end_matches('/')
+                                .to_string()
+                        };
+                        if identity(&session.metadata.workspace.to_string_lossy())
+                            != identity(&bound_path.to_string_lossy())
+                        {
+                            per_session_from = Some(session.metadata.workspace.clone());
+                            Some(bound_path.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    // Round-20 minor 1: an ADMITTED session whose metadata
+                    // cannot be read is reported failed like any other —
+                    // silently dropping it let the run claim full success
+                    // over a session this run explicitly admitted.
+                    Err(_) => {
+                        failed_session_ids.push(session_id.clone());
+                        continue;
+                    }
+                }
+            }
+        };
+        let Some(new_path) = new_path else {
             continue;
         };
         // An orphan (session JSON already gone) has no metadata to write; a
         // corrupt JSON is NOT an orphan — set_workspace's load parse failure
         // lands in failed and is retryable (review #463 minor: the orphan
         // classification accepts only NotFound, not any load error).
-        if sessions.durable_session_record_is_absent(session_id) {
-            if final_stale.iter().any(|sid| sid == session_id) {
-                // Orphan sidecar persist failed: a restart would resurrect
-                // the old directory, so report it as failed — a rerun retries
-                // the same sidecar (m2).
-                failed_session_ids.push(session_id.clone());
-            } else {
-                rebound_session_ids.push(session_id.clone());
-            }
+        // Report honesty (review #463 round-10 minor 4; wording narrowed per
+        // round-24 minor 8): a session deleted mid-run must never be claimed
+        // as rebound — the rebound list and the `workspace_rebound` events
+        // must not carry a dead id. A dead id MAY surface transiently in the
+        // failed/post-busy lists (safe direction: a false-FAILED self-heals
+        // on rerun) where a lane's owner re-check races the delete; this
+        // loop routes its own NotFound arms through the same ghost
+        // classification instead of blanket-failing. A to-lane orphan this
+        // run did nothing for (only a sidecar remains, put there by an
+        // earlier run) does not claim a rebound either. Only an orphan whose
+        // binding artifacts still exist AND whose binding a lane of THIS run
+        // actually moved stays reportable.
+        if let Some(outcome) = absent_record_outcome_if_ghost(
+            &sessions,
+            session_id,
+            &final_stale,
+            &prefix_outcome,
+            &plain_rebind,
+        ) {
+            record_absent_record_outcome(
+                outcome,
+                session_id,
+                &mut rebound_session_ids,
+                &mut failed_session_ids,
+            );
             continue;
         }
+        // Deliverable-path rebase (review #463 round-10 Major 2):
+        // artifacts[].storage_path persists absolute workspace paths, so
+        // without this pass every pre-rebind deliverable keeps pointing at
+        // the vanished root (un-openable card, dropped from the deliverables
+        // index, un-healable by the frontend reconcile — its relative→
+        // absolute escape hatch is spent). Deliberately BEFORE set_workspace:
+        // both writes hit the same session JSON, so a failure here almost
+        // certainly dooms the metadata write too, and counting the session
+        // failed while its metadata is still stale is what keeps the rerun
+        // convergent — the to-lane scan re-admits it (metadata ≠ binding)
+        // and retries both. Running it after would strand a rebase failure
+        // forever: a metadata-healthy session is never admitted again.
+        // Round-21 R2: resolve and record the per-session event geometry
+        // BEFORE the rebase calls — a strand-repaired session that fails the
+        // artifact or acp-state step continues past the loop's tail, and its
+        // failure event must still carry the geometry its (divergent-vintage)
+        // buffer can match, not the run-level pair.
+        if let Some(session_from) = &per_session_from {
+            per_id_event_geometry.push((
+                session_id.clone(),
+                session_from.clone(),
+                new_path.clone(),
+            ));
+        }
+        if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &|path: &Path| {
+            per_session_from
+                .as_ref()
+                .and_then(|session_from| {
+                    SessionAgentStore::rebind_target_path(path, session_from, &new_path)
+                })
+                .or_else(|| SessionAgentStore::rebind_target_path(path, &from, &to_display))
+        }) {
+            // Same CodeQL root-cause-only rule as set_workspace below.
+            eprintln!(
+                "[projects] rebind artifact-path rebase failed: {}",
+                error.root_cause()
+            );
+            // Round-24 MAJOR 1 / minor 8: a record this run's own load no
+            // longer finds is a mid-run delete, not a failed translate —
+            // classify it by the loop-head ghost helper (mostly Skip: the
+            // serialized delete purged the binding artifacts with the
+            // record) instead of claiming a dead id as failed.
+            if let Some(outcome) = absent_record_outcome_if_ghost(
+                &sessions,
+                session_id,
+                &final_stale,
+                &prefix_outcome,
+                &plain_rebind,
+            ) {
+                record_absent_record_outcome(
+                    outcome,
+                    session_id,
+                    &mut rebound_session_ids,
+                    &mut failed_session_ids,
+                );
+                continue;
+            }
+            failed_session_ids.push(session_id.clone());
+            continue;
+        }
+        // Post-write owner re-check (round-24 MAJOR 1, mirroring the plain
+        // lane's round-18 minor-7 check): the user-side delete now holds
+        // `scheduled_mutation` across the record removal (store delete_locked),
+        // so it can no longer interleave inside this loop's load→save pairs —
+        // but a delete landing between this save's release and the next
+        // write must not sail on into acp-state translation and
+        // set_workspace, either of which would re-create the deleted record
+        // wholesale and turn the ghost into a live-looking rebound.
+        if let Some(outcome) = absent_record_outcome_if_ghost(
+            &sessions,
+            session_id,
+            &final_stale,
+            &prefix_outcome,
+            &plain_rebind,
+        ) {
+            record_absent_record_outcome(
+                outcome,
+                session_id,
+                &mut rebound_session_ids,
+                &mut failed_session_ids,
+            );
+            continue;
+        }
+        // acp-state workspace translation (review #463 round-14 B2): every
+        // ACP spawn persists workspace.path into sessions/<id>/acp-state.json,
+        // and the boot recovery reads that field BEFORE the workspace
+        // baseline — an untranslated state file preempts even a successfully
+        // recaptured baseline and resurrects the vanished root if the agent
+        // index is later lost. Same ordering rule as the artifact rebase
+        // above: it must run before set_workspace, so a failure keeps the
+        // metadata stale and the rerun re-admits the session — a converged
+        // metadata would strand the stale state file forever.
+        if let Err(error) =
+            crate::features::codex_acp::translate_acp_state_workspace(session_id, &|path: &Path| {
+                per_session_from
+                    .as_ref()
+                    .and_then(|session_from| {
+                        SessionAgentStore::rebind_target_path(path, session_from, &new_path)
+                    })
+                    .or_else(|| SessionAgentStore::rebind_target_path(path, &from, &to_display))
+            })
+        {
+            // Same CodeQL root-cause-only rule as set_workspace below.
+            eprintln!(
+                "[projects] rebind acp-state workspace translation failed: {}",
+                error.root_cause()
+            );
+            failed_session_ids.push(session_id.clone());
+            continue;
+        }
+        let mut synced_this_loop = false;
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
+                synced_this_loop = true;
+                // Post-write owner re-check (round-24 MAJOR 1): a delete
+                // landing between this save's lock release and the report
+                // push would otherwise push a freshly dead id into the
+                // rebound list and event it — the exact projects.rs report
+                // contract above. The plain lane's round-18 minor-7 check,
+                // mirrored. Residual tail (round-24 minor 8): a delete can
+                // still land between THIS probe and the push below — the
+                // window is shrunk to a single probe, not closed; the
+                // contract wording above stays absolute because the same
+                // probe re-runs on the rerun that the stale badge would
+                // trigger.
+                if let Some(outcome) = absent_record_outcome_if_ghost(
+                    &sessions,
+                    session_id,
+                    &final_stale,
+                    &prefix_outcome,
+                    &plain_rebind,
+                ) {
+                    record_absent_record_outcome(
+                        outcome,
+                        session_id,
+                        &mut rebound_session_ids,
+                        &mut failed_session_ids,
+                    );
+                    continue;
+                }
                 // Indexed session whose sidecar failed both passes: the
                 // binding moved but the authoritative sidecar still holds the
                 // old path, so honestly count it as failed to trigger a user
@@ -639,50 +1172,96 @@ pub async fn rebind_workspace_root(
                     "[projects] rebind set_workspace failed: {}",
                     error.root_cause()
                 );
+                // Round-24 MAJOR 1 / minor 8: a record the load no longer
+                // finds is a mid-run delete — ghost-classify it instead of
+                // blanket-failing a dead id (see the rebase error arm).
+                if let Some(outcome) = absent_record_outcome_if_ghost(
+                    &sessions,
+                    session_id,
+                    &final_stale,
+                    &prefix_outcome,
+                    &plain_rebind,
+                ) {
+                    record_absent_record_outcome(
+                        outcome,
+                        session_id,
+                        &mut rebound_session_ids,
+                        &mut failed_session_ids,
+                    );
+                    continue;
+                }
                 failed_session_ids.push(session_id.clone());
             }
         }
         // Baseline recapture is gated to code sessions (#464 unify): plain
         // bound sessions do not consume workspace baselines, so no code-lane
-        // sidecar is created for them.
-        if code_rebound_ids.contains(session_id.as_str()) {
-            // Baseline recapture: best-effort, the git fingerprint is derivable
-            // again, and a failure does not block the rebind. Runs on
-            // spawn_blocking: a non-git directory synchronously walks tens of
-            // thousands of entries and must not run serially on the async
-            // command thread (same idiom as session creation in codex.rs).
-            let baseline_session_id = session_id.clone();
-            let baseline_root = new_path.clone();
-            match tauri::async_runtime::spawn_blocking(move || {
+        // sidecar is created for them. A repair-only session (round-18
+        // MAJOR-2) converges onto an out-of-geometry target, so its baseline
+        // must be recaptured at the repaired target verbatim too — the old
+        // baseline points at the vanished intermediate root. A to-lane
+        // admittee whose set_workspace just succeeded also needs it (review
+        // #463 round-19 SF-2): its metadata was behind the binding from an
+        // earlier interrupted run, nothing ever recaptured the baseline
+        // since, and the boot-recovery fallback would keep pointing at the
+        // vanished root — but only for code sessions, never for the plain
+        // lane's rebound set.
+        // Arm 3 is code-gated (review #463 round-21 SF-4): a plain chat
+        // admitted from the to-scan is in neither the plain rebound nor the
+        // plain failed set, so without the codex-record probe it captured a
+        // codex-workspace-baseline.json the plain lane never reads — the
+        // exact stray-file-plus-wasted-walk this gate exists to prevent.
+        let is_code_session = acp_pool
+            .agents()
+            .code_project_workspace(session_id)
+            .is_some();
+        if code_rebound_ids.contains(session_id.as_str())
+            || per_session_from.is_some()
+            || (synced_this_loop
+                && is_code_session
+                && !plain_rebind
+                    .rebound
+                    .iter()
+                    .any(|(sid, _)| sid == session_id)
+                && !plain_lane_failed.iter().any(|sid| sid == session_id))
+        {
+            deferred_baselines.push((session_id.clone(), new_path.clone()));
+        }
+    }
+
+    // Drain the deferred baseline recaptures with bounded concurrency
+    // (review #463 round-18 MAJOR-3): each is a spawn_blocking walk of up to
+    // WALK_LIMIT entries (or a SHA-256 pass over a git tree); serially
+    // awaiting one per rebound session stalled the dialog for tens of
+    // seconds to minutes on large destinations. Best-effort and
+    // order-independent — a failure is logged (root cause only, same CodeQL
+    // rule) and never blocks the report.
+    if !deferred_baselines.is_empty() {
+        let mut in_flight = tokio::task::JoinSet::new();
+        for (baseline_session_id, baseline_root) in deferred_baselines {
+            in_flight.spawn_blocking(move || {
                 crate::features::codex_acp::workspace::capture_baseline(
                     &baseline_session_id,
                     &baseline_root,
                 )
-            })
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    // Same CodeQL constraint as set_workspace above: the chain
-                    // embeds sessions/<id>/…json.tmp paths; log the root cause
-                    // only.
-                    eprintln!(
-                        "[projects] rebind capture_baseline failed: {}",
-                        error.root_cause()
-                    )
-                }
-                Err(error) => {
-                    eprintln!("[projects] rebind capture_baseline task failed: {error}")
+            });
+            if in_flight.len() >= REBIND_BASELINE_RECAPTURE_CONCURRENCY {
+                if let Some(result) = in_flight.join_next().await {
+                    log_baseline_result(result);
                 }
             }
+        }
+        while let Some(result) = in_flight.join_next().await {
+            log_baseline_result(result);
         }
     }
 
     // Project roots LAST (review #463 round-8 M3): committing them earlier
     // made an interrupted run unreachable — the root would already sit at
     // `to` (available, so no badge) while the session lanes still pointed at
-    // `from`, and re-adding the old root to retry collides with the moved one
-    // and rolls back. With the roots last, a crash anywhere above still shows
+    // `from`. Recovery for the finally-stale stragglers this ordering can
+    // strand (review #463 round-21 SF-9): re-adding the OLD path as a
+    // project root re-arms the unavailable-root badge, whose rebind entry
+    // then converges the remaining sessions via the on-disk prefix scan. With the roots last, a crash anywhere above still shows
     // the old root as unavailable and the badge reruns the remaining lanes
     // (every step is idempotent). The overlap invariant was pre-flighted
     // before any write and is revalidated under the write lock here.
@@ -690,7 +1269,10 @@ pub async fn rebind_workspace_root(
     // This retry entry exists exactly while `from` is unavailable, which is
     // also the only state in which the badge (the sole rebind entry) is
     // rendered — so the reorder restores the entry for every interrupted run
-    // that the user could have started in the first place. In the
+    // that the user could have started in the first place. The badge's
+    // availability signal is the `available` wire field (`is_dir()` in
+    // from_project, review #463 round-14 B1; dropping it badges EVERY root —
+    // pinned by project_root_status_wire_carries_available). In the
     // strong-confirm path (`from` reappeared after the badge was shown, see
     // require_confirm_existing) the folder is available again and no badge is
     // rendered either way; the dialog that drove the run is still open and its
@@ -702,18 +1284,48 @@ pub async fn rebind_workspace_root(
     // only) fails HERE — after the session lanes are durable. The user gets the
     // localized conflict marker and a dialog that stays open with a retry, and
     // a rerun converges once the overlap is resolved, but the per-session
-    // detail of this run is not reported alongside the error.
+    // detail of this run is not reported alongside the error — beyond the
+    // ids reachable through `rebound ∪ failed`, per-session fence-hit detail
+    // is dropped here (round-24 minor 1, residual on record).
     // Only a genuine overlap conflict carries the localized conflict marker
     // (round-8 review M3): persist and other infrastructure failures must
     // surface as ordinary errors, or the user is told to resolve a
     // "conflict" that no resolution fixes.
-    let affected_project_ids =
-        store
-            .rebind_roots(&from, &to_display)
-            .map_err(|error| match error {
+    // The session lanes above are already durable when this fails, so the
+    // mark-carrying events are emitted on the error path too (review #463
+    // round-C minor 1): the documented retry cannot re-admit sessions whose
+    // set_workspace already succeeded (metadata == binding at `to`), so this
+    // run's only chance to stamp them is here — without it a resident buffer
+    // could save stale artifact paths over the rebased JSON for as long as
+    // the conflict stands.
+    let affected_project_ids = match store.rebind_roots(&from, &to_display) {
+        Ok(ids) => ids,
+        Err(error) => {
+            emit_workspace_rebound_events(
+                &app,
+                rebound_session_ids.iter().chain(&failed_session_ids),
+                &from,
+                &to_display,
+                &per_id_event_geometry,
+            );
+            let marker = match error {
                 RebindRootsError::Overlap(context) => format!("REBIND_ROOTS_CONFLICT: {context:#}"),
+                RebindRootsError::Persist(context) => format!("REBIND_ROOTS_PERSIST: {context:#}"),
                 RebindRootsError::Other(context) => format!("rebind_workspace_root: {context:#}"),
-            })?;
+            };
+            // Carryover honesty (review #463 round-14 should-fix 1): the
+            // session lanes are already durable at `to` when the roots commit
+            // fails, but an Err carries no report — so the dialog's
+            // post-busy carryover stays empty, and on the retry a refused
+            // eviction of an already-rebound session is dropped
+            // (touched_this_run == false ∧ carryover empty), closing the
+            // dialog "up to date" while an old-cwd runtime stays resident.
+            // Append this run's moved ids; the dialog feeds them back and
+            // the backend honors only the intersection with its own retry
+            // population, so the suffix can never widen the eviction set.
+            return Err(append_rebound_ids_suffix(marker, &rebound_session_ids));
+        }
+    };
 
     // Post-pass fence hits that the pre-rewrite snapshot never saw (review
     // #463 round-8 MINOR-1): a session created under `from` by a concurrent
@@ -726,23 +1338,29 @@ pub async fn rebind_workspace_root(
     fold_unreported_fence_hits(&final_stale, &affected, &mut failed_session_ids);
 
     emit_project_event(&app, "projects:list_changed", "rebound");
-    for session_id in &rebound_session_ids {
-        super::sessions::emit_session_event(
-            &app,
-            "session:list_changed",
-            session_id,
-            "workspace_rebound",
-        );
-    }
     // Post-migration busy recheck (finding 5): the entry fence and the
     // multi-file migration are not mutually exclusive, so a turn may have
     // started — against the old directory — during the migration. Bindings
     // are already moved; report honestly and let the frontend suggest one
     // retry when idle. Scheduled rounds share the entry-fence semantics
     // (M5).
+    // Same single bounded ACP acquisition as the entry fence (restored,
+    // review #463 round-11 B2/T13); an unreadable state (`None`) is reported
+    // "not busy" here, because the reclaim tail re-checks under its own bound
+    // and is what actually reports a refusal — inventing post-busy ids for
+    // sessions nothing was refused for would keep the dialog open on a false
+    // report. The id list is rebuilt from the live `affected` rather than
+    // reused from the entry fence: the two fences are evaluated
+    // independently, so this recheck never trusts a list assembled before
+    // the migration ran.
+    let post_fence_ids: Vec<String> = affected.iter().map(|(id, _)| id.clone()).collect();
+    let acp_busy_after = acp_pool
+        .rebind_blocking_sessions(&post_fence_ids)
+        .await
+        .unwrap_or_default();
     let mut post_busy_session_ids = Vec::new();
     for (session_id, _) in &affected {
-        if acp_pool.is_turn_active(session_id).await
+        if acp_busy_after.iter().any(|id| id == session_id)
             || engines.is_turn_active(session_id)
             || engines.is_scheduled_turn_running(session_id)
         {
@@ -764,6 +1382,12 @@ pub async fn rebind_workspace_root(
     // candidates (M2).
     let post_busy: std::collections::HashSet<String> =
         post_busy_session_ids.iter().cloned().collect();
+    // One shared budget for the whole reclaim tail (review #463 round-10 T13):
+    // a contended ACP pool would otherwise charge its per-call wait once per
+    // candidate. Candidates the budget does not reach are reported exactly
+    // like a refused eviction (the same touched/carryover gate below), so the
+    // dialog keeps its retry instead of closing on an unverified success.
+    let tail_deadline = tokio::time::Instant::now() + REBIND_EVICT_TAIL_BUDGET;
     for session_id in collect_eviction_candidates(
         &rebound_session_ids,
         &failed_session_ids,
@@ -772,8 +1396,16 @@ pub async fn rebind_workspace_root(
         if post_busy.contains(&session_id) {
             continue;
         }
-        let acp_idle = acp_pool.evict_if_idle_for_rebind(&session_id).await;
-        let engine_idle = engines.evict_if_idle_for_rebind(&session_id).await;
+        // Out of budget = "not idle": nothing was touched, so the session must
+        // not be counted as reclaimed.
+        let (acp_idle, engine_idle) = if tokio::time::Instant::now() < tail_deadline {
+            (
+                acp_pool.evict_if_idle_for_rebind(&session_id).await,
+                engines.evict_if_idle_for_rebind(&session_id).await,
+            )
+        } else {
+            (false, false)
+        };
         if !acp_idle || !engine_idle {
             // A turn started between the recheck and the eviction and the
             // pools refused to kill it. Surface the session so the user can
@@ -797,25 +1429,71 @@ pub async fn rebind_workspace_root(
             }
         }
     }
-    // The plain sidecars and metadata moved, but if the legacy global table
-    // could not be synced, the next boot migration would re-bind the old paths
-    // over the fresh sidecars — the report must not claim success (#464
-    // round-5 blocker 1). The list is driven by the entries the surviving
-    // table would actually resurrect, not by this run's rewrite log: on a
-    // retry nothing is left to rewrite and the rebound set is empty while the
-    // stale table is still there (#464 round-6 blocking 1).
-    if plain_rebind.legacy_sync_failed {
-        merge_legacy_resurrections_into_failures(
-            &mut failed_session_ids,
-            &plain_rebind.legacy_resurrection_ids,
-        );
-    }
+    // workspace_rebound events carry the rebind geometry and cover every
+    // session whose persisted artifact paths this PR's lanes rebased —
+    // rebound, failed (lanes moved; something else did not finish), and
+    // post-busy (moved by this or an earlier run). Wording scoped per
+    // round-26 minor 1: "dead ids are never REPORTED as rebound, hence
+    // never evented as one" — the failed/post-busy chains below carry ids
+    // verbatim and a mid-run delete can surface there transiently (the
+    // safe, self-healing direction this file documents at the loop head).
+    // The frontend marks those
+    // sessions so their in-memory buffers stop re-persisting stale artifact
+    // paths over the rebased JSON: a chat turn completed after the rebind
+    // wholesale-saves the buffer's artifact list, and without the mark that
+    // save would durably revert the backend rebase (review #463 round-B
+    // Major 1). Emitted after the reclaim tail so the post-busy list is
+    // final; ids already in the rebound list may repeat (the mark write is
+    // idempotent).
+    emit_workspace_rebound_events(
+        &app,
+        rebound_session_ids
+            .iter()
+            .chain(&failed_session_ids)
+            .chain(&post_busy_session_ids),
+        &from,
+        &to_display,
+        &per_id_event_geometry,
+    );
     Ok(RebindWorkspaceReport {
         rebound_session_ids,
         failed_session_ids,
         affected_project_ids,
         post_busy_session_ids,
     })
+}
+
+/// workspace_rebound event with the rebind geometry (see the call site for
+/// why failed and post-busy ids are included). Same forwarding convention
+/// as `emit_session_event` applies to the session event; dead ids are never
+/// reported, hence never evented (review #463 round-10 minor 4).
+fn emit_workspace_rebound_events<'a>(
+    app: &AppHandle,
+    session_ids: impl Iterator<Item = &'a String>,
+    from: &Path,
+    to: &Path,
+    // Per-id geometry overrides (review #463 round-20 R4): strand-repaired
+    // sessions converge onto a target from an EARLIER run's geometry, so
+    // their events must carry the pair the FE chain can actually match —
+    // the run-level from→to pair would leave their buffered vintages
+    // unresolvable and let a live stale buffer revert the rebase durably.
+    per_id_geometry: &[(String, PathBuf, PathBuf)],
+) {
+    for session_id in session_ids {
+        let (event_from, event_to) = per_id_geometry
+            .iter()
+            .find(|(id, _, _)| id == session_id)
+            .map(|(_, session_from, session_to)| (session_from.to_owned(), session_to.to_owned()))
+            .unwrap_or_else(|| (from.to_path_buf(), to.to_path_buf()));
+        let payload = serde_json::json!({
+            "id": session_id,
+            "action": "workspace_rebound",
+            "from": event_from.display().to_string(),
+            "to": event_to.display().to_string(),
+        });
+        let _ = app.emit("session:list_changed", payload.clone());
+        crate::features::remote_control::forward_app_event(app, "session:list_changed", payload);
+    }
 }
 
 /// Admits a session found under the `to` prefix into the rebind (review #463
@@ -838,7 +1516,19 @@ fn admit_rebind_retry_candidate(
         return;
     }
     let needs_metadata_sync = match sessions.load(&session_id) {
-        Ok(session) => session.metadata.workspace != path,
+        // Folded identity-key compare (review #463 round-14 should-fix 2):
+        // a case/separator spelling drift (Windows) between the metadata and
+        // the binding is the same directory — a raw != would read a healthy
+        // to-lane session as needing sync, causing a spurious set_workspace
+        // rewrite plus a false "rebound" report entry and event.
+        Ok(session) => {
+            crate::platform::os::filesystem_path_identity_key(
+                &session.metadata.workspace.to_string_lossy(),
+            )
+            .trim_end_matches('/')
+                != crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
+                    .trim_end_matches('/')
+        }
         Err(_) => true,
     };
     if needs_metadata_sync {
@@ -846,6 +1536,218 @@ fn admit_rebind_retry_candidate(
     } else {
         retry_evict_candidates.push(session_id);
     }
+}
+
+/// Report classification for a session whose durable record is absent (the
+/// orphan branch of the rebind metadata loop; review #463 round-10 minor 4).
+/// `stale` mirrors the pre-existing finally-stale rule (a lane write that did
+/// not stick must be reported failed so a rerun retries it). `artifacts_exist`
+/// probes both binding stores for a surviving index record / sidecar:
+/// deletion removes all of them, so `false` means the session died mid-run
+/// and the report plus the `workspace_rebound` event stream must stay silent
+/// about it. `moved_this_run` gates the hollow success the to-lane could
+/// otherwise produce: an orphan whose sidecar an EARLIER run put under `to`
+/// had nothing translated by this run, so counting it rebound would claim
+/// work that did not happen.
+#[derive(Debug, PartialEq, Eq)]
+enum AbsentRecordOutcome {
+    /// Dead id or nothing done this run: no report entry, no event.
+    Skip,
+    /// Orphan sidecar persist failed: report failed (a rerun retries it).
+    Failed,
+    /// This run moved the orphan's binding: report rebound.
+    Rebound,
+}
+
+fn classify_absent_record_session(
+    stale: bool,
+    artifacts_exist: bool,
+    moved_this_run: bool,
+) -> AbsentRecordOutcome {
+    if !artifacts_exist {
+        return AbsentRecordOutcome::Skip;
+    }
+    // Stale wins over moved (review #463 round-11 B4): an orphan whose
+    // sidecar write failed is in `final_stale` but not `affected`, so the
+    // orphan branch computes moved=false — a plain moved gate would Skip it,
+    // and every rerun would repeat the silence while a stale sidecar sits
+    // under the vanished `from`. Something WAS attempted for this session,
+    // so the enum's own "report failed" promise applies regardless.
+    if stale {
+        return AbsentRecordOutcome::Failed;
+    }
+    if !moved_this_run {
+        return AbsentRecordOutcome::Skip;
+    }
+    AbsentRecordOutcome::Rebound
+}
+
+/// Post-write ghost gate (round-24 MAJOR 1): re-runs the loop-head absence
+/// probe and, when the record is gone, classifies the ghost with the same
+/// helper and the same argument expression the loop head uses — one source
+/// for the report contract, so the post-write and error-arm call sites
+/// cannot drift from it. `None` = the record is still on disk; the caller
+/// proceeds normally.
+///
+/// The classification consults the PLAIN term only
+/// (`workspace_binding_artifacts_exist`: in-memory cache or sidecar file) —
+/// the codex-lane `binding_artifacts_exist` was removed as caller-less dead
+/// code (round-26 minor 1: the ghost helper is its only historical caller,
+/// and the codex record probe it began with is `binding_owner_exists`'s
+/// job, which the scan and write passes gate on directly).
+fn absent_record_outcome_if_ghost(
+    sessions: &SessionStore,
+    session_id: &str,
+    final_stale: &[String],
+    prefix_outcome: &RebindWorkspacePrefixOutcome,
+    plain_rebind: &RebindBindingsOutcome,
+) -> Option<AbsentRecordOutcome> {
+    if !sessions.durable_session_record_is_absent(session_id) {
+        return None;
+    }
+    Some(classify_absent_record_session(
+        final_stale.iter().any(|sid| sid == session_id),
+        sessions.workspace_binding_artifacts_exist(session_id),
+        prefix_outcome
+            .affected
+            .iter()
+            .any(|(sid, _)| sid == session_id)
+            || plain_rebind
+                .rebound
+                .iter()
+                .any(|(sid, _)| sid == session_id),
+    ))
+}
+
+/// Route a classified ghost into the report lists (Skip reports nothing —
+/// a dead id or nothing done this run is neither reported nor evented).
+fn record_absent_record_outcome(
+    outcome: AbsentRecordOutcome,
+    session_id: &str,
+    rebound_session_ids: &mut Vec<String>,
+    failed_session_ids: &mut Vec<String>,
+) {
+    match outcome {
+        AbsentRecordOutcome::Skip => {}
+        AbsentRecordOutcome::Failed => failed_session_ids.push(session_id.to_string()),
+        AbsentRecordOutcome::Rebound => rebound_session_ids.push(session_id.to_string()),
+    }
+}
+
+/// Stranded-index detection (review #463 round-10 Major 1): among the codex
+/// to-lane hits, the sessions admitted into `affected` (metadata ≠ binding,
+/// hence fenced) whose index record disagrees with the path the scan
+/// surfaced. The comparison authority is the session's SIDECAR, read
+/// directly via `sidecar_path_of` (review #463 round-14 R1): an index-arm
+/// scan hit surfaces the index path itself, so comparing against the
+/// surfaced value would compare the index with itself and make the
+/// divergence structurally invisible. A disagreement means the index is
+/// stranded and must be re-keyed onto the sidecar's path. `index_path_of`
+/// is `SessionAgentStore::code_project_workspace`; only code sessions are
+/// considered because the disagreement shape requires a sidecar to compare
+/// against, and ACP records carry none — the round-10 divergence shape
+/// (index ≠ sidecar) cannot exist for them. This does NOT claim ACP records
+/// can never strand: an ACP index move whose RUN died before the metadata
+/// loop, followed by a re-pick of a DIFFERENT destination, still leaves the
+/// record unreachable by any prefix scan — the destination-change residual
+/// documented on the dialog (RebindFolderDialog.jsx); repairing it would
+/// need a persisted pending-rebind marker, the remedy already on record.
+fn detect_stranded_index_records(
+    to_lane_hits: &[(String, PathBuf)],
+    lane_moved_ids: &[String],
+    stale_sidecar_ids: &[String],
+    index_path_of: impl Fn(&str) -> Option<PathBuf>,
+    sidecar_path_of: impl Fn(&str) -> Option<PathBuf>,
+) -> Vec<(String, PathBuf)> {
+    // Deliberately NOT scoped to `affected` (review #463 round-11 B3): a
+    // strand whose metadata already synced (metadata == surfaced path, e.g.
+    // after a run that failed only the sidecar passes) never enters
+    // `affected`, yet the damage is index ≠ sidecar and metadata is
+    // irrelevant to it. Every to-lane hit whose index disagrees with the
+    // authoritative path drives the re-key; a healthy record has
+    // index == sidecar and is untouched.
+    //
+    // The authority is the SIDECAR, read directly (review #463 round-14 R1):
+    // `sessions_under_workspace` surfaces index records first and skips the
+    // sidecar read for those ids, so for an index-arm hit the "surfaced"
+    // path IS the index path — comparing the index against it can never
+    // detect the divergence (the three-run interleave: index@`to`,
+    // sidecar@`to2`, reported as an empty success forever). The repair
+    // target is the sidecar's path, and a missing/unreadable sidecar falls
+    // back to the surfaced path (the off-index orphan arm, where surfaced
+    // already is the sidecar value).
+    //
+    // Except the sessions THIS run's codex lane itself just moved (review
+    // #463 round-12 M1): their surfaced path was captured at scan time,
+    // before the lane rewrote them — comparing it against the fresh index
+    // reports a false "disagreement" and the repair would re-key the index
+    // BACK onto the stale captured path (for a from-inside-to rebind, onto
+    // the vanished directory). Only records no writer of this run touched
+    // can honestly disagree.
+    //
+    // Except the sessions whose SIDECAR is the stale side (review #463
+    // round-17 MAJOR-1): `sidecar_final_stale` holds the sessions whose
+    // sidecar rewrite failed durably — run 1 left index@`to`, sidecar@`from`
+    // — so on the retry the sidecar pass fails again and the detector, if
+    // unguarded, reads the STALE sidecar as authority, re-keys the index
+    // onto the vanished `from`, and `fold_repaired_index_targets` then feeds
+    // `from` into the metadata loop — destroying the partially-good state
+    // and making even/odd retries oscillate. A sidecar this run itself
+    // reported finally-stale is never a legitimate repair authority; such a
+    // session is already reported failed, and the rerun converges it through
+    // the ordinary lane passes once the persistent fault clears.
+    //
+    // The comparison folds both sides to platform identity keys (review #463
+    // round-13): a case-spelling difference between the index record and the
+    // surfaced sidecar path (Windows) is the same directory, and a raw
+    // string compare would read it as a disagreement and trigger a
+    // benign-but-noisy spurious re-key.
+    fn identity_key(path: &Path) -> String {
+        crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
+            .trim_end_matches('/')
+            .to_string()
+    }
+    to_lane_hits
+        .iter()
+        .filter(|(session_id, _)| !lane_moved_ids.iter().any(|id| id == session_id))
+        .filter(|(session_id, _)| !stale_sidecar_ids.iter().any(|id| id == session_id))
+        .filter_map(|(session_id, surfaced)| {
+            let authority = sidecar_path_of(session_id).unwrap_or_else(|| surfaced.clone());
+            index_path_of(session_id)
+                .filter(|indexed| identity_key(indexed) != identity_key(&authority))
+                .map(|_| (session_id.clone(), authority))
+        })
+        .collect()
+}
+
+/// The stranded-repair guard's pure half (review #463 round-17 MAJOR-1):
+/// an authority under the run's `from` prefix means the sidecar was never
+/// translated by this run — it is the stale side, and re-keying the index
+/// onto it re-points the record at the vanished root. Folded identity keys,
+/// component-aware (a sibling sharing the prefix's spelling, `/alpha` vs
+/// `/alphabet`, is not nested).
+fn repair_target_is_backward(target: &Path, from: &Path) -> bool {
+    let target_key = crate::platform::os::filesystem_path_identity_key(&target.to_string_lossy());
+    let from_key = crate::platform::os::filesystem_path_identity_key(&from.to_string_lossy());
+    crate::platform::os::path_identity_is_same_or_nested(
+        target_key.trim_end_matches('/'),
+        from_key.trim_end_matches('/'),
+    )
+}
+
+/// Producer-side pin target for the carryover wire shape (review #463
+/// round-17 SF-1): the marker line first, then the moved-id list on its own
+/// `\nrebound-session-ids:` line, comma-joined with no trailing separator.
+/// The dialog strips the suffix by the exact constant `REBOUND_IDS_SUFFIX`
+/// in `rebindErrors.js` and feeds the ids back as the post-busy carryover —
+/// deleting the suffix would resurrect the round-14 SF1 bug (the dialog
+/// closing "up to date" while an old-cwd runtime stays resident), so both
+/// halves of the format are pinned.
+fn append_rebound_ids_suffix(marker: String, moved_session_ids: &[String]) -> String {
+    format!(
+        "{marker}\nrebound-session-ids:{}",
+        moved_session_ids.join(",")
+    )
 }
 
 /// Eviction candidates for the rebind tail: sessions rebound in this run,
@@ -935,23 +1837,6 @@ fn plain_lane_fence_rescan(sessions: &SessionStore, from: &Path, final_stale: &m
     }
 }
 
-/// Round-8 should-fix 8: the round-6-B1 user-facing contract — when the
-/// legacy global table could not be synced, every session that table would
-/// resurrect at the next boot joins the report's failure list (deduplicated),
-/// so the dialog stays open with an honest retry instead of closing on a
-/// false success. Extracted from the command body for testability: the body
-/// needs the Tauri harness, this merge is pure.
-fn merge_legacy_resurrections_into_failures(
-    failed_session_ids: &mut Vec<String>,
-    legacy_resurrection_ids: &[String],
-) {
-    for session_id in legacy_resurrection_ids {
-        if !failed_session_ids.contains(session_id) {
-            failed_session_ids.push(session_id.clone());
-        }
-    }
-}
-
 /// Metadata replay targets for one rebind run: the pre-rewrite snapshot
 /// first (it already contains every binding under `from` visible before the
 /// rewrites started — the union happens at snapshot time, projects.rs
@@ -967,6 +1852,18 @@ fn merge_legacy_resurrections_into_failures(
 /// every plain chat — `set_workspace` twice and, worse, the id twice in
 /// `rebound_session_ids` (no dedup downstream), so the dialog would claim
 /// "Rebound 2N" for N plain chats (round-8 review finding 1).
+/// Whether a session's pre-sync metadata sits behind the binding the scan
+/// admitted (round-26 MAJOR-1): folded identity-key compare, same domain as
+/// the to-lane's `needs_metadata_sync` — a case/separator spelling drift is
+/// the same directory (not behind), a different target is (behind, carrying
+/// an earlier era's artifact and acp-state paths).
+fn metadata_behind_binding(pre_sync: &Path, bound_path: &Path) -> bool {
+    crate::platform::os::filesystem_path_identity_key(&pre_sync.to_string_lossy())
+        .trim_end_matches('/')
+        != crate::platform::os::filesystem_path_identity_key(&bound_path.to_string_lossy())
+            .trim_end_matches('/')
+}
+
 fn metadata_rebind_targets(
     affected: &[(String, PathBuf)],
     codex_rebound: &[(String, PathBuf)],
@@ -981,6 +1878,61 @@ fn metadata_rebind_targets(
         }
     }
     targets
+}
+
+/// Upper bound on concurrently running baseline recaptures after the rebind
+/// metadata loop (review #463 round-18 MAJOR-3): each recapture walks up to
+/// `WALK_LIMIT` entries on a blocking thread; four at a time keeps the
+/// post-rebind tail bounded on large destinations without saturating the
+/// blocking pool.
+const REBIND_BASELINE_RECAPTURE_CONCURRENCY: usize = 4;
+
+/// Baseline recaptures are best-effort: a failure is logged root-cause-only
+/// and never fails the run. The earlier "the fingerprint is derivable again"
+/// absolute is retracted (round-26 minor 1, same scope as the retraction at
+/// `detect_stranded_index_records`): a failed recapture is never retried,
+/// and the stale baseline remains the boot-recovery fallback for a session
+/// whose acp-state workspace field is empty.
+fn log_baseline_result(result: Result<Result<(), anyhow::Error>, tokio::task::JoinError>) {
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            // Same CodeQL constraint as set_workspace: the chain embeds
+            // sessions/<id>/…json.tmp paths; log the root cause only.
+            eprintln!(
+                "[projects] rebind capture_baseline failed: {}",
+                error.root_cause()
+            );
+        }
+        Err(error) => eprintln!("[projects] rebind capture_baseline task failed: {error}"),
+    }
+}
+
+/// The repaired (sidecar-target) path for a session the stranded-index
+/// repair re-keyed this run, if any (review #463 round-15 SF-C).
+fn repaired_index_target(repaired: &[(String, PathBuf)], session_id: &str) -> Option<PathBuf> {
+    repaired
+        .iter()
+        .find(|(sid, _)| sid == session_id)
+        .map(|(_, target)| target.clone())
+}
+
+/// Fold the stranded-index repair's re-keyed targets into the metadata sync
+/// set (review #463 round-15 SF-C): repaired ids leave the eviction-only
+/// retry candidates (their metadata matched the surfaced path at scan time,
+/// which is exactly why the loop must still sync them onto the repaired
+/// index's target) and join `affected` with the sidecar's target verbatim.
+fn fold_repaired_index_targets(
+    affected: &mut Vec<(String, PathBuf)>,
+    retry_evict_candidates: &mut Vec<String>,
+    repaired: &[(String, PathBuf)],
+) {
+    for (repaired_id, target) in repaired {
+        retry_evict_candidates.retain(|sid| sid != repaired_id);
+        if !affected.iter().any(|(sid, _)| sid == repaired_id) {
+            affected.push((repaired_id.clone(), target.clone()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -999,6 +1951,35 @@ mod tests {
         let object = value.as_object().expect("response serializes as an object");
         assert!(object.contains_key("projects"));
         assert!(object.contains_key("assignments"));
+    }
+
+    /// Wire-shape lock (review #463 round-14 R3): the sidebar's
+    /// unavailableRoots filter (main.jsx) reads exactly the `available`
+    /// field — without it, undefined classifies every healthy root as
+    /// unavailable and the badge renders unconditionally. Pins the field's
+    /// presence and its is_dir semantics.
+    #[test]
+    fn project_root_status_wire_carries_available() {
+        let unique = format!("pinvou3-root-status-{}", std::process::id());
+        let existing = std::env::temp_dir().join(&unique);
+        std::fs::create_dir_all(&existing).expect("create existing root");
+        let missing = std::env::temp_dir().join(format!("{unique}-missing"));
+        let project = Project {
+            id: "p1".to_string(),
+            name: "P1".to_string(),
+            roots: vec![existing.clone(), missing],
+            position: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let item = ProjectListItem::from_project(&project, 0);
+        let value = serde_json::to_value(&item).expect("serialize ProjectListItem");
+        let roots = value["roots"].as_array().expect("roots serialize as array");
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0]["available"], serde_json::json!(true));
+        assert_eq!(roots[1]["available"], serde_json::json!(false));
+
+        let _ = std::fs::remove_dir_all(&existing);
     }
 
     /// Wire-shape locks: the CLI consumes `delete_project`'s return value
@@ -1045,31 +2026,6 @@ mod tests {
         );
         let normal = std::env::temp_dir().join("pinvou3-rebind-from-check");
         assert!(validate_rebind_from(&normal).is_ok());
-    }
-
-    #[test]
-    fn merge_legacy_resurrections_dedupes_into_failures() {
-        let mut failed = vec!["already-failed".to_string()];
-        merge_legacy_resurrections_into_failures(
-            &mut failed,
-            &[
-                "resurrected-a".to_string(),
-                "already-failed".to_string(),
-                "resurrected-b".to_string(),
-            ],
-        );
-        assert_eq!(
-            failed,
-            vec![
-                "already-failed".to_string(),
-                "resurrected-a".to_string(),
-                "resurrected-b".to_string()
-            ]
-        );
-        // An empty resurrection set (a table this process never parsed) adds
-        // nothing — legacy_sync_failed alone still failed the run upstream.
-        merge_legacy_resurrections_into_failures(&mut failed, &[]);
-        assert_eq!(failed.len(), 3);
     }
 
     #[test]
@@ -1130,6 +2086,601 @@ mod tests {
         assert_eq!(
             targets.iter().find(|(id, _)| id == "codex-newcomer"),
             Some(&("codex-newcomer".to_string(), PathBuf::from("/from/deep"))),
+        );
+    }
+
+    #[test]
+    fn stranded_index_detection_admits_only_disagreeing_hits() {
+        // review #463 round-10 Major 1 + round-11 B3: a to-lane hit whose
+        // index record disagrees with the scan-surfaced (sidecar-
+        // authoritative) path is a strand, whether or not it was admitted
+        // into `affected` — a metadata-healthy strand (metadata == path,
+        // never in `affected`) used to escape the repair and report full
+        // success forever. Agreeing records and non-candidate records (index
+        // returns None) must not be re-keyed.
+        let to = PathBuf::from("/vault/beta");
+        let stranded = PathBuf::from("/vault/beta/deep");
+        let hits = vec![
+            ("stranded".to_string(), stranded.clone()),
+            ("agreeing".to_string(), to.clone()),
+            ("not-code".to_string(), to.clone()),
+            ("healthy".to_string(), to.clone()),
+            ("metadata-synced-strand".to_string(), to.clone()),
+            ("lane-moved".to_string(), to.clone()),
+        ];
+        let index_of = |id: &str| -> Option<PathBuf> {
+            match id {
+                // The strand: index at the vanished intermediate target.
+                "stranded" => Some(PathBuf::from("/gone/intermediate")),
+                "agreeing" => Some(to.clone()),
+                // An ACP/plain record: code_project_workspace returns None.
+                "not-code" => None,
+                // round-11 B3: metadata already synced (never in `affected`),
+                // the index still disagrees — must be repaired.
+                "metadata-synced-strand" => Some(PathBuf::from("/gone/intermediate")),
+                // round-12 M1: moved by this run's lane — the index now agrees
+                // with the live path but disagrees with the stale capture;
+                // excluded so the repair cannot resurrect it.
+                "lane-moved" => Some(PathBuf::from("/gone/intermediate")),
+                _ => None,
+            }
+        };
+        // round-12 M1: a hit this run's own codex lane just moved is
+        // excluded — its surfaced path is a stale scan-time capture, and
+        // "repairing" it re-keys the index onto the vanished path.
+        let no_sidecar = |_: &str| -> Option<PathBuf> { None };
+        let detected = detect_stranded_index_records(
+            &hits,
+            &["lane-moved".to_string()],
+            &[],
+            index_of,
+            no_sidecar,
+        );
+        assert_eq!(
+            detected,
+            vec![
+                ("stranded".to_string(), stranded),
+                ("metadata-synced-strand".to_string(), to),
+            ],
+            "every disagreeing to-lane hit is repaired, affected membership irrelevant"
+        );
+    }
+
+    #[test]
+    fn stranded_index_detection_folds_spelling_differences() {
+        // review #463 round-13: the detector compares folded platform
+        // identity keys, not raw strings. On Windows the raw compare read a
+        // case-spelling difference between the index record and the surfaced
+        // sidecar path (`C:\P\A` vs `c:\p\a`) as a disagreement and re-keyed
+        // spuriously; the key fold makes spelling noise a non-strand on every
+        // platform (the POSIX key is the path itself, so the case-fold arm is
+        // exercised by the Windows adapter's own tests). A genuinely
+        // different path must still be detected.
+        let hits = vec![("s".to_string(), PathBuf::from("/vault/beta"))];
+        let trailing_sep = |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/vault/beta/")) };
+        let no_sidecar = |_: &str| -> Option<PathBuf> { None };
+        assert!(
+            detect_stranded_index_records(&hits, &[], &[], trailing_sep, no_sidecar).is_empty(),
+            "a spelling-only difference is the same directory, not a strand"
+        );
+        let genuinely_different =
+            |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/gone/intermediate")) };
+        assert_eq!(
+            detect_stranded_index_records(&hits, &[], &[], genuinely_different, no_sidecar),
+            vec![("s".to_string(), PathBuf::from("/vault/beta"))],
+            "a real disagreement is still re-keyed onto the surfaced path"
+        );
+    }
+
+    /// Round-15 SF-D second half: the detector's call site must pass the
+    /// SIDECAR accessor — swapping it for code_project_workspace is verbatim
+    /// the round-14 R1 bug, and every detector test injects hand-written
+    /// closures, so only a wiring probe sees the swap.
+    ///
+    /// Round-18 MAJOR-1 rebuilt: the probe now runs against
+    /// [`production_source`] — production text only — and pins the accessor
+    /// ORDER, not mere presence, so the R1 swap fails red.
+    #[test]
+    fn stranded_detection_is_wired_to_the_sidecar_accessor() {
+        let window = production_source();
+        let start = window
+            .find("detect_stranded_index_records(")
+            .expect("the production detector call site must exist");
+        let call = &window[start..(start + 700).min(window.len())];
+        let index_at = call
+            .find("code_project_workspace")
+            .expect("the index accessor must feed the detector");
+        let sidecar_at = call
+            .find("code_sidecar_workspace")
+            .expect("the detector must compare the index against the SIDECAR (R1)");
+        assert!(
+            index_at < sidecar_at,
+            "the sidecar accessor must be the later (authority) argument"
+        );
+        let stale_at = call
+            .find("&prefix_outcome.sidecar_final_stale")
+            .expect("the finally-stale exclusion must be wired into the detector");
+        assert!(stale_at < index_at, "the exclusion precedes the accessors");
+    }
+
+    /// Production-source window for the wiring probes (review #463 round-18
+    /// MAJOR-1): everything before the test module. `include_str!` embeds the
+    /// WHOLE file, so an unanchored `find` matched the probe's own argument
+    /// literal and the window then contained the probe's own assertion
+    /// strings — the earlier versions of these two probes could never fail
+    /// (the round-12 phantom-pin class). Cutting at `#[cfg(test)]` makes the
+    /// window provably production text; an anchor that exists only in the
+    /// tests now fails with the expect message instead of self-matching.
+    fn production_source() -> &'static str {
+        let src = include_str!("projects.rs");
+        let tests = src
+            .find("#[cfg(test)]")
+            .expect("the test module marker must exist");
+        &src[..tests]
+    }
+
+    /// Round-24 MAJOR 1: the metadata loop's post-write ghost gate over a
+    /// REAL store. The serialized user delete (store.delete holds
+    /// `scheduled_mutation`) purges the binding artifacts together with the
+    /// record, so a mid-run ghost classifies Skip — never Rebound, never a
+    /// blanket failed — and the orphan-sidecar shapes keep the round-11 B4
+    /// report semantics at every gate call site (parity with the loop head,
+    /// single-sourced through the helper).
+    #[test]
+    fn metadata_loop_ghost_gate_classifies_over_real_store() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-ghost-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        // SAFETY: platform::test_support ENV_LOCK is held for the whole test
+        // by the guard above.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        let from = tmp.join("ghost-from");
+        std::fs::create_dir_all(&from).expect("create from");
+        let to = tmp.join("ghost-to");
+        std::fs::create_dir_all(&to).expect("create to");
+        let prefix_outcome = RebindWorkspacePrefixOutcome::default();
+
+        // A plain-bound session whose binding a lane of this run moved.
+        let moved = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create moved");
+        let moved_id = moved.metadata.id.clone();
+        store
+            .bind_session_workspace(&moved_id, from.clone())
+            .expect("bind moved under from");
+        let plain_rebind = RebindBindingsOutcome {
+            rebound: vec![(moved_id.clone(), to.clone())],
+            failed_session_ids: Vec::new(),
+        };
+
+        // A live record: the gate is transparent.
+        assert_eq!(
+            absent_record_outcome_if_ghost(&store, &moved_id, &[], &prefix_outcome, &plain_rebind,),
+            None,
+            "a live record must never be ghost-classified",
+        );
+
+        // The serialized user delete: the record and the binding artifacts
+        // (cache entry + sidecar) go together — the ghost is Skip even
+        // though this run moved its binding. Claiming it rebound (or
+        // blanket-failing it) would violate the report contract the gate
+        // exists to keep.
+        store.delete(&moved_id).expect("serialized delete");
+        assert!(store.durable_session_record_is_absent(&moved_id));
+        assert!(
+            !store.workspace_binding_artifacts_exist(&moved_id),
+            "the delete must purge the binding artifacts the Skip relies on",
+        );
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &moved_id,
+                std::slice::from_ref(&moved_id),
+                &prefix_outcome,
+                &plain_rebind,
+            ),
+            Some(AbsentRecordOutcome::Skip),
+            "a mid-run delete must classify Skip, never rebound and never a dead failed",
+        );
+
+        // Orphan-sidecar shape: the record is dropped WITHOUT the delete
+        // path (no artifact purge), so cache + sidecar survive — the
+        // round-11 B4 semantics must hold at every gate call site too.
+        let orphan = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create orphan");
+        let orphan_id = orphan.metadata.id.clone();
+        store
+            .bind_session_workspace(&orphan_id, from.clone())
+            .expect("bind orphan under from");
+        let record_path = store
+            .manager
+            .sessions_dir()
+            .join(format!("{orphan_id}.json"));
+        std::fs::remove_file(&record_path).expect("drop the record only");
+        assert!(store.durable_session_record_is_absent(&orphan_id));
+        assert!(
+            store.workspace_binding_artifacts_exist(&orphan_id),
+            "cache + sidecar survive the manual record drop",
+        );
+        let moved_orphan = RebindBindingsOutcome {
+            rebound: vec![(orphan_id.clone(), to.clone())],
+            failed_session_ids: Vec::new(),
+        };
+        assert_eq!(
+            absent_record_outcome_if_ghost(&store, &orphan_id, &[], &prefix_outcome, &moved_orphan,),
+            Some(AbsentRecordOutcome::Rebound),
+            "a moved-this-run orphan with live artifacts stays reportable",
+        );
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                std::slice::from_ref(&orphan_id),
+                &prefix_outcome,
+                &moved_orphan,
+            ),
+            Some(AbsentRecordOutcome::Failed),
+            "stale wins over moved (round-11 B4)",
+        );
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                &[],
+                &prefix_outcome,
+                &RebindBindingsOutcome::default(),
+            ),
+            Some(AbsentRecordOutcome::Skip),
+            "an orphan this run did nothing for stays silent",
+        );
+
+        // Round-24 minor 21: the codex lane records its moves in
+        // `prefix_outcome.affected` (the plain lane's in `plain_rebind
+        // .rebound`, covered above) — drive that disjunct too, so deleting
+        // it reverts the classification to Skip and fails here.
+        let mut codex_outcome = RebindWorkspacePrefixOutcome::default();
+        codex_outcome.affected.push((orphan_id.clone(), to.clone()));
+        assert_eq!(
+            absent_record_outcome_if_ghost(
+                &store,
+                &orphan_id,
+                &[],
+                &codex_outcome,
+                &RebindBindingsOutcome::default(),
+            ),
+            Some(AbsentRecordOutcome::Rebound),
+            "a codex-lane-moved orphan with live artifacts stays reportable through the affected disjunct",
+        );
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-24 MAJOR 1 / minor 8: the metadata loop must WIRE the ghost
+    /// gate at the load-bearing points — between the set_workspace save and
+    /// the rebound push (a delete landing after the save must not be claimed
+    /// as rebound), and in both write error arms before the blanket failed
+    /// push (a NotFound load is a mid-run delete, not a failed translate).
+    /// Source-level like the other command-layer probes: the command needs a
+    /// live AppHandle + four managed states to drive at runtime.
+    /// Round-24 minor 9: producer-side serde pin for RebindWorkspaceReport.
+    /// The dialog reads the snake_case wire fields; a future `rename_all =
+    /// "camelCase"` would turn a partial failure into a false "up to date"
+    /// toast with every suite green. The badge and event lanes have pins;
+    /// this mirrors one for the report struct itself.
+    #[test]
+    fn rebind_workspace_report_serializes_snake_case_wire_fields() {
+        let report = RebindWorkspaceReport {
+            rebound_session_ids: vec!["s1".to_string()],
+            failed_session_ids: vec!["s2".to_string()],
+            affected_project_ids: vec!["prj-1".to_string()],
+            post_busy_session_ids: vec!["s3".to_string()],
+        };
+        let payload = serde_json::to_value(&report).expect("the report must serialize");
+        let object = payload
+            .as_object()
+            .expect("the report must serialize to a JSON object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "affected_project_ids",
+                "failed_session_ids",
+                "post_busy_session_ids",
+                "rebound_session_ids",
+            ],
+            "the report's wire field names drifted — the dialog reads snake_case",
+        );
+    }
+
+    /// Round-26 MAJOR-1: the pre-sync metadata load must be keyed on the
+    /// ACTUAL condition — the metadata sitting behind the binding the scan
+    /// admitted (folded identity compare) — and must fire for every admitted
+    /// session, not only on the repair arm; a run-global-only translation
+    /// would claim Rebound over stranded A-era artifact/acp-state paths.
+    /// Source-level like the other command-layer probes. Mutation: deleting
+    /// the `metadata_behind_binding` disjunct (restoring the repair-arm-only
+    /// load) fails the first assert.
+    #[test]
+    fn metadata_loop_loads_pre_sync_from_for_metadata_behind_binding() {
+        let src = production_source();
+        let some_arm = src
+            .find("Round-26 MAJOR-1: the repair arm is not the only")
+            .expect("the pre-sync load comment must exist in the Some arm");
+        let tail = &src[some_arm..];
+        let behind_gate = tail
+            .find("metadata_behind_binding(&pre_sync, bound_path)")
+            .expect("the per-session from must key on metadata-behind-binding");
+        let repair_gate = tail
+            .find("repaired_target.is_some()")
+            .expect("the repair arm must keep its load");
+        assert!(
+            behind_gate < repair_gate,
+            "the metadata-behind-binding condition must precede the repair-arm fallback"
+        );
+        let set_ws = src
+            .find("sessions.set_workspace(session_id, new_path.clone())")
+            .expect("set_workspace must exist");
+        assert!(
+            set_ws > some_arm,
+            "the pre-sync load must run before set_workspace overwrites the metadata"
+        );
+        // The pure decision helper: folded identity compare.
+        assert!(metadata_behind_binding(
+            std::path::Path::new("/data/A"),
+            std::path::Path::new("/data/B"),
+        ));
+        assert!(!metadata_behind_binding(
+            std::path::Path::new("/data/A/"),
+            std::path::Path::new("/data/A"),
+        ));
+        // Case-only drift folds to the same directory on Windows (the
+        // platform identity-key implementation owns that behavior; not
+        // asserted here to keep the file free of target-cfg exceptions).
+    }
+
+    /// Round-26 MAJOR-4: the eviction-tail refusal glue — a refused or
+    /// timed-out reclaim becomes a post-busy report entry ONLY when this run
+    /// touched the session or a carryover post-busy id feeds back — is the
+    /// PR's stated core contract ("an unreported refusal would close the
+    /// dialog on a false full success") and was the one unpinned link
+    /// between two pinned halves. Mutation: deleting the guarded push keeps
+    /// every suite green without this pin.
+    #[test]
+    fn eviction_tail_refusal_glue_feeds_post_busy_is_wired() {
+        let src = production_source();
+        let refusal = src
+            .find("if !acp_idle || !engine_idle {")
+            .expect("the refusal condition must exist in the eviction tail");
+        let tail = &src[refusal..];
+        let touched = tail
+            .find("let touched_this_run = rebound_session_ids.iter().any(")
+            .expect("the touched-this-run gate must exist");
+        let push = tail
+            .find("post_busy_session_ids.push(session_id);")
+            .expect("the post-busy push must exist");
+        assert!(
+            touched < push,
+            "the touched/carryover gate must precede the post-busy push (deleting the glue must fail here)"
+        );
+        assert!(
+            tail.find("carryover_post_busy.contains(&session_id)")
+                .is_some(),
+            "the carryover feedback arm must gate the push beside touched_this_run",
+        );
+    }
+
+    /// Round-23 minor 2 (destination-validation cause logging): the
+    /// `map_err` replacement must log the validator's root cause before
+    /// swapping in the marker — the sibling arms all do, and the round-26
+    /// minor-5 audit found this pin missing. Source-level: the log lives
+    /// inside the closure.
+    #[test]
+    fn destination_validation_logs_the_cause_before_the_marker() {
+        let src = production_source();
+        let closure = src
+            .find("validate_codex_project_workspace(&to).map_err(|e| {")
+            .expect("the destination-validation closure must bind the error");
+        let tail = &src[closure..];
+        let log = tail
+            .find("rebind destination validation failed")
+            .expect("the cause must be logged before the marker replaces it");
+        let marker = tail
+            .find("REBIND_TO_UNUSABLE: the destination folder cannot be used")
+            .expect("the marker must exist");
+        assert!(log < marker, "the cause log must precede the marker swap");
+    }
+
+    #[test]
+    fn metadata_loop_post_write_ghost_gates_are_wired() {
+        let src = production_source();
+        let set_ws = src
+            .find("sessions.set_workspace(session_id, new_path.clone())")
+            .expect("the metadata loop's set_workspace call must exist");
+        let after_set_ws = &src[set_ws..];
+        let ok_gate = after_set_ws
+            .find("absent_record_outcome_if_ghost(")
+            .expect("the post-write ghost gate must follow set_workspace (round-24 MAJOR 1)");
+        let rebound_push = after_set_ws
+            .find("rebound_session_ids.push(session_id.clone())")
+            .expect("the rebound push must exist");
+        assert!(
+            ok_gate < rebound_push,
+            "the ghost gate must classify before the rebound push claims the id",
+        );
+        let rebase_arm = src
+            .find("rebind artifact-path rebase failed")
+            .expect("the rebase error arm must exist");
+        let after_rebase_err = &src[rebase_arm..];
+        let rebase_gate = after_rebase_err
+            .find("absent_record_outcome_if_ghost(")
+            .expect("the rebase error arm must ghost-classify (round-24 minor 8)");
+        let rebase_failed = after_rebase_err
+            .find("failed_session_ids.push(session_id.clone())")
+            .expect("the rebase error arm must keep the failed classification");
+        assert!(
+            rebase_gate < rebase_failed,
+            "the rebase arm must classify the ghost before blanket-failing",
+        );
+        let set_ws_err = after_set_ws
+            .find("rebind set_workspace failed")
+            .expect("the set_workspace error arm must exist");
+        let after_set_ws_err = &after_set_ws[set_ws_err..];
+        let set_ws_gate = after_set_ws_err
+            .find("absent_record_outcome_if_ghost(")
+            .expect("the set_workspace error arm must ghost-classify (round-24 minor 8)");
+        let set_ws_failed = after_set_ws_err
+            .find("failed_session_ids.push(session_id.clone())")
+            .expect("the set_workspace error arm must keep the failed classification");
+        assert!(
+            set_ws_gate < set_ws_failed,
+            "the set_workspace arm must classify the ghost before blanket-failing",
+        );
+    }
+
+    #[test]
+    fn repaired_index_targets_join_the_metadata_sync_set() {
+        // review #463 round-15 SF-C: the repaired session was admitted as an
+        // eviction-only candidate (metadata == surfaced path at scan time);
+        // the fold must move it into `affected` with the sidecar's target
+        // verbatim and out of retry_evict_candidates, or its metadata stays
+        // divergent forever and no retry converges it. The metadata loop
+        // reads the repaired target verbatim — rebind_target_path cannot map
+        // a path from an earlier run's geometry.
+        let mut affected = vec![];
+        let mut retry_evict = vec!["s1".to_string(), "other".to_string()];
+        let repaired = vec![("s1".to_string(), PathBuf::from("/vault/gamma"))];
+        fold_repaired_index_targets(&mut affected, &mut retry_evict, &repaired);
+        assert_eq!(
+            affected,
+            vec![("s1".to_string(), PathBuf::from("/vault/gamma"))],
+            "the repaired session joins the metadata sync set with the sidecar target"
+        );
+        assert_eq!(
+            retry_evict,
+            vec!["other".to_string()],
+            "the repaired session leaves the eviction-only candidates"
+        );
+        assert_eq!(
+            repaired_index_target(&repaired, "s1"),
+            Some(PathBuf::from("/vault/gamma")),
+        );
+        assert_eq!(repaired_index_target(&repaired, "other"), None);
+        // rebind_target_path cannot express the repaired target: it is under
+        // neither this run's `from` nor its `to` — the verbatim override in
+        // the loop is load-bearing, not a nicety.
+        assert_eq!(
+            SessionAgentStore::rebind_target_path(
+                &PathBuf::from("/vault/gamma"),
+                Path::new("/gone"),
+                Path::new("/vault/beta"),
+            ),
+            None,
+        );
+        // Already-affected sessions are not double-entered.
+        let mut affected = vec![("s1".to_string(), PathBuf::from("/vault/beta"))];
+        let mut retry_evict = vec![];
+        fold_repaired_index_targets(&mut affected, &mut retry_evict, &repaired);
+        assert_eq!(affected.len(), 1, "no double entry for an affected id");
+    }
+
+    #[test]
+    fn stranded_index_detection_compares_the_index_against_the_sidecar() {
+        // review #463 round-14 R1: `sessions_under_workspace` surfaces index
+        // records first, so for an index-arm hit the surfaced path IS the
+        // index path — comparing index vs surfaced compares the index with
+        // itself and the strand is structurally invisible (the three-run
+        // interleave: run 1 leaves index@`to`/sidecar@`from`, run 2 moves the
+        // sidecar to `to2` but its index re-key persist fails, run 3's
+        // to-scan surfaces the id via the index arm). The detector must read
+        // the sidecar directly and re-key the index onto the SIDECAR's path.
+        let to = PathBuf::from("/vault/beta");
+        let to2 = PathBuf::from("/vault/gamma");
+        let hits = vec![
+            // Index-arm hit: surfaced == index@to; the sidecar sits at to2.
+            ("index-arm-strand".to_string(), to.clone()),
+            // Index-arm hit whose sidecar agrees: healthy, untouched.
+            ("index-arm-healthy".to_string(), to.clone()),
+            // Index-arm hit with NO sidecar: falls back to the surfaced
+            // path (== index), nothing to disagree with.
+            ("index-arm-no-sidecar".to_string(), to.clone()),
+            // Sidecar-arm hit (off-index orphan shape): surfaced is already
+            // the sidecar value; an index record that disagrees is repaired
+            // onto it.
+            ("sidecar-arm-strand".to_string(), to.clone()),
+        ];
+        let index_of = |id: &str| -> Option<PathBuf> {
+            match id {
+                "index-arm-strand" => Some(to.clone()),
+                "index-arm-healthy" => Some(to.clone()),
+                "index-arm-no-sidecar" => Some(to.clone()),
+                "sidecar-arm-strand" => Some(PathBuf::from("/gone/intermediate")),
+                _ => None,
+            }
+        };
+        let sidecar_of = |id: &str| -> Option<PathBuf> {
+            match id {
+                "index-arm-strand" => Some(to2.clone()),
+                "index-arm-healthy" => Some(to.clone()),
+                "sidecar-arm-strand" => Some(to.clone()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            detect_stranded_index_records(&hits, &[], &[], index_of, sidecar_of),
+            vec![
+                ("index-arm-strand".to_string(), to2),
+                ("sidecar-arm-strand".to_string(), to),
+            ],
+            "an index-arm hit is compared against its sidecar and re-keyed onto it"
+        );
+    }
+
+    #[test]
+    fn absent_record_classification_stays_silent_for_dead_and_untouched_ids() {
+        // review #463 round-10 minor 4: a session deleted mid-run (binding
+        // artifacts gone with it) and a to-lane orphan this run did nothing
+        // for are Skip — no report entry, no workspace_rebound event; an
+        // orphan this run actually moved stays reportable, Failed when its
+        // sidecar write did not stick, Rebound otherwise.
+        use super::AbsentRecordOutcome::*;
+        let dead = classify_absent_record_session(false, false, true);
+        assert!(matches!(dead, Skip), "dead id: nothing survives to report");
+        let untouched = classify_absent_record_session(false, true, false);
+        assert!(
+            matches!(untouched, Skip),
+            "to-lane orphan: only a sidecar remains, nothing moved this run"
+        );
+        let rebound = classify_absent_record_session(false, true, true);
+        assert!(matches!(rebound, Rebound));
+        let failed = classify_absent_record_session(true, true, true);
+        assert!(
+            matches!(failed, Failed),
+            "a lane write that did not stick is reported failed for retry"
+        );
+        // round-11 B4: an orphan whose sidecar write failed is in
+        // `final_stale` but not `affected`, so moved=false — the old moved
+        // gate Skipped it and every rerun reproduced the silence.
+        let orphan_stale = classify_absent_record_session(true, true, false);
+        assert!(
+            matches!(orphan_stale, Failed),
+            "a stale orphan sidecar reports failed even when moved is false"
+        );
+        let dead_stale = classify_absent_record_session(true, false, false);
+        assert!(
+            matches!(dead_stale, Skip),
+            "deleted mid-run: artifacts gone, nothing to report even if stale"
         );
     }
 
@@ -1320,9 +2871,350 @@ mod tests {
         assert!(reject_nested_rebind_target(from, Path::new("/a/b")).is_err());
         assert!(
             reject_nested_rebind_target(from, Path::new("/a/bc")).is_ok(),
-            "目录边界:sibling 前缀不得误命中"
+            "directory boundary: a sibling prefix sharing the spelling must not match"
         );
-        assert!(reject_nested_rebind_target(from, Path::new("/a")).is_ok());
+        // `to` a strict ancestor of `from` used to be OK; since round-17
+        // MAJOR-2 it is the rejected mirror geometry (see
+        // rebind_rejects_from_nested_inside_target_mirror_geometry below).
+        assert!(reject_nested_rebind_target(from, Path::new("/a")).is_err());
+    }
+
+    #[test]
+    fn rebind_rejects_from_nested_inside_target_mirror_geometry() {
+        // review #463 round-17 MAJOR-2: `from` strictly inside `to` is
+        // reachable through the strong-confirm flow (the old root recreated
+        // between badge and pick; Windows traverse-ACL shapes), and without
+        // this rejection the lanes deepen one level per rerun
+        // (`from/B/sub` → `from/B/B/sub`) and never converge. Same typed
+        // marker; equality was already handled by the first arm.
+        let mirror =
+            reject_nested_rebind_target(Path::new("/a/b/c"), Path::new("/a/b")).unwrap_err();
+        assert!(
+            mirror.starts_with("REBIND_TO_NESTED"),
+            "the mirror geometry lands on the same typed marker (round-8 M4)"
+        );
+        assert!(reject_nested_rebind_target(Path::new("/a/b"), Path::new("/a")).is_err());
+        // Unrelated or sibling destinations are still fine.
+        assert!(reject_nested_rebind_target(Path::new("/a/b"), Path::new("/c/d")).is_ok());
+        assert!(reject_nested_rebind_target(Path::new("/a/bc"), Path::new("/a/b")).is_ok());
+    }
+
+    #[test]
+    fn stranded_detection_skips_sessions_whose_sidecar_is_the_stale_side() {
+        // review #463 round-17 MAJOR-1: run 1 leaves index@`to`,
+        // sidecar@`from` (the sidecar rewrite failed durably); on the retry
+        // the sidecar pass fails again, the session lands in
+        // `sidecar_final_stale`, and an unguarded detector would read the
+        // STALE sidecar as authority — re-keying the index (then the
+        // metadata) BACK onto the vanished `from`, oscillating with every
+        // retry. A session this run itself reported finally-stale is never a
+        // repair authority.
+        let to = PathBuf::from("/vault/beta");
+        let from = PathBuf::from("/vault/alpha");
+        let hits = vec![("stale-sidecar".to_string(), to.clone())];
+        let index_of = |_: &str| -> Option<PathBuf> { Some(to.clone()) };
+        let sidecar_at_from = |_: &str| -> Option<PathBuf> { Some(from.clone()) };
+        assert!(
+            detect_stranded_index_records(
+                &hits,
+                &[],
+                &["stale-sidecar".to_string()],
+                index_of,
+                sidecar_at_from,
+            )
+            .is_empty(),
+            "the finally-stale sidecar must never drive the repair backward",
+        );
+        // The exclusion is exactly the finally-stale set, not a blanket
+        // carve-out: the same shape with a DIFFERENT id in the stale list
+        // still repairs (the run-10 interleave, sidecar at `to2`).
+        let sidecar_at_to2 = |_: &str| -> Option<PathBuf> { Some(PathBuf::from("/vault/gamma")) };
+        assert_eq!(
+            detect_stranded_index_records(
+                &hits,
+                &[],
+                &["other".to_string()],
+                index_of,
+                sidecar_at_to2,
+            ),
+            vec![("stale-sidecar".to_string(), PathBuf::from("/vault/gamma"))],
+        );
+    }
+
+    #[test]
+    fn repair_targets_under_from_are_refused() {
+        // round-17 MAJOR-1's call-site guard, pure half: an authority under
+        // the run's `from` (equality included) is the stale side. Folded
+        // keys, component-aware — a sibling sharing the prefix's spelling is
+        // NOT nested.
+        let from = Path::new("/vault/alpha");
+        assert!(repair_target_is_backward(Path::new("/vault/alpha"), from));
+        assert!(repair_target_is_backward(
+            Path::new("/vault/alpha/sub"),
+            from
+        ));
+        assert!(repair_target_is_backward(Path::new("/vault/alpha/"), from));
+        assert!(!repair_target_is_backward(Path::new("/vault/beta"), from));
+        assert!(!repair_target_is_backward(
+            Path::new("/vault/alphabet"),
+            from
+        ));
+    }
+
+    #[test]
+    fn suffix_helper_is_wired_at_the_roots_error_arm() {
+        // review #463 round-20 R2: the helper pin alone is hollow —
+        // reverting the sole production call site to a bare marker (the
+        // round-14 SF1 bug: the dialog reports "up to date" while an
+        // old-cwd runtime stays resident) left every test green. The
+        // production text must carry the wrapped call, exactly once.
+        let calls = production_source()
+            .matches("append_rebound_ids_suffix(marker, &rebound_session_ids)")
+            .count();
+        assert_eq!(
+            calls, 1,
+            "the roots-error arm must wrap the marker with the moved-id suffix"
+        );
+    }
+
+    #[test]
+    fn rebound_ids_suffix_wire_shape_is_pinned_end_to_end() {
+        // review #463 round-17 SF-1: the producer string had no test, so
+        // deleting the suffix passed the whole suite and silently resurrected
+        // the round-14 SF1 bug. Pin the exact wire shape and cross-check the
+        // FE parser's strip constant.
+        let error = append_rebound_ids_suffix(
+            "REBIND_ROOTS_PERSIST: ctx".to_string(),
+            &["s1".to_string(), "s2".to_string()],
+        );
+        assert_eq!(
+            error, "REBIND_ROOTS_PERSIST: ctx\nrebound-session-ids:s1,s2",
+            "marker line first, then the moved ids on their own line, comma-joined",
+        );
+        let fe = include_str!("../../../../src/features/projects/rebindErrors.js");
+        assert!(
+            fe.contains("'\\nrebound-session-ids:'"),
+            "the FE parser's strip constant drifted from the producer format"
+        );
+    }
+
+    #[test]
+    fn repaired_targets_fold_is_wired_into_the_command() {
+        // review #463 round-17 SF-7, rebuilt round-18 MAJOR-1: the fold's
+        // call-site wiring must hold in the PRODUCTION text (the window is
+        // cut before the test module, so the probe's own literals cannot
+        // satisfy it) — deleting the call left every unit test green while
+        // the repaired session stayed an eviction-only candidate forever.
+        let window = production_source();
+        let start = window
+            .find("let stranded: Vec<(String, PathBuf)> = detect_stranded_index_records(")
+            .expect("the production detector binding must exist");
+        let span = &window[start..(start + 4500).min(window.len())];
+        assert!(
+            span.contains("fold_repaired_index_targets("),
+            "the repaired targets must be folded into the metadata sync set at the call site"
+        );
+        assert!(
+            span.contains("repair_target_is_backward(target, &from)"),
+            "the backward-repair guard must sit on the repair path (round-17 MAJOR-1)"
+        );
+    }
+
+    #[test]
+    fn retry_admission_routes_by_metadata_sync_state() {
+        // review #463 round-17 SF-2: `admit_rebind_retry_candidate` had zero
+        // coverage, including the folded identity-key compare whose
+        // regression to a raw `!=` would spuriously rewrite healthy to-lane
+        // sessions on Windows spelling drift.
+        crate::platform::test_support::with_temp_home("rebind-admit", || {
+            let store = crate::features::sessions::SessionStore::boot_for_process_startup()
+                .expect("boot store");
+            let ws = std::env::temp_dir().join("rebind-admit-ws");
+            let _ = std::fs::remove_dir_all(&ws);
+            std::fs::create_dir_all(&ws).expect("create ws");
+            let session = store
+                .create_new("/model".into(), None, ws.clone())
+                .expect("create session");
+
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                session.metadata.id.clone(),
+                ws.clone(),
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.is_empty() && retry_evict == vec![session.metadata.id.clone()],
+                "a healthy to-lane session (metadata == binding) is an eviction candidate only"
+            );
+
+            // A trailing-separator spelling drift is the same directory
+            // (folded identity key) — not a sync-worthy difference.
+            let ws_sep = PathBuf::from(format!("{}{}", ws.display(), std::path::MAIN_SEPARATOR));
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                session.metadata.id.clone(),
+                ws_sep,
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.is_empty() && retry_evict.len() == 1,
+                "a spelling-only drift must not demand a metadata rewrite"
+            );
+
+            // A genuinely different binding needs the metadata sync.
+            let elsewhere = std::env::temp_dir().join("rebind-admit-elsewhere");
+            let _ = std::fs::remove_dir_all(&elsewhere);
+            std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                session.metadata.id.clone(),
+                elsewhere,
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.len() == 1 && retry_evict.is_empty(),
+                "metadata != binding admits the session into the sync set"
+            );
+
+            // A load failure (the session record is gone) conservatively
+            // admits — there is nothing to compare against.
+            let mut affected = Vec::new();
+            let mut retry_evict = Vec::new();
+            admit_rebind_retry_candidate(
+                "absent-session".to_string(),
+                ws,
+                &store,
+                &mut affected,
+                &mut retry_evict,
+            );
+            assert!(
+                affected.len() == 1 && retry_evict.is_empty(),
+                "an unloadable session is admitted, never silently evicted"
+            );
+        });
+    }
+
+    #[test]
+    fn runtime_starting_falls_back_to_busy_when_ids_are_known() {
+        // review #463 round-19 R1 (superseding the round-18 minor-3 pin,
+        // which matched a production COMMENT and passed while production did
+        // the opposite): the arm is pinned on the executable lines — the
+        // known-busy `format!` return must be an unconditional predecessor
+        // of the starting-up fallback, and the fallback's guard must test
+        // the known set for emptiness.
+        let window = production_source();
+        let start = window
+            .find("if acp_busy_unknown {")
+            .expect("the unknown-ACP-state arm must exist");
+        let arm = &window[start..(start + 1800).min(window.len())];
+        let busy_return_at = arm
+            .find("return Err(format!(\"REBIND_SESSIONS_BUSY: {}\", busy_ids.join(\", \")))")
+            .expect("known busy ids must ride the id-bearing REBIND_SESSIONS_BUSY return");
+        let guard_at = arm
+            .find("if !busy_ids.is_empty() {")
+            .expect("the known-busy shortcut must be guarded by the known set");
+        let starting_at = arm
+            .find("return Err(\n            \"REBIND_RUNTIME_STARTING:")
+            .expect("the empty-known-set fallback must remain");
+        assert!(guard_at < busy_return_at);
+        assert!(
+            busy_return_at < starting_at,
+            "the known-busy return must precede the starting-up fallback"
+        );
+    }
+
+    #[test]
+    fn persist_roots_error_maps_to_the_typed_marker() {
+        // review #463 round-17 SF-6; round-20 minor 15 rebuild: the pin now
+        // runs on PRODUCTION text (the uncut include_str could have matched
+        // its own assertion text) and covers both arms — a Persist→Other
+        // regression drops the disk-failure copy, an Overlap→Other regression
+        // drops the conflict dialog.
+        let window = production_source();
+        assert!(
+            window.contains("RebindRootsError::Persist(context) => format!(\"REBIND_ROOTS_PERSIST"),
+            "the Persist arm must keep producing the typed REBIND_ROOTS_PERSIST marker"
+        );
+        assert!(
+            window
+                .contains("RebindRootsError::Overlap(context) => format!(\"REBIND_ROOTS_CONFLICT"),
+            "the Overlap arm must keep producing the typed REBIND_ROOTS_CONFLICT marker"
+        );
+    }
+
+    #[test]
+    fn baseline_arm_three_is_code_gated() {
+        // review #463 round-21 SF-4: the metadata-loop admittee arm must
+        // probe the codex record before capturing a baseline — a plain
+        // to-lane admittee would otherwise gain a stray
+        // codex-workspace-baseline.json the plain lane never reads.
+        let window = production_source();
+        let arm = window[window
+            .find("// Arm 3 is code-gated")
+            .expect("the arm-3 gate must exist")..]
+            .lines()
+            .take(30)
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        assert!(
+            arm.contains("code_project_workspace(session_id)"),
+            "arm 3 must be gated on the codex record probe"
+        );
+        assert!(
+            arm.contains("synced_this_loop"),
+            "the gate must still require this loop's metadata sync"
+        );
+    }
+
+    #[test]
+    fn per_session_rebase_closures_are_wired_in_production() {
+        // review #463 round-20 minor 15: the per-session rebase remained the
+        // unprobed round-14-R2 shape — a hand-copied-closure test passes
+        // while the production closure drifts. Both closures (artifact rebase
+        // and acp-state translate) must consult the per-session from with the
+        // run-global pair as the fallback.
+        let window = production_source();
+        let closures = window
+            .matches("SessionAgentStore::rebind_target_path(path, session_from, &new_path)")
+            .count();
+        assert!(
+            closures >= 2,
+            "the artifact and acp-state rebase closures must both map through the per-session from"
+        );
+        let fallbacks = window
+            .matches("or_else(|| SessionAgentStore::rebind_target_path(path, &from, &to_display))")
+            .count();
+        assert!(
+            fallbacks >= 2,
+            "both closures must keep the run-global pair as the fallback"
+        );
+    }
+
+    #[test]
+    fn entry_no_op_compares_folded_identity_keys() {
+        // review #463 round-20 minor 7's pin: the entry no-op must compare
+        // folded identity keys (the raw `from == to_display` compare let a
+        // case-only alias destination dead-end on misleading nesting copy).
+        let window = production_source();
+        let folded = window
+            .matches("filesystem_path_identity_key(&to_display.to_string_lossy())")
+            .count();
+        assert!(
+            folded >= 2,
+            "the entry no-op must fold both sides before comparing"
+        );
     }
 
     #[test]

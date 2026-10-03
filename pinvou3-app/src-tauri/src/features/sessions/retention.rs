@@ -461,11 +461,39 @@ impl SessionStore {
         save_context: impl FnOnce() -> String,
         event: &'static str,
     ) -> Result<PathBuf> {
+        self.persist_then_reconcile_impl(session, save_context, event, true)
+    }
+
+    /// Retention-free persist (review #463 round-18 MAJOR-4): an in-place
+    /// metadata rewrite never creates or removes a session, so the post-persist
+    /// retention reconciliation — which re-reads every on-disk session JSON's
+    /// 64 KB prefix — is pure amplification for the rebind's bulk loop
+    /// (O(affected × on-disk sessions) full-directory rescans, all while the
+    /// process-wide rebind gate is held). The session population the policy
+    /// reasons about is unchanged by such a write, and the next arbitrary
+    /// save reconciles as usual.
+    pub(crate) fn persist_in_place(
+        &self,
+        session: &SavedSession,
+        event: &'static str,
+    ) -> Result<PathBuf> {
+        self.persist_then_reconcile_impl(session, || format!("{event} in place"), event, false)
+    }
+
+    fn persist_then_reconcile_impl(
+        &self,
+        session: &SavedSession,
+        save_context: impl FnOnce() -> String,
+        event: &'static str,
+        reconcile_retention: bool,
+    ) -> Result<PathBuf> {
         let path = self
             .save_session_atomic(session)
             .with_context(save_context)?;
-        if let Err(error) = self.enforce_session_retention_locked() {
-            eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+        if reconcile_retention {
+            if let Err(error) = self.enforce_session_retention_locked() {
+                eprintln!("[sessions] retention reconciliation failed after {event}: {error:#}");
+            }
         }
         Ok(path)
     }

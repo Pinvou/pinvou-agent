@@ -169,7 +169,7 @@
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.13",
-    "dompurify": "^3.4.14",
+    "dompurify": "^3.4.16",
     "highlight.js": "^11.11.1",
     "marked": "^14.1.4",
     "react": "^19.2.8",

@@ -4332,25 +4332,25 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-lock")
                 .unwrap();
-            // Store (Preset) reinstall of untrusted dependencies: since
-            // PR #547 Windows fails closed with an explicit error (the
-            // "never execute" contract holds by never reaching the
-            // downloader); other platforms keep warn-skip, the install
-            // succeeds but likewise never reaches the downloader.
+            // Marketplace-path (Preset) reinstall of untrusted dependencies has
+            // failed closed with an explicit error on Windows since PR #547
+            // (another way to honor "never execute": the downloader is never
+            // reached); other platforms keep the warn-skip, so install
+            // succeeds but must still never reach the downloader.
             let reinstall = manager.install_with_python(
                 "upload-lock",
                 &std::collections::HashMap::new(),
                 &python,
             );
-            // Runtime check (capabilities::is_windows): tests must not use
-            // cfg(target_os) (architecture guard
-            // rust_target_cfg_outside_adapter baseline is 0).
+            // Runtime check (capabilities::is_windows): the test avoids
+            // cfg(target_os) because the architecture guard keeps the
+            // rust_target_cfg_outside_adapter baseline at zero.
             if crate::platform::capabilities::is_windows() {
                 assert!(
                     reinstall
                         .unwrap_err()
                         .contains("未经过 Windows 可验证依赖锁"),
-                    "the Windows store path must fail closed on untrusted dependencies"
+                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
                 );
             } else {
                 reinstall.unwrap();
@@ -4379,16 +4379,16 @@ mod tests {
             recycle_bin::RecycleBin::new()
                 .take_back("upload-pip")
                 .unwrap();
-            // Same branch as upload-lock: the Windows store path fails closed
-            // on untrusted pip declarations (PR #547); other platforms install
-            // successfully but pip is never executed.
+            // Same marketplace-path branch as upload-lock: Windows fails
+            // closed on untrusted pip declarations (PR #547); other platforms
+            // install successfully but pip must never run.
             let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
             if crate::platform::capabilities::is_windows() {
                 assert!(
                     reinstall
                         .unwrap_err()
                         .contains("未经过 Windows 可验证依赖锁"),
-                    "the Windows store path must fail closed on untrusted dependencies"
+                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
                 );
             } else {
                 reinstall.unwrap();

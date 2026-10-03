@@ -7,9 +7,9 @@ gate also has `windows-codex-runtime-test`, which is out of scope here). It is
 a two-leg matrix on `windows-latest` (`fail-fast: false`, `max-parallel: 2`);
 the required gate aggregates the matrix result, so both legs must pass:
 
-- `all-targets-check` runs the metadata-only checks (steps 5-6 below).
+- `all-targets-check` runs the metadata-only checks (steps 6-7 below).
 - `regression` links the `pinvou3_lib` test executable and runs everything
-  that needs it (steps 7-11 below).
+  that needs it (steps 8-12 below).
 
 Routing is job level and identical for both legs. The job runs on every push
 to `main` (cumulative Windows coverage plus cache warm-up) and on ready,
@@ -29,45 +29,51 @@ on the app crate; only `pet` is exempt from both filters.
 
 ## What the job runs
 
-The job shell is `bash`; four steps opt into `pwsh`. Steps 1-4 and the
+The job shell is `bash`; four steps opt into `pwsh`. Steps 1-5 and the
 cache restore run on both legs; the leg of every later step is noted. In
 order:
 
 1. Checkout (`submodules: false`), then
    `git submodule update --init --recursive -- CodeWhale`.
-2. `dtolnay/rust-toolchain@stable`, then `rustup default` aligned to the
-   `rust-toolchain.toml` pin (same toolchain as local development).
+2. `dtolnay/rust-toolchain@stable`, then `rustup default` aligned to whatever
+   the `rust-toolchain.toml` selects (same toolchain as local development).
 3. Compile `rustc-stack-wrapper.exe` (`rustc -O`) and export it as
    `RUSTC_WRAPPER`: compile-time-only `RUST_MIN_STACK=16MiB`; the `.exe` form
    avoids the cmd.exe 8191-character command-line limit.
    `AWS_LC_SYS_PREBUILT_NASM=1` substitutes for the NASM the runner lacks.
-4. (`both legs`) `Windows Rust cache baseline diagnostics`: print the
+4. (`both legs`) `Probe and export the Windows lld link flags`: compile a
+   hello-world with `-C linker-features=+lld` (falling back to the explicit
+   `-C linker=rust-lld -C linker-flavor=lld-link` pair) and export the
+   working flags as `RUSTFLAGS` via `GITHUB_ENV`, so an unsupported flag
+   fails in seconds instead of hours into the cold build. See the
+   "Link memory on the hosted runner" section for why lld is required.
+5. (`both legs`) `Windows Rust cache baseline diagnostics`: print the
    `WINDOWS_RUST_CACHE` marker (target presence plus fingerprint and
    direct dependency-artifact counts, no recursive scan) so cold-cache
    regressions are visible per leg without leaking cache contents.
-5. (`all-targets-check`) `cargo check --manifest-path
+6. (`all-targets-check`) `cargo check --manifest-path
    pinvou3-app/src-tauri/Cargo.toml --all-targets --features dev-tools`.
-6. (`all-targets-check`) `cargo check --manifest-path pinvou-cli/Cargo.toml --workspace
+7. (`all-targets-check`) `cargo check --manifest-path pinvou-cli/Cargo.toml --workspace
    --all-targets --locked`: the CLI's Windows-only branches (exe/cmd
    candidates, `cmd /D /S /C` shims, taskkill tree kill, `CREATE_NO_WINDOW`)
    compile-check only on a Windows runner.
-7. (`regression`) Link check: `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
+8. (`regression`) Link check: `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
    --lib --no-run --message-format=json`, capturing the `pinvou3_lib` test
    executable as `PINVOU3_TEST_EXE`.
-8. (`regression`) Embed the Common-Controls v6 manifest (resource `#1`) with the Windows SDK
+9. (`regression`) Embed the Common-Controls v6 manifest (resource `#1`) with the Windows SDK
    `mt.exe`: `muda` statically imports `TaskDialogIndirect`, which exists only
    in the Common-Controls v6 side-by-side assembly, and Windows ignores a
    side-by-side `<exe>.manifest` once `link.exe` embedded a default one.
-9. (`regression`) Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
+10. (`regression`) Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
    — a non-blocking PE import-table diagnostic (`continue-on-error`), after
-   step 8 so the embedded manifest exempts SxS DLLs such as `comctl32`.
-10. (`regression`) Run the CodeWhale PowerShell regression filters
+   step 9 so the embedded manifest exempts SxS DLLs such as `comctl32`.
+11. (`regression`) Run the CodeWhale PowerShell regression filters
    (`forkguard_powershell` and `forkguard_windows_shell_text`) from the
    dependency crate itself. The parent application jobs do not execute a
    dependency crate's lib tests. The step unsets `SHELL` so the Windows
    fallback to `pwsh.exe` is deterministic, and each filter must match at
    least one test so a rename cannot silently pass.
-11. (`regression`) Regression loop: run the patched application binary directly — re-invoking
+12. (`regression`) Regression loop: run the patched application binary directly — re-invoking
    `cargo test` could relink and drop the embedded manifest — once per filter
    with `--test-threads=1`; each filter must match at least one test
    (`running [1-9][0-9]* tests?`) so a renamed test fails loudly:
@@ -127,6 +133,26 @@ under the debug profile tauri's `generate_context!` uses `devUrl`, `dist/`
 is never packaged, and `build.rs` only depends on `tauri-build`/`cc` —
 saving 3-5 minutes per run.
 
+## Link memory on the hosted runner
+
+The `regression` leg's cold test-binary link can OOM the 16 GB hosted runner.
+The failure mode is not a crash but silent pagefile thrash: the 2026-10
+stable-1.99 rollover reproduced it twice (runs 36919362322 and 36940184038),
+with the whole dependency graph compiling in ~25 minutes and the final link
+producing zero output for the remaining hours until the cap killed the leg.
+The job therefore mirrors the recipe the linux `rust-test` leg measured for
+the same OOM: `CARGO_PROFILE_DEV_LTO=thin` (cross-crate dead-code elimination
+shrinks the test binary; cargo passes `-C linker-plugin-lto` to
+dependencies), `CARGO_PROFILE_DEV_DEBUG=0` (no DWARF; panic file:line comes
+from `Location` rodata), and `RUSTFLAGS` selecting the bundled lld with
+`/threads:1` so both the ThinLTO backends and the final link stay serial
+(the linux leg uses the gcc-driver equivalents `-fuse-ld=lld`,
+`--thinlto-jobs=1`, `--threads=1`). Growing the hosted runner's pagefile is
+not an option: a pagefile change requires a reboot a CI job cannot perform,
+so peak link memory is cut below RAM instead. The linker-selection flags are
+probed per toolchain by step 4, since the stable surface for picking lld has
+moved between releases.
+
 ## Duration, timeout, and failure diagnosis
 
 Each run emits only aggregate, non-sensitive diagnostics:
@@ -147,12 +173,17 @@ scheduling while keeping the metrics.
 Passing runs historically took 85-87 minutes; since 2026-09 several died at
 the previous 90-minute cap during the link step, and run 34802015051 was
 cancelled mid-build after PR #478 added the full `pinvou-cli` workspace
-compile. `timeout-minutes` is now 180, with headroom for two cold workspaces;
-the cap applies per leg, since either leg can still compile cold on a cache
-miss.
+compile, so the cap moved to 180. The 2026-10 stable rollover to 1.99.0 then
+invalidated the rust-cache key and the cold test-binary link OOM'd (see the
+previous section), killed at the 180-minute cap (run 36919362322) and then,
+after the cap moved to 240, at that cap too (run 36940184038) — the raise
+alone could not fix an out-of-memory link. `timeout-minutes` is therefore 240
+together with the link-memory recipe above, with headroom for one fully cold
+toolchain rollover per channel bump; the cap
+applies per leg, since either leg can still compile cold on a cache miss.
 
-On failure, read the import-diagnostic output (step 9) and the failing filter
-name (steps 10–11); cache restore misses stay visible rollback signals. Do not
+On failure, read the import-diagnostic output (step 10) and the failing filter
+name (steps 11-12); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, moving a step to the other leg
 without its prerequisites, skipping the manifest or import contract, changing
 failures to warnings, or adding another independent large target cache beyond

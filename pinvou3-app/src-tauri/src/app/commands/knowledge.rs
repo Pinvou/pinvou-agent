@@ -256,12 +256,41 @@ use crate::features::remote_knowledge::RemoteKnowledgeService;
 use knowledge_domain::*;
 use model_domain::*;
 
-sync_command_passthrough!(knowledge_domain, kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState);
-sync_command_passthrough!(knowledge_domain, kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState);
-async_command_passthrough!(knowledge_domain, kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String>);
-async_command_passthrough!(knowledge_domain, kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String>);
-async_command_passthrough!(knowledge_domain, kb_collection_create(state: State<'_, KnowledgeService>, name: String, category: Option<String>, description: Option<String>) -> Result<i64, String>);
-async_command_passthrough!(knowledge_domain, kb_collection_update(state: State<'_, KnowledgeService>, id: i64, name: String, category: Option<String>, description: Option<String>) -> Result<(), String>);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String>
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_collection_list(state: State<'_, KnowledgeService>) -> Result<Vec<Collection>, String>
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_collection_create(
+        state: State<'_, KnowledgeService>,
+        name: String,
+        category: Option<String>,
+        description: Option<String>,
+    ) -> Result<i64, String>
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_collection_update(
+        state: State<'_, KnowledgeService>,
+        id: i64,
+        name: String,
+        category: Option<String>,
+        description: Option<String>,
+    ) -> Result<(), String>
+);
 
 #[tauri::command]
 pub async fn kb_collection_delete(
@@ -279,17 +308,77 @@ pub async fn kb_collection_delete(
     }
     Ok(())
 }
-sync_command_passthrough!(knowledge_domain, kb_collection_add_sources(state: State<'_, KnowledgeService>, collection_id: i64, paths: Vec<String>) -> IndexState);
-sync_command_passthrough!(knowledge_domain, kb_index_status(state: State<'_, KnowledgeService>) -> IndexState);
-sync_command_passthrough!(knowledge_domain, kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String>);
-sync_command_passthrough!(knowledge_domain, kb_index_failed_files(state: State<'_, KnowledgeService>, job_id: String, offset: usize, limit: usize) -> Result<FailedImportFilePage, String>);
-sync_command_passthrough!(knowledge_domain, kb_index_resume(state: State<'_, KnowledgeService>, job_id: String) -> Result<IndexState, String>);
-sync_command_passthrough!(knowledge_domain, kb_index_retry_file(state: State<'_, KnowledgeService>, job_id: String, item_id: i64) -> Result<IndexState, String>);
-async_command_passthrough!(knowledge_domain, kb_documents(state: State<'_, KnowledgeService>, collection_id: i64, limit: Option<usize>) -> Result<Vec<Document>, String>);
-async_command_passthrough!(knowledge_domain, kb_remove_document(state: State<'_, KnowledgeService>, pool: State<'_, EnginePool>, doc_id: i64) -> Result<(), String>);
-sync_command_passthrough!(knowledge_domain, kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo);
-async_command_passthrough!(knowledge_domain, kb_search(state: State<'_, KnowledgeService>, query: SearchQueryDto) -> Result<Vec<FileHit>, String>);
-async_command_passthrough!(knowledge_domain, kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String>);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_collection_add_sources(
+        state: State<'_, KnowledgeService>,
+        collection_id: i64,
+        paths: Vec<String>,
+    ) -> IndexState
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_index_status(state: State<'_, KnowledgeService>) -> IndexState
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String>
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_index_failed_files(
+        state: State<'_, KnowledgeService>,
+        job_id: String,
+        offset: usize,
+        limit: usize,
+    ) -> Result<FailedImportFilePage, String>
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_index_resume(
+        state: State<'_, KnowledgeService>,
+        job_id: String,
+    ) -> Result<IndexState, String>
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_index_retry_file(
+        state: State<'_, KnowledgeService>,
+        job_id: String,
+        item_id: i64,
+    ) -> Result<IndexState, String>
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_documents(
+        state: State<'_, KnowledgeService>,
+        collection_id: i64,
+        limit: Option<usize>,
+    ) -> Result<Vec<Document>, String>
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_remove_document(
+        state: State<'_, KnowledgeService>,
+        pool: State<'_, EnginePool>,
+        doc_id: i64,
+    ) -> Result<(), String>
+);
+sync_command_passthrough!(
+    knowledge_domain,
+    kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_search(
+        state: State<'_, KnowledgeService>,
+        query: SearchQueryDto,
+    ) -> Result<Vec<FileHit>, String>
+);
+async_command_passthrough!(
+    knowledge_domain,
+    kb_stats(state: State<'_, KnowledgeService>) -> Result<Stats, String>
+);
 
 #[tauri::command]
 pub async fn kb_model_status(
@@ -312,7 +401,14 @@ pub async fn kb_model_status(
     let _ = app.emit("kb_model:status", &status);
     Ok(status)
 }
-async_command_passthrough!(model_domain, kb_model_load_after_first_frame(app: AppHandle, service: State<'_, KnowledgeService>, pool: State<'_, EnginePool>) -> Result<bool, String>);
+async_command_passthrough!(
+    model_domain,
+    kb_model_load_after_first_frame(
+        app: AppHandle,
+        service: State<'_, KnowledgeService>,
+        pool: State<'_, EnginePool>,
+    ) -> Result<bool, String>
+);
 
 #[tauri::command]
 pub async fn kb_model_download(

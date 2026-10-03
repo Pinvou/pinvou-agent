@@ -32,11 +32,11 @@ assert.deepEqual(manifestIds, ['lingling', 'langlang', 'ace-taffy']);
 
 assert.match(
   petCommands,
-  /sync_command_passthrough!\(selected_pet_domain,\s*get_selected_pet/,
+  /sync_command_passthrough!\(\s*selected_pet_domain,\s*get_selected_pet/,
 );
 assert.match(
   petCommands,
-  /sync_command_passthrough!\(selected_pet_domain,\s*set_selected_pet/,
+  /sync_command_passthrough!\(\s*selected_pet_domain,\s*set_selected_pet/,
 );
 assert.match(rustLib, /commands::pet::get_selected_pet/);
 assert.match(rustLib, /commands::pet::set_selected_pet/);

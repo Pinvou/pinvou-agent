@@ -661,7 +661,6 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.98.0
           components: clippy, rustfmt
 
       - name: Cargo cache
@@ -1293,14 +1292,19 @@ jobs:
     # after sccache removal (aws-lc-sys prebuilt NASM objects compile even
     # slower). Since 2026-09 several runs died at the 90-minute cap during
     # the link step while passing runs already took 85-87 minutes, so the
-    # cap is raised to 180 minutes. PR #478 additionally compiles the whole
+    # cap was raised to 180 minutes. PR #478 additionally compiles the whole
     # pinvou-cli workspace on this Windows-only leg, and lockfile changes
-    # miss the rust-cache key (full cold compile); a 90-minute run was
-    # cancelled mid-build (run 34802015051), so 180 minutes leaves headroom
-    # for two cold workspaces. Each independent leg can still compile cold on
-    # a cache miss, so the cap is kept per leg until the phase timings below
-    # justify a tighter one.
-    timeout-minutes: 180
+    # miss the rust-cache key (full cold compile). Floating stable rolled to
+    # 1.99.0 on 2026-10-01: the rust-cache key hashes the rustc version, so
+    # every PR leg recompiled both workspaces from scratch and the cold link
+    # step alone consumed the whole 180-minute budget before any regression
+    # ran (this PR's run 36919362322). PR legs never save the cache
+    # (save-if main-only), so the cap is raised to 240 minutes to keep one
+    # fully cold toolchain rollover per channel bump inside a single leg;
+    # each independent leg can still compile cold on a cache miss, so the
+    # cap is kept per leg until the phase timings below justify a tighter
+    # one.
+    timeout-minutes: 240
     env:
       # reqwest 0.13 → aws-lc-sys(非 FIPS)。Windows x86_64 需 NASM 汇编;runner 默认无 NASM,
       # 用预生成 NASM 对象规避(aws-lc-rs 官方支持,无需额外装 NASM)。
@@ -1314,6 +1318,22 @@ jobs:
       # client、到不了 server 派生的 rustc,codegen 仍会溢出。必须用
       # ${{ github.workspace }} 绝对路径(避免按 cwd 双拼解析)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
+      # 2026-10 stable 1.99: the cold `cargo test --lib --no-run` OOM'd the
+      # 16 GB hosted runner in the final test-binary link (730 dep crates
+      # compile in ~25 minutes, then the link pagefile-thrashes silently for
+      # hours; runs 36919362322 and 36940184038 were killed at the 180/240
+      # caps). Same OOM the linux rust-test leg already solved; mirror its
+      # measured recipe for MSVC: thin LTO shrinks the test binary cross-crate
+      # (cargo passes -C linker-plugin-lto to dependencies), lld consumes that
+      # bitcode natively and links with a far smaller peak than link.exe,
+      # /threads:1 serializes both the ThinLTO backends and the final link,
+      # and dropping DWARF shrinks objects further (panic file:line comes
+      # from Location rodata, not debuginfo). Growing the hosted runner's
+      # pagefile instead needs a reboot a CI job cannot perform, so the fix
+      # is to cut peak link memory below RAM. The linker flags are probed and
+      # exported as RUSTFLAGS by the probe step below.
+      CARGO_PROFILE_DEV_LTO: "thin"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1345,6 +1365,33 @@ jobs:
       - name: 编译 Windows 栈 wrapper(.exe)
         shell: bash
         run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
+
+      # Probe which stable rustc flag selects the bundled lld for MSVC on this
+      # toolchain, then export the winning flags as RUSTFLAGS for every later
+      # step. linker-features went stable first; the explicit linker+flavor
+      # pair is the fallback. An unsupported flag fails the probe in seconds;
+      # without it the failure would surface only at the final link, hours
+      # into the cold build.
+      - name: Probe and export the Windows lld link flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d)"
+          echo 'fn main() {}' > "$probe/probe.rs"
+          if rustc -C linker-features=+lld -C link-arg=/threads:1 \
+              -o "$probe/probe.exe" "$probe/probe.rs" 2>"$probe/a.err"; then
+            flags="-C linker-features=+lld -C link-arg=/threads:1"
+          elif rustc -C linker=rust-lld -C linker-flavor=lld-link \
+              -C link-arg=/threads:1 -o "$probe/probe.exe" \
+              "$probe/probe.rs" 2>"$probe/b.err"; then
+            flags="-C linker=rust-lld -C linker-flavor=lld-link -C link-arg=/threads:1"
+          else
+            echo "FAIL: this toolchain has no stable flag to select lld" >&2
+            cat "$probe/a.err" "$probe/b.err" >&2 || true
+            exit 1
+          fi
+          echo "probed RUSTFLAGS=$flags"
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
 
       # This job's cargo steps do not need frontend dependencies: under the
       # debug profile tauri's generate_context! uses devUrl, dist/ is never
