@@ -2027,7 +2027,7 @@ fn agents_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 probe.agent_name,
                 if probe.cli_path.is_some() && probe.version_supported {
                     "installed"
-                } else if probe.cli_path.is_some() && probe.version_probe_failed {
+                } else if probe.version_probe_failed {
                     // A cold binary, an unprobing one, or a hang is not the
                     // same fact as a too-old version (the GUI distinguishes
                     // TimedOut/Failed from Found and retries timeouts).

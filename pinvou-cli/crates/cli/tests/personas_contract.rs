@@ -242,10 +242,22 @@ fn json_output_mode_flows_through_every_personas_subcommand() {
 #[test]
 fn personas_delete_without_yes_is_refused_before_any_state_change() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("delete-yes-gate");
+
+    // The refusal runs against an ISOLATED home (never the developer's real
+    // one) and is pinned behaviorally: the visible catalog is byte-identical
+    // across the refused run, which is the "no state change" the test name
+    // claims.
+    let before = run(&["pinvou", "personas", "list"]).expect("list before the refusal");
     let error = run(&["pinvou", "personas", "delete", "user-some-card"])
         .expect_err("delete without --yes must refuse");
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("--yes"), "{error}");
+    let after = run(&["pinvou", "personas", "list"]).expect("list after the refusal");
+    assert_eq!(
+        before.stdout, after.stdout,
+        "a refused delete must not change the visible catalog"
+    );
 }
 
 #[test]

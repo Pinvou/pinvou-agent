@@ -3174,7 +3174,8 @@ struct SearchProbe {
 
 /// The search endpoints the product actually calls, copied from
 /// `CodeWhale/crates/tui/src/tools/web_search.rs` (`TAVILY_ENDPOINT`,
-/// `BOCHA_ENDPOINT`, `METASO_ENDPOINT`, `BAIDU_ENDPOINT`). They are duplicated
+/// `BOCHA_ENDPOINT`, `BAIDU_ENDPOINT`) and from `run_metaso_search`'s
+/// `{METASO_ENDPOINT}/search` composition. They are duplicated
 /// rather than imported because the CLI does not depend on the TUI crate;
 /// they must be changed together with that file.
 const TAVILY_SEARCH_ENDPOINT: &str = "https://api.tavily.com/search";

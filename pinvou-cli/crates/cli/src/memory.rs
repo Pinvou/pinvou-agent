@@ -1767,8 +1767,11 @@ fn delete(
     confirmed: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    support::sandbox_home()?;
+    // `--yes` gates first, like every sibling: a misconfigured home must
+    // produce the documented exit-2 confirmation refusal, not an exit-1
+    // sandbox error, so scripts keying on the refusal class stay stable.
     require_yes(confirmed)?;
+    support::sandbox_home()?;
     let changed = match store {
         MemoryStore::Preferences => {
             feature::delete_preference(id).map_err(|error| feature_error("delete", error))?

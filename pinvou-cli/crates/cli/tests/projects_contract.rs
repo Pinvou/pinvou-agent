@@ -1108,6 +1108,77 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The GUI's mirror geometry (#463 round-17 MAJOR-2): `from` strictly inside
+/// `to` deepens a `from/sub` binding one level per rerun and is false-failed
+/// by run 1's fence rescan, so the CLI refuses it with the same typed marker
+/// instead of performing a rebind the desktop app would have rejected. The
+/// refusal must leave the project root and the session sidecar untouched.
+#[test]
+fn projects_rebind_refuses_from_strictly_inside_to() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-mirror-nested");
+    let dir = make_root_dir("rebind-mirror-nested");
+    let outer = std::fs::canonicalize(&dir).unwrap();
+    let inner = outer.join("B");
+    std::fs::create_dir_all(&inner).unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Mirror",
+        "--root",
+        outer.to_str().unwrap(),
+    ]);
+    let project_id = value["id"].as_str().unwrap().to_owned();
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, inner.clone())
+        .expect("create session");
+    let session_id = session.metadata.id;
+    sessions
+        .bind_session_workspace(&session_id, inner.clone())
+        .expect("bind workspace");
+    drop(sessions);
+
+    let error = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        inner.to_str().unwrap(),
+        outer.to_str().unwrap(),
+        "--yes",
+    ])
+    .expect_err("a rebind with the original inside the destination must refuse");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("REBIND_TO_NESTED"),
+        "the refusal must carry the typed marker: {error}"
+    );
+
+    // Nothing moved: the project keeps its root and the sidecar binding is
+    // intact.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    assert_eq!(list["projects"][0]["id"], project_id);
+    assert_eq!(
+        list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
+        outer.to_str().unwrap()
+    );
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&session_id)
+            .join("workspace-binding.json"),
+    )
+    .expect("the sidecar must still exist");
+    assert!(
+        sidecar.contains(inner.to_str().unwrap()),
+        "the refusal must leave the binding as-is: {sidecar}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A legacy table that exists but never parses (corrupt or hand-truncated)
 /// must fail the whole rebind with the typed `REBIND_LEGACY_TABLE_CORRUPT`
 /// marker BEFORE anything moves (the #463 plan/apply split made the legacy

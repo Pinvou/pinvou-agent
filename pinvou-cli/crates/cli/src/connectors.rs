@@ -58,6 +58,10 @@
 //!   serialize concurrent installs through the shared
 //!   `locks/connector-install.lock` (blocking wait, native-lane
 //!   discipline).
+//! - `status` and `ima status` read the OS keyring for the ima entry on
+//!   every run — macOS may prompt, exactly as `plugins readiness`
+//!   documents for its own reads; this module touches the same credential
+//!   store.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
@@ -2807,7 +2811,14 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 }
                 return Err(error);
             }
-            finish_connect_side_effects(spec)?;
+            if let Err(error) = finish_connect_side_effects(spec) {
+                // The login itself succeeded, so the one-scan grant already
+                // took effect and the QR note promises removal once it does:
+                // a failed post-login store sync must not leave the
+                // credential-equivalent PNG behind.
+                let _ = std::fs::remove_dir_all(&qr_dir);
+                return Err(error);
+            }
             let _ = std::fs::remove_dir_all(&qr_dir);
         }
         "dingtalk" | "tmeet" => {

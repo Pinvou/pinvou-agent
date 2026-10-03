@@ -351,7 +351,7 @@ where
         // discoverable from the usage text. Stderr, so JSON consumers on a
         // pipe are unaffected.
         crate::note!(
-            "note: claimed the trailing `--output {}` as the global output mode              (families exporting to a file take `--output PATH` instead)",
+            "note: claimed the trailing `--output {}` as the global output mode (families exporting to a file take `--output PATH` instead)",
             if matches!(mode, OutputMode::Json) {
                 "json"
             } else {
