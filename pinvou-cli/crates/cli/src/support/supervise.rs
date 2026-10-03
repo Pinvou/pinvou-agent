@@ -282,11 +282,19 @@ mod imp {
     static SPAWN_WINDOW: Mutex<()> = Mutex::new(());
 
     static INSTALL: Once = Once::new();
-    /// Set by the watcher the moment cleanup starts. Main's exit path parks
-    /// forever once this is set: the watcher's phase 3 always terminates the
-    /// process (bounded by the grace + escalation), so the park cannot hang —
-    /// it only stops main from winning the race to `std::process::exit` and
-    /// robbing the 128+N re-raise of its conventional exit status.
+    /// Set by the signal handler the moment an interrupt is taken (and
+    /// re-stored by the watcher when it wakes). Storing it in the handler —
+    /// not only in the watcher — closes the store-visibility window: the
+    /// watcher's first store used to wait on a thread wake behind the
+    /// self-pipe read, so a main thread that reached its exit path in that
+    /// gap observed `false`, won the race to `std::process::exit`, and killed
+    /// the watcher before phase 1 ever forwarded a signal — orphaning every
+    /// registered vendor group and robbing scripts of the 128+N status.
+    /// Main's exit path parks forever once this is set: the watcher's
+    /// phase 3 always terminates the process (bounded by the grace +
+    /// escalation), so the park cannot hang — it only stops main from
+    /// winning the race to `std::process::exit` and robbing the 128+N
+    /// re-raise of its conventional exit status.
     static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
     /// Bounded grace in a test-free zone: `Once` guards double installs from
@@ -410,6 +418,13 @@ mod imp {
         }
         let byte = sig as u8;
         write_signal_byte(fd, byte);
+        // Publish the interrupt before returning: an async-signal-safe
+        // `AtomicBool` store, so main's exit-path gate observes it even if
+        // the watcher thread has not been scheduled yet (see
+        // [`CLEANUP_STARTED`]). Stored after the pipe write so a broken pipe
+        // keeps today's degrade — main exits normally instead of parking on
+        // a watcher that will never wake.
+        CLEANUP_STARTED.store(true, Ordering::Release);
     }
 
     /// The handler's one syscall, split out so the unit tests can pin its
@@ -568,6 +583,23 @@ mod imp {
     /// sleep-loop: this runs at most once per process lifetime, on a path
     /// whose only exit is the watcher killing the process.
     pub(super) fn park_while_cleanup_concludes() {
+        // Block the interrupt family around the gate load: a signal delivered
+        // between the final `false` observation and the caller's
+        // `std::process::exit` would otherwise start cleanup in a process
+        // that is already tearing down. While blocked, a late signal stays
+        // pending; a `false` gate restores the mask and returns — the
+        // pending signal then dies with the process, which is correct
+        // (cleanup never started, so the family's own exit code is the right
+        // one). A `true` gate restores before parking, delivering the
+        // pending signal normally: the handler re-run is idempotent for the
+        // watcher (an extra self-pipe byte, a re-store of the flag it also
+        // sets).
+        let previous = block_interrupt_signals();
+        let started = CLEANUP_STARTED.load(Ordering::Acquire);
+        restore_interrupt_signals(previous);
+        if !started {
+            return;
+        }
         while CLEANUP_STARTED.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }

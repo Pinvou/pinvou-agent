@@ -346,17 +346,22 @@ fn run_agent(
     let report = pinvou_product_backend::run_agentic_task(request)
         .map_err(|error| CliError::failed(format!("agent_run_failed: {error:#}")))?;
     // The consumed persona was one-shot and the turn that consumed it has
-    // now been submitted (setup faults above propagate and skip this; the
-    // setup TIMEOUT is the one Ok report whose turn provably never entered
-    // the engine, and its `submitted: false` skips the consume — the staged
-    // body stays equipped for the next run). Clear the staged body, keeping
-    // the persona_id on the sidecar — `personas active` keeps reporting the
-    // card until `unequip`, the same split the GUI's in-memory take leaves
-    // behind. A failure here is warned, not fatal: the report exists, the
-    // turn ran, and failing the whole run after a submitted turn would
-    // misreport it as never-started. A re-run against the same session then
-    // sees no staged body (the already-consumed state), which is exactly the
-    // one-shot contract.
+    // now been submitted (setup faults above propagate and skip this). The
+    // setup TIMEOUT is the only Ok report that can say `submitted: false`,
+    // and only when the deadline fired before the submit was entered — the
+    // turn provably never ran, so the consume is skipped and the staged
+    // body stays equipped for the next run. Once the submit was entered the
+    // report says submitted: true even though the outcome is ambiguous (the
+    // turn may have been admitted and keep running): the consume spends the
+    // staged body rather than risking a double injection next run — the
+    // same at-least-once direction as every submitted run. Clear the staged
+    // body, keeping the persona_id on the sidecar — `personas active` keeps
+    // reporting the card until `unequip`, the same split the GUI's
+    // in-memory take leaves behind. A failure here is warned, not fatal:
+    // the report exists, the turn ran, and failing the whole run after a
+    // submitted turn would misreport it as never-started. A re-run against
+    // the same session then sees no staged body (the already-consumed
+    // state), which is exactly the one-shot contract.
     if let Some((session_id, turn)) = staged_turn.as_ref().filter(|_| report.submitted) {
         let injected = match turn {
             crate::personas::StagedPersonaTurn::Inject(injection) => injection,

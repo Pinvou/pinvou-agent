@@ -801,14 +801,20 @@ fn tools_install(
     let mgr = MarketplaceManager::new();
     mgr.install(id, &config)
         .map_err(|error| feature_error("tools install", id, error))?;
-    // Companion skills follow the package (GUI `install_marketplace_tool`):
-    // a companion INSTALL failure is logged and does not roll back the MCP
-    // install (a skill is an enhancement). The consent sync that follows
-    // each install is NOT best-effort: `sync_after_install_or_fail` below
-    // maps a failed consent-file write to a command failure with the GUI's
-    // consent marker — a failed consent write must not set an installed
-    // connector live by default, so it fails the command instead of being
-    // logged (the companion install itself stays the only log-only half).
+    // DenyAll scopes (e.g. code) keep newly installed packages off by
+    // default. The tool's OWN consent sync runs IMMEDIATELY after the
+    // install commit, BEFORE the companion loop — the GUI's round-21
+    // MAJOR 2 ordering (`install_marketplace_tool_post_install`): the
+    // stored list is the consent store, so a crash mid-companion-install
+    // would otherwise leave the pack ON in every initialized scope with
+    // zero consent rows and nothing at boot to reconcile it. The companion
+    // loop is real disk work (unzip, directory creates), so that window is
+    // wide enough to matter. Each companion's own sync follows its install
+    // for the same reason, and neither sync is best-effort:
+    // `sync_after_install_or_fail` maps a failed consent-file write to a
+    // command failure with the GUI's consent marker. (The companion
+    // INSTALL failure itself stays log-only: a skill is an enhancement.)
+    sync_after_install_or_fail("tools install", id)?;
     let mut companion_note = Vec::new();
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
@@ -821,8 +827,6 @@ fn tools_install(
             }
         }
     }
-    // DenyAll scopes (e.g. code) keep newly installed packages off by default.
-    sync_after_install_or_fail("tools install", id)?;
     // The GUI validates remote MCP connections right after install
     // (validate_on_install manifests) and, on a failed handshake, UNINSTALLS
     // the tool again. The handshake runs on the foundation's async MCP stack,
@@ -1028,6 +1032,9 @@ fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
     let Some(fields) = entry.as_object() else {
         return false;
     };
+    if mcp_entry_spells_both_header_aliases(fields) {
+        return false;
+    }
     const OPTIONAL_STRING: &[&str] = &[
         "command",
         "cwd",
@@ -1039,7 +1046,10 @@ fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
     const OPTIONAL_U64: &[&str] = &["connect_timeout", "execute_timeout", "read_timeout"];
     const PLAIN_BOOL: &[&str] = &["disabled", "enabled", "required"];
     const STRING_LIST: &[&str] = &["args", "enabled_tools", "disabled_tools", "scopes"];
-    // `env_http_headers` is the declared alias of `env_headers`.
+    // `env_http_headers` is the declared alias of `env_headers`; serde
+    // rejects an ENTRY that spells both (duplicate field) exactly like the
+    // root-level `servers`/`mcpServers` pair below, so the same decision is
+    // re-applied here.
     const STRING_MAP: &[&str] = &["env", "headers", "env_headers", "env_http_headers"];
     fields.iter().all(|(key, value)| {
         let key = key.as_str();
@@ -1063,6 +1073,16 @@ fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
             true
         }
     })
+}
+
+/// `env_headers` / `env_http_headers`: serde accepts the value from either
+/// key but rejects a struct that spells both (duplicate field after alias
+/// resolution) — the desktop's one-shot parse fails and the server counts as
+/// absent, so the hand-mirror must refuse the entry too.
+fn mcp_entry_spells_both_header_aliases(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    fields.contains_key("env_headers") && fields.contains_key("env_http_headers")
 }
 
 /// Degrading variant for `tools auth`: a status READ must not turn a damaged
@@ -1724,7 +1744,10 @@ fn default_export_name(id: &str) -> PathBuf {
 
 /// `probe` field on a `plugins readiness` row: how complete the row's
 /// `ready` / `reason` pair is. `registry` means the registry verdict IS the
-/// whole answer (the GUI computes it from the same `readiness_for` call).
+/// whole answer (the GUI computes MCP/Bundle/Skill rows from the same
+/// `readiness_for` call; the ima row deliberately bypasses `readiness_for`
+/// and replicates the GUI's own ima arm — `connectors::ima::status_with_store`
+/// — so its verdict semantics are identical, but the call is not).
 /// `unavailable_in_cli` means the verdict is a headless under-approximation:
 /// the desktop reaches the real answer through a live probe this crate cannot
 /// run, so `ready: false` on such a row means "not determined here", not
@@ -1873,15 +1896,25 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
                         keyring_target(spec.target),
                         &spec.key,
                     );
-                    credential_store
-                        .get(&reference)
-                        .map(|value| value.is_some())
-                        .map_err(|error| {
-                            CliError::failed(format!(
-                                "plugins readiness({bundle_id}): credential store unavailable: {}",
+                    // A per-row keyring READ error degrades this row, not the
+                    // whole command: the GUI's `_` arm folds read errors to
+                    // absent (`missing_credentials`) and keeps serving every
+                    // other card — one corrupted keychain entry must not hide
+                    // every other row's verdict. The degrade keeps the
+                    // fail-closed direction (a present key the store cannot
+                    // answer counts as absent, never the reverse).
+                    match credential_store.get(&reference) {
+                        Ok(value) => value.is_some(),
+                        Err(error) => {
+                            note!(
+                                "[plugins] readiness {}: credential store read failed \
+                                 (reporting the credential as absent): {}",
+                                bundle_id,
                                 error.user_message()
-                            ))
-                        })?
+                            );
+                            false
+                        }
+                    }
                 };
                 resolved_credentials.push((spec.key.clone(), present));
             }

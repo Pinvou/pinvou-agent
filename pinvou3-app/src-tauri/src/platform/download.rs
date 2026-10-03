@@ -135,7 +135,10 @@ pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
 /// that same registry), so integrity on this path rests on TLS and the
 /// mirror's sync fidelity — not the same strength as the SHA-256 pin
 /// verification used for archive/wheel downloads.
-pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
+/// `pub` for the crate-boundary re-export in `platform::mod` (the CLI's
+/// `connectors ensure-cli tmeet` retry chain consumes the app's constant
+/// instead of a drifting copy).
+pub const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 
 /// Redact userinfo (`user:pass@host`) before showing a candidate URL in
 /// logs/errors: users may paste credentials into an acceleration prefix, and

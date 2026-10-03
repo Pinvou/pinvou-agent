@@ -1042,6 +1042,11 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     // guard adds the unnamed ones — an early error return between them, a
     // panic), so a truncated download never sits at the staged path.
     let _staged_part = StagedFile { path: part.clone() };
+    // A stale `.part` from a crashed run (SIGKILL/power loss between create
+    // and rename) would make the exclusive `create_new` above fail with a
+    // raw `File exists` naming an internal path; the reserve helper heals
+    // exactly that case — a leftover REGULAR file is unlinked and re-
+    // reserved once, while a planted symlink keeps the refusal.
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
         .connect_timeout(Duration::from_secs(30))
@@ -1996,6 +2001,46 @@ fn postprocess_retry_prompt(mode: PostprocessMode) -> &'static str {
 }
 
 /// Mirror of `voice_postprocess_max_tokens`.
+/// Anthropic Messages body for voice postprocess — field set mirrors the
+/// GUI's `voice_postprocess_request_body` / core `anthropic_messages_request`
+/// wire: model/max_tokens/system/messages and **no `temperature`**. A
+/// hard-coded 0 400s on gateways that pin sampling server-side
+/// (live-probed on the Kimi Coding Plan 2026-09-30: "invalid temperature:
+/// only 1 is allowed for this model" — the reason the GUI stopped sending
+/// the field, pinned by the foundation's body test).
+fn postprocess_anthropic_body(
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{ "role": "user", "content": user }],
+    })
+}
+
+/// Chat Completions body for voice postprocess — the same no-`temperature`
+/// wire as [`postprocess_anthropic_body`].
+fn postprocess_chat_body(
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": user }
+        ],
+        "max_tokens": max_tokens,
+        "stream": false
+    })
+}
+
 fn postprocess_max_tokens(mode: PostprocessMode, retry: bool) -> u32 {
     let base = match mode {
         PostprocessMode::Edit => 2048,
@@ -2288,8 +2333,15 @@ fn postprocess(
             // same number would spend the whole budget before the first
             // request and leave the retry structurally dead.
             let started = Instant::now();
-            // Same shared-bridge fallback as the GUI `voice_postprocess_bridge`
-            // with no session: global prefs + the active model.
+            // Shared-bridge fallback shaped like the GUI
+            // `voice_postprocess_bridge` with no session: global prefs + the
+            // active model. Disclosed deviation: `fresh_bridge_for_draft` is
+            // `pub(crate)`, so this hand-rolled clone cannot run its
+            // `finalize_runtime_bridge` step (vLLM served-name correction +
+            // operator-route fact adoption) — on a single-model vLLM-class
+            // route whose configured name is not the served name, the GUI
+            // sends the corrected name and this lane sends the configured
+            // one.
             let mut bridge = pool.bridge.clone();
             bridge.prefs = pinvou3_lib::platform::prefs::UserPrefs::load();
             bridge.session_model = bridge.prefs.active_model().cloned();
@@ -2385,10 +2437,14 @@ fn postprocess(
 /// "cannot be built within an async runtime"), so the request inputs are
 /// resolved into owned data first and the HTTP exchange itself runs on a
 /// dedicated OS thread with no runtime context. Same endpoints, same body
-/// (system+user messages, temperature 0, max_tokens, and the per-provider
-/// thinking controls for the deterministic vendor set: vllm, deepseek, kimi
-/// (model-gated), qwen, doubao, glm, mimo, minimax — the same presets the
-/// GUI's `voice_reasoning_dialect` decides without URL sniffing).
+/// (system+user messages, **no `temperature`** — a hard-coded 0 400s on
+/// gateways that pin sampling server-side, the live-probed reason the GUI's
+/// `voice_postprocess_request_body` omits it — plus max_tokens and the
+/// per-provider thinking controls for the deterministic vendor set: vllm,
+/// deepseek, kimi (model-gated), qwen, doubao, glm, mimo, minimax — the same
+/// presets the GUI's `voice_reasoning_dialect` decides without URL
+/// sniffing). OpenCode gateway routes carry the mandatory
+/// `x-opencode-session` header, like every hand-rolled auxiliary client.
 #[allow(clippy::too_many_arguments)]
 fn call_postprocess_model(
     bridge: &pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge,
@@ -2457,16 +2513,23 @@ fn postprocess_http_exchange(
         } else {
             format!("{trimmed}/v1/messages")
         };
-        let mut request = client
-            .post(url)
-            .header("anthropic-version", "2023-06-01")
-            .json(&serde_json::json!({
-                "model": model_name,
-                "max_tokens": postprocess_max_tokens(mode, retry),
-                "system": system,
-                "messages": [{ "role": "user", "content": user }],
-                "temperature": 0,
-            }));
+        let mut request = client.post(url).header("anthropic-version", "2023-06-01");
+        // The OpenCode gateway enforces `x-opencode-session` on every
+        // hand-rolled auxiliary client (400 MissingSessionID otherwise, see
+        // core::model_endpoint's own doc) — the same conditional header
+        // `models probe` attaches.
+        if pinvou3_lib::model_probe::is_opencode_gateway_base_url(&base_url) {
+            request = request.header(
+                "x-opencode-session",
+                pinvou3_lib::model_probe::opencode_session_id_for("voice-postprocess"),
+            );
+        }
+        request = request.json(&postprocess_anthropic_body(
+            &model_name,
+            system,
+            &user,
+            postprocess_max_tokens(mode, retry),
+        ));
         if !api_key.trim().is_empty() {
             request = request.header("x-api-key", api_key.trim());
         }
@@ -2507,22 +2570,25 @@ fn postprocess_http_exchange(
         return Ok((sanitize_postprocess_output(&text), truncated));
     }
 
-    let mut body = serde_json::json!({
-        "model": model_name,
-        "messages": [
-            { "role": "system", "content": system },
-            { "role": "user", "content": user }
-        ],
-        "temperature": 0,
-        "max_tokens": postprocess_max_tokens(mode, retry),
-        "stream": false
-    });
+    let mut body = postprocess_chat_body(
+        &model_name,
+        system,
+        &user,
+        postprocess_max_tokens(mode, retry),
+    );
     apply_postprocess_reasoning_controls(&mut body, preset, provider.as_str(), &model_name);
-    let value: serde_json::Value = client
-        .post(format!(
-            "{}/chat/completions",
-            base_url.trim_end_matches('/')
-        ))
+    let mut request = client.post(format!(
+        "{}/chat/completions",
+        base_url.trim_end_matches('/')
+    ));
+    // Same conditional gateway header as the Anthropic lane above.
+    if pinvou3_lib::model_probe::is_opencode_gateway_base_url(&base_url) {
+        request = request.header(
+            "x-opencode-session",
+            pinvou3_lib::model_probe::opencode_session_id_for("voice-postprocess"),
+        );
+    }
+    let value: serde_json::Value = request
         .bearer_auth(api_key)
         .json(&body)
         .send()
@@ -2642,6 +2708,15 @@ fn apply_postprocess_reasoning_controls(
         || lower.contains("qwen")
     {
         body["enable_thinking"] = serde_json::json!(false);
+        return;
+    }
+    // Same last-resort model-name fallback as the GUI's dialect picker: a
+    // custom OpenAI-compatible endpoint fronting a deepseek-* model gets
+    // `thinking: disabled` too — the postprocess sanitizer only strips one
+    // leading `<think>` block, so reasoning leaked past it lands verbatim
+    // in the output.
+    if lower.contains("deepseek") {
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
     }
 }
 
@@ -3063,8 +3138,8 @@ mod tests {
     use super::{
         AsrLanes, AsrPreflight, OutputMode, PostprocessMode, VoiceCommand,
         anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls, asr_preflight,
-        execute, ffmpeg_missing_is_fatal_for, postprocess_http_exchange, postprocess_prompt,
-        transcribe_with,
+        execute, ffmpeg_missing_is_fatal_for, postprocess_anthropic_body, postprocess_chat_body,
+        postprocess_http_exchange, postprocess_prompt, transcribe_with,
     };
 
     /// Panic-safe `PINVOU3_ASR_CMD` restore for the resolution test below:
@@ -3297,6 +3372,47 @@ content-length: {}\r\n\r\n{}",
             "qwen3-32b",
         );
         assert_eq!(body["enable_thinking"], serde_json::json!(false));
+        // Same last-resort arm as the GUI's dialect picker: a deepseek model
+        // name behind a custom OpenAI-compatible endpoint gets
+        // `thinking: disabled` too, and stays off the qwen field.
+        let mut body = serde_json::json!({ "model": "deepseek-v5" });
+        apply_postprocess_reasoning_controls(
+            &mut body,
+            ModelPreset::OpenaiCompatible,
+            "openai_compatible",
+            "deepseek-v5",
+        );
+        assert_eq!(
+            body["thinking"], disabled,
+            "a deepseek model name must disable thinking: {body}"
+        );
+        assert!(body.get("enable_thinking").is_none());
+    }
+
+    /// The postprocess request bodies must omit `temperature`, like the
+    /// GUI's `voice_postprocess_request_body` and the foundation's
+    /// `anthropic_messages_request` (pinned there as
+    /// `anthropic_messages_body_omits_temperature`): a hard-coded 0 400s on
+    /// gateways that pin sampling server-side (live-probed on the Kimi
+    /// Coding Plan 2026-09-30).
+    #[test]
+    fn postprocess_bodies_omit_temperature_like_the_gui_wire() {
+        for body in [
+            postprocess_chat_body("m", "sys", "user", 768),
+            postprocess_anthropic_body("m", "sys", "user", 2048),
+        ] {
+            assert!(
+                body.get("temperature").is_none(),
+                "no temperature on the postprocess wire: {body}"
+            );
+        }
+        let chat = postprocess_chat_body("m", "sys", "user", 768);
+        assert_eq!(chat["model"], "m");
+        assert_eq!(chat["max_tokens"], 768);
+        assert_eq!(chat["stream"], serde_json::json!(false));
+        let anthropic = postprocess_anthropic_body("m", "sys", "user", 2048);
+        assert_eq!(anthropic["system"], "sys");
+        assert_eq!(anthropic["max_tokens"], 2048);
     }
 
     /// Wire-level parity for one new preset: on the OpenAI-compatible route a

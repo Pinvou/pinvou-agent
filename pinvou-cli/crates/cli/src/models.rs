@@ -1441,7 +1441,15 @@ fn edit<S: CredentialStore>(
         };
         let mut updated = existing.clone();
         apply_model_edit(&mut updated, changes);
-        require_known_vision_model(prefs, updated.vision_model_id.as_deref())?;
+        // Validate only the reference this edit WRITES: a pre-existing
+        // dangling `vision_model_id` (the referenced model was removed —
+        // `remove_model` does not cascade) must not fail an unrelated edit,
+        // where the GUI's `save_model_inner` (this module's parity anchor)
+        // has no such gate. A carried-through reference keeps the GUI's
+        // behavior: the dead fallback silently never fires.
+        if changes.vision_model_id.is_some() {
+            require_known_vision_model(prefs, updated.vision_model_id.as_deref())?;
+        }
         match (&replacement, clear_api_key) {
             // Replace: store first, then mark configured, all inside the
             // closure so the save that follows either commits both or neither.

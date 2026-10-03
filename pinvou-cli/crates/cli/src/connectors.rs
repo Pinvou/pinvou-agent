@@ -1433,8 +1433,9 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             // remedy) while naming the uncertainty.
             if resolve_vendor_cli(spec).is_some() {
                 entry["probe"] = json!(format!(
-                    "unanswerable: the CLI is present but its --version probe failed or timed \
-                     out; `pinvou connectors ensure-cli {}` re-checks the install",
+                    "unanswerable: the CLI is present but its --version probe failed, timed \
+                     out, or returned an unparseable version; `pinvou connectors \
+                     ensure-cli {}` re-checks the install",
                     spec.id
                 ));
                 // The human row renders only `note` (same channel as
@@ -1442,14 +1443,16 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
                 // remedy must land there too — stderr is invisible to a
                 // `--output json`-style consumer of the human table.
                 entry["note"] = json!(format!(
-                    "the CLI is present but its --version probe failed or timed out \
-                     (`pinvou connectors ensure-cli {}` re-checks the install)",
+                    "the CLI is present but its --version probe failed, timed out, or \
+                     returned an unparseable version; `pinvou connectors ensure-cli {}` \
+                     re-checks the install",
                     spec.id
                 ));
                 note!(
                     "[connectors] {} is present on disk or PATH, but its --version probe \
-                     failed or timed out — reporting it as not installed would be a guess; \
-                     run `pinvou connectors ensure-cli {}` to re-check",
+                     failed, timed out, or returned an unparseable version — reporting it as \
+                     not installed would be a guess; run `pinvou connectors ensure-cli {}` to \
+                     re-check",
                     spec.cli_bin,
                     spec.id
                 );
@@ -1708,18 +1711,6 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
     let spec = kind.spec();
     let logout_deadline = Instant::now() + Duration::from_secs(CONNECT_DEFAULT_TIMEOUT_SECS);
     let mut value = match spec.id {
-        // Mirror `feishu_logout`: `lark-cli auth logout` clears the token.
-        "feishu" => {
-            let (ok, _, _) = run_cli_bounded(spec, &["auth", "logout"], logout_deadline)?;
-            if !ok {
-                return Err(CliError::failed(format!(
-                    "{} CLI logout failed",
-                    spec.display_name
-                )));
-            }
-            bundle_store_on_disconnected(spec.id);
-            json!({ "ok": true, "id": spec.id })
-        }
         // Mirror `wecom_logout`: no logout subcommand exists; delete the
         // credential directory `~/.config/wecom` (real user home, exactly
         // like the GUI — PINVOU3_HOME does not relocate vendor credentials).
@@ -1744,14 +1735,17 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
             bundle_store_on_disconnected(spec.id);
             json!({ "ok": true, "id": spec.id, "removed": existed })
         }
-        // Mirror `dingtalk_logout` / `tmeet_logout`: already logged out when
-        // the CLI is not installed; otherwise `auth logout [--yes]` must
-        // succeed before the store mirror is updated. The gate judges
-        // through `logout_probe` (GUI `logout_probe_verdict` parity): a CLI
-        // that exists but fails its version probe leaves the login state
-        // unconfirmed, and the error surfaces without touching the store —
-        // claiming `installed:false` there would skip the real logout while
-        // the vendor token stays on disk.
+        // Mirror `feishu_logout` / `dingtalk_logout` / `tmeet_logout`: the
+        // probe verdict is unified with the GUI's `logout_probe_verdict` —
+        // a genuinely not-installed CLI degrades to `installed:false` and
+        // clears the bundle store (the GUI's own comment says the verdict
+        // is shared by all three), while a CLI that exists but fails its
+        // version probe leaves the login state unconfirmed, and the error
+        // surfaces without touching the store — claiming `installed:false`
+        // there would skip the real logout while the vendor token stays on
+        // disk. feishu previously skipped this gate and failed forever on
+        // an uninstalled lark-cli while the store mirror kept claiming
+        // connected.
         _ => {
             let args: &[&str] = if spec.id == "dingtalk" {
                 &["auth", "logout", "--yes"]
@@ -1865,6 +1859,7 @@ struct LockArtifact {
     name: String,
     version: String,
     url: String,
+    mirror_url: Option<String>,
     archive_sha256: String,
     binary_sha256: String,
 }
@@ -1905,6 +1900,7 @@ fn load_lock() -> Result<(String, Vec<LockArtifact>), CliError> {
                     name: string_field(artifact, "name"),
                     version: string_field(artifact, "version"),
                     url: string_field(artifact, "url"),
+                    mirror_url: optional_string_field(artifact, "mirrorUrl"),
                     archive_sha256: string_field(artifact, "archiveSha256"),
                     binary_sha256: string_field(artifact, "binarySha256"),
                 })
@@ -1920,6 +1916,43 @@ fn string_field(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+fn optional_string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+/// Download candidates tried in order — the GUI `artifact_download_urls`
+/// chain: the GitHub acceleration prefix env (opt-in), the lock table's
+/// reviewed `mirrorUrl`, then the official URL. Labels name the candidate
+/// class in errors, never the URL itself (mirror URLs can be intranet
+/// addresses). Each candidate is checksum-verified by the caller.
+fn artifact_download_urls(artifact: &LockArtifact) -> Vec<(&'static str, String)> {
+    let mut urls = Vec::new();
+    if let Ok(prefix) = std::env::var(pinvou3_lib::features::GITHUB_ASSET_MIRROR_PREFIX_ENV)
+        && let Some(prefixed) = github_prefixed_url(prefix.trim(), &artifact.url)
+    {
+        urls.push(("GitHub mirror prefix", prefixed));
+    }
+    if let Some(mirror) = artifact.mirror_url.clone() {
+        urls.push(("reviewed mirror", mirror));
+    }
+    urls.push(("official URL", artifact.url.clone()));
+    urls
+}
+
+/// The GUI `github_prefixed_url` rule: only a github.com release URL can be
+/// re-hosted under the acceleration prefix.
+fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
+    if prefix.is_empty() || !url.starts_with("https://github.com/") {
+        return None;
+    }
+    Some(format!("{}/{}", prefix.trim_end_matches('/'), url))
 }
 
 fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -2015,10 +2048,6 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     let _install_guard = install_lock
         .write()
         .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
-    let log_path = pinvou3_home().join("cli-install.log");
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     // npm is an npm.cmd shim on Windows; resolve the candidate and wrap the
     // spawn the same way every other vendor CLI child is wrapped.
     let npm = crate::support::binary_candidates("npm")
@@ -2029,7 +2058,42 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
                 .find(|path| path.is_file())
         })
         .ok_or_else(|| CliError::failed("npm was not found on PATH; install Node.js first"))?;
-    let mut cmd = crate::support::build_command(&npm, &["install", "-g", TMEET_NPM_SPEC]);
+    // GUI parity (`tmeet.rs::install_tmeet_cli`): the default npm registry
+    // first, then one retry through npmmirror — "registry.npmjs.org is
+    // often unreachable on China networks" is the GUI's own rationale for
+    // the second attempt. Marker lines separate the attempts in the shared
+    // append-only log (the app's `append_cli_install_log`, with its 8 MiB
+    // rotation) so the first failure's cause is not lost.
+    pinvou3_lib::features::append_cli_install_log("── npm install (default npm registry) ──");
+    if run_npm_attempt(spec, &npm, None)? {
+        return Ok(true);
+    }
+    pinvou3_lib::features::append_cli_install_log(
+        "── default registry failed, retrying via npmmirror ──",
+    );
+    if run_npm_attempt(spec, &npm, Some(pinvou3_lib::platform::NPM_MIRROR_REGISTRY))? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// One npm attempt of [`run_npm_install`]: appends its stdout/stderr to the
+/// shared install log — append, never truncate, the GUI's rule that the log
+/// carries every stage's output of a multi-stage install — under the same
+/// supervised bracket as every long-running vendor child.
+fn run_npm_attempt(
+    spec: &VendorSpec,
+    npm: &std::path::Path,
+    registry: Option<&'static str>,
+) -> Result<bool, CliError> {
+    let log_path = pinvou3_home().join("cli-install.log");
+    let mut args: Vec<&str> = vec!["install", "-g", TMEET_NPM_SPEC];
+    let registry_arg;
+    if let Some(registry) = registry {
+        registry_arg = format!("--registry={registry}");
+        args.push(&registry_arg);
+    }
+    let mut cmd = crate::support::build_command(npm, &args);
     crate::support::set_process_group(&mut cmd);
     // The GUI's tmeet install applies the user npm prefix (the shared
     // apply_user_npm_prefix helper), so `ensure-cli tmeet` must not try to
@@ -2038,7 +2102,11 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
-    let (out, err) = match std::fs::File::create(&log_path) {
+    let (out, err) = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
         Ok(file) => match file.try_clone() {
             Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
             Err(_) => (Stdio::null(), Stdio::null()),
@@ -2160,13 +2228,33 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         artifact.name, artifact.version, archive_ext
     ));
     if !file_is_sha256(&archive, &artifact.archive_sha256) {
-        download_https(&artifact.url, &archive)?;
-        if !file_is_sha256(&archive, &artifact.archive_sha256) {
-            let _ = std::fs::remove_file(&archive);
-            return Err(CliError::failed(format!(
-                "{} archive checksum mismatch",
-                artifact.name
-            )));
+        // GUI `download_verified` chain (`artifact_download_urls`): every
+        // candidate is checksum-verified before it counts, so a tampered
+        // mirror only costs a retry — without the chain, the networks the
+        // mirrorUrl/npmmirror entries were reviewed for fail the install
+        // permanently while the GUI's install succeeds.
+        let mut last_error: Option<CliError> = None;
+        let mut verified = false;
+        for (label, url) in artifact_download_urls(artifact) {
+            match download_https(&url, &archive) {
+                Ok(()) => {
+                    if file_is_sha256(&archive, &artifact.archive_sha256) {
+                        verified = true;
+                        break;
+                    }
+                    let _ = std::fs::remove_file(&archive);
+                    last_error = Some(CliError::failed(format!(
+                        "{} archive checksum mismatch ({label})",
+                        artifact.name
+                    )));
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if !verified {
+            return Err(last_error.unwrap_or_else(|| {
+                CliError::failed(format!("{} archive download failed", artifact.name))
+            }));
         }
     }
 
@@ -2330,7 +2418,21 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     }
     let part = destination.with_extension("part");
     let mut reader = response.take(MAX_ARCHIVE_BYTES + 1);
-    let mut file = std::fs::File::create(&part)
+    // `create_new`, not `create`: `File::create` follows a symlink
+    // pre-planted at the fully predictable `.part` name and would truncate
+    // its target, then publish the renamed symlink — the exclusive
+    // reservation the voice downloader's `.part` already uses. 0600 at
+    // create on unix, matching the same convention (the mode must be set on
+    // the SAME open, not after).
+    let mut open_options = std::fs::OpenOptions::new();
+    open_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open_options.mode(0o600);
+    }
+    let mut file = open_options
+        .open(&part)
         .map_err(|error| CliError::failed(format!("cannot create archive file: {error}")))?;
     let copied = match std::io::copy(&mut reader, &mut file) {
         Ok(copied) => copied,
@@ -3620,22 +3722,30 @@ default — turn them off in the tools list: {error}",
         // before surfacing the failure, and propagate a failed rollback (a
         // silently half-written credential state is worse than the original
         // error).
-        let restore = |reference: &CredentialReference, previous: Option<String>| {
+        // Mirror `rollback_secret` (and the GUI's Round-37 C5 shape): attempt
+        // BOTH restores even when the first fails — a `?` on the first would
+        // strand a half-old/half-new credential pair with `ima status` still
+        // reporting connected. Each failure is collected, both are reported,
+        // and the primary error still wins.
+        let mut rollback_failures: Vec<String> = Vec::new();
+        for (reference, previous) in [
+            (&client_ref, previous_client_id),
+            (&api_ref, previous_api_key),
+        ] {
             let outcome = match previous {
                 Some(value) => store.set(reference, &value).err(),
                 None => store.delete(reference).err(),
             };
             if let Some(rollback_error) = outcome {
-                return Err(CliError::failed(format!(
-                    "ima connect failed ({error}) and the credential rollback also failed: \
-                     {}",
-                    rollback_error.user_message()
-                )));
+                rollback_failures.push(rollback_error.user_message());
             }
-            Ok(())
-        };
-        restore(&client_ref, previous_client_id)?;
-        restore(&api_ref, previous_api_key)?;
+        }
+        if !rollback_failures.is_empty() {
+            return Err(CliError::failed(format!(
+                "ima connect failed ({error}) and the credential rollback also failed: {}",
+                rollback_failures.join("; ")
+            )));
+        }
         return Err(error);
     }
     let value = json!({ "ok": true, "id": "ima", "connected": true });

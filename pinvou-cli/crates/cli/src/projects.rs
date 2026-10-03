@@ -737,40 +737,15 @@ fn validate_rebind_to(to: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Same-folder spelling test for the to-lane retry admit: trailing
-/// separators are trimmed and Windows case-only drift folds away, mirroring
-/// the GUI's `filesystem_path_identity_key` comparison (#463 round-14)
-/// without the `pub(crate)` helper. A raw `!=` there reads a healthy
-/// to-lane session as needing sync, causing a spurious rewrite plus a
-/// fabricated "rebound" report entry.
-fn same_workspace_spelling(a: &str, b: &str) -> bool {
-    fn trim(s: &str) -> &str {
-        s.trim_end_matches(['/', '\\'])
-    }
-    let (a, b) = (trim(a), trim(b));
-    if cfg!(windows) {
-        a.eq_ignore_ascii_case(b)
-    } else {
-        a == b
-    }
-}
-
-/// Mirror of the GUI's `reject_nested_rebind_target`, both arms (equality is
-/// handled by the caller first):
-/// - a target inside the old directory deepens on every rerun
-///   (/a/x → /a/x/new/x → …), breaking idempotency;
-/// - the mirror geometry (#463 round-17 MAJOR-2) — the old directory strictly
-///   inside the target — deepens a binding at `from/sub` one level per rerun
-///   (`from/B/sub` → `from/B/B/sub`) while run 1 is even false-failed by the
-///   fence rescan, which is why the GUI refuses it fatally and this CLI must
-///   too instead of performing a rebind the desktop app would have rejected.
-/// The GUI compares folded identity keys through
-/// `platform::os::path_identity_is_same_or_nested`, which is `pub(crate)` to
-/// the app crate; the CLI compares components with `Path::starts_with` — both
-/// operands are already in the entry-normalized resolved display form, so the
-/// match is whole-component and the one deviation is Windows case-only
-/// spellings, where the app's canonicalize at validation time already removes
-/// the case difference in practice.
+/// Mirror of the GUI's `reject_nested_rebind_target` (equality is handled by
+/// the caller first): a target inside the old directory deepens on every
+/// rerun (/a/x → /a/x/new/x → …), breaking idempotency. The GUI compares
+/// folded identity keys through `platform::os::path_identity_is_same_or_nested`,
+/// which is `pub(crate)` to the app crate; the CLI compares components with
+/// `Path::starts_with` — both operands are already in the entry-normalized
+/// resolved display form, so the match is whole-component and the one
+/// deviation is Windows case-only spellings, where the app's canonicalize at
+/// validation time already removes the case difference in practice.
 fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
     to_display.starts_with(from) || from.starts_with(to_display)
 }
@@ -852,11 +827,8 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         return rebind_report(output, Vec::new(), Vec::new(), Vec::new());
     }
     if rebind_target_is_same_or_nested(&to_display, &from_display) {
-        // Direction-neutral copy: the marker stays stable for scripts, and
-        // the mirror arm (the old folder inside the destination) must not
-        // print a message that describes only the first arm.
         return Err(CliError::failed(
-            "projects rebind: the source and destination folders must not be \
+            "projects rebind: the original and destination folders are \
              nested inside each other (REBIND_TO_NESTED)",
         ));
     }
@@ -1012,6 +984,44 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
             }
             continue;
         }
+        // GUI parity for the storage halves of `rebind_workspace_root`
+        // (`app/commands/projects.rs`), which run BEFORE the metadata write
+        // so a failure here keeps the metadata stale — the to-lane scan
+        // re-admits the session on a rerun and retries, where a converged
+        // metadata would strand the stale paths forever:
+        // 1. `rebase_workspace_artifact_paths` rewrites the session's
+        //    deliverable/artifact storage paths into the new root (skipping
+        //    this leaves un-openable absolute paths into the vanished root).
+        // 2. `translate_acp_state_workspace` rewrites the ACP state file's
+        //    `workspace.path` — boot recovery reads that field BEFORE the
+        //    workspace baseline, so an untranslated state file resurrects
+        //    the vanished root if the agent index is later lost.
+        // Both are pure storage, `pub` feature-layer APIs; the only rebind
+        // half genuinely skipped here is the desktop runtime work (the pool
+        // restart), as the module header discloses.
+        let translate =
+            |path: &Path| SessionAgentStore::rebind_target_path(path, &from_display, &to_display);
+        if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &translate) {
+            // Same root-cause-only echo as set_workspace below (the chain
+            // embeds store paths); the id reaches the user through the
+            // failed list.
+            note!(
+                "[projects] rebind artifact-path rebase failed: {}",
+                error.root_cause()
+            );
+            failed_session_ids.push(session_id.clone());
+            continue;
+        }
+        if let Err(error) =
+            pinvou3_lib::features::codex_acp::translate_acp_state_workspace(session_id, &translate)
+        {
+            note!(
+                "[projects] rebind acp-state workspace translation failed: {}",
+                error.root_cause()
+            );
+            failed_session_ids.push(session_id.clone());
+            continue;
+        }
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
                 // Indexed session whose sidecar failed both passes: the
@@ -1110,10 +1120,18 @@ fn admit_to_lane_retry_candidate(
         return;
     }
     let needs_metadata_sync = match sessions.load(&session_id) {
-        Ok(session) => !same_workspace_spelling(
-            &session.metadata.workspace.to_string_lossy(),
-            &bound_path.to_string_lossy(),
-        ),
+        Ok(session) => {
+            // Same folded identity comparison as the GUI's to-lane scan
+            // (`filesystem_path_identity_key`): a Windows case/separator
+            // spelling drift between metadata and binding must not re-admit
+            // a healthy session for a whole-record rewrite plus a false
+            // "rebound" report entry. The other Windows deviations this
+            // module documents (`path_is_under_root`,
+            // `rebind_target_is_same_or_nested`) follow the same fold.
+            pinvou3_lib::platform::filesystem_path_identity_key(
+                &session.metadata.workspace.to_string_lossy(),
+            ) != pinvou3_lib::platform::filesystem_path_identity_key(&bound_path.to_string_lossy())
+        }
         Err(_) => true,
     };
     if needs_metadata_sync {

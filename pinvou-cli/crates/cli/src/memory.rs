@@ -1255,9 +1255,12 @@ fn expected_pending_topic(kind: AddKind) -> &'static str {
 /// case-insensitively was handed back with its own topic/kind untouched —
 /// fields the prior check never looked at.
 ///
-/// On any mismatch the add fails with the pending queue and every store
-/// untouched — before `confirm_pending_memory` runs — which is what the
-/// remediation below promises.
+/// On any mismatch the add fails before `confirm_pending_memory` runs: the
+/// pending row's STATUS and CONTENT are untouched and nothing is confirmed
+/// or materialized (what the remediation below promises). The queue FILE
+/// itself can still be rewritten by the dedupe branch's idempotent
+/// bookkeeping (an `updated_at` bump, empty topic/source backfill) — a
+/// rewrite, not a semantic change, and the divergence refusal is unaffected.
 fn diverged_candidate(
     kind: AddKind,
     pending_id: &str,
@@ -1385,8 +1388,10 @@ normalization (task-like or punctuation-only text is not stored)",
     // reviewed and writes the other row's wording into ITS topic bucket
     // (round-18: a foreign-topic candidate with the same text was adopted
     // and confirmed through, deleting that bucket's previous item) — so the
-    // divergence is caught here, before `confirm_pending_memory` runs,
-    // leaving the pending queue and both stores exactly as they were.
+    // divergence is caught here, before `confirm_pending_memory` runs:
+    // the pending row's status and content stay untouched (the dedupe
+    // branch's bookkeeping rewrite can still bump `updated_at` — a
+    // no-op semantically) and neither store is written.
     //
     // The comparison replays the pipeline over the returned row's fields, so
     // a row that IS derivable from this caller's input still passes: an add
@@ -1421,8 +1426,9 @@ normalization (task-like or punctuation-only text is not stored)",
                 // shares) or a concurrent writer clearing the bucket.
                 .ok_or_else(|| {
                     CliError::failed(
-                        "memory_add_not_materialized: preference content belongs to the \
-memory profile instead",
+                        "memory_add_not_materialized: the confirmed preference was not found \
+in the profile (a concurrent writer cleared the bucket, or the content was routed to \
+the memory profile instead)",
                     )
                 })?;
             let after = items

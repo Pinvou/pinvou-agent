@@ -576,6 +576,14 @@ fn models_token_only_accepts_models_subcommands() {
 fn models_list_reports_fresh_default_model() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("list-fresh");
+    // Hermeticity first: an ambient DEEPSEEK_API_KEY short-circuits
+    // refresh_credential_states_with_store to env_override for EVERY model,
+    // so the "missing" assertions below would fail spuriously on any
+    // machine that exports it. Cleared before the first run, restored on
+    // drop (the same guard the env_override half below re-uses).
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
     let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     let models = value["models"].as_array().expect("models array");
@@ -607,8 +615,6 @@ fn models_list_reports_fresh_default_model() {
     // DEEPSEEK_API_KEY env override marks every model env_override in the
     // list JSON without touching the OS keychain (the prefs layer's
     // refresh_credential_states_with_store short-circuits on it).
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
     unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
     let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let human = run_ok(&["pinvou", "models", "list"]);
@@ -729,6 +735,12 @@ fn settings_json_get_reports_a_bad_key_as_usage_error() {
 fn models_add_use_show_remove_round_trip_without_secrets() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("model-lifecycle");
+    // Hermeticity: an ambient DEEPSEEK_API_KEY short-circuits every model's
+    // credential_state to env_override, so the keyless "missing" assertion
+    // below fails spuriously on machines that export it.
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
 
     // Add without a key: must not touch the credential store.
     let stdout = run_ok(ADD_ARGS);
@@ -1694,6 +1706,38 @@ fn models_add_writes_the_gui_form_metadata() {
 /// The gap that silently breaks other features: rotating a key or fixing a
 /// `base_url` used to require `remove` + `add`, which mints a NEW id and
 /// therefore orphans per-session model bindings and scheduled-task model
+/// `models edit` must learn the id is unknown BEFORE consuming a credential
+/// source: `--api-key-stdin` blocks on the pipe, so the resolve must not run
+/// first or a mistyped id eats the pasted key and only then fails. The
+/// env-var twin distinguishes the orders without a pipe: the correct order
+/// reports the unknown id, the regressed order reports the unset variable.
+#[test]
+fn models_edit_reports_unknown_id_before_resolving_the_credential() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("models-edit-order");
+    let _restore = RestoreEnvVar("PINVOU_MODELS_TEST_MISSING_KEY", None);
+    unsafe { std::env::remove_var("PINVOU_MODELS_TEST_MISSING_KEY") };
+    let (message, code) = run_err(&[
+        "pinvou",
+        "models",
+        "edit",
+        "no-such-model",
+        "--name",
+        "X",
+        "--api-key-env",
+        "PINVOU_MODELS_TEST_MISSING_KEY",
+    ]);
+    assert_eq!(code, ExitCode::Failed, "{message}");
+    assert!(
+        message.contains("model not found"),
+        "the unknown-id refusal must come before the credential resolution: {message}"
+    );
+    assert!(
+        !message.contains("PINVOU_MODELS_TEST_MISSING_KEY"),
+        "the credential source must not be touched (or named) first: {message}"
+    );
+}
+
 /// pins. `models edit` must change everything EXCEPT the id.
 #[test]
 fn models_edit_mutates_in_place_and_preserves_the_id() {

@@ -63,12 +63,12 @@ libc = "0.2"
 [dev-dependencies]
 # Contract tests hold the same advisory lock files a second CLI process would
 # hold, pinning the busy-path contract.
-fd-lock = "4"
 # The round-18 login guard test probes its fake vendor processes with real
 # kill(2) calls (signal-0 existence checks, the interrupt, red leftovers
 # cleanup) — pure standard-library std has no way to express any of those;
 # the regular `cfg(unix)` dependency above is already visible to tests, so
-# no dev-dependency duplicate is needed.
+# no dev-dependency duplicates (libc, and fd-lock for the same reason) are
+# needed.
 
 [[bin]]
 name = "pinvou"

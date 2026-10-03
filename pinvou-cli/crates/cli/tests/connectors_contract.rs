@@ -618,7 +618,7 @@ fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
 }
 
 #[test]
-fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
+fn connectors_logout_and_apply_skills_on_uninstalled_connector_degrade_like_the_gui() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("uninstalled-errors");
     let _path = VendorCliGuard::new();
@@ -632,13 +632,23 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
         assert!(error.to_string().contains("--yes"), "{error}");
     }
 
-    // With --yes, feishu logout shells out to `lark-cli auth logout`; without
-    // the binary that is a clean host failure naming the install hint.
-    let error = run(&["pinvou", "connectors", "logout", "feishu", "--yes"])
-        .expect_err("logout without lark-cli must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("lark-cli"), "{error}");
-    assert!(error.to_string().contains("ensure-cli feishu"), "{error}");
+    // All three vendor-gated connectors treat "CLI not installed" as already
+    // logged out — the GUI's `logout_probe_verdict` NotInstalled degrade
+    // (its own comment says the verdict is unified for
+    // feishu/dingtalk/tmeet): ok:true, installed:false, and the bundle-store
+    // mirror is cleared. feishu previously failed forever here while the
+    // store mirror kept claiming connected.
+    for id in ["feishu", "dingtalk", "tmeet"] {
+        let value = run_json(&["pinvou", "connectors", "logout", id, "--yes"]);
+        assert_eq!(value["ok"], true, "{id}");
+        assert_eq!(value["id"], id, "{id}");
+        assert_eq!(value["installed"], false, "{id}");
+        assert_eq!(
+            run_json(&["pinvou", "connectors", "status", id])["connectors"][0]["installed"],
+            false,
+            "{id}: the store mirror must not keep claiming connected after the degrade"
+        );
+    }
 
     // apply-skills mirrors the GUI: an unprobeable vendor CLI counts as
     // "not connected" and the command succeeds with skills hidden (the same
@@ -654,14 +664,6 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_fail_cleanly() {
         outcome.stdout.contains("skills should show: no"),
         "apply-skills should hide skills when not connected"
     );
-
-    // dingtalk/tmeet treat "CLI not installed" as already logged out.
-    for id in ["dingtalk", "tmeet"] {
-        let value = run_json(&["pinvou", "connectors", "logout", id, "--yes"]);
-        assert_eq!(value["ok"], true, "{id}");
-        assert_eq!(value["id"], id, "{id}");
-        assert_eq!(value["installed"], false, "{id}");
-    }
 }
 
 #[test]
@@ -1140,6 +1142,15 @@ fn logout_and_apply_skills_remove_the_companion_skill_directories() {
     assert!(!skills.join("dws").exists());
     let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
     assert_eq!(value["skills_removed"], true);
+
+    // The show-direction disclosure keys the docs promise must exist and be
+    // stable: the CLI never unpacks skill directories (the desktop's
+    // embedded bundle does) and never runs the execpolicy ruleset
+    // hot-refresh (the GUI's engine pool does). A regression deleting or
+    // renaming either key would silently strand a JSON consumer.
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+    assert_eq!(value["skills_unpack"], "app-only");
+    assert_eq!(value["ruleset_refresh"], "gui-only");
 
     let _ = std::fs::remove_dir_all(&bin);
 }

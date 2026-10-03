@@ -1433,6 +1433,65 @@ fn memory_update_preferences_over_the_cap_reports_the_truncation() {
          WORK_CONTEXT_TEXT_MAX_CHARS (160)"
     );
 
+    /// The docs row enumerates three update caps ("preferences 120, work
+    /// context 160, timed stores 180"); the 160 literal in the update
+    /// report lane is otherwise unpinned — the exact gap class the timed
+    /// test's commentary describes as worth closing.
+    #[test]
+    fn memory_update_work_context_caps_at_160() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let home = TempHome::new("work-context-over-cap");
+
+        run_ok(&[
+            "pinvou",
+            "memory",
+            "add",
+            "work-context",
+            "--content",
+            "Shipping the pinvou CLI",
+        ]);
+        let id = pinvou3_lib::features::memory::load_work_context_with_cleanup()
+            .unwrap()
+            .value
+            .last()
+            .map(|item| item.id.clone())
+            .expect("the seeded work-context row must be listed");
+
+        // 170 single-byte characters, normalization-inert like the
+        // preferences fixture above, so only the cap can change the text.
+        let content: String = std::iter::repeat_n("abcdefghij", 17).collect();
+        assert_eq!(content.chars().count(), 170);
+
+        let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+            "pinvou",
+            "memory",
+            "update",
+            "work-context",
+            &id,
+            "--content",
+            &content,
+            "--output",
+            "json",
+        ]))
+        .expect("single-line JSON output");
+
+        assert_eq!(json["truncated"], serde_json::json!(true), "{json}");
+        assert_eq!(json["submitted_characters"], serde_json::json!(170));
+        assert_eq!(
+            json["stored_characters"],
+            serde_json::json!(160),
+            "the work-context update lane caps at 160"
+        );
+        let stored = pinvou3_lib::features::memory::load_work_context_with_cleanup()
+            .unwrap()
+            .value;
+        let item = stored
+            .iter()
+            .find(|item| content.starts_with(&item.text))
+            .unwrap_or_else(|| panic!("the truncated text must be stored: {stored:?}"));
+        assert_eq!(item.text.chars().count(), 160);
+    }
+
     // The human rendering carries the same disclosure, for the interactive
     // caller who never looks at JSON. The preferences store is
     // replace-per-topic, so this second over-cap update rewrites the same
