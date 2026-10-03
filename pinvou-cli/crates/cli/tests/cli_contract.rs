@@ -12,6 +12,24 @@ use std::sync::Mutex;
 #[cfg(not(feature = "product-backend"))]
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// Restores the previous `PINVOU3_HOME` on drop, so the restore survives a
+/// panicking assertion instead of leaking the polluted value into every later
+/// test in the process.
+#[cfg(not(feature = "product-backend"))]
+struct RestoreHome(Option<std::ffi::OsString>);
+
+#[cfg(not(feature = "product-backend"))]
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        match self.0.take() {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: ENV_LOCK is held by the owning test.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+}
+
 #[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
@@ -30,7 +48,7 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
             .as_nanos()
     ));
     std::fs::create_dir(&root).unwrap();
-    let previous = std::env::var_os("PINVOU3_HOME");
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
     unsafe { std::env::set_var("PINVOU3_HOME", &root) };
     let adapter = GaiaAdapter::new();
     let expected = RunManifest::new(
@@ -45,7 +63,9 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     assert_eq!(GAIA_LEVEL, 1);
     let mutations = [
         ("run_id", serde_json::json!("different-run-id")),
-        ("schema_version", serde_json::json!(2)),
+        // Schema 1 (legacy) stays scoreable on purpose; only an unknown
+        // schema must be rejected by the scoring gate.
+        ("schema_version", serde_json::json!(99)),
         ("concurrency", serde_json::json!(2)),
         ("pass", serde_json::json!(2)),
         (
@@ -79,10 +99,7 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
         let error = execute(parsed).expect_err("mutated manifest must be rejected before scoring");
         assert_eq!(error.to_string(), "gaia_run_manifest_mismatch", "{field}");
     }
-    match previous {
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
+    drop(_restore);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -243,7 +260,7 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     ));
     std::fs::create_dir(&home).unwrap();
     let previous_dir = std::env::current_dir().unwrap();
-    let previous_home = std::env::var_os("PINVOU3_HOME");
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
     std::env::set_current_dir(&home).unwrap();
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
@@ -260,10 +277,7 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     assert_ne!(error.to_string(), "gaia_worktree_unavailable");
 
     std::env::set_current_dir(previous_dir).unwrap();
-    match previous_home {
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
+    drop(_restore);
     std::fs::remove_dir_all(home).unwrap();
 }
 
@@ -281,7 +295,7 @@ fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     ));
     let source = home.join("arbitrary-source");
     std::fs::create_dir_all(&source).unwrap();
-    let previous = std::env::var_os("PINVOU3_HOME");
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
     unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
     let parsed = parse_args([
@@ -297,10 +311,7 @@ fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     assert_eq!(error.to_string(), "gaia_verify_failed");
     assert!(!error.to_string().contains(source.to_str().unwrap()));
 
-    match previous {
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
+    drop(_restore);
     std::fs::remove_dir_all(home).unwrap();
 }
 
