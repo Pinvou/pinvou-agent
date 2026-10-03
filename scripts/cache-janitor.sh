@@ -14,8 +14,9 @@
 #      整系列保护」降级为「去重」:2026-10-01 实测配额常态 10.7/10GB,LRU 正在
 #      驱逐最有价值的 windows/macos 缓存;若不加此规则,仅靠 LRU 决定牺牲品。
 #      系列按首个平台标记(-Linux-/-Darwin-/-Windows_NT-)切分,不含平台段:
-#      同一 shared-key 若跨平台复用会被跨平台去重(当前各 shared-key 均单平台,
-#      复用前须先把平台纳入分组)。
+#      同一 shared-key 若跨平台/跨架构复用会被跨组去重(ubuntu-22.04 与
+#      ubuntu-22.04-arm 都产生 -Linux- 标记,仅架构段不同;当前各 shared-key 均
+#      单平台单架构,复用前须先把平台与架构段都纳入分组)。
 #
 # 注意:规则 B/C/D 必须按缓存作用域(ref)分组。作用域之间互不可见,跨 ref
 # 只留最新会把 main 的可用缓存换成 PR 作用域的(main 读不到),等于误删。
@@ -150,6 +151,10 @@ closed = set(os.environ.get('CLOSED_REFS','').split())
 entries = [c for c in json.load(open('/tmp/cache-janitor-list.json')) if c['key'].startswith('v0-rust-') and c['ref'] not in closed]
 groups = {}
 for c in entries:
+    # 缺 createdAt 的条目无法排序;剔除而不是让下面的 sort 抛 TypeError——
+    # 那会静默杀死整个规则 D(进程替换的失败状态无人检查),去重停摆数周。
+    if not c.get('createdAt'):
+        continue
     # key 形如 v0-rust-<shared-key>-<platform>-<arch>-<hashes...>,其中 platform
     # ∈ {Linux, Darwin, Windows_NT}。系列名 = shared-key 段:取 v0-rust- 之后、
     # 首个平台标记之前的全部片段(如 rust-lint-v2 / windows-rust-test /

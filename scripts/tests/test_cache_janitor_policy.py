@@ -59,6 +59,11 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         # a PR-scoped one main cannot read.
         rule_d = self.script.split("# ---------- 规则 D:", maxsplit=1)[1]
         self.assertIn("c['key'].startswith('v0-rust-')", rule_d)
+        # Entries without createdAt cannot be ordered: they must be excluded
+        # from the groups. A null reaching the sort raises TypeError inside
+        # the process substitution, whose failure status nobody checks —
+        # rule D would silently stop deduping while the janitor stays green.
+        self.assertIn("if not c.get('createdAt'):", rule_d)
         for marker in ("-Linux-", "-Darwin-", "-Windows_NT-"):
             self.assertIn(f"'{marker}'", rule_d)
         self.assertIn("groups.setdefault((series, c['ref']), [])", rule_d)
