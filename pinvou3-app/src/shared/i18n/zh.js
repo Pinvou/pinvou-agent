@@ -917,7 +917,7 @@ dictZh.uiArtifacts = {
   diChangesLog:n=>`设计变更 ${n}`, diEmpty:'空',
 };
 
-dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的会话', dropHint:'松开即可引用该会话', chipRemove:name=>`移除引用 ${name}`, cardJump:label=>`打开会话：${label}`, cardUnavailable:'会话已删除', cardDisabled:'功能已关闭' };
+dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的会话', dropHint:'松开即可引用该会话', chipRemove:name=>`移除引用 ${name}`, cardJump:label=>`打开会话：${label}`, cardUnavailable:'会话已删除', cardDisabled:'功能已关闭', disabledNotice:'会话引用功能已关闭，引用不会随消息发送' };
 dictZh.uiSessionMessage = { from:name=>`来自会话：${name}`, fromUnknown:'来自另一个会话', jump:name=>`打开会话：${name}`, unavailable:'会话已删除' };
 
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).

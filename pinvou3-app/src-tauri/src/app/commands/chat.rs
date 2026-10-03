@@ -90,28 +90,18 @@ pub(crate) async fn chat_with_reservation(
     }
     // 默认标题会话用首条消息自动命名（原生代码会话与 ACP 同一语义）。
     // 命名失败不阻断发送——标题是展示层信息，正文投递才是关键路径。
-    let title_source = if message.trim().is_empty() {
+    // A leading session-mention injection block is stripped before the
+    // fallback branch (first_send_title_source): a refs-only + attachment
+    // first send still titles after the attachment basename.
+    let title_source = super::sessions::first_send_title_source(
+        message.trim(),
         attachments
             .as_deref()
             .unwrap_or_default()
             .first()
-            .map(|attachment| attachment.basename.clone())
-            .unwrap_or_default()
-    } else {
-        // A leading session-mention injection block (## Referenced chats
-        // contract + JSON metadata, see session-mention.js) is machine
-        // context, not user body text: strip it before auto-titling so a
-        // refs-only first send does not name the session after the contract.
-        // A received cross-session message block (features::messaging) is
-        // machine context too: strip it OUTERMOST first (the sender block
-        // wraps the body; the body itself may start with a mention block),
-        // matching the frontend parse order in UserBubble.
-        super::sessions::strip_session_mention_block(super::sessions::strip_session_message_block(
-            message.trim(),
-        ))
-        .trim()
-        .to_string()
-    };
+            .map(|attachment| attachment.basename.as_str()),
+    )
+    .to_string();
     if let Err(error) = super::sessions::apply_default_session_title(store, &sid, &title_source) {
         log::warn!("[pinvou3][chat] auto title failed for {sid}: {error}");
     }

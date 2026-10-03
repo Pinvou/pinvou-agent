@@ -886,7 +886,7 @@ dictJa.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 
-dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ' };
+dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ', disabledNotice:'セッション参照機能がオフのため、参照はメッセージに送信されません' };
 dictJa.uiSessionMessage = { from:name=>`セッションから：${name}`, fromUnknown:'別のセッションから', jump:name=>`セッションを開く：${name}`, unavailable:'セッションが削除されました' };
 
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).

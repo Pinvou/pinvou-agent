@@ -222,7 +222,9 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     // (MAX_BLOCK_JSON_LINE_LENGTH in session-mention.js): a line beyond the
     // bound is dirty data by the block's own construction (MAX_SESSION_REFS ×
     // capped title), and both sides must agree that it is not a block —
-    // otherwise one side strips and the other keeps the raw contract.
+    // otherwise one side strips and the other keeps the raw contract. Counted
+    // in UTF-16 code units to match the JS string `length` exactly (astral
+    // code points count as 2, same as JS).
     const MAX_BLOCK_JSON_LINE_CHARS: usize = 64 * 1024;
     let mut rest = match text.strip_prefix(SESSION_MENTION_BLOCK_HEADER) {
         Some(rest) if rest.starts_with('\n') => &rest[1..],
@@ -239,9 +241,17 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
         // JSON line is the last line (refs-only trimmed form).
         None => (rest, ""),
     };
-    if json_line.chars().count() > MAX_BLOCK_JSON_LINE_CHARS {
+    if json_line.encode_utf16().count() > MAX_BLOCK_JSON_LINE_CHARS {
         return text;
     }
+    // Parser-floor note (deliberate divergence): serde_json is stricter than
+    // the JS JSON.parse on lone-surrogate escapes ("\ud800") and extreme
+    // float exponents, so a hand-forged block carrying such content is
+    // `matched` on the JS side but fail-open passthrough here. Unreachable
+    // through the real send path (Tauri's IPC JSON rejects the escaped lone
+    // surrogate at the command boundary), and both sides fail OPEN toward
+    // "keep the raw text" on dirty data, so the asymmetry only ever surfaces
+    // as a kept-block title on hand-crafted input.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
         return text;
     };
@@ -285,7 +295,9 @@ pub(crate) fn strip_session_message_block(text: &str) -> &str {
         // JSON line is the last line (header + sender only).
         None => (rest, ""),
     };
-    if json_line.chars().count() > MAX_BLOCK_JSON_LINE_CHARS {
+    // Counted in UTF-16 code units to match the JS string `length` exactly
+    // (astral code points count as 2, same as JS).
+    if json_line.encode_utf16().count() > MAX_BLOCK_JSON_LINE_CHARS {
         return text;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
@@ -300,6 +312,25 @@ pub(crate) fn strip_session_message_block(text: &str) -> &str {
     match after.strip_prefix('\n') {
         Some(body) => body,
         None => text,
+    }
+}
+
+/// First-send auto-title source shared by the native chat and ACP paths: the
+/// message-block- and mention-stripped body when non-empty, otherwise the
+/// caller's fallback (attachment basename / workspace reference). Branching
+/// on the STRIPPED body keeps the attachment fallback for a refs-only +
+/// attachment first send (round-9) — the block strips to an empty body,
+/// which must title after the attachment exactly like a plain
+/// attachment-only send. A received cross-session message block is machine
+/// context too: strip it OUTERMOST first (the sender block wraps the body;
+/// the body itself may start with a mention block), matching the frontend
+/// parse order in UserBubble.
+pub(crate) fn first_send_title_source<'a>(message: &'a str, fallback: Option<&'a str>) -> &'a str {
+    let body = strip_session_mention_block(strip_session_message_block(message)).trim();
+    if body.is_empty() {
+        fallback.unwrap_or("")
+    } else {
+        body
     }
 }
 
@@ -519,6 +550,36 @@ mod session_mention_title_tests {
             "t".repeat(1000)
         ));
         assert_eq!(strip_session_mention_block(&near_cap), "");
+    }
+
+    #[test]
+    fn refs_only_with_attachment_keeps_the_attachment_fallback() {
+        // Round-9: the fallback branches on the STRIPPED body — a refs-only
+        // first send with a ready attachment must still title after the
+        // attachment basename exactly like a plain attachment-only send (the
+        // pre-fix code branched on the raw message and no-oped the title).
+        use super::first_send_title_source;
+        let refs_only = mention_block(r#"[{"sessionId":"abc123","title":"销量 PPT"}]"#);
+        assert_eq!(
+            first_send_title_source(refs_only.trim(), Some("规格说明书.pdf")),
+            "规格说明书.pdf",
+            "refs-only + attachment must take the attachment fallback"
+        );
+        assert_eq!(
+            first_send_title_source(&format!("{refs_only}帮我总结讨论"), Some("规格说明书.pdf")),
+            "帮我总结讨论",
+            "a body wins over the attachment fallback"
+        );
+        assert_eq!(
+            first_send_title_source("", Some("规格说明书.pdf")),
+            "规格说明书.pdf",
+            "plain attachment-only keeps the pre-PR behavior"
+        );
+        assert_eq!(
+            first_send_title_source(refs_only.trim(), None),
+            "",
+            "refs-only without attachments no-ops the title (default survives)"
+        );
     }
 
     #[test]

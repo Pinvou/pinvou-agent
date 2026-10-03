@@ -76,6 +76,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiBuiltinPlugins',
     'uiSessionMessage',
     'uiAuxChat',
+    'uiSessionMention',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
@@ -192,7 +193,7 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiConversation.cancelled, `${language}.uiConversation.cancelled must exist`);
   // Session mention (PR #586): every key consumed by SessionMentionControls /
   // ChatView must exist in all three locales (function keys typed as such).
-  for (const key of ['menuTitle', 'menuEmpty', 'dropHint', 'cardUnavailable', 'cardDisabled']) {
+  for (const key of ['menuTitle', 'menuEmpty', 'dropHint', 'cardUnavailable', 'cardDisabled', 'disabledNotice']) {
     assert.ok(dict[language].uiSessionMention[key], `${language}.uiSessionMention.${key} must exist`);
   }
   for (const fnKey of ['chipRemove', 'cardJump']) {

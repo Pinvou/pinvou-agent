@@ -885,7 +885,7 @@ dictEn.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 
-dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No matching sessions', dropHint:'Drop to reference this session', chipRemove:name=>`Remove reference ${name}`, cardJump:label=>`Open session: ${label}`, cardUnavailable:'Session deleted', cardDisabled:'Feature off' };
+dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No matching sessions', dropHint:'Drop to reference this session', chipRemove:name=>`Remove reference ${name}`, cardJump:label=>`Open session: ${label}`, cardUnavailable:'Session deleted', cardDisabled:'Feature off', disabledNotice:'Session mention is turned off; references are not sent with the message' };
 dictEn.uiSessionMessage = { from:name=>`From session: ${name}`, fromUnknown:'From another session', jump:name=>`Open session: ${name}`, unavailable:'Session deleted' };
 
 // app-automations scheduled-task tool card (tool-renderers.jsx create card).

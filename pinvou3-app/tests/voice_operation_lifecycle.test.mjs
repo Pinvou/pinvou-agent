@@ -437,9 +437,6 @@ test("chatview: the task lane consumes only its own draft and maps restored to n
   assert.match(
     chatViewSource,
     /sendChatMessage\(outgoingText, \{ \.\.\.context, draftOwner: owner \}\)/,
-    // outgoingText = the mention block (when the gate is on and chips are
-    // picked) ahead of constrained.text — the mention feature extends the
-    // task lane; the draft owner still rides through sendChatMessage.
     "the task lane must pass the draft owner through sendChatMessage",
   );
   assert.match(

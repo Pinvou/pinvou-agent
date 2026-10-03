@@ -100,8 +100,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   (settings.json / admin policy), never inside the plugin-center section.
 - **Shipped scope (this cycle)**: the deny/registry layer (layer 3), the
   per-turn inventory signal, and the server-side `feature_disabled` fallback.
-  Layers 1/2/4 arrive with the first feature's UI; until then the switch is
-  settings.json-only.
+  Layers 1/2/4 ship with the first feature (session mention: the gated @
+  group, the injection-block gate, and the historical-card degradation),
+  while the switch itself is still settings.json-only — the feature's own
+  settings UI is a later cycle.
 
 ## 4. Tool design rules
 

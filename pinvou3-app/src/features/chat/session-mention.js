@@ -72,7 +72,11 @@ export function buildSessionMentionBlock(refs) {
   const items = (Array.isArray(refs) ? refs : [])
     .map((ref) => ({
       sessionId: String((ref && ref.sessionId) || ''),
-      title: String((ref && ref.title) || ''),
+      // Cap here, not just in dedupe: an uncapped (pasted) session rename
+      // could otherwise produce a block this module's own 64 KB/200-char
+      // parser rejects — raw contract in the bubble, refs silently dropped
+      // on edit-resend.
+      title: capRefTitle(String((ref && ref.title) || '')),
     }))
     .filter((ref) => ref.sessionId);
   if (!items.length) return '';
@@ -92,11 +96,11 @@ export function buildSessionMentionBlock(refs) {
  * When body lines do follow, the blank separator line is still required, so
  * hand-written lookalikes without it are not treated as blocks.
  * @param {string} text raw user message text
- * @returns {{ refs: Array<{sessionId: string, title: string}>, text: string }} parsed refs and the stripped body
+ * @returns {{ refs: Array<{sessionId: string, title: string}>, text: string, matched: boolean }} parsed refs, the stripped body, and whether the input was structurally a block at all (a byte-valid block that parses to zero refs is still matched — consumers that must agree with the Rust titler and the bubble strip gate on this, not on refs.length)
  */
 export function splitSessionMentionBlock(text) {
   const raw = String(text || '');
-  const empty = { refs: [], text: raw };
+  const empty = { refs: [], text: raw, matched: false };
   if (!raw.startsWith(BLOCK_HEADER + '\n')) return empty;
   const lines = raw.split('\n');
   // Block layout: header + contract lines + JSON line + blank line (see
@@ -125,7 +129,7 @@ export function splitSessionMentionBlock(text) {
       title: capRefTitle(String((item && item.title) || '')),
     }))
     .filter((ref) => ref.sessionId);
-  return { refs, text: hasBody ? lines.slice(jsonLineIndex + 2).join('\n') : '' };
+  return { refs, text: hasBody ? lines.slice(jsonLineIndex + 2).join('\n') : '', matched: true };
 }
 
 // Isolated session id prefixes, aligned with session_reader_server's
@@ -141,10 +145,11 @@ const isIsolatedSessionId = (sessionId) => {
 /**
  * @ trigger token: the @ must not be preceded by an email-local-part character
  * (letters/digits/._%+-), so an address like a@b.com never triggers while a
- * CJK-adjacent @ (no whitespace in Chinese input) does. A capture group
- * carries the preceding character (lookbehind is avoided for Safari 14).
+ * CJK-adjacent @ (no whitespace in Chinese input) does; / joins the excluded
+ * class so a URL path segment (github.com/@user) stays inert too. A capture
+ * group carries the preceding character (lookbehind is avoided for Safari 14).
  */
-const MENTION_TRIGGER_RE = /(^|[^A-Za-z0-9._%+-])@([^\s@]*)$/;
+const MENTION_TRIGGER_RE = /(^|[^A-Za-z0-9._%+\-/])@([^\s@]*)$/;
 
 /**
  * Parse the @ trigger token at the end of the composer text.
@@ -218,6 +223,38 @@ export function dedupeSessionRefs(refs) {
     if (out.length >= MAX_SESSION_REFS) break;
   }
   return out;
+}
+
+/**
+ * Pending mention chips per composer draft scope (session id, or draft epoch
+ * for the not-yet-materialized draft session). Module-level, in-memory only,
+ * FIFO-evicted at the bound with no evicted-scope stash and no purge on
+ * session deletion — deliberately simpler than the bridge's composer working
+ * set (LRU + stash + delete purge); both agree on the user-visible property
+ * that chips survive view unmount/remount but not an app restart.
+ */
+const MENTION_DRAFT_CACHE_LIMIT = 200;
+const mentionDrafts = new Map();
+
+/**
+ * Stash the outgoing scope's refs. Empty list deletes the scope's entry;
+ * overwriting an existing key never evicts (the size does not grow).
+ */
+export function stashSessionMentionDraft(key, refs) {
+  const list = Array.isArray(refs) ? refs : [];
+  if (!list.length) {
+    mentionDrafts.delete(key);
+    return;
+  }
+  if (!mentionDrafts.has(key) && mentionDrafts.size >= MENTION_DRAFT_CACHE_LIMIT) {
+    mentionDrafts.delete(mentionDrafts.keys().next().value);
+  }
+  mentionDrafts.set(key, list);
+}
+
+/** Restore a scope's refs through the shared choke point (dedupe + cap + isolation). */
+export function restoreSessionMentionDraft(key) {
+  return dedupeSessionRefs(mentionDrafts.get(key) || []);
 }
 
 // Classic-script bridges (platform/{tauri,web}) reuse the same contract parsing

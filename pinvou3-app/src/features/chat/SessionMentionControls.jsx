@@ -7,6 +7,7 @@ import { MessageSquare, X } from '../../components/icons.jsx';
  * AttachmentChips / BackgroundTasksIndicator; all copy is injected via
  * props.copy (trilingual i18n keys live under uiSessionMention in shared/i18n).
  */
+
 const CHIP_CLS =
   'h-7 max-w-[220px] rounded-lg pl-2 pr-1 inline-flex items-center gap-1.5 text-[12px] ' +
   'bg-[#E8F0FE] text-[#1967D2] dark:bg-[#1F3A5F] dark:text-[#A8C7FA]';
@@ -62,7 +63,7 @@ export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHove
     if (selectedOptionRef.current) selectedOptionRef.current.scrollIntoView({ block: 'nearest' });
   }, [selectedIndex]);
   return (
-    <div data-testid="session-mention-menu" role="listbox" aria-label={copy.menuTitle}>
+    <div id="session-mention-listbox" data-testid="session-mention-menu" role="listbox" aria-label={copy.menuTitle}>
       <div className="px-3 py-2 text-[12px] font-medium text-[#85888D] dark:text-[#9AA0A6]">
         {copy.menuTitle}
       </div>
@@ -141,14 +142,18 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
             {inner}
           </button>
         ) : (
+          // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the card is a labelled pill (not a widget role); the deleted-session reason must reach assistive tech instead of staying tooltip-only
           <span
             key={ref.sessionId + '-' + index}
             data-testid={'session-mention-card-' + ref.sessionId}
             title={disabled ? disabledNotice : (known ? label : copy.cardUnavailable)}
-            // Focusable in the feature-off state so the disabled reason is
-            // not tooltip-only on a non-focusable element.
-            tabIndex={disabled ? 0 : undefined}
+            // Focusable in the feature-off and deleted states so the reason
+            // is not tooltip-only on a non-focusable element.
+            tabIndex={disabled || !known ? 0 : undefined}
             aria-disabled={disabled || undefined}
+            aria-label={disabled
+              ? `${ref.title || ref.sessionId} — ${disabledNotice}`
+              : (known ? undefined : `${ref.title || ref.sessionId} — ${copy.cardUnavailable}`)}
             // Alive but without a navigation callback (non-main-timeline
             // contexts): keep the normal colors, only unclickable — the dead
             // grey is reserved for deleted sessions and the feature-off state.
