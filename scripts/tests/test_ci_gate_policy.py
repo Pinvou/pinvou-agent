@@ -1103,6 +1103,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "windows_python_dependency_contract.ps1",
             windows_codex_filter,
         )
+        # The VC++ temp-preflight pins inside windows_runtime_packaging_contract.test.js
+        # target src-tauri/packaging/windows/nsis/vcredist-temp-preflight.ps1, so edits
+        # to that file must trigger the only job that runs the pins.
+        self.assertIn(
+            "pinvou3-app/src-tauri/packaging/windows/nsis/**",
+            windows_codex_filter,
+        )
 
         windows_job = self.pr_workflow.split(
             "\n  windows-codex-runtime-test:", maxsplit=1
@@ -1116,6 +1123,69 @@ class CiGatePolicyTests(unittest.TestCase):
             "\n  required-gate:", maxsplit=1
         )[1]
         self.assertIn("- windows-codex-runtime-test", required_gate)
+
+    def test_windows_rustup_repair_runs_in_required_native_job(self):
+        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "windows_rustup_repair: ${{ steps.filter.outputs.windows_rustup_repair }}",
+            changes,
+        )
+        repair_filter = re.search(
+            r"\n            windows_rustup_repair:\n((?:              .*(?:\n|$))+)",
+            changes,
+        ).group(1)
+        for trigger in (
+            ".github/workflows/pr-check.yml",
+            "pinvou3-app/scripts/ci/**",
+            "pinvou3-app/scripts/tauri/build.js",
+            "pinvou3-app/tests/windows_rustup_repair_smoke.ps1",
+            "pinvou3-app/tests/windows_rust_toolchain_contract.test.js",
+            "pinvou3-app/src-tauri/rust-toolchain.toml",
+            "pinvou3-app/package.json",
+        ):
+            self.assertIn(trigger, repair_filter)
+
+        job_body = self.pr_workflow.split(
+            "\n  windows-rustup-repair-test:", maxsplit=1
+        )[1]
+        job = re.split(r"\n  [a-zA-Z]", job_body, maxsplit=1)[0]
+        self.assertIn("needs: changes", job)
+        self.assertIn("needs.changes.outputs.windows_rustup_repair == 'true'", job)
+        self.assertIn("runs-on: windows-latest", job)
+        self.assertIn("npm --prefix pinvou3-app run test:windows-rustup-repair", job)
+        # scripts/ci/** is in no node-test filter, so this job is the only
+        # gate that pins ensure-rust-toolchain.ps1 through the node contract
+        # test. Dropping the step would silently unpin the repair engine.
+        self.assertIn(
+            "node --test pinvou3-app/tests/windows_rust_toolchain_contract.test.js",
+            job,
+        )
+        # The contract test must run before the smoke: it fails in seconds on
+        # engine drift, while the smoke pays a real toolchain download first.
+        self.assertLess(
+            job.index(
+                "node --test pinvou3-app/tests/windows_rust_toolchain_contract.test.js"
+            ),
+            job.index("npm --prefix pinvou3-app run test:windows-rustup-repair"),
+        )
+
+        # Same three-wiring rule as the other native legs: needs entry, env
+        # backfill, and summary-loop entry.
+        required_gate = self.pr_workflow.split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("- windows-rustup-repair-test", required_gate)
+        self.assertIn(
+            "WINDOWS_RUSTUP_REPAIR_RESULT: "
+            "${{ needs.windows-rustup-repair-test.result }}",
+            required_gate,
+        )
+        self.assertIn(
+            '"windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"',
+            required_gate,
+        )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
         changes = _without_yaml_comments(

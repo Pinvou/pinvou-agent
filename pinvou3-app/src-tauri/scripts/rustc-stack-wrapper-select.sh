@@ -14,8 +14,10 @@
 #     命令行上限限制(大型 crate 的 rustc 命令行超限),故 Windows 用
 #     .exe 版(经 CreateProcess 直启,上限 32767 字符)。
 #
-# 本脚本是"平台选择"的单一真相源:run-dev.sh 与 CI smoke
-# (rustc-wrapper-smoke.yml)都执行它,保证正式入口与实际验证一致。
+# Shell entry points use this script for platform selection: run-dev.sh and
+# the CI smoke (rustc-wrapper-smoke.yml) both execute it. Running npm/Tauri
+# directly from PowerShell does not depend on bash; scripts/tauri/build.js
+# builds the Windows .exe wrapper natively from the same source instead.
 # 输出空时调用方不得设置 RUSTC_WRAPPER。
 #
 # 注意:Windows 分支用 cygpath -m 把 MSYS 风格路径(/c/...)转成 Windows
@@ -38,10 +40,18 @@ case "$(uname -s)" in
       # 在 rustc 参数位不可靠。
       # 编译失败即报错终止:Windows 栈溢出已实证,静默退回"不注入"会把 wrapper
       # 构建失败重新表现为难诊断的 rustc 栈溢出。
-      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$exe")"; then
+      # 与 scripts/tauri/build.js 相同的原子替换:先写唯一临时文件再改名,
+      # 中断的编译绝不能留下半截 exe 被下次的 mtime 缓存永远复用。
+      tmp_exe="$exe.$$.$RANDOM.tmp"
+      # MSVC rustc -O 链接带 /DEBUG:临时 exe 旁还会写一个同名 .pdb
+      # (临时名去掉 .tmp 换成 .pdb),必须与临时 exe 一起清理。
+      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$tmp_exe")"; then
+        rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
         echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
         exit 1
       fi
+      mv -f "$tmp_exe" "$exe"
+      rm -f "${tmp_exe%.tmp}.pdb"
     fi
     cygpath -m "$exe"
     ;;
