@@ -2167,7 +2167,10 @@ fn import_display_name_matches_the_gui_sanitizer() {
     // The no-trim rule: the GUI's sanitizer filters and caps but never
     // trims, so leading/trailing spaces must survive into the stored name
     // (a trim-on-store revert silently diverged the two surfaces).
-    let spaced = home.path().join("  spaced name.md ");
+    // (the extension must stay last for the format gate, so the trailing
+    // half of the no-trim rule is pinned by the leading spaces here — a
+    // trim strips both ends by the same stroke)
+    let spaced = home.path().join("  spaced name.md");
     std::fs::write(&spaced, "---\nname: spaced-name-skill\n---\nbody").unwrap();
     run_ok(&["pinvou", "plugins", "import", spaced.to_str().unwrap()]);
     let bundles: serde_json::Value = serde_json::from_str(
@@ -2182,7 +2185,7 @@ fn import_display_name_matches_the_gui_sanitizer() {
         .expect("bundle record for the spaced import");
     assert_eq!(
         record["source"],
-        serde_json::json!("upload:  spaced name.md "),
+        serde_json::json!("upload:  spaced name.md"),
         "the display name must be stored untrimmed, exactly like the GUI stores it"
     );
 }
