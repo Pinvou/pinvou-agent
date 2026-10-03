@@ -61,7 +61,7 @@ import { formatAttachmentLimitError } from '../attachments/attachment-limit-erro
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { ConversationAttachmentBubble } from '../attachments/ConversationAttachmentBubble.jsx';
 import { splitAttachmentLine } from '../attachments/attachment-message.js';
-import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from './chat-input-limit.js';
+import { CHAT_INPUT_MAX_LENGTH, constrainChatInput } from '../../shared/chat-input-limit.js';
 import { deriveRunningShellTasks, tailOutputLines } from './background-tasks.js';
 import { formatElapsedMs } from '../../shared/format-utils.mjs';
 import { useShellTaskCancel } from './shell-task-cancel.js';
