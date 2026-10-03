@@ -636,7 +636,13 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     backup_once(path)?;
-    let tmp = path.with_extension("tmp");
+    // The staging name carries the pid, exactly like `persist_locked`:
+    // a fixed `.tmp` name let two surfaces rename each other's half-written
+    // file into place — and unlike the store file, this helper writes the
+    // user's REAL claude/codex/kimi CLI config, now from two processes
+    // (GUI + the CLI's `providers add/switch`) since this diff made the
+    // mutators cross-surface.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     // 直接以 0600 创建临时文件（配置含明文 key，kimi/claude 的 CLI 配置），
     // 避免默认 umask 0644 让同机其他用户可读，也无「先 0644 写、后收紧」的
     // 暴露窗口（评审中危项 + 复审低危 4）。平台细节在 platform/filesystem.rs，
@@ -648,7 +654,10 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         file.write_all(content)
             .with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
     }
-    fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error).with_context(|| format!("替换 {} 失败", path.display()));
+    }
     Ok(())
 }
 
