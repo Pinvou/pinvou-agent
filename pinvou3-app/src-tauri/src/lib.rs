@@ -1333,6 +1333,7 @@ pub fn run() {
             commands::computer_use::computer_use_confirm,
             commands::computer_use::computer_use_set_enabled,
             commands::computer_use::computer_use_request_permissions,
+            commands::computer_use::computer_use_permission_status,
             commands::connectors::refresh_connector_auth_gates,
             commands::connectors::feishu_ensure_cli,
             commands::connectors::feishu_connect_begin,
@@ -1983,6 +1984,10 @@ mod tool_allowlist_contract {
             "file_search",
             "registry_sync",
             "start_registry_mcp_server",
+            // The computer-use instruction section (computer_use::
+            // instruction_block, rendered while the master switch is on)
+            // names the tool directly, so it must ship non-deferred.
+            crate::features::computer_use::TOOL_NAME,
         ] {
             assert!(
                 PINVOU3_ALWAYS_LOADED_TOOLS.contains(&load_bearing),

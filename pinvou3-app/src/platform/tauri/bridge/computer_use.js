@@ -420,6 +420,14 @@
       return invoke("computer_use_request_permissions");
     }
 
+    // macOS TCC grant snapshot ({supported, screen_recording, accessibility}).
+    // Advisory only: a permission granted after this app process launched
+    // still reads false until the app restarts — the settings UI pairs a
+    // miss with the restart guidance instead of polling for a flip.
+    function permissionStatus() {
+      return invoke("computer_use_permission_status");
+    }
+
     // Structured confirm payload (backend contract): the event carries the
     // action name plus optional button/click_count/point/end_point/
     // text_length/text_preview/text_preview_truncated (and chord/
@@ -553,6 +561,7 @@
       deny,
       setEnabled,
       requestPermissions,
+      permissionStatus,
     };
   };
 })(window);

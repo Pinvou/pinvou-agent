@@ -125,7 +125,10 @@ const expectedProtocolHashes = {
   // chord_masked_chars passthrough in buildConfirmRequest), the
   // background-session refresh guard, and the inert-branch optional chaining
   // inside the listener callback spans (no invoke/listen call-set change).
-  computerUse: '9d0bad5bab784eb784a92b8df52ff7e83adef94cc0f6cb7bdbb99f913217e5b8',
+  // Recomputed for the permission onboarding row: the new
+  // computer_use_permission_status invoke (settings permissionStatus) joins
+  // the domain's call set.
+  computerUse: 'a681a541d4352b99d8e964e5a19f9cbaf45fd9fa9d56d5395d6c9e6c88459843',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup combined with the rebind wave's
   // workspace_binding redaction and retry-payload changes (see batch note
