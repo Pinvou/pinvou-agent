@@ -199,7 +199,7 @@ try {
   }
 
   foreach ($command in @("cargo", "rustc", "clippy-driver", "rustfmt")) {
-    & rustup run $Toolchain $command -V
+    & rustup run $Toolchain $command --version
     if ($LASTEXITCODE -ne 0) {
       throw "Post-repair verification failed: $command"
     }

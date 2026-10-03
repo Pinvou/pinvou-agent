@@ -221,6 +221,11 @@ test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
     /Refusing automatic repair without an isolated RUSTUP_HOME/u,
   );
   assert.match(rustToolchainGuard, /\.pinvou3-toolchain\.lock/u);
+  // The exclusivity mode must stay pinned on its own: a FileShare that lets
+  // others open the lock file (e.g. ::Read) would void the serialization the
+  // adopt-or-refuse decision relies on, and the order assertion below passes
+  // vacuously once its needle is gone (both indexOf calls return -1).
+  assert.match(rustToolchainGuard, /\[IO\.FileShare\]::None/u);
   assert.match(rustToolchainGuard, /shared RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /filesystem root as RUSTUP_HOME/u);
   assert.match(rustToolchainGuard, /rust-toolchain\.toml/u);
@@ -260,6 +265,34 @@ test("the toolchain probe covers rust-std, not just the binaries", () => {
   );
 });
 
+test("the toolchain probes use the --version long form", () => {
+  // rustfmt 1.10.0 (stable 1.99.0) rewrote cargo-fmt on clap and rejects the
+  // short -V, so a -V probe classified every healthy current stable as
+  // incomplete and sent the repair engine into a non-convergent reinstall
+  // loop. --version is accepted by all six probe commands under both the old
+  // getopts-based and the new clap-based cargo-fmt.
+  assert.match(
+    rustToolchainGuard,
+    /& \$accountRustupPath run \$accountToolchain \$command --version/u,
+    "the account probe must use --version",
+  );
+  assert.match(
+    rustToolchainGuard,
+    /"run", \$toolchain, \$Command, "--version"/u,
+    "the isolated completeness gate must use --version",
+  );
+  assert.doesNotMatch(
+    rustToolchainGuard,
+    /"-V"/u,
+    "no probe may pass the short -V form",
+  );
+  assert.match(
+    rustupRepairSmoke,
+    /& rustup run \$Toolchain \$command --version/u,
+    "the smoke's post-repair verification must use --version too",
+  );
+});
+
 test("the repair is bounded overall and survives a stalled kill", () => {
   assert.match(rustToolchainGuard, /RepairTimeoutSeconds = 1500/u);
   assert.match(rustToolchainGuard, /exceeded its \{0\}s budget/u);
@@ -277,18 +310,21 @@ test("the repair is bounded overall and survives a stalled kill", () => {
   );
   // The derived lock default is an expression; the range must stay attached
   // so a caller-passed 0 cannot degenerate into an instant, misleading lock
-  // timeout while an unrelated repair holds the lock.
+  // timeout while an unrelated repair holds the lock. The upper bound must
+  // also admit the largest derivable default (7200 + 2 * 3600 + 300);
+  // a narrower bound rejects the derived default at parameter-binding time.
   assert.match(
     rustToolchainGuard,
-    /\[ValidateRange\(1, 7200\)\]\s*\r?\n\s*\[int\]\$LockTimeoutSeconds/u,
+    /\[ValidateRange\(1, 14700\)\]\s*\r?\n\s*\[int\]\$LockTimeoutSeconds/u,
   );
   // The lock wait must out-wait the holder's legitimate worst case (the
-  // overall repair budget plus one more bounded install attempt and slack),
-  // so a second build queues behind a live repair instead of failing
-  // spuriously mid-repair.
+  // overall repair budget, plus the final budget-cleared attempt's install
+  // AND its uninstall reset - two bounded stages, each with kill/drain
+  // slack - plus probe overhead), so a second build queues behind a live
+  // repair instead of failing spuriously mid-repair.
   assert.match(
     rustToolchainGuard,
-    /LockTimeoutSeconds = \(\s*\$RepairTimeoutSeconds \+ \$InstallAttemptTimeoutSeconds \+ 300\s*\)/u,
+    /LockTimeoutSeconds = \(\s*\$RepairTimeoutSeconds \+ 2 \* \$InstallAttemptTimeoutSeconds \+ 300\s*\)/u,
   );
   // A rustup kill race (InvalidOperationException, Win32Exception) must count
   // as a failed attempt and must never hang on an unbounded wait or stream
@@ -559,6 +595,46 @@ test("an explicit RUSTC_WRAPPER wins and non-Windows hosts are untouched", () =>
     source: "environment",
   });
   assert.equal(configuredEnvironment.RUSTC_WRAPPER, "C:\\custom\\rustc-wrapper.exe");
+
+  // The log must distinguish this stack wrapper (run-dev.sh and the
+  // release-packages job pass it back through the environment) from a
+  // foreign one such as sccache, which forgoes the 16 MiB stack fix.
+  const stackScriptsPath = path.join("C:\\", "repo", "src-tauri", "scripts");
+  const foreignLogs = [];
+  prepareWindowsRustcStackWrapper({
+    environment: { RUSTC_WRAPPER: "C:\\tools\\sccache.exe" },
+    platform: "win32",
+    scriptsPath: stackScriptsPath,
+    log: (line) => foreignLogs.push(line),
+    spawnCompiler: () => {
+      throw new Error("an explicit wrapper must not be rebuilt");
+    },
+  });
+  assert.equal(
+    foreignLogs.some((line) => line.includes("NOT applied")),
+    true,
+    "a foreign caller wrapper must be logged as forgoing the stack fix",
+  );
+  const stackWrapperLogs = [];
+  prepareWindowsRustcStackWrapper({
+    environment: { RUSTC_WRAPPER: path.join(stackScriptsPath, "rustc-stack-wrapper.exe") },
+    platform: "win32",
+    scriptsPath: stackScriptsPath,
+    log: (line) => stackWrapperLogs.push(line),
+    spawnCompiler: () => {
+      throw new Error("an explicit wrapper must not be rebuilt");
+    },
+  });
+  assert.equal(
+    stackWrapperLogs.some((line) => line.includes("the Windows rustc stack wrapper")),
+    true,
+    "the stack wrapper itself must be recognized in the log",
+  );
+  assert.equal(
+    stackWrapperLogs.some((line) => line.includes("NOT applied")),
+    false,
+    "the stack wrapper must not be logged as forgoing the stack fix",
+  );
 
   for (const platform of ["linux", "darwin"]) {
     const environment = {};

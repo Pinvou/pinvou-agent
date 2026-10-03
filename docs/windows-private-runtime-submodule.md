@@ -107,10 +107,15 @@ rustup. When the toolchain channel configured in `src-tauri/rust-toolchain.toml`
 libdir, it is reused read-only. Otherwise the build switches to an isolated
 `RUSTUP_HOME` (`pinvou3-app/.cache/rustup/<channel>-<host-triple>`, overridable
 with `PINVOU3_RUSTUP_HOME`) and repairs the toolchain there, trying a
-configured `RUSTUP_DIST_SERVER` first, then the rsproxy and USTC mirrors
-(mirror-first, matching the #619 runtime-download convention), and the
-official Rust source last, with a bounded timeout per install attempt and an
-overall repair budget (`-RepairTimeoutSeconds`, 1500 s by default). The script
+configured `RUSTUP_DIST_SERVER` first, then the rsproxy and USTC mirrors,
+and the official Rust source last, with a bounded timeout per install attempt
+and an overall repair budget (`-RepairTimeoutSeconds`, 1500 s by default).
+The mirror-first ordering serves the population #619 targets (machines where
+the official source stalls); set `RUSTUP_DIST_SERVER` to the official URL to
+get official-first with mirror fallback. Note the integrity model differs
+from #619's runtime downloads: those carry pinned SHA-256 sums, while rustup
+verifies components only against the channel manifest served by the same
+mirror, so mirror trust rests on HTTPS to the mirror operator. The script
 refuses to modify the account's shared `~/.rustup`, a filesystem root, any
 non-empty directory that lacks its `.pinvou3-managed-rustup` marker, or a run
 without an isolated `RUSTUP_HOME`. If a repair, reset, or the budget runs out,

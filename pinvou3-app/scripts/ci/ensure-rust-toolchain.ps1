@@ -7,22 +7,28 @@ param(
   [ValidateRange(1, 7200)]
   [int]$RepairTimeoutSeconds = 1500,
   # A waiter must out-wait the holder's legitimate worst case: the overall
-  # repair budget plus one more bounded install attempt, plus probe/reset
-  # slack. The lock is handle-based and released on crash, so a long wait can
-  # only mean a live, still-useful repair on the other side; a fixed 600s
-  # deadline made a second build on the same checkout fail spuriously while
-  # the holder was legitimately mid-repair.
-  [ValidateRange(1, 7200)]
+  # repair budget, plus the final budget-cleared attempt's install AND its
+  # uninstall reset (each bounded by InstallAttemptTimeoutSeconds and
+  # carrying its own kill/drain slack), plus probe overhead. The lock is
+  # handle-based and released on crash, so a long wait can only mean a live,
+  # still-useful repair on the other side; a fixed 600s deadline made a
+  # second build on the same checkout fail spuriously while the holder was
+  # legitimately mid-repair.
+  [ValidateRange(1, 14700)]
   [int]$LockTimeoutSeconds = (
-    $RepairTimeoutSeconds + $InstallAttemptTimeoutSeconds + 300
+    $RepairTimeoutSeconds + 2 * $InstallAttemptTimeoutSeconds + 300
   )
 )
 
 $ErrorActionPreference = "Stop"
 
-# cargo/rustc -V never touch the standard library, so a toolchain whose
-# rust-std was wiped or half-extracted passes every binary probe. The target
-# libdir reported by rustc must exist and be populated for real compiles.
+# Version probes use --version, the long form all six probe commands accept:
+# rustfmt 1.10.0 (stable 1.99.0) rewrote cargo-fmt on clap and rejects the
+# short -V, so a -V probe classified every healthy current stable as
+# incomplete and sent the repair into a non-convergent reinstall loop.
+# Probes never touch the standard library, so a toolchain whose rust-std was
+# wiped or half-extracted still passes every binary probe; the target libdir
+# reported by rustc must exist and be populated for real compiles.
 function Test-RustStdTargetLib {
   param(
     [Parameter(Mandatory = $true)]
@@ -81,7 +87,7 @@ if ($CheckOnly) {
     foreach ($command in @(
       "cargo", "rustc", "clippy-driver", "rustfmt", "cargo-clippy", "cargo-fmt"
     )) {
-      & $accountRustupPath run $accountToolchain $command -V 2>&1 |
+      & $accountRustupPath run $accountToolchain $command --version 2>&1 |
         ForEach-Object { Write-Host "[rustup] $_" }
       if ($LASTEXITCODE -ne 0) {
         $invalidAccountCommands += $command
@@ -160,7 +166,10 @@ try {
       $_.Name -ne ".pinvou3-toolchain.lock"
     })
     if ($existingEntries.Count -gt 0) {
-      throw "[rustup] Refusing to adopt a non-empty unmarked RUSTUP_HOME: $managedRustupHome"
+      throw (
+        "[rustup] Refusing to adopt a non-empty unmarked RUSTUP_HOME: $managedRustupHome. " +
+        "It is safe to delete the isolated RUSTUP_HOME at $managedRustupHome and re-run the build."
+      )
     }
     Set-Content -LiteralPath $managedMarker `
       -Value "pinvou3-managed-rustup-v1" -Encoding Ascii
@@ -210,9 +219,13 @@ try {
     }
   }
 
-  # Mirror-first, matching the #619 runtime-download convention: this engine
-  # exists for machines where the official source stalls, so the CN mirrors
-  # come first and the official source is the last resort. rsproxy and USTC
+  # Mirror-first, the ordering #619 uses for its runtime downloads: this
+  # engine exists for machines where the official source stalls, so the CN
+  # mirrors come first and the official source is the last resort. Note the
+  # integrity model differs from #619's SHA-256-pinned downloads: rustup
+  # verifies components only against the channel manifest served by the same
+  # mirror, so mirror trust rests on HTTPS; RUSTUP_DIST_SERVER restores
+  # official-first with mirror fallback. rsproxy and USTC
   # each serve both the dist manifests and the rustup update root for rolling
   # and version-pinned channels alike (verified live). TUNA is not in the
   # chain: it 404s version-pinned manifests, so it only works while the
@@ -312,9 +325,9 @@ try {
           $null = $stdoutTask.Wait(10000)
           $null = $stderrTask.Wait(10000)
           $stdoutText = ""
-          if ($stdoutTask.IsCompleted) { $stdoutText = $stdoutTask.Result }
+          if ($stdoutTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $stdoutText = $stdoutTask.Result }
           $stderrText = ""
-          if ($stderrTask.IsCompleted) { $stderrText = $stderrTask.Result }
+          if ($stderrTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $stderrText = $stderrTask.Result }
           $nativeOutput = @($stdoutText, $stderrText) -join "`n"
           $nativeOutput -split '[\r\n]+' | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace($_)) {
@@ -378,7 +391,7 @@ try {
       [string]$Command
     )
 
-    $exitCode = Invoke-Rustup -Arguments @("run", $toolchain, $Command, "-V")
+    $exitCode = Invoke-Rustup -Arguments @("run", $toolchain, $Command, "--version")
     return $exitCode -eq 0
   }
 
@@ -483,14 +496,17 @@ try {
         if (Test-ManagedToolchainPresent) {
           Write-Host "[rustup] Resetting the incomplete isolated toolchain before retry."
           # Bounded like the install: a reset stalled by AV scanning or a
-          # transiently locked binary must fail the attempt instead of
-          # outlasting the budget and the waiters' derived lock deadline.
+          # transiently locked binary must abort the repair instead of
+          # outlasting the budget and the waiters' derived lock deadline. A
+          # directory that cannot be reset cannot be repaired by a later
+          # attempt over the same directory, so aborting is the honest
+          # outcome; the error names the way out.
           $resetExitCode = Invoke-Rustup -Arguments @(
             "toolchain", "uninstall", $toolchain
           ) -TimeoutSeconds $InstallAttemptTimeoutSeconds
           if ($resetExitCode -ne 0) {
             throw (
-              "[rustup] Failed to reset the isolated Rust toolchain: $toolchain. " +
+              "[rustup] Failed to reset the isolated Rust toolchain: $toolchain (exit $resetExitCode). " +
               "It is safe to delete the isolated RUSTUP_HOME at $managedRustupHome and re-run the build."
             )
           }
