@@ -15,6 +15,8 @@ pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.pdb
 # selector / build.js 的原子替换临时文件(被 kill -9 掉的编译会留下)
 pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe.*.tmp
+# MSVC rustc -O 链接带 /DEBUG,临时 exe 旁会留下同名 .pdb(同样 kill -9 会留下)
+pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe.*.pdb
 
 # Node / frontend
 # node_modules 不带尾斜杠:带尾斜杠只匹配目录,而 git 对 symlink 按 lstat 判定,

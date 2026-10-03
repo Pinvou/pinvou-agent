@@ -525,6 +525,9 @@ test("the Windows rustc stack wrapper is compiled once and then reused", (t) => 
     spawnCompiler: (command, args, options) => {
       compileInvocations.push({ command, args, options });
       fs.writeFileSync(args[3], "fixture executable");
+      // MSVC rustc links with /DEBUG: a temp compile also drops a sibling
+      // .pdb beside the temporary executable.
+      fs.writeFileSync(`${args[3].replace(/\.tmp$/u, ".pdb")}`, "fixture pdb");
       return { status: 0 };
     },
   });
@@ -546,6 +549,10 @@ test("the Windows rustc stack wrapper is compiled once and then reused", (t) => 
   assert.ok(
     !fs.existsSync(compileInvocations[0].args[3]),
     "the temporary wrapper must not survive a successful compile",
+  );
+  assert.ok(
+    !fs.existsSync(`${compileInvocations[0].args[3].replace(/\.tmp$/u, ".pdb")}`),
+    "the temporary pdb must not survive a successful compile",
   );
 
   const cachedEnvironment = {};
@@ -697,6 +704,7 @@ test("a missing or failed wrapper build stops before Cargo can overflow", (t) =>
       log: () => {},
       spawnCompiler: (command, args) => {
         fs.writeFileSync(args[3], "partial executable");
+        fs.writeFileSync(`${args[3].replace(/\.tmp$/u, ".pdb")}`, "partial pdb");
         return { status: 1 };
       },
     }),
@@ -708,9 +716,11 @@ test("a missing or failed wrapper build stops before Cargo can overflow", (t) =>
     "a failed rebuild must not clobber the existing wrapper",
   );
   assert.equal(
-    fs.readdirSync(scriptsPath).filter((entry) => entry.endsWith(".tmp")).length,
+    fs.readdirSync(scriptsPath).filter(
+      (entry) => entry.endsWith(".tmp") || entry.endsWith(".pdb"),
+    ).length,
     0,
-    "a failed rebuild must clean up its temporary output",
+    "a failed rebuild must clean up its temporary output and pdb",
   );
 });
 
