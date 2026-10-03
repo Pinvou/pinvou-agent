@@ -46,12 +46,7 @@ pub(super) fn write(operation_id: &str, stage: &str, detail: impl AsRef<str>) {
 }
 
 fn rotate_if_oversized(path: &std::path::Path) {
-    if std::fs::metadata(path)
-        .map(|metadata| metadata.len() > MAX_LOG_BYTES)
-        .unwrap_or(false)
-    {
-        let _ = std::fs::remove_file(path);
-    }
+    let _ = crate::platform::filesystem::rotate_log_if_oversized(path, MAX_LOG_BYTES, None);
 }
 
 fn clean_field(value: &str) -> String {

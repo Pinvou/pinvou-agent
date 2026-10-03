@@ -2224,6 +2224,33 @@ pub(crate) fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
     Ok(quarantine)
 }
 
+/// Append-only log/diary rotation: when `path` exceeds `max_bytes`, either
+/// delete it (`keep: None`) or rename it to the explicit `keep` destination
+/// (overwrite-replace, so the newest superseded copy survives). Missing
+/// source is "nothing to rotate" (`Ok(false)`), matching every caller's
+/// inspect-then-act preamble. The rename relies on std's replace-existing
+/// semantics on both platforms; concurrent rotations may lose the race —
+/// logging is not worth a lock, callers ignore or log the error.
+pub(crate) fn rotate_log_if_oversized(
+    path: &Path,
+    max_bytes: u64,
+    keep: Option<&Path>,
+) -> io::Result<bool> {
+    let oversized = match std::fs::metadata(path) {
+        Ok(metadata) => metadata.len() > max_bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !oversized {
+        return Ok(false);
+    }
+    match keep {
+        None => std::fs::remove_file(path)?,
+        Some(destination) => std::fs::rename(path, destination)?,
+    }
+    Ok(true)
+}
+
 /// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
 /// tests check the screenshot capture_and_store wrote through this — the target cfg stays
 /// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
@@ -2269,7 +2296,10 @@ fn assert_private_mode_impl(path: &Path, expected: u32) {
 pub(crate) mod tests {
     use std::path::Path;
 
-    use super::{atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file};
+    use super::{
+        atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
+        rotate_log_if_oversized,
+    };
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file};
     #[cfg(any(
@@ -2278,6 +2308,46 @@ pub(crate) mod tests {
         all(target_os = "linux", target_pointer_width = "64")
     ))]
     use super::{ensure_private_real_directory, open_private_file_directory};
+
+    #[test]
+    fn rotate_log_deletes_oversized_file_when_no_suffix_requested() {
+        let path = std::env::temp_dir().join(format!(
+            "pinvou3_rotate_del_test_{}.log",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"x".repeat(16)).unwrap();
+        // Under budget: no rotation, file intact.
+        assert!(!rotate_log_if_oversized(&path, 32, None).unwrap());
+        assert!(path.exists());
+        // Over budget: file removed.
+        assert!(rotate_log_if_oversized(&path, 8, None).unwrap());
+        assert!(!path.exists());
+        // Already gone: reported as nothing to rotate, not an error.
+        assert!(!rotate_log_if_oversized(&path, 8, None).unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rotate_log_renames_to_suffix_replacing_previous_copy() {
+        let base = std::env::temp_dir().join(format!(
+            "pinvou3_rotate_keep_test_{}.log",
+            std::process::id()
+        ));
+        let rotated = std::env::temp_dir().join(format!(
+            "pinvou3_rotate_keep_test_{}.log.old",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&rotated);
+        std::fs::write(&base, b"new contents exceeding the budget").unwrap();
+        std::fs::write(&rotated, b"old").unwrap();
+        assert!(rotate_log_if_oversized(&base, 8, Some(&rotated)).unwrap());
+        assert!(!base.exists());
+        assert_eq!(
+            std::fs::read(&rotated).unwrap(),
+            b"new contents exceeding the budget"
+        );
+        let _ = std::fs::remove_file(&rotated);
+    }
 
     #[test]
     fn darwin_x86_64_directory_symbols_are_inode64_qualified() {

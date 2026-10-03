@@ -25,9 +25,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use sha2::Digest as _;
 
-use crate::platform::encoding::hex_lower;
 use crate::platform::paths;
 use crate::platform::strings::truncate_utf8;
 
@@ -41,7 +39,7 @@ pub const AUDIT_TARGET_MAX_BYTES: usize = 600;
 pub const AUDIT_ERROR_MAX_BYTES: usize = 600;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex_lower(&sha2::Sha256::digest(bytes))
+    crate::platform::hashing::sha256_hex(bytes)
 }
 
 /// `<pinvou3 data dir>/computer-use/`.
