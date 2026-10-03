@@ -55,6 +55,16 @@ pub fn parse(values: &[String]) -> Result<FilesCommand, CliError> {
                 .get(2)
                 .map(PathBuf::from)
                 .ok_or_else(|| CliError::usage("files ingest requires a PATH"))?;
+            // A `--`-prefixed token is an argv-decidable mistake (a
+            // truncated flag pair like `files ingest --output`), not a
+            // filename to resolve against the cwd: refusing it here keeps
+            // the exit-2 usage contract instead of an exit-1 host failure
+            // about an unreadable `--output` path.
+            if path.as_os_str().to_string_lossy().starts_with('-') {
+                return Err(CliError::usage(format!(
+                    "files ingest requires a PATH, got the option-like token {path:?}"
+                )));
+            }
             let rest = &values[3..];
             let mut output: Option<PathBuf> = None;
             let mut index = 0;

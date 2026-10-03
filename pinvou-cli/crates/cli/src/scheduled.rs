@@ -786,6 +786,20 @@ impl TaskStore {
     /// mirroring `save_run`'s migration step.
     fn save_run(&self, run: &serde_json::Value) -> Result<(), CliError> {
         let record = run_from_value(run)?;
+        // The run record's own id is joined into two file names below, and
+        // the reconcile lane feeds disk-derived records back through here —
+        // so a hand-edited/corrupt legacy run file carrying a non-component
+        // id would turn those joins into a traversal. Same gate the
+        // definition lane applies on read (`require_safe_record_id`); the
+        // refusal is a host failure (the corruption is disk content, not
+        // argv), not a write.
+        if safe_storage_id("scheduled run id", &record.id).is_err() {
+            return Err(CliError::failed(format!(
+                "the run record's stored id '{}' is not a single path component; fix or \
+                 remove the run file manually",
+                record.id
+            )));
+        }
         let dir = self.runs_dir_for(&record.automation_id)?;
         std::fs::create_dir_all(&dir).map_err(|error| {
             CliError::failed(format!(
@@ -980,7 +994,7 @@ fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
         Err(error) => {
             crate::note!(
-                "warning: cannot read {}: {error}; continuing with the empty default (the next successful write replaces the unreadable file)",
+                "pinvou: warning: cannot read {}: {error}; continuing with the empty default (the next successful write replaces the unreadable file)",
                 path.display()
             );
             serde_json::Value::Null
@@ -1438,6 +1452,18 @@ fn session_titles(store: &SessionStore) -> std::collections::HashMap<String, Str
                 .into_iter()
                 .map(|metadata| (metadata.id, metadata.title))
                 .collect()
+        })
+        // A sessions-store failure must not silently fabricate state: with
+        // an empty map the existence checks below (owned-session
+        // attribution, unread/pinned lookup) would render every run as
+        // "no session, read, not pinned" — a fabricated answer, not a
+        // degraded one. The note names the degrade; the command still
+        // succeeds (the run records themselves are intact).
+        .inspect_err(|error| {
+            note!(
+                "pinvou: warning: could not list sessions for run attribution (session/unread \
+                 fields degrade to absent): {error}"
+            );
         })
         .unwrap_or_default()
 }
@@ -1916,13 +1942,13 @@ enabled in settings",
             if let Ok(path) = store_holder.def_path(&id) {
                 if let Err(remove_error) = std::fs::remove_file(&path) {
                     note!(
-                        "warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+                        "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
                     );
                 }
             }
             if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
                 note!(
-                    "warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+                    "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
                 );
             }
             return Err(error);
@@ -1933,13 +1959,13 @@ enabled in settings",
             if let Ok(path) = store_holder.def_path(&id) {
                 if let Err(remove_error) = std::fs::remove_file(&path) {
                     note!(
-                        "warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+                        "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
                     );
                 }
             }
             if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
                 note!(
-                    "warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+                    "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
                 );
             }
             // A binding written above must not outlive the rolled-back task:
@@ -1948,7 +1974,7 @@ enabled in settings",
             if validated_model_id.as_deref().is_some() {
                 if let Err(clear_error) = write_model_binding(&store_holder, &id, None) {
                     note!(
-                        "warning: scheduled create: rollback could not clear the model binding: {clear_error}"
+                        "pinvou: warning: scheduled create: rollback could not clear the model binding: {clear_error}"
                     );
                 }
             }
@@ -1994,7 +2020,7 @@ fn rollback_committed_update_definition(
 ) -> CliError {
     if let Err(restore_error) = store_holder.write_def(pre_update_def) {
         note!(
-            "warning: scheduled update: the rollback could not restore the previous definition: {restore_error}"
+            "pinvou: warning: scheduled update: the rollback could not restore the previous definition: {restore_error}"
         );
     }
     let status = pre_update_def
@@ -2027,12 +2053,12 @@ fn rollback_committed_update_definition(
         };
         match parked {
             Ok(_parked) => note!(
-                "warning: scheduled update: the rollback could not re-resolve the pre-update \
+                "pinvou: warning: scheduled update: the rollback could not re-resolve the pre-update \
                  schedule ({restore_error}); the task is left PAUSED with its previous \
                  definition — resume it after checking the schedule"
             ),
             Err(_) => note!(
-                "warning: scheduled update: the rollback could not re-resolve the pre-update \
+                "pinvou: warning: scheduled update: the rollback could not re-resolve the pre-update \
                  schedule: {restore_error}"
             ),
         }
@@ -2137,7 +2163,7 @@ fn update(
         // (retryable, like the GUI's repair), but a stderr note names the
         // landed half instead of the exit reading as if nothing changed.
         crate::note!(
-            "warning: the workspace repair failed; the definition update itself is already committed"
+            "pinvou: warning: the workspace repair failed; the definition update itself is already committed"
         );
         return Err(error);
     }
@@ -2164,7 +2190,7 @@ fn update(
         Ok(runs) => runs,
         Err(error) => {
             crate::note!(
-                "warning: run history for {id} could not be read ({}); \
+                "pinvou: warning: run history for {id} could not be read ({}); \
 the update itself is committed",
                 error
             );
@@ -2323,7 +2349,7 @@ fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutco
         // enrichment guards below refuse.
         if let Err(error) = ensure_workspace(&store_holder, &mut def) {
             crate::note!(
-                "warning: the workspace repair for {id} failed ({error}); \
+                "pinvou: warning: the workspace repair for {id} failed ({error}); \
 the resume itself is committed"
             );
         }
@@ -2337,7 +2363,7 @@ the resume itself is committed"
         Ok(runs) => runs,
         Err(error) => {
             crate::note!(
-                "warning: run history for {id} could not be read ({}); \
+                "pinvou: warning: run history for {id} could not be read ({}); \
 the status change itself is committed",
                 error
             );
@@ -2430,7 +2456,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         });
         if let Err(restore_error) = restore {
             note!(
-                "warning: scheduled delete: the rollback could not restore the pre-delete status: {restore_error}"
+                "pinvou: warning: scheduled delete: the rollback could not restore the pre-delete status: {restore_error}"
             );
         }
     };
