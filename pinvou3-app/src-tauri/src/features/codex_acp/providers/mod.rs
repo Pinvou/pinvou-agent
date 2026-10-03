@@ -345,6 +345,22 @@ impl AcpProvidersStore {
         Self::persist_locked(&agents, &self.path)
     }
 
+    /// Fresh read of `current` for the decision paths that gate a CLI-config
+    /// rewrite (`save`'s active-provider arm, `delete`'s revert arm). The
+    /// plain `current()` reads only the in-memory map, which a CLI process
+    /// can have stale-dated: deciding from the stale value rewrites (or
+    /// fails to revert) the config for a provider that is no longer current
+    /// — the config/store split-brain the reload-on-mutator fix closed for
+    /// writes. Reloads under the write guard so every later reader sees the
+    /// adopted state, exactly like the mutators.
+    pub fn current_after_reload(&self, agent: &str) -> Option<String> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
+            .get(agent)
+            .and_then(|state| state.current_provider_id.clone())
+    }
+
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
         self.agents
             .read()
@@ -776,7 +792,7 @@ impl ProviderManager {
         // store.current=B」的分裂态。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        if self.store.current(agent).as_deref() == Some(record.id.as_str()) {
+        if self.store.current_after_reload(agent).as_deref() == Some(record.id.as_str()) {
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
@@ -813,7 +829,7 @@ impl ProviderManager {
         // 删除当前 Provider 会回退 CLI 配置：与 switch/save 同锁，防交错。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        let was_current = self.store.current(agent).as_deref() == Some(provider_id);
+        let was_current = self.store.current_after_reload(agent).as_deref() == Some(provider_id);
         let removed = self.store.get(agent, provider_id);
         if was_current {
             match removed.as_ref() {
@@ -1156,6 +1172,60 @@ mod tests {
             path,
             agents: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// The decision primitive behind `save`'s active-provider arm and
+    /// `delete`'s revert arm: a long-lived side whose in-memory `current`
+    /// was stale-dated by a CLI process's `set_current` must answer the
+    /// disk's value, not its own stale one — deciding from the stale value
+    /// rewrote the CLI config for a provider that was no longer current
+    /// (the config/store split-brain).
+    #[test]
+    fn current_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        gui.set_current("codex", Some("pv-a")).unwrap();
+        // Both sides saw the same state so far; the memory answer agrees.
+        assert_eq!(cli.current_after_reload("codex").as_deref(), Some("pv-a"));
+
+        // The CLI process switches behind the GUI's back: disk now says
+        // pv-b while the GUI's memory still says pv-a.
+        cli.set_current("codex", Some("pv-b")).unwrap();
+        assert_eq!(
+            gui.current("codex").as_deref(),
+            Some("pv-a"),
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "the decision read must adopt the disk state"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Shared behavior contracts of the three CLI ConfigWriters, locked in one
