@@ -2552,7 +2552,7 @@ mod tests {
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore, MemoryCredentialStore,
     };
-    use crate::platform::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard};
     use secrets::{
         mcp_secret_env_var, mcp_secret_reference, snapshot_secret_values, store_secret_value,
     };
@@ -2581,21 +2581,33 @@ mod tests {
         // placeholders, and the test outcome would depend on whether the
         // bridge boot tests have already run (order coupling).
         super::install_mcp_secret_resolver();
-        let prev = std::env::var("PINVOU3_HOME").ok();
         let prev_secrets = secrets::snapshot_secret_values();
         secrets::clear_secret_values_for_test();
+        // Opt the credential store into its file fallback for the body: the
+        // home redirect below cannot hermeticize the OS keyring, and on macOS
+        // the real keyring read blocks the headless test on the ACL consent
+        // dialog (see the valve comment in platform::credential_store). The
+        // file fallback resolves through CODEWHALE_HOME rather than
+        // PINVOU3_HOME, so it must be pointed at the same temp dir —
+        // otherwise valved reads and writes land in the developer's real
+        // ~/.codewhale/secrets/secrets.json (and trigger its legacy
+        // migration). EnvVarGuard restores all three vars on every exit
+        // path, including a panicking body.
+        let _env = EnvVarGuard::capture(&[
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+            "CODEWHALE_HOME",
+            "PINVOU3_HOME",
+        ]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f();
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         secrets::restore_secret_values(prev_secrets);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3545,22 +3557,27 @@ mod tests {
         // Same as with_temp_home: install the foundation resolver to avoid
         // test order coupling.
         super::install_mcp_secret_resolver();
-        let prev = std::env::var("PINVOU3_HOME").ok();
         let prev_secrets = secrets::snapshot_secret_values();
         secrets::clear_secret_values_for_test();
+        // Same hermeticity valve as with_temp_home (see its comment): the
+        // file fallback goes through CODEWHALE_HOME, which is pointed at the
+        // same temp dir, and EnvVarGuard restores the env even on panic.
+        let _env = EnvVarGuard::capture(&[
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+            "CODEWHALE_HOME",
+            "PINVOU3_HOME",
+        ]);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
         let dir =
             std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
         f().await;
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         secrets::restore_secret_values(prev_secrets);
         let _ = std::fs::remove_dir_all(&dir);
     }
