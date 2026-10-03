@@ -46,10 +46,11 @@
 #      stuck sysfs write) is uninterruptible; the workflow-side
 #      `timeout 240` + non-fatal wrapper is the last line there, and
 #      PINVOU3_CI_DISABLE_ZRAM=1 is the standing opt-out.
-#   2. /mnt/swapfile (priority 10), 8 GiB, provisioned on EVERY runner:
-#      swap is mandatory, not opt-in (2026-09-19 decision) — with the zram
-#      pool hard-capped at 70% of RAM, this is the only unbounded overflow
-#      layer. The safety guards stay: /mnt is skipped when tmpfs (RAM
+#   2. /mnt/swapfile (priority 10), 8 GiB — raised to 16 GiB whenever the
+#      zram layer is inactive (2026-10 degraded mode; see below) —
+#      provisioned on EVERY runner: swap is mandatory, not opt-in
+#      (2026-09-19 decision) — with the zram pool hard-capped at 70% of
+#      RAM, this is the only unbounded overflow layer. The safety guards stay: /mnt is skipped when tmpfs (RAM
 #      backed) or too small, the file is capped at 60% of actual free
 #      space, and an image-provided /mnt/swapfile is rebuilt in place. On
 #      the single-disk hosted images this costs 8G of build disk — a
@@ -306,9 +307,11 @@ setup_zram() {
   return 0
 }
 
-# Mandatory disk swap: the 8 GiB /mnt/swapfile is the unbounded overflow
-# layer beyond the zram pool cap and is provisioned on every runner (no
-# opt-in switch since 2026-09-19). On hosted images / and /mnt share one
+# Mandatory disk swap: the /mnt/swapfile is the unbounded overflow layer
+# beyond the zram pool cap and is provisioned on every runner (no opt-in
+# switch since 2026-09-19); 8 GiB normally, 16 GiB when zram is inactive
+# (sole overflow layer then, sized for the measured 14.2 GB rust-test
+# link peaks). On hosted images / and /mnt share one
 # ext4, so the guards below keep the file from taking the runner down.
 setup_disk_swap() {
   # /mnt safety checks are load bearing: on images where /mnt is tmpfs
