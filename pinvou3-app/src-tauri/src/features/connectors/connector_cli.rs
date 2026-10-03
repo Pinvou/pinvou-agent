@@ -300,7 +300,8 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
 }
 
 /// Appends one stage marker line to `cli-install.log`. The log is
-/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// append-only (see the module's `run_with_timeout`, which rotates and
+/// drives vendor children under the same budget); each stage's output of a
 /// multi-stage install (mirror retry after the default registry fails) is
 /// attributed via its marker line. Write failures are likewise silently
 /// dropped and never block the install flow.
@@ -326,7 +327,11 @@ pub fn append_cli_install_log(line: &str) {
 /// still fully preserved.
 const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-fn rotate_cli_install_log_if_oversized(log_path: &Path) {
+/// Rotates `cli-install.log` to `.old` once it exceeds the 8 MiB budget.
+/// `pub` for the headless CLI's ensure-cli lane, which redirects npm stdio
+/// into the same log directly (`connectors.rs::run_npm_attempt`) and must
+/// enforce the same bound the GUI's `run_with_timeout` enforces here.
+pub fn rotate_cli_install_log_if_oversized(log_path: &Path) {
     rotate_cli_install_log_if_oversized_with(log_path, CLI_INSTALL_LOG_MAX_BYTES);
 }
 

@@ -877,4 +877,36 @@ mod staged_copy_limit_tests {
             b"# ordinary attachment\n"
         );
     }
+
+    /// The default path must keep its behavioral pin, not just the injected
+    /// one: the over-cap tests above drive `TEST_LIMIT = 8` through
+    /// `stage_file_in_workspace_with_copier`, which a refactor that unbound
+    /// the DEFAULT closure (or dropped the copier call) would survive with a
+    /// green suite. A sparse file one byte over the real `MAX_FILE_BYTES`
+    /// pins the production wiring through `stage_file_in_workspace` itself.
+    #[test]
+    fn the_default_staging_copier_rejects_over_the_real_cap() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("huge.bin");
+        let file = std::fs::File::create(&source).unwrap();
+        file.set_len((crate::features::files::file_ingest::MAX_FILE_BYTES as u64) + 1)
+            .unwrap();
+        drop(file);
+
+        let staged = stage_file_in_workspace(
+            source.to_str().unwrap(),
+            "huge.bin",
+            workspace.path(),
+            "attachments",
+        );
+        assert!(
+            staged.is_none(),
+            "an over-cap source must be rejected by the DEFAULT wiring: {staged:?}"
+        );
+        assert!(
+            !workspace.path().join("attachments/huge.bin").exists(),
+            "a rejected staging must not leave the target behind"
+        );
+    }
 }

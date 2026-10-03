@@ -35,6 +35,12 @@ pub use download::NPM_MIRROR_REGISTRY;
 // spelling drift between metadata and binding must not re-admit a healthy
 // session for a whole-record rewrite.
 pub use os::filesystem_path_identity_key;
+// Same crate-boundary shape as the re-exports above: the headless CLI's
+// file-persisting lanes (`artifacts write`, `feedback submit`) were the last
+// holders of a drifting local stage-then-rename copy; they now consume the
+// app's hardened writer (Windows backup/rollback state machine included)
+// instead of maintaining their own.
+pub use filesystem::{atomic_write, atomic_write_private};
 pub(crate) mod startup;
 pub(crate) mod strings;
 pub mod super_permission;

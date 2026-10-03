@@ -59,6 +59,11 @@ pub struct ScanState {
     pub phase: String,
     pub roots: Vec<String>,
     pub scanned: u64,
+    /// Raw entries enumerated pre-prune. The GUI ignores this; the headless
+    /// `scan start` stall bound watches it because a pruned-heavy tree can
+    /// legitimately spend the whole stall window between two countable
+    /// reports while walking healthily.
+    pub raw_seen: u64,
     pub finished_at: i64,
 }
 
@@ -674,10 +679,25 @@ impl KnowledgeService {
                 let mut swept_roots: Vec<PathBuf> = Vec::with_capacity(roots.len());
                 for root in &roots {
                     let base = scanned_total;
-                    let (walked, walk_errors) =
-                        scanner::scan(root, &store, &ex, &existing, &mut visited, |n| {
+                    let (walked, walk_errors) = scanner::scan(
+                        root,
+                        &store,
+                        &ex,
+                        &existing,
+                        &mut visited,
+                        |n| {
                             scan_state.lock().scanned = base + n;
-                        });
+                        },
+                        // Each heartbeat stands for RAW_HEARTBEAT enumerated
+                        // entries; counting ticks (not the per-root raw
+                        // value, which restarts at 0 for every root) keeps
+                        // the counter monotonic across roots with no
+                        // bookkeeping.
+                        |raw| {
+                            let _ = raw;
+                            scan_state.lock().raw_seen += 1;
+                        },
+                    );
                     scanned_total = base + walked;
                     scan_state.lock().scanned = scanned_total;
                     if root_authorizes_deletion(root, walked, walk_errors) {
@@ -1624,6 +1644,7 @@ mod tests {
     #[test]
     fn scan_panic_guard_always_clears_the_running_flag() {
         let state = Mutex::new(ScanState {
+            raw_seen: 0,
             running: true,
             phase: "scanning".into(),
             roots: vec!["/tmp".into()],
