@@ -344,6 +344,20 @@ where
             _ => break,
         };
         record_global_output_mode(&mut output, &mut global_output_seen, mode)?;
+        // The trailing pair was claimed as the global mode, so a family
+        // file destination literally named `json`/`human` was just stolen
+        // (`sessions export s-1 --output json`): the run succeeds with
+        // stdout output, and without this line the theft is only
+        // discoverable from the usage text. Stderr, so JSON consumers on a
+        // pipe are unaffected.
+        crate::note!(
+            "note: claimed the trailing `--output {}` as the global output mode              (families exporting to a file take `--output PATH` instead)",
+            if matches!(mode, OutputMode::Json) {
+                "json"
+            } else {
+                "human"
+            }
+        );
         let end = values.len() - 2;
         values.drain(end..=end + 1);
     }
