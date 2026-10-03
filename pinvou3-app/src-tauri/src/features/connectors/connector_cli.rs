@@ -300,7 +300,8 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
 }
 
 /// Appends one stage marker line to `cli-install.log`. The log is
-/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// append-only (see the module's `run_with_timeout`, which rotates and
+/// drives vendor children under the same budget); each stage's output of a
 /// multi-stage install (mirror retry after the default registry fails) is
 /// attributed via its marker line. Write failures are likewise silently
 /// dropped and never block the install flow.
