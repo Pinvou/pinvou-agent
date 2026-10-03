@@ -47,9 +47,12 @@ assert.match(
   'export menu item must be gated on onExportArchive and keep its data-testid',
 );
 
-// 5. Flip-up placement estimate covers the 7-item menu
-// (6 items × h-9 36px + divider 9px + vertical padding 8px), passed to the
-// shared usePortalMenu hook.
-assert.ok(nav.includes('usePortalMenu({ height: 233 })'), 'menu flip-up height estimate must match the current menu item count');
+// 5. Flip-up placement estimate covers the tallest reachable menu: 8 enabled
+// entries on a desktop bound row (8 × h-9 36px + divider 9px + vertical
+// padding 8px = 305), passed to the shared usePortalMenu hook. Re-derived
+// with the real enumeration after round-9 N1 added the desktop-gated
+// view-workspace entry; the old 269 under-counted by one row
+// (review #484 round-11 m7).
+assert.ok(nav.includes('usePortalMenu({ height: 305 })'), 'menu flip-up height estimate must match the current menu item count');
 
 console.log('session export contract tests passed');

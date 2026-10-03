@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 const STORE_VERSION: u32 = 5;
 const CONFIG_DEFAULTS_VERSION: u32 = 1;
@@ -136,6 +137,10 @@ pub struct SessionAgentRecord {
     /// 项目会话保存创建时选定的绝对目录；临时会话目录由 session id 推导。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
+    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根)。旧记录缺该键或为
+    /// 空 = 单根语义(调用方按 cwd 归一)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<PathBuf>,
     /// 产品模式（plain/code）。旧记录没有该字段时按 plain 兼容；
     /// 序列化保持原布尔格式（true=code），旧版本应用读新文件不误判。
     #[serde(
@@ -163,6 +168,10 @@ pub struct CodeSessionSidecar {
     /// 项目会话保存的绝对目录；临时会话为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<PathBuf>,
+    /// 创建时锁定的钥匙串快照(§6):全量可访问根(含主根);旧 sidecar 缺该键
+    /// 或为空 = 单根语义。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<PathBuf>,
     /// 首次绑定时间（Unix 秒）。仅作元信息，不参与恢复语义。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_at: Option<i64>,
@@ -256,6 +265,31 @@ fn code_session_sidecar_path(store_path: &Path, session_id: &str) -> PathBuf {
         .join("code-session.json")
 }
 
+/// `set_session_workspace_roots` 的写入回执（评审 #484 round-10 M2）：
+/// `applied` = agent 记录已提交；`sidecar_committed` = 原生代码 sidecar 重写
+/// 回执——`None` = 非 code 会话无需 sidecar，`Some(false)` = 索引已提交但
+/// sidecar 重写失败；`state_committed` = acp-state.json 快照同步回执——
+/// `None` = 没有该文件可同步（原生车道/测试直构 store），`Some(false)` =
+/// 索引已提交但快照同步失败（陈旧快照保留对齐前更宽的根集，索引丢失恢复
+/// 时会以 over-grant 方向复活）。两类失败都必须随 align outcome
+/// （`sidecar_stale`）透出而非静默（评审 #484 round-13 M3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceRootsWrite {
+    pub applied: bool,
+    pub sidecar_committed: Option<bool>,
+    pub state_committed: Option<bool>,
+}
+
+impl WorkspaceRootsWrite {
+    fn skipped() -> Self {
+        Self {
+            applied: false,
+            sidecar_committed: None,
+            state_committed: None,
+        }
+    }
+}
+
 /// 原子写入原生代码会话 sidecar；写入失败逐条记日志并返回 false，不阻断会话
 /// 绑定主流程（辅助索引仍然可用，丢失恢复兜底时才依赖 sidecar；缺失的 sidecar
 /// 由启动时的 `backfill_missing_code_session_sidecars` 自愈补写）。
@@ -264,12 +298,14 @@ fn write_code_session_sidecar(
     session_id: &str,
     kind: CodexWorkspaceKind,
     workspace_path: Option<PathBuf>,
+    workspace_roots: Vec<PathBuf>,
 ) -> bool {
     let path = code_session_sidecar_path(store_path, session_id);
     let sidecar = CodeSessionSidecar {
         version: CODE_SESSION_SIDECAR_VERSION,
         workspace_kind: kind,
         workspace_path,
+        workspace_roots,
         bound_at: Some(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -526,6 +562,7 @@ impl SessionAgentStore {
         backend: AgentBackend,
         kind: CodexWorkspaceKind,
         workspace_path: Option<PathBuf>,
+        workspace_roots: Vec<PathBuf>,
     ) -> Result<()> {
         if !backend.is_acp() {
             anyhow::bail!("ACP 会话不能绑定非 ACP 后端");
@@ -536,6 +573,17 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        // 钥匙串快照(§6):项目会话存创建时锁定的全量根,落盘前归一为 cwd 居首
+        // 去重(review #484 round-5 M2——底座 normalize_workspace_roots 消费时
+        // cwd 居首,落盘序与生效序必须一致,否则 chip 错标主根);临时会话恒为
+        // 空(§9.1:无绑定工作区),与 bind_code_native_session 的 Temporary
+        // 处理一致(review #484 m3)。
+        let workspace_roots = match (kind, workspace_path.as_deref()) {
+            (CodexWorkspaceKind::Project, Some(cwd)) => {
+                crate::features::sessions::cwd_first_workspace_roots(cwd, workspace_roots)
+            }
+            _ => Vec::new(),
+        };
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -549,6 +597,9 @@ impl SessionAgentStore {
             record.backend = backend;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path;
+            // 重复设置(同一会话再次调用)保持最后一次的值,与 workspace_path
+            // 同一写入点。
+            record.workspace_roots = workspace_roots;
             // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
             record.mode = SessionMode::Plain;
@@ -571,6 +622,7 @@ impl SessionAgentStore {
         session_id: &str,
         kind: CodexWorkspaceKind,
         workspace_path: Option<PathBuf>,
+        workspace_roots: Vec<PathBuf>,
     ) -> Result<()> {
         if kind == CodexWorkspaceKind::Project && workspace_path.is_none() {
             anyhow::bail!("项目会话缺少工作目录");
@@ -578,6 +630,14 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        // 钥匙串快照(§6):项目会话存全量根,落盘前与 set_acp_workspace 同一
+        // 归一(cwd 居首去重,review #484 round-5 M2);临时会话恒为空(单根)。
+        let workspace_roots = match (kind, workspace_path.as_deref()) {
+            (CodexWorkspaceKind::Project, Some(cwd)) => {
+                crate::features::sessions::cwd_first_workspace_roots(cwd, workspace_roots)
+            }
+            _ => Vec::new(),
+        };
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -593,13 +653,131 @@ impl SessionAgentStore {
             record.backend = AgentBackend::Deepseek;
             record.workspace_kind = kind;
             record.workspace_path = workspace_path.clone();
+            record.workspace_roots = workspace_roots;
             record.mode = SessionMode::Code;
         }
         self.persist()?;
         // 权威 sidecar：辅助索引损坏/丢失后据此恢复原生代码会话类型与项目绑定。
         // 写失败已逐条记日志；缺失的 sidecar 由启动时回填自愈补写。
-        write_code_session_sidecar(&self.path, session_id, kind, workspace_path);
+        let record_roots = self
+            .records
+            .read()
+            .get(session_id)
+            .map(|record| record.workspace_roots.clone())
+            .unwrap_or_default();
+        write_code_session_sidecar(&self.path, session_id, kind, workspace_path, record_roots);
         Ok(())
+    }
+
+    /// 「对齐到项目」(§9.7)的钥匙串替换:整体重写创建时的快照。注意本方法
+    /// **有意**不遵循「权限只增」约定——对齐是用户的显式动作,快照被所属项目
+    /// 此刻的 roots 整体替换,附加根可能增也可能减(被移除的根从快照消失,底座
+    /// 侧的写豁免随之失效);一致性由调用方(命令层)用活动回合围栏与
+    /// SyncSession 推送保证。原生代码会话同时重写权威 sidecar(sidecar 的
+    /// bound_at 随之刷新为当前时间——它是元数据,不参与恢复语义,与
+    /// write_code_session_sidecar 的恒重写行为一致);ACP 会话没有 sidecar,
+    /// 只写索引。记录不存在或没有绑定工作区(临时会话)时返回 Ok(false),
+    /// 调用方走纯绑定通道处理。
+    pub fn set_session_workspace_roots(
+        &self,
+        session_id: &str,
+        workspace_roots: Vec<PathBuf>,
+    ) -> Result<WorkspaceRootsWrite> {
+        // Snapshot the current keychain so a persist failure can roll memory
+        // back to the on-disk state — the same convention as
+        // rebind_workspace_prefix: without the rollback the process believes
+        // the align happened while disk says otherwise, and the next read
+        // would report roots that were never persisted (review #484 M2).
+        let original_roots = {
+            let mut records = self.records.write();
+            let Some(record) = records.get_mut(session_id) else {
+                return Ok(WorkspaceRootsWrite::skipped());
+            };
+            if record.workspace_kind != CodexWorkspaceKind::Project
+                || record.workspace_path.is_none()
+            {
+                return Ok(WorkspaceRootsWrite::skipped());
+            }
+            let original_roots = record.workspace_roots.clone();
+            record.workspace_roots = workspace_roots.clone();
+            original_roots
+        };
+        if let Err(error) = self.persist() {
+            if let Some(record) = self.records.write().get_mut(session_id) {
+                record.workspace_roots = original_roots;
+            }
+            return Err(error);
+        }
+        let record = self.get(session_id);
+        let state_workspace_path = if record.workspace_kind == CodexWorkspaceKind::Project {
+            record.workspace_path.clone()
+        } else {
+            None
+        };
+        let sidecar_committed = if record.mode.is_code() {
+            Some(write_code_session_sidecar(
+                &self.path,
+                session_id,
+                record.workspace_kind,
+                record.workspace_path,
+                workspace_roots.clone(),
+            ))
+        } else {
+            None
+        };
+        // The per-session acp-state.json is the only durable ACP artifact that
+        // survives a session-agents.json loss (review #484 round-11 M8): keep
+        // its roots snapshot convergent with the index, or a later index loss
+        // lets the recovery path resurrect the pre-align (wider) root set.
+        // Failure here cannot roll the index back (it is already committed),
+        // so it is reported through `state_committed` and surfaces as
+        // `sidecar_stale` on the align outcome — swallowing it would report a
+        // narrowing align as clean while the durable ACP copy keeps the wider
+        // pre-align set (review #484 round-13 M3). 同步而不创建:acp-state.json
+        // 的创建归 spawn 路径所有;没有该文件的会话(原生车道、测试直构
+        // store)跳过,恢复路径本就读不到。下一次 respawn 会整体重写该文件。
+        let mut state_committed: Option<bool> = None;
+        if record.workspace_kind == CodexWorkspaceKind::Project {
+            if let Some(workspace_path) = &state_workspace_path {
+                if let Ok(state_path) = super::events::state_path(session_id) {
+                    if state_path.exists() {
+                        let patch = json!({
+                            "workspace": {
+                                "kind": record.workspace_kind,
+                                "path": workspace_path,
+                                "roots": workspace_roots,
+                            }
+                        });
+                        state_committed = Some(
+                            match super::events::patch_acp_state(session_id, patch) {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    eprintln!(
+                                        "[pinvou3-app] 同步 acp-state.json 钥匙串快照失败: {error:#}"
+                                    );
+                                    false
+                                }
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(WorkspaceRootsWrite {
+            applied: true,
+            sidecar_committed,
+            state_committed,
+        })
+    }
+
+    /// 创建会话时锁定的钥匙串快照(§6):全量可访问根(含主根);旧记录 / 临时
+    /// 会话 / 无记录 = 空(单根语义,调用方按 cwd 归一)。
+    pub fn session_workspace_roots(&self, session_id: &str) -> Vec<PathBuf> {
+        self.records
+            .read()
+            .get(session_id)
+            .map(|record| record.workspace_roots.clone())
+            .unwrap_or_default()
     }
 
     /// 该会话的产品模式（plain/code）；无记录时按 plain 缺省
@@ -826,7 +1004,7 @@ impl SessionAgentStore {
         // minor: unconditional persist() + advanced memory on failure left
         // the process believing the rebind happened while disk said
         // otherwise).
-        let mut originals: Vec<(String, Option<PathBuf>)> = Vec::new();
+        let mut originals: Vec<(String, Option<PathBuf>, Vec<PathBuf>)> = Vec::new();
         {
             let mut records = self.records.write();
             for (session_id, record) in records.iter_mut() {
@@ -851,8 +1029,26 @@ impl SessionAgentStore {
                 } else {
                     to.join(suffix)
                 };
-                originals.push((session_id.clone(), record.workspace_path.clone()));
+                originals.push((
+                    session_id.clone(),
+                    record.workspace_path.clone(),
+                    record.workspace_roots.clone(),
+                ));
                 record.workspace_path = Some(next.clone());
+                // The keychain snapshot migrates with the binding (§7): roots
+                // under the `from` prefix shift onto `to`, roots outside it
+                // are untouched. Stale `/from/...` entries would otherwise be
+                // normalized into additional writable roots outside `to` on
+                // the next resume (review #484 M3).
+                for root in record.workspace_roots.iter_mut() {
+                    if let Some(root_suffix) = Self::rebind_relative_suffix(root, from) {
+                        *root = if root_suffix.as_os_str().is_empty() {
+                            to.to_path_buf()
+                        } else {
+                            to.join(root_suffix)
+                        };
+                    }
+                }
                 affected.push((session_id.clone(), next));
             }
         }
@@ -860,10 +1056,12 @@ impl SessionAgentStore {
             // Roll the in-memory bindings back to the persisted state: the
             // caller reports the rebind as failed, and a retry must see the
             // original `from` bindings (not ones memory pretends moved).
+            // The keychain translation is rolled back with the path.
             let mut records = self.records.write();
-            for (session_id, original) in originals {
+            for (session_id, original_path, original_roots) in originals {
                 if let Some(record) = records.get_mut(&session_id) {
-                    record.workspace_path = original;
+                    record.workspace_path = original_path;
+                    record.workspace_roots = original_roots;
                 }
             }
             return Err(error);
@@ -900,12 +1098,28 @@ impl SessionAgentStore {
             } else {
                 to.join(suffix)
             };
+            // The orphan sidecar's keychain migrates with its binding too:
+            // roots under the `from` prefix shift onto `to`, roots outside it
+            // are untouched. Preserving the snapshot verbatim would strand
+            // `/from/...` entries (usually including the old cwd) that the
+            // foundation normalizes into additional writable roots outside
+            // `to` on resume (review #484 M3).
+            let rebound_roots: Vec<PathBuf> = sidecar
+                .workspace_roots
+                .iter()
+                .map(|root| match Self::rebind_relative_suffix(root, from) {
+                    Some(root_suffix) if root_suffix.as_os_str().is_empty() => to.to_path_buf(),
+                    Some(root_suffix) => to.join(root_suffix),
+                    None => root.clone(),
+                })
+                .collect();
             match persist_code_session_sidecar(
                 &code_session_sidecar_path(&self.path, &session_id),
                 &CodeSessionSidecar {
                     version: CODE_SESSION_SIDECAR_VERSION,
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(next.clone()),
+                    workspace_roots: rebound_roots,
                     bound_at: sidecar.bound_at,
                 },
             ) {
@@ -959,11 +1173,21 @@ impl SessionAgentStore {
                     .get(session_id)
                     .is_some_and(|record| record.mode.is_code())
                 {
+                    // The keychain snapshot rides along with the sidecar
+                    // rewrite: the record pass above already translated the
+                    // roots in memory, so re-reading them here persists the
+                    // rebound set (the rewrite itself only backfills path and
+                    // timestamp).
+                    let record_roots = records
+                        .get(session_id)
+                        .map(|record| record.workspace_roots.clone())
+                        .unwrap_or_default();
                     if write_code_session_sidecar(
                         &self.path,
                         session_id,
                         CodexWorkspaceKind::Project,
                         Some(path.clone()),
+                        record_roots,
                     ) {
                         sidecar_final_stale.retain(|sid| sid != session_id);
                     } else if !sidecar_final_stale.iter().any(|sid| sid == session_id) {
@@ -1235,6 +1459,7 @@ impl SessionAgentStore {
                 &session_id,
                 record.workspace_kind,
                 record.workspace_path,
+                record.workspace_roots,
             ) {
                 backfilled += 1;
                 eprintln!("[pinvou3-app] 回填原生代码会话 sidecar: {session_id}");
@@ -1259,6 +1484,10 @@ impl SessionAgentStore {
             workspace_kind: recovered.workspace_kind,
             workspace_path: recovered.workspace_path,
             mode: SessionMode::Code,
+            // The keychain rides in the sidecar (review #484 round-3 minor):
+            // dropping it here turns a lost index into a silent keychain
+            // loss — the session would resume single-root after a crash.
+            workspace_roots: recovered.workspace_roots,
             ..Default::default()
         };
         if record.workspace_kind == CodexWorkspaceKind::Project && record.workspace_path.is_none() {
@@ -1638,6 +1867,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Project,
                 Some(root.clone()),
+                Vec::new(),
             )
             .unwrap();
         store
@@ -1650,6 +1880,7 @@ mod tests {
                     AgentBackend::CodexAcp,
                     CodexWorkspaceKind::Temporary,
                     None,
+                    Vec::new(),
                 )
                 .is_err()
         );
@@ -1660,6 +1891,7 @@ mod tests {
                     AgentBackend::ClaudeAcp,
                     CodexWorkspaceKind::Project,
                     Some(root.clone()),
+                    Vec::new(),
                 )
                 .is_err()
         );
@@ -1686,7 +1918,7 @@ mod tests {
         };
         assert!(!store.is_code_session("session-1"));
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None, Vec::new())
             .unwrap();
 
         let record = store.get("session-1");
@@ -1697,7 +1929,7 @@ mod tests {
         assert!(store.is_code_session("session-1"));
         // 原生绑定不需要 Agent 上下文，同值重复绑定保持幂等。
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None, Vec::new())
             .unwrap();
         assert!(store.is_code_session("session-1"));
 
@@ -1726,6 +1958,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .unwrap();
         store
@@ -1733,7 +1966,12 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+                .bind_code_native_session(
+                    "session-1",
+                    CodexWorkspaceKind::Temporary,
+                    None,
+                    Vec::new()
+                )
                 .is_err()
         );
         let record = store.get("session-1");
@@ -1757,7 +1995,12 @@ mod tests {
         // kind 与 path 必须配套。
         assert!(
             store
-                .bind_code_native_session("session-1", CodexWorkspaceKind::Project, None)
+                .bind_code_native_session(
+                    "session-1",
+                    CodexWorkspaceKind::Project,
+                    None,
+                    Vec::new()
+                )
                 .is_err()
         );
         assert!(
@@ -1766,13 +2009,19 @@ mod tests {
                     "session-1",
                     CodexWorkspaceKind::Temporary,
                     Some(root.clone()),
+                    Vec::new(),
                 )
                 .is_err()
         );
         assert!(!store.is_code_session("session-1"));
 
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         let record = store.get("session-1");
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
@@ -1782,7 +2031,12 @@ mod tests {
         // 已绑定的代码会话不可改绑工作区；同值重复绑定幂等。
         assert!(
             store
-                .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+                .bind_code_native_session(
+                    "session-1",
+                    CodexWorkspaceKind::Temporary,
+                    None,
+                    Vec::new()
+                )
                 .is_err()
         );
         assert!(
@@ -1791,11 +2045,17 @@ mod tests {
                     "session-1",
                     CodexWorkspaceKind::Project,
                     Some(root.join("other")),
+                    Vec::new(),
                 )
                 .is_err()
         );
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         let record = store.get("session-1");
         assert_eq!(record.workspace_kind, CodexWorkspaceKind::Project);
@@ -1823,7 +2083,12 @@ mod tests {
         // s3: bound elsewhere, unaffected; prefix boundary: from-x must not
         // match from.
         store
-            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         store
             .set_acp_workspace(
@@ -1831,6 +2096,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Project,
                 Some(from.join("sub")),
+                Vec::new(),
             )
             .unwrap();
         store
@@ -1838,10 +2104,16 @@ mod tests {
                 "s3",
                 CodexWorkspaceKind::Project,
                 Some(root.join("elsewhere")),
+                Vec::new(),
             )
             .unwrap();
         store
-            .bind_code_native_session("s4", CodexWorkspaceKind::Project, Some(root.join("from-x")))
+            .bind_code_native_session(
+                "s4",
+                CodexWorkspaceKind::Project,
+                Some(root.join("from-x")),
+                Vec::new(),
+            )
             .unwrap();
         for sid in ["s1", "s2", "s3", "s4"] {
             touch_owner_record(&store.path, sid);
@@ -1905,6 +2177,7 @@ mod tests {
                 version: CODE_SESSION_SIDECAR_VERSION,
                 workspace_kind: CodexWorkspaceKind::Project,
                 workspace_path: Some(from.join("deep")),
+                workspace_roots: Vec::new(),
                 bound_at: None,
             },
         )
@@ -1934,6 +2207,89 @@ mod tests {
     }
 
     #[test]
+    fn rebind_prefix_translates_keychain_snapshots_with_the_binding() {
+        // Review #484 M3: every lane of rebind_workspace_prefix must migrate
+        // the keychain snapshot with the binding — stale `/from` roots would
+        // be normalized into additional writable roots outside `to` on the
+        // next resume. Roots outside the prefix stay untouched, in the index
+        // record and in an off-index orphan sidecar alike.
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-codex-rebind-roots-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+
+        // Indexed native code session: the keychain payload is cwd-first
+        // (§6) — primary root under `from`, an attached root under `from`,
+        // and one outside it.
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                vec![from.clone(), from.join("extra"), elsewhere.clone()],
+            )
+            .unwrap();
+        // The merged base's owner re-check (review #463 round-15 SF-B) skips
+        // ownerless records in both lanes, so this PR-era fixture must
+        // register live owners like its siblings do.
+        touch_owner_record(&store.path, "s1");
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert_eq!(outcome.affected.len(), 1);
+        let record = store.get("s1");
+        assert_eq!(record.workspace_path.as_deref(), Some(to.as_path()));
+        assert_eq!(
+            record.workspace_roots,
+            vec![to.clone(), to.join("extra"), elsewhere.clone()],
+            "prefix roots shift onto `to`, outside roots stay"
+        );
+        // The sidecar the bind wrote carries the same rebound set.
+        let sidecar = read_code_session_sidecar(&store.path, "s1").unwrap();
+        assert_eq!(
+            sidecar.workspace_roots,
+            vec![to.clone(), to.join("extra"), elsewhere.clone()]
+        );
+
+        // Off-index orphan sidecar: the orphan rewrite pass translates the
+        // snapshot itself (no index record owns it).
+        persist_code_session_sidecar(
+            &code_session_sidecar_path(&store.path, "orphan"),
+            &CodeSessionSidecar {
+                version: CODE_SESSION_SIDECAR_VERSION,
+                workspace_kind: CodexWorkspaceKind::Project,
+                workspace_path: Some(from.join("deep")),
+                workspace_roots: vec![from.join("deep"), elsewhere.clone()],
+                bound_at: None,
+            },
+        )
+        .unwrap();
+        touch_owner_record(&store.path, "orphan");
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        assert!(outcome.affected.iter().any(|(sid, _)| sid == "orphan"));
+        let orphan = read_code_session_sidecar(&store.path, "orphan").unwrap();
+        assert_eq!(
+            orphan.workspace_path.as_deref(),
+            Some(to.join("deep").as_path())
+        );
+        assert_eq!(
+            orphan.workspace_roots,
+            vec![to.join("deep"), elsewhere],
+            "the orphan's snapshot migrates with its binding"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn rebind_repairs_index_sidecar_disagreement_on_a_rekeyed_rerun() {
         // review #463 round-8 minor 9: run 1 (from→to) delivers the index but
         // both sidecar passes fail; run 2 (from→to2) then moves only the
@@ -1957,7 +2313,12 @@ mod tests {
         fs::create_dir_all(&to).unwrap();
         fs::create_dir_all(&to2).unwrap();
         store
-            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         touch_owner_record(&store.path, "s1");
 
@@ -2027,7 +2388,12 @@ mod tests {
             fs::create_dir_all(dir).unwrap();
         }
         store
-            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         touch_owner_record(&store.path, "s1");
 
@@ -2044,6 +2410,7 @@ mod tests {
                 version: CODE_SESSION_SIDECAR_VERSION,
                 workspace_kind: CodexWorkspaceKind::Project,
                 workspace_path: Some(to2.clone()),
+                workspace_roots: Vec::new(),
                 bound_at: None,
             },
         )
@@ -2101,7 +2468,12 @@ mod tests {
             fs::create_dir_all(dir).unwrap();
         }
         store
-            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         touch_owner_record(&store.path, "s1");
         {
@@ -2243,6 +2615,7 @@ mod tests {
                 version: CODE_SESSION_SIDECAR_VERSION,
                 workspace_kind: CodexWorkspaceKind::Project,
                 workspace_path: Some(from.clone()),
+                workspace_roots: Vec::new(),
                 bound_at: None,
             },
         )
@@ -2255,6 +2628,7 @@ mod tests {
                 "indexed-deny",
                 CodexWorkspaceKind::Project,
                 Some(from.clone()),
+                Vec::new(),
             )
             .unwrap();
         touch_owner_record(&store.path, "indexed-deny");
@@ -2331,6 +2705,7 @@ mod tests {
                 "s1",
                 CodexWorkspaceKind::Project,
                 Some(sidecar_path.clone()),
+                Vec::new(),
             )
             .unwrap();
         // Divergence shape: the index record disagrees with the sidecar.
@@ -2350,7 +2725,7 @@ mod tests {
         );
         // A temporary binding carries no project workspace.
         store
-            .bind_code_native_session("tmp-1", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("tmp-1", CodexWorkspaceKind::Temporary, None, Vec::new())
             .unwrap();
         assert_eq!(store.code_sidecar_workspace("tmp-1"), None);
         // An unknown id reads as absent.
@@ -2382,10 +2757,20 @@ mod tests {
         fs::create_dir_all(&from).unwrap();
         fs::create_dir_all(&to).unwrap();
         store
-            .bind_code_native_session("live", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "live",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         store
-            .bind_code_native_session("dead", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "dead",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         touch_owner_record(&store.path, "live");
         touch_owner_record(&store.path, "dead");
@@ -2498,7 +2883,12 @@ mod tests {
         fs::create_dir_all(&from).unwrap();
         fs::create_dir_all(&to).unwrap();
         store
-            .bind_code_native_session("midrun", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "midrun",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
 
         OWNER_PROBE_DEAD_IDS
@@ -2559,7 +2949,12 @@ mod tests {
         fs::create_dir_all(&from).unwrap();
         fs::create_dir_all(&to).unwrap();
         store
-            .bind_code_native_session("s1", CodexWorkspaceKind::Project, Some(from.clone()))
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+                Vec::new(),
+            )
             .unwrap();
         touch_owner_record(&store.path, "s1");
 
@@ -2595,6 +2990,178 @@ mod tests {
     }
 
     #[test]
+    fn set_session_workspace_roots_rolls_back_memory_when_persist_fails() {
+        // review #484 M2: the keychain replacement (align) mutates the
+        // in-memory record before persist(); on failure the memory must be
+        // rolled back to the on-disk snapshot, otherwise the process reports
+        // roots that were never persisted and a retry diff against memory
+        // would misjudge the state. Mirrors
+        // rebind_prefix_rolls_back_memory_when_index_persist_fails.
+        // Hermetic guard (review #484 round-10 M1 convention): the align write
+        // now also converges a pre-existing acp-state.json under
+        // sessions_root(), which honors PINVOU3_HOME — hold ENV_LOCK and
+        // redirect it so this test can never touch a real store.
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev_home = std::env::var("PINVOU3_HOME").ok();
+        let hermetic_home = std::env::temp_dir().join(format!(
+            "pinvou3-codex-align-rollback-home-{}",
+            std::process::id()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &hermetic_home) };
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-align-rollback-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let workspace = root.join("workspace");
+        let extra = root.join("extra");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        store
+            .bind_code_native_session(
+                "s1",
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone()],
+            )
+            .unwrap();
+
+        // Round-21 SF-7 moved the index persist onto atomic_write, whose
+        // randomized temp names defeat tmp-path occupation: occupy the index
+        // file's own path with a DIRECTORY — the rename onto it fails on
+        // every platform after the in-memory mutation.
+        fs::remove_file(&store.path).unwrap();
+        fs::create_dir(&store.path).unwrap();
+        let error = store
+            .set_session_workspace_roots("s1", vec![workspace.clone(), extra.clone()])
+            .expect_err("persist failure surfaces as an error");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            store.session_workspace_roots("s1"),
+            vec![workspace.clone()],
+            "memory rolled back to the on-disk keychain"
+        );
+
+        // After clearing the obstacle a retry persists the same replacement.
+        fs::remove_dir_all(&store.path).unwrap();
+        let retried = store
+            .set_session_workspace_roots("s1", vec![workspace.clone(), extra.clone()])
+            .expect("retry persists");
+        assert!(retried.applied);
+        assert_eq!(
+            retried.sidecar_committed,
+            Some(true),
+            "a healthy code-session rewrite reports the sidecar as committed"
+        );
+        assert_eq!(
+            store.session_workspace_roots("s1"),
+            vec![workspace.clone(), extra.clone()]
+        );
+
+        // skipped lanes: unknown session and a temporary (unbound) record
+        // write nothing and never touch the disk.
+        let ghost = store
+            .set_session_workspace_roots("ghost", vec![workspace.clone()])
+            .expect("unknown session");
+        assert!(!ghost.applied);
+        assert_eq!(ghost.sidecar_committed, None);
+        store
+            .bind_code_native_session("temp", CodexWorkspaceKind::Temporary, None, Vec::new())
+            .unwrap();
+        let temporary = store
+            .set_session_workspace_roots("temp", vec![workspace])
+            .expect("temporary session has no keychain");
+        assert!(!temporary.applied);
+
+        fs::remove_dir_all(&root).unwrap();
+        // SAFETY: ENV_LOCK held for the whole test; restoring the caller's
+        // environment.
+        unsafe {
+            match prev_home {
+                Some(home) => std::env::set_var("PINVOU3_HOME", home),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn set_session_workspace_roots_reports_a_failed_acp_state_convergence() {
+        // Round-13 M3: a Project-kind ACP record with a pre-existing (here:
+        // deliberately unwritable) acp-state.json must surface the failed
+        // convergence as state_committed = Some(false). Swallowing it would
+        // report a narrowing align as clean while the durable ACP copy keeps
+        // the wider pre-align set that acp_recovery_record reads back after a
+        // session-agents.json loss. Hermetic under ENV_LOCK + PINVOU3_HOME:
+        // the state path resolves under the redirected home.
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev_home = std::env::var("PINVOU3_HOME").ok();
+        let hermetic_home = std::env::temp_dir().join(format!(
+            "pinvou3-codex-state-converge-home-{}",
+            std::process::id()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &hermetic_home) };
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-state-converge-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let workspace = root.join("workspace");
+        let extra = root.join("extra");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        store
+            .set_acp_workspace(
+                "s-acp",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone()],
+            )
+            .unwrap();
+        // The pre-existing state artifact as an unwritable directory: spawn
+        // owns its creation, so a pre-existing-but-unusable copy is exactly
+        // the convergence-failure shape.
+        let state_dir = hermetic_home
+            .join("sessions")
+            .join("s-acp")
+            .join("acp-state.json");
+        fs::create_dir_all(&state_dir).unwrap();
+
+        let write = store
+            .set_session_workspace_roots("s-acp", vec![workspace.clone(), extra.clone()])
+            .expect("the index commits");
+        assert!(write.applied);
+        assert_eq!(write.state_committed, Some(false), "{write:?}");
+        assert_eq!(write.sidecar_committed, None, "ACP records have no sidecar");
+
+        fs::remove_dir_all(&root).unwrap();
+        // SAFETY: ENV_LOCK held for the whole test; restoring the caller's
+        // environment.
+        unsafe {
+            match prev_home {
+                Some(home) => std::env::set_var("PINVOU3_HOME", home),
+                None => std::env::remove_var("PINVOU3_HOME"),
+            }
+        }
+    }
+
+    #[test]
     fn recovered_acp_record_is_persisted_atomically() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-codex-recovery-store-test-{}",
@@ -2621,6 +3188,7 @@ mod tests {
                     )]),
                     workspace_kind: CodexWorkspaceKind::Project,
                     workspace_path: Some(root.clone()),
+                    workspace_roots: Vec::new(),
                     mode: SessionMode::Plain,
                 },
             )
@@ -2718,7 +3286,12 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         let sidecar = read_code_session_sidecar(store.path(), "session-1")
             .expect("sidecar should exist after binding");
@@ -2741,7 +3314,12 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         // 模拟辅助索引丢失：清空记录并从磁盘重建（empty store）。
         let recovered_store = SessionAgentStore {
@@ -2777,7 +3355,12 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
         // ACP 会话已占用该 session：恢复必须拒绝，不能覆盖。
@@ -2787,6 +3370,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Project,
                 Some(root.clone()),
+                Vec::new(),
             )
             .unwrap();
         assert!(
@@ -2811,7 +3395,7 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None, Vec::new())
             .unwrap();
         assert!(read_code_session_sidecar(store.path(), "session-1").is_some());
         store.remove("session-1").unwrap();
@@ -2837,6 +3421,7 @@ mod tests {
             version: CODE_SESSION_SIDECAR_VERSION,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: None,
+            workspace_roots: Vec::new(),
             bound_at: None,
         };
         assert!(
@@ -2849,6 +3434,7 @@ mod tests {
             version: CODE_SESSION_SIDECAR_VERSION,
             workspace_kind: CodexWorkspaceKind::Temporary,
             workspace_path: Some(root.clone()),
+            workspace_roots: Vec::new(),
             bound_at: None,
         };
         assert!(
@@ -2858,6 +3444,121 @@ mod tests {
         );
         assert!(!store.is_code_session("session-1"));
         assert!(!store.is_code_session("session-2"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn set_acp_workspace_forces_empty_keychain_for_temporary_sessions() {
+        // review #484 m3: a Temporary record must carry an EMPTY keychain
+        // (single-root semantics), matching bind_code_native_session — before
+        // the alignment, a Temporary ACP session bound with a non-empty
+        // workspace_roots payload stored it verbatim, contradicting the
+        // session_workspace_roots contract ("临时会话 = 空").
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-temporary-keychain-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .set_acp_workspace(
+                "session-1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+                vec![root.clone()],
+            )
+            .unwrap();
+        assert!(
+            store.session_workspace_roots("session-1").is_empty(),
+            "a temporary ACP session never stores a keychain snapshot"
+        );
+
+        // The Project arm is unchanged: the full creation-time snapshot rides.
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        store
+            .set_acp_workspace(
+                "session-2",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone(), root.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_workspace_roots("session-2"),
+            vec![workspace, root.clone()]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn project_keychain_persists_cwd_first_and_deduped() {
+        // review #484 round-5 M2: the create channel sends storage-order
+        // roots plus a separate cwd; both agent-lane bind entry points must
+        // persist the base-normalized shape (cwd first, the rest in order,
+        // duplicates removed) so the stored order matches the effective one.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-cwd-first-keychain-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        let extra = root.join("extra");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        // ACP lane: storage order [extra, workspace] with cwd = workspace.
+        store
+            .set_acp_workspace(
+                "session-acp",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![extra.clone(), workspace.clone(), extra.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_workspace_roots("session-acp"),
+            vec![workspace.clone(), extra.clone()],
+            "cwd is promoted to the primary slot and duplicates collapse"
+        );
+
+        // Native code lane: cwd already in slot 0 stays unchanged.
+        store
+            .bind_code_native_session(
+                "session-native",
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                vec![workspace.clone(), extra.clone()],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_workspace_roots("session-native"),
+            vec![workspace.clone(), extra.clone()],
+            "an already cwd-first keychain is persisted unchanged"
+        );
+
+        // Empty stays empty (single-root contract), for both lanes.
+        store
+            .set_acp_workspace(
+                "session-empty",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(store.session_workspace_roots("session-empty").is_empty());
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2874,7 +3575,12 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
         // 模拟辅助索引丢失后的首次恢复：真实恢复，返回 true。
@@ -2909,7 +3615,12 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         // 非代码会话不参与回填。
         store
@@ -2918,6 +3629,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .unwrap();
         // 模拟存量会话/绑定时写失败：索引记录 code_session=true 但 sidecar 缺失。
@@ -2946,13 +3658,19 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         // 写入高于当前支持版本的 sidecar：拒读并按缺失处理，不能静默按 v1 解析。
         let future = CodeSessionSidecar {
             version: CODE_SESSION_SIDECAR_VERSION + 1,
             workspace_kind: CodexWorkspaceKind::Project,
             workspace_path: Some(root.join("future-workspace")),
+            workspace_roots: Vec::new(),
             bound_at: None,
         };
         fs::write(
@@ -2983,7 +3701,12 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         store
-            .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         assert!(read_code_session_sidecar(&path, "session-1").is_some());
         // 让索引 persist 必失败：索引路径被同名目录占用，rename 无法覆盖。
@@ -2996,6 +3719,7 @@ mod tests {
                     AgentBackend::CodexAcp,
                     CodexWorkspaceKind::Temporary,
                     None,
+                    Vec::new(),
                 )
                 .is_err()
         );

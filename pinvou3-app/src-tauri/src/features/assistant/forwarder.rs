@@ -7,7 +7,7 @@
 
 use super::*;
 
-use crate::features::assistant::engine_pool::stamp_steer_generation;
+use crate::features::assistant::engine_pool::{EnginePool, stamp_steer_generation};
 
 /// Summary detail line for the persistent startup timeline describing a
 /// terminal MCP session-boot receipt. `enabled_servers` counts only enabled
@@ -281,6 +281,15 @@ pub(crate) fn spawn_event_forwarder(
         let self_metrics = app
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
+        // 手动压缩在途标记(review #484 round-18 M2):compact_now 在入队时置位,
+        // 本 forwarder 在压缩终态事件里清除(Started 臂幂等重置位)。压缩不占用
+        // 回合预留,turn 侧忙探测看不见它,这个收尾必须由事件源头完成,否则
+        // align 的忙围栏会一直误判。try_state:headless harness / 测试可能没
+        // manage EnginePool,拿不到就跳过——引擎回收路径同样会移除该条目,不会
+        // 留下粘滞的忙标记(与上方 self_metrics 的防御式形态一致)。
+        let engine_pool = app
+            .try_state::<EnginePool>()
+            .map(|pool| pool.inner().clone());
         let mut current_turn_id: Option<String> = None;
         let mut startup_first_output_recorded = false;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
@@ -1428,6 +1437,11 @@ pub(crate) fn spawn_event_forwarder(
                 Event::CompactionStarted {
                     id, message, auto, ..
                 } => {
+                    // 幂等重置在途标记(review #484 round-18 M2):入队时已置位,
+                    // 这里补齐自动压缩等未经 pool.compact_now 的路径。
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, true);
+                    }
                     let payload = json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(
@@ -1473,11 +1487,20 @@ pub(crate) fn spawn_event_forwarder(
                             u64::from(bridge.usage_context_window()),
                         );
                     }
+                    // 压缩终态:释放在途标记(review #484 round-18 M2),align 的
+                    // 忙围栏据此恢复可见。
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                 }
                 Event::CompactionCancelled { id, message, auto } => {
                     // Cancellation is a terminal compaction phase just like done/fail.
                     // Forward the stable id so both UI lanes can settle the exact
                     // in-flight card instead of leaving the manual compact action locked.
+                    // 终态:同步释放在途标记(review #484 round-18 M2)。
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                     let payload = json!({
                         "session_id": session_id,
                         "phase": "cancel",
@@ -1493,6 +1516,10 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::CompactionFailed { id, message, auto } => {
+                    // 终态失败同样释放在途标记(review #484 round-18 M2)。
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                     let payload = json!({ "session_id": session_id, "phase": "fail", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(

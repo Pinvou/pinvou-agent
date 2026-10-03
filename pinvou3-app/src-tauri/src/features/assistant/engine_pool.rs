@@ -1465,6 +1465,18 @@ pub struct EnginePool {
     /// run_scheduled_turn's spawn→submit window the lifecycle is not yet
     /// active; idle reclaim needs this as a second layer of protection).
     scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+    /// Manual compaction in flight, keyed by session id (the
+    /// enqueue→terminal-event window, review #484 round-18 M2): compact_now
+    /// sets it when it enqueues `Op::CompactContext`, and the forwarder's
+    /// compaction terminal events (Completed/Cancelled/Failed — Started is
+    /// idempotent) clear it. Compaction runs no turn reservation, so neither
+    /// `is_turn_active` nor `is_scheduled_turn_running` sees it; without this
+    /// set, align's live push could `SyncSession` a stale pre-compaction disk
+    /// snapshot over a compacting engine and silently roll the manual
+    /// compaction back. Engine reclaim removes the entry so a dead engine
+    /// (aborted forwarder never delivering the terminal event) cannot leave a
+    /// sticky busy flag.
+    compacting_sessions: Arc<SyncMutex<HashSet<String>>>,
     /// Steer-id engine-incarnation allocator: a process-monotonic AtomicU64
     /// sequence bumped on every engine spawn. Arc-shared so pool clones see
     /// one sequence (same idiom as every shared field here — EnginePool is a
@@ -1588,6 +1600,7 @@ impl EnginePool {
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
+            compacting_sessions: Arc::new(SyncMutex::new(HashSet::new())),
             steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
             execution_root_rewind_flags: Arc::new(SyncMutex::new(HashMap::new())),
         })
@@ -2706,6 +2719,16 @@ impl EnginePool {
                 RECLAIM_SHUTDOWN_RETRY_PATIENCE,
             ));
         }
+        // A reclaimed engine's forwarder was aborted (and awaited) above, so
+        // the compaction terminal event (Completed/Cancelled/Failed) that
+        // would clear the in-flight flag can never arrive — and clearing only
+        // here (not at entry) means a queued CompactionStarted the dying
+        // forwarder still processed before its abort cannot re-set the flag
+        // behind this cleanup. Without this, a dead engine leaves a sticky
+        // busy flag and every later align is refused (review #484 round-18
+        // M2; cleanup at the same chokepoint every removal/reap path funnels
+        // through).
+        self.set_compaction_in_flight(session_id, false);
     }
 
     async fn evict_locked(&self, session_id: &str) {
@@ -2993,6 +3016,28 @@ impl EnginePool {
     /// peer recheck needs to count it as busy).
     pub(crate) fn is_scheduled_turn_running(&self, session_id: &str) -> bool {
         self.scheduled_running_sessions.lock().contains(session_id)
+    }
+
+    /// Mark/unmark a manual compaction as in flight (review #484 round-18
+    /// M2). The pool sets it when compact_now enqueues `Op::CompactContext`
+    /// (closing the enqueue→CompactionStarted window) and the forwarder's
+    /// compaction terminal events clear it.
+    pub(crate) fn set_compaction_in_flight(&self, session_id: &str, in_flight: bool) {
+        if in_flight {
+            self.compacting_sessions
+                .lock()
+                .insert(session_id.to_string());
+        } else {
+            self.compacting_sessions.lock().remove(session_id);
+        }
+    }
+
+    /// Whether this session has a manual compaction in flight (the
+    /// enqueue→terminal-event window). Compaction holds no turn reservation,
+    /// so the turn-active probes are blind to it; align's busy fence must ask
+    /// here explicitly or its live push can roll the compaction back.
+    pub fn is_compaction_in_flight(&self, session_id: &str) -> bool {
+        self.compacting_sessions.lock().contains(session_id)
     }
 
     /// Refresh the session engine's idle clock (called when a turn starts;
@@ -3748,7 +3793,20 @@ impl EnginePool {
         let Some(engine) = self.handle_for(session_id).await else {
             anyhow::bail!("session_engine_not_running");
         };
-        engine.compact_now().await?;
+        // Mark compaction in flight BEFORE the enqueue (review #484 round-18
+        // M2): compaction holds no turn reservation, so between this enqueue
+        // and the forwarder's terminal compaction event the session looks
+        // fully idle to every turn-based busy probe. align's live push must
+        // see this window or its SyncSession wholesale-replaces the compacting
+        // engine's messages with the stale pre-compaction disk snapshot. The
+        // forwarder clears the flag at Completed/Cancelled/Failed; a failed
+        // enqueue never reaches the engine, so no event would arrive — clear
+        // it here to keep the flag from going sticky.
+        self.set_compaction_in_flight(session_id, true);
+        if let Err(error) = engine.compact_now().await {
+            self.set_compaction_in_flight(session_id, false);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -8435,5 +8493,50 @@ mod probed_facts_wiring_tests {
         );
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+    #[test]
+    fn spawn_config_carries_the_session_keychain_snapshot() {
+        // Round-13 M4: `build_engine_config_for_session_roots` must copy the
+        // bridge-resolved keychain snapshot into `EngineConfig.workspace_roots` —
+        // the line is the spawn-lane delivery of the feature; deleting it leaves
+        // the config default (empty) and this assertion red. The resolver here is
+        // the same injection the composition root installs.
+        let mut bridge = wiring_bridge(saved_model(
+            ModelPreset::OpenaiCompatible,
+            "spawn-keychain-model",
+            Some("custom"),
+        ));
+        let w = std::env::temp_dir().join("pinvou3-spawn-config-keychains");
+        let w_for_resolver = w.clone();
+        bridge.set_workspace_roots_resolver(std::sync::Arc::new(move |session_id: &str| {
+            if session_id == "s-keyed" {
+                vec![w_for_resolver.clone(), w_for_resolver.join("extra")]
+            } else {
+                Vec::new()
+            }
+        }));
+        let roots = crate::features::sessions::SessionRoots {
+            execution: w.join("execution"),
+            ledger: w.join("ledger"),
+            bound: true,
+        };
+        let cfg = bridge.build_engine_config_for_session_roots("s-keyed", roots);
+        assert_eq!(
+            cfg.workspace_roots,
+            vec![w.clone(), w.join("extra")],
+            "the spawn config must carry the resolver's snapshot verbatim"
+        );
+        let unkeyed = bridge.build_engine_config_for_session_roots(
+            "s-other",
+            crate::features::sessions::SessionRoots {
+                execution: w.join("execution"),
+                ledger: w.join("ledger"),
+                bound: false,
+            },
+        );
+        assert!(
+            unkeyed.workspace_roots.is_empty(),
+            "no snapshot = single-root semantics"
+        );
     }
 }

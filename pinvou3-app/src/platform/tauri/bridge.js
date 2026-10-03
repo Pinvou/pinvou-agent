@@ -283,6 +283,11 @@ function pinvouSharedtauriMain() {
     // create_session via the workspacePath parameter, cleared after successful
     // materialization, reset by enterDraft.
     draftWorkspacePath: null,
+    // Draft staging for the project channel (§9.3): the keychain snapshot and
+    // project ownership, passed down with the materializing create_session;
+    // null/empty = a plain-folder or temporary draft.
+    draftWorkspaceRoots: [],
+    draftProjectId: null,
     // 最新 plan/todos 快照（用于 mode header 进度 chip，与 plan_ready 卡解耦）
     planSnapshot: { plan: null, todos: null },
     // 当前 session 产物列表 [{ path, basename }]
@@ -1105,6 +1110,7 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const createNewSession = sessionsFeature.createNewSession;
   const setDraftWorkspace = sessionsFeature.setDraftWorkspace;
   const pickDraftWorkspace = sessionsFeature.pickDraftWorkspace;
+  const rememberDraftWorkspaceRecent = sessionsFeature.rememberDraftWorkspaceRecent;
   const getSessionWorkspaceBinding = sessionsFeature.getSessionWorkspaceBinding;
   const ensureSession = sessionsFeature.ensureSession;
   const hydratedMessageKey = sessionsFeature.hydratedMessageKey;
@@ -1187,6 +1193,17 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
     return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
+  }
+
+  // The mode a chat draft WILL run once a workspace pick binds it (review
+  // #484 round-11 M6): grant-notice surfaces must describe the post-binding
+  // posture — bound drafts align with the code lane's safety posture
+  // (currentDraftModeState's bound arm), so the composer chip and the
+  // pre-grant notice must agree instead of the notice reading the unbound
+  // snapshot while the chip flips to plan.
+  function boundDraftMode() {
+    const d = state.modeDefaults && state.modeDefaults.code;
+    return d || "plan";
   }
 
   // 事件监听器统一入口:按 payload.session_id 路由同步逻辑;后台变更后补一次 notify 刷新列表。
@@ -2331,6 +2348,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const deleteProject = projectsFeature.deleteProject;
   const moveSessionToProject = projectsFeature.moveSessionToProject;
   const rebindWorkspaceRoot = projectsFeature.rebindWorkspaceRoot;
+  const ensureFolderProjects = projectsFeature.ensureFolderProjects;
+  const updateProjectRoots = projectsFeature.updateProjectRoots;
+  const setPrimaryRoot = projectsFeature.setPrimaryRoot;
+  const setNeverMaterialize = projectsFeature.setNeverMaterialize;
+  const alignSessionToProject = projectsFeature.alignSessionToProject;
 
   const multiAgentFeature = installBridgeFeature("multiagent", { state, notify, invoke, listen });
   const listMultiAgentSubagents = multiAgentFeature.listSubagentTranscripts;
@@ -2558,6 +2580,13 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       // such channel, the UI guards on method existence).
       setDraftWorkspace,
       pickDraftWorkspace,
+      // Recents-list recorder for the single-entry picker path (the system
+      // dialog lane records inside pickDraftWorkspace itself; review #484
+      // round-18 M3).
+      rememberDraftWorkspaceRecent,
+      // Pre-grant notice mode for the chat lane's workspace surfaces (the
+      // posture the draft takes once the pick binds; review #484 round-11 M6).
+      boundDraftMode,
       // Working directory binding query for materialized sessions (bound
       // sessions share the code mode's safety posture; web/remote sessions have
       // no binding concept, stub returns null).
@@ -2570,6 +2599,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       deleteProject,
       moveSessionToProject,
       rebindWorkspaceRoot,
+      ensureFolderProjects,
+      updateProjectRoots,
+      setPrimaryRoot,
+      setNeverMaterialize,
+      alignSessionToProject,
     },
     monitor: {
       startMonitorPolling,

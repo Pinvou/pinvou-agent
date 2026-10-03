@@ -2217,18 +2217,40 @@ impl AppEngine {
     /// `{{PINVOU3_WORKSPACE}}` 占位符。原先 sync 时重写 disk + 传 SystemPrompt::Text
     /// 都是 disk-API-限制的副作用,现在彻底走掉。
     pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
-        self.handle
-            .send(Op::SyncSession {
-                session_id: Some(session_id),
-                messages,
-                system_prompt: None,
-                system_prompt_override: false,
-                model: self.bridge.model(),
-                workspace: self.workspace.clone(),
-                mode: AppMode::Agent,
-            })
-            .await?;
+        let op = Self::sync_session_op(
+            &session_id,
+            messages,
+            self.bridge.model(),
+            self.workspace.clone(),
+            // 恢复路径钥匙串回填(§6):创建时锁定的全量根,会话重启不丢;
+            // 无快照(旧会话/临时会话)为空 = 单根,底座按 cwd 归一。
+            self.bridge.session_workspace_roots(&session_id),
+        );
+        self.handle.send(op).await?;
         Ok(())
+    }
+
+    /// `sync_session` 的载荷构造(评审 #484 round-13 M4 提取钉死):这是
+    /// 钥匙串回填进入底座的唯一通道,字段名/serde 形状或回填行为被删改时
+    /// 该构造器编译失败或测试变红。EngineHandle 跨 crate 不可构造,故
+    /// 载荷层在此钉住;调用点把桥解析出的快照原样传入。
+    pub(crate) fn sync_session_op(
+        session_id: &str,
+        messages: Vec<Message>,
+        model: String,
+        workspace: std::path::PathBuf,
+        workspace_roots: Vec<std::path::PathBuf>,
+    ) -> Op {
+        Op::SyncSession {
+            session_id: Some(session_id.to_string()),
+            messages,
+            system_prompt: None,
+            system_prompt_override: false,
+            model,
+            workspace,
+            workspace_roots,
+            mode: AppMode::Agent,
+        }
     }
 }
 
@@ -4101,5 +4123,48 @@ mod expert_turn_invariant_tests {
             both.to_string().contains("expert snapshot"),
             "快照守卫必须先于候选行守卫（与生产装配顺序一致）: {both}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_session_op_carries_the_keychain_backfill() {
+        // Round-13 M4: the SyncSession payload is the keychain backfill's only
+        // channel into the foundation — the builder pins the field's presence
+        // and serde shape (deleting the field fails to compile here, renaming
+        // it reds this assert). The call site passes the bridge-resolved
+        // snapshot through unchanged.
+        let op = AppEngine::sync_session_op(
+            "s-backfill",
+            Vec::new(),
+            "test-model".to_string(),
+            std::path::PathBuf::from("/w"),
+            vec![
+                std::path::PathBuf::from("/w"),
+                std::path::PathBuf::from("/x"),
+            ],
+        );
+        match op {
+            Op::SyncSession {
+                session_id,
+                messages,
+                workspace_roots,
+                ..
+            } => {
+                assert_eq!(session_id.as_deref(), Some("s-backfill"));
+                assert!(messages.is_empty());
+                assert_eq!(
+                    workspace_roots,
+                    vec![
+                        std::path::PathBuf::from("/w"),
+                        std::path::PathBuf::from("/x")
+                    ]
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
     }
 }
