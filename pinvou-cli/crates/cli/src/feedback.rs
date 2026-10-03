@@ -467,16 +467,16 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), CliError> {
     let mut bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| CliError::failed(format!("feedback submit: serialize: {error}")))?;
     bytes.push(b'\n');
-    // Shared stage+rename helper: a crash mid-write must not leave a truncated
+    // The app's shared stage+rename writer (the same helper the artifact
+    // write lane uses): a crash mid-write must not leave a truncated
     // feedback file behind, and the staging step must not follow a planted
-    // symlink or swallow a failing fsync (see `artifacts::atomic_write`).
-    crate::artifacts::atomic_write(path, &bytes, crate::artifacts::WriteVisibility::OwnerOnly)
-        .map_err(|error| {
-            CliError::failed(format!(
-                "feedback submit: cannot write {}: {error}",
-                path.display()
-            ))
-        })
+    // symlink or swallow a failing fsync.
+    pinvou3_lib::platform::atomic_write_private(path, &bytes).map_err(|error| {
+        CliError::failed(format!(
+            "feedback submit: cannot write {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn new_feedback_id() -> String {

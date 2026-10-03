@@ -877,7 +877,7 @@ fn consume_staged_persona_injection_at(
     // Same stage+rename/owner-only discipline as [`persist_equipped_persona`]:
     // the retained `persona_id` is still read by `active` and the delete
     // sweep, and a concurrent reader must never observe a torn sidecar.
-    crate::artifacts::atomic_write(path, &bytes, crate::artifacts::WriteVisibility::OwnerOnly)
+    pinvou3_lib::platform::atomic_write_private(path, &bytes)
         .map_err(|error| CliError::failed(format!("cannot save session persona sidecar: {error}")))
 }
 
@@ -951,7 +951,7 @@ fn persist_equipped_persona(
     // the sidecar embeds the card's full injection body, which for a
     // user-authored persona is text the user wrote and no other account on the
     // machine has a reason to read.
-    crate::artifacts::atomic_write(&path, &bytes, crate::artifacts::WriteVisibility::OwnerOnly)
+    pinvou3_lib::platform::atomic_write_private(&path, &bytes)
         .map_err(|error| CliError::failed(format!("cannot save session persona sidecar: {error}")))
 }
 
@@ -1449,12 +1449,11 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let sidecar = dir.join("persona_equipped.json");
-        crate::artifacts::atomic_write(
+        pinvou3_lib::platform::atomic_write_private(
             &sidecar,
             serde_json::json!({ "persona_id": "user-seam", "pending_body": injection })
                 .to_string()
                 .as_bytes(),
-            crate::artifacts::WriteVisibility::OwnerOnly,
         )
         .unwrap();
         // Read side: the staged text comes back exactly as written (frozen at
