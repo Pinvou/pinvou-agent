@@ -747,7 +747,7 @@ fn validate_rebind_to(to: &Path) -> Result<(), CliError> {
 /// deviation is Windows case-only spellings, where the app's canonicalize at
 /// validation time already removes the case difference in practice.
 fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
-    to_display.starts_with(from)
+    to_display.starts_with(from) || from.starts_with(to_display)
 }
 
 /// Mirror of `SessionStore::durable_session_record_is_absent` (the helper is
@@ -828,8 +828,8 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     }
     if rebind_target_is_same_or_nested(&to_display, &from_display) {
         return Err(CliError::failed(
-            "projects rebind: the destination cannot sit inside the original folder \
-             (REBIND_TO_NESTED)",
+            "projects rebind: the original and destination folders are \
+             nested inside each other (REBIND_TO_NESTED)",
         ));
     }
     // Root pre-flight (REBIND_ROOTS_CONFLICT): the roots commit LAST, so an
