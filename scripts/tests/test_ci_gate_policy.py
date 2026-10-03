@@ -1292,9 +1292,11 @@ class CiGatePolicyTests(unittest.TestCase):
         macos_job = self.pr_workflow.split(
             "\n  macos-rust-check:", maxsplit=1
         )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
-        smoke_step = macos_job.split(
-            "- name: Tauri bundle smoke", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        smoke_step = _without_yaml_comments(
+            macos_job.split(
+                "- name: Tauri bundle smoke", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn(
             "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
             smoke_step,
@@ -1334,6 +1336,21 @@ class CiGatePolicyTests(unittest.TestCase):
                 job_if,
                 f"macos-rust-check is a rust gate; {output} changes must not trigger it",
             )
+        # Positive shape: push must stay unconditional and the PR branch must
+        # keep the rust-filter routing. Without this, collapsing the whole if
+        # to a bare push check deletes PR-side macOS coverage (the only leg
+        # that runs macOS-only unit tests on PRs) while every negative pin
+        # and step-level pin stays green.
+        self.assertIn(
+            "github.event_name == 'push' ||",
+            job_if,
+            "main push 必须无条件进入本 job(路径无关的累计覆盖契约)",
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'",
+            job_if,
+            "PR 侧必须保留 rust 过滤路由(draft/ready 高危路径)",
+        )
 
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
@@ -1348,7 +1365,7 @@ class CiGatePolicyTests(unittest.TestCase):
         leaked_groups = [
             line
             for line in bundle_tail.splitlines()[1:]
-            if re.fullmatch(r"            [a-z_]+:", line)
+            if re.fullmatch(r"            [A-Za-z0-9_-]+:", line)
         ]
         self.assertEqual(
             [], leaked_groups,
@@ -1371,11 +1388,19 @@ class CiGatePolicyTests(unittest.TestCase):
         macos_job = self.pr_workflow.split(
             "\n  macos-rust-check:", maxsplit=1
         )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        # mac-build died inside its own 50-minute cap; the fold replaces it
+        # with 180. Reverting to the default (360) or deleting the cap burns
+        # a hung runner for hours — the exact waste this PR removes.
+        self.assertIn("timeout-minutes: 180", macos_job)
 
         # Full native lib regression: push-only, serial threads, locked.
-        test_step = macos_job.split(
-            "- name: macOS full lib tests", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        # Comment-stripped: an if-line deleted but kept "alive" in a YAML
+        # comment must not satisfy the gate.
+        test_step = _without_yaml_comments(
+            macos_job.split(
+                "- name: macOS full lib tests", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn(
             "if: ${{ github.event_name == 'push' }}", test_step
         )
@@ -1383,27 +1408,52 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo test --lib --features benchmark-hooks --locked -- --test-threads=1",
             test_step,
         )
+        # Same silent-no-op guard as the PR leg's computer_use run: a
+        # filterless suite that somehow runs zero tests must fail the push.
+        self.assertIn("running [1-9][0-9]* tests?", test_step)
+
+        # The universal build needs both darwin targets installed; dropping
+        # this step resurfaces as MODULE/target errors on the first
+        # bundle_chain push, weeks after the fold (same class as the npm
+        # provisioning miss the review caught).
+        targets_step = _without_yaml_comments(
+            macos_job.split(
+                "- name: 安装双 target (universal bundle smoke, push only)",
+                maxsplit=1,
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
+        self.assertIn("github.event_name == 'push'", targets_step)
+        self.assertIn(
+            "rustup target add aarch64-apple-darwin x86_64-apple-darwin",
+            targets_step,
+        )
 
         # The release-fast compile smoke and the verify script stay push-only.
-        release_fast = macos_job.split(
-            "- name: Cargo build (release-fast", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        release_fast = _without_yaml_comments(
+            macos_job.split(
+                "- name: Cargo build (release-fast", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn("github.event_name == 'push'", release_fast)
         self.assertIn(
             "cargo build --profile release-fast --target aarch64-apple-darwin --lib",
             release_fast,
         )
-        verify_step = macos_job.split(
-            "- name: Verify 脚本", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        verify_step = _without_yaml_comments(
+            macos_job.split(
+                "- name: Verify 脚本", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn("always() && github.event_name == 'push'", verify_step)
         self.assertIn("./scripts/run-mac-verify.sh --skip-test", verify_step)
 
         # The computer_use filtered run yields to the full leg on push (the
         # full suite executes the same tests) and keeps guarding PR legs.
-        computer_use = macos_job.split(
-            "- name: macOS computer_use unit tests", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        computer_use = _without_yaml_comments(
+            macos_job.split(
+                "- name: macOS computer_use unit tests", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn("github.event_name != 'push'", computer_use)
 
         # The bundle smoke consumes node_modules (build.js resolves
@@ -1412,16 +1462,21 @@ class CiGatePolicyTests(unittest.TestCase):
         # The 2026-10 review round caught the fold initially dropping them:
         # the first bundle_chain push would have died MODULE_NOT_FOUND while
         # every lock test stayed green.
-        node_step = macos_job.split(
-            "- name: Node.js (universal bundle smoke, push only)", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        node_step = _without_yaml_comments(
+            macos_job.split(
+                "- name: Node.js (universal bundle smoke, push only)", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn("github.event_name == 'push'", node_step)
+        self.assertIn("node-version: '24'", node_step)
         self.assertIn(
             "cache-dependency-path: pinvou3-app/package-lock.json", node_step
         )
-        npm_step = macos_job.split(
-            "- name: 安装前端依赖 (universal bundle smoke, push only)", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        npm_step = _without_yaml_comments(
+            macos_job.split(
+                "- name: 安装前端依赖 (universal bundle smoke, push only)", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
         self.assertIn("github.event_name == 'push'", npm_step)
         self.assertIn("npm ci", npm_step)
         # Provisioning must precede the smoke step in the job body.
@@ -1470,6 +1525,74 @@ class CiGatePolicyTests(unittest.TestCase):
         # (rust-cache's default keeps target artifacts). Comments stripped:
         # the decision record above mentions the old value historically.
         self.assertNotIn("cache-targets:", rust_test_cache)
+
+    def test_quota_and_toolchain_hardening_stays_pinned(self):
+        # 2026-10 audit hardening. Each item is a silent policy change (quota
+        # weight or toolchain drift) if removed, with no runtime error to
+        # expose it — so each is pinned:
+        # - CARGO_INCREMENTAL=0 repo-wide: incremental artifacts are pure
+        #   cache-bloat on ephemeral runners under the 10GB quota.
+        # - knowledge-rust drops its target cache (workspace compiles cold
+        #   inside its 30-minute cap); only ~/.cargo is cached.
+        # - The CodeWhale Windows regression resolves its toolchain via the
+        #   same rust-toolchain.toml-derived resolution as every other leg
+        #   (RUSTUP_TOOLCHAIN beats the directory override file).
+        # - Both Cargo.lock drift guards fail loud when a cargo invocation
+        #   regenerated a lockfile instead of honoring it (--locked parity).
+        self.assertIn('CARGO_INCREMENTAL: "0"', self.pr_workflow)
+
+        knowledge_job = self.pr_workflow.split(
+            "\n  knowledge-rust:", maxsplit=1
+        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        knowledge_cache = _without_yaml_comments(
+            knowledge_job.split(
+                "uses: Swatinem/rust-cache@v2", maxsplit=1
+            )[1].split("\n      - name:", maxsplit=1)[0]
+        )
+        self.assertIn("cache-targets: false", knowledge_cache)
+
+        windows_rust_job = self.pr_workflow.split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[1].split("\n  macos-rust-check:", maxsplit=1)[0]
+        self.assertIn(
+            "RUSTUP_TOOLCHAIN: ${{ steps.pinned_toolchain.outputs.version }}",
+            _without_yaml_comments(windows_rust_job),
+        )
+
+        for job_name, end_marker in (
+            ("knowledge-rust", "\n  rust-lint:"),
+            ("rust-lint", "\n  rust-test:"),
+        ):
+            job = self.pr_workflow.split(
+                f"\n  {job_name}:", maxsplit=1
+            )[1].split(end_marker, maxsplit=1)[0]
+            self.assertIn(
+                "Cargo.lock drift guard", job, job_name,
+            )
+            self.assertIn(
+                "git diff --exit-code -- '**/Cargo.lock'", job, job_name,
+            )
+
+    def test_connector_darwin_x64_executes_on_intel(self):
+        # darwin-x64 verifies the pinned x86_64 connector CLIs by EXECUTING
+        # them. On the arm64 image that step was skipped (can_run: false),
+        # leaving sha256/file checks only — a hash-matching but broken binary
+        # shipped green. macos-15-intel is the Intel image (sunset ~2027 with
+        # the macos-15 generation; the re-homing note lives in the matrix).
+        workflow = (
+            ROOT / ".github/workflows/connector-verify.yml"
+        ).read_text(encoding="utf-8")
+        darwin_x64 = workflow.split(
+            "- platform: darwin-x64", maxsplit=1
+        )[1].split("- platform:", maxsplit=1)[0]
+        self.assertIn("runs-on: macos-15-intel", darwin_x64)
+        self.assertIn("can_run: true", darwin_x64)
+        # The arm64 leg keeps executing on the arm64 image (no coverage lost).
+        darwin_arm64 = workflow.split(
+            "- platform: darwin-arm64", maxsplit=1
+        )[1].split("- platform:", maxsplit=1)[0]
+        self.assertIn("runs-on: macos-15", darwin_arm64)
+        self.assertIn("can_run: true", darwin_arm64)
 
     def test_wrapper_smoke_routes_merge_groups_before_platform_matrix(self):
         # rustc-wrapper-smoke must first pass the paths-filter gate before
