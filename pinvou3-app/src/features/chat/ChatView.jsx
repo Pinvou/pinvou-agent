@@ -30,8 +30,8 @@ import { ComputerUseBanner, ComputerUseDialogs } from '../computer-use/ComputerU
 import {
   ConversationTimeline,
   LiveConversationActivityIndicator,
-  useConversationSecondClock,
 } from '../conversation/ConversationTimeline.jsx';
+import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
 import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
