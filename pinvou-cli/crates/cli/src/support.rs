@@ -336,6 +336,14 @@ fn is_row_unsafe_char(ch: char) -> bool {
             | '\u{2060}' // WORD JOINER: invisible, renders two different
                          // strings identically (the hiding hazard this
                          // module's threat model names)
+            | '\u{2061}'..='\u{2064}' // INVISIBLE OPERATOR/TIMES/SEPARATOR/
+                                      // PLUS: same identical-rendering hazard
+            | '\u{FE00}'..='\u{FE0F}' // VARIATION SELECTORS: invisible; they
+                                      // swap glyph identity between renders
+            | '\u{E0001}' // LANGUAGE TAG (invisible)
+            | '\u{E0020}'..='\u{E007F}' // TAG CHARACTERS: invisible payload
+                                        // channel (the known Unicode smuggling
+                                        // vector)
         )
 }
 
@@ -747,6 +755,14 @@ mod tests {
         let hostile = "line\u{202E}spoof\u{202C}mid\u{2066}iso\u{2069}\u{200B}\u{FEFF}";
         let cleaned = collapse_block_control_characters(hostile);
         assert_eq!(cleaned, "line spoof mid iso   ");
+        // The invisible-operator/variation-selector/tag ranges join the set
+        // with the same identical-rendering rationale as U+2060.
+        let hostile2 = "x\u{2061}y\u{FE0F}z\u{E0001}\u{E0020}w\u{E007F}";
+        assert_eq!(
+            collapse_control_characters(hostile2),
+            "x y z  w ",
+            "invisible operators, variation selectors, and tag characters must not survive"
+        );
         // Layout survives: newline and tab are structure, not spoofing.
         assert_eq!(collapse_block_control_characters("a\n\tb"), "a\n\tb");
         // The row sanitizer keeps flattening layout, as before.

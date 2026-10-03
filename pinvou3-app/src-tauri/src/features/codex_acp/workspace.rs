@@ -342,7 +342,12 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
             .with_context(|| format!("创建工作区基线目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(&baseline).context("序列化工作区基线失败")?;
-    let temporary = path.with_extension("json.tmp");
+    // Pid-carrying staging name: the CLI's `code` family captures baselines
+    // from a second process against the same session directories, and a
+    // fixed `.tmp` name lets two surfaces rename each other's half-written
+    // file into place (the same rule the providers store's `persist_locked`
+    // documents).
+    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
     {
         let mut file = fs::File::create(&temporary)
             .with_context(|| format!("创建工作区基线失败: {}", temporary.display()))?;
@@ -350,8 +355,10 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
             .with_context(|| format!("写入工作区基线失败: {}", temporary.display()))?;
         file.sync_all().ok();
     }
-    fs::rename(&temporary, &path)
-        .with_context(|| format!("保存工作区基线失败: {}", path.display()))?;
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("保存工作区基线失败: {}", path.display()));
+    }
     Ok(())
 }
 

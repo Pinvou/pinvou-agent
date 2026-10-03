@@ -853,13 +853,23 @@ fn parse_run(rest: &[String]) -> Result<CodeCommand, CliError> {
             "code run requires --prompt-file F or --prompt S",
         ));
     }
-    let timeout_secs =
-        match option(&options, "--timeout-secs") {
-            Some(value) => Some(value.parse::<u64>().map_err(|_| {
+    let timeout_secs = match option(&options, "--timeout-secs") {
+        Some(value) => {
+            // Zero is refused, not just unparseable text: the message
+            // promises a positive integer, and a 0 value would turn any
+            // future wiring of this flag into an immediate timeout.
+            let parsed = value.parse::<u64>().map_err(|_| {
                 CliError::usage("code run --timeout-secs must be a positive integer")
-            })?),
-            None => None,
-        };
+            })?;
+            if parsed == 0 {
+                return Err(CliError::usage(
+                    "code run --timeout-secs must be a positive integer",
+                ));
+            }
+            Some(parsed)
+        }
+        None => None,
+    };
     Ok(CodeCommand::Run {
         agent,
         workspace,
@@ -4914,9 +4924,11 @@ fn workspace_diff(
             let mut combined = String::new();
             let mut diffed_files = 0usize;
             let mut hit_diff_limit = false;
+            let mut hit_file_cap = false;
             let mut failures: Vec<serde_json::Value> = Vec::new();
             for row in changes["changes"].as_array().cloned().unwrap_or_default() {
                 if diffed_files >= WORKSPACE_DIFF_FILE_CAP {
+                    hit_file_cap = true;
                     break;
                 }
                 diffed_files += 1;
@@ -4964,9 +4976,29 @@ fn workspace_diff(
                     }
                 }
             }
+            // The file cap is a truncation like any other: files beyond it are
+            // exactly the "listed by `changes` but not diffed" case the
+            // doctrine above refuses to drop silently, so they surface in the
+            // same three places (text marker, `truncated` flag, stderr note)
+            // instead of rendering like a complete diff of a 600-file refactor
+            // that only contains its first 500 files.
+            if hit_file_cap {
+                note!(
+                    "code workspace diff: stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap; the \
+                     remaining changed files are not included — diff them with \
+                     `pinvou code workspace diff --file <path>`"
+                );
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&format!(
+                    "# diff truncated: stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap; the \
+                     remaining changed files are not included\n"
+                ));
+            }
             // Actually cut the payload when reporting truncation — the
             // per-file path below does the same.
-            let truncated = hit_diff_limit || combined.len() > DIFF_LIMIT;
+            let truncated = hit_diff_limit || hit_file_cap || combined.len() > DIFF_LIMIT;
             if truncated {
                 truncate_utf8(&mut combined, DIFF_LIMIT);
             }
@@ -5210,7 +5242,11 @@ fn checkpoints_list(session: &str, output: OutputMode) -> Result<CliOutcome, Cli
                     .turn
                     .map(|turn| turn.to_string())
                     .unwrap_or_else(|| "-".to_owned()),
-                entry.label,
+                // Labels are agent/GUI-authored display text: same row
+                // sanitizer as every other vendor-fed cell (the app side
+                // only trims and clamps the length, it does not strip
+                // control or bidi characters).
+                crate::support::collapse_control_characters(&entry.label),
             )
         })
         .collect::<Vec<_>>()
@@ -5249,11 +5285,14 @@ fn checkpoints_diff(
                 "checkpoints diff({session}): checkpoint diff failed to serialize: {error}"
             ))
         })?;
+    // The patch is `git diff` over the execution root — raw working-tree
+    // file content, i.e. agent-authored text rendered on a terminal: same
+    // block sanitizer as the workspace diff lane above.
     let human = format!(
         "checkpoint: {}\nchanges: {}\npatch:\n{}",
         diff.checkpoint.id,
         diff.changes.len(),
-        diff.patch,
+        crate::support::collapse_block_control_characters(&diff.patch),
     );
     Ok(success(render(output, human, &value)))
 }
@@ -5477,9 +5516,13 @@ fn resolve_undo_state(
 }
 
 /// Failure report for the transcript-restore step of `checkpoints undo`, when
-/// the working tree has already been restored. `condition_broken` says whether
-/// the undo precondition no longer holds (new turns, edits, or the bound
-/// checkpoint vanished): that failure is not retryable, every other one is.
+/// the working tree has already been restored. `tree_restored` says whether a
+/// tree restore actually ran: a rewind record with no bound PreRestore
+/// checkpoint only ever restores the transcript, so claiming a restored
+/// working tree there would misdescribe the state the retry starts from.
+/// `condition_broken` says whether the undo precondition no longer holds (new
+/// turns, edits, or the bound checkpoint vanished): that failure is not
+/// retryable, every other one is.
 /// Selected by the re-derived undo state, never by the store's message text.
 fn undo_restore_failure(
     condition_broken: bool,
@@ -5488,18 +5531,24 @@ fn undo_restore_failure(
     detail: &str,
 ) -> CliError {
     let rollback_point = checkpoint_id.unwrap_or("-");
+    let tree_half = if checkpoint_id.is_some() {
+        "the working tree was already restored to rollback point, but"
+    } else {
+        // No PreRestore bound: this undo never touches the working tree.
+        "the transcript restore alone (this rewind bound no tree checkpoint), but"
+    };
     if condition_broken {
         CliError::failed(format!(
-            "code_checkpoints_undo_condition_changed({session}): the working tree was already \
-             restored to rollback point {rollback_point}, but restoring the transcript failed: \
+            "code_checkpoints_undo_condition_changed({session}): {tree_half} restoring the \
+             transcript failed at rollback point {rollback_point}: \
              {detail}. This is not retryable; the rewind record was not consumed but the \
              truncated messages remain in the rewind backup — handle manually (new turns or \
              edits landed after the rewind)"
         ))
     } else {
         CliError::failed(format!(
-            "code checkpoints undo({session}): the working tree was already restored to \
-             rollback point {rollback_point}, but restoring the transcript failed: {detail}. \
+            "code checkpoints undo({session}): {tree_half} restoring the transcript failed at \
+             rollback point {rollback_point}: {detail}. \
              The rewind record was not consumed, so `checkpoints undo` can be retried"
         ))
     }
