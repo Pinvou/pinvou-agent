@@ -1024,10 +1024,18 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         }
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
-                // Indexed session whose sidecar failed both passes: the
-                // binding moved but the authoritative sidecar still holds
-                // the old path — honestly count it as failed.
-                if finally_stale {
+                // GUI parity (round-24): a retention delete landing between
+                // this loop's pre-check and the just-released save lock must
+                // not push a freshly dead id into the reported rebound list —
+                // the GUI re-probes absence after both save arms for exactly
+                // this race. Report accuracy only (a rerun's owner gates
+                // exclude the dead id either way).
+                if session_record_is_absent(session_id) {
+                    failed_session_ids.push(session_id.clone());
+                } else if finally_stale {
+                    // Indexed session whose sidecar failed both passes: the
+                    // binding moved but the authoritative sidecar still holds
+                    // the old path — honestly count it as failed.
                     failed_session_ids.push(session_id.clone());
                 } else {
                     rebound_session_ids.push(session_id.clone());

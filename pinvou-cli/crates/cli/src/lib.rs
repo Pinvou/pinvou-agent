@@ -171,6 +171,11 @@ impl ExitCode {
     }
 }
 
+/// The benchmark family's usage line, named by the unknown-command error the
+/// same way every other family's catch-all names its subcommands (the
+/// dispatch contract's rule: the error must name what IS dispatchable).
+const BENCHMARK_USAGE: &str = "usage: pinvou benchmark <list|run <id>|status <run>|resume <run>|report <run>|fetch <gaia-token-env>|verify|score <run>|submission <run>>";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BenchmarkCommand {
     List,
@@ -524,7 +529,10 @@ fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
                     "--output requires human or json (submission files use --destination)",
                 ));
             }
-            return Err(CliError::usage("unknown benchmark command"));
+            return Err(CliError::usage(format!(
+                "unknown benchmark command\n{}",
+                BENCHMARK_USAGE
+            )));
         }
     };
     Ok(command)

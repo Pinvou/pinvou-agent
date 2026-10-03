@@ -1198,6 +1198,78 @@ fn projects_rebind_refuses_from_strictly_inside_to() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The other mirror geometry — the DESTINATION strictly inside the source —
+/// is the arm the head commit restored: `/a/x -> /a/x/new` deepens the
+/// project root one level per rerun and breaks idempotency, so the CLI
+/// refuses it with the same typed `REBIND_TO_NESTED` marker. Without this
+/// pin, a regression dropping the `to.starts_with(from)` arm passes the
+/// whole suite (the sibling test covers only from-inside-to).
+#[test]
+fn projects_rebind_refuses_to_strictly_inside_from() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-deepen-nested");
+    let dir = make_root_dir("rebind-deepen-nested");
+    let from = std::fs::canonicalize(&dir).unwrap();
+    let to = from.join("new");
+    std::fs::create_dir_all(&to).unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Deepen",
+        "--root",
+        from.to_str().unwrap(),
+    ]);
+    let project_id = value["id"].as_str().unwrap().to_owned();
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, from.clone())
+        .expect("create session");
+    let session_id = session.metadata.id;
+    sessions
+        .bind_session_workspace(&session_id, from.clone())
+        .expect("bind workspace");
+    drop(sessions);
+
+    let error = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ])
+    .expect_err("a rebind with the destination inside the source must refuse");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("REBIND_TO_NESTED"),
+        "the refusal must carry the typed marker: {error}"
+    );
+
+    // Nothing moved: the project keeps its root and the sidecar binding is
+    // intact.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    assert_eq!(list["projects"][0]["id"], project_id);
+    assert_eq!(
+        list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
+        from.to_str().unwrap()
+    );
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&session_id)
+            .join("workspace-binding.json"),
+    )
+    .expect("the sidecar must still exist");
+    assert!(
+        sidecar.contains(from.to_str().unwrap()),
+        "the refusal must leave the binding as-is: {sidecar}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A legacy table that exists but never parses (corrupt or hand-truncated)
 /// must fail the whole rebind with the typed `REBIND_LEGACY_TABLE_CORRUPT`
 /// marker BEFORE anything moves (the #463 plan/apply split made the legacy
