@@ -355,14 +355,59 @@ impl AcpProvidersStore {
     /// fails to revert) the config for a provider that is no longer current
     /// — the config/store split-brain the reload-on-mutator fix closed for
     /// writes. Reloads under the write guard so every later reader sees the
-    /// adopted state, exactly like the mutators.
-    pub fn current_after_reload(&self, agent: &str) -> Option<String> {
+    /// adopted state, exactly like the mutators. `pub(crate)`: the module
+    /// is private and even app callers sit behind `save`/`delete`/`switch`
+    /// — the CLI consumes the decision paths, never this raw read.
+    pub(crate) fn current_after_reload(&self, agent: &str) -> Option<String> {
         let _section = self.section_lock();
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         agents
             .get(agent)
             .and_then(|state| state.current_provider_id.clone())
+    }
+
+    /// Fresh read of one provider record — the decision input `switch`
+    /// applies to the CLI config file. The plain `get` reads only the
+    /// in-memory map, which a CLI process can have stale-dated: applying a
+    /// removed provider's endpoint is the same config/store split-brain
+    /// `current_after_reload` closed for `save`/`delete`.
+    fn record_after_reload(&self, agent: &str, provider_id: &str) -> Option<ProviderRecord> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents.get(agent).and_then(|state| {
+            state
+                .providers
+                .iter()
+                .find(|candidate| candidate.id == provider_id)
+                .cloned()
+        })
+    }
+
+    /// Fresh read of the current id AND its record in one critical section —
+    /// the shape `switch_official_locked` needs: deriving the revert target
+    /// from a stale `current`/record pair rewrites the config for a provider
+    /// a peer already removed or un-currented.
+    fn current_and_record_after_reload(
+        &self,
+        agent: &str,
+    ) -> (Option<String>, Option<ProviderRecord>) {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.get(agent);
+        let current = state.and_then(|state| state.current_provider_id.clone());
+        let record = current.as_deref().and_then(|id| {
+            state.and_then(|state| {
+                state
+                    .providers
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+                    .cloned()
+            })
+        });
+        (current, record)
     }
 
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
@@ -384,6 +429,15 @@ impl AcpProvidersStore {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
+        // 上面的 reload 可能带回并发方对目标 Provider 的 remove：把 current
+        // 钉到一个表里已不存在的 id（而 CLI 配置文件已写入它的 endpoint），
+        // 正是本 store 拒绝的配置/表分裂态。在此报错会走 switch 既有的
+        // 回滚臂还原配置写入——「失败 = 什么都没发生」。
+        if let Some(id) = provider_id
+            && !state.providers.iter().any(|candidate| candidate.id == id)
+        {
+            anyhow::bail!("切换目标 Provider 已在切换期间被移除: {id}");
+        }
         state.current_provider_id = provider_id.map(str::to_string);
         state.official_default_model = official_default_model.map(str::to_string);
         Self::persist_locked(&agents, &self.path)
@@ -909,9 +963,13 @@ impl ProviderManager {
         // 交错（评审中危项）。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
+        // Fresh read under the section lock: a stale in-memory record could
+        // apply a provider a peer process already removed (the CLI's boot
+        // can be hours old); the persist-side existence re-check below is
+        // the second half of the same guard.
         let record = self
             .store
-            .get(agent, provider_id)
+            .record_after_reload(agent, provider_id)
             .with_context(|| format!("Provider 不存在: {provider_id}"))?;
         let key = self
             .api_key(agent, provider_id)?
@@ -965,12 +1023,10 @@ impl ProviderManager {
     }
 
     /// 无锁内部实现：调用方必须已持 per-agent 切换锁（delete 持锁后调用）。
+    /// store 读取走 reload 后的 fresh read（配置/表分裂态的同一纪律）。
     fn switch_official_locked(&self, agent: &str) -> Result<()> {
-        let current = self.store.current(agent);
-        let reverted = current
-            .as_deref()
-            .and_then(|id| self.store.get(agent, id))
-            .map(|record| ProviderTarget::from_record(&record, None));
+        let (_current, record) = self.store.current_and_record_after_reload(agent);
+        let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
         let official_default_model = self.store.official_default_model(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(reverted.as_ref())?;
@@ -1385,6 +1441,72 @@ mod tests {
             gui.current_after_reload("codex").as_deref(),
             Some("pv-b"),
             "the decision read must adopt the disk state"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The switch paths' half of the same split-brain discipline: a record
+    /// resolved for `switch` must come from the disk state (a peer may have
+    /// upserted after this process booted), and `set_switch_state` must
+    /// refuse to pin `current` to an id a concurrent `remove` erased between
+    /// the config write and the persist — that state (config carries the
+    /// provider, table does not) is exactly what the store refuses; the
+    /// error routes `switch` into its rollback arm.
+    #[test]
+    fn switch_decisions_read_the_disk_state_and_refuse_a_removed_target() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        // A CLI process that booted BEFORE the table landed must still
+        // resolve its records: the plain `get` answers None from the empty
+        // boot memory.
+        assert!(
+            cli.get("codex", "pv-b").is_none(),
+            "precondition: the plain read is the stale memory view"
+        );
+        assert!(
+            cli.record_after_reload("codex", "pv-b").is_some(),
+            "the switch decision read must adopt the disk state"
+        );
+
+        // The switch persist itself: a peer remove landing between the config
+        // write and `set_switch_state` must refuse, not pin a dangling id.
+        gui.remove("codex", "pv-b").unwrap();
+        let error = cli
+            .set_switch_state("codex", Some("pv-b"), None)
+            .expect_err("a provider removed mid-switch must fail the persist");
+        assert!(
+            error.to_string().contains("pv-b"),
+            "the refusal names the removed id: {error}"
+        );
+        // The store must not carry the dangling current either.
+        assert_ne!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "no refused switch may leave current pointing at the removed id"
         );
         let _ = fs::remove_dir_all(&dir);
     }
