@@ -220,13 +220,19 @@ fn settings_alias_routes_into_the_models_family() {
 
 #[test]
 fn family_without_subcommand_is_a_usage_error_naming_the_family() {
+    // The family parser's own USAGE must answer — the catch-all
+    // TOP_LEVEL_USAGE also contains the family token, so a bare
+    // `contains(family)` would pass even if the routing regressed to it.
     let message = usage_error(&["pinvou", "sessions"]);
     assert!(
-        message.contains("sessions"),
-        "unexpected message: {message}"
+        message.contains("pinvou sessions <list|"),
+        "the family usage must name the family's subcommands: {message}"
     );
     let message = usage_error(&["pinvou", "memory"]);
-    assert!(message.contains("memory"), "unexpected message: {message}");
+    assert!(
+        message.contains("pinvou memory <overview|"),
+        "the family usage must name the family's subcommands: {message}"
+    );
 }
 
 // The former `stub_execution_reports_not_implemented_as_host_failure` test

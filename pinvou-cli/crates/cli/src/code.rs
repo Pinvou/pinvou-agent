@@ -1956,14 +1956,36 @@ fn probe_all_agents() -> Vec<AgentProbe> {
     AcpPool::agent_catalog()
         .into_iter()
         .map(|descriptor| {
-            std::thread::Builder::new()
+            let handle = std::thread::Builder::new()
                 .name(format!("agent-probe-{}", descriptor.agent_id))
-                .spawn(move || probe_agent(descriptor.agent_id, descriptor.agent_name))
-                .expect("spawn agent probe thread")
+                .spawn(move || probe_agent(descriptor.agent_id.clone(), descriptor.agent_name))
+                .expect("spawn agent probe thread");
+            (descriptor, handle)
         })
         .collect::<Vec<_>>()
         .into_iter()
-        .map(|handle| handle.join().expect("agent probe thread panicked"))
+        .map(|(descriptor, handle)| {
+            // A panicking probe thread degrades to a failed probe instead
+            // of aborting the whole listing (the same doctrine the models
+            // probe-local round applies): the other agents' rows still
+            // render, and the dead probe keeps its catalog identity while
+            // reading as `version_probe_failed` rather than fabricating an
+            // installed/authenticated fact.
+            handle.join().unwrap_or_else(|_| AgentProbe {
+                min_version: MIN_VERSIONS
+                    .iter()
+                    .find(|(id, _)| *id == descriptor.agent_id)
+                    .map(|(_, min)| *min)
+                    .unwrap_or("0.0.0"),
+                agent_id: descriptor.agent_id.to_owned(),
+                agent_name: descriptor.agent_name.to_owned(),
+                cli_path: None,
+                version: None,
+                version_probe_failed: true,
+                version_supported: false,
+                authenticated: false,
+            })
+        })
         .collect()
 }
 

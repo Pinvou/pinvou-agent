@@ -58,7 +58,11 @@
 //! The per-attempt timeout budget is measured from *after* the host is up, so it
 //! bounds the model round-trip like the GUI's does rather than the tokio /
 //! Tauri / `SessionStore` boot; `POSTPROCESS_TOTAL_BUDGET` is the separate
-//! overall bound on the command.
+//! overall bound on the command. Disclosed side effect of that shared boot:
+//! the store's retention sweep runs on the way up, so a stateless-looking
+//! `voice postprocess` can evict the oldest unpinned sessions exactly like
+//! any other store-opening command (unlike the `monitor`/remote lanes, which
+//! moved to `run_bare_host` precisely because they need no store).
 //!
 //! What `voice postprocess` deliberately does NOT mirror is the GUI's
 //! *client-side* voice pipeline in `platform/tauri/bridge/voice.js`: the
@@ -2320,7 +2324,14 @@ fn postprocess(
     });
     let human = format!(
         "Mode: {}\nSource: {}\nTruncated: {}\nText: {}\n{}",
-        mode_str, outcome.source, outcome.truncated, outcome.text, POSTPROCESS_NOTE
+        mode_str,
+        outcome.source,
+        outcome.truncated,
+        // The text is model output parsing an untrusted document: the same
+        // ESC/bidi block sanitizer as the transcribe lane applies (JSON mode
+        // keeps the verbatim bytes via serde).
+        crate::support::collapse_block_control_characters(&outcome.text),
+        POSTPROCESS_NOTE
     );
     Ok(success(render(output, human, &value)))
 }

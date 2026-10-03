@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use crate::support::{read_text_file_capped, render, success};
+use crate::support::{collapse_control_characters, read_text_file_capped, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::sessions::SessionStore;
 
@@ -935,9 +935,15 @@ fn write(
         "path": path.display().to_string(),
         "bytes": bytes,
     });
+    // A POSIX filename may carry control characters and the path is
+    // agent-chosen, so the human line collapses it like the list rows;
+    // JSON keeps the verbatim path.
     Ok(success(render(
         output,
-        format!("wrote {} ({bytes} bytes)", path.display()),
+        format!(
+            "wrote {} ({bytes} bytes)",
+            collapse_control_characters(&path.display().to_string())
+        ),
         &value,
     )))
 }
