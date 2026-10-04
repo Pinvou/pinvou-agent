@@ -1,7 +1,8 @@
 // Canonical action-button classes for tool/plan cards (tool-renderers), the
-// YOLO first-switch confirm card, and the artifacts panel chrome. This used to
-// be mirrored verbatim in shared/yolo-confirm-card.jsx (the shared layer must
-// not import features); both sides now import from here.
+// YOLO first-switch confirm card, and the artifacts panel chrome. The YOLO
+// card used to keep its own partial mirror (danger/default only, no primary
+// branch) because the shared layer must not import features; both sides now
+// import from here.
 const cardBtnCls = (variant) => {
   const base = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
   if (variant === 'primary') return `${base} bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]`;
