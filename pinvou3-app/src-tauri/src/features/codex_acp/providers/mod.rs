@@ -320,6 +320,32 @@ impl AcpProvidersStore {
         Self::persist_locked(&agents, &self.path)
     }
 
+    /// Atomic import insert: the absence check and the insert share ONE
+    /// section-lock critical section, so two concurrent importers cannot
+    /// both pass the fresh pre-check and silently replace each other (the
+    /// check→act window the pre-check alone leaves between its lock
+    /// release and `upsert`'s re-acquisition). Returns `false` when a
+    /// record with the same id already existed — nothing was written, and
+    /// the caller accounts the entry as an id conflict instead of
+    /// replacing the peer's record.
+    pub fn insert_if_absent(&self, agent: &str, record: ProviderRecord) -> Result<bool> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        if agents.get(agent).is_some_and(|state| {
+            state
+                .providers
+                .iter()
+                .any(|candidate| candidate.id == record.id)
+        }) {
+            return Ok(false);
+        }
+        let state = agents.entry(agent.to_string()).or_default();
+        state.providers.push(record);
+        Self::persist_locked(&agents, &self.path)?;
+        Ok(true)
+    }
+
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
         let _section = self.section_lock();
         let mut agents = self.agents.write();
@@ -382,11 +408,19 @@ impl AcpProvidersStore {
     }
 
     /// Fresh read of one provider record — the decision input `switch`
-    /// applies to the CLI config file. The plain `get` reads only the
-    /// in-memory map, which a CLI process can have stale-dated: applying a
-    /// removed provider's endpoint is the same config/store split-brain
-    /// `current_after_reload` closed for `save`/`delete`.
-    fn record_after_reload(&self, agent: &str, provider_id: &str) -> Option<ProviderRecord> {
+    /// applies to the CLI config file, and the spawn-env injection consults
+    /// before naming a key. The plain `get` reads only the in-memory map,
+    /// which a CLI process can have stale-dated: applying a removed
+    /// provider's endpoint is the same config/store split-brain
+    /// `current_after_reload` closed for `save`/`delete`, and injecting a
+    /// removed provider's key strands the spawned session on a dead
+    /// credential. `pub(crate)`: the spawn-env decision sits in the parent
+    /// module.
+    pub(crate) fn record_after_reload(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Option<ProviderRecord> {
         let _section = self.section_lock();
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
@@ -638,8 +672,36 @@ fn backup_once(path: &Path) -> Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".pinvou3-bak");
     let backup = path.with_file_name(name);
-    if path.exists() && !backup.exists() {
-        fs::copy(path, &backup).with_context(|| format!("备份 {} 失败", path.display()))?;
+    if !path.exists() {
+        return Ok(());
+    }
+    // Exclusive create, not check-then-copy: the one-time backup must never
+    // be overwritten by a losing racer's late copy. Pre-diff only the GUI
+    // wrote this file; the CLI's `providers add/switch` is now a second
+    // concurrent writer of the same REAL config, and the old
+    // `exists()`-check → `fs::copy` let B's copy land after A's rename —
+    // replacing the pristine original with post-write content and silently
+    // defeating "find your original providers after a bad write".
+    // `AlreadyExists` from the peer that won the race is success: the backup
+    // exists, which is all this helper promises.
+    let permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
+    let mut source = fs::File::open(path)?;
+    let mut destination = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&backup)
+    {
+        Ok(destination) => destination,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("备份 {} 失败", backup.display())),
+    };
+    std::io::copy(&mut source, &mut destination)
+        .with_context(|| format!("备份 {} 失败", path.display()))?;
+    // `io::copy` does not carry the source's mode the way `fs::copy` does;
+    // restore it best-effort (the backup's content is the promise, the mode
+    // is parity hygiene).
+    if let Some(permissions) = permissions {
+        let _ = fs::set_permissions(&backup, permissions);
     }
     Ok(())
 }
@@ -1195,8 +1257,10 @@ impl ProviderManager {
             }
             // id 冲突（已存在或格式非法——仅前缀匹配不够，非法字符会写进 TOML
             // 表名）时重新生成并告警。冲突判定走 reload 后的 fresh read：仅读
-            // 内存会让本进程启动后对端（CLI/GUI 另一侧）新增的同 id 条目被
-            // upsert 静默覆盖，而不计入 id_conflicts。
+            // 内存会让本进程启动后对端新增的同 id 条目被静默覆盖。这里的
+            // 预检与其后的插入仍隔着自己的一小段窗口（两把锁之间），真正的
+            // 并发导入竞争由 `insert_if_absent` 的同锁原子检查兜底——输家
+            // 计入 id_conflicts 并回滚自己的凭据，不覆盖赢家的记录。
             let id = if entry.id.starts_with(PROVIDER_ID_PREFIX)
                 && entry.id.len() <= 64
                 && entry
@@ -1256,7 +1320,7 @@ impl ProviderManager {
                 },
                 None => None,
             };
-            match self.store.upsert(
+            match self.store.insert_if_absent(
                 agent,
                 ProviderRecord {
                     id,
@@ -1270,7 +1334,21 @@ impl ProviderManager {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 },
             ) {
-                Ok(()) => result.imported += 1,
+                Ok(true) => result.imported += 1,
+                Ok(false) => {
+                    // Lost the check→act race (round-36 review): a peer
+                    // import landed the same id between this loop's fresh
+                    // pre-check and the insert's critical section. The
+                    // atomic insert wrote nothing; roll the just-written
+                    // credential back and account the entry as an id
+                    // conflict plus a skip — the peer's record stands,
+                    // un-replaced.
+                    if credential.is_some() {
+                        self.credentials.delete(&reference).ok();
+                    }
+                    result.id_conflicts += 1;
+                    result.skipped += 1;
+                }
                 Err(error) => {
                     // store 落盘失败：删除刚写入的孤儿凭据，避免无记录的 keyring 残留
                     if credential.is_some() {
@@ -1515,6 +1593,28 @@ mod tests {
             gui.current_after_reload("codex").as_deref(),
             Some("pv-b"),
             "the decision read must adopt the disk state"
+        );
+        // The record decision reads (spawn-env injection, session provider
+        // override validation) adopt the disk state the same way: a provider
+        // the CLI added is found and one it removed is gone, while the plain
+        // reads keep the stale memory values.
+        cli.upsert("codex", record("pv-cli", "CLI")).unwrap();
+        assert!(
+            gui.get("codex", "pv-cli").is_none(),
+            "precondition: the plain record read is the stale memory value"
+        );
+        assert!(
+            gui.record_after_reload("codex", "pv-cli").is_some(),
+            "the fresh record read must adopt the CLI-written provider"
+        );
+        cli.remove("codex", "pv-a").unwrap();
+        assert!(
+            gui.get("codex", "pv-a").is_some(),
+            "precondition: the plain record read keeps the removed provider"
+        );
+        assert!(
+            gui.record_after_reload("codex", "pv-a").is_none(),
+            "the fresh record read must drop the CLI-removed provider"
         );
         let _ = fs::remove_dir_all(&dir);
     }

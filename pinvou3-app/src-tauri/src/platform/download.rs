@@ -122,7 +122,9 @@ pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
 /// 的总时长上限：归档有 128/64 MiB 的硬上限，总量上限可计算；慢链路要求
 /// ~150 KB/s 也能完成。reqwest 0.13 的 blocking 客户端没有 read_timeout，
 /// 只能以总时长兜底，与 async 下载器的空闲上限是两种互补策略。
-pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
+/// `pub`：headless CLI 的连接器归档下载经 platform facade 复用同一常量
+/// （与 [`NPM_MIRROR_REGISTRY`] 同一 crate 边界形状），避免漂移的本地副本。
+pub const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(900);
 
 /// npm CN mirror registry (Alibaba Cloud npmmirror, a sync mirror of the

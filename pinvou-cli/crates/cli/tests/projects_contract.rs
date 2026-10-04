@@ -911,6 +911,116 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
 }
 
 #[test]
+fn projects_rebind_rerun_translates_storage_behind_the_binding() {
+    // Round-36 review MAJOR (the GUI's round-26 MAJOR-1): run 1 can move the
+    // binding lanes and still fail its storage/metadata passes, leaving the
+    // session's artifacts and acp-state on run 1's target while the binding
+    // already sits on run 1's destination. A run 2 whose `from` is THAT
+    // destination must translate the two storage halves with the session's
+    // PRE-sync metadata workspace — the run-global pair maps neither half,
+    // both persist nothing, and the run would claim Rebound over dead paths.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-behind-binding");
+    let origin_dir = make_root_dir("rebind-behind-origin");
+    let mid_dir = make_root_dir("rebind-behind-mid");
+    let to_dir = make_root_dir("rebind-behind-to");
+    let origin = std::fs::canonicalize(&origin_dir).unwrap();
+    let mid = std::fs::canonicalize(&mid_dir).unwrap();
+    let to = std::fs::canonicalize(&to_dir).unwrap();
+
+    // Seed the exact state a failed run 1 (origin→mid) leaves behind: the
+    // binding lane moved to `mid`, but the metadata, the artifact storage
+    // path and the acp-state workspace all stayed on `origin`.
+    let sessions = SessionStore::boot().expect("boot session store");
+    let stranded = sessions
+        .create_new("test-model".to_owned(), None, origin.clone())
+        .expect("create stranded session");
+    let stranded_id = stranded.metadata.id;
+    sessions
+        .update_artifacts(
+            &stranded_id,
+            vec![origin.join("report.md").to_string_lossy().into_owned()],
+        )
+        .expect("seed the stranded artifact storage path");
+    sessions
+        .bind_session_workspace(&stranded_id, mid.clone())
+        .expect("move the binding lane to mid");
+    drop(sessions);
+    std::fs::create_dir_all(home.sessions_root().join(&stranded_id)).unwrap();
+    std::fs::write(
+        home.sessions_root()
+            .join(&stranded_id)
+            .join("acp-state.json"),
+        serde_json::json!({ "workspace": { "path": origin.to_string_lossy() } }).to_string(),
+    )
+    .unwrap();
+
+    // Run 2 (mid→to): nothing is left under `mid` except this binding, so
+    // only the per-session pre-sync geometry can reach the `origin` paths.
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        mid.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ]);
+    let failed = value["failed_session_ids"].as_array().unwrap();
+    assert!(
+        failed.is_empty(),
+        "the stranded session must converge: {failed:?}"
+    );
+    let rebound: Vec<&str> = value["rebound_session_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    assert!(
+        rebound.contains(&stranded_id.as_str()),
+        "the stranded session must be reported as rebound: {rebound:?}"
+    );
+
+    // Every stored path must now name the new destination and none may name
+    // the vanished origin: with the run-global pair only, both storage
+    // halves persist nothing and the record keeps its `origin` paths (red).
+    let raw = std::fs::read_to_string(home.sessions_root().join(format!("{stranded_id}.json")))
+        .expect("session record still on disk");
+    assert!(
+        !raw.contains(origin.to_str().unwrap()),
+        "artifact storage paths must be rebased off the vanished origin: {raw}"
+    );
+    assert!(
+        raw.contains(to.to_str().unwrap()),
+        "the record must carry the new destination: {raw}"
+    );
+    let acp_state = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&stranded_id)
+            .join("acp-state.json"),
+    )
+    .expect("acp-state file still on disk");
+    assert!(
+        acp_state.contains(to.to_str().unwrap()) && !acp_state.contains(origin.to_str().unwrap()),
+        "the acp-state workspace.path must translate off the origin: {acp_state}"
+    );
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&stranded_id)
+            .join("workspace-binding.json"),
+    )
+    .expect("plain binding sidecar still on disk");
+    assert!(
+        sidecar.contains(to.to_str().unwrap()),
+        "the binding sidecar must move: {sidecar}"
+    );
+
+    std::fs::remove_dir_all(&origin_dir).ok();
+    std::fs::remove_dir_all(&mid_dir).ok();
+    std::fs::remove_dir_all(&to_dir).ok();
+}
+
+#[test]
 fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
     // The retry pass must admit only metadata that LAGS its binding: a
     // session created directly under `to` whose metadata already matches is
@@ -1530,4 +1640,28 @@ fn update_clear_roots_expresses_the_gui_empty_roots_form() {
     ])
     .unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
+}
+
+/// Round-36 review minor (GUI `move_session_to_project` parity): aux ids
+/// are chat-kind, so the chat-only admission would pass them — but an
+/// assignment row for an aux id is a ghost entry no list can clear.
+#[test]
+fn projects_move_refuses_aux_session_ids_like_the_gui() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("move-aux-refusal");
+    let store = SessionStore::boot().expect("boot session store");
+    let aux = store
+        .create_new("test-model".to_owned(), None, std::env::temp_dir())
+        .expect("create session");
+    let aux_id = format!("aux-{}", aux.metadata.id);
+    drop(store);
+
+    let parsed =
+        parse_args(["pinvou", "projects", "move", &aux_id, "--yes"]).expect("the move line parses");
+    let error = execute(parsed).expect_err("an aux id must be refused by move");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("auxiliary conversations"),
+        "{error}"
+    );
 }

@@ -595,7 +595,21 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 return;
             }
             *state = registry;
-            *self.seen.write() = stamp;
+            // A read that landed on a confirmed absence prices it in with
+            // the ABSENT sentinel — the same pricing the quarantine arm
+            // below the Failed read does. The plain never-created case used
+            // to leave `seen` unknown here, so every `reload_if_changed` on
+            // a never-created sidecar paid the full failed read the
+            // sentinel exists to skip (the GUI task-list poll runs three
+            // compacts per poll, forever on chat-only installs). The
+            // re-stat under the lock above already proved the file is still
+            // absent; a foreign write that recreates it yields a real
+            // stamp, which never equals the sentinel.
+            if stamp.is_none() && FileStamp::of(self.path.as_ref()).is_none() {
+                *self.seen.write() = Some(FileStamp::ABSENT);
+            } else {
+                *self.seen.write() = stamp;
+            }
             self.quarantined
                 .store(false, std::sync::atomic::Ordering::Release);
         }
@@ -1829,6 +1843,55 @@ mod foreign_writer_tests {
             after_remove.kind_lookup_for("gui-task"),
             ScheduledTaskKindLookup::Chat,
             "only the GUI's own entry is removed"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (a2) The plain never-created case prices its absence in too (round-36
+    /// review): `open` on a not-yet-created sidecar boots the empty default
+    /// with `seen` unknown, and the Loaded install used to leave it unknown,
+    /// so every `reload_if_changed` kept paying the full failed read the
+    /// ABSENT sentinel exists to skip. After the fix the confirmed absence
+    /// records the sentinel, the next checks answer from it, and a file that
+    /// later appears carries a real stamp that never equals the sentinel —
+    /// so the foreign write is still picked up.
+    #[test]
+    fn never_created_sidecar_prices_its_absence_in_after_the_first_read() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        assert!(
+            !path.exists(),
+            "precondition: the sidecar was never created"
+        );
+
+        store.reload();
+        assert_eq!(
+            *store.seen.read(),
+            Some(FileStamp::ABSENT),
+            "a confirmed absence must be priced in, not left unknown"
+        );
+
+        // A later foreign write is still seen: a real stamp never equals
+        // the sentinel. The payload is a valid registry (the store's own
+        // serde shape), so the reload READS it instead of quarantining.
+        let foreign = ScheduledTaskKindRegistry::default();
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&foreign).expect("serialize the empty kinds registry"),
+        )
+        .expect("plant the foreign file");
+        store.reload_if_changed();
+        assert_ne!(
+            *store.seen.read(),
+            Some(FileStamp::ABSENT),
+            "a real file must replace the sentinel with its stamp"
+        );
+        assert_eq!(
+            *store.seen.read(),
+            FileStamp::of(&path),
+            "the reload must adopt the foreign file's stamp"
         );
 
         let _ = std::fs::remove_dir_all(dir);

@@ -30,6 +30,10 @@ pub use hashing::sha256_file;
 // And the npm mirror registry the `connectors ensure-cli tmeet` retry chain
 // falls back to (the GUI's own install_tmeet_cli constant).
 pub use download::NPM_MIRROR_REGISTRY;
+// The headless CLI's archive downloads run on the same slow links the GUI's
+// budget was sized for ("slow links need ~150 KB/s to finish"); a drifting
+// local 600 s constant timed installs out where the GUI succeeds.
+pub use download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT;
 // The projects rebind lane folds stored paths through the OS-guaranteed
 // identity equivalence before comparing: on Windows, a case/separator
 // spelling drift between metadata and binding must not re-admit a healthy

@@ -417,14 +417,18 @@ mod imp {
             return;
         }
         let byte = sig as u8;
-        write_signal_byte(fd, byte);
-        // Publish the interrupt before returning: an async-signal-safe
-        // `AtomicBool` store, so main's exit-path gate observes it even if
-        // the watcher thread has not been scheduled yet (see
-        // [`CLEANUP_STARTED`]). Stored after the pipe write so a broken pipe
-        // keeps today's degrade — main exits normally instead of parking on
-        // a watcher that will never wake.
-        CLEANUP_STARTED.store(true, Ordering::Release);
+        // Publish the interrupt only when the byte actually landed: main's
+        // exit-path gate parks on a watcher that wakes on exactly that byte,
+        // so storing CLEANUP_STARTED on a failed write would park forever on
+        // a watcher that never wakes. A failed write keeps today's degrade —
+        // main exits normally instead — which is what the old comment
+        // promised and the code now matches.
+        if write_signal_byte(fd, byte) {
+            // An async-signal-safe `AtomicBool` store, so main's exit-path
+            // gate observes it even if the watcher thread has not been
+            // scheduled yet (see [`CLEANUP_STARTED`]).
+            CLEANUP_STARTED.store(true, Ordering::Release);
+        }
     }
 
     /// The handler's one syscall, split out so the unit tests can pin its
@@ -434,15 +438,16 @@ mod imp {
     /// misread the interrupted call's cause. Saved before, restored after:
     /// the standard self-pipe discipline. `pub(super)` for the tests, like
     /// the other pinned internals.
-    pub(super) fn write_signal_byte(fd: libc::c_int, byte: u8) {
+    pub(super) fn write_signal_byte(fd: libc::c_int, byte: u8) -> bool {
         // SAFETY: write(2) is reentrant; the buffer outlives the call. The
         // errno location is dereferenced only on this thread, around the
         // write itself.
         unsafe {
             let errno = errno_location();
             let saved = *errno;
-            libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+            let written = libc::write(fd, &byte as *const u8 as *const libc::c_void, 1) == 1;
             *errno = saved;
+            written
         }
     }
 

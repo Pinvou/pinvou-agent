@@ -1451,6 +1451,12 @@ fn documents(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
+    // An unknown collection id answers an empty list from `list_documents`
+    // (exit 0, indistinguishable from a genuinely empty collection) — the
+    // one collection-addressing lane that skipped the family's existence
+    // gate (`documents remove` has it; `update`/`delete`/`add-sources` have
+    // it). Name the id instead.
+    ensure_collection_exists(&service, collection_id, "documents")?;
     let documents = service
         .l1()
         // No CLI-side page cap: `L1Store::list_documents` already clamps to
