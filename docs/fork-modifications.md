@@ -50,6 +50,15 @@
 | 守护 | 167 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试 |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
 
+### 父仓 chop：消费引擎新公共原语（父仓适配，本 PR）
+
+上游集成批次（head `upstream/integration` = `pinjou3-clean` + 4 = `422a60f26`，待上游经 PR #81/#82/#85/#87 合并）后，父仓把四处与底座注释对齐/双份维护的适配改为消费引擎原语：
+
+- 指纹常量：`scripts/fork-guard.sh` 登记头 `44921cf02` → `422a60f26`、`EXPECTED_COMMITS` 50 → 54。
+- 技能安装安全面（#81 `is_safe_path`/`validate_skill_name_segment`/`InstalledFromMarker`/`INSTALLED_FROM_MARKER`/`add_entry_size` pub）：`features/marketplace/plugin_import.rs::checked_zip_entry_path` 的头部声明大小累计闸改调 `deepseek_tui::skills::install::add_entry_size`（逐点等价回归 `forkguard_declared_size_cap_delegates_to_engine_add_entry_size` 钉住边界与饱和语义）；`skill_marketplace.rs` 的本地 `.installed-from` 常量改引引擎公共常量（`forkguard_installed_from_marker_delegates_to_engine_constant`）。穿越判定保留 zip crate `enclosed_name` sanitizer、symlink 判定保留 unix 位面——前者归一化输出承重（喂 `skill_md_rank` 等下游布局逻辑）且语义是「净化放行」，与引擎拒绝谓词不可逐点互换，verdict 差异由 `forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate` 登记；`is_safe_skill_name` 是 app 专属更严白名单（`[a-zA-Z0-9_-]{1,64}`，底座验证器更宽），非对齐副本、保留。
+- 敏感路径清单单源（#87 `sensitive_paths` 模块）：`platform/path_policy.rs` 的 `BLOCKED_COMPONENTS`/`BLOCKED_PREFIXES` 编译期锚定在引擎清单上（`const` 断言逐项校验子集关系，引擎改名/删除即编译失败强制同步；app 专属 `id_*` 组件面以互斥断言单列）；引擎残差与登记理由写进常量文档与 `forkguard_blocked_lists_are_the_anchored_subset_of_engine_inventory` 运行期钉。`features/assistant/safety_deny_rules.rs` 的 `SENSITIVE_DIR_NAMES` 与引擎 `SENSITIVE_DIRECTORY_NAMES` 内容与顺序逐项一致，直接改派生常量；`SENSITIVE_CHILD_FILES`/`SENSITIVE_NAME_DIRS`/`SENSITIVE_ABS_FILES` 同样编译期锚定（`forkguard_deny_inventory_anchored_to_engine_sensitive_paths` 钉残差集）。拒绝语料保持字节不变：`rule_snapshot_is_stable` 钉数 8729 与全部分族断言原样通过。
+- automation run 归档（#85 `list_archived_runs`）：**不 chop**。引擎归档按 automation id 存 run 记录、无 task 元数据；app 的 scheduled 历史 sidecar 是 UI 契约（task 展示名/model 快照 + `deleted_at`、单 JSON 全量列出），契约差异已在 `ArchivedScheduledTaskSnapshot` 文档注明，委托另行登记。
+
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
 
 - 底座半边已并入登记批次：CodeWhale PR #38（squash `f5c68cab8`，见第 3 节提交序列与 T1 保留内容）把共享 cancel 槽升级为 `TurnCancelSlot { turn_id, token }`，并提供宿主入口 `EngineHandle::cancel_turn(turn_id, reason, mode) -> bool`（身份校验、steer 处置与 token 克隆在同一把槽锁内完成）与收口期 `EngineHandle::publish_stop_disposition(reason, mode)`（只发布 stop 处置、绝不触发任何 token）。
