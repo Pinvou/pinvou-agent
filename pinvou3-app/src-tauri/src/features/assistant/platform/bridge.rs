@@ -2851,11 +2851,19 @@ impl Pinvou3Bridge {
     pub(crate) fn build_multi_agent_dt_config(&self, snapshot: &ExpertRosterSnapshot) -> DtConfig {
         let mut config = self.build_dt_config();
         config.fleet = Some(snapshot.fleet_config().clone());
-        // 旧提醒逐字教的 per-call 预算字段不在模型 schema 里（#5324 裁剪）；预算归
-        // 引擎配置，角色默认步数本就无限制。这里把默认墙钟钉到底座上限 86400s
-        // （底座按 1..=86400 钳制），子智能体未显式传 wall_time_secs 时不再被
-        // 1800s 底座默认提前截断。App 配置面不暴露 subagents 偏好，且基底
-        // `build_dt_config` 从不填充 `subagents`——此处是无条件钉定，不会覆盖用户值。
+        // The per-call budget field the old prompt taught verbatim is not in
+        // the model schema (trimmed by #5324); budgets belong to the engine
+        // config: the base `build_dt_config` already injects
+        // `default_max_steps` = `HOST_STEP_BUDGET` (2000, so subagents
+        // without an explicit max_steps no longer fall back to the base role
+        // default of 0 = unbounded; explicit values still win per the base
+        // `resolve_max_steps`). This pins the default wall clock to the base
+        // ceiling of 86,400 s (the base clamps to 1..=86,400), so subagents
+        // without an explicit wall_time_secs are no longer cut off early by
+        // the base default of 1800 s. The app config surface does not expose
+        // subagents preferences; `get_or_insert` reuses the map the base
+        // already created, so this only pins `default_wall_time_secs` next
+        // to the injected `default_max_steps` without overwriting it.
         let subagents = config.subagents.get_or_insert_with(Default::default);
         subagents.default_wall_time_secs = Some(86_400);
         config
