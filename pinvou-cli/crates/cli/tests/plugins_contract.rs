@@ -1564,6 +1564,14 @@ fn recycle_round_trip_via_fixture() {
 fn readiness_zero_state_reports_uninstalled_catalog() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("readiness");
+    // The ima row reads the credential store on every readiness run, and on
+    // a headless host whose ambient `~/.codewhale/secrets/secrets.json`
+    // carries real ima credentials the zero-state verdict would flip to
+    // `installed: true`. Same `CODEWHALE_HOME` snapshot-and-redirect the
+    // ima sibling below applies for exactly this exposure (inert where the
+    // OS keyring wins the probe).
+    let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
+    unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
 
     let human = run_ok(&["pinvou", "plugins", "readiness"]);
     assert!(

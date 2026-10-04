@@ -1073,6 +1073,15 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
         .map(String::as_str)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| CliError::usage("code command requires a session id"))?;
+    // A flag-shaped token passes the session-id alphabet (`-` is a legal
+    // character), so `code sessions info --workspace` with the id forgotten
+    // would otherwise become an exit-1 store lookup for a session named
+    // after the flag. Same discipline as `projects`' id guard.
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "code: expected a session id, got flag-shaped {id:?}"
+        )));
+    }
     if !crate::support::valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
@@ -1628,6 +1637,17 @@ fn probe_cli_version(executable: &Path) -> VersionProbe {
     }
 }
 
+/// Whether `codex_version_token` has a real digit-headed token to find —
+/// the fallback-free precondition for treating probed output as a version.
+fn codex_output_has_version_token(version: &str) -> bool {
+    version.split_whitespace().any(|token| {
+        token
+            .split(['.', '-', '+'])
+            .next()
+            .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
 /// Mirror of `runtime::parse_codex_version_output`: codex prints a
 /// package-prefixed line ("codex-cli 0.146.0"), so the version is the first
 /// whitespace token whose dot/dash/plus-separated head is all digits.
@@ -1641,6 +1661,20 @@ fn codex_version_token(version: &str) -> &str {
                 .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
         })
         .unwrap_or(version)
+}
+
+/// A codex `--version` whose output carries no digit-headed token is a
+/// banner, not a version: classify the probe as failed (the GUI's
+/// `parse_codex_version_output` drops such a candidate outright) instead of
+/// letting the token fallback masquerade the banner as an installed version
+/// and read the row as the misleading "version-too-old".
+fn classify_codex_probe(probe: VersionProbe) -> VersionProbe {
+    match probe {
+        VersionProbe::Version(text) if !codex_output_has_version_token(&text) => {
+            VersionProbe::Failed
+        }
+        other => other,
+    }
 }
 
 /// Per-agent compatibility gate over probed version output — the single
@@ -1934,10 +1968,18 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let cli_name = agent_cli_name(agent);
     let cli_path = resolve_agent_cli(agent, cli_name);
     // Reuse the verdict the codex override gate just produced for this exact
-    // path instead of spawning the same `--version` twice.
+    // path instead of spawning the same `--version` twice. Banner-only
+    // codex output classifies as a failed probe (see `classify_codex_probe`).
     let probe = cli_path
         .as_deref()
-        .map(|path| memoized_override_probe(path).unwrap_or_else(|| probe_cli_version(path)));
+        .map(|path| memoized_override_probe(path).unwrap_or_else(|| probe_cli_version(path)))
+        .map(|probe| {
+            if agent == "codex" {
+                classify_codex_probe(probe)
+            } else {
+                probe
+            }
+        });
     let version = match &probe {
         Some(VersionProbe::Version(text)) => Some(text.clone()),
         _ => None,
@@ -3717,9 +3759,9 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
             })?;
             if bytes.len() as u64 > MAX_TIMELINE_BYTES {
                 return Err(CliError::failed(format!(
-                    "code sessions timeline({id}): journal too large: over {} bytes (limit \
-                     {MAX_TIMELINE_BYTES})",
-                    MAX_TIMELINE_BYTES + 1
+                    "code sessions timeline({id}): journal is at least {} bytes, over the \
+                     {MAX_TIMELINE_BYTES}-byte limit",
+                    bytes.len()
                 )));
             }
             let content = String::from_utf8_lossy(&bytes);
@@ -5765,6 +5807,30 @@ mod tests {
         assert!(version_at_least(codex_version_token("0.200.0"), "0.144.6"));
         assert!(version_at_least(codex_version_token("1.0"), "0.144.6"));
         assert!(!version_at_least(codex_version_token("0.14.9"), "0.144.6"));
+    }
+
+    #[test]
+    fn codex_banner_output_classifies_as_a_failed_probe() {
+        // Round-36 review minor: banner-only `--version` output has no
+        // digit-headed token, so the token fallback would masquerade it as
+        // an installed version and read the row as "version-too-old"; the
+        // GUI drops such a candidate as a failed probe instead.
+        assert!(matches!(
+            classify_codex_probe(VersionProbe::Version("OpenAI Codex".to_owned())),
+            VersionProbe::Failed
+        ));
+        assert!(matches!(
+            classify_codex_probe(VersionProbe::Version("codex-cli 0.146.0".to_owned())),
+            VersionProbe::Version(_)
+        ));
+        assert!(matches!(
+            classify_codex_probe(VersionProbe::Failed),
+            VersionProbe::Failed
+        ));
+        assert!(matches!(
+            classify_codex_probe(VersionProbe::TimedOut),
+            VersionProbe::TimedOut
+        ));
     }
 
     #[test]

@@ -450,6 +450,15 @@ fn require_id(value: Option<&String>, command: &str) -> Result<String, CliError>
     if id.is_empty() {
         return Err(CliError::usage(format!("{command} requires a task id")));
     }
+    // A flag-shaped token in the id slot (`scheduled show --limit` with the
+    // id forgotten) must fail as usage here, not as an exit-1 store lookup
+    // against a task named after the flag. Same discipline as `projects`' id
+    // guard.
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "{command}: expected a task id, got flag-shaped {id:?}"
+        )));
+    }
     Ok(id)
 }
 
@@ -2416,6 +2425,23 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     require_yes(yes)?;
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
+    // The archive snapshot is keyed by this id, and the GUI's validator
+    // drops any archived entry whose inner `task.id` diverges from its key
+    // (`archived_task_is_valid`, stores.rs) — so deleting under a
+    // hand-mismatched definition would report success while the run history
+    // silently vanished from the GUI's deleted-task feed. Refuse before any
+    // mutation instead (the GUI keys its archive by the record's own id).
+    match str_field(&def, "id") {
+        Some(record_id) if record_id == id => {}
+        other => {
+            return Err(CliError::failed(format!(
+                "scheduled_id_mismatch: scheduled delete({id}): the definition file's id ({}) \
+                 does not match its file name; heal or remove the definition by hand before \
+                 deleting",
+                other.unwrap_or("<missing>")
+            )));
+        }
+    }
     // Pause first, exactly like the GUI's destructive sequence: a concurrent
     // GUI scheduler tick must not enqueue a run between the active-run check
     // below and the removal. The pause lives in `status` — the field the
@@ -2589,6 +2615,16 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     }
     let runs_dir = store_holder.runs_dir_for(id)?;
     if runs_dir.exists() {
+        // Known window, disclosed (round-36 review): the fd-lock below is
+        // CLI×CLI only, and the GUI's tick re-reads definitions fresh each
+        // pass — a tick whose def-read predates the provisional pause but
+        // whose run persist lands after this `list_runs` can lose that run
+        // record to this removal (unarchived), or resurrect it as an
+        // orphan of a deleted automation. Closing it needs the GUI's
+        // cancel-active-run + reconcile machinery; the window is
+        // sub-second and gated on the app's tick, so it stays disclosed
+        // rather than papered over. The GUI's own delete is fenced by
+        // `cancel_active_run_tasks` + reconcile (`tasks.rs`).
         if let Err(error) = std::fs::remove_dir_all(&runs_dir) {
             // The definition file is already removed — the delete is
             // committed, exactly like the GUI, whose
@@ -2892,9 +2928,14 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         let task_id = str_field(def, "id").unwrap_or("").to_owned();
         // Push the limit down per task: the foundation truncates the
         // sortable file listing BEFORE reading (`list_runs(id, limit)`),
-        // and the union of per-task top-K always contains the global top-K,
-        // so the sort+truncate below returns identical rows without reading
-        // every historical run file of every task. One narrowing, accepted:
+        // so the sort+truncate below returns identical rows without
+        // reading every historical run file of every task. The union of
+        // per-task top-K contains the global top-K because both orderings
+        // agree today: every writer sets `scheduled_for = created_at` at
+        // record creation, so the foundation's `created_at` truncation and
+        // this merge's `scheduled_for` sort cannot disagree (a hand-edited
+        // record with `scheduled_for != created_at` could — accepted,
+        // like the twin narrowing below). One narrowing, accepted:
         // with a limit set, an active run id beyond the per-task top-K no
         // longer suppresses an equal archived-twin id below — a layout only
         // a hand-crafted store can produce, since run ids are fresh per run.

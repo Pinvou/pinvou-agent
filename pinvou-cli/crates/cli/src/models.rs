@@ -3434,7 +3434,22 @@ fn search_response_probe(
 ///
 /// Returns `(probe code, truthful detail)` for a body that means failure.
 fn search_body_error(provider: SearchProvider, body: &str) -> Option<(&'static str, String)> {
-    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    // A 2xx body that is not JSON at all (a captive portal or an HTML error
+    // interstitial served with 200) must not pass as "no business error":
+    // for the three providers with declared JSON conventions an
+    // unparseable body means the probe cannot have reached the real API —
+    // the same failure class the unreadable-body arm above reports. Tavily
+    // carries no error-code convention, so its body stays unjudged here.
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) if provider == SearchProvider::Tavily => return None,
+        Err(_) => {
+            return Some((
+                "response_unreadable",
+                "the 2xx body is not JSON (expected the provider's JSON envelope)".to_owned(),
+            ));
+        }
+    };
     match provider {
         SearchProvider::Tavily => None,
         SearchProvider::Metaso => {
@@ -3639,6 +3654,29 @@ fn resolve_search_key<S: CredentialStore>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn non_json_2xx_body_fails_the_search_probe_for_json_convention_providers() {
+        // Round-36 review minor: a captive portal or an HTML interstitial
+        // served with 200 used to parse as "no business error" and pass the
+        // probe; for the three providers with declared JSON conventions it
+        // must fail as response_unreadable, while Tavily (no error-code
+        // convention) stays unjudged.
+        use super::{SearchProvider, search_body_error};
+        let portal = "<html>please log in to the wifi</html>";
+        for provider in [
+            SearchProvider::Metaso,
+            SearchProvider::Bocha,
+            SearchProvider::Baidu,
+        ] {
+            let (code, _) = search_body_error(provider, portal)
+                .unwrap_or_else(|| panic!("{provider:?}: a non-JSON body must fail the probe"));
+            assert_eq!(code, "response_unreadable");
+        }
+        assert!(search_body_error(SearchProvider::Tavily, portal).is_none());
+        // A well-formed envelope still classifies by its business code.
+        assert!(search_body_error(SearchProvider::Metaso, r#"{"code":0}"#).is_none());
+    }
+
     use super::*;
     use pinvou3_lib::platform::credential_store::CredentialError;
 

@@ -108,6 +108,20 @@ impl EnvVarGuard {
             previous: std::env::var_os(name),
         }
     }
+
+    /// Capture and REMOVE: for ambient credentials (`OPENAI_API_KEY` and
+    /// friends) whose presence alone changes production behavior (the codex
+    /// authenticated probe short-circuits on them) and would otherwise make
+    /// spawn-count assertions machine-dependent.
+    fn remove(name: &'static str) -> Self {
+        let guard = Self::capture(name);
+        // SAFETY: the owning test holds ENV_LOCK, so env writes are
+        // serialized in-process.
+        unsafe {
+            std::env::remove_var(name);
+        }
+        guard
+    }
 }
 
 #[cfg(unix)]
@@ -1009,8 +1023,12 @@ fn sessions_timeline_cap_is_enforced_at_the_boundary() {
     let error = run(&["pinvou", "code", "sessions", "timeline", &id])
         .expect_err("an over-cap journal must fail explicitly");
     assert!(
-        error.to_string().contains("journal too large"),
-        "the runaway-journal failure must be named: {error}"
+        // The message states the measured size against the limit (the
+        // round-36 fix for the off-by-one: a journal of exactly limit+1
+        // bytes used to be told it was "over limit+1").
+        error.to_string().contains("33554433 bytes")
+            && error.to_string().contains("over the 33554432-byte limit"),
+        "the runaway-journal failure must name the size and the limit: {error}"
     );
 }
 
@@ -2637,6 +2655,13 @@ fn login_drives_the_real_vendor_spawn_path() {
     );
     let args_file = bin.join("seen-args.txt");
     let _bin = ScratchDir(bin);
+    // The post-login `codex_authenticated` probe short-circuits without
+    // spawning when any of these ambient credentials is exported, which
+    // would break the exact spawn counts asserted below on a machine that
+    // carries them. Round-36 review minor: remove all three for the run.
+    let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
+    let _codex_token = EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
+    let _codex_access = EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
     let _codex_path = EnvVarGuard::capture("PINVOU3_CODEX_PATH");
     unsafe { std::env::set_var("PINVOU3_CODEX_PATH", &script) };
 
@@ -3790,4 +3815,18 @@ fn providers_update_delete_key_requires_yes() {
         .find(|entry| entry["id"] == added_id.as_str())
         .expect("the provider row must survive a key deletion");
     assert_eq!(entry["hasCredential"], false, "key gone after --yes");
+}
+
+/// Round-36 review minor: `--workspace` passes the session-id alphabet, so
+/// `code sessions info --workspace` with the id forgotten became an exit-1
+/// store lookup; it must be refused as usage, naming the real mistake.
+#[test]
+fn flag_shaped_token_in_the_session_id_slot_is_a_usage_error() {
+    let error = parse_args(["pinvou", "code", "sessions", "info", "--workspace"])
+        .expect_err("a flag-shaped session id must be refused at parse time");
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert!(
+        error.to_string().contains("flag-shaped"),
+        "the refusal must name the flag-shaped token: {error}"
+    );
 }

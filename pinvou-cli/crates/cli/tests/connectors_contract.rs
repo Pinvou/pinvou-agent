@@ -1878,7 +1878,18 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
 /// download error; the post-fix code surfaces the clearer repair message.
 /// The tmeet arm of the same command is npm-shaped and stays out of scope
 /// like the download lane.
+///
+/// Round-36 review MAJOR: this test executes the live download lane the
+/// file header declares out of hermetic scope, and its verdict is coupled
+/// to the network — on a host where the pinned install succeeds, the
+/// managed install takes precedence over the non-executable PATH fake and
+/// the command legitimately reports success, so the `Ok` panic arm fires on
+/// correct behavior. The hermetic half of the contract (the verdict tail:
+/// no exit 0 while the resolved binary cannot execute) is pinned by the
+/// in-src `ensure_cli_execution_verdict` unit tests; this end-to-end lane
+/// stays opt-in like the other network paths.
 #[test]
+#[ignore = "network: executes the real download lane; the hermetic verdict tail is pinned in src"]
 #[cfg(unix)]
 fn ensure_cli_never_reports_success_for_a_binary_that_cannot_execute() {
     use std::os::unix::fs::PermissionsExt as _;

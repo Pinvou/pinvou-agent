@@ -1300,6 +1300,10 @@ fn diverged_candidate(
 /// materialized into its authoritative store.
 fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
+    let file_path = match &source {
+        AddSource::Inline(_) => None,
+        AddSource::File(path) => Some(path.clone()),
+    };
     let content = match source {
         AddSource::Inline(content) => content,
         AddSource::File(path) => {
@@ -1307,7 +1311,20 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
         }
     };
     if content.trim().is_empty() {
-        return Err(CliError::usage("memory add requires non-empty content"));
+        return match file_path {
+            // An empty inline value is argv-decidable: the documented
+            // usage-class exception ("empty `--content` in `memory`").
+            None => Err(CliError::usage("memory add requires non-empty content")),
+            // Whether the body is empty depends on the file the command was
+            // pointed at, and the crate's exit-class rule puts everything
+            // content-dependent on the host-failure side — the same
+            // classification the personas sibling applies to its
+            // `--file`/`--stdin` empty body.
+            Some(path) => Err(CliError::failed(format!(
+                "memory add: the file {} holds no non-whitespace content",
+                path.display()
+            ))),
+        };
     }
     // Fail before any state change: preference-shaped profile text (the
     // feature heuristic `looks_like_profile_preference_text`, Chinese-only

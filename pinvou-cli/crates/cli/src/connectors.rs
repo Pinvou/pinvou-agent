@@ -1988,16 +1988,25 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
             ensure_native_cli(spec)?;
         }
     };
-    // The user-facing claim of this command is "the CLI is present and
-    // executes", not "some bytes landed": a hash-matched destination that
-    // the OS refuses to execute (a staged file losing its exec bit through a
-    // filesystem that ignores the 0755, a quarantine attribute, a shim
-    // resolving to a broken interpreter) must surface here instead of the
-    // next status probe. `cli_installed` runs the real `--version`, and the
-    // check is NOT skipped when `ensure_native_cli` reports the hash already
-    // matched: that means the file verified without this call installing
-    // anything, so an unexecutable pre-existing binary is caught on the
-    // repair path too — exactly the state a user runs `ensure-cli` to fix.
+    ensure_cli_execution_verdict(spec, output)
+}
+
+/// The user-facing claim of `ensure-cli` is "the CLI is present and
+/// executes", not "some bytes landed": a hash-matched destination that the
+/// OS refuses to execute (a staged file losing its exec bit through a
+/// filesystem that ignores the 0755, a quarantine attribute, a shim
+/// resolving to a broken interpreter) must surface here instead of the next
+/// status probe. `cli_installed` runs the real `--version`, and the check is
+/// NOT skipped when `ensure_native_cli` reports the hash already matched:
+/// that means the file verified without this call installing anything, so
+/// an unexecutable pre-existing binary is caught on the repair path too —
+/// exactly the state a user runs `ensure-cli` to fix. Split out from the
+/// download lanes so the hermetic unit tests can pin this verdict without
+/// executing a live download.
+fn ensure_cli_execution_verdict(
+    spec: &VendorSpec,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
     if !cli_installed(spec) {
         return Err(CliError::failed(format!(
             "{} CLI is present on disk but will not execute; retry with `connectors ensure-cli` \
@@ -2265,8 +2274,12 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         // candidate is checksum-verified before it counts, so a tampered
         // mirror only costs a retry — without the chain, the networks the
         // mirrorUrl/npmmirror entries were reviewed for fail the install
-        // permanently while the GUI's install succeeds.
-        let mut last_error: Option<CliError> = None;
+        // permanently while the GUI's install succeeds. Every candidate's
+        // cause is kept: the GUI aggregates deliberately ("keeping only the
+        // last error would hide the first root cause that triggered the
+        // mirror retry", `native_installer.rs`) and on exactly the networks
+        // this chain exists for, first-cause burial is the common case.
+        let mut causes: Vec<String> = Vec::new();
         let mut verified = false;
         for (label, url) in artifact_download_urls(artifact) {
             match download_https(&url, &archive) {
@@ -2276,18 +2289,18 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
                         break;
                     }
                     let _ = std::fs::remove_file(&archive);
-                    last_error = Some(CliError::failed(format!(
-                        "{} archive checksum mismatch ({label})",
-                        artifact.name
-                    )));
+                    causes.push(format!("{label}: archive checksum mismatch"));
                 }
-                Err(error) => last_error = Some(error),
+                Err(error) => causes.push(format!("{label}: {error}")),
             }
         }
         if !verified {
-            return Err(last_error.unwrap_or_else(|| {
-                CliError::failed(format!("{} archive download failed", artifact.name))
-            }));
+            return Err(CliError::failed(format!(
+                "{} archive download failed (all {} candidate download sources exhausted): {}",
+                artifact.name,
+                causes.len(),
+                causes.join("; ")
+            )));
         }
     }
 
@@ -2432,8 +2445,12 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
         return Err(CliError::failed("connector download URL must be https"));
     }
     let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .connect_timeout(Duration::from_secs(30))
+        // Same budget as the GUI's `download_verified`: the app's
+        // 900 s archive total (sized for ~150 KB/s slow links) and its 15 s
+        // connect timeout — a CLI-only install must not time out where the
+        // GUI succeeds (`platform::download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT`).
+        .timeout(pinvou3_lib::platform::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT)
+        .connect_timeout(Duration::from_secs(15))
         // Same https-only redirect policy as the GUI's `download_verified`
         // (features/connectors/native_installer.rs): content integrity is
         // pinned by sha256, but a scheme-downgrading redirect must not leak
@@ -3222,9 +3239,16 @@ fn spawn_and_capture_url(
         }
     }
     if url.is_none() {
-        notes.push(format!(
+        // The remedy is already known when the URL window lapses — a
+        // headless user staring at a silent terminal for the rest of the
+        // connect budget gets the diagnosis live (the GUI errors outright
+        // at its per-connector 40-60s window); the wait itself stays, since
+        // a late link is still worth capturing.
+        let note = format!(
             "no login link within {url_wait:?} (check network / proxy); still waiting for the CLI to exit"
-        ));
+        );
+        note!("{note}");
+        notes.push(note);
     } else if needs_code_line
         && user_code.is_none()
         && !url
@@ -3983,6 +4007,133 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    // ── ensure-cli execution verdict (hermetic) ─────────────────────────
+    // The end-to-end `ensure-cli` test executes the live download lane (its
+    // verdict is coupled to network reachability, so it is `#[ignore]`
+    // opt-in); these unit tests pin the hermetic half — the verdict tail
+    // that must refuse exit 0 while the resolved binary cannot execute, and
+    // report success once it can.
+
+    // The fake's executability is a unix permission bit, so the whole
+    // guard family stays unix-only behind its unix-gated callers.
+    #[cfg(unix)]
+    struct VerdictEnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+        // Held for the guard's whole lifetime: PATH/PINVOU3_HOME mutation is
+        // process-global, and the crate's shared ENV_LOCK is what every other
+        // env-touching unit test in this binary serializes on (the models
+        // TempHome holds it for its whole lifetime), so this test cannot
+        // interleave its env swaps with theirs.
+        _lock: std::sync::MutexGuard<'static, ()>,
+        bin_dir: PathBuf,
+        home_dir: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl VerdictEnvGuard {
+        fn stage_fake(binary: &str, executable: bool) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            let lock = crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let test = std::thread::current()
+                .name()
+                .unwrap_or_default()
+                .replace(['/', '\\', ':'], "_");
+            let bin_dir = std::env::temp_dir().join(format!(
+                "pinvou-connectors-verdict-bin-{test}-{}",
+                std::process::id()
+            ));
+            let home_dir = std::env::temp_dir().join(format!(
+                "pinvou-connectors-verdict-home-{test}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&bin_dir);
+            let _ = std::fs::remove_dir_all(&home_dir);
+            std::fs::create_dir_all(&bin_dir).unwrap();
+            std::fs::create_dir_all(&home_dir).unwrap();
+            let fake = bin_dir.join(binary);
+            std::fs::write(&fake, "#!/bin/sh\necho 'fake 1.0.0'\n").unwrap();
+            let mode = if executable { 0o755 } else { 0o644 };
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(mode)).unwrap();
+            let keys = [
+                "PATH",
+                "PINVOU3_HOME",
+                "NPM_CONFIG_PREFIX",
+                "npm_config_prefix",
+            ];
+            let saved: Vec<(&'static str, Option<OsString>)> = keys
+                .iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect();
+            // The managed install paths resolve under PINVOU3_HOME; an empty
+            // sandbox keeps resolution off a real machine's vendor install.
+            // PATH is PREPENDED, not replaced: sibling tests in this binary
+            // spawn real tools (`tar`) via the ambient PATH and must keep
+            // resolving while these tests run.
+            // SAFETY: VERDICT_ENV_LOCK serializes every env access in this
+            // test binary (the only threads are the test runner's, and all
+            // env-mutating tests hold the lock).
+            let prepared_path = match std::env::var_os("PATH") {
+                Some(existing) => std::env::join_paths(
+                    std::iter::once(bin_dir.clone()).chain(std::env::split_paths(&existing)),
+                )
+                .expect("the staged PATH stays representable"),
+                None => bin_dir.clone().into_os_string(),
+            };
+            unsafe {
+                std::env::set_var("PATH", prepared_path);
+                std::env::set_var("PINVOU3_HOME", &home_dir);
+                std::env::remove_var("NPM_CONFIG_PREFIX");
+                std::env::remove_var("npm_config_prefix");
+            }
+            Self {
+                saved,
+                _lock: lock,
+                bin_dir,
+                home_dir,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for VerdictEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                // SAFETY: same VERDICT_ENV_LOCK serialization as staging.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.bin_dir);
+            let _ = std::fs::remove_dir_all(&self.home_dir);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execution_verdict_refuses_a_present_but_unspawnable_binary() {
+        let _guard = VerdictEnvGuard::stage_fake("lark-cli", false);
+        let outcome = ensure_cli_execution_verdict(ConnectorKind::Feishu.spec(), OutputMode::Human);
+        let error = outcome.expect_err("an unexecutable binary must not pass the verdict");
+        assert!(
+            error.to_string().contains("will not execute"),
+            "the refusal must name the real state: {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execution_verdict_reports_success_once_the_binary_runs() {
+        let _guard = VerdictEnvGuard::stage_fake("lark-cli", true);
+        let outcome = ensure_cli_execution_verdict(ConnectorKind::Feishu.spec(), OutputMode::Human);
+        outcome.expect("an executable binary must pass the verdict");
+    }
 
     #[test]
     fn clear_stale_part_removes_a_crashed_download_debris() {

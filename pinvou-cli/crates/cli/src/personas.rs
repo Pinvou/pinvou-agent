@@ -320,6 +320,15 @@ fn require_id(value: Option<&String>, subcommand: &str) -> Result<String, CliErr
             "personas {subcommand} requires an id"
         )));
     }
+    // A flag-shaped token in the id slot (`personas show --source` with the
+    // id forgotten) would otherwise become an exit-1 store lookup for a
+    // persona named after the flag. Same discipline as `projects`' id guard
+    // and `equip`'s persona-slot guard.
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "personas {subcommand}: expected an id, got flag-shaped {id:?}"
+        )));
+    }
     Ok(id)
 }
 

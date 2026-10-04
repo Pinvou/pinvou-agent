@@ -989,3 +989,24 @@ fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
 
     std::fs::remove_file(&body_path).unwrap();
 }
+
+/// Round-36 review minor: a flag-shaped token in the persona-id slot (a
+/// truncated `personas show --source <id>`) passed the id guard and became
+/// an exit-1 store lookup for a persona named after the flag; it must be
+/// refused as usage, naming the real mistake. (`equip`'s persona slot
+/// already had this guard; show/delete now share it.)
+#[test]
+fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
+    for arguments in [
+        ["pinvou", "personas", "show", "--source"],
+        ["pinvou", "personas", "delete", "--yes"],
+    ] {
+        let error = parse_args(arguments)
+            .expect_err("a flag-shaped persona id must be refused at parse time");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        assert!(
+            error.to_string().contains("flag-shaped"),
+            "the refusal must name the flag-shaped token: {error}"
+        );
+    }
+}

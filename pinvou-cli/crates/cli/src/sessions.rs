@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::codex_acp::SessionAgentStore;
-use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
+use pinvou3_lib::features::sessions::{SessionKind, SessionStore, is_aux_session_id};
 
 const SHOW_PREVIEW_CHARS: usize = 200;
 
@@ -276,6 +276,15 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
         .clone();
     if id.is_empty() {
         return Err(CliError::usage("sessions command requires a session id"));
+    }
+    // A flag-shaped token in the id slot (`sessions delete --yes` with the
+    // id forgotten) must name the real mistake here, not two steps later at
+    // `require_yes`, which would tell the user to pass the flag they just
+    // passed. Same discipline as `projects`' id guard.
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "sessions: expected a session id, got flag-shaped {id:?}"
+        )));
     }
     Ok(id)
 }
@@ -614,6 +623,13 @@ fn show(
 }
 
 fn rename(id: &str, title: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // GUI `rename_session` parity: aux ids are managed through their main
+    // session, and retitling one here would desync the pair.
+    if is_aux_session_id(id) {
+        return Err(CliError::failed(format!(
+            "sessions rename({id}): auxiliary conversations are managed through their main session"
+        )));
+    }
     let store = open_store()?;
     store
         .set_title(id, title.to_owned())
@@ -678,6 +694,14 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     } else {
         ("unpin", "unpinned")
     };
+    // GUI `set_session_pinned` parity: aux ids would land in the pinned
+    // table as ghost entries — aux sessions are invisible in every list, so
+    // the entry could never be cleared from the UI.
+    if is_aux_session_id(id) {
+        return Err(CliError::failed(format!(
+            "sessions {verb}({id}): auxiliary conversations are managed through their main session"
+        )));
+    }
     require_existing(&store, id, verb)?;
     if let Err(error) = store.set_pinned(id, pinned) {
         return sidecar_not_persisted(
@@ -701,6 +725,13 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
     } else {
         ("restore", "restored")
     };
+    // Same ghost-entry argument as the pin gate (GUI
+    // `set_session_archived` parity).
+    if is_aux_session_id(id) {
+        return Err(CliError::failed(format!(
+            "sessions {verb}({id}): auxiliary conversations are managed through their main session"
+        )));
+    }
     require_existing(&store, id, verb)?;
     if let Err(error) = store.set_hidden(id, hidden) {
         return sidecar_not_persisted(

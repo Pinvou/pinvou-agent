@@ -1356,3 +1356,57 @@ fn relative_pinvou3_home_is_rejected_before_any_store_access() {
     assert!(error.to_string().contains("absolute"));
     let _ = std::fs::remove_dir_all(&relative);
 }
+
+/// Round-36 review minor: flag-shaped tokens pass the session-id alphabet
+/// (`-` is a legal character), so a forgotten id parsed as a session named
+/// after the flag — `sessions delete --yes` answered "pass --yes to
+/// confirm" for the flag just passed, and `sessions show --last` became an
+/// exit-1 store lookup. The id guard names the real mistake as usage.
+#[test]
+fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
+    for arguments in [
+        ["pinvou", "sessions", "delete", "--yes"],
+        ["pinvou", "sessions", "show", "--last"],
+    ] {
+        let error = parse_args(arguments)
+            .expect_err("a flag-shaped session id must be refused at parse time");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        assert!(
+            error.to_string().contains("flag-shaped"),
+            "the refusal must name the flag-shaped token: {error}"
+        );
+    }
+}
+
+/// Round-36 review minor (GUI rename/pin/archive parity): the metadata
+/// lanes accepted aux-session ids the GUI refuses — a pinned/archived/retitled
+/// aux id is a ghost entry no list can ever clear, because aux sessions are
+/// invisible in every list.
+#[test]
+fn metadata_lanes_refuse_aux_session_ids_like_the_gui() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("aux-refusal");
+    let store = SessionStore::boot().expect("boot session store");
+    let aux = store
+        .create_new("test-model".to_owned(), None, std::env::temp_dir())
+        .expect("create session");
+    let aux_id = format!("aux-{}", aux.metadata.id);
+    drop(store);
+
+    for arguments in [
+        vec!["pinvou", "sessions", "pin", &aux_id],
+        vec!["pinvou", "sessions", "unpin", &aux_id],
+        vec!["pinvou", "sessions", "archive", &aux_id],
+        vec!["pinvou", "sessions", "restore", &aux_id],
+        vec!["pinvou", "sessions", "rename", &aux_id, "new", "title"],
+    ] {
+        let parsed = parse_args(arguments.clone())
+            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
+        let error = execute(parsed).expect_err("an aux id must be refused by every metadata lane");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        assert!(
+            error.to_string().contains("auxiliary conversations"),
+            "{arguments:?}: {error}"
+        );
+    }
+}
