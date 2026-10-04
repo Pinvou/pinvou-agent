@@ -702,6 +702,8 @@
 //!   is ALLOWED again — the R6 dest-first archive wildcard was rolled back
 //!   with the rest of the exfil-shape enumeration (v2.2).
 
+use crate::platform::path_policy::{inventory_contains, inventory_has_joined};
+use codewhale_execpolicy::sensitive_paths;
 use codewhale_execpolicy::{PermissionAction, ToolAskRule};
 
 /// Directory names of former hook segment 1 `SENSITIVE_DIRS` (POSIX side),
@@ -715,21 +717,12 @@ use codewhale_execpolicy::{PermissionAction, ToolAskRule};
 /// token files are enumerated in [`SENSITIVE_CHILD_FILES`]). The v3 scope
 /// keeps only the irreversible faces over this inventory; reads were removed
 /// (v3 rollback).
-const SENSITIVE_DIR_NAMES: &[&str] = &[
-    ".ssh",
-    ".gnupg",
-    ".gnupg/private-keys-v1.d",
-    ".aws",
-    ".config/gcloud",
-    ".azure",
-    ".docker",
-    ".kube",
-    ".config/google-chrome",
-    ".mozilla/firefox",
-    ".password-store",
-    ".dws",
-    ".tmeet",
-];
+///
+/// 引擎清单单源（CodeWhale #87）：内容与顺序与底座
+/// `sensitive_paths::SENSITIVE_DIRECTORY_NAMES` 逐项一致，现直接派生（原为
+/// 注释对齐副本）——底座清单改动即时生效于此语料，`rule_snapshot_is_stable`
+/// 的钉数与分族断言把任何漂移挡在门外。
+const SENSITIVE_DIR_NAMES: &[&str] = sensitive_paths::SENSITIVE_DIRECTORY_NAMES;
 
 /// Well-known credential FILES inside sensitive directories (former hook
 /// segment 1 substring covered every child; the token channel has no
@@ -738,6 +731,12 @@ const SENSITIVE_DIR_NAMES: &[&str] = &[
 /// carried by the directory destroy rules and the residues registered in the
 /// module docs). v3.3 adds the cloud-CLI token files of the newly enumerated
 /// `gcloud`/`azure` directories.
+///
+/// 引擎清单单源（CodeWhale #87）：本清单 ⊆ 底座 `SENSITIVE_FILE_NAMES`
+/// （const 断言锚定）。引擎残差不进语料的口径保持不变：`.ssh` 密钥/信任文件
+/// 与 home 根裸文件名经 [`SENSITIVE_NAME_DIRS`] 的（名字，属主目录）建档进入；
+/// `credentials.json`/`.env` 刻意不枚举（名字粘进每个普通工程根，见模块文档
+/// v3 范围节），摄取面由 `platform::path_policy::BLOCKED_COMPONENTS` 承担。
 const SENSITIVE_CHILD_FILES: &[&str] = &[
     ".ssh/config",
     ".kube/config",
@@ -759,6 +758,10 @@ const SENSITIVE_CHILD_FILES: &[&str] = &[
 
 /// Filename → owning directory (`~/` = home root). Used to build the full
 /// path spellings of each name under every home prefix.
+///
+/// 引擎清单单源（CodeWhale #87）：每条 `{dir}{name}` 拼接词面锚定在底座
+/// `SENSITIVE_FILE_NAMES` 上（const 断言；引擎按路径拼写登记，本处按
+/// （名字，属主目录）建档以展开每个 home 前缀下的全路径拼写）。
 const SENSITIVE_NAME_DIRS: &[(&str, &str)] = &[
     ("id_rsa", ".ssh/"),
     ("id_ed25519", ".ssh/"),
@@ -779,6 +782,13 @@ const SENSITIVE_NAME_DIRS: &[(&str, &str)] = &[
 /// `/etc/sudoers.d/` fragment; those forms are spelled out explicitly. The
 /// surviving consumers are the destroy and dd-overwrite families (reads were
 /// removed in the v3 scope rollback).
+///
+/// 引擎清单单源（CodeWhale #87）：九个精确词面 ⊆ 底座
+/// `SENSITIVE_ABSOLUTE_PREFIXES`，`/etc/sudoers.d/*` 是引擎 `/etc/sudoers.d/`
+/// 前缀的 glob token 词面（调用点展开；const 断言一并锚定）。引擎残差
+/// `/etc/ssh/`、`/root/`、`/var/log/auth`、`/proc/`、`/sys/` 属摄取前缀面
+/// （`platform::path_policy::BLOCKED_PREFIXES`）与 destroy 根目标族（`/root`），
+/// 不在本枚举重复。
 const SENSITIVE_ABS_FILES: &[&str] = &[
     "/etc/shadow",
     "/etc/shadow-",
@@ -797,6 +807,84 @@ const SENSITIVE_ABS_FILES: &[&str] = &[
     // spelling a model writes is an exact token of its own.
     "/etc/sudoers.d/*",
 ];
+
+// ── 引擎清单编译期锚定（const eval；字节比较 helper 在 platform::path_policy）─
+
+const fn all_children_in_engine_files(entries: &[&str]) -> bool {
+    let mut i = 0;
+    while i < entries.len() {
+        if !inventory_contains(sensitive_paths::SENSITIVE_FILE_NAMES, entries[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn all_name_dirs_in_engine_files(entries: &[(&str, &str)]) -> bool {
+    let mut i = 0;
+    while i < entries.len() {
+        let (name, dir) = entries[i];
+        if !inventory_has_joined(sensitive_paths::SENSITIVE_FILE_NAMES, dir, name) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// 精确词面 ∈ 引擎前缀清单，或为某引擎前缀的 `<prefix>*` glob 词面。
+const fn all_abs_files_anchored_to_engine(entries: &[&str]) -> bool {
+    let mut i = 0;
+    while i < entries.len() {
+        let mut anchored =
+            inventory_contains(sensitive_paths::SENSITIVE_ABSOLUTE_PREFIXES, entries[i]);
+        if !anchored {
+            let e = entries[i].as_bytes();
+            if e.len() >= 2 && e[e.len() - 1] == b'*' && e[e.len() - 2] == b'/' {
+                let mut j = 0;
+                while j < sensitive_paths::SENSITIVE_ABSOLUTE_PREFIXES.len() {
+                    let p = sensitive_paths::SENSITIVE_ABSOLUTE_PREFIXES[j].as_bytes();
+                    if e.len() == p.len() + 1 {
+                        let mut matched = true;
+                        let mut k = 0;
+                        while k < p.len() {
+                            if e[k] != p[k] {
+                                matched = false;
+                                break;
+                            }
+                            k += 1;
+                        }
+                        if matched {
+                            anchored = true;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+            }
+        }
+        if !anchored {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// 子集锚定：引擎清单任何一侧的改名/删除让本 crate 编译失败，强制有意识同步。
+const _: () = assert!(
+    all_children_in_engine_files(SENSITIVE_CHILD_FILES),
+    "SENSITIVE_CHILD_FILES 必须逐项存在于引擎 SENSITIVE_FILE_NAMES"
+);
+const _: () = assert!(
+    all_name_dirs_in_engine_files(SENSITIVE_NAME_DIRS),
+    "SENSITIVE_NAME_DIRS 的拼接词面必须逐项存在于引擎 SENSITIVE_FILE_NAMES"
+);
+const _: () = assert!(
+    all_abs_files_anchored_to_engine(SENSITIVE_ABS_FILES),
+    "SENSITIVE_ABS_FILES 必须锚定于引擎 SENSITIVE_ABSOLUTE_PREFIXES（精确或 <prefix>* 词面）"
+);
 
 /// First-argument destroy/tamper commands: the former live segments 1/2
 /// substrings denied deleting a sensitive path as well (`rm ~/.ssh/id_rsa`,
@@ -1883,6 +1971,68 @@ pub(crate) fn safety_deny_ruleset_with_state(
 mod tests {
     use super::*;
     use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+
+    /// 引擎清单单源锚定的运行期镜像：`SENSITIVE_DIR_NAMES` 直派（内容与顺序
+    /// 逐项一致）；CHILD_FILES/NAME_DIRS/ABS_FILES 子集锚定 + 残差登记逐项
+    /// 钉死（见各常量文档）。引擎侧任何改动会同时被编译期 const 断言与本用
+    /// 例拦截，语料覆盖面变化必须是有意识的。
+    #[test]
+    fn forkguard_deny_inventory_anchored_to_engine_sensitive_paths() {
+        use sensitive_paths::{
+            SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_DIRECTORY_NAMES, SENSITIVE_FILE_NAMES,
+        };
+
+        // 直派面：内容与顺序逐项一致（语料字节不变的根据）。
+        assert_eq!(SENSITIVE_DIR_NAMES, SENSITIVE_DIRECTORY_NAMES);
+
+        // 子集面。
+        for child in SENSITIVE_CHILD_FILES {
+            assert!(SENSITIVE_FILE_NAMES.contains(child), "{child} 应在引擎清单");
+        }
+        for (name, dir) in SENSITIVE_NAME_DIRS {
+            let joined = format!("{dir}{name}");
+            assert!(
+                SENSITIVE_FILE_NAMES.contains(&joined.as_str()),
+                "{joined} 应在引擎清单"
+            );
+        }
+        for file in SENSITIVE_ABS_FILES {
+            let anchored = SENSITIVE_ABSOLUTE_PREFIXES.contains(file)
+                || (file.ends_with("/*")
+                    && SENSITIVE_ABSOLUTE_PREFIXES.contains(&&file[..file.len() - 1]));
+            assert!(anchored, "{file} 应锚定于引擎前缀清单");
+        }
+
+        // 残差登记：引擎文件清单中不进语料的恰为 credentials.json/.env
+        // （刻意不枚举——见模块文档 v3 范围节；摄取面由
+        // platform::path_policy::BLOCKED_COMPONENTS 承担）；引擎前缀残差属摄
+        // 取前缀面与 destroy 根目标族（/root）。
+        for engine_file in SENSITIVE_FILE_NAMES {
+            let in_child = SENSITIVE_CHILD_FILES.contains(engine_file);
+            let in_name_dirs = SENSITIVE_NAME_DIRS
+                .iter()
+                .any(|(n, d)| format!("{d}{n}") == *engine_file);
+            let deliberate_absence = matches!(*engine_file, "credentials.json" | ".env");
+            assert!(
+                in_child || in_name_dirs || deliberate_absence,
+                "引擎文件 {engine_file} 未被语料覆盖也不在残差登记中"
+            );
+        }
+        for engine_prefix in SENSITIVE_ABSOLUTE_PREFIXES {
+            let glob = format!("{engine_prefix}*");
+            let in_abs = SENSITIVE_ABS_FILES
+                .iter()
+                .any(|f| *f == *engine_prefix || *f == glob);
+            let deliberate_absence = matches!(
+                *engine_prefix,
+                "/etc/ssh/" | "/root/" | "/var/log/auth" | "/proc/" | "/sys/"
+            );
+            assert!(
+                in_abs || deliberate_absence,
+                "引擎前缀 {engine_prefix} 未被枚举也不在残差登记中"
+            );
+        }
+    }
 
     fn engine() -> ExecPolicyEngine {
         // Inject the "off" sudo state and no Windows real-home prefix instead
