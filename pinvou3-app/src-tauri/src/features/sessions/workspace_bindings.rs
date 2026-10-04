@@ -438,8 +438,11 @@ impl SessionStore {
     /// round-10 minor 4). Session deletion clears the cache and removes the
     /// session directory (sidecar included), so `false` means the session
     /// died mid-rebind — the report and the event stream must not count a
-    /// dead id as rebound.
-    pub(crate) fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
+    /// dead id as rebound. `pub`: the headless CLI's rebind consumes the
+    /// same ghost classifier (`classify_absent_record_session` shape) for
+    /// its own report, the same crate-boundary shape as the other widened
+    /// rebind halves.
+    pub fn workspace_binding_artifacts_exist(&self, id: &str) -> bool {
         self.session_workspaces.read().contains_key(id)
             || match std::fs::metadata(self.session_workspace_sidecar_path(id)) {
                 Ok(meta) => meta.is_file(),

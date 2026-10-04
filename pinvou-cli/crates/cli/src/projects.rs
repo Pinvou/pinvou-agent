@@ -646,6 +646,17 @@ fn move_session(
     // traversal. Usage wins over Failed: a malformed session id reports the
     // usage error even when the project id is unknown too.
     crate::support::require_valid_session_id(session_id, "projects move")?;
+    // GUI `move_session_to_project` parity: aux sessions are chat-kind, so
+    // the chat-only admission below would pass them — but admitting them
+    // into the assignments table creates the ghost-entry class (aux ids are
+    // invisible in every list, so an assignment could never be cleared from
+    // the UI).
+    if pinvou3_lib::features::sessions::is_aux_session_id(session_id) {
+        return Err(CliError::failed(format!(
+            "projects move({session_id}): auxiliary conversations are managed through their \
+             main session"
+        )));
+    }
     // Omitting the project id is the ungrouping form, whose write is
     // irreversible on both surfaces (neither can turn the explicit entry
     // back into "auto-grouped"). Every other irreversible write in this
@@ -782,6 +793,11 @@ fn session_record_is_absent(session_id: &str) -> bool {
 /// Deviations, all disclosed: the desktop-process half (active-turn fence,
 /// post-migration busy recheck, idle-gated runtime eviction) needs the app's
 /// runtime pools and is skipped — the stderr note on every run says so; the
+/// GUI's stranded-index detection/repair (`detect_stranded_index_records`,
+/// the divergence-repair-persist-failed shape that matches NEITHER prefix
+/// scan of any rerun) has no CLI counterpart, so that one class reports an
+/// honest-but-empty rerun here — the every-run stderr note pointing at a
+/// desktop rerun is the repair route; the
 /// confirmation is `--yes`, required unconditionally, which subsumes the
 /// GUI's confirm-existing escalation; and the metadata replay is driven by
 /// the lanes' outcomes plus a post-rewrite to-lane retry pass instead of a
@@ -962,11 +978,27 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         .iter()
         .map(|(session_id, _)| session_id.clone())
         .collect();
+    // The ghost classifier's moved-this-run term: the union of what BOTH
+    // lanes actually rewrote this run (the GUI's `classify_absent_record_session`
+    // input; a to-lane retry admit is in neither set when its earlier run
+    // did the moving).
+    let moved_this_run: HashSet<String> = prefix_outcome
+        .affected
+        .iter()
+        .map(|(session_id, _)| session_id.clone())
+        .chain(
+            plain_rebind
+                .rebound
+                .iter()
+                .map(|(session_id, _)| session_id.clone()),
+        )
+        .collect();
     let mut rebound_session_ids = Vec::new();
     let mut failed_session_ids = Vec::new();
     for (session_id, bound_path) in &metadata_targets {
         // The lanes hand back already-translated paths; the to-prefix arm of
-        // rebind_target_path passes them through unchanged.
+        // rebind_target_path passes them through unchanged. The metadata
+        // target itself always maps through the run-global pair.
         let Some(new_path) =
             SessionAgentStore::rebind_target_path(bound_path, &from_display, &to_display)
         else {
@@ -975,11 +1007,20 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         let finally_stale = final_stale.iter().any(|sid| sid == session_id);
         // An orphan (session JSON gone) has no metadata to write; a corrupt
         // JSON is NOT an orphan — set_workspace's load failure lands in
-        // failed and is retryable.
+        // failed and is retryable. The classification is the GUI's
+        // `classify_absent_record_session`: no surviving binding artifacts
+        // → Skip (nothing to claim), a stale sidecar wins over moved →
+        // Failed (something WAS attempted; a rerun must re-report it), a
+        // moved-this-run orphan with surviving artifacts → Rebound, and an
+        // orphan an EARLIER run stranded under `to` → Skip (counting it
+        // rebound would claim work this run did not do).
         if session_record_is_absent(session_id) {
+            if !sessions.workspace_binding_artifacts_exist(session_id) {
+                continue;
+            }
             if finally_stale {
                 failed_session_ids.push(session_id.clone());
-            } else {
+            } else if moved_this_run.contains(session_id) {
                 rebound_session_ids.push(session_id.clone());
             }
             continue;
@@ -999,8 +1040,43 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         // Both are pure storage, `pub` feature-layer APIs; the only rebind
         // half genuinely skipped here is the desktop runtime work (the pool
         // restart), as the module header discloses.
+        //
+        // The two halves translate with the session's PRE-sync metadata
+        // workspace when it lags the binding the scan admitted (the GUI's
+        // round-26 MAJOR-1 shape, `metadata_behind_binding`): run 1 can move
+        // the binding lanes and still fail its storage/metadata passes, so
+        // run 2 admits the session under a from that its stranded artifact
+        // and acp-state paths predate — the run-global pair maps neither,
+        // both halves persist nothing, and `set_workspace` would move the
+        // metadata while the run claims Rebound over dead paths. Loaded
+        // once here, before `set_workspace` overwrites it. A failed pre-sync
+        // load (corrupt JSON) leaves the global map in charge — the same
+        // fallback the GUI uses — and `set_workspace` below still fails
+        // honestly on the same unreadable record.
+        let pre_sync_workspace = match sessions.load(session_id) {
+            Ok(session) => Some(session.metadata.workspace),
+            Err(error) => {
+                note!(
+                    "[projects] rebind pre-sync metadata load failed: {}",
+                    error.root_cause()
+                );
+                None
+            }
+        };
+        let metadata_behind_binding = pre_sync_workspace.as_ref().is_some_and(|pre_sync| {
+            pinvou3_lib::platform::filesystem_path_identity_key(&pre_sync.to_string_lossy())
+                .trim_end_matches('/')
+                != pinvou3_lib::platform::filesystem_path_identity_key(
+                    &bound_path.to_string_lossy(),
+                )
+                .trim_end_matches('/')
+        });
+        let storage_from = match (&pre_sync_workspace, metadata_behind_binding) {
+            (Some(pre_sync), true) => pre_sync.as_path(),
+            _ => from_display.as_path(),
+        };
         let translate =
-            |path: &Path| SessionAgentStore::rebind_target_path(path, &from_display, &to_display);
+            |path: &Path| SessionAgentStore::rebind_target_path(path, storage_from, &to_display);
         if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &translate) {
             // Same root-cause-only echo as set_workspace below (the chain
             // embeds store paths); the id reaches the user through the

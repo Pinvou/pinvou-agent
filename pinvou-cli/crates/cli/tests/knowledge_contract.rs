@@ -864,6 +864,23 @@ fn documents_zero_state_and_remove_no_op() {
     );
 }
 
+/// Round-36 review minor: an unknown collection id used to answer exit 0
+/// with an empty list (`list_documents` filters by collection_id), which is
+/// indistinguishable from a genuinely empty collection — the one
+/// collection-addressing lane that skipped the family's existence gate.
+#[test]
+fn documents_unknown_collection_id_is_refused_not_empty() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = TempHome::new("documents-unknown-collection");
+
+    let error = execute_error(&["pinvou", "knowledge", "documents", "424242"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("collection 424242 not found"),
+        "the refusal must name the id: {error}"
+    );
+}
+
 /// Index jobs are DB-persisted, and `add-sources` waits for the import to
 /// finish INSIDE the invocation (mirroring `scan start`'s wait-loop
 /// contract): a one-shot process that returned immediately would kill its

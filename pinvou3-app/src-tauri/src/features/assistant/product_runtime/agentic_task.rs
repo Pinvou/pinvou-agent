@@ -606,6 +606,18 @@ async fn run_session_lifecycle(
             executor.teardown_evict(session_id).await;
             return;
         }
+        // The same liveness consult the never-started lane makes before
+        // choosing Cleanup (round-36 review): a submit in flight when the
+        // deadline fired can be admitted-but-undurably-appended, so the
+        // record still reads as a fresh stub while its turn gate is held
+        // for the turn's whole wall clock — the bounded-evict doc
+        // (`evict_bounded`) forbids exactly that wait for a run that must
+        // produce its report. Keep-inspectable on liveness, like the
+        // never-started disposition.
+        if executor.teardown_turn_active(session_id) {
+            executor.teardown_evict(session_id).await;
+            return;
+        }
         match one_shot_cleanup_decision(
             store.chat_session_has_messages(session_id).map_err(|_| ()),
             store
@@ -946,17 +958,29 @@ async fn restore_pre_run_pins(
 /// The `run_turn` Err arm is the only production caller; this helper is split
 /// out (like the panic arm's `resume_unwind_after_pinned_restore`) so the
 /// decision is unit-pinnable against a real store without an
-/// `EnginePoolRuntime`.
+/// `EnginePoolRuntime` — the engine's liveness arrives as the caller-side
+/// `turn_active` parameter instead.
 fn submit_err_admitted_turn(
     store: &SessionStore,
     session_id: &str,
     submit_entered: bool,
     pre_submit_revision: Option<&str>,
+    turn_active: bool,
 ) -> bool {
     if !submit_entered {
         // The setup failed before the submit was ever polled, so no turn can
         // have been admitted — regardless of the missing snapshot.
         return false;
+    }
+    // Liveness wins over the record facts (round-36 review): a turn the
+    // submit admitted can sit undurably-appended for the forwarder's whole
+    // lag window, so an unchanged revision does NOT prove the transcript is
+    // dead — the exact forwarder-lag race the `!submitted` lifecycle lane
+    // consults `teardown_turn_active` for. Restoring the caller session's
+    // pins over a live turn routes through `switch_session_model`, which
+    // evicts the live engine.
+    if turn_active {
+        return true;
     }
     let Some(pre) = pre_submit_revision else {
         return true;
@@ -1596,6 +1620,7 @@ async fn run_turn(
                     session_id,
                     submit_entered.load(Ordering::SeqCst),
                     pre_submit_revision.as_deref(),
+                    runtime.teardown_turn_active(session_id),
                 ) {
                     restore_pre_run_pins(
                         runtime,
@@ -3709,7 +3734,8 @@ mod tests {
             &store,
             "adm_probe",
             false,
-            None
+            None,
+            false
         ));
 
         // Submit failed before the durable append (nothing landed) → the
@@ -3718,7 +3744,27 @@ mod tests {
             &store,
             "adm_probe",
             true,
-            Some(&pre)
+            Some(&pre),
+            false
+        ));
+
+        // Round-36 review: liveness wins over unchanged record facts — the
+        // forwarder lag means an admitted turn can sit undurably-appended,
+        // and restoring pins over it evicts a live engine.
+        assert!(super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            true,
+            Some(&pre),
+            true
+        ));
+        // Liveness does not resurrect a provably pre-submit failure.
+        assert!(!super::submit_err_admitted_turn(
+            &store,
+            "adm_probe",
+            false,
+            None,
+            true
         ));
 
         // Submit admitted the message and only then faulted (the engine can
@@ -3732,7 +3778,8 @@ mod tests {
             &store,
             "adm_probe",
             true,
-            Some(&pre)
+            Some(&pre),
+            false
         ));
 
         // No pre-submit snapshot (fresh session, or the snapshot read
@@ -3741,7 +3788,8 @@ mod tests {
             &store,
             "adm_probe",
             true,
-            None
+            None,
+            false
         ));
 
         // Record unreadable after the error → unknown ⇒ keep.
@@ -3751,7 +3799,8 @@ mod tests {
             &store,
             "adm_probe",
             true,
-            Some(&pre)
+            Some(&pre),
+            false
         ));
     }
 

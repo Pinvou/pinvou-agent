@@ -3139,9 +3139,11 @@ impl AcpPool {
         let agent = backend.agent_id().context("非 ACP 会话")?;
         match provider_id {
             Some(provider_id) => {
+                // 同 save/delete 的 fresh-read 纪律：CLI 进程在本 GUI 启动后
+                // add 的 Provider，读启动内存会被误判「不存在」。
                 self.providers
                     .store()
-                    .get(agent, &provider_id)
+                    .record_after_reload(agent, &provider_id)
                     .with_context(|| format!("Provider 不存在: {provider_id}"))?;
                 self.agents
                     .set_acp_config_value(session_id, "provider", &provider_id)?;
@@ -3169,12 +3171,21 @@ impl AcpPool {
             .cloned();
         let provider_id = match session_provider {
             Some(provider_id) => Some(provider_id),
-            None => self.providers.store().current(agent),
+            // codex 的 key 在 spawn 时注入：判定必须走 reload 后的 fresh
+            // read——CLI 进程在本 GUI 启动后 switch 过 current 时，读启动
+            // 内存会把旧 Provider 的 key 注进指向新 endpoint 的 config，
+            // 产生无因的 401。与 save/delete 的 fresh-read 纪律同一形状。
+            None => self.providers.store().current_after_reload(agent),
         };
         let Some(provider_id) = provider_id else {
             return Ok(None);
         };
-        if self.providers.store().get(agent, &provider_id).is_none() {
+        if self
+            .providers
+            .store()
+            .record_after_reload(agent, &provider_id)
+            .is_none()
+        {
             return Ok(None);
         }
         self.providers.api_key(agent, &provider_id)
@@ -3299,7 +3310,14 @@ impl AcpPool {
             tokio::task::spawn_blocking(move || remove_agent_paths(config_paths))
                 .await
                 .context("删除 Agent 配置任务异常退出")??;
-            for record in self.providers.store().state(agent_id).providers {
+            // 与上面同一 fresh-read 纪律：CLI 在本 GUI 启动后 add 的受管
+            // Provider 也要进清理集合，否则其凭据与受管配置在卸载后残留。
+            for record in self
+                .providers
+                .store()
+                .state_after_reload(agent_id)
+                .providers
+            {
                 let _ = self.providers.delete(agent_id, &record.id);
             }
             let _ = self.providers.store().set_current(agent_id, None);

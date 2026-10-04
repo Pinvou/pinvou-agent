@@ -1539,6 +1539,64 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
     let _ = home;
 }
 
+/// Round-36 review minor: the archive snapshot is keyed by the argv id and
+/// the GUI's validator drops any archived entry whose inner `task.id`
+/// diverges from its key, so deleting under a hand-mismatched definition
+/// used to report success while the run history silently vanished from the
+/// GUI's deleted-task feed. The mismatch must be refused before any
+/// mutation.
+#[test]
+fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-id-mismatch");
+    let created = create_task(&home, "Mismatched task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("old-run.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "old-run",
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Hand-corrupt the definition: the inner id stops matching the file.
+    let def_path = home.def_path(&task_id);
+    let mut def: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&def_path).expect("the seeded definition"))
+            .unwrap();
+    def["id"] = serde_json::json!("hand-renamed-id");
+    std::fs::write(&def_path, def.to_string()).unwrap();
+
+    let parsed = parse_args(["pinvou", "scheduled", "delete", &task_id, "--yes"])
+        .expect("the delete line parses");
+    let error = execute(parsed).expect_err("a mismatched definition must be refused, not archived");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("scheduled_id_mismatch"),
+        "the refusal must carry the documented error code: {error}"
+    );
+    // Nothing was mutated: the definition survives and no archive snapshot
+    // swallowed the history.
+    assert!(def_path.exists(), "the definition must stay untouched");
+    if let Ok(raw) =
+        std::fs::read_to_string(home.root.join("automations").join("history-archive.json"))
+    {
+        let archive: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            archive["tasks"].get(&task_id).is_none(),
+            "the mismatched task must not be archived: {archive}"
+        );
+    }
+    let _ = home;
+}
+
 // ---- round-3 fixes: RFC3339 ONCE AT calendar truth, delete pause semantics ----
 
 #[test]
@@ -3368,4 +3426,24 @@ fn run_reports_a_failed_run_through_a_nonzero_exit() {
         "the durable run record carries its error: {runs:?}"
     );
     let _ = home;
+}
+
+/// Round-36 review minor: a flag-shaped token in the task-id slot (a
+/// truncated `scheduled show --limit <id>`) passed the id guard and became
+/// an exit-1 store lookup for a task named after the flag; it must be
+/// refused as usage, naming the real mistake.
+#[test]
+fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
+    for arguments in [
+        ["pinvou", "scheduled", "show", "--limit"],
+        ["pinvou", "scheduled", "delete", "--yes"],
+    ] {
+        let error =
+            parse_args(arguments).expect_err("a flag-shaped task id must be refused at parse time");
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        assert!(
+            error.to_string().contains("flag-shaped"),
+            "the refusal must name the flag-shaped token: {error}"
+        );
+    }
 }

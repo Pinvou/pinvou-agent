@@ -1069,15 +1069,21 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     // raw `File exists` naming an internal path; the reserve helper heals
     // exactly that case — a leftover REGULAR file is unlinked and re-
     // reserved once, while a planted symlink keeps the refusal.
-    // The 900 s total matches the mirrored app helper's budget
-    // (`platform/download.rs`): at ~300 KB/s the 254 MiB Windows q8 model
-    // needs ~870 s, so the GUI install succeeds where a tighter budget
-    // would fail both URLs. The read-idle bound the app carries stays
-    // not-copied (see the module header) — a stalled connection still ends
-    // at the total budget, just later than the app's 30 s idle cut.
+    // The budget is a CLI-side substitute, NOT a mirror of the app helper
+    // this lane mirrors: `platform/download.rs`'s
+    // `download_to_part_with_verify` bounds stalls with the 30 s read-idle
+    // timeout and carries no total at all (the 900 s
+    // `ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT` there belongs to the archive
+    // lane). A one-shot CLI process has no cancel flag to poll, so the
+    // total is the stall bound instead — sized at 900 s so the ~254 MiB
+    // Windows q8 model finishes at ~300 KB/s. The read-idle cut the app
+    // carries stays not-copied (see the module header): a stalled
+    // connection ends at the total budget, later than the app's 30 s idle
+    // cut.
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(900))
-        .connect_timeout(Duration::from_secs(30))
+        // Same connect timeout as the app's downloader (download.rs:15 s).
+        .connect_timeout(Duration::from_secs(15))
         // Same https-only redirect policy as the connectors download lane
         // (`download_https`) and the GUI's `download_verified`: integrity is
         // pinned by sha256, but a scheme-downgrading redirect must not leak
@@ -1095,7 +1101,6 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     let response = client
         .get(url)
         .send()
-        .and_then(|response| response.error_for_status())
         // reqwest Display carries the full mirror URL (possibly an intranet
         // address), so only the error class is kept.
         .map_err(|error| {
@@ -1104,6 +1109,18 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
                 summarize_request_error(&error, "model mirror")
             ))
         })?;
+    // The custom redirect policy `attempt.stop()`s a refused hop (scheme
+    // downgrade / 10-hop cap), which surfaces as the 3xx response itself —
+    // `error_for_status` only errors on 4xx/5xx, so without this check the
+    // redirect page would be downloaded and hashed and the user sent to
+    // "verify" a checksum mismatch whose real cause is a plaintext hop.
+    // Same explicit status check as the connectors download lane.
+    if !response.status().is_success() {
+        return Err(CliError::failed(format!(
+            "voice asr-install: download failed with HTTP {}",
+            response.status()
+        )));
+    }
     let result = (|| -> Result<(), CliError> {
         use std::io::Read as _;
         let mut file = open_staged_part(&part).map_err(|error| {
@@ -2692,12 +2709,11 @@ fn anthropic_stop_reason_says_truncated(response: &serde_json::Value) -> bool {
 /// doubao, glm, mimo, minimax, and qwen (preset, provider, or model name).
 /// The GUI's remaining URL-sniffing lanes need the crate-private
 /// `core::reasoning_dialect` helpers and stay skipped (disclosed on
-/// [`call_postprocess_model`]); its last-resort model-name fallback also
-/// disables thinking for `deepseek`-named models, which this lane does not
-/// cover — a DeepSeek model behind a custom endpoint keeps its reasoning
-/// here where the GUI suppresses it. That makes the qwen model-name
-/// fallback the last-resort arm here, exactly where the GUI puts its
-/// sniffing fallback.
+/// [`call_postprocess_model`]); its last-resort model-name fallback that
+/// disables thinking for `deepseek`-named models IS covered here (same
+/// substring arm the GUI applies), which makes the qwen model-name fallback
+/// the other last-resort arm, exactly where the GUI puts its sniffing
+/// fallback.
 ///
 /// Branch order mirrors the GUI dispatch: a preset the GUI handles
 /// deterministically must never fall through to the model-name fallback.

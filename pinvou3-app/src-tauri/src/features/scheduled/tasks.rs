@@ -1605,8 +1605,21 @@ pub async fn list_scheduled_tasks(
     // downgrades the task to an unattended chat run), so liveness for
     // unlisted ids is confirmed against the definitions still on disk — the
     // foundation re-reads each def per `get_automation`, which is exactly
-    // the freshness compact's deletion oracle needs.
-    let is_live = |id: &str| manager.get_automation(id).is_ok();
+    // the freshness compact's deletion oracle needs. A miss must be
+    // distinguished from an error (round-36 review): `get_automation` also
+    // fails on read I/O, a parse failure, or a newer schema — collapsing
+    // those into "not live" would delete a kind record whose definition
+    // still exists, the unsafe direction this oracle exists to prevent.
+    // Walk the wrapped chain: a NotFound source is a genuine miss, every
+    // other error lingers — fail closed, the same direction as the
+    // scanner's walk-error veto.
+    let is_live = |id: &str| match manager.get_automation(id) {
+        Ok(_) => true,
+        Err(error) => !error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .any(|io_error| io_error.kind() == std::io::ErrorKind::NotFound),
+    };
     if let Err(error) = state.model_bindings.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled model bindings: {error:#}");
     }

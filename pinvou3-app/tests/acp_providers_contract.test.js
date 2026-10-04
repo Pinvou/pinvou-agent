@@ -509,7 +509,7 @@ assert.ok(
 // ---------------------------------------------------------------- 9. Claude 细化模型槽位 + env 生效值（改动 5）
 
 // 槽位定义：mod.rs 提供 CLAUDE_MODEL_SLOTS（opus/sonnet/haiku/fable/subagent → env 键）
-// 槽位表现为 `pub const`：8dc02118e 为 CLI 走 facade 引用把它从 pub(crate)
+// 槽位表现为 `pub const`：1a32c6e93 为 CLI 走 facade 引用把它从 pub(crate)
 // 放宽为 pub（值仍只为同仓消费者使用）。匹配两种拼法以防可见性再次调整时
 // 契约悄悄失配。
 assert.ok(

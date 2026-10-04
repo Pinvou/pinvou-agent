@@ -29,7 +29,7 @@ use crate::features::assistant::product_runtime::eval_tool_policy::{
     EvalToolPolicy, resolve_eval_policy,
 };
 use crate::features::assistant::product_runtime::{
-    EnginePoolRuntime, EvalSuiteModelGuard, SessionSpec, TurnInput,
+    EnginePoolRuntime, EvalSuiteModelGuard, SessionSpec, TurnInput, note_stderr,
 };
 use crate::features::{knowledge, sessions::SessionStore};
 
@@ -666,8 +666,14 @@ pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// Same cap the staging copier (`copy_bounded` at the shared call sites)
 /// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
 /// request validator and the copier cannot drift apart.
-pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 =
-    crate::features::files::file_ingest::MAX_FILE_BYTES;
+/// Deliberately an INDEPENDENT literal, not an alias of
+/// `files::file_ingest::MAX_FILE_BYTES`: the two caps guard different sides
+/// of the same handoff (validate before staging, bounded copy during), and
+/// the compile-time assert in `attachments.rs` is only meaningful while the
+/// constants are separate values — an alias can never drift and therefore
+/// can never fail the assert the comment there promises. Raise both
+/// together or the assert fires.
+pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 /// Aggregate size cap across one attachment batch (100 MiB).
 pub(crate) const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -1398,7 +1404,14 @@ where
                     Ok(service) => {
                         app.manage(service);
                     }
-                    Err(error) => eprintln!("[headless] knowledge service init failed: {error:#}"),
+                    // `note_stderr`, not a bare eprintln!: a closed stderr
+                    // (the headless CLI's `2>&1 | head`) turns a plain
+                    // eprintln! into a panic, which the catch_unwind around
+                    // .setup() would degrade into a failed run — this arm is
+                    // the documented log-and-leave-tools-denied degrade.
+                    Err(error) => note_stderr(&format!(
+                        "[headless] knowledge service init failed: {error:#}"
+                    )),
                 }
                 match crate::features::remote_knowledge::RemoteKnowledgeService::load(
                     crate::features::remote_knowledge::RemoteKnowledgeService::default_path(),
@@ -1407,7 +1420,10 @@ where
                         app.manage(service);
                     }
                     Err(error) => {
-                        eprintln!("[headless] remote knowledge service init failed: {error}")
+                        // Same closed-stderr panic hazard as above.
+                        note_stderr(&format!(
+                            "[headless] remote knowledge service init failed: {error}"
+                        ))
                     }
                 }
                 let pool = build_pool(app.handle().clone(), store.clone())?;

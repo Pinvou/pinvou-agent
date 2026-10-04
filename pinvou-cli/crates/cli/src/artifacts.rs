@@ -264,10 +264,11 @@ struct DeliverableRow {
 /// What one index scan produced: the deliverable rows, plus the session
 /// records the scan could not read.
 ///
-/// The skipped list is not cosmetic. A session record over the scan cap is
-/// dropped from the index, so an incomplete listing is indistinguishable from
-/// an empty one — see [`list`], which puts the names into the JSON payload for
-/// exactly that reason.
+/// The skipped list is not cosmetic. A session record over the scan cap —
+/// or one that cannot be read/parsed at all (permissions, a mid-write
+/// record, corrupt JSON) — is dropped from the index, so an incomplete
+/// listing is indistinguishable from an empty one — see [`list`], which puts
+/// the names into the JSON payload for exactly that reason.
 struct DeliverableIndex {
     rows: Vec<DeliverableRow>,
     skipped: Vec<String>,
@@ -369,9 +370,24 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
                 skipped.push(stem);
                 continue;
             }
-            RecordRead::Unreadable => continue,
+            RecordRead::Unreadable => {
+                // Same "incomplete ≠ empty" disclosure as the oversize
+                // branch: an EACCES'd or mid-write record is dropped from
+                // the index, so an unreadable slice must surface in
+                // skipped_sessions instead of vanishing (round-36 review).
+                note!("[artifacts] list skips {} (unreadable)", file.display());
+                skipped.push(stem);
+                continue;
+            }
         };
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            // Corrupt JSON is the same undecidable slice: disclosed, then
+            // skipped.
+            note!(
+                "[artifacts] list skips {} (not a valid session record)",
+                file.display()
+            );
+            skipped.push(stem);
             continue;
         };
         let session_id = view

@@ -2088,3 +2088,38 @@ fn memory_update_current_focus_over_the_cap_truncates_at_the_timed_cap() {
         "the stored text must be a prefix of the submission"
     );
 }
+
+/// Round-36 review minor: a whitespace-only `--file` body is a
+/// content-dependent condition, so it is a host failure (exit 1) per the
+/// crate's exit-class rule — the same classification the personas sibling
+/// applies — while an empty inline `--content` stays the documented
+/// usage-class exception.
+#[test]
+fn memory_add_whitespace_only_file_body_is_a_host_failure() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("add-whitespace-file");
+
+    let file = home.path().join("blank.txt");
+    std::fs::write(&file, "   \n\t\n").unwrap();
+    let parsed = parse_args([
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--file",
+        file.to_str().unwrap(),
+    ])
+    .expect("the add line parses");
+    let error = execute(parsed).expect_err("a whitespace-only file body must fail");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("holds no non-whitespace content"),
+        "{error}"
+    );
+
+    // The inline argv form keeps its documented usage classification.
+    let error = expect_usage_error(&["pinvou", "memory", "add", "preference", "--content", "   "]);
+    assert!(error.to_string().contains("non-empty content"), "{error}");
+}
