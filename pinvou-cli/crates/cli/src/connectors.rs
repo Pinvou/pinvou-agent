@@ -691,6 +691,12 @@ fn run_cli_bounded(
             spec.cli_bin, spec.id
         ))
     })?;
+    // RAII bracket per the supervise module's own rule ("prefer the RAII
+    // GroupGuard over a manual pair"): the manual pairs answered the ordinary
+    // exits only — a panic between spawn and the paired forget (thread
+    // spawn/allocation below) used to leave the group registered for a later
+    // interrupt to SIGTERM at a recycled pgid (round-39 review).
+    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     // Lossy like the GUI's `String::from_utf8_lossy`: vendor CLIs (wecom /
@@ -725,7 +731,7 @@ fn run_cli_bounded(
             // takes its npm/shell/node descendants with it instead of
             // orphaning them.
             crate::support::kill_process_tree(&mut child);
-            crate::support::supervise::forget_child_group(child.id());
+            group.release();
             return Err(CliError::failed(format!(
                 "{} {} timed out",
                 spec.cli_bin,
@@ -746,7 +752,7 @@ fn run_cli_bounded(
             // below). The child was never reaped by us, so the kill cannot
             // race a recycled pid.
             crate::support::kill_process_tree(&mut child);
-            crate::support::supervise::forget_child_group(child.id());
+            group.release();
             return Err(CliError::failed(format!(
                 "waiting for {} failed: {error}",
                 spec.cli_bin
@@ -756,7 +762,7 @@ fn run_cli_bounded(
     // The child is reaped by the wait above, so an interrupt from here on
     // must not signal a group the OS may have already recycled: release the
     // registration BEFORE the drain grace, which can hold for up to 2×5s.
-    crate::support::supervise::forget_child_group(child.id());
+    group.release();
     // A descendant that inherited the write end can keep EOF away forever —
     // the deadline above only bounds the direct child. Bound the drain like
     // `code`/`voice`: give the pipes a short grace to deliver EOF, then
@@ -2041,19 +2047,7 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     // install log). Blocking wait is fine, same discipline as the native
     // lane: installs are rare and the loser just installs over the finished
     // tree. The guard releases when this function returns.
-    let install_lock_dir = pinvou3_home().join("locks");
-    std::fs::create_dir_all(&install_lock_dir).map_err(|error| {
-        CliError::failed(format!(
-            "cannot create the connector lock directory: {error}"
-        ))
-    })?;
-    let install_lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(install_lock_dir.join("connector-install.lock"))
-        .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?;
-    let mut install_lock = fd_lock::RwLock::new(install_lock_file);
+    let mut install_lock = open_install_lock()?;
     // Blocking acquire, by design (round-37 review): the holder's whole
     // critical section is bounded (two npm attempts ≤ 2×180s, download
     // ≤ 900s, tar ≤ 120s), so a loser's wait is bounded in practice by
@@ -2170,6 +2164,10 @@ fn run_npm_attempt(
     // `run_cli_bounded`).
     let mut child = crate::support::supervise::spawn_supervised(&mut cmd)
         .map_err(|error| CliError::failed(format!("npm install failed to start: {error}")))?;
+    // RAII bracket per the supervise module's rule (see `run_cli_bounded`):
+    // the paired forgets below answer the ordinary exits, the guard covers
+    // everything a panic could skip.
+    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
     let start = Instant::now();
     loop {
         // An OS-level wait error leaves the child's state unknown, and a
@@ -2180,7 +2178,7 @@ fn run_npm_attempt(
             Ok(polled) => polled,
             Err(error) => {
                 crate::support::kill_process_tree(&mut child);
-                crate::support::supervise::forget_child_group(child.id());
+                group.release();
                 return Err(CliError::failed(format!("wait: {error}")));
             }
         };
@@ -2188,13 +2186,13 @@ fn run_npm_attempt(
             Some(status) => {
                 // Reaped here, so the group must leave the registry before
                 // the OS can recycle the pgid.
-                crate::support::supervise::forget_child_group(child.id());
+                group.release();
                 return Ok(status.success());
             }
             None => {
                 if start.elapsed() > Duration::from_secs(NPM_INSTALL_TIMEOUT_SECS) {
                     crate::support::kill_process_tree(&mut child);
-                    crate::support::supervise::forget_child_group(child.id());
+                    group.release();
                     return Err(CliError::failed(format!(
                         "CLI install timed out after {NPM_INSTALL_TIMEOUT_SECS}s (network or proxy blocked; log at {})",
                         log_path.display()
@@ -2211,15 +2209,12 @@ fn run_npm_attempt(
 /// the module doc): extraction uses the system `tar` and the license
 /// side-files the app writes are skipped; both SHA-256 verifications are
 /// identical to the GUI path.
-fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
-    // Serialize concurrent CLI installs (two `ensure-cli` processes would
-    // race on the shared staging archive and destination); blocking wait is
-    // fine — installs are rare and the loser just re-verifies the hash.
-    // Scope note: this lock gates CLI×CLI only. A GUI-triggered install of
-    // the same connector takes the desktop's in-process mutex, not this
-    // file lock, and GUI×CLI interleaving stays a disclosed residual (the
-    // payloads are SHA-256-pinned and installed by atomic rename, so the
-    // outcome remains correct) — see docs/pinvou-cli.md Known limitations.
+/// Opens (creating if needed) the cross-process `locks/connector-install.lock`
+/// both install lanes serialize on. One copy of the directory-create, open
+/// and error strings — the fd_lock write guard borrows its `RwLock`, so the
+/// blocking acquire stays at the call sites (round-39 review: the two
+/// hand-copied blocks drifted on nothing today but had every opportunity to).
+fn open_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     let install_lock_dir = pinvou3_home().join("locks");
     std::fs::create_dir_all(&install_lock_dir).map_err(|error| {
         CliError::failed(format!(
@@ -2232,7 +2227,23 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         .write(true)
         .open(install_lock_dir.join("connector-install.lock"))
         .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?;
-    let mut install_lock = fd_lock::RwLock::new(install_lock_file);
+    Ok(fd_lock::RwLock::new(install_lock_file))
+}
+
+// Returns `Result<()>`: both arms used to return an always-`Ok(true)` whose
+// two-valued `Ok(false)` semantics died when the verdict tail became
+// unconditional — a vestigial bool a future caller could misread (round-39
+// review).
+fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
+    // Serialize concurrent CLI installs (two `ensure-cli` processes would
+    // race on the shared staging archive and destination); blocking wait is
+    // fine — installs are rare and the loser just re-verifies the hash.
+    // Scope note: this lock gates CLI×CLI only. A GUI-triggered install of
+    // the same connector takes the desktop's in-process mutex, not this
+    // file lock, and GUI×CLI interleaving stays a disclosed residual (the
+    // payloads are SHA-256-pinned and installed by atomic rename, so the
+    // outcome remains correct) — see docs/pinvou-cli.md Known limitations.
+    let mut install_lock = open_install_lock()?;
     let _install_guard = install_lock
         .write()
         .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
@@ -2258,7 +2269,7 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
         // hash matched and `present()` still runs in
         // `ensure_cli_with`/"安装完成但无法执行" — so install=true here
         // regardless of which branch produced the bytes (round-18 finding 3).
-        return Ok(true);
+        return Ok(());
     }
 
     std::fs::create_dir_all(&version_dir).map_err(|error| {
@@ -2355,6 +2366,17 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
                 |error| CliError::failed(format!("cannot set executable permissions: {error}")),
             )?;
         }
+        // Flush the staged binary before the destination rename — the GUI's
+        // installer syncs both stages (round-39 review: same torn-binary
+        // window the download sync above closes). The staging file was
+        // created by rename, so the flush goes through a fresh handle; fsync
+        // on a read-only fd flushes the file's data on every supported
+        // platform.
+        std::fs::File::open(&staging)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| {
+                CliError::failed(format!("cannot flush the staged connector binary: {error}"))
+            })?;
         // On posix `rename` replaces the destination atomically — the pre-`remove_file`
         // this site used to do opened a window where a concurrent spawner resolved
         // a MISSING binary (the Known limitations copy already promised "installed
@@ -2395,7 +2417,7 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<bool, CliError> {
     }
     let _ = std::fs::remove_dir_all(&extract_dir);
     staging_result?;
-    Ok(true)
+    Ok(())
 }
 
 fn file_is_sha256(path: &Path, expected: &str) -> bool {
@@ -2526,6 +2548,18 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
         let _ = std::fs::remove_file(&part);
         return Err(CliError::failed("connector archive exceeds the size cap"));
     }
+    // Flush the `.part` before the publish rename, matching the GUI's
+    // `download_verified` (native_installer.rs syncs the downloaded archive):
+    // a crash between rename and flush could otherwise publish a torn
+    // archive that the hash gate only heals on the NEXT ensure-cli run,
+    // while `resolve_vendor_cli` (a plain is_file check, no hash) keeps
+    // resolving and spawning it (round-39 review).
+    if let Err(error) = file.sync_all() {
+        let _ = std::fs::remove_file(&part);
+        return Err(CliError::failed(format!(
+            "cannot flush the downloaded archive: {error}"
+        )));
+    }
     drop(file);
     if let Err(error) = std::fs::rename(&part, destination) {
         let _ = std::fs::remove_file(&part);
@@ -2607,6 +2641,9 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // `run_cli_bounded`).
     let mut child = crate::support::supervise::spawn_supervised(&mut list)
         .map_err(|error| CliError::failed(format!("cannot list archive with tar: {error}")))?;
+    // RAII bracket (see `run_cli_bounded`): the drain-thread spawn below
+    // sits between the supervised spawn and the paired forget.
+    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
     // The listing is drained on a thread and the BOUNDED WAIT drives the
     // lane, the same order `run_cli_bounded` uses. In the previous order
     // (blocking read, then wait) a tar that produced under the cap and
@@ -2631,7 +2668,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // Paired on every exit including the `?` arms of `listed` below: the
     // child is reaped or dead by now, so leaving the pgid registered would
     // only invite the recycled-pid kill.
-    crate::support::supervise::forget_child_group(child.id());
+    group.release();
     listed?;
     // Bounded collection instead of an unbounded `join`: a pipe-inheriting
     // descendant that escaped the group can hold stdout open past the reap,
@@ -2674,6 +2711,8 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // with the spawn→register window closed).
     let mut child = crate::support::supervise::spawn_supervised(&mut extract)
         .map_err(|error| CliError::failed(format!("cannot extract archive with tar: {error}")))?;
+    // RAII bracket, same as the listing lane above.
+    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
     // Same wait-first discipline as the listing lane above: the bounded
     // wait drives the deadline, the drainer thread keeps the pipe empty
     // (one byte past the cap is KEPT so an over-size member is detectable
@@ -2696,7 +2735,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     };
     let extracted = wait_or_kill(&mut child, "extracting the connector archive");
     // Paired on every exit, as in the listing lane.
-    crate::support::supervise::forget_child_group(child.id());
+    group.release();
     extracted?;
     // Same bounded collection as the listing lane above.
     let bytes = bytes_thread

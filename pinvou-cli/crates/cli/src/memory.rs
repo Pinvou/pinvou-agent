@@ -78,6 +78,7 @@ pub enum MemoryStore {
     RecentActivity,
     RecentWork,
     Pending,
+    Never,
 }
 
 impl MemoryStore {
@@ -89,9 +90,10 @@ impl MemoryStore {
             "recent-activity" | "recent_activity" => Ok(Self::RecentActivity),
             "recent-work" | "recent_work" => Ok(Self::RecentWork),
             "pending" => Ok(Self::Pending),
+            "never" => Ok(Self::Never),
             other => Err(CliError::usage(format!(
                 "unknown memory store '{other}' (valid: preferences, work-context, \
-current-focus, recent-activity, recent-work, pending)"
+current-focus, recent-activity, recent-work, pending, never)"
             ))),
         }
     }
@@ -104,6 +106,7 @@ current-focus, recent-activity, recent-work, pending)"
             Self::RecentActivity => "recent_activity",
             Self::RecentWork => "recent_work",
             Self::Pending => "pending",
+            Self::Never => "never",
         }
     }
 
@@ -413,6 +416,10 @@ archive-only: pinvou memory archive <id>"
         MemoryStore::Pending => Err(CliError::usage(format!(
             "memory {action} does not support store 'pending'; resolve pending items: \
 pinvou memory pending confirm|ignore|never <id>"
+        ))),
+        MemoryStore::Never => Err(CliError::usage(format!(
+            "memory {action} does not support store 'never'; entries are listed via \
+'memory list --store never' and re-shaped by 'memory organize', not edited per item"
         ))),
         _ => unreachable!("editable stores are filtered above"),
     }
@@ -882,6 +889,8 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                 feature::load_recent_work().map_err(|error| feature_error("list", error))?;
             let pending =
                 feature::load_pending_memory().map_err(|error| feature_error("list", error))?;
+            let never =
+                feature::load_never_memory().map_err(|error| feature_error("list", error))?;
             let mut lines = Vec::new();
             let mut section = |label: &str, items: &[String]| {
                 lines.push(format!("{label} ({})", items.len()));
@@ -916,6 +925,7 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                     .map(render_recent_work)
                     .collect::<Vec<_>>(),
             );
+            section("never", &never.iter().map(render_never).collect::<Vec<_>>());
             section(
                 "pending",
                 &pending.iter().map(render_pending).collect::<Vec<_>>(),
@@ -940,6 +950,7 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                 "recent_activity": serde_json::to_value(&recent_activity).unwrap_or_default(),
                 "recent_work": serde_json::to_value(&recent_work).unwrap_or_default(),
                 "pending": serde_json::to_value(&pending).unwrap_or_default(),
+                "never": serde_json::to_value(&never).unwrap_or_default(),
             });
             Ok(success(render(output, lines.join("\n"), &value)))
         }
@@ -1021,6 +1032,18 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
             let items = feature::load_pending_memory().map_err(io_error)?;
             (
                 items.iter().map(render_pending).collect(),
+                serde_json::to_value(&items).unwrap_or_default(),
+                Vec::new(),
+            )
+        }
+        MemoryStore::Never => {
+            // Round-39 review: `memory pending never` writes this store while
+            // only `memory overview` read it back — the aggregate list gains
+            // the same visibility (patterns + reasons are the user's own
+            // bookkeeping, not secret state).
+            let items = feature::load_never_memory().map_err(io_error)?;
+            (
+                items.iter().map(render_never).collect(),
                 serde_json::to_value(&items).unwrap_or_default(),
                 Vec::new(),
             )
@@ -1574,7 +1597,7 @@ fn update_writer_cap(store: MemoryStore) -> Option<usize> {
         MemoryStore::WorkContext => Some(feature::WORK_CONTEXT_TEXT_MAX_CHARS),
         // TIMED_TEXT_MAX_CHARS, shared by both timed stores.
         MemoryStore::CurrentFocus | MemoryStore::RecentActivity => Some(180),
-        MemoryStore::RecentWork | MemoryStore::Pending => None,
+        MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => None,
     }
 }
 
@@ -1747,7 +1770,7 @@ fn update(
         // `MemoryCommand::Update` directly (a test, a future embedding of
         // `execute`) deserves a refusal it can handle rather than a crash
         // that also loses the report.
-        MemoryStore::RecentWork | MemoryStore::Pending => {
+        MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => {
             return Err(CliError::usage(format!(
                 "memory update does not support store '{}' (valid: preferences, \
 work-context, current-focus, recent-activity)",
@@ -1828,7 +1851,7 @@ fn delete(
         // `parse_delete` rejects both stores at parse time, but the match must
         // be exhaustive and a handled refusal beats a panic for any in-process
         // caller that constructs the command directly.
-        MemoryStore::RecentWork | MemoryStore::Pending => {
+        MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => {
             return Err(CliError::usage(format!(
                 "memory delete does not support store '{}' (valid: preferences, \
 work-context, current-focus, recent-activity)",
@@ -2370,6 +2393,23 @@ fn render_pending(item: &feature::PendingMemoryItem) -> String {
         one_line(item.status.as_str()),
         one_line(item.kind.as_str()),
         one_line(&item.content)
+    )
+}
+
+/// `never` rows read back what `memory pending never` recorded: id, the
+/// blocked-content pattern, the caller's reason, and the stamp. The reason is
+/// optional in the store, so it renders as `-` like the other absent cells.
+fn render_never(item: &feature::NeverMemoryItem) -> String {
+    format!(
+        "{}\t{}\t{}\t{}",
+        one_line(&item.id),
+        one_line(&item.pattern),
+        one_line(if item.reason.is_empty() {
+            "-"
+        } else {
+            &item.reason
+        }),
+        one_line(&item.created_at)
     )
 }
 

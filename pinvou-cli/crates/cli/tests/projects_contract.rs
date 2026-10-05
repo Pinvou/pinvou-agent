@@ -802,6 +802,26 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         acp_state.contains(to.to_str().unwrap()),
         "the acp-state workspace.path must move: {acp_state}"
     );
+    // Round-39 review: arm 1 (a from-lane moved code session) must recapture
+    // the workspace baseline exactly like the round-38 arm-3 pin below does —
+    // a stale baseline pointing into the vanished root is the boot-recovery
+    // fallback. Deleting the `code_rebound_ids.contains` arm from the
+    // recapture gate fails this assertion while the rest of the suite stays
+    // green.
+    let baseline = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&code_id)
+            .join("codex-workspace-baseline.json"),
+    )
+    .expect("a from-lane moved code session must recapture its workspace baseline");
+    assert!(
+        baseline.contains(to.to_str().unwrap()),
+        "the arm-1 recaptured baseline must name the new root: {baseline}"
+    );
+    assert!(
+        !baseline.contains(from.to_str().unwrap()),
+        "the arm-1 recaptured baseline must not name the vanished source: {baseline}"
+    );
 
     // Idempotent rerun: nothing is left under `from`, so a rerun converges
     // to an honest empty report under exit 0.

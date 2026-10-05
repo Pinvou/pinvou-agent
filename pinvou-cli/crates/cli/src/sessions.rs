@@ -909,7 +909,10 @@ fn export(
             });
             Ok(success(render(
                 output,
-                format!("exported {id} -> {} ({bytes} bytes)", path.display()),
+                format!(
+                    "exported {id} -> {} ({bytes} bytes)",
+                    crate::support::collapse_control_characters(&path.display().to_string())
+                ),
                 &value,
             )))
         }

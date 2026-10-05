@@ -558,14 +558,20 @@ fn ffmpeg_available() -> bool {
 /// reports the system Speech runtime as present (`asr_bundled_runtime_status`
 /// → `Some(true)`), other platforms check engine + ffmpeg + model files.
 fn asr_components() -> (bool, bool, bool, bool) {
-    asr_components_with(ffmpeg_available())
+    // Lazy verdict: on macOS the composition never consumes the ffmpeg
+    // half, and an eager probe used to spawn a real `ffmpeg -version` per
+    // `asr-status`/`transcribe` — a wedged ffmpeg first on PATH stalled the
+    // read-only status command up to the probe timeout for a verdict
+    // nothing reads (round-39 review).
+    asr_components_with(|| ffmpeg_available())
 }
 
 /// `asr_components` with the ffmpeg verdict supplied: `asr-install` probes
 /// ffmpeg once up front (round-38 review — the already-present path used to
 /// spawn a second, redundant `ffmpeg -version` here) and hands the verdict
-/// through instead of re-asking.
-fn asr_components_with(ffmpeg: bool) -> (bool, bool, bool, bool) {
+/// through instead of re-asking. The verdict is a closure so the macOS early
+/// return leaves it unevaluated (round-39 review).
+fn asr_components_with(ffmpeg: impl FnOnce() -> bool) -> (bool, bool, bool, bool) {
     // Only Linux has a CLI install route (`voice asr-install`); Windows
     // ships the engine in the MSI, which only the desktop app's
     // repair/reinstall flow can restore; macOS needs no installation.
@@ -576,7 +582,7 @@ fn asr_components_with(ffmpeg: bool) -> (bool, bool, bool, bool) {
     }
     let engine = engine_path().is_some();
     let model = model_available();
-    (engine, ffmpeg, model, installable)
+    (engine, ffmpeg(), model, installable)
 }
 
 /// Whether `run_recognition` will attempt the bundled engine at all. Only
@@ -866,7 +872,7 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         let path = download_asr_model()?;
         steps.push(format!("downloaded model {}", path.display()));
     }
-    let (engine, _, model, _) = asr_components_with(ffmpeg_ok);
+    let (engine, _, model, _) = asr_components_with(|| ffmpeg_ok);
     let ffmpeg = ffmpeg_ok;
     let value = serde_json::json!({
         "engine": engine,
@@ -1821,10 +1827,10 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Mirror the GUI: the engine's own model path is passed through the env
-    // when it is installed locally.
-    if model_available() {
-        command_line.env("PINVOU3_SENSEVOICE_MODEL", model_path());
-    }
+    // when it is installed locally. Deliberately stricter than the GUI's
+    // `is_file()` gate: the CLI hands the path over only when it passes the
+    // sha256 integrity check, so a present-but-corrupt model is not passed
+    // to the external ASR tool here (disclosed deviation, round-39 review).
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt as _;
@@ -2073,7 +2079,6 @@ fn postprocess_retry_prompt(mode: PostprocessMode) -> &'static str {
     }
 }
 
-/// Mirror of `voice_postprocess_max_tokens`.
 /// Anthropic Messages body for voice postprocess — field set mirrors the
 /// GUI's `voice_postprocess_request_body` / core `anthropic_messages_request`
 /// wire: model/max_tokens/system/messages and **no `temperature`**. A
@@ -2114,6 +2119,9 @@ fn postprocess_chat_body(
     })
 }
 
+/// Retry bump mirror of the GUI's `voice_postprocess_max_tokens`: the same
+/// per-mode base and +512 on the retry pass, so a token-budget change in the
+/// GUI surfaces here as a body mismatch instead of silent drift.
 fn postprocess_max_tokens(mode: PostprocessMode, retry: bool) -> u32 {
     let base = match mode {
         PostprocessMode::Edit => 2048,

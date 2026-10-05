@@ -1243,8 +1243,12 @@ fn collections_update(
         .list_collections()
         .map_err(|error| feature_error("collections update", error))?;
     let Some(existing) = collections.iter().find(|collection| collection.id == id) else {
+        // One stable code for the family's not-found class: the concurrent
+        // race arm below reports the same condition as
+        // `knowledge_collection_not_found`, so the pre-check must not split
+        // the class across two machine prefixes (round-39 review).
         return Err(CliError::failed(format!(
-            "knowledge collections update: collection {id} not found"
+            "knowledge_collection_not_found: collection {id} not found"
         )));
     };
     let name = name.unwrap_or_else(|| existing.name.clone());
@@ -1285,8 +1289,11 @@ fn ensure_collection_exists(
 ) -> Result<(), CliError> {
     match service.l1().collection_name(id) {
         Ok(Some(_)) => Ok(()),
+        // The stable family code, not a per-operation prose prefix, so a
+        // script keying on not-found matches every command in the family
+        // (round-39 review); the operation stays in the message for humans.
         Ok(None) => Err(CliError::failed(format!(
-            "knowledge {operation}: collection {id} not found"
+            "knowledge_collection_not_found: collection {id} not found ({operation})"
         ))),
         Err(error) => Err(feature_error(operation, error)),
     }
@@ -1696,6 +1703,15 @@ fn require_job_id(
 fn index_resume(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     require_job_id(&service, job_id, "resume")?;
+    // Disclosed residual (the same sub-second race class the add-sources
+    // lane documents): a desktop app can start its own import between this
+    // pre-check and `resume_index`, and the store's guarded re-arm then runs
+    // both importers on one collection — the single-import invariant this
+    // CLI keeps everywhere else. The store guard still prevents re-arming a
+    // job that is not `interrupted`, and the invocation blocks on and
+    // reports `job_id`'s own state; rerunning after interrupting is the
+    // remedy (round-39 review: the window existed identically on the
+    // add-sources lane but was disclosed only there).
     index_state_result(service.resume_index(job_id.to_owned()))?;
     let final_state = wait_for_terminal_job(&service, job_id, "knowledge index resume")?;
     index_finished(&final_state, output)
@@ -1839,7 +1855,15 @@ fn wait_for_terminal_job(
                 last.failed,
             )));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        // The poll step stays at 50 ms for real imports, but a sub-second
+        // stall bound (the hermetic tests drive the trip with `1`) must not
+        // have its whole window swallowed by one sleep — that made the trip
+        // depend on the import losing a race against the FIRST poll, which
+        // is the flake the frozen-import test's margin rests on (round-39
+        // review).
+        let step =
+            std::cmp::min(Duration::from_millis(50), stall_bound / 2).max(Duration::from_millis(1));
+        std::thread::sleep(step);
         last = named_job_state(service, job_id, "status")?;
     }
 }

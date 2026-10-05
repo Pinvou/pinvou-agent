@@ -230,8 +230,14 @@ fn run_agent(
     // over a plain `read_to_string` (over PROMPT_FILE_MAX_BYTES, and anything
     // that is not a regular file) are stated in RUN_USAGE, because they are a
     // narrowing of what `--prompt-file` used to accept.
-    let prompt =
-        crate::support::read_text_file_capped(prompt_file, PROMPT_FILE_MAX_BYTES, "agent run")?;
+    // Stable code form, per the helper's own convention (support.rs: new
+    // call sites pick the caller's snake_case code — a human phrase renders
+    // the same failure without a scriptable prefix; round-39 review).
+    let prompt = crate::support::read_text_file_capped(
+        prompt_file,
+        PROMPT_FILE_MAX_BYTES,
+        "agent_prompt_file_unreadable",
+    )?;
     // Consumed persona (round-18 wiring): a `pinvou personas equip` on this
     // session staged a one-shot persona body on the per-session sidecar
     // `persona_equipped.json`; this lane now delivers it through

@@ -65,17 +65,21 @@ fn run_ok(arguments: &[&str]) -> String {
     outcome.stdout
 }
 
-/// Usage errors may surface from `parse` or from `execute`; both must carry
-/// the exit-code 2 usage marker.
-fn expect_usage_error(arguments: &[&str]) -> pinvou_cli::CliError {
+/// A command error from either the parse or the execute lane. Despite the
+/// old name, only SOME call sites assert the exit-2 usage class (through
+/// `assert_usage`) — the rest deliberately expect exit-1 host failures, so
+/// the name now says what it guarantees and nothing more (round-39 review:
+/// "usage error" forced every reader to re-derive the class from the call
+/// site's own assertions).
+fn expect_command_error(arguments: &[&str]) -> pinvou_cli::CliError {
     match parse_args(arguments.to_vec()) {
         Err(error) => error,
-        Ok(parsed) => execute(parsed).expect_err("expected usage error"),
+        Ok(parsed) => execute(parsed).expect_err("expected a command error"),
     }
 }
 
 fn assert_usage(arguments: &[&str]) {
-    let error = expect_usage_error(arguments);
+    let error = expect_command_error(arguments);
     assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
 }
 
@@ -228,7 +232,7 @@ fn memory_rejects_invalid_usage_with_exit_code_two() {
     assert_usage(&["pinvou", "memory", "bogus"]);
     assert_usage(&["pinvou", "memory"]);
     // unknown store value names the valid options
-    let error = expect_usage_error(&["pinvou", "memory", "list", "--store", "bogus"]);
+    let error = expect_command_error(&["pinvou", "memory", "list", "--store", "bogus"]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("preferences"), "{error}");
     assert!(error.to_string().contains("recent-work"), "{error}");
@@ -307,7 +311,7 @@ fn memory_rejects_invalid_usage_with_exit_code_two() {
             "words",
         ][..],
     ] {
-        let error = expect_usage_error(arguments);
+        let error = expect_command_error(arguments);
         assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
         assert!(
             error.to_string().contains("no positional arguments"),
@@ -317,13 +321,13 @@ fn memory_rejects_invalid_usage_with_exit_code_two() {
 
     // organize without --yes is rejected at execute time, like delete: the
     // LLM-driven store rewrite is destructive
-    let error = expect_usage_error(&["pinvou", "memory", "organize"]);
+    let error = expect_command_error(&["pinvou", "memory", "organize"]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("--yes"), "{error}");
     assert_usage(&["pinvou", "memory", "list", "--bogus", "x"]);
 
     // delete without --yes is rejected at execute time
-    let error = expect_usage_error(&["pinvou", "memory", "delete", "preferences", "id-1"]);
+    let error = expect_command_error(&["pinvou", "memory", "delete", "preferences", "id-1"]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("--yes"), "{error}");
 }
@@ -484,7 +488,7 @@ fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
     );
 
     // deleting the same id again is a host failure, not a silent success
-    let error = expect_usage_error(&["pinvou", "memory", "delete", "preferences", &id, "--yes"]);
+    let error = expect_command_error(&["pinvou", "memory", "delete", "preferences", &id, "--yes"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("preferences_not_found"),
@@ -645,9 +649,60 @@ fn memory_pending_confirm_ignore_and_never_resolve_fixture_entries() {
     assert_eq!(never[0].reason, "billing details");
 
     // unknown ids surface as host failures
-    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", "missing-id"]);
+    let error = expect_command_error(&["pinvou", "memory", "pending", "confirm", "missing-id"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("pending_not_found"), "{error}");
+}
+
+/// Round-39 review: `memory pending never` writes the never store while only
+/// `memory overview` read it back — `memory list` now surfaces it too, both
+/// as `--store never` and in the aggregate listing's `never` key, so "what
+/// did I mark never, and why" has a list answer.
+#[test]
+fn memory_list_surfaces_the_never_store() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("never-list");
+
+    let nevered = enqueue_fixture("preference", "Avoid storing billing notes");
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "pending",
+        "never",
+        &nevered.id,
+        "--reason",
+        "billing details",
+    ]);
+
+    // The dedicated store lane: same {items, cleanup_warnings} envelope as
+    // every other `list --store` shape.
+    let json = run_ok(&[
+        "pinvou", "memory", "list", "--store", "never", "--output", "json",
+    ]);
+    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = envelope["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{envelope}");
+    assert_eq!(items[0]["pattern"], "Avoid storing billing notes");
+    assert_eq!(items[0]["reason"], "billing details");
+    let human = run_ok(&["pinvou", "memory", "list", "--store", "never"]);
+    assert!(human.contains("Avoid storing billing notes"), "{human}");
+    assert!(human.contains("billing details"), "{human}");
+
+    // And the aggregate listing carries the same facts under its own key.
+    let aggregate = run_ok(&["pinvou", "memory", "list", "--output", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&aggregate).unwrap();
+    let never = value["never"]
+        .as_array()
+        .expect("the aggregate list must carry a never key");
+    assert_eq!(never.len(), 1, "{value}");
+    // `never_pending_memory` derives a fresh `never_` id for the store row
+    // (the pending fixture id is not carried over), so the round trip is
+    // pinned on pattern + reason, which ARE carried verbatim.
+    assert_eq!(
+        never[0]["pattern"], "Avoid storing billing notes",
+        "{value}"
+    );
+    assert_eq!(never[0]["reason"], "billing details", "{value}");
 }
 
 /// Writes one active recent-work line straight into the store file: the app
@@ -687,7 +742,7 @@ fn memory_archive_marks_recent_work_fixture_archived() {
     assert_eq!(stored[0].status, "archived");
 
     // archiving an unknown id fails instead of silently succeeding
-    let error = expect_usage_error(&["pinvou", "memory", "archive", "missing-id"]);
+    let error = expect_command_error(&["pinvou", "memory", "archive", "missing-id"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("recent_work_not_found"),
@@ -813,7 +868,7 @@ fn memory_organize_refuses_when_memory_is_disabled() {
     // manually); this pins the honest error instead of a vacuous pass.
     // --yes clears the destructive-action gate so the disabled refusal is
     // what is under test.
-    let error = expect_usage_error(&["pinvou", "memory", "organize", "--yes"]);
+    let error = expect_command_error(&["pinvou", "memory", "organize", "--yes"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("memory_organize_disabled"),
@@ -873,7 +928,7 @@ fn memory_organize_refuses_when_another_process_holds_the_lock() {
     let mut lock = fd_lock::RwLock::new(file);
     let _held = lock.write().unwrap();
 
-    let error = expect_usage_error(&["pinvou", "memory", "organize", "--yes"]);
+    let error = expect_command_error(&["pinvou", "memory", "organize", "--yes"]);
     assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     assert!(
         error.to_string().contains("memory_organize_busy"),
@@ -983,7 +1038,7 @@ fn memory_add_profile_shaped_preference_text_fails_before_the_pending_store() {
     // routed to the profile, not the preference store: the confirm path
     // silently skips the write while still marking the candidate confirmed.
     // The add must fail up front (exit 1) WITHOUT enqueueing the candidate.
-    let error = expect_usage_error(&[
+    let error = expect_command_error(&[
         "pinvou",
         "memory",
         "add",
@@ -1033,7 +1088,7 @@ fn memory_pending_confirm_reports_a_profile_shaped_no_op_honestly() {
     )
     .expect("enqueue the profile-shaped candidate");
 
-    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
+    let error = expect_command_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     let message = error.to_string();
     // The message states the observable fact first — the confirm produced no
@@ -1071,7 +1126,7 @@ fn memory_pending_confirm_fails_when_the_id_does_not_round_trip() {
     // stored id on read-back.
     let raw_id = format!("{}.", item.id);
 
-    let error = expect_usage_error(&["pinvou", "memory", "pending", "confirm", &raw_id]);
+    let error = expect_command_error(&["pinvou", "memory", "pending", "confirm", &raw_id]);
     assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     assert!(
         error.to_string().contains("cannot be verified"),
@@ -1095,7 +1150,7 @@ fn memory_update_rejects_empty_content_as_a_usage_error() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("update-empty-content");
     for (content, needle) in [("", "requires a value"), ("   ", "non-empty content")] {
-        let error = expect_usage_error(&[
+        let error = expect_command_error(&[
             "pinvou",
             "memory",
             "update",
@@ -1127,7 +1182,7 @@ fn memory_update_refuses_content_that_normalizes_away_like_add_does() {
     let _home = TempHome::new("update-normalizes-away");
 
     // Punctuation-only: `clean_candidate_sentence` strips it to nothing.
-    let update = expect_usage_error(&[
+    let update = expect_command_error(&[
         "pinvou",
         "memory",
         "update",
@@ -1144,7 +1199,7 @@ fn memory_update_refuses_content_that_normalizes_away_like_add_does() {
     );
 
     // The add-side classification of the very same input, for comparison.
-    let add = expect_usage_error(&[
+    let add = expect_command_error(&[
         "pinvou",
         "memory",
         "add",
@@ -1272,7 +1327,7 @@ fn memory_rejects_duplicate_boolean_flags() {
         ][..],
         &["pinvou", "memory", "organize", "--yes", "--yes"][..],
     ] {
-        let error = expect_usage_error(arguments);
+        let error = expect_command_error(arguments);
         assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
         assert!(
             error.to_string().contains("duplicate option --yes"),
@@ -1301,7 +1356,7 @@ fn memory_rejects_empty_option_values() {
             "pinvou", "memory", "pending", "confirm", "id", "--reason", "",
         ][..],
     ] {
-        let error = expect_usage_error(arguments);
+        let error = expect_command_error(arguments);
         assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
         assert!(
             error.to_string().contains("requires a value"),
@@ -1607,7 +1662,7 @@ fn memory_add_fails_when_the_pipeline_stores_different_text() {
     // A pending candidate the user never resolved, in a different casing.
     enqueue_fixture("work_context", "We Deploy On Fridays");
 
-    let error = expect_usage_error(&[
+    let error = expect_command_error(&[
         "pinvou",
         "memory",
         "add",
@@ -1669,7 +1724,7 @@ fn memory_add_case_dedupe_failure_leaves_the_pending_queue_and_store_untouched()
 
     // Same text, different casing: the dedupe key is lowercased, so the
     // enqueue hands back the seeded row instead of queueing this one.
-    let error = expect_usage_error(&[
+    let error = expect_command_error(&[
         "pinvou",
         "memory",
         "add",
@@ -1770,7 +1825,7 @@ fn memory_add_refuses_a_same_text_candidate_in_a_foreign_topic_bucket() {
         "Prefer concise answers",
     );
 
-    let error = expect_usage_error(&[
+    let error = expect_command_error(&[
         "pinvou",
         "memory",
         "add",
@@ -1832,7 +1887,7 @@ fn memory_add_refuses_a_same_text_work_context_candidate_in_a_foreign_bucket() {
         .unwrap();
     let gui = enqueue_fixture_with_topic("work_context", "role_domain", "We deploy on Fridays");
 
-    let error = expect_usage_error(&[
+    let error = expect_command_error(&[
         "pinvou",
         "memory",
         "add",
@@ -2168,6 +2223,7 @@ fn memory_add_whitespace_only_file_body_is_a_host_failure() {
     );
 
     // The inline argv form keeps its documented usage classification.
-    let error = expect_usage_error(&["pinvou", "memory", "add", "preference", "--content", "   "]);
+    let error =
+        expect_command_error(&["pinvou", "memory", "add", "preference", "--content", "   "]);
     assert!(error.to_string().contains("non-empty content"), "{error}");
 }

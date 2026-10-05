@@ -690,9 +690,33 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
             continue;
         };
         if value.get("persona_id").and_then(serde_json::Value::as_str) == Some(persona_id) {
-            match std::fs::remove_file(&path) {
-                Ok(()) => cleared.push(session_id),
-                Err(error) => sweep_errors.push(format!("{session_id}: {error}")),
+            // Round-39 review (M4): the sweep is a sidecar mutator, so its
+            // read→remove pair runs under the equip lock like every other
+            // mutator. Lock-free, the remove raced a concurrent equip's
+            // locked write (deleting a freshly staged pair after `equip`
+            // exited 0) and the consume's locked read→clear window
+            // (recreating the sidecar after the sweep reported it cleared).
+            // Re-check the persona under the lock: an equip that landed
+            // between the unlocked read and this lock may have staged a
+            // different persona, whose pair must survive the sweep.
+            let mut lock = equip_state_lock()?;
+            let _guard = lock.write().map_err(|error| {
+                CliError::failed(format!("cannot lock the persona equip state: {error}"))
+            })?;
+            let fresh =
+                crate::support::read_text_file_capped(&path, MAX_SIDECAR_BYTES, "personas delete")
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+            let still_matches = fresh
+                .as_ref()
+                .and_then(|value| value.get("persona_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(persona_id);
+            if still_matches {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => cleared.push(session_id),
+                    Err(error) => sweep_errors.push(format!("{session_id}: {error}")),
+                }
             }
         }
     }
@@ -1003,8 +1027,11 @@ fn require_equippable_body(card: &PersonaCard) -> Result<(), CliError> {
 /// could otherwise swallow a mid-run restage — `equip`'s write landing after
 /// the consume's read was overwritten by the consume's null-clear, which
 /// LOSES a body that was never injected (the guard's comment promises the
-/// opposite). The sidecar is CLI-only (`persona_equipped.json` appears
-/// nowhere in the app crate), so a CLI-only lock has no cross-surface
+/// opposite). Round-39 review: EVERY sidecar mutator takes this lock —
+/// `equip`, the run-path consume, `unequip`'s remove, and the delete sweep's
+/// re-check→remove — a mutator outside it resurrects or deletes a pair the
+/// user already saw settled. The sidecar is CLI-only (`persona_equipped.json`
+/// appears nowhere in the app crate), so a CLI-only lock has no cross-surface
 /// semantics; a reader needs no lock (rename-atomic writes).
 fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
@@ -1150,6 +1177,17 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
         ))
     })?;
     store.set_persona(session_id, None, None);
+    // Round-39 review (M4): the remove is a sidecar mutator and runs under
+    // the equip lock like the consume and the delete sweep. Lock-free, a
+    // run's post-turn consume could read the pair, watch unequip delete the
+    // file, then write its exact-pair-guarded clear back — resurrecting a
+    // sidecar (and the card's anchor) after unequip reported success. Under
+    // the lock the remove serializes against the consume's read→clear
+    // window; an equip that lands after it is a legitimate fresh equip.
+    let mut lock = equip_state_lock()?;
+    let _guard = lock.write().map_err(|error| {
+        CliError::failed(format!("cannot lock the persona equip state: {error}"))
+    })?;
     if let Err(error) = std::fs::remove_file(&path) {
         if error.kind() != std::io::ErrorKind::NotFound {
             return Err(CliError::failed(format!(
@@ -1550,11 +1588,15 @@ mod tests {
     /// round-trip of the staged text, plus the persona id the pool check
     /// needs) and the consume (one-shot body clearance that keeps the
     /// persona_id, mirroring `take_pending_turn_injections`' split between
-    /// `pending_persona_body` and `active_persona`) at the unit level,
-    /// path-resolved so no `PINVOU3_HOME` dance is needed.
+    /// `pending_persona_body` and `active_persona`) at the unit level. The
+    /// sidecar paths stay explicit, but the consume takes the equip lock
+    /// under `pinvou3_home()`, so the test still roots a `TempHome` — the
+    /// lock directory must not be created in the developer's real data root
+    /// (round-39 review).
     #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_returns_the_equip_staged_body_verbatim() {
+        let _home = TempHome::new("seam-verbatim");
         let card = PersonaCard {
             id: "user-seam".to_owned(),
             dept: "specialized".to_owned(),
@@ -1618,6 +1660,10 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_tolerates_missing_and_corrupt_sidecars() {
+        // Same lock-directory discipline as the verbatim seam test: the
+        // consume no-ops here, but it still takes the equip lock under
+        // `pinvou3_home()` (round-39 review).
+        let _home = TempHome::new("seam-tolerant");
         let dir = std::env::temp_dir().join(format!(
             "pinvou-cli-personas-seam-tol-{}-{}",
             std::process::id(),
