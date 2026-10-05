@@ -3037,3 +3037,83 @@ fn persist_search_settings_failure_leaves_the_deferred_delete_unrun() {
     assert_eq!(credential.credential_state, CredentialState::Configured);
     assert!(credential.has_secret);
 }
+
+#[test]
+fn persist_search_settings_disk_failure_leaves_the_deferred_delete_unrun() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let home = TempPinvou3Home::new("search-delete-disk-fail");
+    seed_search_deletion_prefs();
+    let search = search_deletion_payload(Some(CredentialEditAction::Delete));
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+
+    // A read-only PINVOU3_HOME fails the save's disk write AFTER the closure
+    // captured the deferred delete — the one abort direction where the
+    // `saved.is_ok()` gate (not the `?` before the assignment inside the
+    // closure) is the only thing keeping the keyring delete unrun.
+    std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o555))
+        .expect("make PINVOU3_HOME read-only");
+    let error = super::settings::persist_search_settings_inner(search, &store)
+        .expect_err("the failing disk write must fail the save");
+    std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o755))
+        .expect("restore PINVOU3_HOME permissions");
+
+    assert!(error.contains("save settings failed"), "{error}");
+    assert!(
+        store.ops().is_empty(),
+        "the aborted save must run no keyring op, deferred delete included: {:?}",
+        store.ops()
+    );
+    let prefs = UserPrefs::load();
+    let credential = prefs
+        .search
+        .credentials
+        .get(&SearchProvider::Tavily)
+        .expect("the aborted save must leave the provider configured in prefs");
+    assert_eq!(credential.credential_state, CredentialState::Configured);
+    assert!(credential.has_secret);
+}
+
+fn web_deletion_patch(action: Option<CredentialEditAction>) -> super::settings::WebSettingsPatch {
+    super::settings::WebSettingsPatch {
+        memory_enabled: None,
+        search: Some(search_deletion_payload(action)),
+    }
+}
+
+#[test]
+fn persist_web_settings_commits_before_the_deferred_keyring_delete() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("web-delete-order");
+    seed_search_deletion_prefs();
+    let patch = web_deletion_patch(Some(CredentialEditAction::Delete));
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    store.fail_delete();
+
+    // Web clients carry the same Delete action through WebSettingsPatch.search
+    // (web_access_update_settings), so the web persist path must obey the
+    // identical ordering: commit first, then attempt the deferred delete —
+    // with the delete failing, Ok + a committed removal is only reachable
+    // when the save landed first.
+    super::settings::persist_web_settings_inner(patch, &store).expect("the save must succeed");
+
+    let prefs = UserPrefs::load();
+    // SearchPrefs::normalize retains out the secretless/refless entry, so
+    // absence on disk is what a committed delete must produce.
+    assert!(
+        !prefs
+            .search
+            .credentials
+            .contains_key(&SearchProvider::Tavily),
+        "the deleted credential must not survive in prefs"
+    );
+    assert_eq!(
+        store.ops(),
+        vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
+        "exactly one deferred keyring delete, attempted after the commit"
+    );
+}

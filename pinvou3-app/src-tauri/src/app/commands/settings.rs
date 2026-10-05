@@ -1421,7 +1421,20 @@ pub(super) fn persist_search_settings_inner(
 }
 
 pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs, String> {
-    let store = SystemCredentialStore::new();
+    persist_web_settings_inner(patch, &SystemCredentialStore::new())
+}
+
+/// Testable core of [`persist_web_settings`]: the credential store is
+/// injected so tests can pin the deferred-delete ordering, mirroring
+/// [`persist_search_settings_inner`].
+pub(super) fn persist_web_settings_inner(
+    patch: WebSettingsPatch,
+    store: &dyn CredentialStore,
+) -> Result<UserPrefs, String> {
+    // Same ordering contract as `save_model`/`delete_model`: the keyring
+    // deletes deferred by the migration run only after the prefs save has
+    // committed; an aborted transaction leaves them unrun, and a failed
+    // post-commit delete is downgraded to a warning.
     let mut deferred_deletes = Vec::new();
     let saved = UserPrefs::update_transaction(|prefs| {
         if let Some(memory_enabled) = patch.memory_enabled {
@@ -1430,7 +1443,7 @@ pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs,
         if let Some(search) = patch.search {
             prefs.search = search;
         }
-        let (prepared, deferred) = prepare_prefs_for_save(prefs.clone(), &store)?;
+        let (prepared, deferred) = prepare_prefs_for_save(prefs.clone(), store)?;
         *prefs = prepared;
         deferred_deletes = deferred;
         Ok(())
@@ -1438,7 +1451,7 @@ pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs,
     .map(refresh_safe_prefs)
     .map_err(|e| sanitize_command_error("save web settings", e));
     if saved.is_ok() {
-        delete_deferred_search_credentials("save_web_settings", &store, deferred_deletes);
+        delete_deferred_search_credentials("save_web_settings", store, deferred_deletes);
     }
     saved
 }
