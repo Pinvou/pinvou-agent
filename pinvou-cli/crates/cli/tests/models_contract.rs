@@ -1992,6 +1992,159 @@ fn probe_local_identifies_local_server() {
     );
 }
 
+/// The headline hygiene claim — credentials never enter argv — has no
+/// regression pin: enforcement is the value-flag allow-list, and a future
+/// edit adding `api-key` (or `token`) to it silently reintroduces argv
+/// secrets while CI stays green. The rejection must also never echo the
+/// rejected value (round-38 review).
+#[test]
+fn models_reject_plaintext_secret_flags_instead_of_ingesting_them() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("argv-secret");
+    let secret = "sk-argv-secret-value-1234567890";
+    for lane in [
+        vec![
+            "pinvou",
+            "models",
+            "add",
+            "--preset",
+            "deepseek",
+            "--name",
+            "N",
+            "--model",
+            "M",
+            "--base-url",
+            "U",
+            "--api-key",
+            secret,
+        ],
+        vec![
+            "pinvou",
+            "models",
+            "add",
+            "--preset",
+            "deepseek",
+            "--name",
+            "N",
+            "--model",
+            "M",
+            "--base-url",
+            "U",
+            "--token",
+            secret,
+        ],
+        vec!["pinvou", "models", "edit", "m_someid", "--api-key", secret],
+    ] {
+        let message = usage_error(&lane);
+        assert!(
+            !message.contains(secret),
+            "the usage error must not echo the rejected secret: {message}"
+        );
+    }
+    // The rejection is parse-time, so nothing was configured either
+    // (count-based: a fresh home's defaults may carry a seeded model).
+    let before = load_prefs().advanced.saved_models.len();
+    assert_eq!(
+        load_prefs().advanced.saved_models.len(),
+        before,
+        "no model may be added by the rejected lanes"
+    );
+}
+
+/// The no-reveal redaction gate had no test for the state where a leak would
+/// matter: a CONFIGURED model (a stored credential) shown WITHOUT
+/// `--reveal-key` must print neither the key bytes nor an api_key line, in
+/// human and JSON output alike. Uses the file-backed secret backend pointed
+/// at a throwaway home so the fixture never touches the real keychain
+/// (round-38 review).
+#[test]
+fn configured_model_show_without_reveal_key_leaks_nothing() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("no-reveal");
+    let mut homes: Vec<(&'static str, Option<std::ffi::OsString>)> = Vec::new();
+    for name in ["CODEWHALE_HOME", "HOME"] {
+        homes.push((name, std::env::var_os(name)));
+        unsafe { std::env::set_var(name, _home.root.join("secrets-home")) };
+    }
+    struct RestoreHomes(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for RestoreHomes {
+        fn drop(&mut self) {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(v) => unsafe { std::env::set_var(name, v) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+    let _homes = RestoreHomes(homes);
+    let _backend = RestoreEnvVar(
+        "CODEWHALE_SECRET_BACKEND",
+        Some(std::ffi::OsString::from("file")),
+    );
+    let secret = "sk-no-reveal-check-1234567890";
+    // Hermeticity, same as the lifecycle test: an ambient DEEPSEEK_API_KEY
+    // short-circuits credential_state to env_override, which would make the
+    // fixture not exercise the stored-credential gate at all.
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _key_env = RestoreEnvVar(
+        "PINVOU_CLI_TEST_NOREVEAL_KEY",
+        Some(std::ffi::OsString::from(secret)),
+    );
+    // SAFETY: ENV_LOCK is held by the owning test; the guard above restores
+    // the previous value on every exit path.
+    unsafe { std::env::set_var("PINVOU_CLI_TEST_NOREVEAL_KEY", secret) };
+
+    let stdout = run_ok(&[
+        "pinvou",
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        "No reveal",
+        "--model",
+        "M",
+        "--base-url",
+        "U",
+        "--api-key-env",
+        "PINVOU_CLI_TEST_NOREVEAL_KEY",
+    ]);
+    let id = stdout
+        .strip_prefix("id: ")
+        .expect("prints the new id")
+        .trim()
+        .to_owned();
+
+    let human = run_ok(&["pinvou", "models", "show", &id]);
+    let json = run_ok(&["pinvou", "--output", "json", "models", "show", &id]);
+    let list = run_ok(&["pinvou", "--output", "json", "models", "list"]);
+    for (surface, text) in [
+        ("human show", &human),
+        ("json show", &json),
+        ("json list", &list),
+    ] {
+        assert!(
+            !text.contains(secret),
+            "{surface} must not carry the key bytes without --reveal-key: {text}"
+        );
+        assert!(
+            !text.contains("api_key"),
+            "{surface} must not print an api_key line without --reveal-key: {text}"
+        );
+    }
+    // The fixture must actually be a CONFIGURED model, or the gate above is
+    // untested (the round-37-era tests all ran against keyless models).
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["has_secret"], true,
+        "the fixture model must have a stored credential: {json}"
+    );
+}
+
 /// The search provider enum surface the CLI validates against must stay the
 /// GUI's five providers (parse-time rejection depends on it).
 #[test]

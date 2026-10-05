@@ -1484,7 +1484,12 @@ where
 /// made the lanes need a display on headless Linux (the Tauri event loop).
 /// No event loop and no app context here: the work future runs on the
 /// runtime directly, with the same nested-task panic containment as the
-/// product host's spawn site.
+/// product host's spawn site. One hard precondition, unlike the windowless
+/// product host (which contains its whole boot): the WORK future is
+/// panic-contained, but the boot itself is not — `tauri::async_runtime::set`
+/// panics if a runtime was already initialized in this process, so this
+/// helper must stay at-most-once per process and never run beside another
+/// host lane.
 pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,

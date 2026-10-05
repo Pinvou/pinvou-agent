@@ -330,9 +330,7 @@ pub(crate) fn read_zip_entry_bounded(
         .read_to_end(&mut buf)
         .map_err(|e| format!("读{what}: {e}"))?;
     if buf.len() as u64 > declared_size {
-        return Err(format!(
-            "{what} 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝"
-        ));
+        return Err(format!("{what}{}", REJECT_FORGED_HEADER));
     }
     Ok(buf)
 }
@@ -345,6 +343,15 @@ pub(crate) fn read_zip_entry_bounded(
 ///   兜底计量——头部声明可被伪造）。
 /// 返回净化后的条目路径（分隔符归一为 `/`），并把本条目声明大小累进
 /// `declared_total`。
+/// The rejection literals carry the substrings the headless CLI's
+/// `translate_plugin_import_error` anchors on; they are single-sourced here
+/// so the anchor test below pins the production strings, not hand copies
+/// (round-38 review: the copies had drifted from being a test of anything).
+pub(crate) const REJECT_TRAVERSAL: &str = "zip 含不安全路径(穿越),拒绝";
+pub(crate) const REJECT_SYMLINK: &str = "zip 含 symlink,拒绝";
+pub(crate) const REJECT_FORGED_HEADER: &str =
+    " 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
+
 pub(crate) fn checked_zip_entry_path(
     entry: &mut zip::read::ZipFile<'_, std::fs::File>,
     declared_total: &mut u64,
@@ -352,11 +359,11 @@ pub(crate) fn checked_zip_entry_path(
     label: &str,
 ) -> Result<String, String> {
     let Some(enclosed) = entry.enclosed_name() else {
-        return Err("zip 含不安全路径(穿越),拒绝".to_string());
+        return Err(REJECT_TRAVERSAL.to_string());
     };
     if let Some(mode) = entry.unix_mode() {
         if mode & 0o170000 == 0o120000 {
-            return Err("zip 含 symlink,拒绝".to_string());
+            return Err(REJECT_SYMLINK.to_string());
         }
     }
     *declared_total = declared_total.saturating_add(entry.size());
@@ -1384,13 +1391,13 @@ mod tests {
     ];
 
     /// The literal rejection messages must keep carrying the substrings the
-    /// CLI translator searches for.
+    /// CLI translator searches for. Asserts on the PRODUCTION constants
+    /// (round-38 review: hand-copied strings made this vacuous — rewording
+    /// the real messages passed while the translator silently stopped
+    /// matching).
     #[test]
     fn cli_error_translation_anchors_are_present_in_the_messages() {
-        let traversal = "zip 含不安全路径(穿越),拒绝";
-        let symlink = "zip 含 symlink,拒绝";
-        let forged = "x 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
-        let joined = format!("{traversal}{symlink}{forged}");
+        let joined = format!("{REJECT_TRAVERSAL}{REJECT_SYMLINK}x{REJECT_FORGED_HEADER}");
         for (_, anchors) in CLI_TRANSLATION_ANCHORS {
             for anchor in anchors {
                 assert!(

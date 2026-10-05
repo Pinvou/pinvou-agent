@@ -251,6 +251,14 @@ super-permission pkexec toggle.
   legacy layout, but the residual is real until the GUI takes the same file
   lock. The voice
   `asr-install` residual is of the same class and disclosed on the command.
+- The same GUI×CLI class applies to ima's stored credentials: `connectors ima
+  connect` snapshots the previous client-id/api-key values up front and rolls
+  both back if its post-steps fail. A GUI `ima connect` completing between
+  this snapshot and the rollback can lose its freshly stored credential (the
+  rollback deletes the references it now shares) — byte-for-byte the GUI
+  rollback's own shape, so this is parity, not a CLI defect, but it is
+  undisclosed there; avoid running both surfaces' `ima connect` at once
+  (round-38 review).
 - CLI consent/scope writes to `disabled_bundles.json` (`connectors
   enable`/`disable`, `plugins enable`/`disable`/`project-skills`, and the
   DenyAll sync after `plugins` installs/imports and `connectors

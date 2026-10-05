@@ -1460,8 +1460,13 @@ impl ProviderManager {
             }
             // We won the id: materialize the credential the record now
             // references. A failure rolls OUR record back together with the
-            // (ours-alone) keyring entry — no peer can share either, since
-            // the id existed only from our insert onward.
+            // keyring entry. The id was ours alone at the insert, but the
+            // window is not microscopic (the keyring write itself can park
+            // on a keychain prompt), so a peer `save` addressing this id
+            // before the rollback lands can lose the record it just saw —
+            // the residual the round-38 review named; strictly narrower
+            // than the pre-round-37 order, where the keyring was touched
+            // before the id was won at all.
             if let Some(key) = &entry.api_key
                 && let Err(error) = self.credentials.set(&reference, key)
             {

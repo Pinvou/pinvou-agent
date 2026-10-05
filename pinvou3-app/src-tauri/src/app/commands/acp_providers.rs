@@ -25,8 +25,14 @@ fn parse_key_action(
     }
 }
 
+// Round-38 review: these three reads run under the providers' cross-process
+// section lock (`state_after_reload`/`import`), which waits up to
+// SECTION_LOCK_TIMEOUT for a concurrent CLI mutator. A sync `#[tauri::command]`
+// executes on the main thread, so a CLI `code providers save` holding the lock
+// across a keychain prompt would freeze the whole UI for up to that timeout;
+// async commands run on the async runtime instead.
 #[tauri::command]
-pub fn list_acp_providers(
+pub async fn list_acp_providers(
     agent: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<AcpProvidersView, String> {
@@ -153,14 +159,17 @@ pub async fn logout_acp_agent(
 }
 
 #[tauri::command]
-pub fn export_acp_providers(agent: String, acp_pool: State<'_, AcpPool>) -> Result<String, String> {
+pub async fn export_acp_providers(
+    agent: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<String, String> {
     acp_pool
         .export_acp_providers(&agent)
         .map_err(|error| format!("导出 Provider 失败: {error:#}"))
 }
 
 #[tauri::command]
-pub fn import_acp_providers(
+pub async fn import_acp_providers(
     agent: String,
     json: String,
     acp_pool: State<'_, AcpPool>,

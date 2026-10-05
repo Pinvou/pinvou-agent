@@ -1695,13 +1695,6 @@ fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
     assert!(!pending_dir.exists(), "nothing may be staged: {error}");
 }
 
-/// Round-28 review: the `agent run --attach` credential gate (the same
-/// `check_sensitive_path` rule `feedback --attach` applies) had no contract
-/// test — the identical gap round-27 closed for `feedback --body-file`.
-/// Deleting the gate in `agent_task.rs` passes the whole suite without this.
-/// The gate runs after the prompt read and before any host boot, so the
-/// refusal is hermetic.
-#[test]
 /// Round-37 review: the migration note tells users `agent run --prompt-file`
 /// is "a regular file of at most 4 MiB", but the shared helper's caps were
 /// pinned only through the feedback/voice lanes — nothing failed if this
@@ -1729,6 +1722,16 @@ fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
     );
 }
 
+/// Round-28 review: the `agent run --attach` credential gate (the same
+/// `check_sensitive_path` rule `feedback --attach` applies) had no contract
+/// test — the identical gap round-27 closed for `feedback --body-file`.
+/// Deleting the gate in `agent_task.rs` passes the whole suite without this.
+/// The gate runs after the prompt read and before any host boot, so the
+/// refusal is hermetic.
+// Round-38 review: the round-37 cap test's `#[test]` had been stacked onto
+// this doc comment, leaving this function attribute-less and never run —
+// the exact regression the round-28 note describes was uncaught again.
+#[test]
 fn agent_run_refuses_an_attachment_under_a_credential_path() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("agent-attach-secret");

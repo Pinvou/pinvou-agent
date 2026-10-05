@@ -2824,21 +2824,33 @@ enabled in settings",
              written ({error}); the run history for task {id} is not persisted"
         ))
     })?;
-    if let Ok(mut latest) = store_holder.read_def(id) {
-        if latest.is_object() {
-            latest["updated_at"] = serde_json::json!(now_string());
-            latest["last_run_at"] = record["ended_at"].clone();
-            // Best-effort like the enrichment below, but not silent: unlike
-            // the rollback `let _ =` lanes (where the unwritten state dies
-            // with the failed command), a failed refresh here leaves a
-            // user-visible stale "last run" behind while the command still
-            // succeeds, so the loss is disclosed on stderr instead.
-            if let Err(error) = store_holder.write_def(&latest) {
-                note!(
-                    "pinvou: warning: scheduled run {run_id} (task {id}) completed, but its \
-                     definition could not be refreshed ({error}); the task still shows the \
-                     previous last-run time"
-                );
+    // Round-38 review: the read arm of this refresh was the one silent
+    // failure left between the two write arms — a definition that vanished
+    // or became unreadable while the organize pass ran would silently skip
+    // the last-run stamp the write arm notes about.
+    match store_holder.read_def(id) {
+        Err(error) => note!(
+            "pinvou: warning: scheduled run {run_id} (task {id}) completed, but its \
+             definition could not be re-read to refresh last-run time ({error}); the task \
+             still shows the previous last-run time"
+        ),
+        Ok(mut latest) => {
+            if latest.is_object() {
+                latest["updated_at"] = serde_json::json!(now_string());
+                latest["last_run_at"] = record["ended_at"].clone();
+                // Best-effort like the enrichment below, but not silent:
+                // unlike the rollback `let _ =` lanes (where the unwritten
+                // state dies with the failed command), a failed refresh here
+                // leaves a user-visible stale "last run" behind while the
+                // command still succeeds, so the loss is disclosed on stderr
+                // instead.
+                if let Err(error) = store_holder.write_def(&latest) {
+                    note!(
+                        "pinvou: warning: scheduled run {run_id} (task {id}) completed, but its \
+                         definition could not be refreshed ({error}); the task still shows the \
+                         previous last-run time"
+                    );
+                }
             }
         }
     }

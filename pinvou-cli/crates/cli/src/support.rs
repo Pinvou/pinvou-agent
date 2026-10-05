@@ -255,6 +255,44 @@ pub fn read_text_file_capped(
         .map_err(|_| CliError::failed(format!("{action}: {} is not valid UTF-8", path.display())))
 }
 
+/// The byte twin of [`read_text_file_capped`] — same regular-file gate and
+/// `take`-bounded read for payloads the CLI only verifies or re-emits
+/// (round-38 review: the benchmark artifact lanes were the last unbounded
+/// store reads, against the family contract that every file read is capped).
+/// The cap is self-defense against a store file some other build or process
+/// has grown, not a format limit, so callers pass their existing failure
+/// code as `action` and keep their contract stable.
+pub fn read_bytes_capped(path: &Path, max_bytes: usize, action: &str) -> Result<Vec<u8>, CliError> {
+    let meta = std::fs::metadata(path).map_err(|error| {
+        CliError::failed(format!(
+            "{action}: cannot inspect {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !meta.is_file() {
+        return Err(CliError::failed(format!(
+            "{action}: {} is not a regular file",
+            path.display()
+        )));
+    }
+    let file = std::fs::File::open(path).map_err(|error| {
+        CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
+        })?;
+    if bytes.len() > max_bytes {
+        return Err(CliError::failed(format!(
+            "{action}: {} exceeds the {max_bytes}-byte read limit",
+            path.display()
+        )));
+    }
+    Ok(bytes)
+}
+
 /// Replaces every character that can corrupt a terminal row with a space,
 /// so a vendor- or user-controlled string cannot break the column structure
 /// of a human tab-separated row: control characters (newline, tab, ESC, …)

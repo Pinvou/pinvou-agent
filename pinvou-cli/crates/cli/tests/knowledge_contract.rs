@@ -243,24 +243,10 @@ fn seed_running_job(home: &TempHome, label: &str, files: usize) -> (i64, String)
     (collection, job)
 }
 
-/// Polls `knowledge index status` (read-only, non-recovering) until the
-/// phase is one of `phases`, failing after `timeout_secs`.
-fn poll_index_phase(phases: &[&str], timeout_secs: u64) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        let phase = state["phase"].as_str().unwrap_or_default().to_owned();
-        if phases.contains(&phase.as_str()) {
-            return state;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "index job never reached {phases:?} (last state: {state})"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
+// Round-38 review: the strict `poll_index_phase` helper lost its last
+// caller when the stall-timeout coverage moved into
+// `a_frozen_import_is_interrupted_and_resumable` (which reads the settled
+// state once instead of polling); the relaxed twin below is still in use.
 /// [`poll_index_phase`], but returning the last observed state instead of
 /// panicking when the deadline passes: for the bounded drain, where the
 /// point is "the import thread is usually done", not "the job must land a
@@ -1550,28 +1536,20 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     );
 }
 
-/// The import-owning commands' no-progress timeout leaves the job
-/// `interrupted` (immediately resumable), not `running`-with-no-owner: the
-/// timeout path interrupts through the feature layer's `interrupt_index`
-/// before failing. The stall is driven for real: the source "tree" is 110k
-/// empty directories, so the import thread spends seconds in the pre-item
-/// WALK phase (nothing indexed, no counters moving, no DB lock held), while
-/// the invoking child runs with `PINVOU_KB_IMPORT_STALL_MILLIS=300` — the
-/// test/automation override knob. The child must exit 1, report the
-/// interrupted/resumable remedy, and leave the job `interrupted` on disk
-/// for a fresh invocation to read back.
+/// A walk with a live heartbeat must NOT trip the no-progress stall bound
+/// (round-37 review MAJOR: the walk phase runs before any item exists, so
+/// the per-item liveness signature cannot move and a healthy walk over a
+/// pruned-heavy tree used to trip the stall bound — interrupted mid-walk
+/// on EVERY attempt, with a remedy (`index resume`) that re-walked into
+/// the same bound forever). The importer now ticks the job row's
+/// `updated_at` every 5000 walked entries and the CLI's signature reads
+/// it, so a walk that outlives the bound completes with an honest zero.
+/// (The timeout mechanism itself is exercised by
+/// [`a_frozen_import_is_interrupted_and_resumable`] below; the app-side
+/// `touch` unit test pins the heartbeat's terminal-state guard, and the
+/// interrupted/park machinery stays covered by the SIGKILL-strand tests.)
 #[test]
 fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
-    // Round-37 review MAJOR: the walk phase runs before any item exists, so
-    // the per-item liveness signature cannot move and a healthy walk over a
-    // pruned-heavy tree used to trip the stall bound — interrupted mid-walk
-    // on EVERY attempt, with a remedy (`index resume`) that re-walked into
-    // the same bound forever. The importer now ticks the job row's
-    // `updated_at` every 5000 walked entries and the CLI's signature reads
-    // it, so a walk that outlives the bound completes instead. (The timeout
-    // mechanism itself still fires on a genuinely frozen job — the app-side
-    // `touch` unit test pins the heartbeat's terminal-state guard, and the
-    // interrupted/park machinery stays covered by the SIGKILL-strand tests.)
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("stall-timeout");
 
@@ -1630,6 +1608,90 @@ fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
     assert!(
         stderr.contains("0 importable files"),
         "the empty harvest must be disclosed on stderr: {stderr}"
+    );
+}
+
+/// The other half of the stall contract, exercised for real (round-38
+/// review: the repointed negative test above left the timeout arm — bound
+/// expiry → `interrupt_index` → the interrupted/resumable remedy → exit 1 —
+/// with zero executing coverage): each 5000-entry heartbeat segment of the
+/// walk takes far longer than a 1 ms bound, so the wait loop trips it, and
+/// the job must land `interrupted` (immediately resumable) on disk — from
+/// which a fresh `index resume` completes without any recovery-owning boot.
+#[test]
+fn a_frozen_import_is_interrupted_and_resumable() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("stall-interrupt");
+
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "stall-interrupt",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    // Same empty-directory shape as the negative test: 9000 traversed
+    // entries, zero importable files. The walk's first heartbeat only fires
+    // at entry 5000, so with the bound at 1 ms the signature is frozen at
+    // the loop's first polls and the trip is deterministic.
+    let root = home.path().join("stall-tree");
+    for a in 0..30 {
+        let band = root.join(format!("a{a:03}"));
+        for b in 0..30 {
+            let cell = band.join(format!("b{b:03}"));
+            std::fs::create_dir_all(&cell).expect("create cell dir");
+            for c in 0..10 {
+                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
+            }
+        }
+    }
+
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args([
+            "knowledge",
+            "collections",
+            "add-sources",
+            &id.to_string(),
+            root.to_str().unwrap(),
+        ])
+        .env("PINVOU3_HOME", home.path())
+        .env("PINVOU_NO_COLOR", "1")
+        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "1");
+    let outcome = command.output().expect("walking add-sources child runs");
+    let stderr = String::from_utf8_lossy(&outcome.stderr);
+    assert!(
+        !outcome.status.success(),
+        "a signature frozen past the bound must trip it, got success with stderr {stderr}"
+    );
+    assert!(
+        stderr.contains("reported no progress"),
+        "the timeout must name the stall, not a generic fault: {stderr}"
+    );
+    assert!(
+        stderr.contains("interrupted and is resumable now"),
+        "the remedy must state the interrupt landed and the job is resumable: {stderr}"
+    );
+
+    // The on-disk state backs the remedy: `interrupted`, with a job id a
+    // fresh invocation can resume.
+    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
+    let job_id = settled["jobId"]
+        .as_str()
+        .expect("the interrupted job is named for resuming")
+        .to_owned();
+
+    // The remedy's command works verbatim: no desktop-app boot in between.
+    run_ok(&["pinvou", "knowledge", "index", "resume", &job_id]);
+    let resumed = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(
+        resumed["phase"],
+        serde_json::json!("done"),
+        "the resumed import must complete the empty harvest"
     );
 }
 
