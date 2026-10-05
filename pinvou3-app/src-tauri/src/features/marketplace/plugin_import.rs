@@ -352,6 +352,25 @@ pub(crate) const REJECT_SYMLINK: &str = "zip 含 symlink,拒绝";
 pub(crate) const REJECT_FORGED_HEADER: &str =
     " 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
 
+/// Declared-size cap rejection (the head-declared budget `checked_zip_entry_path`
+/// enforces). `label` names the entry; the fixed halves carry the substrings
+/// the headless CLI's `translate_plugin_import_error` anchors on (解压+上限).
+pub(crate) fn reject_declared_cap(label: &str, max_bytes: u64) -> String {
+    format!("{label}解压超过 {} MiB 上限", max_bytes / 1024 / 1024)
+}
+
+/// Actual-size cap rejection (the zip-bomb backstop on the real bytes read).
+/// Same anchor contract as [`reject_declared_cap`]; the two hand-copied
+/// format sites (pass-1 read and pass-2 write) now share this helper
+/// (round-39 review: rewording either site silently reverted the CLI's cap
+/// rejection to verbatim Chinese while the anchor test stayed green).
+pub(crate) fn reject_actual_cap(max_bytes: u64) -> String {
+    format!(
+        "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+        max_bytes / 1024 / 1024
+    )
+}
+
 pub(crate) fn checked_zip_entry_path(
     entry: &mut zip::read::ZipFile<'_, std::fs::File>,
     declared_total: &mut u64,
@@ -368,10 +387,7 @@ pub(crate) fn checked_zip_entry_path(
     }
     *declared_total = declared_total.saturating_add(entry.size());
     if *declared_total > max_bytes {
-        return Err(format!(
-            "{label}解压超过 {} MiB 上限",
-            max_bytes / 1024 / 1024
-        ));
+        return Err(reject_declared_cap(label, max_bytes));
     }
     Ok(enclosed.to_string_lossy().replace('\\', "/"))
 }
@@ -864,10 +880,7 @@ pub fn import_plugin_package(
         let buf = read_zip_entry_bounded(entry, declared_size, what)?;
         actual_total = actual_total.saturating_add(buf.len() as u64);
         if actual_total > MAX_PLUGIN_SIZE_BYTES {
-            return Err(format!(
-                "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-            ));
+            return Err(reject_actual_cap(MAX_PLUGIN_SIZE_BYTES));
         }
         Ok(buf)
     };
@@ -1170,10 +1183,7 @@ pub fn import_plugin_package(
             // （zip bomb 兜底，二轮评审 M-4）。超限由调用方清 staged 拒收。
             actual_total = actual_total.saturating_add(buf.len() as u64);
             if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
+                return Err(reject_actual_cap(MAX_PLUGIN_SIZE_BYTES));
             }
             std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
         }
@@ -1384,20 +1394,28 @@ mod tests {
     // refusals; if you must reword, update
     // pinvou-cli/crates/cli/src/plugins.rs `translate_plugin_import_error`
     // in the same change.
-    const CLI_TRANSLATION_ANCHORS: [(&str, &[&str]); 3] = [
+    const CLI_TRANSLATION_ANCHORS: [(&str, &[&str]); 4] = [
         ("zip-slip traversal", &["不安全路径"]),
         ("symlink entry", &["symlink"]),
         ("forged header / zip bomb", &["伪造头部", "解压"]),
+        ("extraction cap", &["解压", "上限"]),
     ];
 
     /// The literal rejection messages must keep carrying the substrings the
     /// CLI translator searches for. Asserts on the PRODUCTION constants
     /// (round-38 review: hand-copied strings made this vacuous — rewording
     /// the real messages passed while the translator silently stopped
-    /// matching).
+    /// matching). The extraction-cap arms are pinned through the production
+    /// `reject_*_cap` helpers, whose formatted output is what the CLI's
+    /// 解压+上限 branch actually sees (round-39 review: the cap branch was
+    /// claimed here but never anchored).
     #[test]
     fn cli_error_translation_anchors_are_present_in_the_messages() {
-        let joined = format!("{REJECT_TRAVERSAL}{REJECT_SYMLINK}x{REJECT_FORGED_HEADER}");
+        let joined = format!(
+            "{REJECT_TRAVERSAL}{REJECT_SYMLINK}x{REJECT_FORGED_HEADER}x{}x{}",
+            reject_declared_cap("条目 x", MAX_PLUGIN_SIZE_BYTES),
+            reject_actual_cap(MAX_PLUGIN_SIZE_BYTES),
+        );
         for (_, anchors) in CLI_TRANSLATION_ANCHORS {
             for anchor in anchors {
                 assert!(
