@@ -14,13 +14,16 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useDialogFocusRestore } from '../hooks/useDialogFocusRestore.js';
+import { isImeComposing } from '../shared/ime-guard.mjs';
 
-// Escape to close (disabled while busy). Shared by the confirm dialogs built
-// on ModalShell and CodexAcpView's branch-switch dialog.
+// Escape to close (disabled while busy, and ignored during IME composition —
+// that Escape cancels the candidate window and must not close the dialog;
+// shared/ime-guard.mjs has the macOS WKWebView details). Shared by the confirm
+// dialogs built on ModalShell and CodexAcpView's branch-switch dialog.
 function useDialogEscapeKey(busy, onCancel) {
   useEffect(() => {
     const onKey = (event) => {
-      if (event.key === 'Escape' && !busy) {
+      if (event.key === 'Escape' && !busy && !isImeComposing(event)) {
         event.preventDefault();
         onCancel();
       }
