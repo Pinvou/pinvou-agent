@@ -3,6 +3,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use support::success;
+
 use adapter_gaia::{
     GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter, GaiaDataset, GaiaSnapshotManager,
     GaiaSource, HfSnapshotDownloader,
@@ -687,7 +689,7 @@ pub fn render_list(output: OutputMode) -> String {
                     spec.availability.is_available(),
                     spec.score_kind,
                     spec.command_error,
-                    spec.description.replace('\\', "\\\\").replace('"', "\\\""),
+                    json_escape(spec.description),
                 ))
                 .collect::<Vec<_>>()
                 .join(",")
@@ -721,7 +723,7 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Benchmark(BenchmarkCommand::Status(run_id)) => status(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::Report(run_id)) => report(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::RunSmoke) => run_smoke(output),
-        CliCommand::Benchmark(BenchmarkCommand::Resume(run_id)) => resume_smoke(&run_id, output),
+        CliCommand::Benchmark(BenchmarkCommand::Resume(run_id)) => resume_run(&run_id, output),
         CliCommand::Benchmark(BenchmarkCommand::FetchGaia { token_env, source }) => {
             fetch_gaia(token_env, source, output)
         }
@@ -760,13 +762,6 @@ pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
         CliCommand::Monitor(command) => monitor::execute(command, output),
         CliCommand::Artifacts(command) => artifacts::execute(command, output),
         CliCommand::Projects(command) => projects::execute(command, output),
-    }
-}
-
-fn success(stdout: String) -> CliOutcome {
-    CliOutcome {
-        exit_code: ExitCode::Success,
-        stdout,
     }
 }
 
@@ -1613,7 +1608,7 @@ fn run_smoke(_output: OutputMode) -> Result<CliOutcome, CliError> {
 }
 
 #[cfg(not(feature = "product-backend"))]
-fn resume_smoke(_run_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
+fn resume_run(_run_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
 }
 
@@ -1912,8 +1907,12 @@ fn run_smoke(output: OutputMode) -> Result<CliOutcome, CliError> {
     product::run(output)
 }
 
+/// Handles `benchmark resume` for BOTH stored kinds, dispatching on the run's
+/// manifest — the name is `resume_run`, not `resume_smoke`: the smoke-only
+/// name sent a reader grepping the smoke lane to conclude gaia resume lives
+/// elsewhere (round-39 review).
 #[cfg(feature = "product-backend")]
-fn resume_smoke(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn resume_run(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
     match store.read_manifest().map_err(core_error)?.benchmark() {
         "gaia" => product::resume_gaia(run_id, output),

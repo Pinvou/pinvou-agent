@@ -34,7 +34,14 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// on drop. `HOME` isolation keeps `ProviderManager`'s per-CLI config writers
 /// (`~/.codex`, `~/.claude`) and the kimi data root inside the sandbox.
 struct HomeGuard {
-    previous: (Option<OsString>, Option<OsString>, Option<OsString>),
+    previous: (
+        Option<OsString>,
+        Option<OsString>,
+        Option<OsString>,
+        Option<OsString>,
+        Option<OsString>,
+        Option<OsString>,
+    ),
     root: PathBuf,
 }
 
@@ -53,6 +60,9 @@ impl HomeGuard {
             std::env::var_os("PINVOU3_HOME"),
             std::env::var_os("CODEWHALE_HOME"),
             std::env::var_os("HOME"),
+            std::env::var_os("USERPROFILE"),
+            std::env::var_os("HOMEDRIVE"),
+            std::env::var_os("HOMEPATH"),
         );
         // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
         // are serialized in-process.
@@ -60,6 +70,16 @@ impl HomeGuard {
             std::env::set_var("PINVOU3_HOME", &root);
             std::env::set_var("CODEWHALE_HOME", root.join("codewhale"));
             std::env::set_var("HOME", root.join("home"));
+            // Round-39 review (M2): the app's `user_home_dir` reads
+            // USERPROFILE (then HOMEDRIVE+HOMEPATH) FIRST on Windows, and the
+            // provider manager roots the codex/claude config writers there —
+            // leaving the real values set meant a local Windows `cargo test`
+            // could strip real `pv-*` entries from the developer's actual
+            // `~/.codex/config.toml`/`~/.claude`. Redirect all three into the
+            // sandbox; on Unix nothing reads them, so setting is harmless.
+            std::env::set_var("USERPROFILE", root.join("home"));
+            std::env::set_var("HOMEDRIVE", "C:");
+            std::env::set_var("HOMEPATH", root.join("home"));
         }
         std::fs::create_dir_all(root.join("home")).unwrap();
         Self { previous, root }
@@ -72,7 +92,14 @@ impl HomeGuard {
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        let (pinvou, codewhale, home) = (&self.previous.0, &self.previous.1, &self.previous.2);
+        let (pinvou, codewhale, home, profile, homedrive, homepath) = (
+            &self.previous.0,
+            &self.previous.1,
+            &self.previous.2,
+            &self.previous.3,
+            &self.previous.4,
+            &self.previous.5,
+        );
         // SAFETY: ENV_LOCK is held by the owning test.
         unsafe {
             match pinvou {
@@ -86,6 +113,18 @@ impl Drop for HomeGuard {
             match home {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
+            }
+            match profile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match homedrive {
+                Some(value) => std::env::set_var("HOMEDRIVE", value),
+                None => std::env::remove_var("HOMEDRIVE"),
+            }
+            match homepath {
+                Some(value) => std::env::set_var("HOMEPATH", value),
+                None => std::env::remove_var("HOMEPATH"),
             }
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -3364,6 +3403,16 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
         "PINVOU_CLI_TEST_RULES_KEY",
     ]);
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    // The add above SUCCEEDED, so the fixture key is in the REAL OS keychain
+    // on developer machines (the file fallback only engages where the
+    // keyring probe fails). Round-39 review: no cleanup was registered —
+    // every green run orphaned one `sk-test-rules-*` entry, the exact leak
+    // class round-37 closed elsewhere. Drop order puts this before
+    // `_env_guard`/`_home`, so `remove` still sees the sandboxed store.
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added_id.clone(),
+    };
     let error = run(&[
         "pinvou",
         "code",
@@ -3858,6 +3907,13 @@ fn providers_update_delete_key_requires_yes() {
         "PINVOU_TEST_DELETE_KEY_SECRET",
     ]);
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    // The add succeeded, so the fixture key is in the real keychain on dev
+    // machines; the test's own final `--delete-key --yes` normally cleans
+    // it, but a mid-test panic used to orphan the entry (round-39 review).
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added_id.clone(),
+    };
     let home_path = home.root.clone();
     let _ = home_path; // HomeGuard drops last, resetting PINVOU3_HOME itself.
 

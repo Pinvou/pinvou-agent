@@ -496,24 +496,25 @@ mod imp {
         // the spawn window (see `snapshot_spawn_safe`): a group whose
         // spawning thread was mid-fork is either already registered here or
         // the snapshot waited for the register to land.
-        for pgid in snapshot_spawn_safe() {
+        let phase1: Vec<libc::pid_t> = snapshot_spawn_safe();
+        for pgid in &phase1 {
             // SAFETY: kill(2) to a group we registered; ESRCH (already gone)
             // is fine to ignore.
             unsafe {
-                libc::kill(-pgid, libc::SIGTERM);
+                libc::kill(-*pgid, libc::SIGTERM);
             }
         }
 
         // Phase 2 — bounded grace. The policy is `grace_decision`, a pure
         // function the unit tests pin; this loop is only its effect.
         let started = Instant::now();
-        // Groups already asked to stop. Phase 1 TERMed its snapshot; a group
-        // that registers between that snapshot and a later one (the same
-        // sub-millisecond class the spawn window closes for the snapshot
-        // itself) must get its own polite TERM here instead of waiting for
-        // the deadline's SIGKILL (round-38 review).
-        let mut asked: std::collections::HashSet<libc::pid_t> =
-            snapshot_spawn_safe().into_iter().collect();
+        // Groups already asked to stop: EXACTLY the phase-1 snapshot, the set
+        // phase 1 actually TERMed. Seeding from a second, fresh snapshot
+        // instead marked every group registering in the between-snapshots
+        // window as already-asked without anyone having TERMed it, so it
+        // rode straight to the deadline's SIGKILL — the opposite of the
+        // polite-first delivery this window exists for (round-39 review).
+        let mut asked: std::collections::HashSet<libc::pid_t> = phase1.into_iter().collect();
         loop {
             // Same spawn-window discipline as phase 1: a spawn completing
             // during the grace is registered before this snapshot sees it.
@@ -621,10 +622,11 @@ mod imp {
     /// sleep-loop: this runs at most once per process lifetime, on a path
     /// whose only exit is the watcher killing the process.
     pub(super) fn park_while_cleanup_concludes() {
-        // Block the interrupt family around the gate load: a signal delivered
-        // between the final `false` observation and the caller's
-        // `std::process::exit` would otherwise start cleanup in a process
-        // that is already tearing down.
+        // Flush any interrupt already pended for this thread: the block
+        // window makes a delivered signal pend, and POSIX runs the handler
+        // during the restore — setting CLEANUP_STARTED before the gate load
+        // below. (The block does NOT bracket the load; a signal delivered
+        // after it still races main's exit, which the later comment covers.)
         let previous = block_interrupt_signals();
         restore_interrupt_signals(previous);
         // Round-37 review MAJOR: the gate must be read AFTER the restore.

@@ -1074,6 +1074,19 @@ fn safe_prefs<S: CredentialStore>(store: &S) -> UserPrefs {
     prefs
 }
 
+/// Plain prefs load for the probe lanes (`models test`, `probe-local`): their
+/// rows render only ok/code/detail/http_status — no credential_state — so the
+/// all-models keychain refresh `safe_prefs` performs (one `get` per stored
+/// credential) buys nothing here; the one key they need is resolved
+/// explicitly afterwards, exactly like the GUI twin's plain
+/// `UserPrefs::load()` in `resolve_saved_model_key` (round-39 review).
+fn plain_prefs() -> UserPrefs {
+    let mut prefs = UserPrefs::load();
+    prefs.normalize_saved_model_metadata();
+    prefs.sanitize_plaintext_api_keys();
+    prefs
+}
+
 /// One `models list`/`show` JSON row. Field names are the GUI's
 /// `ModelListItem` DTO (a flatten of `SavedModel`), so a script can read
 /// back every field `models add`/`edit` accepts without maintaining a
@@ -1832,7 +1845,7 @@ fn test_connection<S: CredentialStore>(
     id: &str,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let prefs = safe_prefs(store);
+    let prefs = plain_prefs();
     let model = find_model(&prefs, id)?;
     // A keychain failure is a probe RESULT, not a crash: like every other
     // `models test` outcome it renders a single-line JSON row on stdout
@@ -2501,7 +2514,7 @@ fn probe_local<S: CredentialStore>(
             None
         }
         None => {
-            let prefs = safe_prefs(store);
+            let prefs = plain_prefs();
             let model = prefs
                 .active_model()
                 .cloned()
@@ -2598,6 +2611,12 @@ fn probe_local<S: CredentialStore>(
     };
     let authenticated = bearer.is_some();
     let kind = select_local_server_kind(&target, bearer.as_deref());
+    // The human lines collapse the target like every other untrusted cell
+    // (`models list`/`show`): WHATWG URL parsing strips interior control
+    // characters before the loopback gate, so a stored
+    // `http://127.0.0.1:8000/\nkind: fake` would otherwise forge human output
+    // lines. JSON keeps the verbatim value (round-39 review).
+    let human_url = crate::support::collapse_control_characters(&target);
     // `unknown_authenticated` is not a classification, it is the absence of
     // one: the endpoint answered every signature probe with 401/403. Saying
     // so with exit 1 keeps a script from reading a kind the probe never
@@ -2609,7 +2628,7 @@ fn probe_local<S: CredentialStore>(
              of the probed endpoints is crashing the probe)";
         let text = render(
             output,
-            format!("url: {target}\nkind: {kind}\ndetail: {detail}"),
+            format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
             &serde_json::json!({
                 "url": target,
                 "kind": kind,
@@ -2631,7 +2650,7 @@ fn probe_local<S: CredentialStore>(
         };
         let text = render(
             output,
-            format!("url: {target}\nkind: {kind}\ndetail: {detail}"),
+            format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
             &serde_json::json!({
                 "url": target,
                 "kind": kind,
@@ -2646,7 +2665,7 @@ fn probe_local<S: CredentialStore>(
     }
     let text = render(
         output,
-        format!("url: {target}\nkind: {kind}"),
+        format!("url: {human_url}\nkind: {kind}"),
         &serde_json::json!({ "url": target, "kind": kind }),
     );
     Ok(success(text))

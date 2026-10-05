@@ -766,25 +766,6 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
         || pinvou3_lib::platform::path_identity_is_same_or_nested(&from_key, &to_key)
 }
 
-/// Mirror of `SessionStore::durable_session_record_is_absent` (the helper is
-/// `pub(crate)` to the app crate, the layout is the store's own:
-/// `<sessions root>/<id>.json`): only NotFound counts as absent, so a corrupt
-/// record is never mistaken for an orphan and stays a retryable failure. An
-/// invalid id is "present" fail-closed like the GUI's — the id is validated
-/// BEFORE joining it into a path, so a hostile sidecar key can never move the
-/// probe outside the sessions root and get a NotFound read back
-/// (misclassified as "rebound" instead of failed).
-fn session_record_is_absent(session_id: &str) -> bool {
-    if pinvou3_lib::features::sessions::validate_session_id(session_id).is_err() {
-        return false;
-    }
-    let record = pinvou3_lib::platform::paths::sessions_root().join(format!("{session_id}.json"));
-    matches!(
-        std::fs::metadata(&record),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-    )
-}
-
 /// Mirror of `rebind_workspace_root` (storage half, review #463/#464 lineage):
 /// after a project directory physically moved, translate every binding under
 /// the `from` prefix onto `to` — project roots, the codex lane
@@ -1037,7 +1018,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         // moved-this-run orphan with surviving artifacts → Rebound, and an
         // orphan an EARLIER run stranded under `to` → Skip (counting it
         // rebound would claim work this run did not do).
-        if session_record_is_absent(session_id) {
+        if sessions.durable_session_record_is_absent(session_id) {
             if !sessions.workspace_binding_artifacts_exist(session_id) {
                 continue;
             }
@@ -1161,7 +1142,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                 // the GUI re-probes absence after both save arms for exactly
                 // this race. Report accuracy only (a rerun's owner gates
                 // exclude the dead id either way).
-                if session_record_is_absent(session_id) {
+                if sessions.durable_session_record_is_absent(session_id) {
                     failed_session_ids.push(session_id.clone());
                 } else if finally_stale {
                     // Indexed session whose sidecar failed both passes: the

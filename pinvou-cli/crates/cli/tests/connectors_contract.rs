@@ -1552,9 +1552,13 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
             .get(id)
             .expect("store read must succeed")
             .expect("seeded record must be kept");
+        // The production constant, not a hand copy: the store single-sources
+        // this reason and this same file already imports `pinvou3_lib`
+        // (round-39 review — the hand copy failed as an opaque string diff
+        // instead of a self-documenting comparison when the constant moves).
         assert_eq!(
             record.degraded.as_deref(),
-            Some("已断开授权：配套技能已随断开移除，重新连接即可恢复"),
+            Some(pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON),
             "{id}: logout must mark the store record disconnected"
         );
     }

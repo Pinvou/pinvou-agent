@@ -33,7 +33,7 @@
 
 use std::path::PathBuf;
 
-use crate::support::{render, success};
+use crate::support::{collapse_control_characters, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::files::file_ingest::{self, IngestResult};
 
@@ -217,7 +217,13 @@ fn write_file(
         );
     }
     let mut human = summary_lines(result);
-    human.push(format!("Output: {}", destination.display()));
+    // The destination is caller-supplied and may carry control characters;
+    // the human line collapses it like the artifacts write lane. JSON keeps
+    // the verbatim path (round-39 review).
+    human.push(format!(
+        "Output: {}",
+        collapse_control_characters(&destination.display().to_string())
+    ));
     Ok(success(render(output, human.join("\n"), &value)))
 }
 

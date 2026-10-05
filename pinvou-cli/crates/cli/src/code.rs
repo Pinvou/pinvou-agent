@@ -2531,6 +2531,17 @@ fn login(
     code: Option<LoginCodeSource>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    // The claude-only gate first: which source the caller asked for is
+    // decidable from argv alone, so the same misuse keeps one exit class
+    // whether or not the named env var happens to be set (round-39 review:
+    // resolving the env var first made `--code-env C` exit 1 when C was
+    // unset but exit 2 when it was set, while `--code C` always exited 2).
+    if code.is_some() && agent != "claude" {
+        return Err(CliError::usage(format!(
+            "code login {agent} does not accept an authorization code; only the claude \
+             login flow consumes one"
+        )));
+    }
     // Resolve the code lane as far as it can be before the child exists.
     // `--code`/`--code-env` are for callers that already hold the code, so
     // their value resolves (and is validated) up front — a missing or empty
@@ -2545,12 +2556,13 @@ fn login(
         Some(LoginCodeSource::Env(var)) => {
             let value = std::env::var(&var).map_err(|_| {
                 CliError::failed(format!(
-                    "code login: authorization code environment variable {var} is not set"
+                    "code_login_env_missing: authorization code environment variable \
+                     {var} is not set"
                 ))
             })?;
             if value.trim().is_empty() {
                 return Err(CliError::failed(format!(
-                    "code login: authorization code environment variable {var} is empty"
+                    "code_login_env_empty: authorization code environment variable {var} is empty"
                 )));
             }
             (Some(value), false)
@@ -2566,12 +2578,6 @@ fn login(
         }
         None => (None, false),
     };
-    if (code.is_some() || stdin_code_deferred) && agent != "claude" {
-        return Err(CliError::usage(format!(
-            "code login {agent} does not accept an authorization code; only the claude \
-             login flow consumes one"
-        )));
-    }
     if let Some(code) = code.as_deref() {
         let trimmed = code.trim();
         if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
@@ -3132,9 +3138,12 @@ fn providers_save(
     // Mirror the lib store's statically reachable validation in English
     // before any secret resolution (--api-key-stdin blocks on stdin): the
     // store's own messages for these two rules are Chinese, the same
-    // translation-boundary rule as the marketplace importer.
+    // translation-boundary rule as the marketplace importer. These are
+    // argv-decidable input shapes, so they carry the usage class like their
+    // parse-time siblings (round-39 review: the mirrors used to exit 1 while
+    // the same shape class exited 2 at parse).
     if wire_api == Some("kimi") && agent != "kimi" {
-        return Err(CliError::failed(
+        return Err(CliError::usage(
             "the kimi wire protocol only applies to the kimi agent",
         ));
     }
@@ -3167,7 +3176,7 @@ fn providers_save(
             })
             .collect();
         if !missing.is_empty() {
-            return Err(CliError::failed(format!(
+            return Err(CliError::usage(format!(
                 "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
                  model slot (a missing slot falls back to official traffic); missing: {} \
                  (valid slots: {})",
@@ -3184,14 +3193,14 @@ fn providers_save(
     // address. Only the user-supplied value is gated; a merged update keeps
     // the existing record's already-valid values.
     if agent != "claude" && !model_slots.is_empty() {
-        return Err(CliError::failed(format!(
+        return Err(CliError::usage(format!(
             "code providers {lane}: --model-slot is only supported for the claude agent \
              (refined model slots); these agents take --model only"
         )));
     }
     if let Some(name) = name.as_deref() {
         if name.trim().is_empty() {
-            return Err(CliError::failed(format!(
+            return Err(CliError::usage(format!(
                 "code providers {lane}: --name must not be blank"
             )));
         }
@@ -3199,7 +3208,7 @@ fn providers_save(
     if let Some(url) = base_url.as_deref() {
         let trimmed = url.trim();
         if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
-            return Err(CliError::failed(format!(
+            return Err(CliError::usage(format!(
                 "code providers {lane}: --base-url must be a full http(s):// address"
             )));
         }
@@ -3277,8 +3286,18 @@ fn providers_save(
     } else {
         CredentialEditAction::KeepExisting
     };
-    let name = name.ok_or_else(|| CliError::usage("providers add requires --name"))?;
-    let base_url = base_url.ok_or_else(|| CliError::usage("providers add requires --base-url"))?;
+    // Unreachable in both lanes: `add` enforces --name/--base-url at parse
+    // time and a merged update inherits the existing record's values — these
+    // arms exist so a future caller of `providers_save` cannot silently
+    // construct a record without them (the store's own rejection would
+    // surface as Chinese text). Lane-honest wording, not the add-lane usage
+    // the old copies promised (round-39 review).
+    let name = name.ok_or_else(|| {
+        CliError::failed("code providers: internal error — no name resolved for the record")
+    })?;
+    let base_url = base_url.ok_or_else(|| {
+        CliError::failed("code providers: internal error — no base URL resolved for the record")
+    })?;
     let record = manager
         .save(
             agent,
@@ -5431,8 +5450,15 @@ fn valid_checkpoint_id(id: &str) -> bool {
 /// serialized from typed messages, so a deserialization failure is a
 /// transcript-integrity error, not a parse hiccup.
 fn count_user_turns_exact(messages: &serde_json::Value) -> Result<u32, CliError> {
-    let empty = Vec::new();
-    let array = messages.as_array().unwrap_or(&empty);
+    // The transcript is serialized from a typed `Vec<Turn>`, so a non-array
+    // payload is the transcript-integrity failure the header names — not an
+    // empty history that would surface as a misleading "0 turns" rewind
+    // refusal (round-39 review).
+    let Some(array) = messages.as_array() else {
+        return Err(CliError::failed(
+            "code session transcript is malformed: expected a turn array",
+        ));
+    };
     checkpoints::count_user_turns_in_json(array)
         .map_err(|error| CliError::failed(format!("code session transcript is malformed: {error}")))
 }
