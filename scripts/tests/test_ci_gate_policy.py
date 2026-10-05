@@ -519,6 +519,35 @@ class CiGatePolicyTests(unittest.TestCase):
             "runs no CLI leg at all",
         )
         self.assertIn("- 'CodeWhale'", cli_paths)
+        # Round-38: every literal cli_rust filter entry must name a path that
+        # EXISTS in the repository. The round-37 mcp-servers entry shipped as
+        # `pinvoy3-app/...` (a typo), which no glob ever matches — the entry
+        # was dead, the gap it claims to close stayed open, and this suite
+        # pinned the dead spelling as if it were coverage. A reachability
+        # check keeps the pin from outliving the path again.
+        cli_rust_entries = _extract_quoted_paths(cli_paths)
+        self.assertTrue(cli_rust_entries, "cli_rust paths 解析为空")
+        # Submodule gitlinks are not checked out everywhere this suite runs
+        # (fast-gate needs no CodeWhale tree), so their existence is pinned
+        # by .gitmodules instead of the working tree.
+        submodule_paths = set()
+        gitmodules = ROOT / ".gitmodules"
+        if gitmodules.exists():
+            for line in gitmodules.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("path = "):
+                    submodule_paths.add(stripped[len("path = "):].strip())
+        for entry in cli_rust_entries:
+            if "*" in entry:
+                # Glob metachars beyond the dir/** form are resolved by the
+                # paths-filter itself; only literal entries can rot.
+                continue
+            if entry in submodule_paths:
+                continue
+            self.assertTrue(
+                (ROOT / entry).exists(),
+                f"cli_rust 过滤路径在仓库中不存在(死条目): {entry}",
+            )
         # The connector lock tables are compiled into the CLI with include_str!
         # from src-tauri/src/platform/connector_lock.rs, so editing or
         # deleting one is a CLI source change in all but name — and
@@ -549,7 +578,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # either must not skip every compile leg while required-gate passes
         # on skipped.
         self.assertIn(
-            "- 'pinvoy3-app/resources/mcp-servers/**'",
+            "- 'pinvou3-app/resources/mcp-servers/**'",
             cli_paths,
             "mcp_catalog.rs include_str!s the app-level mcp-servers tree; "
             "without this entry an mcp-servers PR runs no CLI leg at all",

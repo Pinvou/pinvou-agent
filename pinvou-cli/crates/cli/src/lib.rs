@@ -816,8 +816,15 @@ fn finalize_smoke_outcomes(
         .map_err(|_| CliError::failed("smoke_report_failed"))?;
     let store = RunStore::open(base, run_id).map_err(core_error)?;
     let report_path = if store.run_dir().join("report.md").exists() {
-        let existing = std::fs::read_to_string(store.run_dir().join("report.md"))
-            .map_err(|_| CliError::failed("smoke_report_failed"))?;
+        let existing = String::from_utf8(
+            crate::support::read_bytes_capped(
+                &store.run_dir().join("report.md"),
+                BENCHMARK_ARTIFACT_READ_CAP,
+                "smoke_report_failed",
+            )
+            .map_err(|_| CliError::failed("smoke_report_failed"))?,
+        )
+        .map_err(|_| CliError::failed("smoke_report_failed"))?;
         if existing != markdown {
             return Err(CliError::failed("smoke_report_failed"));
         }
@@ -880,11 +887,25 @@ fn status(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(text))
 }
 
+/// Read cap for the benchmark store's own artifacts (`report.md`,
+/// `score.json`). They are tool-written and tiny in practice; the bound is
+/// the family's no-unbounded-read contract against a store file that some
+/// other build or process has grown (round-38 review).
+const BENCHMARK_ARTIFACT_READ_CAP: usize = 32 * 1024 * 1024;
+
 fn report(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
     let path = store.run_dir().join("report.md");
-    let markdown =
-        std::fs::read_to_string(&path).map_err(|_| CliError::failed("report_not_available"))?;
+    // Round-38 review: capped like every other store read — the report is
+    // tool-written, but the no-OOM bound is the family contract.
+    let markdown = crate::support::read_bytes_capped(
+        &path,
+        BENCHMARK_ARTIFACT_READ_CAP,
+        "report_not_available",
+    )
+    .and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|_| CliError::failed("report_not_available"))
+    })?;
     let text = match output {
         OutputMode::Human => markdown,
         OutputMode::Json => format!(
@@ -1134,8 +1155,12 @@ fn publish_gaia_score_artifacts(
     );
     let report_path = store.run_dir().join("report.md");
     if report_path.exists() {
-        let existing = std::fs::read(&report_path)
-            .map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
+        let existing = crate::support::read_bytes_capped(
+            &report_path,
+            BENCHMARK_ARTIFACT_READ_CAP,
+            "gaia_score_artifact_failed",
+        )
+        .map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
         if existing != markdown.as_bytes() {
             return Err(CliError::failed("gaia_score_artifact_conflict"));
         }
@@ -1541,8 +1566,12 @@ fn integration_layer(outcome: &TaskOutcome) -> &'static str {
 fn publish_or_verify_bytes(store: &RunStore, name: &str, expected: &[u8]) -> Result<(), CliError> {
     let path = store.run_dir().join(name);
     if path.exists() {
-        let existing =
-            std::fs::read(path).map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
+        let existing = crate::support::read_bytes_capped(
+            &path,
+            BENCHMARK_ARTIFACT_READ_CAP,
+            "gaia_score_artifact_failed",
+        )
+        .map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
         if existing != expected {
             return Err(CliError::failed("gaia_score_artifact_conflict"));
         }

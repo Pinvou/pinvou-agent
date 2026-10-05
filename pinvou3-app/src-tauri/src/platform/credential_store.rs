@@ -687,6 +687,9 @@ fn is_secret_like(value: &str) -> bool {
         || lower.starts_with("xoxa-")
         || lower.starts_with("xoxs-")
         || lower.starts_with("xoxe-")
+        // Slack refresh tokens rotate through this prefix too (round-38
+        // review: the family claimed Slack shapes but skipped it).
+        || lower.starts_with("xoxr-")
         || lower.starts_with("xapp-")
         || (trimmed.len() >= 24
             && trimmed.chars().any(|c| c.is_ascii_digit())
@@ -1076,6 +1079,9 @@ mod tests {
         // scanner on synthetic values.
         for token in [
             "ghp_shortexample",
+            "gho_shortexample",
+            "ghs_shortexample",
+            "ghu_shortexample",
             "ghr_shortexample",
             "github_pat_shortexample",
             "glpat-shortexample",
@@ -1086,7 +1092,11 @@ mod tests {
             // STS temporary credentials share the 20-char shape.
             "ASIAIOSFODNN7EXAMPLE",
             "xoxb-shortexample",
+            "xoxp-shortexample",
+            "xoxa-shortexample",
+            "xoxs-shortexample",
             "xoxe-shortexample",
+            "xoxr-shortexample",
             "xapp-shortexample",
         ] {
             let redacted = super::redact_secret(token);

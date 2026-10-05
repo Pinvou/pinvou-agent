@@ -375,7 +375,6 @@ fn memory_profile_set_get_round_trips_through_feature_io() {
     assert_eq!(value["identity"]["assistant_alias"], "Pin");
 }
 
-#[test]
 /// The docs row promises the stable `memory_add_failed` code for write-time
 /// refusals (sensitive/task-like content). Round-37 review: no test drove
 /// the refusal through the CLI, so a reworded or mis-routed code passed the
@@ -420,6 +419,11 @@ fn memory_add_reports_the_stable_code_for_sensitive_content() {
     );
 }
 
+// Round-38 review: this round-trip had lost its `#[test]` to the stacked
+// attribute above, so the only executing coverage of `memory delete --yes`
+// (the happy delete, the re-delete `preferences_not_found` failure) never
+// ran.
+#[test]
 fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("preference-roundtrip");

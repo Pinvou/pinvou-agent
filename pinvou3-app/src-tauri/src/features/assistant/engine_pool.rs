@@ -2966,9 +2966,8 @@ impl EnginePool {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     // Plain eprintln!: this twin is compiled in default
-                    // (non-benchmark) builds where `product_runtime` is
-                    // cfg'd out, and the closed-stderr panic it risks is
-                    // bounded to a detached best-effort sweep.
+                    // (non-benchmark) builds, and the closed-stderr panic
+                    // it risks is bounded to a detached best-effort sweep.
                     Err(error) => {
                         eprintln!("[engine_pool] {label} {} failed: {error}", dir.display())
                     }

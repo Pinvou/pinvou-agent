@@ -558,6 +558,14 @@ fn ffmpeg_available() -> bool {
 /// reports the system Speech runtime as present (`asr_bundled_runtime_status`
 /// → `Some(true)`), other platforms check engine + ffmpeg + model files.
 fn asr_components() -> (bool, bool, bool, bool) {
+    asr_components_with(ffmpeg_available())
+}
+
+/// `asr_components` with the ffmpeg verdict supplied: `asr-install` probes
+/// ffmpeg once up front (round-38 review — the already-present path used to
+/// spawn a second, redundant `ffmpeg -version` here) and hands the verdict
+/// through instead of re-asking.
+fn asr_components_with(ffmpeg: bool) -> (bool, bool, bool, bool) {
     // Only Linux has a CLI install route (`voice asr-install`); Windows
     // ships the engine in the MSI, which only the desktop app's
     // repair/reinstall flow can restore; macOS needs no installation.
@@ -568,7 +576,6 @@ fn asr_components() -> (bool, bool, bool, bool) {
     }
     let engine = engine_path().is_some();
     let model = model_available();
-    let ffmpeg = ffmpeg_available();
     (engine, ffmpeg, model, installable)
 }
 
@@ -811,7 +818,8 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         }
     })?;
     let mut steps: Vec<String> = Vec::new();
-    if !ffmpeg_available() {
+    let mut ffmpeg_ok = ffmpeg_available();
+    if !ffmpeg_ok {
         // The installer's second argument is the progress hook the GUI wires to
         // `deps:install_progress`; passing `None` here made the whole ffmpeg
         // step silent while `deps install` streams its progress — a `pkexec`
@@ -850,12 +858,16 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
             ))
         })?;
         steps.push("installed ffmpeg".to_owned());
+        // Load-bearing verification, not a redundant probe: a "successful"
+        // install that left no usable ffmpeg must still report honestly.
+        ffmpeg_ok = ffmpeg_available();
     }
     if !model_available() {
         let path = download_asr_model()?;
         steps.push(format!("downloaded model {}", path.display()));
     }
-    let (engine, ffmpeg, model, _) = asr_components();
+    let (engine, _, model, _) = asr_components_with(ffmpeg_ok);
+    let ffmpeg = ffmpeg_ok;
     let value = serde_json::json!({
         "engine": engine,
         "ffmpeg": ffmpeg,

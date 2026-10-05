@@ -596,13 +596,15 @@ fn sessions_timeline_reads_timing_events_and_tolerates_missing_file() {
     assert!(lines[0].contains("t1-start"));
 }
 
-/// `SessionStore::set_pinned` / `set_hidden` return `()`: the sidecar layer
-/// catches a failed persist, rolls its in-memory cache back to the durable
-/// state and only reports on stderr. Without a post-write verification the
-/// CLI printed "pinned <id>" and exited 0 with nothing written, so a script
-/// on a read-only `~/.pinvou3` recorded a pin (or an archive) that no later
-/// run can see. Make the write genuinely impossible and require a non-zero
-/// exit plus a message that names the sidecar.
+/// The sidecar layer's `set_pinned` / `set_hidden` USED to return `()`:
+/// they caught a failed persist, rolled the in-memory cache back to the
+/// durable state and only reported on stderr (they now propagate the
+/// persist failure, which the CLI's post-write verification below also
+/// depends on). Without that verification the CLI printed "pinned <id>"
+/// and exited 0 with nothing written, so a script on a read-only
+/// `~/.pinvou3` recorded a pin (or an archive) that no later run can see.
+/// Make the write genuinely impossible and require a non-zero exit plus a
+/// message that names the sidecar.
 #[cfg(unix)]
 #[test]
 fn sessions_pin_and_archive_fail_when_the_sidecar_cannot_be_persisted() {

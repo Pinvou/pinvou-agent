@@ -1272,7 +1272,12 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
     /// kind-specific prompt as an unattended full-permission Yolo
     /// conversation), so a miss pays a `stat` and re-reads only when the file
     /// actually changed; a hit stays lock-only with no IO, which is the hot
-    /// path for every already-known task.
+    /// path for every already-known task. Round-38 review note: the hit path
+    /// never re-consults disk, so a FOREIGN edit to an already-known id's
+    /// kind stays unseen until some miss, mutator, or poll reloads — bounded
+    /// staleness in the safe direction (the unknown→miss path always
+    /// reloads; a kind can only degrade Chat→organize, never the reverse,
+    /// without passing through a miss).
     pub(crate) fn kind_lookup_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
         if let Some(lookup) = self.stored_kind(automation_id) {
             return lookup;

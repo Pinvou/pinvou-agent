@@ -1810,28 +1810,41 @@ const IMA_SKILL_ID: &str = "ima-skills";
 /// registry branch would look for) and the `ima-skills` companion package's
 /// installed flag.
 ///
-/// A credential-store READ failure propagates instead of reading as absent:
-/// `ima_status` fails the whole GUI command on one, and "unavailable" is a
-/// different fact from "missing" for the same reason the `tools auth` token
-/// probe discloses itself rather than guessing.
-fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> Result<(bool, bool), CliError> {
-    let credential_present = |name: &str| -> Result<bool, CliError> {
-        credential_store
-            .get(&CredentialReference::for_ima_secret(name))
-            .map(|value| value.is_some_and(|secret| !secret.trim().is_empty()))
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "plugins readiness(ima): ima credential store unavailable: {}",
+/// A credential-store READ failure degrades to "absent" with a stderr note
+/// and is named again in the row's reason (`credential_store_unavailable`),
+/// so one corrupted keychain entry cannot hide every other bundle's verdict
+/// (round-38 review: the row used to abort the whole table, making the CLI
+/// strictly less available than the GUI's per-bundle card on the same
+/// failure). "Unavailable" stays a different fact from "missing": the
+/// fail-closed direction is unchanged — a present key the store cannot
+/// answer reads as absent, never the reverse — and the reason string keeps
+/// the two apart for scripts. (The GUI's `ima_status` fails its whole
+/// command on a read failure; that is a one-card surface, this is a table.)
+fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> (bool, bool, bool) {
+    let credential_present = |name: &str| -> (bool, bool) {
+        match credential_store.get(&CredentialReference::for_ima_secret(name)) {
+            Ok(value) => (value.is_some_and(|secret| !secret.trim().is_empty()), false),
+            Err(error) => {
+                note!(
+                    "[plugins] readiness ima: credential store read failed \
+                     (reporting the credential as absent): {}",
                     error.user_message()
-                ))
-            })
+                );
+                (false, true)
+            }
+        }
     };
-    let credentials_present = credential_present("client_id")? && credential_present("api_key")?;
+    let (client_ok, client_failed) = credential_present("client_id");
+    let (api_ok, api_failed) = credential_present("api_key");
     let skill_installed = SkillMarketplaceManager::new()
         .list_skills()
         .into_iter()
         .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
-    Ok((credentials_present, skill_installed))
+    (
+        client_ok && api_ok,
+        skill_installed,
+        client_failed || api_failed,
+    )
 }
 
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1859,11 +1872,15 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             // `IMA_API_KEY` lookup is the wrong namespace and would report
             // `missing_credentials` for a connected ima.
             if bundle.kind == BundleKind::Skill && bundle.id == "ima" {
-                let (credentials_present, skill_installed) =
-                    ima_readiness_parts(&credential_store)?;
+                let (credentials_present, skill_installed, store_unavailable) =
+                    ima_readiness_parts(&credential_store);
                 let ready = credentials_present && skill_installed;
                 let reason = if ready {
                     None
+                } else if store_unavailable {
+                    // The store could not answer; the row's verdict is not a
+                    // credential fact (round-38 review degrade).
+                    Some("credential_store_unavailable".to_owned())
                 } else if !credentials_present {
                     Some("missing_credentials".to_owned())
                 } else {
