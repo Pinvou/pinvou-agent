@@ -220,7 +220,10 @@ pub enum ScheduledCommand {
 /// verbatim: the GUI feature is `pub(crate)` to `pinvou3_lib`, so the const
 /// cannot be referenced from the CLI, and this is GUI data the model consumes,
 /// not CLI copy). `chat_prompt_mirrors_the_gui_once_scheduling_guidance` in
-/// scheduled_contract.rs pins the ONCE guidance so copy drift fails CI.
+/// scheduled_contract.rs pins the ONCE guidance substrings so copy drift in
+/// them fails CI (round-38 review note: only those substrings are pinned,
+/// not the whole copy — the rrule examples and the schtasks prohibition can
+/// still drift silently).
 const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任务。请通过提问帮我确定方案，回复保持简短，不要长篇解释。
 
 这是一个纯对话收集流程。不要调用任何工具，不要写文件，不要读写 ~/.pinvou3，也不要手动创建 automations JSON。信息完整后只输出给前端解析的任务参数，前端会通过 create_scheduled_task 创建并打开任务详情，不再要求用户二次确认。
@@ -1343,19 +1346,27 @@ fn unread_and_running(
     runs: &[serde_json::Value],
     store: Option<&SessionStore>,
     read_state: &serde_json::Value,
+    titles: &std::collections::HashMap<String, String>,
 ) -> (bool, bool) {
     let task_id = str_field(def, "id").unwrap_or("");
     let is_running = runs
         .iter()
         .any(|run| matches!(str_field(run, "status").unwrap_or(""), "queued" | "running"));
     let viewed = viewed_runs(read_state, task_id);
+    // Round-38 review: existence is judged against the precomputed title map
+    // (the GUI's `has_unread_scheduled_runs_from_snapshot` shape), not a live
+    // per-run `load_session_snapshot` — a task with hundreds of completed
+    // runs used to read and fully parse that many session files per
+    // `list`/`show`.
     let has_unread = match store {
         Some(store) => runs.iter().any(|run| {
             str_field(run, "status") == Some("completed")
-                && owned_session_id(run, task_id, store).is_some_and(|session_id| {
-                    !store.is_hidden(&session_id)
-                        && !viewed.contains(&str_field(run, "id").unwrap_or(""))
-                })
+                && owned_session_id_from_snapshot(run, task_id, store, titles).is_some_and(
+                    |session_id| {
+                        !store.is_hidden(&session_id)
+                            && !viewed.contains(&str_field(run, "id").unwrap_or(""))
+                    },
+                )
         }),
         // Without the store the unread computation cannot tell which
         // completed runs have live conversations; report none rather than
@@ -1365,8 +1376,9 @@ fn unread_and_running(
     (has_unread, is_running)
 }
 
-/// Mirrors `features::scheduled::tasks::owned_session_id`: the run's thread
-/// is a CLI-visible scheduled-run session owned by this exact task.
+/// Live single-run probe for the one-run paths (`mark-viewed`'s ownership
+/// precheck): one session read is cheaper there than building the whole
+/// title map. The many-run paths use [`owned_session_id_from_snapshot`].
 fn owned_session_id(
     run: &serde_json::Value,
     task_id: &str,
@@ -1427,10 +1439,11 @@ fn map_task(
     bindings: &serde_json::Value,
     kinds: &serde_json::Value,
     ui_metadata: &serde_json::Value,
+    titles: &std::collections::HashMap<String, String>,
 ) -> serde_json::Value {
     let task_id = str_field(def, "id").unwrap_or("").to_owned();
     let model = str_field(def, "model");
-    let (has_unread_runs, is_running) = unread_and_running(def, runs, store, read_state);
+    let (has_unread_runs, is_running) = unread_and_running(def, runs, store, read_state, titles);
     let (pinned, pinned_at) = pinned_for(ui_metadata, &task_id);
     serde_json::json!({
         "id": task_id,
@@ -1456,6 +1469,12 @@ fn map_task(
         "pinned": pinned,
         "pinnedAt": pinned_at,
     })
+}
+
+/// [`session_titles`] for the best-effort enrichment sites: no store means
+/// the same empty map (and absent session-derived fields) as a failed read.
+fn session_titles_for(store: Option<&SessionStore>) -> std::collections::HashMap<String, String> {
+    store.map(session_titles).unwrap_or_default()
 }
 
 fn session_titles(store: &SessionStore) -> std::collections::HashMap<String, String> {
@@ -1556,8 +1575,8 @@ fn render_runs(
     runs: &[serde_json::Value],
     read_state: &serde_json::Value,
     task_names: &std::collections::HashMap<String, (String, Option<String>)>,
+    titles: &std::collections::HashMap<String, String>,
 ) -> (Vec<String>, Vec<serde_json::Value>) {
-    let titles = session_titles(store);
     let mut lines = Vec::new();
     let values = runs
         .iter()
@@ -1717,6 +1736,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
     let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
     let defs = store_holder.list_defs()?;
+    let titles = session_titles(&sessions);
     let mut lines = Vec::new();
     let tasks = defs
         .iter()
@@ -1731,6 +1751,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 &bindings,
                 &kinds,
                 &ui_metadata,
+                &titles,
             );
             // Human rows must not be forgeable: every textual cell goes
             // through the shared collapse (JSON keeps the originals), the
@@ -1769,6 +1790,7 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
     let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
     let runs = store_holder.list_runs(id, None)?;
+    let titles = session_titles(&sessions);
     let task = map_task(
         &def,
         &runs,
@@ -1777,9 +1799,10 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         &bindings,
         &kinds,
         &ui_metadata,
+        &titles,
     );
     let names = task_name_map(std::slice::from_ref(&def));
-    let (run_lines, run_values) = render_runs(&sessions, &runs, &read_state, &names);
+    let (run_lines, run_values) = render_runs(&sessions, &runs, &read_state, &names, &titles);
     // Same no-forgeable-output rule as `list`: every textual value collapses
     // before it reaches the terminal (JSON keeps the originals).
     let cell = |key: &str, default: &str| {
@@ -2008,6 +2031,7 @@ enabled in settings",
         &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
         &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
         &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        &session_titles_for(sessions.as_ref()),
     );
     Ok(success(render(
         output,
@@ -2219,6 +2243,7 @@ the update itself is committed",
         &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
         &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
         &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        &session_titles_for(sessions.as_ref()),
     );
     Ok(success(render(
         output,
@@ -2392,6 +2417,7 @@ the status change itself is committed",
         &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
         &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
         &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        &session_titles_for(sessions.as_ref()),
     );
     Ok(success(render(
         output,
@@ -2727,6 +2753,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         &serde_json::Value::Null,
         &serde_json::Value::Null,
         &serde_json::Value::Null,
+        &session_titles_for(sessions.as_ref()),
     );
     let mut value = task;
     value["deletedSessionIds"] = serde_json::json!([]);
@@ -2943,7 +2970,13 @@ fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     let records = store_holder.list_runs(id, limit)?;
     let names = task_name_map(std::slice::from_ref(&def));
-    let (lines, values) = render_runs(&sessions, &records, &read_state, &names);
+    let (lines, values) = render_runs(
+        &sessions,
+        &records,
+        &read_state,
+        &names,
+        &session_titles(&sessions),
+    );
     let human = if lines.is_empty() {
         format!("No runs for scheduled task {id}.")
     } else {
@@ -3028,7 +3061,13 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     if let Some(limit) = limit {
         records.truncate(limit);
     }
-    let (lines, values) = render_runs(&sessions, &records, &read_state, &names);
+    let (lines, values) = render_runs(
+        &sessions,
+        &records,
+        &read_state,
+        &names,
+        &session_titles(&sessions),
+    );
     let human = if lines.is_empty() {
         "No scheduled runs.".to_owned()
     } else {
@@ -3137,7 +3176,13 @@ viewed"
     let (has_unread, _) = {
         let refreshed = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
         let def = serde_json::json!({ "id": task_id });
-        unread_and_running(&def, &runs, Some(&sessions), &refreshed)
+        unread_and_running(
+            &def,
+            &runs,
+            Some(&sessions),
+            &refreshed,
+            &session_titles(&sessions),
+        )
     };
     let value = serde_json::json!({
         "automationId": task_id,

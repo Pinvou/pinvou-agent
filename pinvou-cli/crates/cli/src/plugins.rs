@@ -521,10 +521,11 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
     let id = value
         .ok_or_else(|| CliError::usage("plugins command requires an id"))?
         .clone();
-    // A `--`-prefixed id is a mistyped flag (e.g. `plugins disable --scope`);
-    // recording it into disabled_bundles.json would disable nothing and
-    // confuse the next list read.
-    if id.is_empty() || id.starts_with("--") {
+    // A `-`-prefixed id is a mistyped flag (e.g. `plugins disable --scope`,
+    // or the single-dash `plugins disable -x` that used to persist a junk
+    // `-x` row into disabled_bundles.json); recording either into the store
+    // would disable nothing and confuse the next list read.
+    if id.is_empty() || id.starts_with('-') {
         return Err(CliError::usage("plugins command requires an id"));
     }
     Ok(id)
@@ -864,6 +865,7 @@ fn tools_install(
         ));
         value["validation_rollback"] = serde_json::json!("skipped");
     }
+    human.push_str(HOT_REFRESH_NOTE);
     Ok(success(render(output, human, &value)))
 }
 
@@ -953,7 +955,7 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     });
     Ok(success(render(
         output,
-        format!("{action} {id}{oauth_note}"),
+        format!("{action} {id}{oauth_note}{HOT_REFRESH_NOTE}"),
         &value,
     )))
 }
@@ -1489,7 +1491,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     });
     Ok(success(render(
         output,
-        format!("imported {} (kind={kind} icon={})", report.id, report.icon),
+        format!("imported {} (kind={kind} icon={})", report.id, report.icon) + HOT_REFRESH_NOTE,
         &value,
     )))
 }
@@ -1682,6 +1684,7 @@ fn recycle_restore(id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
         human
             .push_str("\nwarning: credentials were removed at uninstall; re-enter them before use");
     }
+    human.push_str(HOT_REFRESH_NOTE);
     Ok(success(render(output, human, &value)))
 }
 
@@ -2044,7 +2047,14 @@ fn set_enabled(
     // and the read-back verification must both use that id: comparing the
     // raw id reported false `persistence_verified` for enables (nothing was
     // removed) and could never verify disables of remapped ids.
-    let packages = pinvou3_lib::features::marketplace::scope::package_id_for(id);
+    // Round-38 review: one `available_tools()` walk serves the target id,
+    // the retain's normalization, and the read-back verification — the same
+    // hoist the lib made for its own multi-entry lists (round-23 MINOR 3);
+    // the per-entry `package_id_for` here had reintroduced it.
+    let tool_snapshot =
+        pinvou3_lib::features::marketplace::MarketplaceManager::new().available_tools();
+    let packages =
+        pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, id);
     // `--scope both` is two independent single-scope writes: the storage layer
     // exposes one scope per critical section and no two-scope transaction, so
     // a failure on the second scope cannot roll the first one back. Rather
@@ -2073,7 +2083,10 @@ fn set_enabled(
             // raw) must not survive an enable and deadlock every retry into
             // a remedy-less hard failure.
             ids.retain(|existing| {
-                pinvou3_lib::features::marketplace::scope::package_id_for(existing) != packages
+                pinvou3_lib::features::marketplace::scope::to_package_id_with(
+                    &tool_snapshot,
+                    existing,
+                ) != packages
             });
         } else if !ids.iter().any(|existing| existing == &packages) {
             ids.push(packages.clone());
@@ -2085,7 +2098,8 @@ fn set_enabled(
         // that only dropped the exact spelling would otherwise report success
         // while the package stayed disabled.
         let recorded = ids.iter().any(|existing| {
-            pinvou3_lib::features::marketplace::scope::package_id_for(existing) == packages
+            pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, existing)
+                == packages
         });
         pinvou3_lib::features::marketplace::save_disabled_bundles_for(connector_scope, &ids)
             .map_err(|error| {
@@ -2131,16 +2145,23 @@ fn set_enabled(
             "\nwarning: id not found in the installed catalog; the toggle was recorded anyway",
         );
     }
-    // Caveat at the point of action: the GUI runs `hot_refresh` after a scope
-    // change (`refresh_live_sessions_skills` + `refresh_permission_rulesets`),
-    // which needs the engine pool the CLI does not host. A desktop app running
-    // alongside keeps its live engines on the whitelist they started with.
-    human.push_str(
-        "\nnote: no hot-refresh broadcast was sent; a running desktop app's live \
-         engines keep the previous whitelist until they are restarted",
-    );
+    // Caveat at the point of action (see [`HOT_REFRESH_NOTE`]): the GUI runs
+    // `hot_refresh` after a scope change (`refresh_live_sessions_skills` +
+    // `refresh_permission_rulesets`), which needs the engine pool the CLI
+    // does not host.
+    human.push_str(HOT_REFRESH_NOTE);
     Ok(success(render(output, human, &value)))
 }
+
+/// Caveat appended at every mutating action point whose GUI counterpart
+/// runs `hot_refresh` (scope toggles, tool install, uninstall, import,
+/// recycle restore — the matching `app/commands/marketplace.rs` sites): the
+/// engine pool the refresh needs is not hosted here, so a running desktop
+/// app keeps its live engines on the state they started with until they
+/// restart. Round-38 review: the note used to ride only the scope toggles,
+/// leaving install/uninstall/import/restore silent about the same gap.
+const HOT_REFRESH_NOTE: &str = "\nnote: no hot-refresh broadcast was sent; a running desktop app's \
+     live engines keep the state they started with until they are restarted";
 
 /// Suffix naming the scopes a `--scope both` run already persisted when a
 /// later scope fails. The scopes are written one critical section at a time

@@ -827,6 +827,37 @@ pub(crate) fn staged_persona_turn(session_id: &str) -> Option<StagedPersonaTurn>
     Some(StagedPersonaTurn::Orphaned(staged))
 }
 
+/// Round-38 review: the fail-open arm of [`staged_persona_turn`] (a staged
+/// body whose card cannot be pool-checked because the pool itself is
+/// unreadable) used to be completely silent on the run that skipped it —
+/// the equip had promised "applies to the next agent run", so a caller
+/// could not tell "no persona" from "persona skipped, pool unreadable".
+/// Best-effort stderr disclosure only: the run still proceeds without the
+/// injection and the body stays staged.
+#[cfg(feature = "product-backend")]
+pub(crate) fn note_deferred_staged_injection(session_id: &str) {
+    let Ok(path) = equip_state_path(session_id) else {
+        return;
+    };
+    let Some(staged) = staged_persona_injection_at(&path) else {
+        return;
+    };
+    if get(&staged.persona_id).is_some() {
+        // Resolvable now — either it was injected this run or the pool
+        // recovered; neither is the deferred class.
+        return;
+    }
+    if !pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
+        note!(
+            "personas: session {session_id} has a staged persona body for '{}' that was NOT \
+             injected: the persona pool could not be read, so the run cannot verify the card \
+             still exists (fail-open). The body stays staged for the next run; `personas \
+             active` shows the equipped card",
+            staged.persona_id
+        );
+    }
+}
+
 /// Clears the staged one-shot body after the turn that consumed it, keeping
 /// `persona_id` on the sidecar — the same state split the GUI's one-shot take
 /// leaves in memory (`take_pending_turn_injections` clears
@@ -877,6 +908,16 @@ fn consume_staged_persona_injection_at(
     path: &std::path::Path,
     expected: &StagedPersonaInjection,
 ) -> Result<(), CliError> {
+    // Round-38 review: the exact-pair guard below is only as strong as the
+    // read→write window it spans; under the lock, a concurrent equip's
+    // restage serializes either before this read (the guard sees the NEW
+    // pair and keeps it) or after this clear (nothing to lose) — the
+    // lost-restage window is closed, which is what the guard's comment
+    // always promised.
+    let mut lock = equip_state_lock()?;
+    let _guard = lock.write().map_err(|error| {
+        CliError::failed(format!("cannot lock the persona equip state: {error}"))
+    })?;
     let raw = match crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run") {
         Ok(raw) => raw,
         // Missing/unreadable: nothing verifiably staged to clear. Degrading to
@@ -956,12 +997,50 @@ fn require_equippable_body(card: &PersonaCard) -> Result<(), CliError> {
 
 /// Persists the equip state for the next CLI invocation. The raw-body budget
 /// is checked by [`require_equippable_body`] before the body is wrapped.
+/// Serializes the session persona sidecar's read-modify-write pairs across
+/// processes (round-38 review): `equip` staging a body and a run consuming
+/// it are different one-shot processes, and the consume's read→clear window
+/// could otherwise swallow a mid-run restage — `equip`'s write landing after
+/// the consume's read was overwritten by the consume's null-clear, which
+/// LOSES a body that was never injected (the guard's comment promises the
+/// opposite). The sidecar is CLI-only (`persona_equipped.json` appears
+/// nowhere in the app crate), so a CLI-only lock has no cross-surface
+/// semantics; a reader needs no lock (rename-atomic writes).
+fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        CliError::failed(format!(
+            "cannot create the persona lock directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+    let path = dir.join("persona-equip.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "cannot open the persona equip lock {}: {error}",
+                path.display()
+            ))
+        })?;
+    Ok(fd_lock::RwLock::new(file))
+}
+
 fn persist_equipped_persona(
     session_id: &str,
     persona_id: &str,
     pending_body: &str,
 ) -> Result<(), CliError> {
     let path = equip_state_path(session_id)?;
+    // Hold across the whole stage: a concurrent consume's read→clear pair
+    // must not interleave with this write (see [`equip_state_lock`]).
+    let mut lock = equip_state_lock()?;
+    let _guard = lock.write().map_err(|error| {
+        CliError::failed(format!("cannot lock the persona equip state: {error}"))
+    })?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|error| {
             CliError::failed(format!(
