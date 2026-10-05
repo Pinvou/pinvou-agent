@@ -13,7 +13,9 @@
 //!
 //! - `marketplace/bundles.json` → `marketplace/bundles.lock` (`store.rs`)
 //! - `marketplace/recycle-bin.json` → `marketplace/recycle-bin.lock` (`recycle_bin.rs`)
-//! - `mcp.json` → `mcp.lock` (`connectors.rs` writers)
+//! - `mcp.json` → `mcp.lock` (`connectors.rs` writers, the boot builtin
+//!   refresh in `runtime_bundle/platform/extraction.rs`, and the marketplace
+//!   transaction's journal restore in `mod.rs`)
 //!
 //! Each acquisition opens a fresh lock file, so the OS lock actually excludes
 //! other threads of this process too; the in-process mutex stays in front of
@@ -60,17 +62,19 @@
 //! `bundles.lock` / `recycle-bin.lock` / `mcp.lock` themselves. Everything
 //! else nests INTO them, never out:
 //!
-//! - `MARKETPLACE_TRANSACTION_LOCK` → file locks: install/uninstall hold the
-//!   transaction lock and enter every one of the three inside it.
+//! - `MARKETPLACE_TRANSACTION_LOCK` → file locks: install legs enter the
+//!   mcp/bundles locks inside the transaction lock; uninstall/restore legs
+//!   additionally enter the recycle-bin lock (install legs never do).
 //! - Per-id `import_lock` → file locks: the unified import path
 //!   (`import_lock → bundles.lock`), restore (`import_lock → recycle-bin.lock`,
 //!   `import_lock → TRANSACTION → mcp.lock`, `import_lock → bundles.lock`).
 //! - The scope lock (#517 — PR still open, landing separately from the
 //!   branch carrying this module — `disabled_bundles.lock`) → `bundles.lock`:
-//!   the scope critical sections' store legs (legacy-migration id
-//!   normalization, DenyAll installed-ids enumeration) re-enter the store
-//!   lock; no store method enters the scope's — that ordering is never
-//!   reversed.
+//!   the scope critical sections' store legs — the DenyAll default
+//!   expansion's skill enumeration (`resolve_scope_disabled_ids` → the
+//!   store's `records()`, always through the bounded try-read) — re-enter
+//!   the store lock; no store method enters the scope's — that ordering is
+//!   never reversed.
 //!
 //! None of these edges is ever taken in reverse (a file-lock section takes no
 //! marketplace lock; the scope/transaction/import locks are never acquired
@@ -86,8 +90,9 @@ use std::sync::{Arc, LazyLock, Mutex, TryLockError};
 /// The cross-process lock file for a marketplace data file: same directory,
 /// same stem, `.lock` suffix (`bundles.json` → `bundles.lock` — the same shape
 /// as #517's `disabled_bundles.json` → `disabled_bundles.lock`). Holds no user
-/// data.
-pub(super) fn lock_path_for(data_path: &Path) -> PathBuf {
+/// data. Crate-visible so the runtime_bundle boot-writer's cross-process
+/// regression test can derive the same lock path.
+pub(crate) fn lock_path_for(data_path: &Path) -> PathBuf {
     data_path.with_extension("lock")
 }
 
@@ -101,10 +106,11 @@ static PROCESS_MUTEXES: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The in-process mutex serializing `lock_path`'s acquisitions in this
-/// process. Exposed for the cross-process regression tests' handshake (the
-/// worker must be observed past the mutex acquisition before the absence
-/// assertion runs).
-pub(super) fn process_mutex_for(lock_path: &Path) -> Arc<Mutex<()>> {
+/// process. Crate-visible for the cross-process regression tests' handshake
+/// (the worker must be observed past the mutex acquisition before the absence
+/// assertion runs) — including the runtime_bundle boot-writer test in the
+/// sibling feature module.
+pub(crate) fn process_mutex_for(lock_path: &Path) -> Arc<Mutex<()>> {
     let mut registry = PROCESS_MUTEXES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -161,13 +167,24 @@ where
     // The in-process mutex is already held while the OS lock is taken, and no
     // lock reachable inside `f` (see the module's global-order note) is held
     // by another thread waiting on this one, so deadlock is impossible. A
-    // signal-interrupted flock retries instead of surfacing as a spurious
-    // write refusal.
+    // signal-interrupted flock retries below instead of surfacing as a
+    // spurious write refusal — and so does the Windows blocking LockFileEx
+    // race that surfaces a transient ERROR_LOCK_VIOLATION as a raw error
+    // instead of blocking (the race fd-lock's own try path maps to
+    // WouldBlock): a bounded retry turns it into a normal wait, and a
+    // persistent failure still refuses fail-closed once the bound is
+    // exhausted (the #517 `with_scope_file_lock` disposition).
+    let mut lock_write_retries = 0u32;
     let _os_guard = loop {
         match lock.write() {
             Ok(guard) => break guard,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => {
+                if lock_write_retries < LOCK_WRITE_TRANSIENT_RETRIES {
+                    lock_write_retries += 1;
+                    std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
+                    continue;
+                }
                 return Err(format!("lock {}: {error}", lock_path.display()));
             }
         }
@@ -175,10 +192,19 @@ where
     f()
 }
 
+/// Bounded retry for transient OS-lock acquisition errors in
+/// `with_file_lock` (the Windows blocking LockFileEx ERROR_LOCK_VIOLATION
+/// race); a persistent failure still refuses fail-closed after the bound.
+const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
+const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
+
 /// Once-per-mode logging for lock-read failures. Reads must stay bounded even
 /// when the lock is persistently unavailable (a broken home must not print a
 /// line per list refresh) — the first occurrence per failure mode is enough
-/// to make the degradation diagnosable.
+/// to make the degradation diagnosable. The two mode bits are process-global
+/// across all three lock files: one file's first failure suppresses the same
+/// mode's first log on the others (each message names its own path), and any
+/// successful locked read re-arms both bits — accepted as observability-only.
 static READ_FAILURE_LOGGED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 const LOG_LOCK_OPEN: u8 = 1 << 0;

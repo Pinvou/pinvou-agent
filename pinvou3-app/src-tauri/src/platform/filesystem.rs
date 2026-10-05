@@ -422,9 +422,12 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
 /// at an unrelated target, or split the exclusion across two inodes), and
 /// `O_NONBLOCK` keeps a planted FIFO from blocking the `open` itself (the
 /// callers' bounded try-lock funnel cannot bound a syscall below it). A
-/// planted FIFO that survives both is not refused: flock on it succeeds and
-/// all peers opening the same path exclude on the same inode, so exclusion
-/// still holds — the file just is not the regular lock file. Windows relies
+/// planted FIFO that survives both is not refused, and the outcome is
+/// platform-split: on macOS flock on it fails with `EOPNOTSUPP` (verified
+/// empirically), so writes refuse and reads degrade — the accepted
+/// fail-closed directions; where flock does succeed (Linux), all peers
+/// opening the same path exclude on the same inode, so exclusion still
+/// holds — the file just is not the regular lock file. Windows relies
 /// on the owning profile directory's ACL,
 /// consistent with the rest of the application data tree.
 pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
@@ -456,10 +459,12 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
                 .map_err(|error| {
                     // Name the file and the recovery: every marketplace write
                     // refuses while this fails, and the lock file holds no
-                    // user data, so fixing its mode (or deleting it) is always
-                    // safe.
+                    // user data. Advice is rename-aside, not deletion
+                    // (round-16 review on #517): deleting the file while a
+                    // peer holds the flock splits exclusion across two
+                    // inodes — the lost update the lock exists to prevent.
                     std::io::Error::other(format!(
-                        "tighten {} to 0600: {error} (fix the file's permissions or remove it; it holds no data)",
+                        "tighten {} to 0600: {error} (fix the file's permissions, or rename it aside while no other Pinvou process is running; it holds no data)",
                         path.display()
                     ))
                 })?;
