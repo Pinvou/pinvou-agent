@@ -22,7 +22,10 @@ description = "Credential persistence tests use explicit non-production test key
 targetRules = ["generic-api-key"]
 condition = "AND"
 regexTarget = "line"
-paths = ['''^pinvou3-app/src-tauri/src/(?:platform/)?prefs(?:/.+)?\.rs$''']
+paths = [
+  '''^pinvou3-app/src-tauri/src/(?:platform/)?prefs(?:/.+)?\.rs$''',
+  '''^pinvou3-app/src-tauri/src/app/commands/tests\.rs$''',
+]
 regexes = ['''sk-(?:test|legacy|custom|once)-secret-1234567890''']
 
 [[allowlists]]

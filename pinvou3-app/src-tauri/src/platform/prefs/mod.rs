@@ -887,6 +887,11 @@ impl UserPrefs {
         prefs.migrate_legacy_local_thinking_default();
         prefs.migrate_models();
         prefs.normalize_saved_model_metadata();
+        // deferred_search_deletes is intentionally ignored here: a Delete
+        // action never reaches disk through the app's own flows
+        // (mark_missing clears credential_action before anything persists),
+        // so a deferral on load can only come from a hand-edited settings
+        // file, where not deleting is the benign orphan direction.
         let migration = prefs.migrate_plaintext_api_keys_with_store(&SystemCredentialStore::new());
         let memory_policy_changed = prefs.enforce_memory_locale_policy();
         let normalization_changed = minimax_endpoint_changed
@@ -1030,9 +1035,9 @@ impl UserPrefs {
         }
     }
 
-    pub fn migrate_plaintext_api_keys_with_store<S: CredentialStore>(
+    pub fn migrate_plaintext_api_keys_with_store(
         &mut self,
-        store: &S,
+        store: &dyn CredentialStore,
     ) -> CredentialMigrationResult {
         let mut result = CredentialMigrationResult::default();
 
@@ -1164,23 +1169,22 @@ impl UserPrefs {
                     }
                 }
                 CredentialEditAction::Delete => {
+                    // The keyring delete is DEFERRED, not run here: this method
+                    // executes inside `UserPrefs::update_transaction` closures
+                    // (via `prepare_prefs_for_save`), so deleting before the
+                    // commit would leave the provider configured-but-secretless
+                    // when a later step of the same transaction fails and the
+                    // save aborts. The caller must delete the captured
+                    // reference only after its save committed, where a failure
+                    // merely orphans the credential (the benign direction —
+                    // the reference is deterministic per provider, so a re-set
+                    // overwrites the orphan).
                     if let Some(reference) = credential.credential_ref.clone().or_else(|| {
                         provider
                             .supports_api_key()
                             .then(|| provider.credential_reference())
                     }) {
-                        if let Err(err) = store.delete(&reference) {
-                            eprintln!(
-                                "[pinvou3-app] search credential delete failed for {}: {}",
-                                provider.as_str(),
-                                err.user_message()
-                            );
-                            credential.mark_unavailable();
-                            result
-                                .failed_search_providers
-                                .push(provider.as_str().to_string());
-                            continue;
-                        }
+                        result.deferred_search_deletes.push(reference);
                     }
                     credential.mark_missing();
                     result.settings_sanitized = true;
@@ -1207,7 +1211,7 @@ impl UserPrefs {
         }
     }
 
-    pub fn refresh_credential_states_with_store<S: CredentialStore>(&mut self, store: &S) {
+    pub fn refresh_credential_states_with_store(&mut self, store: &dyn CredentialStore) {
         let env_override = std::env::var("DEEPSEEK_API_KEY")
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
@@ -3052,6 +3056,48 @@ mod tests {
         assert_eq!(
             store.get(&reference).unwrap().as_deref(),
             Some("mk-search-secret-1234567890")
+        );
+    }
+
+    #[test]
+    fn migrate_search_delete_action_defers_the_keyring_delete() {
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        let mut prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Tavily,
+                credentials: [(
+                    SearchProvider::Tavily,
+                    SearchCredential {
+                        credential_ref: Some(SearchProvider::Tavily.credential_reference()),
+                        credential_state: CredentialState::Configured,
+                        has_secret: true,
+                        credential_action: Some(CredentialEditAction::Delete),
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let result = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        assert_eq!(
+            result.deferred_search_deletes,
+            vec![SearchProvider::Tavily.credential_reference()],
+            "the delete action must defer the provider's credential reference"
+        );
+        assert_eq!(result.migrated_count, 0);
+        assert!(result.settings_sanitized);
+        let credential = &prefs.search.credentials[&SearchProvider::Tavily];
+        assert_eq!(credential.credential_state, CredentialState::Missing);
+        assert!(credential.credential_ref.is_none());
+        assert!(
+            store.ops().is_empty(),
+            "no keyring call may run inside the migration: {:?}",
+            store.ops()
         );
     }
 

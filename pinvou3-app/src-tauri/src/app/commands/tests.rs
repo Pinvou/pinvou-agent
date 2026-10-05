@@ -2928,3 +2928,112 @@ fn save_model_inner_commits_prefs_before_the_deferred_delete() {
         "exactly one deferred keyring delete, attempted after the commit"
     );
 }
+
+// ---- search credential deletion ordering (search settings save commits before the keyring) ----
+
+use crate::platform::prefs::{SearchCredential, SearchProvider};
+
+fn search_deletion_credential(action: Option<CredentialEditAction>) -> SearchCredential {
+    SearchCredential {
+        credential_ref: Some(SearchProvider::Tavily.credential_reference()),
+        credential_state: CredentialState::Configured,
+        has_secret: true,
+        credential_action: action,
+        ..Default::default()
+    }
+}
+
+fn search_deletion_payload(action: Option<CredentialEditAction>) -> SearchPrefs {
+    SearchPrefs {
+        provider: SearchProvider::Tavily,
+        enabled_providers: vec![SearchProvider::Bing, SearchProvider::Tavily],
+        api_key: None,
+        credentials: [(SearchProvider::Tavily, search_deletion_credential(action))]
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn seed_search_deletion_prefs() {
+    UserPrefs::update_transaction(|prefs| {
+        prefs.migrate_models();
+        prefs.search = search_deletion_payload(None);
+        Ok(())
+    })
+    .expect("seed search deletion prefs");
+}
+
+#[test]
+fn persist_search_settings_commits_before_the_deferred_keyring_delete() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("search-delete-order");
+    seed_search_deletion_prefs();
+    let search = search_deletion_payload(Some(CredentialEditAction::Delete));
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    store.fail_delete();
+
+    // With the keyring delete failing, Ok + a committed removal is only
+    // reachable when the prefs save landed BEFORE the delete attempt: the
+    // reverted ordering (delete first) would have destroyed the secret and
+    // then aborted, leaving the provider configured-but-secretless.
+    super::settings::persist_search_settings_inner(search, &store).expect("the save must succeed");
+
+    let prefs = UserPrefs::load();
+    let credential = prefs.search.credentials.get(&SearchProvider::Tavily);
+    // SearchPrefs::normalize retains out the secretless/refless entry, so
+    // absence on disk is what a committed delete must produce.
+    assert!(
+        credential.is_none(),
+        "the deleted credential must not survive in prefs: {:?}",
+        credential
+    );
+    assert_eq!(
+        store.ops(),
+        vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
+        "exactly one deferred keyring delete, attempted after the commit"
+    );
+}
+
+#[test]
+fn persist_search_settings_failure_leaves_the_deferred_delete_unrun() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("search-delete-abort");
+    seed_search_deletion_prefs();
+    let mut search = search_deletion_payload(Some(CredentialEditAction::Delete));
+    search.credentials.insert(
+        SearchProvider::Bocha,
+        SearchCredential {
+            api_key: "sk-test-secret-1234567890".to_string(),
+            credential_action: Some(CredentialEditAction::Replace),
+            ..Default::default()
+        },
+    );
+    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    store.fail_set();
+
+    // A sibling provider's keyring set failure aborts the whole transaction;
+    // the already-captured Tavily delete must stay unrun, or Tavily would be
+    // left configured-but-secretless on disk.
+    let error = super::settings::persist_search_settings_inner(search, &store)
+        .expect_err("the failing sibling set must fail the save");
+
+    assert!(error.contains("credential store unavailable"), "{error}");
+    assert_eq!(
+        store.ops(),
+        vec!["set:pinvou3-search-api-key:search:bocha=sk-test-secret-1234567890".to_string()],
+        "the aborted save must record only the failed sibling set, no keyring delete: {:?}",
+        store.ops()
+    );
+    let prefs = UserPrefs::load();
+    let credential = prefs
+        .search
+        .credentials
+        .get(&SearchProvider::Tavily)
+        .expect("the aborted save must leave the provider configured in prefs");
+    assert_eq!(credential.credential_state, CredentialState::Configured);
+    assert!(credential.has_secret);
+}

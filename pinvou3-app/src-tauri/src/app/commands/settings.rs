@@ -9,16 +9,44 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(refresh_safe_prefs(UserPrefs::load()))
 }
 
-fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
-    let store = SystemCredentialStore::new();
+fn prepare_prefs_for_save(
+    mut prefs: UserPrefs,
+    store: &dyn CredentialStore,
+) -> Result<(UserPrefs, Vec<CredentialReference>), String> {
     prefs.normalize_saved_model_metadata();
-    let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
+    let migration = prefs.migrate_plaintext_api_keys_with_store(store);
     if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
+    // The migration DEFERS destructive keyring deletes (see the search
+    // Delete arm in `migrate_plaintext_api_keys_with_store`): surface them so
+    // the caller runs them only after its prefs save committed.
+    let deferred_deletes = migration.deferred_search_deletes;
     prefs.sanitize_plaintext_api_keys();
-    prefs.refresh_credential_states_with_store(&store);
-    Ok(prefs)
+    prefs.refresh_credential_states_with_store(store);
+    Ok((prefs, deferred_deletes))
+}
+
+/// Runs the search-provider keyring deletes the prefs migration deferred —
+/// only ever call this AFTER the prefs save committed. Before the commit a
+/// delete would leave a configured-but-secretless provider when the save then
+/// aborted; after it, a failed delete can only orphan a credential, which is
+/// downgraded to a warning (the benign direction — the reference is
+/// deterministic per provider, so a re-set overwrites the orphan).
+fn delete_deferred_search_credentials(
+    context: &str,
+    store: &dyn CredentialStore,
+    references: Vec<CredentialReference>,
+) {
+    for reference in references {
+        if let Err(error) = store.delete(&reference) {
+            log::warn!(
+                "{context}: prefs saved, but the removed search credential could not be \
+                 deleted from the keyring (the orphan is overwritten on re-set): {}",
+                error.user_message()
+            );
+        }
+    }
 }
 
 fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
@@ -1342,37 +1370,77 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
 }
 
 fn persist_general_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
-    UserPrefs::update_transaction(|current| {
+    let store = SystemCredentialStore::new();
+    let mut deferred_deletes = Vec::new();
+    let saved = UserPrefs::update_transaction(|current| {
         apply_general_settings_patch(current, patch);
-        *current = prepare_prefs_for_save(current.clone())?;
+        let (prepared, deferred) = prepare_prefs_for_save(current.clone(), &store)?;
+        *current = prepared;
+        deferred_deletes = deferred;
         Ok(())
     })
-    .map(refresh_safe_prefs)
+    .map(refresh_safe_prefs);
+    // An aborted transaction must not run the deferred deletes: disk prefs
+    // still show the provider configured, and deleting its secret then is
+    // exactly the configured-but-secretless state this ordering prevents.
+    if saved.is_ok() {
+        delete_deferred_search_credentials("update_settings", &store, deferred_deletes);
+    }
+    saved
 }
 
 fn persist_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
-    UserPrefs::update_transaction(|prefs| {
+    persist_search_settings_inner(search, &SystemCredentialStore::new())
+}
+
+/// Testable core of [`persist_search_settings`]: the credential store is
+/// injected so tests can pin the deferred-delete ordering, mirroring
+/// [`save_model_inner`] / [`delete_model_inner`].
+pub(super) fn persist_search_settings_inner(
+    search: SearchPrefs,
+    store: &dyn CredentialStore,
+) -> Result<UserPrefs, String> {
+    // Same ordering contract as `save_model`/`delete_model`: the keyring
+    // deletes deferred by the migration run only after the prefs save has
+    // committed; an aborted transaction leaves them unrun, and a failed
+    // post-commit delete is downgraded to a warning.
+    let mut deferred_deletes = Vec::new();
+    let saved = UserPrefs::update_transaction(|prefs| {
         prefs.search = search;
-        *prefs = prepare_prefs_for_save(prefs.clone())?;
+        let (prepared, deferred) = prepare_prefs_for_save(prefs.clone(), store)?;
+        *prefs = prepared;
+        deferred_deletes = deferred;
         Ok(())
     })
     .map(refresh_safe_prefs)
-    .map_err(|e| sanitize_command_error("save search settings", e))
+    .map_err(|e| sanitize_command_error("save search settings", e));
+    if saved.is_ok() {
+        delete_deferred_search_credentials("save_search_settings", store, deferred_deletes);
+    }
+    saved
 }
 
 pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs, String> {
-    UserPrefs::update_transaction(|prefs| {
+    let store = SystemCredentialStore::new();
+    let mut deferred_deletes = Vec::new();
+    let saved = UserPrefs::update_transaction(|prefs| {
         if let Some(memory_enabled) = patch.memory_enabled {
             prefs.memory_enabled = memory_enabled;
         }
         if let Some(search) = patch.search {
             prefs.search = search;
         }
-        *prefs = prepare_prefs_for_save(prefs.clone())?;
+        let (prepared, deferred) = prepare_prefs_for_save(prefs.clone(), &store)?;
+        *prefs = prepared;
+        deferred_deletes = deferred;
         Ok(())
     })
     .map(refresh_safe_prefs)
-    .map_err(|e| sanitize_command_error("save web settings", e))
+    .map_err(|e| sanitize_command_error("save web settings", e));
+    if saved.is_ok() {
+        delete_deferred_search_credentials("save_web_settings", &store, deferred_deletes);
+    }
+    saved
 }
 
 /// 仅更新搜索配置。模型等其他偏好始终以磁盘最新值为准，避免前端旧快照整份回写。

@@ -187,6 +187,15 @@ pub struct CredentialMigrationResult {
     pub failed_model_ids: Vec<String>,
     pub failed_search_providers: Vec<String>,
     pub settings_sanitized: bool,
+    /// Search-provider credentials the migration marked removed without
+    /// deleting their keyring secret. The migration runs inside
+    /// `UserPrefs::update_transaction` closures, so deleting there would
+    /// destroy the secret before the save committed — a later failure in the
+    /// same transaction aborts with disk prefs untouched and the provider
+    /// left configured-but-secretless. Callers must delete these references
+    /// only after their save committed, where a failed delete merely orphans
+    /// the credential (the benign direction).
+    pub deferred_search_deletes: Vec<CredentialReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1067,6 +1076,7 @@ mod tests {
 #[cfg(test)]
 pub struct RecordingCredentialStore {
     ops: std::sync::Mutex<Vec<String>>,
+    fail_set: std::sync::Mutex<bool>,
     fail_delete: std::sync::Mutex<bool>,
 }
 
@@ -1075,12 +1085,20 @@ impl RecordingCredentialStore {
     pub fn new() -> Self {
         Self {
             ops: std::sync::Mutex::new(Vec::new()),
+            fail_set: std::sync::Mutex::new(false),
             fail_delete: std::sync::Mutex::new(false),
         }
     }
 
     pub fn ops(&self) -> Vec<String> {
         self.ops.lock().expect("recording ops lock").clone()
+    }
+
+    /// Makes every `set` fail, so tests can force a mid-transaction failure
+    /// after a delete has been deferred (a sibling provider whose keyring
+    /// write fails the whole prefs save).
+    pub fn fail_set(&self) {
+        *self.fail_set.lock().expect("recording fail lock") = true;
     }
 
     pub fn fail_delete(&self) {
@@ -1108,6 +1126,9 @@ impl CredentialStore for RecordingCredentialStore {
             Self::label(reference),
             value
         ));
+        if *self.fail_set.lock().expect("recording fail lock") {
+            return Err(CredentialError::new("injected set failure"));
+        }
         Ok(())
     }
 
