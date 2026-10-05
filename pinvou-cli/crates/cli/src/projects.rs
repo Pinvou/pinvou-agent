@@ -750,15 +750,20 @@ fn validate_rebind_to(to: &Path) -> Result<(), CliError> {
 
 /// Mirror of the GUI's `reject_nested_rebind_target` (equality is handled by
 /// the caller first): a target inside the old directory deepens on every
-/// rerun (/a/x → /a/x/new/x → …), breaking idempotency. The GUI compares
-/// folded identity keys through `platform::os::path_identity_is_same_or_nested`,
-/// which is `pub(crate)` to the app crate; the CLI compares components with
-/// `Path::starts_with` — both operands are already in the entry-normalized
-/// resolved display form, so the match is whole-component and the one
-/// deviation is Windows case-only spellings, where the app's canonicalize at
-/// validation time already removes the case difference in practice.
+/// rerun (/a/x → /a/x/new/x → …), breaking idempotency. Round-38 review:
+/// this now feeds the SAME folded identity keys through the SAME
+/// component-boundary predicate the GUI's command layer uses
+/// (`platform::path_identity_is_same_or_nested`, re-exported for the CLI),
+/// instead of a raw `Path::starts_with` copy. The raw compare was
+/// whole-component but not case-folded, so on Windows a case-mismatched
+/// typed `from` — whose missing tail keeps the user's casing through
+/// `resolve_through_existing_ancestor` while `to` canonicalizes — slipped
+/// past both raw arms and performed the deepening rebind the GUI refuses.
 fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
-    to_display.starts_with(from) || from.starts_with(to_display)
+    let to_key = pinvou3_lib::platform::filesystem_path_identity_key(&to_display.to_string_lossy());
+    let from_key = pinvou3_lib::platform::filesystem_path_identity_key(&from.to_string_lossy());
+    pinvou3_lib::platform::path_identity_is_same_or_nested(&to_key, &from_key)
+        || pinvou3_lib::platform::path_identity_is_same_or_nested(&from_key, &to_key)
 }
 
 /// Mirror of `SessionStore::durable_session_record_is_absent` (the helper is
@@ -1425,5 +1430,53 @@ mod tests {
         // string comparison; one hand-edited empty root must not swallow every
         // session here.
         assert!(!path_is_under_root(&workspace, Path::new("")));
+    }
+
+    /// Round-38 review: the nesting rejection must be component-boundary
+    /// exact (`/a/bc` is not nested in `/a/b`) and trailing-separator
+    /// neutral (`/a/b/` is the same directory as `/a/b`) on every platform;
+    /// the case-folded half of the identity keys is Windows-only by
+    /// construction (the adapter folds where the OS folds), so only a
+    /// windows-compiled test binary can assert it.
+    #[test]
+    fn rebind_nesting_rejection_is_component_exact_and_slash_neutral() {
+        assert!(rebind_target_is_same_or_nested(
+            Path::new("/a/b/new"),
+            Path::new("/a/b")
+        ));
+        assert!(rebind_target_is_same_or_nested(
+            Path::new("/a/b"),
+            Path::new("/a/b/new")
+        ));
+        // The subpath-geometry shape the whole gate exists for.
+        assert!(!rebind_target_is_same_or_nested(
+            Path::new("/a/bc"),
+            Path::new("/a/b")
+        ));
+        // Trailing separators are noise on either side.
+        assert!(rebind_target_is_same_or_nested(
+            Path::new("/a/b/new"),
+            Path::new("/a/b/")
+        ));
+        assert!(!rebind_target_is_same_or_nested(
+            Path::new("/a/bc/"),
+            Path::new("/a/b")
+        ));
+        // Disjoint roots never nest.
+        assert!(!rebind_target_is_same_or_nested(
+            Path::new("/x/y"),
+            Path::new("/a/b")
+        ));
+        // Windows case-only spellings: folded (and therefore rejected) where
+        // the OS folds case, verbatim (and therefore allowed past THIS
+        // predicate — the folded equality short-circuit upstream still
+        // catches the exact-respawned shape) where it does not.
+        #[cfg(windows)]
+        {
+            assert!(rebind_target_is_same_or_nested(
+                Path::new("C:\\Data\\Proj\\new"),
+                Path::new("c:\\data\\proj")
+            ));
+        }
     }
 }

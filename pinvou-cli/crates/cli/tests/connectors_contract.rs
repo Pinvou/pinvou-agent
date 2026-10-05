@@ -3,10 +3,12 @@
 //! Parse-level coverage runs against the typed command tree. Execute-level
 //! coverage is strictly hermetic: every test runs against a throwaway
 //! `PINVOU3_HOME` (ENV_LOCK serialization, same pattern as
-//! `sessions_contract.rs`) and additionally points `PATH` at an empty
-//! directory so the vendor connector CLIs (`lark-cli` / `wecom-cli` / `dws`
-//! / `tmeet`) are deterministically absent regardless of what the host has
-//! installed.
+//! `sessions_contract.rs`), points `PATH` at an empty directory so the
+//! vendor connector CLIs (`lark-cli` / `wecom-cli` / `dws` / `tmeet`) are
+//! deterministically absent regardless of what the host has installed, and
+//! (round-38 review) forces the file secret backend inside the same
+//! throwaway home so the ima credential reads never touch the real OS
+//! keyring.
 //!
 //! Out of hermetic scope (not executed here, behavior mirrors the GUI feature
 //! functions): `ensure-cli` (downloads pinned archives / runs npm), `ima
@@ -33,6 +35,10 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 struct HomeGuard {
     previous: Option<OsString>,
     root: PathBuf,
+    /// The pre-test values, restored on drop. (`filter(|_| false)` keeps
+    /// this an always-None holder of the SAVED value, not the sandbox one.)
+    codewhale_home: Option<OsString>,
+    secret_backend: Option<OsString>,
 }
 
 impl HomeGuard {
@@ -50,7 +56,26 @@ impl HomeGuard {
         // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
         // are serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { previous, root }
+        // Round-38 review: force the FILE secret backend rooted in the
+        // sandbox. The credential reads behind `ima status` (and any login
+        // lane's store write) go to `SystemCredentialStore::new()`, whose
+        // keyring is process-global and keyed by a fixed service name — on a
+        // dev machine with real ima credentials the zero-state assertions
+        // failed spuriously and every run risked a keychain prompt. The file
+        // backend honors `CODEWHALE_HOME`, so pointing it inside the
+        // throwaway root makes the store as hermetic as `PINVOU3_HOME`.
+        let codewhale_home = std::env::var_os("CODEWHALE_HOME");
+        let secret_backend = std::env::var_os("CODEWHALE_SECRET_BACKEND");
+        unsafe {
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+            std::env::set_var("CODEWHALE_HOME", root.join("codewhale-home"));
+        }
+        Self {
+            previous,
+            root,
+            codewhale_home,
+            secret_backend,
+        }
     }
 
     /// The LEGACY `<id>_disabled` marker file `platform::connector_state`
@@ -83,6 +108,16 @@ impl Drop for HomeGuard {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             // SAFETY: ENV_LOCK is held by the owning test.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        // SAFETY: ENV_LOCK is held by the owning test.
+        match self.codewhale_home.take() {
+            Some(value) => unsafe { std::env::set_var("CODEWHALE_HOME", value) },
+            None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
+        }
+        // SAFETY: ENV_LOCK is held by the owning test.
+        match self.secret_backend.take() {
+            Some(value) => unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", value) },
+            None => unsafe { std::env::remove_var("CODEWHALE_SECRET_BACKEND") },
         }
         let _ = std::fs::remove_dir_all(&self.root);
     }

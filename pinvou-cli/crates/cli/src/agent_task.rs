@@ -34,13 +34,13 @@ const PROMPT_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// layer cannot enforce from argv alone, because they are the only places
 /// where `agent run` refuses something a plain `read_to_string` accepted:
 /// the prompt file must be a REGULAR file (a symlink to one is fine; a FIFO,
-/// a character device, `/dev/stdin` or a `<(...)` process substitution is
+/// a character device or a `<(...)` process substitution is
 /// refused, because their read blocks before any cap or deadline could act),
 /// and it must fit in [`PROMPT_FILE_MAX_BYTES`].
 const RUN_USAGE: &str = "usage: pinvou agent run --prompt-file <FILE> [--workspace <DIR>] \
      [--timeout-secs <SECONDS>] [--session <ID>] [--mode plan|agent] [--model <ID>] \
      [--attach <PATH>]...\n  --prompt-file must be a regular file (symlinks are followed; \
-     FIFOs, character devices and /dev/stdin are refused) of at most 4 MiB";
+     FIFOs and character devices are refused) of at most 4 MiB";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentCommand {
@@ -255,14 +255,22 @@ fn run_agent(
     // GUI's per-turn light anchor instead — on the GUI the equipped card
     // steers every turn, so `personas active` reporting the card must mean
     // the same thing here.
-    let injection = staged_turn
-        .as_ref()
-        .and_then(|(session_id, turn)| persona_turn_injection(session_id, turn))
-        .or_else(|| {
-            session
-                .as_deref()
-                .and_then(crate::personas::equipped_persona_anchor)
-        });
+    let injection = compose_turn_prompt_injection(
+        staged_turn
+            .as_ref()
+            .and_then(|(session_id, turn)| persona_turn_injection(session_id, turn)),
+        session
+            .as_deref()
+            .and_then(crate::personas::equipped_persona_anchor),
+    );
+    // Round-38 review: the fail-open deferral (staged body kept because the
+    // persona pool was unreadable) used to be completely silent on the run
+    // that skipped it.
+    if injection.is_none()
+        && let Some(session_id) = session.as_deref()
+    {
+        crate::personas::note_deferred_staged_injection(session_id);
+    }
     let prompt = prompt_with_persona_injection(prompt, injection);
     // Canonicalize so the engine receives an absolute path regardless of cwd
     // changes, and fail fast on a missing/non-directory workspace instead of
@@ -447,6 +455,17 @@ fn prompt_with_persona_injection(prompt: String, injection: Option<String>) -> S
         Some(injection) => format!("{injection}\n\n---\n\n{prompt}"),
         None => prompt,
     }
+}
+
+/// Round-38 review: the staged-vs-anchor precedence extracted as a pure seam.
+/// This 2-line composition is the whole wiring behind "the equipped card
+/// keeps steering every later turn" — previously pinned only at the halves
+/// (anchor resolution, injection formatting), so dropping the `.or_else`
+/// anchor arm (a regression to the pre-round-37 inert equip) passed the
+/// whole suite.
+#[cfg(feature = "product-backend")]
+fn compose_turn_prompt_injection(staged: Option<String>, anchor: Option<String>) -> Option<String> {
+    staged.or(anchor)
 }
 
 #[cfg(feature = "product-backend")]
@@ -761,7 +780,11 @@ mod tests {
         assert_eq!(enforced_cap, 4 * 1024 * 1024);
         assert!(RUN_USAGE.contains("4 MiB"), "{RUN_USAGE}");
         assert!(RUN_USAGE.contains("regular file"), "{RUN_USAGE}");
-        assert!(RUN_USAGE.contains("/dev/stdin"), "{RUN_USAGE}");
+        // Round-38 review: the enumeration no longer names /dev/stdin — the
+        // enforced rule is "regular file" (a symlinked /dev/stdin to a pipe
+        // is refused by the same is_file probe, a symlink to a regular file
+        // is accepted), so naming the device path as always-refused was
+        // imprecise. Pin the rule wording instead.
         // Every flag the parser accepts is named in the usage text, so the
         // text cannot silently fall behind RUN_OPTIONS.
         for option in RUN_OPTIONS {
@@ -884,6 +907,23 @@ mod tests {
         // Composition is prepend-only: the user's message survives untouched
         // at the tail of the prompt.
         assert!(composed.ends_with("\n\n---\n\ndo the task"));
+    }
+
+    /// The staged-vs-anchor precedence: a staged body wins; a session that
+    /// merely wears a card gets the anchor. Dropping the anchor arm (the
+    /// round-37 regression this guards) now fails here directly.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn compose_prefers_the_staged_body_and_falls_back_to_the_anchor() {
+        assert_eq!(
+            compose_turn_prompt_injection(Some("staged".to_owned()), Some("anchor".to_owned())),
+            Some("staged".to_owned())
+        );
+        assert_eq!(
+            compose_turn_prompt_injection(None, Some("anchor".to_owned())),
+            Some("anchor".to_owned())
+        );
+        assert_eq!(compose_turn_prompt_injection(None, None), None);
     }
 
     /// The no-persona case is the hard requirement from the wiring review:

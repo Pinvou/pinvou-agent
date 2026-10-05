@@ -3977,18 +3977,27 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
             }
         }
     };
-    client_result.map_err(|error| {
-        credential_error(format!(
-            "{error}. Note: {cleanup_note} before this failure; retrying only \
+    // Round-38 review: both keyring deletes are surfaced together, like the
+    // connect path's rollback deliberately collects both — reporting only
+    // the client-id failure made a second retry look like a fresh attempt
+    // while the api-key delete had failed for its own reason all along.
+    let store_failures: Vec<String> = client_result
+        .err()
+        .map(|error| format!("client id delete failed: {error}"))
+        .into_iter()
+        .chain(
+            api_result
+                .err()
+                .map(|error| format!("api key delete failed: {error}")),
+        )
+        .collect();
+    if !store_failures.is_empty() {
+        return Err(credential_error(format!(
+            "{}. Note: {cleanup_note} before this failure; retrying only \
              repeats the credential store step",
-        ))
-    })?;
-    let api_error = api_result.err().map(|error| {
-        credential_error(format!(
-            "{error}. Note: {cleanup_note} before this failure; retrying only \
-             repeats the credential store step",
-        ))
-    });
+            store_failures.join("; ")
+        )));
+    }
     // A skill-uninstall or consent-cleanup failure is partial state, not a
     // masked success: both join in one honest report naming what landed and
     // what did not.
@@ -3997,9 +4006,6 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         partial.push(failure);
     }
     partial.extend(scope_failures);
-    if let Some(api_failure) = api_error {
-        return Err(api_failure);
-    }
     if !partial.is_empty() {
         return Err(CliError::failed(format!(
             "connectors ima logout: partial state — the ima secrets were deleted, but \
@@ -4015,6 +4021,55 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    // ── install-lane hash gate (round-38 review: the gate primitive had no
+    // negative coverage — a refactor that verified after the rename or
+    // dropped the archive check would have passed the whole suite) ──────
+
+    const KNOWN_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256("")
+
+    fn hash_fixture(name: &str, contents: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-connectors-hash-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn file_is_sha256_accepts_the_matching_payload_and_nothing_else() {
+        let empty = hash_fixture("empty", b"");
+        assert!(file_is_sha256(&empty, KNOWN_SHA256));
+        // One flipped byte must not match, and the mismatch must be against
+        // the CONTENT hash, not a prefix/length artifact.
+        let flipped = hash_fixture("flipped", b"x");
+        assert!(!file_is_sha256(&flipped, KNOWN_SHA256));
+        let _ = std::fs::remove_file(&empty);
+        let _ = std::fs::remove_file(&flipped);
+    }
+
+    #[test]
+    fn file_is_sha256_refuses_missing_and_unreadable_paths() {
+        // A missing file (the common "download never landed" shape) must
+        // read as a mismatch, not panic the install lane.
+        assert!(!file_is_sha256(
+            &PathBuf::from("/nonexistent/pinvou-hash-probe"),
+            KNOWN_SHA256
+        ));
+        #[cfg(unix)]
+        {
+            let dir_as_file = hash_fixture("dir", b"placeholder");
+            std::fs::remove_file(&dir_as_file).unwrap();
+            std::fs::create_dir_all(&dir_as_file).unwrap();
+            assert!(!file_is_sha256(&dir_as_file, KNOWN_SHA256));
+            let _ = std::fs::remove_dir_all(&dir_as_file);
+        }
+    }
 
     // ── ensure-cli execution verdict (hermetic) ─────────────────────────
     // The end-to-end `ensure-cli` test executes the live download lane (its
