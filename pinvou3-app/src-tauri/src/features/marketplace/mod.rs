@@ -16,7 +16,9 @@
 //! - `connectors` — connector 注册/注销(含拆分后的 add_to_mcp_json remote/local 分支)
 
 mod connectors;
-mod file_lock;
+// pub(crate) 仅为让 sibling feature(runtime_bundle)的 boot 写方跨进程回归测试
+// 取到 lock_path_for/process_mutex_for 测试钩子;模块内条目各自保持原可见性。
+pub(crate) mod file_lock;
 mod migration;
 mod python_dependencies;
 mod secrets;
@@ -356,7 +358,14 @@ fn restore_optional_file(path: &Path, content: &Option<Vec<u8>>) -> Result<(), S
 }
 
 fn restore_marketplace_snapshot(snapshot: &MarketplaceStateSnapshot) -> Result<(), String> {
-    restore_optional_file(&paths::mcp_config_path(), &snapshot.mcp)?;
+    // mcp.json 段走跨进程文件锁（#521）：journal 回滚/恢复是 mcp.json 的整文件
+    // 写，只有它与并发写入器互斥，file_lock.rs「三个状态文件的全部临界区都过
+    // 组合锁」的全称不变量才成立（TRANSACTION → mcp.lock，文档方向）。语义边界
+    // （#521 评审披露，非锁可解）：锁只保证这次整文件写与并发写串行，不改变
+    // 「按 begin 时的快照整文件还原」本身——跨进程下，快照之后对端已提交的写入
+    // 会被这次还原覆盖，这是 journal 机制固有的整文件回滚语义。installed.json
+    // 不在 #521 三文件之列，保持原样。
+    with_mcp_json_lock(|| restore_optional_file(&paths::mcp_config_path(), &snapshot.mcp))?;
     restore_optional_file(
         &paths::pinvou3_home()
             .join("marketplace")
