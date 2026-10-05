@@ -637,7 +637,14 @@ impl SessionStore {
     /// rebind orphan classification also uses it: only NotFound counts — a
     /// corrupt JSON is not an orphan (review #463: a parse failure must enter
     /// the failed list as retryable, never silently skipped).
-    pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    ///
+    /// `pub`: the headless CLI's `projects` rebind consumes the same orphan
+    /// probe through the `features::sessions` re-export — the same
+    /// crate-boundary shape as the other widened rebind halves
+    /// (`workspace_binding_artifacts_exist`, `workspace_bindings_under`), so
+    /// the store owns the `<sessions root>/<id>.json` layout instead of the
+    /// CLI hand-mirroring it (round-39 review).
+    pub fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
