@@ -1338,6 +1338,23 @@ fn with_days(byday: Option<&str>, label: &str) -> String {
     }
 }
 
+/// The one unread predicate both run-shaped lanes share (the GUI twin factors
+/// it into `scheduled_run_is_unread_with`): a completed run whose owned
+/// session is live (not hidden) and has not been viewed. The sources
+/// legitimately differ per lane — the list lane reads a precomputed viewed
+/// set and the snapshot-derived ownership, `map_run` reads the read-state
+/// document — but the composition must not (round-39 review: the predicate
+/// was written twice and could drift `list.hasUnreadRuns` from
+/// `runs[].unread`).
+fn run_is_unread(
+    status: Option<&str>,
+    owned_session_id: Option<&str>,
+    hidden: bool,
+    viewed: bool,
+) -> bool {
+    status == Some("completed") && owned_session_id.is_some() && !hidden && !viewed
+}
+
 /// `store` is `None` when the sessions store could not be opened for
 /// best-effort enrichment (see `open_sessions_for_enrichment`): the task is
 /// then rendered without session-derived fields instead of failing.
@@ -1360,13 +1377,13 @@ fn unread_and_running(
     // `list`/`show`.
     let has_unread = match store {
         Some(store) => runs.iter().any(|run| {
-            str_field(run, "status") == Some("completed")
-                && owned_session_id_from_snapshot(run, task_id, store, titles).is_some_and(
-                    |session_id| {
-                        !store.is_hidden(&session_id)
-                            && !viewed.contains(&str_field(run, "id").unwrap_or(""))
-                    },
-                )
+            let owned = owned_session_id_from_snapshot(run, task_id, store, titles);
+            run_is_unread(
+                str_field(run, "status"),
+                owned.as_deref(),
+                owned.as_deref().is_some_and(|sid| store.is_hidden(sid)),
+                viewed.contains(&str_field(run, "id").unwrap_or("")),
+            )
         }),
         // Without the store the unread computation cannot tell which
         // completed runs have live conversations; report none rather than
@@ -1527,10 +1544,12 @@ fn map_run(
     // below reads as absent instead of guessing.
     let session = session_id.as_deref().zip(store);
     let archived = session.is_some_and(|(id, store)| store.is_hidden(id));
-    let unread = str_field(run, "status") == Some("completed")
-        && session_id.is_some()
-        && !archived
-        && !viewed_runs(read_state, &task_id).contains(&str_field(run, "id").unwrap_or(""));
+    let unread = run_is_unread(
+        str_field(run, "status"),
+        session_id.as_deref(),
+        archived,
+        viewed_runs(read_state, &task_id).contains(&str_field(run, "id").unwrap_or("")),
+    );
     serde_json::json!({
         "id": str_field(run, "id").unwrap_or(""),
         "automationId": task_id,
@@ -2541,7 +2560,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     if divergent.is_some() {
         restore_status(&previous_status);
         return Err(CliError::failed(
-            "scheduled delete: run history contains a record owned by another task; \
+            "scheduled_run_owner_mismatch: run history contains a record owned by another task; \
              refusing to archive a corrupt snapshot (repair or remove the divergent run \
              record under the task's runs directory first)"
                 .to_owned(),
@@ -2647,7 +2666,15 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     let def_path = match store_holder.def_path(id) {
         Ok(path) => path,
         Err(error) => {
-            let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
+            // The archive keeps a snapshot of a task that is still live, so
+            // like every sibling rollback lane this failure is disclosed — a
+            // silently kept stale snapshot is exactly the "live + archived"
+            // mixed state the rollback exists to prevent (round-39 review).
+            if let Err(rollback) =
+                write_json_atomic(&store_holder.history_archive_path(), &archive_rollback)
+            {
+                note!("scheduled delete: archive rollback failed: {rollback}");
+            }
             restore_status(&previous_status);
             return Err(error);
         }
@@ -2656,7 +2683,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            let _ = write_json_atomic(&store_holder.history_archive_path(), &archive_rollback);
+            // Same rollback-failure disclosure as the def-path arm above.
+            if let Err(rollback) =
+                write_json_atomic(&store_holder.history_archive_path(), &archive_rollback)
+            {
+                note!("scheduled delete: archive rollback failed: {rollback}");
+            }
             restore_status(&previous_status);
             return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",

@@ -1700,6 +1700,7 @@ fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
 /// pinned only through the feedback/voice lanes — nothing failed if this
 /// lane's delegation reverted to `read_to_string` or swapped the cap. The
 /// refusal must land pre-boot like the attachment refusals above.
+#[cfg(feature = "product-backend")]
 #[test]
 fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1731,6 +1732,10 @@ fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
 // Round-38 review: the round-37 cap test's `#[test]` had been stacked onto
 // this doc comment, leaving this function attribute-less and never run —
 // the exact regression the round-28 note describes was uncaught again.
+// Round-39 review: the same gating discipline as the personas seam tests —
+// both agent refusal legs live behind the product-backend stub, so the
+// featureless `cargo test` run failed here instead of exercising them.
+#[cfg(feature = "product-backend")]
 #[test]
 fn agent_run_refuses_an_attachment_under_a_credential_path() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

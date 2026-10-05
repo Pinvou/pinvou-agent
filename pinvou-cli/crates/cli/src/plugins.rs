@@ -1254,8 +1254,13 @@ fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
         .install(id)
         .map_err(|error| feature_error("skills install", id, error))?;
     sync_after_install_or_fail("skills install", id)?;
-    let value = serde_json::json!({ "id": id, "action": "installed" });
-    Ok(success(render(output, format!("installed {id}"), &value)))
+    let value =
+        serde_json::json!({ "id": id, "action": "installed", "hot_refresh": "not_broadcast" });
+    Ok(success(render(
+        output,
+        format!("installed {id}{HOT_REFRESH_NOTE}"),
+        &value,
+    )))
 }
 
 fn skills_update(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1273,8 +1278,13 @@ fn skills_update(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     mgr.install(id)
         .map_err(|error| feature_error("skills update", id, error))?;
-    let value = serde_json::json!({ "id": id, "action": "updated" });
-    Ok(success(render(output, format!("updated {id}"), &value)))
+    let value =
+        serde_json::json!({ "id": id, "action": "updated", "hot_refresh": "not_broadcast" });
+    Ok(success(render(
+        output,
+        format!("updated {id}{HOT_REFRESH_NOTE}"),
+        &value,
+    )))
 }
 
 fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1287,8 +1297,13 @@ fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcom
         .uninstall(id)
         .map_err(|error| feature_error("skills uninstall", id, error))?;
     remove_scope_rows_or_fail("skills uninstall", &owner)?;
-    let value = serde_json::json!({ "id": id, "action": "uninstalled" });
-    Ok(success(render(output, format!("uninstalled {id}"), &value)))
+    let value =
+        serde_json::json!({ "id": id, "action": "uninstalled", "hot_refresh": "not_broadcast" });
+    Ok(success(render(
+        output,
+        format!("uninstalled {id}{HOT_REFRESH_NOTE}"),
+        &value,
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -2154,12 +2169,15 @@ fn set_enabled(
 }
 
 /// Caveat appended at every mutating action point whose GUI counterpart
-/// runs `hot_refresh` (scope toggles, tool install, uninstall, import,
-/// recycle restore — the matching `app/commands/marketplace.rs` sites): the
-/// engine pool the refresh needs is not hosted here, so a running desktop
-/// app keeps its live engines on the state they started with until they
-/// restart. Round-38 review: the note used to ride only the scope toggles,
-/// leaving install/uninstall/import/restore silent about the same gap.
+/// runs `hot_refresh` (scope toggles, tool install/uninstall, skills
+/// install/update/uninstall, import, recycle restore, project-skills toggle —
+/// the matching `app/commands/marketplace.rs` / `app/commands/connectors.rs`
+/// sites): the engine pool the refresh needs is not hosted here, so a running
+/// desktop app keeps its live engines on the state they started with until
+/// they restart. Round-38 review: the note used to ride only the scope
+/// toggles, leaving install/uninstall/import/restore silent about the same
+/// gap; round-39 review closed the same gap on the skills and project-skills
+/// sites.
 const HOT_REFRESH_NOTE: &str = "\nnote: no hot-refresh broadcast was sent; a running desktop app's \
      live engines keep the state they started with until they are restarted";
 
@@ -2198,13 +2216,20 @@ fn project_skills(enabled: bool, output: OutputMode) -> Result<CliOutcome, CliEr
              failed or was dropped)",
         ));
     }
-    let value = serde_json::json!({ "project_skills_enabled": enabled });
+    let value = serde_json::json!({
+        "project_skills_enabled": enabled,
+        "hot_refresh": "not_broadcast",
+    });
     let human = if enabled {
-        "project skills enabled".to_owned()
+        "project skills enabled"
     } else {
-        "project skills disabled".to_owned()
+        "project skills disabled"
     };
-    Ok(success(render(output, human, &value)))
+    Ok(success(render(
+        output,
+        format!("{human}{HOT_REFRESH_NOTE}"),
+        &value,
+    )))
 }
 
 // ---------------------------------------------------------------------------
