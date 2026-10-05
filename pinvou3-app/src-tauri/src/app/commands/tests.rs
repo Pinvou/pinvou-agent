@@ -3038,6 +3038,14 @@ fn persist_search_settings_failure_leaves_the_deferred_delete_unrun() {
     assert!(credential.has_secret);
 }
 
+// The injection mechanism (read-only PINVOU3_HOME directory) only exists on
+// Unix: 0o555 blocks the save's tmp+rename there, while Windows ignores the
+// directory read-only attribute — and the unix permission APIs this needs do
+// not compile on Windows at all. The platform-independent abort direction
+// (a failing in-transaction step keeps the deferred delete unrun) stays
+// pinned for every OS by persist_search_settings_failure_leaves_the_
+// deferred_delete_unrun above.
+#[cfg(unix)]
 #[test]
 fn persist_search_settings_disk_failure_leaves_the_deferred_delete_unrun() {
     use std::os::unix::fs::PermissionsExt as _;
