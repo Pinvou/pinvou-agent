@@ -412,6 +412,62 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
     Ok(file)
 }
 
+/// Open a cross-process lock file (an fd-lock flock/LockFileEx target) for
+/// read-modify-write serialization. The file holds no user data, but
+/// private-by-default is the home's convention: created 0600 on Unix and
+/// re-tightened only when the mode has drifted (a stat is cheaper than the
+/// ctime-dirtying chmod on hot read paths). On Unix the open is hardened
+/// against a planted or swapped path: `O_NOFOLLOW` refuses a symlink (a
+/// swapped symlink could otherwise point the 0600 tighten — or the flock —
+/// at an unrelated target, or split the exclusion across two inodes), and
+/// `O_NONBLOCK` keeps a planted FIFO from blocking the `open` itself (the
+/// callers' bounded try-lock funnel cannot bound a syscall below it). A
+/// planted FIFO that survives both is not refused: flock on it succeeds and
+/// all peers opening the same path exclude on the same inode, so exclusion
+/// still holds — the file just is not the regular lock file. Windows relies
+/// on the owning profile directory's ACL,
+/// consistent with the rest of the application data tree.
+pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // Stat-gated so the steady state pays one fstat and no chmod. Caveat
+        // (undocumented filesystem classes): on mounts where mode bits do not
+        // stick (some FAT/network/WSL drvfs mounts), every acquisition keeps
+        // seeing !=0600 and pays the fchmod — noisy but harmless; if chmod
+        // errors outright, writes refuse and reads degrade, which is the
+        // accepted fail-closed direction.
+        let needs_tighten = match file.metadata() {
+            Ok(meta) => meta.permissions().mode() & 0o777 != 0o600,
+            Err(_) => true,
+        };
+        if needs_tighten {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(|error| {
+                    // Name the file and the recovery: every marketplace write
+                    // refuses while this fails, and the lock file holds no
+                    // user data, so fixing its mode (or deleting it) is always
+                    // safe.
+                    std::io::Error::other(format!(
+                        "tighten {} to 0600: {error} (fix the file's permissions or remove it; it holds no data)",
+                        path.display()
+                    ))
+                })?;
+        }
+    }
+    Ok(file)
+}
+
 #[derive(Clone)]
 pub(crate) struct RealDirectoryIdentity {
     #[cfg(any(
@@ -2296,6 +2352,8 @@ fn assert_private_mode_impl(path: &Path, expected: u32) {
 pub(crate) mod tests {
     use std::path::Path;
 
+    #[cfg(unix)]
+    use super::open_private_lock_file;
     use super::{
         atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
         rotate_log_if_oversized,
@@ -3214,5 +3272,65 @@ pub(crate) mod tests {
             std::fs::read(&path).unwrap(),
             b"prior revision data\nappended"
         );
+    }
+
+    /// The marketplace-lock counterpart of the append re-tighten regression: the
+    /// lock file is opened on every hot read, so a loose mode left behind by
+    /// an external tool must be tightened again on open — stat-gated, so the
+    /// steady 0600 case pays no chmod.
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_open_re_tightens_a_loose_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bundles.lock");
+
+        std::fs::write(&path, b"not user data").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let _file = open_private_lock_file(&path).expect("lock open");
+
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "reopen must re-tighten a loose lock file"
+        );
+    }
+
+    /// `O_NOFOLLOW` half of the planted-path hardening: a symlink planted at
+    /// the lock path must be refused fail-closed (ELOOP), and the tighten
+    /// must not have been redirected at the symlink's target.
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_open_refuses_a_planted_symlink() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("unrelated-target.txt");
+        std::fs::write(&target, b"victim").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let lock_path = temp.path().join("bundles.lock");
+        std::os::unix::fs::symlink(&target, &lock_path).expect("plant symlink");
+
+        assert!(
+            open_private_lock_file(&lock_path).is_err(),
+            "a planted symlink at the lock path must be refused (O_NOFOLLOW)"
+        );
+        let mode = std::fs::metadata(&target)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the tighten must stay on the opened inode, never the symlink's target"
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"victim");
     }
 }
