@@ -254,6 +254,19 @@ jobs:
               # pinvoy3-tauri compile in the CLI's build graph needs them, so
               # a bundle-resource-only rename must not skip the CLI legs.
               - 'pinvou3-app/src-tauri/resources/common/bundle/**'
+              # Round-37 review: two more compile inputs of the same class
+              # the lock-table entry exists for. mcp_catalog.rs
+              # include_str!s 20+ files under the APP-LEVEL resources dir
+              # (pinvoy3-app/resources/mcp-servers/** — not
+              # src-tauri/resources, which the filters above cover), and
+              # app/commands/marketplace.rs embeds
+              # docs/plugin-package-spec.md; `pub mod marketplace;` is
+              # unconditional, so every CLI-leg compile of pinvoy3-tauri
+              # reads both. Without these entries such a PR skips
+              # cli-test, windows-rust-test AND macos-cli-check while
+              # required-gate passes on `skipped`.
+              - 'pinvoy3-app/resources/mcp-servers/**'
+              - 'docs/plugin-package-spec.md'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'

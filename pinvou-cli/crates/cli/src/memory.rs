@@ -1080,9 +1080,13 @@ fn clean_text_like_feature(value: &str, max_chars: usize) -> String {
 /// even a command that fails later has already named the loss. One formatter
 /// for both lanes so the wording cannot drift.
 fn note_truncation(lane: &str, submitted_chars: usize, cap_chars: usize, cap_clause: &str) {
+    // Round-37 review: "was truncated" claimed a loss before the command
+    // could even store anything — a later failure left stderr asserting a
+    // truncation that never happened. State the cap outcome instead; the
+    // success-path output channels still report the stored result.
     crate::note!(
         "memory {lane}: content is {submitted_chars} characters and exceeds the \
-         {cap_chars}-character cap {cap_clause}; the tail was truncated"
+         {cap_chars}-character cap {cap_clause}; the tail will be truncated to the cap"
     );
 }
 
@@ -1581,6 +1585,11 @@ struct UpdateTruncation {
     cap_chars: usize,
     cap_clause: String,
     submitted_chars: usize,
+    /// The WRITER's real input measured against the cap: the post-strip
+    /// sentence (`clean_candidate_sentence` with an unlimited cap). The
+    /// writer strips before capping, so this — not `submitted_chars` — is
+    /// what can actually exceed `cap_chars` (round-37 review).
+    post_strip_chars: usize,
     stored_chars: usize,
 }
 
@@ -1599,6 +1608,9 @@ impl UpdateTruncation {
             submitted_chars: clean_text_like_feature(content, usize::MAX).chars().count(),
             cap_clause: format!("applied when the {} item is written", store.as_str()),
             cap_chars,
+            post_strip_chars: feature::clean_candidate_sentence(content, usize::MAX)
+                .chars()
+                .count(),
             stored_chars: feature::clean_candidate_sentence(content, cap_chars)
                 .chars()
                 .count(),
@@ -1613,7 +1625,13 @@ impl UpdateTruncation {
     /// three claims false. The normalization-only case gets its own honest
     /// disclosure ([`Self::is_normalized`]).
     fn is_truncated(&self) -> bool {
-        self.submitted_chars > self.cap_chars
+        // Round-37 review: measure the cap against what the writer actually
+        // caps — the POST-strip sentence. `submitted` alone crosses the cap
+        // whenever a 请记住-style prefix is long enough, and a strip-only
+        // crossing stored an intact sentence while this field reported
+        // "the tail was truncated" (all three claims false — the same bug
+        // shape as the in-cap fix below, one window over).
+        self.post_strip_chars > self.cap_chars
     }
 
     /// Shorter after the writer's normalization while never having exceeded

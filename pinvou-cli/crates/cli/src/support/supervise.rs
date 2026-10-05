@@ -591,18 +591,22 @@ mod imp {
         // Block the interrupt family around the gate load: a signal delivered
         // between the final `false` observation and the caller's
         // `std::process::exit` would otherwise start cleanup in a process
-        // that is already tearing down. While blocked, a late signal stays
-        // pending; a `false` gate restores the mask and returns — the
-        // pending signal then dies with the process, which is correct
-        // (cleanup never started, so the family's own exit code is the right
-        // one). A `true` gate restores before parking, delivering the
-        // pending signal normally: the handler re-run is idempotent for the
-        // watcher (an extra self-pipe byte, a re-store of the flag it also
-        // sets).
+        // that is already tearing down.
         let previous = block_interrupt_signals();
-        let started = CLEANUP_STARTED.load(Ordering::Acquire);
         restore_interrupt_signals(previous);
-        if !started {
+        // Round-37 review MAJOR: the gate must be read AFTER the restore.
+        // POSIX delivers a pending unblocked signal BEFORE `pthread_sigmask`
+        // returns, so a signal that pended during the blocked window runs
+        // the handler during `restore_interrupt_signals` — the flag is set
+        // by the time we get here, and the pre-restore snapshot read `false`
+        // that whole time. Returning on the stale snapshot sent main into
+        // `std::process::exit(code)` with the family's own 0/1/2, dropping
+        // the watcher's cleanup phases (group re-kill, phase-3 re-raise) and
+        // the conventional 128+N status exactly when a signal raced the
+        // exit — the race this park exists to close. (A signal landing after
+        // this load still races main's exit; that window is the process
+        // tearing down by definition and is not closable here.)
+        if !CLEANUP_STARTED.load(Ordering::Acquire) {
             return;
         }
         while CLEANUP_STARTED.load(Ordering::Acquire) {

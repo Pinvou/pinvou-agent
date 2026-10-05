@@ -11,7 +11,7 @@ mod kimi;
 pub(crate) mod lifecycle;
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -305,6 +305,18 @@ impl AcpProvidersStore {
     /// truth, and re-reading it can only pull in the other surface's writes.
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
         let _section = self.section_lock();
+        self.upsert_locked(agent, record)
+    }
+
+    /// [`Self::upsert`] for a caller that already holds the cross-process
+    /// section lock: the config-writing decision paths below (`switch`,
+    /// `save`'s active arm) span several store primitives PLUS the
+    /// vendor-config apply, and those must run under ONE flock — taking a
+    /// fresh lock per primitive let a peer process land its own apply
+    /// between this switch's apply and its persist, splitting the CLI
+    /// config from `store.current` (round-37 review MAJOR). `pub(crate)`:
+    /// same-module decision paths only.
+    pub(crate) fn upsert_locked(&self, agent: &str, record: ProviderRecord) -> Result<()> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
@@ -348,6 +360,16 @@ impl AcpProvidersStore {
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
         let _section = self.section_lock();
+        self.remove_locked(agent, provider_id)
+    }
+
+    /// [`Self::remove`] for a caller that already holds the section lock
+    /// (see [`Self::upsert_locked`]).
+    pub(crate) fn remove_locked(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Result<Option<ProviderRecord>> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let Some(state) = agents.get_mut(agent) else {
@@ -367,6 +389,12 @@ impl AcpProvidersStore {
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
         let _section = self.section_lock();
+        self.set_current_locked(agent, provider_id)
+    }
+
+    /// [`Self::set_current`] for a caller that already holds the section
+    /// lock (see [`Self::upsert_locked`]).
+    pub(crate) fn set_current_locked(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
@@ -386,6 +414,12 @@ impl AcpProvidersStore {
     /// — the CLI consumes the decision paths, never this raw read.
     pub(crate) fn current_after_reload(&self, agent: &str) -> Option<String> {
         let _section = self.section_lock();
+        self.current_fresh_locked(agent)
+    }
+
+    /// [`Self::current_after_reload`] for a caller that already holds the
+    /// section lock (see [`Self::upsert_locked`]).
+    pub(crate) fn current_fresh_locked(&self, agent: &str) -> Option<String> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         agents
@@ -422,6 +456,16 @@ impl AcpProvidersStore {
         provider_id: &str,
     ) -> Option<ProviderRecord> {
         let _section = self.section_lock();
+        self.record_fresh_locked(agent, provider_id)
+    }
+
+    /// [`Self::record_after_reload`] for a caller that already holds the
+    /// section lock (see [`Self::upsert_locked`]).
+    pub(crate) fn record_fresh_locked(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Option<ProviderRecord> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         agents.get(agent).and_then(|state| {
@@ -442,6 +486,15 @@ impl AcpProvidersStore {
         agent: &str,
     ) -> (Option<String>, Option<ProviderRecord>) {
         let _section = self.section_lock();
+        self.current_and_record_fresh_locked(agent)
+    }
+
+    /// [`Self::current_and_record_after_reload`] for a caller that already
+    /// holds the section lock (see [`Self::upsert_locked`]).
+    fn current_and_record_fresh_locked(
+        &self,
+        agent: &str,
+    ) -> (Option<String>, Option<ProviderRecord>) {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.get(agent);
@@ -474,6 +527,12 @@ impl AcpProvidersStore {
     /// field exists for (kimi's `default_model` is the concrete casualty).
     pub(crate) fn official_default_model_after_reload(&self, agent: &str) -> Option<String> {
         let _section = self.section_lock();
+        self.official_default_model_fresh_locked(agent)
+    }
+
+    /// [`Self::official_default_model_after_reload`] for a caller that
+    /// already holds the section lock (see [`Self::upsert_locked`]).
+    pub(crate) fn official_default_model_fresh_locked(&self, agent: &str) -> Option<String> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         agents
@@ -490,6 +549,17 @@ impl AcpProvidersStore {
         official_default_model: Option<&str>,
     ) -> Result<()> {
         let _section = self.section_lock();
+        self.set_switch_state_locked(agent, provider_id, official_default_model)
+    }
+
+    /// [`Self::set_switch_state`] for a caller that already holds the
+    /// section lock (see [`Self::upsert_locked`]) — `switch`'s persist arm.
+    pub(crate) fn set_switch_state_locked(
+        &self,
+        agent: &str,
+        provider_id: Option<&str>,
+        official_default_model: Option<&str>,
+    ) -> Result<()> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.entry(agent.to_string()).or_default();
@@ -586,26 +656,17 @@ impl AcpProvidersStore {
     /// left the read-write-rename window open: a peer process could commit
     /// between this process's reload and rename and be silently erased.
     /// The lock file carries no state and the OS releases it when the
-    /// holder dies, so a crash cannot wedge the store. Best-effort: if the
-    /// lock file itself cannot be opened (permissions), the caller proceeds
-    /// unlocked — the pre-lock behavior — rather than refusing provider
-    /// writes on a settings-adjacent edge.
+    /// holder dies, so a crash cannot wedge the store.
+    ///
+    /// Best-effort with an observable degrade (round-37 review): if the
+    /// lock file cannot be opened, the lock syscall fails, or a peer holds
+    /// the section longer than [`SECTION_LOCK_TIMEOUT`] (a stopped peer —
+    /// Ctrl-Z — would otherwise park a GUI settings action forever), the
+    /// caller proceeds unlocked — the pre-lock behavior — but every degrade
+    /// warns, so the lost-update window is never silent.
     fn section_lock(&self) -> Option<fs::File> {
         let lock_path = self.path.with_extension("json.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&lock_path)
-            .ok()?;
-        // Blocking by design: mutators are human-frequency and the section
-        // is a read + a small rename, so contention costs milliseconds; the
-        // GUI's alternative — a refusal on a busy store — would surface as
-        // a settings error for a transient cross-process race.
-        match file.lock() {
-            Ok(()) => Some(file),
-            Err(_) => None,
-        }
+        super::cross_process_section_lock(&lock_path, "acp-providers")
     }
 }
 
@@ -1009,11 +1070,16 @@ impl ProviderManager {
         // store.current=B」的分裂态。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        if self.store.current_after_reload(agent).as_deref() == Some(record.id.as_str()) {
+        // Round-37 review MAJOR: one flock across the fresh `current` read,
+        // the vendor-config apply AND the store persist — same split-brain
+        // closure as `switch` (a peer switch landing between the read and
+        // the persist used to leave config/store disagreeing).
+        let _section = self.store.section_lock();
+        if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
-            if let Err(error) = self.store.upsert(agent, record.clone()) {
+            if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
                 let mut context = "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试".to_string();
@@ -1023,11 +1089,12 @@ impl ProviderManager {
                     }
                     _ => {
                         if let Err(rollback) = writer.restore_default_model(
-                            // Fresh read: the rollback restores the official
-                            // login state, which is whatever the disk holds
-                            // now, not what this process booted with.
+                            // Fresh read under the held section lock: the
+                            // rollback restores the official login state,
+                            // which is whatever the disk holds now, not
+                            // what this process booted with.
                             self.store
-                                .official_default_model_after_reload(agent)
+                                .official_default_model_fresh_locked(agent)
                                 .as_deref(),
                         ) {
                             context =
@@ -1038,7 +1105,7 @@ impl ProviderManager {
                 return Err(error.context(context));
             }
         } else {
-            self.store.upsert(agent, record.clone())?;
+            self.store.upsert_locked(agent, record.clone())?;
         }
         Ok(record)
     }
@@ -1051,22 +1118,28 @@ impl ProviderManager {
         // 删除当前 Provider 会回退 CLI 配置：与 switch/save 同锁，防交错。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        let was_current = self.store.current_after_reload(agent).as_deref() == Some(provider_id);
-        // Fresh read under the section lock, like `was_current`: the revert
-        // input must describe the record on disk, not the one at boot. A
-        // stale record survives the codex revert's equality gate (the top
-        // level `model` is only removed when it equals the reverted
-        // record's), leaving a removed provider's model name pointed at
-        // official auth.
-        let removed = self.store.record_after_reload(agent, provider_id);
+        // Round-37 review MAJOR: one flock across the whole decision — the
+        // `was_current` read, the revert arm AND the record removal. Under
+        // per-primitive locks a peer switch landing between the fresh read
+        // and the removal made the restart/revert decision stale (and its
+        // own config apply could interleave with this revert).
+        let _section = self.store.section_lock();
+        let was_current = self.store.current_fresh_locked(agent).as_deref() == Some(provider_id);
+        // Fresh read under the held section lock: the revert input must
+        // describe the record on disk, not the one at boot. A stale record
+        // survives the codex revert's equality gate (the top level `model`
+        // is only removed when it equals the reverted record's), leaving a
+        // removed provider's model name pointed at official auth.
+        let removed = self.store.record_fresh_locked(agent, provider_id);
         if was_current {
             match removed.as_ref() {
-                Some(record) => self.switch_official_after_removal(agent, record)?,
-                // 已持锁：调无锁实现，避免重复加锁死锁（parking_lot 非可重入）。
+                // 已持双锁：调 fresh 实现，避免重复加锁（flock 与
+                // parking_lot 都非可重入）。
+                Some(record) => self.switch_official_after_removal_fresh(agent, record)?,
                 None => self.switch_official_locked(agent)?,
             }
         }
-        let removed = self.store.remove(agent, provider_id)?;
+        let removed = self.store.remove_locked(agent, provider_id)?;
         if removed.is_some() {
             let reference = CredentialReference::for_acp_provider(agent, provider_id);
             self.credentials.delete(&reference).ok();
@@ -1085,13 +1158,23 @@ impl ProviderManager {
         // 交错（评审中危项）。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
+        // Round-37 review MAJOR: the cross-process flock now spans the WHOLE
+        // decision section — fresh reads, the vendor-config apply AND the
+        // store persist. Under one flock per store primitive, a peer
+        // process could land its own apply between this switch's apply and
+        // its persist: config.toml pointed at the peer's target while
+        // `store.current` recorded ours (the existence re-check could not
+        // catch it — the target still existed), and the next spawn injected
+        // this target's key into the peer's endpoint. The `*_locked` store
+        // primitives reuse the held flock instead of re-acquiring.
+        let _section = self.store.section_lock();
         // Fresh read under the section lock: a stale in-memory record could
         // apply a provider a peer process already removed (the CLI's boot
         // can be hours old); the persist-side existence re-check below is
         // the second half of the same guard.
         let record = self
             .store
-            .record_after_reload(agent, provider_id)
+            .record_fresh_locked(agent, provider_id)
             .with_context(|| format!("Provider 不存在: {provider_id}"))?;
         let key = self
             .api_key(agent, provider_id)?
@@ -1108,11 +1191,11 @@ impl ProviderManager {
             // would overwrite the disk value and break the later
             // official-login restore — kimi's `default_model` is the
             // concrete casualty.
-            None => self.store.official_default_model_after_reload(agent),
+            None => self.store.official_default_model_fresh_locked(agent),
         };
         writer.apply(&ProviderTarget::from_record(&record, Some(key)))?;
         // 单次持久化写入切换状态（低危 3：两步 persist 会留下半切换态）。
-        let persisted = self.store.set_switch_state(
+        let persisted = self.store.set_switch_state_locked(
             agent,
             Some(provider_id),
             official_default_model.as_deref(),
@@ -1147,23 +1230,27 @@ impl ProviderManager {
         // 出现「配置已回官方、store.current=B」的分裂态（复审 F2）。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
+        // Round-37 review MAJOR: the flock spans the reads and the config
+        // rewrite plus the store write, like `switch`.
+        let _section = self.store.section_lock();
         self.switch_official_locked(agent)
     }
 
-    /// 无锁内部实现：调用方必须已持 per-agent 切换锁（delete 持锁后调用）。
+    /// 无锁内部实现：调用方必须已持 per-agent 切换锁 AND the cross-process
+    /// section flock（delete / switch_official 持双锁后调用）。
     /// store 读取走 reload 后的 fresh read（配置/表分裂态的同一纪律）。
     fn switch_official_locked(&self, agent: &str) -> Result<()> {
-        let (_current, record) = self.store.current_and_record_after_reload(agent);
+        let (_current, record) = self.store.current_and_record_fresh_locked(agent);
         let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
         // Same fresh-read discipline as the revert target: this value is
         // written back verbatim by `restore_default_model`, so deciding it
         // from a stale memory copy would silently skip the restore (or, via
         // `switch`, persist the stale `None` over a CLI-written value).
-        let official_default_model = self.store.official_default_model_after_reload(agent);
+        let official_default_model = self.store.official_default_model_fresh_locked(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(reverted.as_ref())?;
         writer.restore_default_model(official_default_model.as_deref())?;
-        self.store.set_current(agent, None)?;
+        self.store.set_current_locked(agent, None)?;
         Ok(())
     }
 
@@ -1176,13 +1263,28 @@ impl ProviderManager {
         removed: &ProviderRecord,
     ) -> Result<()> {
         validate_agent(agent)?;
-        // Fresh read: this restore decides the official login state the same
-        // way `switch_official_locked` does.
-        let official_default_model = self.store.official_default_model_after_reload(agent);
+        // 与 switch/save/delete 同锁（flock 纪律同 `switch_official`）。
+        let lock = self.switch_lock(agent);
+        let _switch_guard = lock.lock();
+        let _section = self.store.section_lock();
+        self.switch_official_after_removal_fresh(agent, removed)
+    }
+
+    /// [`Self::switch_official_after_removal`] for a caller that already
+    /// holds both the per-agent switch lock and the section flock
+    /// (`delete`'s revert arm).
+    fn switch_official_after_removal_fresh(
+        &self,
+        agent: &str,
+        removed: &ProviderRecord,
+    ) -> Result<()> {
+        // Fresh read under the held section lock: this restore decides the
+        // official login state the same way `switch_official_locked` does.
+        let official_default_model = self.store.official_default_model_fresh_locked(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(Some(&ProviderTarget::from_record(removed, None)))?;
         writer.restore_default_model(official_default_model.as_deref())?;
-        self.store.set_current(agent, None)?;
+        self.store.set_current_locked(agent, None)?;
         Ok(())
     }
 
@@ -1260,7 +1362,9 @@ impl ProviderManager {
             // 内存会让本进程启动后对端新增的同 id 条目被静默覆盖。这里的
             // 预检与其后的插入仍隔着自己的一小段窗口（两把锁之间），真正的
             // 并发导入竞争由 `insert_if_absent` 的同锁原子检查兜底——输家
-            // 计入 id_conflicts 并回滚自己的凭据，不覆盖赢家的记录。
+            // 计入 id_conflicts，全程不触碰 keyring（凭据写入在赢得 id 之后，
+            // round-37 审阅：引用是 (agent, id) 的纯函数，输家若先写后删会
+            // 连带删掉赢家记录指向的共享条目）。
             let id = if entry.id.starts_with(PROVIDER_ID_PREFIX)
                 && entry.id.len() <= 64
                 && entry
@@ -1307,23 +1411,20 @@ impl ProviderManager {
             };
             let entry_name = entry.name.trim().to_string();
             // per-entry 错误收集：任一条目失败不中断整批，最后汇总（复审低危 2）。
-            let credential = match &entry.api_key {
-                Some(key) => match self.credentials.set(&reference, key) {
-                    Ok(()) => Some(reference.clone()),
-                    Err(error) => {
-                        result
-                            .errors
-                            .push(format!("写入 {entry_name} 密钥失败: {error:#}"));
-                        result.skipped += 1;
-                        continue;
-                    }
-                },
-                None => None,
-            };
+            // Round-37 review MAJOR: win the id FIRST, write the credential
+            // second. The credential reference is a pure function of
+            // (agent, provider_id), so when two importers race the same id
+            // they share ONE keyring entry — under the old
+            // credential-then-insert order the loser's cleanup deleted the
+            // shared entry the winner's record points at (and the loser's
+            // `set` had already overwritten the winner's key value).
+            // Insert-first means the loser never touches the keyring at
+            // all; the winner writes its key after its record landed.
+            let credential = entry.api_key.as_ref().map(|_| reference.clone());
             match self.store.insert_if_absent(
                 agent,
                 ProviderRecord {
-                    id,
+                    id: id.clone(),
                     name: entry_name.clone(),
                     base_url: trim_base_url(&entry.base_url),
                     model: entry.model,
@@ -1339,26 +1440,38 @@ impl ProviderManager {
                     // Lost the check→act race (round-36 review): a peer
                     // import landed the same id between this loop's fresh
                     // pre-check and the insert's critical section. The
-                    // atomic insert wrote nothing; roll the just-written
-                    // credential back and account the entry as an id
-                    // conflict plus a skip — the peer's record stands,
+                    // atomic insert wrote nothing and this path never
+                    // touched the keyring — the shared reference keeps the
+                    // WINNER's key intact (the previous order's loser
+                    // cleanup deleted it). Account the entry as an id
+                    // conflict plus a skip; the peer's record stands,
                     // un-replaced.
-                    if credential.is_some() {
-                        self.credentials.delete(&reference).ok();
-                    }
                     result.id_conflicts += 1;
                     result.skipped += 1;
+                    continue;
                 }
                 Err(error) => {
-                    // store 落盘失败：删除刚写入的孤儿凭据，避免无记录的 keyring 残留
-                    if credential.is_some() {
-                        self.credentials.delete(&reference).ok();
-                    }
                     result
                         .errors
                         .push(format!("保存 {entry_name} 失败: {error:#}"));
                     result.skipped += 1;
+                    continue;
                 }
+            }
+            // We won the id: materialize the credential the record now
+            // references. A failure rolls OUR record back together with the
+            // (ours-alone) keyring entry — no peer can share either, since
+            // the id existed only from our insert onward.
+            if let Some(key) = &entry.api_key
+                && let Err(error) = self.credentials.set(&reference, key)
+            {
+                let _ = self.store.remove(agent, &id);
+                let _ = self.credentials.delete(&reference);
+                result
+                    .errors
+                    .push(format!("写入 {entry_name} 密钥失败: {error:#}"));
+                result.skipped += 1;
+                continue;
             }
         }
         Ok(result)
@@ -1425,6 +1538,7 @@ fn fixture_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::sync::atomic::AtomicBool;
 
     fn tmp_store(dir: &Path) -> AcpProvidersStore {
@@ -1477,11 +1591,20 @@ mod tests {
         }
         let done = Arc::new(AtomicBool::new(false));
         let done_in = done.clone();
+        // The worker signals right before entering the mutator, so the
+        // bounded-wait assertion below cannot pass vacuously (a bare sleep
+        // lets the assertion pass when the worker has not reached the lock
+        // yet — round-37 review).
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
         let worker = std::thread::spawn(move || {
             let cli = cli;
+            ready_tx.send(()).unwrap();
             cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
             done_in.store(true, Ordering::SeqCst);
         });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must reach the mutator");
         std::thread::sleep(std::time::Duration::from_millis(400));
         assert!(
             !done.load(Ordering::SeqCst),

@@ -2507,8 +2507,12 @@ fn probe_local<S: CredentialStore>(
                 .cloned()
                 .ok_or_else(|| CliError::failed("no active model to probe"))?;
             if !is_loopback_url(&model.base_url, UrlOrigin::StoredConfig)? {
+                // Round-37 review: "pass --url" sent the user in a circle —
+                // the --url value hits the identical loopback guard. Name
+                // the rule instead of the dead-end action.
                 return Err(CliError::usage(format!(
-                    "the active model base_url {} is not a loopback endpoint; pass --url",
+                    "the active model base_url {} is not a loopback endpoint; probe-local \
+                     probes loopback endpoints only — pass --url with a loopback address",
                     model.base_url
                 )));
             }
@@ -2830,8 +2834,12 @@ fn settings_set(
     {
         let effective = saved.memory_enabled;
         (effective != *requested).then(|| {
+            // No "note: " prefix here: the human renderer adds it for
+            // stderr-adjacent display, and in JSON the sentence lands in a
+            // field already NAMED `note` — the old shape serialized
+            // `"note": "note: ..."` (round-37 review).
             format!(
-                "note: the memory locale policy kept memory_enabled = {effective} (memory \
+                "the memory locale policy kept memory_enabled = {effective} (memory \
                  features require the zh-Hans UI language)"
             )
         })
@@ -2844,7 +2852,7 @@ fn settings_set(
         .map(|(name, _)| *name)
         .unwrap_or_default();
     let human = match &note {
-        Some(note) => format!("{key_name} updated\n{note}"),
+        Some(note) => format!("{key_name} updated\nnote: {note}"),
         None => format!("{key_name} updated"),
     };
     let value = match note {
@@ -4268,7 +4276,11 @@ mod tests {
         // sequential lower bound is 7 windows. Asserting < 5 s fails only
         // when probes actually serialize (7 x 3 s = 21 s).
         assert!(
-            elapsed < Duration::from_secs(5),
+            // Two windows + margin: the sequential regression this guards
+            // against costs 21s, so precision is unnecessary — and a tight
+            // ceiling flaked on loaded runners where 7 threads each sleep
+            // out a 3s timeout (round-37 review).
+            elapsed < Duration::from_secs(8),
             "one probe round took {elapsed:?} against a hung endpoint; the candidates \
              must share one timeout window, not run one after another"
         );

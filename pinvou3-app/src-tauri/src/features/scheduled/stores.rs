@@ -1,5 +1,10 @@
 //! 版本化 JSON store:3 个定时注册表的泛型持久化。
 //!
+// architecture-guard: allow-target-cfg -- the failed-boot-read stamp test
+// needs a chmod-000 fixture (a unix permission bit) to make the read fail
+// while the file stays in place; the seen=None semantics under test are
+// platform-independent, only the fixture cannot be expressed portably.
+//!
 //! Wave 1 1d 建立的 `VersionedRegistry` trait + `VersionedJsonStore<T>` 泛型,
 //! 收敛 scheduled run read / model binding / UI metadata 三个同构 store。
 //! 从 tasks.rs 抽离,通过 `use super::*` 复用 facade 的导入。
@@ -367,8 +372,12 @@ enum DiskRead<T> {
     /// repaired. `quarantined`: the unusable payload was RENAMED aside, so
     /// the canonical path is absent after this read — a later absent-file
     /// read must not read as an empty registry while memory may hold the
-    /// only healthy copy.
-    Failed { quarantined: bool },
+    /// only healthy copy. `io_error`: the failure was an I/O read error, not
+    /// a byte-level verdict — the bytes on disk may be healthy, so the
+    /// failure is NOT deterministic and the round-37 review forbids pricing
+    /// this read's stamp (pricing it would freeze memory over a file this
+    /// handle never successfully read).
+    Failed { quarantined: bool, io_error: bool },
 }
 
 impl<T: VersionedRegistry> VersionedJsonStore<T> {
@@ -418,7 +427,10 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                             T::SUPPORTED_VERSION
                         ),
                     );
-                    DiskRead::Failed { quarantined }
+                    DiskRead::Failed {
+                        quarantined,
+                        io_error: false,
+                    }
                 }
                 Err(error) => {
                     // Same pre-rename flag discipline as the schema arm above.
@@ -426,7 +438,10 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                         quarantined_flag.store(true, AtomicOrdering::Release);
                     }
                     let quarantined = Self::handle_invalid(path, &format!("invalid JSON: {error}"));
-                    DiskRead::Failed { quarantined }
+                    DiskRead::Failed {
+                        quarantined,
+                        io_error: false,
+                    }
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -442,7 +457,10 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 // mutator's persist rewrites the healthy registry and heals
                 // the file (which also clears the flag).
                 if quarantined_flag.load(AtomicOrdering::Acquire) || had_seen_file {
-                    DiskRead::Failed { quarantined: true }
+                    DiskRead::Failed {
+                        quarantined: true,
+                        io_error: false,
+                    }
                 } else {
                     DiskRead::Loaded(T::default())
                 }
@@ -454,7 +472,10 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     path.display(),
                     T::WARN_SUFFIX
                 );
-                DiskRead::Failed { quarantined: false }
+                DiskRead::Failed {
+                    quarantined: false,
+                    io_error: true,
+                }
             }
         }
     }
@@ -469,17 +490,25 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // Startup has not seen a file yet, so an absent file legitimately
         // boots the empty default (fail-open); only established handles keep
         // memory over a confirmed absence.
-        let (registry, migrated) = match Self::read_from_disk(&path, &quarantined_flag, false) {
-            // Fail open to an empty registry as before: existing startup
-            // behaviour kept (there is no previous state to preserve here).
-            DiskRead::Loaded(registry) => (registry, false),
-            DiskRead::Migrated(registry) => (registry, true),
-            DiskRead::Failed { .. } => (T::default(), false),
-        };
+        let (registry, migrated, failed_read) =
+            match Self::read_from_disk(&path, &quarantined_flag, false) {
+                // Fail open to an empty registry as before: existing startup
+                // behaviour kept (there is no previous state to preserve here).
+                DiskRead::Loaded(registry) => (registry, false, false),
+                DiskRead::Migrated(registry) => (registry, true, false),
+                DiskRead::Failed { .. } => (T::default(), false, true),
+            };
         let store = Self {
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
-            seen: Arc::new(RwLock::new(stamp)),
+            // Round-37 review MAJOR: a failed boot read must NOT install the
+            // pre-read stamp as `seen` — memory would hold the default while
+            // `seen` matches the real file, and `reload_if_changed` would
+            // skip every future miss-consult for the process lifetime (a
+            // CLI-created kind record would never merge). `None` is the
+            // never-read state: the first miss pays one re-read and, if it
+            // succeeds, re-records the stamp normally.
+            seen: Arc::new(RwLock::new(if failed_read { None } else { stamp })),
             quarantined: Arc::new(std::sync::atomic::AtomicBool::new(
                 quarantined_flag.load(std::sync::atomic::Ordering::Acquire),
             )),
@@ -531,12 +560,15 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             match Self::read_from_disk(self.path.as_ref(), &self.quarantined, had_seen_file) {
                 DiskRead::Loaded(registry) => (registry, false),
                 DiskRead::Migrated(registry) => (registry, true),
-                // Unusable payload: keep the previous in-memory registry and do
-                // NOT update the stamp. Swapping in `T::default()` here (the
-                // pre-fix behaviour) resolved every miss to a plain chat task and
-                // recorded the stamp so the damage never healed; with the stamp
-                // unchanged, a later check re-reads once the file is repaired.
-                DiskRead::Failed { quarantined } => {
+                // Unusable payload: keep the previous in-memory registry. Swapping
+                // in `T::default()` here (the pre-fix behaviour) resolved every
+                // miss to a plain chat task and recorded the stamp so the damage
+                // never healed; how `seen` is priced below depends on WHY the
+                // read failed.
+                DiskRead::Failed {
+                    quarantined,
+                    io_error,
+                } => {
                     if quarantined {
                         // The canonical file was renamed away: until a persist
                         // (or a repaired external write) makes the path exist
@@ -552,20 +584,33 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                         if FileStamp::of(self.path.as_ref()).is_none() {
                             *self.seen.write() = Some(FileStamp::ABSENT);
                         }
+                    } else if io_error {
+                        // Round-37 review MAJOR: a transient I/O error (a
+                        // Windows sharing violation, an EACCES after a
+                        // restore, EIO on a network home) says nothing about
+                        // the bytes on disk — they may parse perfectly. The
+                        // failure is NOT deterministic, so `seen` must stay
+                        // untouched: the next miss consults again, and once
+                        // the error clears the re-read lands normally.
+                        // Pricing the head-of-reload stamp here would freeze
+                        // this (possibly default) memory over a file this
+                        // handle never successfully read — the exact
+                        // lost-consult the stamping exists to prevent.
                     } else {
-                        // The file stayed in place (LogInPlace quarantine or an
-                        // I/O read error): the failure is deterministic given
-                        // unchanged bytes, so without pricing the corrupt
-                        // file's stamp every lookup re-reads, re-parses,
-                        // re-fails and re-warns for as long as it stays
-                        // corrupt (the GUI task-list poll reads the UI
-                        // metadata registry per row). Recording the stamp
-                        // answers "unchanged" until something actually
-                        // rewrites the file — the stamp moving IS the repair
-                        // signal, and the next read retries then.
-                        // `stamp` is the head-of-reload stat (an Option:
-                        // None means the stat itself failed, which keeps
-                        // retrying — the safe direction).
+                        // The file stayed in place and the failure is a
+                        // byte-level verdict (LogInPlace quarantine of
+                        // invalid JSON or a newer schema): deterministic
+                        // given unchanged bytes, so without pricing the
+                        // corrupt file's stamp every lookup re-reads,
+                        // re-parses, re-fails and re-warns for as long as
+                        // it stays corrupt (the GUI task-list poll reads
+                        // the UI metadata registry per row). Recording the
+                        // stamp answers "unchanged" until something
+                        // actually rewrites the file — the stamp moving IS
+                        // the repair signal, and the next read retries
+                        // then. `stamp` is the head-of-reload stat (an
+                        // Option: None means the stat itself failed, which
+                        // keeps retrying — the safe direction).
                         *self.seen.write() = stamp.clone();
                     }
                     return;
@@ -673,7 +718,14 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // consistent, the error tells the caller to retry, and the retry's
         // reload merges the foreign content before re-applying. (The
         // Windows non-identity corner stays as disclosed: len+mtime stamps
-        // can alias a same-length same-tick write.)
+        // can alias a same-length same-tick write. Unix has an analogous
+        // residual, round-37 review: `write_atomic`'s rename frees the old
+        // inode and the NEXT writer's temp file can receive it, so a
+        // same-length foreign write landing in the same mtime tick with a
+        // reused inode is likewise invisible to the stamp — rare on
+        // ns-granularity local filesystems, plausible on FAT/exFAT or
+        // network mounts. `stamp_of_our_write`'s content read-back is the
+        // stronger alternative if this ever needs closing.)
         let current = FileStamp::of(self.path.as_ref());
         let seen = *self.seen.read();
         let unchanged = match (current, seen) {
@@ -1531,6 +1583,48 @@ mod foreign_writer_tests {
         assert_eq!(
             store.kind_lookup_for("gui-task"),
             ScheduledTaskKindLookup::MemoryOrganize
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-37 review MAJOR: a failed boot read (file present but
+    /// unreadable) must boot the default with `seen` unknown. If it priced
+    /// the pre-read stamp, this handle would freeze its default view for
+    /// the process lifetime — every miss-consult skipped while the file's
+    /// (len, mtime, identity) never change — and a CLI-created kind record
+    /// would never merge, the unsafe Chat downgrade. Red on the pre-fix
+    /// code: `seen` was installed from the head-of-boot stat regardless of
+    /// the read outcome, so the healed-permissions lookup answered from the
+    /// frozen default.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_boot_read_does_not_price_the_stamp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "cli-task": kind_entry_json() }));
+        let make_unreadable = |mode: u32| {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(mode);
+            std::fs::set_permissions(&path, perms).unwrap();
+        };
+        make_unreadable(0o000);
+        if std::fs::read_to_string(&path).is_ok() {
+            // Running as root (or an ACL that ignores the mode bits): the
+            // EACCES cannot be simulated here; skip rather than pin a pass
+            // that proves nothing.
+            make_unreadable(0o644);
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let store = kind_store(&path);
+        // Heal the permissions. chmod touches neither len nor mtime, so a
+        // priced stamp would still match and the consult would stay frozen.
+        make_unreadable(0o644);
+        assert_eq!(
+            store.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the first miss after a healed boot-read failure must consult the disk"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

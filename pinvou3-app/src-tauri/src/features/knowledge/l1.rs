@@ -243,18 +243,21 @@ impl L1Store {
             .optional()
     }
 
+    /// Returns whether the row existed (round-37 review: the CLI's
+    /// update lane must not report success for a collection a concurrent
+    /// delete removed between its pre-check and this write).
     pub fn update_collection(
         &self,
         id: i64,
         name: &str,
         category: Option<&str>,
         description: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        self.conn.lock().execute(
+    ) -> rusqlite::Result<bool> {
+        let changed = self.conn.lock().execute(
             "UPDATE collections SET name=?2,category=?3,description=?4,updated_at=?5 WHERE id=?1",
             params![id, name, category, description, now()],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     /// 删知识集 + 其全部文档/块（chunks_fts 由触发器同步）。
@@ -431,12 +434,15 @@ impl L1Store {
         )
     }
 
-    /// 删除文档及其块。
-    pub fn remove_document(&self, doc_id: i64) -> rusqlite::Result<()> {
+    /// 删除文档及其块。Returns whether the document existed (round-37
+    /// review: the CLI's remove lane must not report success for a
+    /// document a concurrent delete removed between its pre-check and
+    /// this write; the GUI's delete has always been a silent no-op).
+    pub fn remove_document(&self, doc_id: i64) -> rusqlite::Result<bool> {
         let c = self.conn.lock();
         c.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
-        c.execute("DELETE FROM documents WHERE id=?1", params![doc_id])?;
-        Ok(())
+        let deleted = c.execute("DELETE FROM documents WHERE id=?1", params![doc_id])?;
+        Ok(deleted > 0)
     }
 
     /// Whether the document exists (headless callers reject unknown ids with

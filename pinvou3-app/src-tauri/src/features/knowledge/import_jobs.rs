@@ -57,6 +57,14 @@ pub struct ImportJobState {
     pub current_path: Option<String>,
     pub current_chunks_done: u64,
     pub current_chunks_total: u64,
+    /// Job-row `updated_at` (epoch seconds). Round-37 review: this is the
+    /// WALK-phase heartbeat the CLI's stall detector reads — the source-root
+    /// walk and the model load run before any item exists, so the per-item
+    /// counters above cannot move; the importer ticks this column instead,
+    /// and a frozen `updated_at` on a preparing/running job is the real
+    /// wedged-thread signal.
+    #[serde(default)]
+    pub updated_at: Option<i64>,
     pub failed_files: Vec<FailedImportFile>,
 }
 
@@ -259,23 +267,53 @@ impl ImportJobStore {
         );
     }
 
+    /// Walk-phase heartbeat (round-37 review MAJOR): the source-root walk
+    /// and the embedder load run before any item exists, so the per-item
+    /// progress the CLI's liveness signature reads cannot move and a
+    /// healthy import used to look wedged. Tick the job row's `updated_at`
+    /// — a column both surfaces already read — so the CLI's stall detector
+    /// sees life through exactly those phases. Guarded to non-terminal
+    /// states so a terminal row's feed ordering is untouched. Best-effort:
+    /// the caller treats a failed tick as one silent beat, not a stall.
+    pub fn touch(&self, job_id: &str) -> rusqlite::Result<bool> {
+        let c = self.conn.lock();
+        let now = now();
+        let touched = c.execute(
+            "UPDATE knowledge_import_jobs SET updated_at=?1 \
+             WHERE id=?2 AND state IN ('preparing','running')",
+            params![now, job_id],
+        )?;
+        Ok(touched > 0)
+    }
+
     /// Park a running job at `interrupted` and return whether the transition
     /// APPLIED. A `false` return means the job was already terminal (the
     /// last item finished between the caller's state read and this call),
     /// so the caller must not park its collection at `pending` — a
     /// fully-indexed collection must not read as needing work with no
     /// self-healing path (`index resume` refuses a non-interrupted job).
+    /// A transaction/execute FAILURE also returns `false` (round-37 review:
+    /// never silently — both failure arms warn, so a busy-locked store
+    /// leaving the job `running` is diagnosable instead of reading as an
+    /// already-terminal race).
     pub fn interrupt(&self, job_id: &str) -> bool {
         let mut c = self.conn.lock();
         let Ok(tx) = c.transaction() else {
+            log::warn!(
+                "knowledge import interrupt {job_id}: cannot start a transaction; the job stays running"
+            );
             return false;
         };
         let now = now();
-        let _ = tx.execute(
+        if let Err(error) = tx.execute(
             "UPDATE knowledge_import_items SET state='pending',updated_at=?2 \
              WHERE job_id=?1 AND state='running'",
             params![job_id, now],
-        );
+        ) {
+            log::warn!(
+                "knowledge import interrupt {job_id}: resetting the running item failed: {error}"
+            );
+        }
         let applied = tx
             .execute(
                 "UPDATE knowledge_import_jobs SET state='interrupted',updated_at=?2 \
@@ -283,7 +321,10 @@ impl ImportJobStore {
                 params![job_id, now],
             )
             .map(|rows| rows > 0)
-            .unwrap_or(false);
+            .unwrap_or_else(|error| {
+                log::warn!("knowledge import interrupt {job_id}: the transition failed: {error}");
+                false
+            });
         let _ = tx.commit();
         applied
     }
@@ -464,6 +505,13 @@ impl ImportJobStore {
         let Some((id, collection_id, phase)) = row else {
             return Ok(None);
         };
+        let updated_at: Option<i64> = c
+            .query_row(
+                "SELECT updated_at FROM knowledge_import_jobs WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
         let (total, completed, skipped, failed): (i64, i64, i64, i64) = c.query_row(
             "SELECT COUNT(*),\
              COALESCE(SUM(CASE WHEN state='completed' THEN 1 ELSE 0 END),0),\
@@ -517,6 +565,7 @@ impl ImportJobStore {
             current_path,
             current_chunks_done,
             current_chunks_total,
+            updated_at,
             failed_files,
         }))
     }
@@ -549,6 +598,59 @@ mod tests {
         let l1 = L1Store::new(conn.clone());
         let collection_id = l1.create_collection("测试", None, None).unwrap();
         (ImportJobStore::new(conn), l1, collection_id)
+    }
+
+    /// Round-37 review MAJOR: `touch` is the walk-phase heartbeat the CLI's
+    /// stall detector reads — it must move a preparing/running job's
+    /// `updated_at` (the only observable that moves before items exist)
+    /// and must leave TERMINAL rows untouched (a cancelled job's feed
+    /// ordering rides `updated_at`; ticking it would re-rank history).
+    #[test]
+    fn touch_moves_running_rows_and_leaves_terminal_rows_frozen() {
+        let (jobs, _l1, collection_id) = setup();
+        let roots = vec![PathBuf::from("/tmp")];
+        let job_id = jobs.create(collection_id, &roots).unwrap();
+        // Force a distinguishable baseline: the clock may not have ticked a
+        // whole second since create, so "moved" must be proven against a
+        // frozen sentinel, not against create-time.
+        {
+            let c = jobs.conn.lock();
+            c.execute(
+                "UPDATE knowledge_import_jobs SET updated_at=1000 WHERE id=?1",
+                params![job_id],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            jobs.touch(&job_id).unwrap(),
+            true,
+            "a preparing job must accept the heartbeat"
+        );
+        let after = jobs.state(&job_id).unwrap().updated_at;
+        assert_ne!(
+            after,
+            Some(1000),
+            "touch must move the row off the frozen baseline (the CLI's \
+             signature reads exactly this field)"
+        );
+
+        // Terminal rows stay frozen.
+        jobs.cancel(&job_id).unwrap();
+        {
+            let c = jobs.conn.lock();
+            c.execute(
+                "UPDATE knowledge_import_jobs SET updated_at=2000 WHERE id=?1",
+                params![job_id],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            jobs.touch(&job_id).unwrap(),
+            false,
+            "a cancelled (terminal) job must refuse the heartbeat"
+        );
+        let frozen = jobs.state(&job_id).unwrap().updated_at;
+        assert_eq!(frozen, Some(2000), "the terminal row's stamp is untouched");
     }
 
     #[test]

@@ -1282,9 +1282,12 @@ impl SessionStore {
 
     /// Three-state record probe for callers whose wrong-"absent" answer is
     /// destructive (the failed-delete backstop sweep): `Some(false)` is a
-    /// CONFIRMED absence (invalid id, no chat path, NotFound), `Some(true)` a
-    /// present record, and `None` an unreadable answer (metadata failed with
-    /// anything but NotFound) the caller must treat as "keep". The plain
+    /// CONFIRMED absence (NotFound), `Some(true)` a present record, and
+    /// `None` an unreadable answer (an invalid id, an unreadable chat path,
+    /// or metadata failing with anything but NotFound) the caller must
+    /// treat as "keep" — fail-closed, so a future edit must not "correct"
+    /// invalid ids toward `Some(false)`: that would sweep their directories
+    /// (round-37 review doc fix). The plain
     /// `exists()` probe folds a permission fault or EIO into "absent", which
     /// would sweep a live session's directory under its surviving record.
     #[cfg(any(feature = "benchmark-hooks", test))]

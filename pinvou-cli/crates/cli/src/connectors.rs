@@ -2054,6 +2054,13 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
         .open(install_lock_dir.join("connector-install.lock"))
         .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?;
     let mut install_lock = fd_lock::RwLock::new(install_lock_file);
+    // Blocking acquire, by design (round-37 review): the holder's whole
+    // critical section is bounded (two npm attempts ≤ 2×180s, download
+    // ≤ 900s, tar ≤ 120s), so a loser's wait is bounded in practice by
+    // ~25 minutes of legitimate concurrent install work. Residual, known:
+    // a holder that is SIGSTOP'd or wedged OUTSIDE those phases blocks a
+    // second ensure-cli indefinitely — the user's own terminal shows the
+    // stopped process, and the GUI takes no part in this lock.
     let _install_guard = install_lock
         .write()
         .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
@@ -4058,9 +4065,15 @@ mod tests {
             std::fs::write(&fake, "#!/bin/sh\necho 'fake 1.0.0'\n").unwrap();
             let mode = if executable { 0o755 } else { 0o644 };
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(mode)).unwrap();
+            // Round-37: HOME joins the sandbox — the vendor resolution
+            // consults $HOME/.npm-global/bin and $HOME/.local/bin BEFORE
+            // PATH, so a real vendor CLI in either directory resolved ahead
+            // of the staged fake and the verdict tests lost hermeticity on
+            // such machines.
             let keys = [
                 "PATH",
                 "PINVOU3_HOME",
+                "HOME",
                 "NPM_CONFIG_PREFIX",
                 "npm_config_prefix",
             ];
@@ -4086,6 +4099,7 @@ mod tests {
             unsafe {
                 std::env::set_var("PATH", prepared_path);
                 std::env::set_var("PINVOU3_HOME", &home_dir);
+                std::env::set_var("HOME", &home_dir);
                 std::env::remove_var("NPM_CONFIG_PREFIX");
                 std::env::remove_var("npm_config_prefix");
             }

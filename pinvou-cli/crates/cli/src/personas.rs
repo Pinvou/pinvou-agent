@@ -739,6 +739,26 @@ fn equipped_persona_id(session_id: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The GUI's per-turn light anchor, resolved live from the session's
+/// equipped card (`engine_pool` composes `equip_anchor(card)` on EVERY
+/// turn while the card is worn — "put it on and it restricts, take it off
+/// and it recovers"). Round-37 review MAJOR: the headless lane only ever
+/// resolved the staged one-shot body, so after that single turn the
+/// equipped card steered nothing on any CLI run while `personas active`
+/// kept reporting it — the persistent-state semantics the CLI advertises
+/// were inert on the only surface that could act on them. The headless
+/// lane now composes the same anchor for every turn whose session wears a
+/// live card and has nothing one-shot staged (a staged body already
+/// carries the full persona; an orphaned card resolves to nothing here by
+/// the same `get` miss). Chinese copy is the GUI's own anchor text — this
+/// rides the model prompt, not the CLI's user-facing output.
+#[cfg(feature = "product-backend")]
+pub(crate) fn equipped_persona_anchor(session_id: &str) -> Option<String> {
+    let persona_id = equipped_persona_id(session_id)?;
+    let card = get(&persona_id)?;
+    Some(pinvou3_lib::features::personas::equip_anchor(&card))
+}
+
 // ── agent-run consumption seam ─────────────────────────────────────────
 //
 // Round-18 wiring: `personas equip` used to stage the injection body on the
@@ -788,14 +808,23 @@ pub(crate) enum StagedPersonaTurn {
 /// missing/unreadable/corrupt sidecar (the same tolerance
 /// [`equipped_persona_id`] applies) → `None`, and the turn's prompt is passed
 /// through verbatim.
+/// An unresolved card is "deleted elsewhere" only when the pool the miss
+/// came from is trustworthy. A faulted very first load publishes an EMPTY
+/// pool with no stamp (the GUI's `user_pool_enumeration_confirmed` guard):
+/// treating that as a deletion would burn a live one-shot body the run
+/// never injected and steer the user into `unequip`-ing a good equip, so
+/// the turn fails open — nothing injected, nothing consumed, the body
+/// stays staged for a future run against a readable pool (round-37 review).
 #[cfg(feature = "product-backend")]
 pub(crate) fn staged_persona_turn(session_id: &str) -> Option<StagedPersonaTurn> {
     let staged = staged_persona_injection_at(&equip_state_path(session_id).ok()?)?;
-    Some(if get(&staged.persona_id).is_some() {
-        StagedPersonaTurn::Inject(staged)
-    } else {
-        StagedPersonaTurn::Orphaned(staged)
-    })
+    if get(&staged.persona_id).is_some() {
+        return Some(StagedPersonaTurn::Inject(staged));
+    }
+    if !pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
+        return None;
+    }
+    Some(StagedPersonaTurn::Orphaned(staged))
 }
 
 /// Clears the staged one-shot body after the turn that consumed it, keeping
@@ -1088,11 +1117,22 @@ fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
         .as_deref()
         .and_then(|persona_id| get(persona_id).map(|card| card.summary()));
     if let (Some(persona_id), None) = (equipped.as_deref(), summary.as_ref()) {
-        // Equipped but unresolvable: the card was deleted from the desktop
-        // app (or the pool file was removed by hand) while the sidecar stayed.
-        // "none" would be a lie — the sidecar is there, it still holds the
-        // deleted card's whole injection body at 0600, and nothing else in the
-        // CLI reports it.
+        // Equipped but unresolvable. Distinguish the two shapes (round-37
+        // review): a deletion verdict is only trustworthy against a pool
+        // this process actually enumerated — a faulted first load leaves an
+        // empty pool that proves nothing, and telling that caller to
+        // `unequip` would destroy a perfectly good equip sidecar.
+        if !pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
+            return Err(CliError::failed(format!(
+                "personas active: session {session_id} has persona {persona_id} equipped but \
+                 the persona pool could not be read in this process; nothing was changed — \
+                 retry when the pool directory is readable"
+            )));
+        }
+        // Card deleted from the desktop app (or the pool file removed by
+        // hand) while the sidecar stayed. "none" would be a lie — the
+        // sidecar is there, it still holds the deleted card's whole
+        // injection body at 0600, and nothing else in the CLI reports it.
         return Err(CliError::failed(format!(
             "personas active: session {session_id} has persona {persona_id} equipped but that \
              card no longer exists; its sidecar still holds the card's full injection body — \
@@ -1625,5 +1665,56 @@ mod tests {
             staged_persona_turn(session_id).is_none(),
             "the matching pair must be spent one-shot"
         );
+    }
+
+    /// Round-37 review MAJOR: a session that merely WEARS a card (staged
+    /// body already consumed, `persona_id` kept so `personas active` keeps
+    /// reporting it) must still steer every later run through the GUI's
+    /// per-turn light anchor — otherwise the equipped state the CLI
+    /// advertises is inert on the only surface that could act on it. The
+    /// builtin card pool makes this hermetic: `pinvou-card-creator`
+    /// resolves without any user pool seeding.
+    #[test]
+    fn an_equipped_card_without_a_staged_body_still_anchors_the_turn() {
+        let _home = TempHome::new("equip-anchor");
+        let session_id = "equip-anchor";
+
+        // Nothing equipped: no anchor.
+        assert!(
+            equipped_persona_anchor(session_id).is_none(),
+            "an unequipped session must not anchor"
+        );
+
+        // Equip the builtin card (the same lane `personas equip` drives).
+        persist_equipped_persona(session_id, "pinvou-card-creator", "full body").unwrap();
+        let anchor =
+            equipped_persona_anchor(session_id).expect("an equipped card must anchor every turn");
+        assert!(
+            anchor.contains("专家面具"),
+            "the anchor is the GUI's equip_anchor text: {anchor}"
+        );
+
+        // While a one-shot body is staged, the composition must prefer the
+        // body (the run injects the full persona, exactly once) — the
+        // anchor only fills turns with nothing staged, which
+        // agent_task's composition expresses as `staged.or_else(anchor)`.
+        let staged = match staged_persona_turn(session_id) {
+            Some(StagedPersonaTurn::Inject(injection)) => injection,
+            other => panic!("the fixture must stage an injection, got {other:?}"),
+        };
+        assert_eq!(staged.body, "full body");
+
+        // After the consume the body is spent but the card is still worn:
+        // the anchor survives — the state `personas active` reports.
+        consume_pending_persona_injection(session_id, &staged).unwrap();
+        assert!(staged_persona_turn(session_id).is_none());
+        assert!(
+            equipped_persona_anchor(session_id).is_some(),
+            "the worn card must keep anchoring turns after the one-shot body is spent"
+        );
+
+        // Unequip clears it.
+        let _ = std::fs::remove_file(equip_state_path(session_id).unwrap());
+        assert!(equipped_persona_anchor(session_id).is_none());
     }
 }

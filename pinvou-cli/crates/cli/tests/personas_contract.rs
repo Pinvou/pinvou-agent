@@ -97,6 +97,59 @@ fn create_session_fixture() -> String {
 }
 
 /// Writes a persona body file and returns its path.
+/// Round-37 review: the orphan verdicts are only trustworthy against a pool
+/// the process actually enumerated. Both shapes need a FRESH process (the
+/// pool stamp is a process global, so in-process tests cannot start from
+/// "never enumerated"): a faulted first load — the personas directory
+/// missing entirely, the GUI's own not-yet-mounted-volume shape — must
+/// refuse to prescribe the destructive `unequip` remedy, while a confirmed
+/// enumeration still reports the deletion with it.
+#[test]
+fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let home = HomeGuard::new("active-pool-fault");
+    let session_id = create_session_fixture();
+    // A sidecar whose card does not resolve (never existed).
+    let sidecar_dir = home.root.join("sessions").join(&session_id);
+    std::fs::create_dir_all(&sidecar_dir).unwrap();
+    std::fs::write(
+        sidecar_dir.join("persona_equipped.json"),
+        serde_json::json!({ "persona_id": "user-ghost" }).to_string(),
+    )
+    .unwrap();
+
+    let run_active = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+            .args(["personas", "active", &session_id])
+            .env("PINVOU3_HOME", home.root.clone())
+            .env("PINVOU_NO_COLOR", "1")
+            .output()
+            .expect("active child runs")
+    };
+
+    // The personas directory is absent entirely: the first enumeration
+    // faults, the empty pool proves nothing, and the remedy must NOT be
+    // the equip-destroying `unequip`.
+    let outcome = run_active();
+    assert!(!outcome.status.success(), "the fault shape must fail");
+    let stderr = String::from_utf8_lossy(&outcome.stderr);
+    assert!(
+        stderr.contains("pool could not be read") && stderr.contains("nothing was changed"),
+        "a faulted pool must not prescribe unequip: {stderr}"
+    );
+
+    // With a readable (empty) pool the miss is a confirmed deletion and the
+    // sidecar cleanup remedy applies.
+    std::fs::create_dir_all(home.root.join("user").join("personas")).unwrap();
+    let outcome = run_active();
+    assert!(!outcome.status.success(), "the deletion shape must fail");
+    let stderr = String::from_utf8_lossy(&outcome.stderr);
+    assert!(
+        stderr.contains("no longer exists") && stderr.contains("unequip"),
+        "a confirmed deletion must name the unequip remedy: {stderr}"
+    );
+}
+
 fn write_body_file(label: &str, body: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)

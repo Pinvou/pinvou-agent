@@ -175,12 +175,14 @@ fn install(packages: &[String], yes: bool, output: OutputMode) -> Result<CliOutc
     // being read as a verified outcome, and `deps check` is the lane that
     // answers "what is installed now".
     let value = serde_json::json!({ "requested": packages });
+    // Round-37 review: the packages are raw argv tokens, so the human cell
+    // gets the same row sanitizer as every other argv-derived cell.
+    let requested = crate::support::collapse_control_characters(&packages.join(", "));
     Ok(success(render(
         output,
         format!(
-            "Requested: {}\nThe installer reported success; run `pinvou deps check` to confirm \
-             which capabilities are now available.",
-            packages.join(", ")
+            "Requested: {requested}\nThe installer reported success; run `pinvou deps check` to \
+             confirm which capabilities are now available."
         ),
         &value,
     )))
