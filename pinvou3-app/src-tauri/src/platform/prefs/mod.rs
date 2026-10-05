@@ -1171,14 +1171,15 @@ impl UserPrefs {
                 CredentialEditAction::Delete => {
                     // The keyring delete is DEFERRED, not run here: this method
                     // executes inside `UserPrefs::update_transaction` closures
-                    // (via `prepare_prefs_for_save`), so deleting before the
-                    // commit would leave the provider configured-but-secretless
-                    // when a later step of the same transaction fails and the
-                    // save aborts. The caller must delete the captured
-                    // reference only after its save committed, where a failure
-                    // merely orphans the credential (the benign direction —
-                    // the reference is deterministic per provider, so a re-set
-                    // overwrites the orphan).
+                    // (via `prepare_prefs_for_save`; it also runs transaction-free
+                    // on load, where the caller drops the deferral), so deleting
+                    // before the commit would leave the provider
+                    // configured-but-secretless when a later step of the same
+                    // transaction fails and the save aborts. The caller must
+                    // delete the captured reference only after its save
+                    // committed, where a failure merely orphans the credential
+                    // (the benign direction — the reference is deterministic per
+                    // provider, so a re-set overwrites the orphan).
                     if let Some(reference) = credential.credential_ref.clone().or_else(|| {
                         provider
                             .supports_api_key()

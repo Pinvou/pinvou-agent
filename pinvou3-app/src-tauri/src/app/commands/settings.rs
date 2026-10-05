@@ -32,7 +32,11 @@ fn prepare_prefs_for_save(
 /// delete would leave a configured-but-secretless provider when the save then
 /// aborted; after it, a failed delete can only orphan a credential, which is
 /// downgraded to a warning (the benign direction — the reference is
-/// deterministic per provider, so a re-set overwrites the orphan).
+/// deterministic per provider, so a re-set overwrites the orphan). The
+/// deletes run after the prefs lock is released, so a concurrent save that
+/// re-adds the same provider in between can lose its fresh secret — the same
+/// narrow window #505 accepted for model credentials; the next refresh marks
+/// the provider missing and a re-set restores it.
 fn delete_deferred_search_credentials(
     context: &str,
     store: &dyn CredentialStore,

@@ -189,12 +189,14 @@ pub struct CredentialMigrationResult {
     pub settings_sanitized: bool,
     /// Search-provider credentials the migration marked removed without
     /// deleting their keyring secret. The migration runs inside
-    /// `UserPrefs::update_transaction` closures, so deleting there would
+    /// `UserPrefs::update_transaction` closures (and transaction-free on
+    /// load, where callers drop the deferral), so deleting there would
     /// destroy the secret before the save committed — a later failure in the
     /// same transaction aborts with disk prefs untouched and the provider
     /// left configured-but-secretless. Callers must delete these references
     /// only after their save committed, where a failed delete merely orphans
     /// the credential (the benign direction).
+    #[serde(default)]
     pub deferred_search_deletes: Vec<CredentialReference>,
 }
 
