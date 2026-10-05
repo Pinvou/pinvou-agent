@@ -45,7 +45,10 @@
 //! just-superseded) state, and the next uncontended read converges. An
 //! unexpected lock error (not plain contention) is logged once per failure
 //! mode and degrades the same way; hot readers must never couple to a peer's
-//! critical section, so no read may hang behind a frozen peer.
+//! critical section, so no read may hang behind a frozen peer. Note that
+//! acquiring either lock materializes `<file>.lock` (and creates its parent
+//! directory) even on the pure read path of a pristine home; on a read-only
+//! home every read pays a failed create and then degrades as above.
 //!
 //! # Global lock order (acyclic; extends the #517 analysis)
 //!
@@ -62,10 +65,12 @@
 //! - Per-id `import_lock` → file locks: the unified import path
 //!   (`import_lock → bundles.lock`), restore (`import_lock → recycle-bin.lock`,
 //!   `import_lock → TRANSACTION → mcp.lock`, `import_lock → bundles.lock`).
-//! - The scope lock (#517, `disabled_bundles.lock`) → `bundles.lock`: the
-//!   scope critical sections' store legs (legacy-migration id normalization,
-//!   DenyAll installed-ids enumeration) re-enter the store lock; no store
-//!   method enters the scope's — that ordering is never reversed.
+//! - The scope lock (#517 — PR still open, landing separately from the
+//!   branch carrying this module — `disabled_bundles.lock`) → `bundles.lock`:
+//!   the scope critical sections' store legs (legacy-migration id
+//!   normalization, DenyAll installed-ids enumeration) re-enter the store
+//!   lock; no store method enters the scope's — that ordering is never
+//!   reversed.
 //!
 //! None of these edges is ever taken in reverse (a file-lock section takes no
 //! marketplace lock; the scope/transaction/import locks are never acquired

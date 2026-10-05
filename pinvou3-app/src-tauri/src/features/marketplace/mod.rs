@@ -83,8 +83,9 @@ use crate::platform::paths;
 /// uninstall, and restore hold TRANSACTION (or import_lock) and enter them
 /// inside it — and the file-lock sections themselves never acquire this lock
 /// or each other, so they are leaves in the global order (the full acyclic
-/// order, including the scope lock's edge onto `bundles.lock`, is documented
-/// in `file_lock.rs`'s module docs).
+/// order, including the scope lock's edge onto `bundles.lock` — an edge from
+/// #517, which lands separately from the branch carrying this doc — is
+/// documented in `file_lock.rs`'s module docs).
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// mcp.json server keys owned by the engine boot path (`runtime_bundle`'s
@@ -9912,6 +9913,85 @@ mod tests {
             assert!(
                 mcp["servers"].get("weather").is_none(),
                 "the entry must be gone after the lock is released: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("kept").is_some(),
+                "the sibling entry must survive: {mcp}"
+            );
+        });
+    }
+
+    /// #521 cross-process contention on the mcp.json secret-MIGRATION write
+    /// path (`migrate_mcp_plaintext_secrets` → whole-file placeholder
+    /// rewrite): while a foreign fd holds the `mcp.lock` OS lock, the
+    /// migration rewrite must not land; after the release the placeholder
+    /// form lands and the sibling entry survives.
+    #[test]
+    fn cross_process_lock_blocks_mcp_secret_migration_write_until_release() {
+        with_temp_home(|| {
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "weather": {"command": "python", "args": ["s.py"], "env": {"AMAP_KEY": "legacy-plain-secret"}},
+                "kept": {"command": "node", "args": ["k.js"]}
+            }));
+            let lock_path = file_lock::lock_path_for(&mcp_path);
+            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let worker = std::thread::spawn(move || {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .migrate_mcp_plaintext_secrets()
+                    .expect("migration should succeed once the foreign lock is released");
+            });
+            // Handshake: wait until the worker holds the mcp.json in-process
+            // mutex — with the foreign lock held, it is now parked on (or just
+            // failed) the OS-lock acquisition (#517 test shape).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match file_lock::process_mutex_for(&lock_path).try_lock() {
+                    Ok(guard) => drop(guard),
+                    Err(std::sync::TryLockError::WouldBlock) => break,
+                    Err(std::sync::TryLockError::Poisoned(p)) => {
+                        drop(p.into_inner());
+                        break;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker never reached the mcp.json lock acquisition point"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // The plaintext secret must still be on disk while the peer holds
+            // the lock — the migration rewrite may not land first.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                let content = std::fs::read_to_string(&mcp_path).unwrap();
+                assert!(
+                    content.contains("legacy-plain-secret"),
+                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            drop(foreign_guard);
+            worker
+                .join()
+                .expect("worker should finish once the foreign lock is released");
+            let mcp: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+            assert_eq!(
+                mcp["servers"]["weather"]["env"]["AMAP_KEY"],
+                serde_json::Value::String(super::secrets::mcp_secret_placeholder("AMAP_KEY")),
+                "the plaintext secret must be migrated to the placeholder form: {mcp}"
             );
             assert!(
                 mcp["servers"].get("kept").is_some(),

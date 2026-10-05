@@ -4,7 +4,7 @@
 use crate::platform::paths;
 
 use super::MarketplaceManager;
-use super::connectors::write_json_pretty;
+use super::connectors::{with_mcp_json_lock, write_json_pretty};
 use super::secrets::{
     mcp_secret_env_var, mcp_secret_placeholder, mcp_secret_reference, mcp_secret_store_error,
     store_secret_value,
@@ -104,7 +104,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(())
     }
 
+    /// mcp.json 是 GUI 与 headless 共享的原子文件:整段读取→改写必须在跨进程
+    /// 文件锁内完成(#521),否则两个进程各自按旧快照写回会互相丢更新。锁只包住
+    /// mcp.json 这一段(mcp.lock 是叶子锁,段内的凭据库读写不取其他市场锁);
+    /// 同一迁移对 manifest.json 的改写不在 #521 的三个共享状态文件之列,保持原样。
     fn migrate_mcp_json_file(&self, path: &std::path::Path) -> Result<(), String> {
+        with_mcp_json_lock(|| self.migrate_mcp_json_file_locked(path))
+    }
+
+    fn migrate_mcp_json_file_locked(&self, path: &std::path::Path) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
         let mut json: serde_json::Value = serde_json::from_str(&content)
