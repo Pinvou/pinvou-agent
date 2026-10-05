@@ -538,14 +538,28 @@ class CiGatePolicyTests(unittest.TestCase):
                 if stripped.startswith("path = "):
                     submodule_paths.add(stripped[len("path = "):].strip())
         for entry in cli_rust_entries:
-            if "*" in entry:
-                # Glob metachars beyond the dir/** form are resolved by the
-                # paths-filter itself; only literal entries can rot.
+            candidate = entry[1:] if entry.startswith("!") else entry
+            if candidate.endswith("/**"):
+                # Round-39 review: the round-37 dead entry was exactly this
+                # shape (`pinvoy3-app/resources/mcp-servers/**` — a typo'd
+                # directory prefix), so the dir/** form must be reachability-
+                # checked too: the prefix directory must exist. The glob tail
+                # itself stays the paths-filter's business.
+                prefix = candidate[: -len("/**")]
+                self.assertTrue(
+                    (ROOT / prefix).is_dir(),
+                    f"cli_rust 过滤条目的目录前缀在仓库中不存在(死条目): {entry}",
+                )
                 continue
-            if entry in submodule_paths:
+            if "*" in candidate:
+                # Glob metachars beyond the dir/** form are resolved by the
+                # paths-filter itself; only literal and dir/** entries can
+                # rot in a checkable way.
+                continue
+            if candidate in submodule_paths:
                 continue
             self.assertTrue(
-                (ROOT / entry).exists(),
+                (ROOT / candidate).exists(),
                 f"cli_rust 过滤路径在仓库中不存在(死条目): {entry}",
             )
         # The connector lock tables are compiled into the CLI with include_str!
@@ -568,7 +582,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "- 'pinvou3-app/src-tauri/resources/common/bundle/**'",
             cli_paths,
             "the bundle resources are build.rs/include_str! inputs of every "
-            "pinvoy3-tauri compile; without this entry a bundle-resource PR "
+            "pinvou3-tauri compile; without this entry a bundle-resource PR "
             "runs no CLI leg at all",
         )
         # Round-37 review: the remaining include_str! inputs of every CLI-leg

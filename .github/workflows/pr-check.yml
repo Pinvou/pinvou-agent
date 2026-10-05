@@ -251,7 +251,7 @@ jobs:
               # resources/common/bundle/instructions-*.md plus
               # deny_sensitive_paths.sh (panicking when absent), and
               # native_installer.rs include_str!s the dws LICENSE — every
-              # pinvoy3-tauri compile in the CLI's build graph needs them, so
+              # pinvou3-tauri compile in the CLI's build graph needs them, so
               # a bundle-resource-only rename must not skip the CLI legs.
               - 'pinvou3-app/src-tauri/resources/common/bundle/**'
               # Round-37 review: two more compile inputs of the same class
