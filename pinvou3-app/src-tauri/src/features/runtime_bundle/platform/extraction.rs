@@ -411,15 +411,8 @@ impl Pinvou3Bundle {
             log::warn!("[pinvou3-app] {note}");
             crate::platform::startup::mark_with_detail("rust", "mcp_builtin_skip", note);
         } else {
-            // 本函数对 mcp.json 的读-改-写绕过 connectors 写入器(不带内建锁),
-            // 与并发安装/卸载的写入器互斥由这把跨进程文件锁补齐(#521,见
-            // marketplace file_lock.rs);boot 链此处无外层持锁,函数体内也无
-            // 嵌套取锁,直接取即可。
-            crate::features::marketplace::with_mcp_json_lock(|| {
-                self.ensure_builtin_mcp_servers()
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(std::io::Error::other)?;
+            // 跨进程锁在 ensure_builtin_mcp_servers 内部取得(写方自带锁,#521)。
+            self.ensure_builtin_mcp_servers()?;
         }
         Ok(reconcile_actions)
     }
@@ -909,7 +902,22 @@ impl Pinvou3Bundle {
     /// （或缺失）时调用本函数——损坏文件由 reconcile 备份并整轮保持原样，repair
     /// loader 的空骨架重建因此只服务于直接调用方（测试、防御兜底），不再承担
     /// 生产链路上的坏文件自愈；那个职责已让位给数据保全（备份 + 跳过重置）。
+    ///
+    /// 全程持 mcp.json 的跨进程文件锁（#521）：不得在已持该锁的临界区内调用
+    /// （进程内 Mutex 不可重入，自死锁）。
     pub(super) fn ensure_builtin_mcp_servers(&self) -> std::io::Result<()> {
+        // mcp.json 的读-改-写自带跨进程文件锁（#521，marketplace file_lock.rs）：
+        // 本函数是 boot 链的 mcp.json 写方，与 GUI/headless 并发安装/卸载的写入器
+        // 互斥（mcp.lock 是叶子锁，锁内不取其他市场锁）；boot 链此处无外层持锁，
+        // 函数体内也无嵌套取锁。
+        crate::features::marketplace::with_mcp_json_lock(|| {
+            self.ensure_builtin_mcp_servers_locked()
+                .map_err(|error| error.to_string())
+        })
+        .map_err(std::io::Error::other)
+    }
+
+    fn ensure_builtin_mcp_servers_locked(&self) -> std::io::Result<()> {
         // mcp.json 只读 + parse 一次,upsert 与 python command 自愈共享(两段语义
         // 不同:前者修内置 server 条目,后者修 marketplace 条目的陈旧 python 路径;
         // 合并的只是 IO,不是逻辑)。本函数的 repair loader 在坏 json 上仍会重建
