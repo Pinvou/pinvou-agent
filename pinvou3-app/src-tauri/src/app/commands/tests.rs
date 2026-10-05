@@ -2976,8 +2976,8 @@ fn persist_search_settings_commits_before_the_deferred_keyring_delete() {
 
     // With the keyring delete failing, Ok + a committed removal is only
     // reachable when the prefs save landed BEFORE the delete attempt: the
-    // reverted ordering (delete first) would have destroyed the secret and
-    // then aborted, leaving the provider configured-but-secretless.
+    // reverted ordering runs the delete inside the transaction, where its
+    // failure aborts the save (and records the keyring op).
     super::settings::persist_search_settings_inner(search, &store).expect("the save must succeed");
 
     let prefs = UserPrefs::load();

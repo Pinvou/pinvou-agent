@@ -3102,6 +3102,85 @@ mod tests {
     }
 
     #[test]
+    fn migrate_search_delete_action_defers_the_synthesized_reference() {
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        let mut prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Tavily,
+                credentials: [(
+                    SearchProvider::Tavily,
+                    SearchCredential {
+                        credential_state: CredentialState::Configured,
+                        has_secret: true,
+                        credential_action: Some(CredentialEditAction::Delete),
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let result = prefs.migrate_plaintext_api_keys_with_store(&store);
+
+        // No stored reference: the Delete arm must fall back to the
+        // provider's deterministic reference, so the deferred delete still
+        // targets the keyring entry a prior set created.
+        assert_eq!(
+            result.deferred_search_deletes,
+            vec![SearchProvider::Tavily.credential_reference()],
+            "the fallback must synthesize the provider's credential reference"
+        );
+        assert!(result.settings_sanitized);
+        let credential = &prefs.search.credentials[&SearchProvider::Tavily];
+        assert_eq!(credential.credential_state, CredentialState::Missing);
+        assert!(credential.credential_ref.is_none());
+        assert!(
+            store.ops().is_empty(),
+            "no keyring call may run inside the migration: {:?}",
+            store.ops()
+        );
+    }
+
+    #[test]
+    fn refresh_skips_credential_entries_without_a_reference() {
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        let mut prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Tavily,
+                credentials: [(
+                    SearchProvider::Tavily,
+                    SearchCredential {
+                        credential_state: CredentialState::Missing,
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // A ref-less entry is what the deferred Delete arm leaves behind.
+        // The refresh must NOT probe the keyring for it: probing by the
+        // provider's deterministic reference would mark the entry Configured
+        // while its secret is still queued for post-commit deletion — the
+        // configured-but-secretless state the deferral exists to prevent.
+        prefs.refresh_credential_states_with_store(&store);
+
+        assert!(
+            store.ops().is_empty(),
+            "the refresh must not touch the keyring for a ref-less entry: {:?}",
+            store.ops()
+        );
+        let credential = &prefs.search.credentials[&SearchProvider::Tavily];
+        assert_eq!(credential.credential_state, CredentialState::Missing);
+    }
+
+    #[test]
     fn search_prefs_partial_json_fills_defaults() {
         // 老的 settings.json 没 search 字段 → 默认 Bing/None,不破坏向前兼容。
         let json = r#"{"theme":"genesis","language":"zh-Hans"}"#;
