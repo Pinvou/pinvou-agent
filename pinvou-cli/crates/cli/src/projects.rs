@@ -965,8 +965,15 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // records are admitted too (the metadata loop classifies orphans);
     // already-synced sessions are not re-reported — nothing was translated
     // for them, so a failure entry would be a guaranteed no-op.
+    let mut to_lane_admitted: HashSet<String> = HashSet::new();
     for (session_id, bound_path) in agents.sessions_under_workspace(&to_display) {
-        admit_to_lane_retry_candidate(session_id, bound_path, &sessions, &mut metadata_targets);
+        admit_to_lane_retry_candidate(
+            session_id,
+            bound_path,
+            &sessions,
+            &mut metadata_targets,
+            &mut to_lane_admitted,
+        );
     }
     // The scan is the lossy form, on purpose: this pass runs POST-rewrite,
     // where a hard abort could not claim "nothing was moved" anymore — the
@@ -975,7 +982,13 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // degrades to cache-only matches, disclosed on stderr; a rerun still
     // converges the missed admittees.
     for (session_id, bound_path) in sessions.workspace_bindings_under(&to_display) {
-        admit_to_lane_retry_candidate(session_id, bound_path, &sessions, &mut metadata_targets);
+        admit_to_lane_retry_candidate(
+            session_id,
+            bound_path,
+            &sessions,
+            &mut metadata_targets,
+            &mut to_lane_admitted,
+        );
     }
     // Only code-lane sessions consume workspace baselines.
     let code_rebound_ids: HashSet<String> = prefix_outcome
@@ -1133,8 +1146,10 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
             failed_session_ids.push(session_id.clone());
             continue;
         }
+        let mut synced_this_loop = false;
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
+                synced_this_loop = true;
                 // GUI parity (round-24): a retention delete landing between
                 // this loop's pre-check and the just-released save lock must
                 // not push a freshly dead id into the reported rebound list —
@@ -1169,7 +1184,28 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         // SF-2 / round-18 MAJOR-2): a session converged via the per-session
         // map keeps a baseline pointing into the vanished root until the
         // recapture re-derives it.
-        if (code_rebound_ids.contains(session_id) || metadata_behind_binding)
+        //
+        // Round-38 review MAJOR (the GUI's round-19 SF-2 arm 3, restored):
+        // a TO-LANE admittee's pre-sync metadata names exactly the run's
+        // `from`, so the reverse-mapped comparison above classifies it as
+        // NOT behind its binding and its baseline was never recaptured —
+        // while the GUI recaptures for exactly this shape (metadata behind
+        // the binding from an earlier interrupted run, nothing recaptured
+        // since). The code-session probe is the GUI's own
+        // `code_project_workspace` (a plain-chat admittee in neither plain
+        // set must not gain a codex baseline it never reads, round-21
+        // SF-4), and `final_stale` covers the GUI's plain-lane failed set.
+        let is_code_session = agents.code_project_workspace(session_id).is_some();
+        if (code_rebound_ids.contains(session_id)
+            || metadata_behind_binding
+            || (to_lane_admitted.contains(session_id)
+                && synced_this_loop
+                && is_code_session
+                && !plain_rebind
+                    .rebound
+                    .iter()
+                    .any(|(sid, _)| sid == session_id)
+                && !final_stale.contains(session_id)))
             && let Err(error) =
                 pinvou3_lib::features::codex_acp::workspace::capture_baseline(session_id, &new_path)
         {
@@ -1238,6 +1274,7 @@ fn admit_to_lane_retry_candidate(
     bound_path: PathBuf,
     sessions: &SessionStore,
     metadata_targets: &mut Vec<(String, PathBuf)>,
+    to_lane_admitted: &mut HashSet<String>,
 ) {
     if metadata_targets.iter().any(|(id, _)| *id == session_id) {
         return;
@@ -1265,6 +1302,7 @@ fn admit_to_lane_retry_candidate(
         Err(_) => true,
     };
     if needs_metadata_sync {
+        to_lane_admitted.insert(session_id.clone());
         metadata_targets.push((session_id, bound_path));
     }
 }

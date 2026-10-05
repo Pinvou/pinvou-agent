@@ -906,6 +906,37 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
         );
     }
 
+    // Round-38 review MAJOR: the code session is a TO-LANE admittee (its
+    // pre-sync metadata names exactly the rerun's `from`), so the reverse-
+    // mapped metadata-behind-binding arm reads false and only the GUI's
+    // round-19 SF-2 arm 3 can order the baseline recapture. Without it the
+    // stale `codex-workspace-baseline.json` keeps pointing into the vanished
+    // root as the boot-recovery fallback.
+    let baseline = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&code_id)
+            .join("codex-workspace-baseline.json"),
+    )
+    .expect("the code admittee's workspace baseline must be recaptured");
+    assert!(
+        baseline.contains(to.to_str().unwrap()),
+        "the recaptured baseline must name the new root: {baseline}"
+    );
+    assert!(
+        !baseline.contains(from.to_str().unwrap()),
+        "the recaptured baseline must not name the vanished source: {baseline}"
+    );
+    // Round-21 SF-4's stray-file rule: a plain-chat admittee in neither
+    // plain set must not gain a codex baseline it never reads.
+    assert!(
+        !home
+            .sessions_root()
+            .join(&plain_id)
+            .join("codex-workspace-baseline.json")
+            .exists(),
+        "a plain-chat admittee must not gain a codex baseline"
+    );
+
     std::fs::remove_dir_all(&from_dir).ok();
     std::fs::remove_dir_all(&to_dir).ok();
 }

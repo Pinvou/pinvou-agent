@@ -1674,6 +1674,7 @@ mod tests {
     /// advertises is inert on the only surface that could act on it. The
     /// builtin card pool makes this hermetic: `pinvou-card-creator`
     /// resolves without any user pool seeding.
+    #[cfg(feature = "product-backend")]
     #[test]
     fn an_equipped_card_without_a_staged_body_still_anchors_the_turn() {
         let _home = TempHome::new("equip-anchor");

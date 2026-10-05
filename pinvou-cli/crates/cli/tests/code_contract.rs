@@ -1995,7 +1995,7 @@ fn providers_round_trip_against_temp_home() {
     assert_eq!(value["action"], "added");
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
     let _keyring = KeyringCleanup {
-        agent: "claude",
+        agent: "codex",
         provider_id: added_id.clone(),
     };
     assert!(
@@ -2530,6 +2530,11 @@ struct KeyringCleanup {
 
 impl Drop for KeyringCleanup {
     fn drop(&mut self) {
+        // Round-38 review: this argv carried `--delete-key`, which `providers
+        // remove` does not parse — the guard failed at parse_args and deleted
+        // nothing, so every add lane kept leaking its fixture key into the
+        // developer's real keychain it was written to clean. `remove` deletes
+        // the stored credential reference by itself.
         if let Ok(parsed) = pinvou_cli::parse_args(vec![
             "pinvou",
             "code",
@@ -2539,13 +2544,17 @@ impl Drop for KeyringCleanup {
             "--agent",
             self.agent,
             "--yes",
-            "--delete-key",
         ]) {
             let _ = pinvou_cli::execute(parsed);
         }
     }
 }
 
+// Round-38 review: the 0600 assertion needs `std::os::unix`, and this file
+// is auto-discovered as a test target on Windows too — the missing gate
+// broke the whole binary's compile there (the round-36 VerdictEnvGuard
+// class again).
+#[cfg(unix)]
 #[test]
 fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     use std::os::unix::fs::PermissionsExt;
@@ -3809,6 +3818,19 @@ fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
 fn providers_update_delete_key_requires_yes() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("delete-key-gate");
+    // Round-38 review: restore the variable on every exit path like the
+    // sibling secret lanes' KeyVar guards, instead of leaking the seeded
+    // value to parallel tests for the rest of the run.
+    struct KeyVar(Option<std::ffi::OsString>);
+    impl Drop for KeyVar {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", value) },
+                None => unsafe { std::env::remove_var("PINVOU_TEST_DELETE_KEY_SECRET") },
+            }
+        }
+    }
+    let _key = KeyVar(std::env::var_os("PINVOU_TEST_DELETE_KEY_SECRET"));
 
     // Seed one provider with a key, so `--delete-key` has a real target.
     // SAFETY: the suite's ENV_LOCK is held for the whole test (same contract

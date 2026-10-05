@@ -99,3 +99,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^pinvou3-app/src-tauri/src/features/marketplace/mod\.rs$''']
 regexes = ['''PINVOU3_MCP_SECRET_PATSNAP_KEY''']
+
+[[allowlists]]
+description = "Credential redaction unit-test corpus uses deliberately synthetic Slack token shapes"
+targetRules = ["slack-legacy-workspace-token"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/src-tauri/src/platform/credential_store\.rs$''']
+regexes = ['''xox[aprs]-shortexample''']

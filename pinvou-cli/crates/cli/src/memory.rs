@@ -1086,7 +1086,7 @@ fn note_truncation(lane: &str, submitted_chars: usize, cap_chars: usize, cap_cla
     // success-path output channels still report the stored result.
     crate::note!(
         "memory {lane}: content is {submitted_chars} characters and exceeds the \
-         {cap_chars}-character cap {cap_clause}; the tail will be truncated to the cap"
+         {cap_chars}-character cap {cap_clause}; the tail would be truncated to the cap"
     );
 }
 

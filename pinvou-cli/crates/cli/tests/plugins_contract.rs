@@ -2130,9 +2130,13 @@ fn oauth_login_propagates_a_damaged_mcp_json() {
 
     let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]);
     assert_eq!(code, ExitCode::Failed);
+    // Round-38 review: "mcp.json" alone cannot discriminate the strict
+    // reader from the lenient fallback — the lenient reader's "mcp.json has
+    // no server '…'" also contains it. Pin the strict reader's own marker.
     assert!(
-        message.contains("mcp.json"),
-        "the acting command must name the unusable config: {message}"
+        message.contains("cannot parse mcp.json") || message.contains("cannot read mcp.json"),
+        "the acting command must fail through the strict reader, not the \
+         lenient status fallback: {message}"
     );
 }
 

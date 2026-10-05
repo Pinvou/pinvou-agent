@@ -94,7 +94,7 @@ pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Optio
         Ok(file) => file,
         Err(error) => {
             eprintln!(
-                "[pinvou3-app] Unable to open the {label} section lock {}: {error}; proceeding                  without cross-process exclusion",
+                "[pinvou3-app] Unable to open the {label} section lock {}: {error}; proceeding without cross-process exclusion",
                 lock_path.display()
             );
             return None;
@@ -113,7 +113,7 @@ pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Optio
             Err(std::fs::TryLockError::WouldBlock) => {
                 if Instant::now() >= deadline {
                     eprintln!(
-                        "[pinvou3-app] The {label} section lock {} stayed held for over {}s;                          proceeding without cross-process exclusion — a concurrent write on                          the other surface may be lost",
+                        "[pinvou3-app] The {label} section lock {} stayed held for over {}s; proceeding without cross-process exclusion — a concurrent write on the other surface may be lost",
                         lock_path.display(),
                         SECTION_LOCK_TIMEOUT.as_secs()
                     );
@@ -123,7 +123,7 @@ pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Optio
             }
             Err(std::fs::TryLockError::Error(error)) => {
                 eprintln!(
-                    "[pinvou3-app] The {label} section lock {} could not be locked: {error};                      proceeding without cross-process exclusion",
+                    "[pinvou3-app] The {label} section lock {} could not be locked: {error}; proceeding without cross-process exclusion",
                     lock_path.display()
                 );
                 return None;

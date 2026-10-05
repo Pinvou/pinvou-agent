@@ -3465,10 +3465,15 @@ fn search_body_error(provider: SearchProvider, body: &str) -> Option<(&'static s
             if code == 0 {
                 return None;
             }
+            // The provider controls this text, so it can echo the presented
+            // key back — redact like every other remote-text render in this
+            // module (round-38 review).
             let message = parsed
                 .get("message")
                 .and_then(|value| value.as_str())
-                .unwrap_or("unknown error");
+                .map(redact_secret)
+                .unwrap_or_else(|| "unknown error".to_owned());
+            let message = message.as_str();
             Some(match code {
                 2005 => (
                     "key_rejected",
@@ -3493,10 +3498,11 @@ fn search_body_error(provider: SearchProvider, body: &str) -> Option<(&'static s
                 .get("msg")
                 .or_else(|| parsed.get("message"))
                 .and_then(|value| value.as_str())
-                .unwrap_or("unknown error");
+                .map(redact_secret)
+                .unwrap_or_else(|| "unknown error".to_owned());
             Some((
                 "provider_error",
-                format!("Bocha search API error (code {code}: {message})"),
+                format!("Bocha search API error (code {code}: {})", message),
             ))
         }
         SearchProvider::Baidu => {
@@ -3511,10 +3517,11 @@ fn search_body_error(provider: SearchProvider, body: &str) -> Option<(&'static s
                 .get("error_msg")
                 .or_else(|| parsed.get("message"))
                 .and_then(|value| value.as_str())
-                .unwrap_or("unknown error");
+                .map(redact_secret)
+                .unwrap_or_else(|| "unknown error".to_owned());
             Some((
                 "provider_error",
-                format!("Baidu search API error (code {code}: {message})"),
+                format!("Baidu search API error (code {code}: {})", message),
             ))
         }
         SearchProvider::Bing => None,
