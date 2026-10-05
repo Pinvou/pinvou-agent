@@ -705,14 +705,14 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
         "missing": missing,
         "asr_dir": asr_dir().display().to_string(),
     });
-    if cfg!(target_os = "windows") {
-        // `installable` is false on Windows because the CLI has no install
-        // route there: the engine ships inside the desktop app's MSI. The
-        // human note below names the reachable workaround (PINVOU3_ASR_CMD /
-        // the managed dir), which does NOT flip these flags — they describe
-        // what lives under AsrDir.
-        value["gui_install_only"] = serde_json::json!(true);
-    }
+    // `installable` is false on Windows because the CLI has no install
+    // route there: the engine ships inside the desktop app's MSI. The human
+    // note below names the reachable workaround (PINVOU3_ASR_CMD / the
+    // managed dir), which does NOT flip these flags — they describe what
+    // lives under AsrDir. Always present as a boolean (round-37 review):
+    // the flag is a Windows-only fact, but a conditionally-absent key is
+    // indistinguishable from false to a script checking presence.
+    value["gui_install_only"] = serde_json::json!(cfg!(target_os = "windows"));
     let mut human = format!(
         "Engine: {}\nFfmpeg: {}\nModel: {}\nReady: {}\nCliTranscribe: {}\nInstallable: {}\nMissing: {}\nAsrDir: {}",
         engine,
@@ -796,8 +796,13 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let _install_guard = install_lock.try_write().map_err(|error| {
         if error.kind() == std::io::ErrorKind::WouldBlock {
             CliError::failed(
-                "asr_install_busy: another pinvou process is installing the ASR model; retry \
-                 after it finishes",
+                // The fd-lock serializes CLI×CLI only; a desktop-app download
+                // holds the in-process GUI flag this process cannot see
+                // (round-37 review: name the residual instead of implying
+                // every pinvou process is covered).
+                "asr_install_busy: another pinvou CLI process is installing the ASR model \
+                 (a desktop-app download is not serialized by this lock); retry after it \
+                 finishes",
             )
         } else {
             CliError::failed(format!(
@@ -2599,6 +2604,11 @@ fn postprocess_http_exchange(
                     summarize_postprocess_error(&error)
                 ))
             })?;
+        // GUI parity (`post_anthropic_messages` errors with "no text block
+        // in anthropic messages response"): a 200 with no text block is a
+        // malformed endpoint answer, not an empty edit — `unwrap_or_default`
+        // here let a block-less retry fall through to an exit-0 success
+        // carrying an empty transcript (round-37 review).
         let text = value
             .get("content")
             .and_then(|content| content.as_array())
@@ -2615,7 +2625,10 @@ fn postprocess_http_exchange(
                     .collect::<Vec<_>>()
                     .join("")
             })
-            .unwrap_or_default();
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| {
+                CliError::failed("no text block in the anthropic messages response".to_owned())
+            })?;
         // GUI parity: the preset detects truncation through the response's
         // `stop_reason` (`app/commands/voice.rs` checks `max_tokens`); the CLI
         // mirrors that contract instead of the engine's own
@@ -2706,7 +2719,10 @@ fn anthropic_stop_reason_says_truncated(response: &serde_json::Value) -> bool {
 /// Deterministic subset of `apply_voice_reasoning_controls` /
 /// `voice_reasoning_dialect` (`app/commands/voice.rs`), covering every vendor
 /// the GUI decides from the preset alone: vllm, deepseek, kimi (model-gated),
-/// doubao, glm, mimo, minimax, and qwen (preset, provider, or model name).
+/// doubao, glm, mimo, minimax, and qwen (preset or model name — plus one
+/// deliberate superset the GUI lacks: a route whose provider string is
+/// exactly "qwen" gets `enable_thinking: false` without waiting for the
+/// model-name fallback; disclosed here since round-37).
 /// The GUI's remaining URL-sniffing lanes need the crate-private
 /// `core::reasoning_dialect` helpers and stay skipped (disclosed on
 /// [`call_postprocess_model`]); its last-resort model-name fallback that
@@ -3562,6 +3578,36 @@ content-length: {}\r\n\r\n{}",
         assert!(!ffmpeg_missing_is_fatal_for(Some("WAV")));
         assert!(!ffmpeg_missing_is_fatal_for(Some("Wav")));
         assert!(ffmpeg_missing_is_fatal_for(None));
+    }
+
+    /// The docs row promises `ffmpeg_missing` when ONLY ffmpeg is absent and
+    /// the input needs conversion. The full command path is unreachable
+    /// hermetically (`model_available` pins the shipped model's exact size +
+    /// sha256, hundreds of MiB), so the routing is pinned at the pure gate:
+    /// engine+model without ffmpeg must reject conversion inputs with the
+    /// stable code while raw wavs still run (the warning lane).
+    #[test]
+    fn asr_preflight_names_ffmpeg_missing_for_conversion_inputs() {
+        let lanes = AsrLanes {
+            engine: true,
+            ffmpeg: false,
+            model: true,
+            external: false,
+            native: true,
+        };
+        match asr_preflight(lanes, Some("mp3")) {
+            AsrPreflight::Reject(message) => assert!(
+                message.starts_with("ffmpeg_missing"),
+                "expected the stable code, got: {message}"
+            ),
+            other => panic!(
+                "a conversion input with only ffmpeg missing must be rejected, got {other:?}"
+            ),
+        }
+        assert!(matches!(
+            asr_preflight(lanes, Some("wav")),
+            AsrPreflight::RunOnRawWav
+        ));
     }
 
     /// The Anthropic preset must detect truncation like the GUI does

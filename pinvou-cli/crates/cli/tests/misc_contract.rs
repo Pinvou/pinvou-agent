@@ -650,8 +650,13 @@ fn voice_asr_status_reports_hermetic_zero_state() {
     // Only Linux has a CLI install route; Windows reports gui_install_only
     // because its engine ships inside the desktop app's MSI.
     assert_eq!(value["installable"], cfg!(target_os = "linux"));
+    assert!(
+        value["gui_install_only"].is_boolean(),
+        "gui_install_only must be present (round-37: unwrap_or(false) made a missing \
+         field indistinguishable from false on non-Windows legs)"
+    );
     assert_eq!(
-        value["gui_install_only"].as_bool().unwrap_or(false),
+        value["gui_install_only"].as_bool().unwrap(),
         cfg!(target_os = "windows")
     );
     // Neither lane of the CLI itself can transcribe in this sandbox (the
@@ -977,6 +982,9 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
 #[test]
 #[ignore = "needs display host + configured model: cargo test --test misc_contract -- --ignored"]
 fn voice_postprocess_calls_the_active_model() {
+    // Round-37 review: sandbox the home — a windowless-host boot runs the
+    // retention sweep against whatever PINVOU3_HOME names.
+    let _home = HomeGuard::new("ignored-voice-postprocess");
     let parsed = parse_args([
         "pinvou",
         "voice",
@@ -1321,8 +1329,10 @@ fn deps_check_reports_the_platform_capability_table() {
     assert_eq!(lines, items.len());
     assert!(outcome.stdout.contains("voice_asr\t"));
     // macOS carries the GUI's i18n key `email_manual` as the email row hint;
-    // the CLI boundary maps it to English copy instead of leaking the key.
-    #[cfg(target_os = "macos")]
+    // the CLI boundary maps it to English copy instead of leaking the key —
+    // on EVERY platform (the mapping is not cfg-gated), so the assertion is
+    // not either (round-37: a macOS-gated assert executed nowhere — CI's
+    // cli-test leg is Linux, macos-cli-check only compiles).
     assert!(
         !outcome.stdout.contains("email_manual"),
         "the raw email_manual i18n key must not reach CLI output"
@@ -1692,6 +1702,33 @@ fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
 /// The gate runs after the prompt read and before any host boot, so the
 /// refusal is hermetic.
 #[test]
+/// Round-37 review: the migration note tells users `agent run --prompt-file`
+/// is "a regular file of at most 4 MiB", but the shared helper's caps were
+/// pinned only through the feedback/voice lanes — nothing failed if this
+/// lane's delegation reverted to `read_to_string` or swapped the cap. The
+/// refusal must land pre-boot like the attachment refusals above.
+#[test]
+fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("agent-prompt-cap");
+    let prompt = home.root.join("big-prompt.txt");
+    std::fs::write(&prompt, vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "agent",
+        "run",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+    ])
+    .expect_err("an over-cap prompt file must be refused before any host boot");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("4194304-byte read limit"),
+        "the cap is the documented 4 MiB: {error}"
+    );
+}
+
 fn agent_run_refuses_an_attachment_under_a_credential_path() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("agent-attach-secret");

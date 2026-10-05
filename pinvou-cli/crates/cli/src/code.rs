@@ -1280,7 +1280,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             // and must not be able to answer `checkout_busy` (exit 1) when
             // another process holds the lock instead of the usage error.
             require_yes(yes)?;
-            let mut mutation_lock = session_mutation_lock(&session)?;
+            let mut mutation_lock = session_mutation_lock(&session, "checkout")?;
             let _mutation_guard =
                 lock_session_for_mutation(&mut mutation_lock, &session, "checkout")?;
             with_workspace(&session, |root| {
@@ -1706,8 +1706,11 @@ fn nonempty_file(path: &Path) -> bool {
 /// for the override resolution the gate just handed back, and without the
 /// memo the codex lanes spawn the override twice (two 15 s-bounded spawns;
 /// the app avoids the same double spawn in `runtime::probe_codex_runtime`
-/// by threading the verdict). Only a PASSING verdict is cached, keyed by
-/// the resolved path, so the gate can never read a stale success.
+/// by threading the verdict). ANY `Version` verdict is cached — passing or
+/// not (the memo is stored before the gate evaluates it) — keyed by the
+/// resolved path; behaviorally inert because the memo is only read back for
+/// the exact same path, whose verdict classifies identically fresh or
+/// memoized (round-37 review corrected the earlier "passing only" claim).
 static LAST_OVERRIDE_PROBE: std::sync::OnceLock<
     std::sync::Mutex<Option<(std::path::PathBuf, VersionProbe)>>,
 > = std::sync::OnceLock::new();
@@ -3509,14 +3512,30 @@ fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliO
         4 * 1024 * 1024,
         &format!("code providers import({agent})"),
     )?;
+    // Round-37 review: the store's own parse failure is a Chinese chain
+    // ("导入文件不是有效的 Provider JSON"); every other store lane mirrors
+    // its validation in English before calling it, so pre-validate the JSON
+    // shape here and let the store only see parseable documents.
+    if let Err(error) = serde_json::from_str::<serde_json::Value>(&json) {
+        return Err(CliError::failed(format!(
+            "code providers import({agent}): the file is not valid provider JSON: {error}"
+        )));
+    }
     let result = manager
         .import(agent, &json)
         .map_err(|error| store_error("providers import", agent, error))?;
     let value = serde_json::json!({ "agent": agent, "result": result });
-    let human = format!(
+    let mut human = format!(
         "imported {}\nid conflicts: {}\nskipped: {}",
         result.imported, result.id_conflicts, result.skipped,
     );
+    // Per-entry failures were collected by the store but silently dropped
+    // from the human rendering (JSON carried them; the operator saw only
+    // `skipped: N` with no reason).
+    for entry_error in &result.errors {
+        human.push_str("\nerror: ");
+        human.push_str(&crate::support::collapse_control_characters(entry_error));
+    }
     Ok(success(render(output, human, &value)))
 }
 
@@ -3877,7 +3896,10 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// concurrent GUI turn on the same session remains undetectable here
 /// (documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
-fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+fn session_mutation_lock(
+    session: &str,
+    action: &str,
+) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     if !crate::support::valid_session_id(session) {
         return Err(CliError::usage("invalid session id"));
     }
@@ -3886,9 +3908,14 @@ fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>
     // would put it in a cwd-relative directory.
     crate::support::sandbox_home()?;
     let dir = paths::pinvou3_home().join("locks");
+    // Round-37 review: the construction failures ARE the docs' "lock file
+    // itself cannot be taken" case (`locks/` replaced by a file, EACCES on
+    // the lock path), so they carry the same stable `{action}_lock` code the
+    // try_write arm emits — a prose-only shape let a whole failure class
+    // dodge the documented contract.
     std::fs::create_dir_all(&dir).map_err(|error| {
         CliError::failed(format!(
-            "code session lock: cannot create {}: {error}",
+            "{action}_lock: cannot create {}: {error}",
             dir.display()
         ))
     })?;
@@ -3900,7 +3927,7 @@ fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>
         .open(&path)
         .map_err(|error| {
             CliError::failed(format!(
-                "code session lock: cannot open {}: {error}",
+                "{action}_lock: cannot open {}: {error}",
                 path.display()
             ))
         })?;
@@ -3914,7 +3941,10 @@ fn session_mutation_lock(session: &str) -> Result<fd_lock::RwLock<std::fs::File>
 /// a hash of the canonical execution root) closes the preventable CLI×CLI
 /// half. The GUI-vs-CLI residual (a GUI turn or rewind in the desktop process
 /// takes no CLI lock) remains undetectable and stays documented.
-fn execution_root_lock(root: &Path) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+fn execution_root_lock(
+    root: &Path,
+    action: &str,
+) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     fn stable(root: &Path) -> String {
         // FNV-1a over the canonical path: deterministic across processes is
         // the only requirement (this is a lock key, not a security digest).
@@ -3929,9 +3959,10 @@ fn execution_root_lock(root: &Path) -> Result<fd_lock::RwLock<std::fs::File>, Cl
     // before `open_store` runs on some paths.
     crate::support::sandbox_home()?;
     let dir = paths::pinvou3_home().join("locks");
+    // Same `{action}_lock` rule as the session lock above (round-37 review).
     std::fs::create_dir_all(&dir).map_err(|error| {
         CliError::failed(format!(
-            "code root lock: cannot create {}: {error}",
+            "{action}_lock: cannot create {}: {error}",
             dir.display()
         ))
     })?;
@@ -3943,7 +3974,7 @@ fn execution_root_lock(root: &Path) -> Result<fd_lock::RwLock<std::fs::File>, Cl
         .open(&path)
         .map_err(|error| {
             CliError::failed(format!(
-                "code root lock: cannot open {}: {error}",
+                "{action}_lock: cannot open {}: {error}",
                 path.display()
             ))
         })?;
@@ -4728,7 +4759,14 @@ fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliErr
         let bytes = record.as_bytes();
         let x = bytes[0] as char;
         let y = bytes[1] as char;
+        // The separator rewrite is a Windows `status` quirk only; on Unix a
+        // literal backslash is a legal filename and rewriting it mangled the
+        // parsed path (round-37 review — inert today, latent wrong-path parse
+        // if the payload is ever consumed).
+        #[cfg(target_os = "windows")]
         let path = record[3..].replace('\\', "/");
+        #[cfg(not(target_os = "windows"))]
+        let path = record[3..].to_string();
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             index += 1;
         }
@@ -4844,7 +4882,7 @@ fn workspace_checkout(
     // checking out different sessions bound to one project directory must not
     // interleave stash/checkout/pop on one working tree.
     let canonical_root = canonical_execution_root(&root);
-    let mut root_lock = execution_root_lock(&canonical_root)?;
+    let mut root_lock = execution_root_lock(&canonical_root, "checkout")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &canonical_root, "checkout", session)?;
     let is_git = git_root(&root).is_some_and(|git_root| git_root == root);
     if !is_git {
@@ -5346,13 +5384,13 @@ fn checkpoints_diff(
     // same project directory would otherwise be diffed against a
     // half-restored tree (the GUI gates diff on busy same-root peers the
     // same way).
-    let mut mutation_lock = session_mutation_lock(session)?;
+    let mut mutation_lock = session_mutation_lock(session, "diff")?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "diff")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
     let root = canonical_execution_root(&execution);
-    let mut root_lock = execution_root_lock(&root)?;
+    let mut root_lock = execution_root_lock(&root, "diff")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "diff", session)?;
     let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id, true)
         .map_err(|error| store_error("checkpoints diff", checkpoint_id, error))?;
@@ -5449,7 +5487,7 @@ fn checkpoints_rewind(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
-    let mut mutation_lock = session_mutation_lock(session)?;
+    let mut mutation_lock = session_mutation_lock(session, "rewind")?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "rewind")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
@@ -5458,7 +5496,7 @@ fn checkpoints_rewind(
     // rewinding *different* sessions bound to the same project directory must
     // not interleave file restores on one working tree.
     let root = canonical_execution_root(&execution);
-    let mut root_lock = execution_root_lock(&root)?;
+    let mut root_lock = execution_root_lock(&root, "rewind")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "rewind", session)?;
 
     // Stale Turn snapshot reconciliation (same source of truth as the GUI).
@@ -5637,13 +5675,13 @@ fn undo_restore_failure(
 /// `--yes` like `rewind`.
 fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
-    let mut mutation_lock = session_mutation_lock(session)?;
+    let mut mutation_lock = session_mutation_lock(session, "undo")?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "undo")?;
     let store = open_store()?;
     let agents = open_agent_store()?;
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
     let root = canonical_execution_root(&execution);
-    let mut root_lock = execution_root_lock(&root)?;
+    let mut root_lock = execution_root_lock(&root, "undo")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "undo", session)?;
     let info = resolve_undo_state(&store, &ledger, session)?.ok_or_else(|| {
         CliError::failed(
@@ -5730,6 +5768,19 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-37 review: the constant's doc promises lockstep with the
+    /// library clamp the wired consumers use; without a pin the "must stay
+    /// in lockstep" claim is unenforced (the sibling constant in
+    /// `agent_task.rs` enforces exactly this).
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn code_run_timeout_cap_matches_library_clamp() {
+        assert_eq!(
+            CODE_RUN_TIMEOUT_SECS_MAX,
+            pinvou_product_backend::MAX_TIMEOUT_SECS
+        );
+    }
 
     #[test]
     fn undo_failure_classification_is_independent_of_the_store_message_text() {

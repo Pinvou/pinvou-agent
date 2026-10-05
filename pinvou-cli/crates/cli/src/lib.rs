@@ -678,12 +678,16 @@ pub fn render_list(output: OutputMode) -> String {
             benchmark_registry()
                 .iter()
                 .map(|spec| format!(
-                    "{{\"id\":\"{}\",\"availability\":\"{}\",\"available\":{},\"score_kind\":\"{}\",\"command_error\":\"{}\"}}",
+                    // `description` joins the payload so JSON carries the
+                    // same facts as the human rows (round-37 review: the
+                    // human table prints it, JSON dropped it).
+                    "{{\"id\":\"{}\",\"availability\":\"{}\",\"available\":{},\"score_kind\":\"{}\",\"command_error\":\"{}\",\"description\":\"{}\"}}",
                     spec.id,
                     spec.availability.as_str(),
                     spec.availability.is_available(),
                     spec.score_kind,
                     spec.command_error,
+                    spec.description.replace('\\', "\\\\").replace('"', "\\\""),
                 ))
                 .collect::<Vec<_>>()
                 .join(",")

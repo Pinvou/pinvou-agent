@@ -849,7 +849,7 @@ fn connect_failure_carries_the_captured_login_link() {
         &bin,
         "dws",
         "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; sleep 30; exit 0; fi\n",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; /bin/sleep 30; exit 0; fi\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -945,7 +945,7 @@ fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
         &bin,
         "dws",
         "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; sleep 1; echo \"user code: DTK123\"; sleep 300; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; /bin/sleep 1; echo \"user code: DTK123\"; /bin/sleep 300; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -998,7 +998,7 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
         &bin,
         "wecom-cli",
         "wecom-cli 1.9.9 (build 1)",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"init\" ]; then printf 'png' > qr.png; echo \"login at https://work.weixin.qq.com/landing?x=1\"; sleep 30; exit 0; fi\n",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"init\" ]; then printf 'png' > qr.png; echo \"login at https://work.weixin.qq.com/landing?x=1\"; /bin/sleep 30; exit 0; fi\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -1787,7 +1787,7 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
              if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n\
              \x20 if [ -f \"{counter}\" ]; then echo '{{\"identities\":{{\"user\":{{\"status\":\"ready\"}}}}}}'; exit 0; fi\n\
              \x20 : > \"{counter}\"\n\
-             \x20 ( sleep 1; mv -f \"{script}\" \"{hidden}\" 2>/dev/null; sleep 3; mv -f \"{hidden}\" \"{script}\" 2>/dev/null ) >/dev/null 2>&1 &\n\
+             \x20 ( /bin/sleep 1; mv -f \"{script}\" \"{hidden}\" 2>/dev/null; sleep 3; mv -f \"{hidden}\" \"{script}\" 2>/dev/null ) >/dev/null 2>&1 &\n\
              \x20 exit 1\n\
              fi\n",
             counter = counter.display(),

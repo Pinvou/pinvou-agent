@@ -1021,6 +1021,116 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
 }
 
 #[test]
+fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
+    // Round-37 review BLOCKER: a session whose binding is a PROPER SUBPATH
+    // of the moved root (`from/sub`, not `from` itself) must get its
+    // artifact and acp-state storage halves translated onto its own
+    // translated binding (`to/sub`), the way the GUI's per-session closure
+    // does — not onto the destination root (`to`). A healthy session (its
+    // metadata already matches its pre-move binding) must also NOT be
+    // classified metadata-behind-binding: the lane outcomes carry the
+    // already-translated binding, so the GUI's stale-metadata detection
+    // only holds when it runs against the PRE-translation binding.
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-subpath");
+    let from_dir = make_root_dir("rebind-subpath-from");
+    let to_dir = make_root_dir("rebind-subpath-to");
+    let from = std::fs::canonicalize(&from_dir).unwrap();
+    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from_sub = from.join("sub");
+    let to_sub = to.join("sub");
+    std::fs::create_dir_all(&from_sub).unwrap();
+    let artifact_on_from = from_sub.join("artifacts").join("report.md");
+    let artifact_on_to_sub = to_sub.join("artifacts").join("report.md");
+    let artifact_on_to_root = to.join("artifacts").join("report.md");
+
+    // A healthy session bound at the subpath: metadata, artifact storage
+    // and acp-state all name `from/sub` (nothing is stranded — this is the
+    // plain moved-project shape, the most common rebind input).
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, from_sub.clone())
+        .expect("create subpath session");
+    let session_id = session.metadata.id;
+    sessions
+        .update_artifacts(
+            &session_id,
+            vec![artifact_on_from.to_string_lossy().into_owned()],
+        )
+        .expect("seed the artifact storage path");
+    sessions
+        .bind_session_workspace(&session_id, from_sub.clone())
+        .expect("bind the session at the subpath");
+    drop(sessions);
+    std::fs::create_dir_all(home.sessions_root().join(&session_id)).unwrap();
+    std::fs::write(
+        home.sessions_root()
+            .join(&session_id)
+            .join("acp-state.json"),
+        serde_json::json!({ "workspace": { "path": from_sub.to_string_lossy() } }).to_string(),
+    )
+    .unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ]);
+    let failed = value["failed_session_ids"].as_array().unwrap();
+    assert!(
+        failed.is_empty(),
+        "the subpath session must rebind cleanly: {failed:?}"
+    );
+    let rebound: Vec<&str> = value["rebound_session_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    assert!(
+        rebound.contains(&session_id.as_str()),
+        "the subpath session must be reported as rebound: {rebound:?}"
+    );
+
+    // Every stored path must name the session's own translated subpath
+    // destination and none may survive on the vanished origin. Translating
+    // onto the destination ROOT (the round-37 bug) loses the `sub`
+    // component: the record carries `to/artifacts/report.md` instead.
+    let raw = std::fs::read_to_string(home.sessions_root().join(format!("{session_id}.json")))
+        .expect("session record still on disk");
+    assert!(
+        raw.contains(artifact_on_to_sub.to_str().unwrap()),
+        "artifact storage paths must rebase onto the translated subpath: {raw}"
+    );
+    assert!(
+        !raw.contains(artifact_on_to_root.to_str().unwrap()),
+        "artifact storage paths must not be flattened onto the destination root: {raw}"
+    );
+    assert!(
+        !raw.contains(from_sub.to_str().unwrap()),
+        "no record path may name the vanished subpath origin: {raw}"
+    );
+    let acp_state = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&session_id)
+            .join("acp-state.json"),
+    )
+    .expect("acp-state file still on disk");
+    assert!(
+        acp_state.contains(to_sub.to_str().unwrap())
+            && !acp_state.contains(from_sub.to_str().unwrap()),
+        "the acp-state workspace.path must translate onto the translated subpath: {acp_state}"
+    );
+
+    std::fs::remove_dir_all(&from_dir).ok();
+    std::fs::remove_dir_all(&to_dir).ok();
+    let _ = home;
+}
+
+#[test]
 fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
     // The retry pass must admit only metadata that LAGS its binding: a
     // session created directly under `to` whose metadata already matches is

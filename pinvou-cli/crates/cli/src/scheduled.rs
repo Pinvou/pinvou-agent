@@ -13,9 +13,14 @@
 //! `next_run_at: null` on create where the foundation resolves the
 //! slot eagerly, silently pausing past one-shots). What stays CLI-local:
 //! - atomic JSON writes with a per-pid/nanos-unique staging file
-//!   (`write_json_atomic`); the foundation writer stages under its own
-//!   unique temp name (`tempfile`-generated), so neither side can collide
-//!   with the other's staging path.
+//!   (`write_json_atomic`); the foundation SIDECAR writer stages under its
+//!   own unique temp name (`tempfile`-generated), so neither side can
+//!   collide with the other's staging path there. Definitions are
+//!   different: BOTH surfaces write them through the foundation's
+//!   `save_automation`, whose staging name is a fixed `<def>.json.tmp` —
+//!   a GUI def write racing a CLI mutation of the same task stays a
+//!   disclosed narrow window (the CLI takes no lock the GUI honors;
+//!   round-37 review corrected the earlier "neither side" claim).
 //! - quarantine policy per store mirrors the GUI's `QuarantineStrategy`
 //!   (Rename for bindings/kinds/read-state/archive) with TWO divergences:
 //!   a corrupt `task-ui-metadata.json` is renamed aside here on every read
@@ -2496,6 +2501,26 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             return Err(error);
         }
     };
+    // Round-37 review (the GUI's `archived_task_is_valid` second half): a
+    // run record whose `automation_id` diverges from the deleted task makes
+    // the GUI REFUSE the delete and restore status — archiving it would
+    // make the GUI drop the ENTIRE entry (with a warn) when the task feed
+    // is next read, so the CLI archived "successfully" while the deleted
+    // feed showed nothing. Mirror the refusal.
+    let divergent = runs.iter().find(|run| {
+        run.get("automation_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|run_id| run_id != id)
+    });
+    if divergent.is_some() {
+        restore_status(&previous_status);
+        return Err(CliError::failed(
+            "scheduled delete: run history contains a record owned by another task; \
+             refusing to archive a corrupt snapshot (repair or remove the divergent run \
+             record under the task's runs directory first)"
+                .to_owned(),
+        ));
+    }
     // The GUI cancels queued/running runs through the foundation TaskManager
     // before deleting; headlessly there is no engine runtime to cancel with,
     // so GUI-runtime-owned active runs refuse deletion. A `queued` record

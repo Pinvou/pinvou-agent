@@ -1994,6 +1994,10 @@ fn providers_round_trip_against_temp_home() {
     ]);
     assert_eq!(value["action"], "added");
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    let _keyring = KeyringCleanup {
+        agent: "claude",
+        provider_id: added_id.clone(),
+    };
     assert!(
         added_id.starts_with("pv-"),
         "code providers add should print a pv_-prefixed GUI id"
@@ -2398,6 +2402,62 @@ fn session_lock_reports_busy_for_every_mutating_command() {
     assert_eq!(session.messages.len(), 4, "transcript untouched");
 }
 
+/// The docs row promises `{action}_lock` when the lock FILE itself cannot
+/// be taken; every lock test only pinned the `_busy` twin (a held lock).
+/// `locks/` as a regular file makes opening any lock path ENOTDIR — a
+/// non-WouldBlock error — which is exactly the `_lock` arm (round-37
+/// review).
+#[test]
+fn lock_file_failures_report_the_stable_lock_codes() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("lock-file-broken");
+    let id = create_code_session_fixture(None);
+    seed_two_turn_transcript(&id);
+
+    // Replace the locks directory with a regular file AFTER the fixtures
+    // booted (the store may create it); every subsequent lock open fails
+    // with ENOTDIR.
+    let locks = home.root.join("locks");
+    std::fs::remove_dir_all(&locks).ok();
+    std::fs::write(&locks, b"not a directory").unwrap();
+
+    for (arguments, code) in [
+        (
+            vec!["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"],
+            "rewind_lock",
+        ),
+        (
+            vec!["pinvou", "code", "checkpoints", "undo", &id, "--yes"],
+            "undo_lock",
+        ),
+        (
+            vec!["pinvou", "code", "checkpoints", "diff", &id, "abc"],
+            "diff_lock",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "workspace",
+                "checkout",
+                &id,
+                "main",
+                "--mode",
+                "stash",
+                "--yes",
+            ],
+            "checkout_lock",
+        ),
+    ] {
+        let error = run(&arguments).expect_err("the broken lock must fail the mutation");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+        assert!(
+            error.to_string().contains(code),
+            "expected {code} in: {error}"
+        );
+    }
+}
+
 #[test]
 fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2453,8 +2513,40 @@ fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
 
 // ---- round-3 fixes: export permissions, login code-source guards ----
 
+/// Removes a providers fixture's keychain entry even when the test panics:
+/// the add lanes write the REAL OS keychain on developer machines (the file
+/// fallback only engages where the keyring probe fails, e.g. headless CI),
+/// and three tests used to leak `sk-test-*` fixtures into the developer's
+/// login keychain (round-37 review). Drop order matters: declared after
+/// `_env_guard`/`_home`, it runs while ENV_LOCK is still held and
+/// `PINVOU3_HOME` still names the sandbox, so `remove` sees the sandboxed
+/// store (the keyring itself is process-global) and deletes exactly the
+/// fixture's reference. Best-effort: failures are ignored — the suite must
+/// not fail during unwind.
+struct KeyringCleanup {
+    agent: &'static str,
+    provider_id: String,
+}
+
+impl Drop for KeyringCleanup {
+    fn drop(&mut self) {
+        if let Ok(parsed) = pinvou_cli::parse_args(vec![
+            "pinvou",
+            "code",
+            "providers",
+            "remove",
+            self.provider_id.as_str(),
+            "--agent",
+            self.agent,
+            "--yes",
+            "--delete-key",
+        ]) {
+            let _ = pinvou_cli::execute(parsed);
+        }
+    }
+}
+
 #[test]
-#[cfg(unix)]
 fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     use std::os::unix::fs::PermissionsExt;
     struct KeyVar(Option<std::ffi::OsString>);
@@ -2495,6 +2587,13 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
         "PINVOU_CLI_TEST_EXPORT_KEY",
     ]);
     assert_eq!(added["action"], "added");
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added["provider"]["id"]
+            .as_str()
+            .expect("added provider id")
+            .to_owned(),
+    };
 
     // Round-18 finding: an existing destination used to be truncated with
     // plaintext keys and exit 0 (the only overwrite-permitting export in the
@@ -3099,6 +3198,10 @@ fn providers_update_claude_rejects_a_legacy_record_without_slots() {
     ]);
     assert_eq!(added["action"], "added");
     let provider_id = added["provider"]["id"].as_str().unwrap().to_owned();
+    let _keyring = KeyringCleanup {
+        agent: "claude",
+        provider_id: provider_id.clone(),
+    };
 
     // Degrade it to a legacy record: same shape, `model_slots` gone.
     let mut store: serde_json::Value =

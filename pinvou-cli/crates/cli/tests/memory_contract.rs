@@ -376,6 +376,50 @@ fn memory_profile_set_get_round_trips_through_feature_io() {
 }
 
 #[test]
+/// The docs row promises the stable `memory_add_failed` code for write-time
+/// refusals (sensitive/task-like content). Round-37 review: no test drove
+/// the refusal through the CLI, so a reworded or mis-routed code passed the
+/// whole suite. `api_key=abcdef` is the app-side heuristic's own positive.
+#[test]
+fn memory_add_reports_the_stable_code_for_sensitive_content() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("add-sensitive-code");
+    for store in ["preference", "work-context"] {
+        let error = match parse_args(vec![
+            "pinvou",
+            "memory",
+            "add",
+            store,
+            "--content",
+            "api_key=abcdef",
+        ]) {
+            Err(error) => error,
+            Ok(parsed) => execute(parsed).expect_err("sensitive content must be refused"),
+        };
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("memory_add_failed"),
+            "expected the stable code, got: {message}"
+        );
+        assert!(message.contains("sensitive"), "{message}");
+    }
+    // The refused content stored nothing.
+    let stdout = run_ok(&[
+        "pinvou",
+        "memory",
+        "list",
+        "--store",
+        "preferences",
+        "--output",
+        "json",
+    ]);
+    assert!(
+        !stdout.contains("api_key"),
+        "a refused add must not store content: {stdout}"
+    );
+}
+
 fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("preference-roundtrip");

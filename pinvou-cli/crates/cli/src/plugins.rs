@@ -816,10 +816,18 @@ fn tools_install(
     // INSTALL failure itself stays log-only: a skill is an enhancement.)
     sync_after_install_or_fail("tools install", id)?;
     let mut companion_note = Vec::new();
+    let tool_package = pinvou3_lib::features::marketplace::scope::package_id_for(id);
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
-                sync_after_install_or_fail("companion skills install", &sid)?;
+                // Round-37 review: mirror the GUI's same-package redundancy
+                // skip — a companion that normalizes to the tool's own
+                // package was already synced by the tool-level call above,
+                // and an unconditional re-sync only adds a failure surface
+                // whose message ("consent gap") would not be true.
+                if pinvou3_lib::features::marketplace::scope::package_id_for(&sid) != tool_package {
+                    sync_after_install_or_fail("companion skills install", &sid)?;
+                }
                 companion_note.push(sid);
             }
             Err(error) => {
@@ -1026,8 +1034,10 @@ fn read_mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, Cli
 ///
 /// Residual, deliberate: the nested `oauth` object's own fields are checked
 /// only as "object or null", and the root `timeouts` block is not inspected at
-/// all. Both are configuration the marketplace flow never writes, so a
-/// divergence there is bounded to hand-edited files.
+/// all. The marketplace reconcile DOES write manifest-declared `oauth`
+/// blocks — but only ever in the `{client_id: string|null}` shape both
+/// surfaces parse (round-37 review corrected the earlier "never written"
+/// claim), so the divergence stays bounded to hand-edited files.
 fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
     let Some(fields) = entry.as_object() else {
         return false;

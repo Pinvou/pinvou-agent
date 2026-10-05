@@ -288,6 +288,17 @@ fn conflicting_global_output_modes_are_a_usage_error() {
     assert_eq!(parsed.output(), OutputMode::Json);
 }
 
+/// Round-37 review: the bare `version` token is claimed by its own arm
+/// outside the family table; nothing parsed it, so deleting the arm
+/// regressed `pinvou version` to exit 2 with no failing row.
+#[test]
+fn bare_version_token_is_claimed_before_family_parsing() {
+    let parsed = parse_args(["pinvou", "version"]).expect("bare version parses");
+    let outcome = pinvou_cli::execute(parsed).expect("version executes");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(outcome.stdout.contains("pinvou "));
+}
+
 #[test]
 fn version_is_a_usable_subcommand_with_json_output() {
     let parsed = parse_args(["pinvou", "--version"]).expect("--version parses");

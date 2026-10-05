@@ -67,6 +67,70 @@ use auth_probe::{AgentAuthProbeState, CachedAuthStatus};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
+
+/// How long a store's cross-process section lock waits for a peer's
+/// reload→mutate→persist section before degrading to unlocked operation
+/// (with a warning). Generous against human-frequency contention; the bound
+/// exists so a peer wedged or SIGSTOP'd inside its section cannot park the
+/// GUI's settings worker forever (round-37 review, concurrency lane).
+pub(crate) const SECTION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cross-process advisory lock over a store's reload→mutate→persist
+/// section, shared by the acp stores (`acp-providers.json`,
+/// `acp-agent-defaults.json`). The lock file carries no state and the OS
+/// releases it when the holder dies, so a crash cannot wedge the store.
+/// Best-effort with an observable degrade (round-37 review): if the lock
+/// file cannot be opened, the lock syscall fails, or a peer holds the
+/// section longer than [`SECTION_LOCK_TIMEOUT`], the caller proceeds
+/// unlocked — the pre-lock behavior — but every degrade warns, so the
+/// lost-update window is never silent. `label` names the store in warnings.
+pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Option<std::fs::File> {
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] Unable to open the {label} section lock {}: {error}; proceeding                  without cross-process exclusion",
+                lock_path.display()
+            );
+            return None;
+        }
+    };
+    // Poll instead of one blocking `lock()`: mutators are human-frequency
+    // and the section is a read + a small rename, so contention costs
+    // milliseconds — but a peer wedged INSIDE its section (or SIGSTOP'd)
+    // must not park a GUI settings action indefinitely, and a refusal on a
+    // busy store would surface as a settings error for a transient
+    // cross-process race. Past the deadline the window reopens, loudly.
+    let deadline = Instant::now() + SECTION_LOCK_TIMEOUT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "[pinvou3-app] The {label} section lock {} stayed held for over {}s;                          proceeding without cross-process exclusion — a concurrent write on                          the other surface may be lost",
+                        lock_path.display(),
+                        SECTION_LOCK_TIMEOUT.as_secs()
+                    );
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                eprintln!(
+                    "[pinvou3-app] The {label} section lock {} could not be locked: {error};                      proceeding without cross-process exclusion",
+                    lock_path.display()
+                );
+                return None;
+            }
+        }
+    }
+}
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, oneshot};

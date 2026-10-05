@@ -250,12 +250,20 @@ fn run_agent(
     let staged_turn = session.and_then(|session_id| {
         crate::personas::staged_persona_turn(session_id).map(|turn| (session_id, turn))
     });
-    let prompt = prompt_with_persona_injection(
-        prompt,
-        staged_turn
-            .as_ref()
-            .and_then(|(session_id, turn)| persona_turn_injection(session_id, turn)),
-    );
+    // Round-37 review MAJOR: the staged one-shot body takes the turn; a
+    // session that merely WEARS a card (body already consumed) gets the
+    // GUI's per-turn light anchor instead — on the GUI the equipped card
+    // steers every turn, so `personas active` reporting the card must mean
+    // the same thing here.
+    let injection = staged_turn
+        .as_ref()
+        .and_then(|(session_id, turn)| persona_turn_injection(session_id, turn))
+        .or_else(|| {
+            session
+                .as_deref()
+                .and_then(crate::personas::equipped_persona_anchor)
+        });
+    let prompt = prompt_with_persona_injection(prompt, injection);
     // Canonicalize so the engine receives an absolute path regardless of cwd
     // changes, and fail fast on a missing/non-directory workspace instead of
     // letting a typo'd path get silently created deeper in the stack.
@@ -315,6 +323,17 @@ fn run_agent(
             crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
                 CliError::failed(format!("agent run: refusing attachment: {reason}"))
             })?;
+            // Round-37 review: the regular-file check lives engine-side
+            // (`validate_attachments`), which runs only after the whole
+            // windowless host booted — a directory passed the CLI gate and
+            // doomed the run after the expensive setup. Same pre-boot
+            // hermetic refusal the credential-path check gives.
+            if !resolved.is_file() {
+                return Err(CliError::failed(format!(
+                    "agent run: attachment is not a regular file: {}",
+                    resolved.display()
+                )));
+            }
             Ok(pinvou3_lib::agentic_task::AgenticTaskAttachment {
                 path: resolved,
                 remove_after_ingest: false,

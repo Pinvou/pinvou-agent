@@ -1755,6 +1755,38 @@ pub(crate) fn import_plugin_package_gated(
 
 #[cfg(test)]
 mod tests {
+    // Round-37 review anti-drift pin: the CLI's error translation keys on
+    // substrings of the rejection strings below (不安全路径 / symlink /
+    // 伪造头部 / 解压+上限). Rewording any of them silently reverts the
+    // headless surface to verbatim Chinese on exactly the zip-slip/bomb
+    // refusals; if you must reword, update
+    // pinvou-cli/crates/cli/src/plugins.rs `translate_plugin_import_error`
+    // in the same change.
+    const CLI_TRANSLATION_ANCHORS: [(&str, &[&str]); 3] = [
+        ("zip-slip traversal", &["不安全路径"]),
+        ("symlink entry", &["symlink"]),
+        ("forged header / zip bomb", &["伪造头部", "解压"]),
+    ];
+
+    /// The literal rejection messages must keep carrying the substrings the
+    /// CLI translator searches for.
+    #[test]
+    fn cli_error_translation_anchors_are_present_in_the_messages() {
+        let traversal = "zip 含不安全路径(穿越),拒绝";
+        let symlink = "zip 含 symlink,拒绝";
+        let forged = "x 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
+        let joined = format!("{traversal}{symlink}{forged}");
+        for (_, anchors) in CLI_TRANSLATION_ANCHORS {
+            for anchor in anchors {
+                assert!(
+                    joined.contains(anchor),
+                    "the CLI translator anchors on '{anchor}', which no longer appears in the \
+                     rejection messages"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     use crate::platform::test_support::write_test_zip;
