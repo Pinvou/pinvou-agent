@@ -1272,6 +1272,13 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     // the user's own verdict (no marker). Computed before the mutations below
     // — the expansion depends on the still-uninitialized state. Under an
     // AllowAll policy there is no expansion and nothing to seed.
+    //
+    // #521 评审接受的窗口（在此记录口径而非加锁）：expansion 经 bundles.json 的
+    // 有界 try 读（records()）取得，若此刻一个安装的写锁正持 bundles 锁，这里会
+    // 退化到安装前快照，在装包可能缺席 seeded_defaults（被物化成无 marker 的
+    // 「用户自关」或缺席禁用集，直到该包的下次显式开关）。毫秒级窗口且仅进程内
+    // （跨进程暴露与 main 相同——main 本就无跨进程排除）；闭合它需要把持锁的
+    // store 快照贯穿 resolve_scope_disabled_ids 的整条调用链，对该窗口不成比例。
     let seeded_defaults: Vec<String> =
         if was_uninitialized && scope.pack_default_policy() == PackDefaultPolicy::DenyAll {
             resolve_scope_disabled_ids(&file, scope)

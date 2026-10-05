@@ -916,7 +916,10 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 /// entry; the writes themselves re-read the file under the lock, and every
 /// concurrent marketplace writer is excluded by
 /// MARKETPLACE_TRANSACTION_LOCK (the boot-path writers run sequentially on the
-/// same thread), so the merge cannot clobber a concurrent change.
+/// same thread), so the merge cannot clobber a concurrent change to *other*
+/// entries — the rebuilt entry's preserved user fields still come from this
+/// snapshot, so a peer's concurrent edit of that same entry can be overwritten
+/// (same-entry last-writer-wins).
 pub(super) fn read_mcp_servers_snapshot() -> serde_json::Map<String, serde_json::Value> {
     let mcp_path = paths::mcp_config_path();
     let parsed: serde_json::Value = if mcp_path.is_file() {
