@@ -200,7 +200,10 @@ fn set_user_stamp(stamp: UserDirStamp) {
 /// certifies the pool; `None` means the very first load hit a directory
 /// fault — e.g. the personas volume was not yet mounted at app start — and
 /// the resulting empty pool proves nothing about any individual card.
-pub(crate) fn user_pool_enumeration_confirmed() -> bool {
+/// `pub`: the headless CLI's persona lanes share the same pool and must
+/// apply the same guard (a faulted first load there must not read as
+/// "card deleted" either — round-37 review).
+pub fn user_pool_enumeration_confirmed() -> bool {
     USER_STAMP
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

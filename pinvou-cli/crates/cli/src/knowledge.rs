@@ -1250,10 +1250,18 @@ fn collections_update(
     let name = name.unwrap_or_else(|| existing.name.clone());
     let category = category.or_else(|| existing.category.clone());
     let description = description.or_else(|| existing.description.clone());
-    service
+    let changed = service
         .l1()
         .update_collection(id, &name, category.as_deref(), description.as_deref())
         .map_err(|error| feature_error("collections update", error))?;
+    if !changed {
+        // Round-37 review: the pre-check can lose a race with a concurrent
+        // delete; the store's rows-affected is the authority. Reporting
+        // success for a row that no longer exists would be a no-op lie.
+        return Err(CliError::failed(format!(
+            "knowledge_collection_not_found: collection {id} no longer exists"
+        )));
+    }
     Ok(success(render(
         output,
         format!("updated collection {id}"),
@@ -1513,10 +1521,17 @@ fn documents_remove(doc_id: i64, output: OutputMode) -> Result<CliOutcome, CliEr
             "knowledge_document_not_found: document {doc_id} does not exist"
         )));
     }
-    service
+    let deleted = service
         .l1()
         .remove_document(doc_id)
         .map_err(|error| feature_error("documents remove", error))?;
+    if !deleted {
+        // Round-37 review: same concurrent-delete race as `collections
+        // update` — the store's rows-affected decides, not the pre-check.
+        return Err(CliError::failed(format!(
+            "knowledge_document_not_found: document {doc_id} does not exist"
+        )));
+    }
     Ok(success(render(
         output,
         format!("removed document {doc_id}"),
@@ -1801,8 +1816,10 @@ fn wait_for_terminal_job(
             };
             return Err(CliError::failed(format!(
                 "{operation}: index job {job_id} is still flagged running but reported no \
-                 progress for {}s (done: {}/{}, failed: {}); the import thread is gone or \
-                 wedged — {remedy}",
+                 progress for {}s (done: {}/{}, failed: {}); either the import thread is \
+                 gone or wedged, or a quiet phase (the embedding-model load, or a source \
+                 tree whose walk outlasts this bound — raise PINVOU_KB_IMPORT_STALL_MILLIS \
+                 for huge trees) outran it — {remedy}",
                 stall_bound.as_secs(),
                 last.done,
                 last.total,
@@ -1816,9 +1833,15 @@ fn wait_for_terminal_job(
 
 /// The observable-progress signature of an in-flight job (see
 /// [`wait_for_terminal_job`]). Owned so the polling loop can hold it across
-/// the re-assignment of the state it was computed from.
-fn job_signature(state: &IndexState) -> (u64, u64, u64, u64, Option<String>) {
+/// the re-assignment of the state it was computed from. The job-row
+/// `updated_at` leads the tuple on purpose (round-37 review MAJOR): the
+/// source-root walk and the model load run before any item exists, so the
+/// per-item counters cannot move — the importer ticks the job row instead
+/// (a walk heartbeat every 5000 entries), and only a job whose heartbeat
+/// AND counters are all frozen is treated as wedged.
+fn job_signature(state: &IndexState) -> (Option<i64>, u64, u64, u64, u64, Option<String>) {
     (
+        state.updated_at,
         state.done,
         state.total,
         state.failed,
@@ -1832,6 +1855,15 @@ fn job_signature(state: &IndexState) -> (u64, u64, u64, u64, Option<String>) {
 /// the import did NOT complete, so they exit 1 while still printing the full
 /// state (human and JSON) the way `index status` would.
 fn index_finished(state: &IndexState, output: OutputMode) -> Result<CliOutcome, CliError> {
+    // Round-37 review: an empty harvest must not read as silent success —
+    // scan pre-flights guard this for the scan lane; imports had no
+    // equivalent. Stderr only, so JSON consumers are unaffected.
+    if display_phase(state) == "done" && state.total == 0 {
+        note!(
+            "note: knowledge index: the sources yielded 0 importable files (nothing was \
+             added; check the exclude rules if this is unexpected)"
+        );
+    }
     let (header, failed) = match display_phase(state).as_str() {
         "interrupted" => (
             "index interrupted (staged progress survives; re-run `pinvou knowledge index \
@@ -1913,6 +1945,7 @@ mod phase_tests {
             current_path: None,
             current_chunks_done: 0,
             current_chunks_total: 0,
+            updated_at: None,
             failed_files: Vec::new(),
         }
     }

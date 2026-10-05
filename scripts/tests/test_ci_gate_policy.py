@@ -542,6 +542,24 @@ class CiGatePolicyTests(unittest.TestCase):
             "pinvoy3-tauri compile; without this entry a bundle-resource PR "
             "runs no CLI leg at all",
         )
+        # Round-37 review: the remaining include_str! inputs of every CLI-leg
+        # compile — mcp_catalog.rs embeds the APP-LEVEL mcp-servers tree (not
+        # src-tauri/resources) and marketplace.rs embeds the plugin package
+        # spec doc. `pub mod marketplace;` is unconditional, so a rename in
+        # either must not skip every compile leg while required-gate passes
+        # on skipped.
+        self.assertIn(
+            "- 'pinvoy3-app/resources/mcp-servers/**'",
+            cli_paths,
+            "mcp_catalog.rs include_str!s the app-level mcp-servers tree; "
+            "without this entry an mcp-servers PR runs no CLI leg at all",
+        )
+        self.assertIn(
+            "- 'docs/plugin-package-spec.md'",
+            cli_paths,
+            "marketplace.rs include_str!s the plugin package spec; without "
+            "this entry a spec-doc PR runs no CLI leg at all",
+        )
         # The CLI path-depends on the app crate, so the leaf features that
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust

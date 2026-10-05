@@ -1415,11 +1415,21 @@ impl AcpConfigDefaultsStore {
         if !backend.is_acp() {
             anyhow::bail!("不能为非 ACP Agent 保存配置默认值");
         }
-        self.records
-            .write()
-            .entry(backend)
-            .or_default()
-            .insert(config_id.to_string(), value_id.to_string());
+        // Round-37 review MAJOR: the CLI's `code` family mutates this store
+        // from a second process (and the GUI holds it for its whole
+        // lifetime), so the in-memory write must not persist the boot-era
+        // snapshot over the peer's committed writes. Same discipline as the
+        // providers store: cross-process section lock → reload → mutate →
+        // persist.
+        let _section = self.section_lock();
+        {
+            let mut records = self.records.write();
+            Self::reload_into(&mut records, &self.path);
+            records
+                .entry(backend)
+                .or_default()
+                .insert(config_id.to_string(), value_id.to_string());
+        }
         self.persist()
     }
 
@@ -1431,8 +1441,13 @@ impl AcpConfigDefaultsStore {
         if !backend.is_acp() || values.is_empty() {
             return Ok(false);
         }
+        // Round-37 review MAJOR: same cross-process discipline as `set` —
+        // the boot migration can run while the other surface mutates, and a
+        // persist of the boot-era snapshot would revert it.
+        let _section = self.section_lock();
         {
             let mut records = self.records.write();
+            Self::reload_into(&mut records, &self.path);
             if records.contains_key(&backend) {
                 return Ok(false);
             }
@@ -1440,6 +1455,38 @@ impl AcpConfigDefaultsStore {
         }
         self.persist()?;
         Ok(true)
+    }
+
+    /// Cross-process section lock over the reload→mutate→persist window,
+    /// same shape as the providers store's (round-37 review MAJOR): the
+    /// CLI's `code` family mutates this store from a second process, and a
+    /// whole-table persist of a boot-era snapshot would silently revert the
+    /// peer's writes.
+    fn section_lock(&self) -> Option<std::fs::File> {
+        let lock_path = self.path.with_extension("json.lock");
+        super::cross_process_section_lock(&lock_path, "acp-agent-defaults")
+    }
+
+    /// Best-effort reload of the disk state into an ALREADY-HELD write
+    /// guard, matching the providers store's `reload_into` semantics: an
+    /// unreadable/unparsable file keeps the in-memory state (and a file
+    /// that turned corrupt after boot is quarantined once, `.invalid`
+    /// sibling, so the next persist cannot silently destroy the peer's
+    /// only copy).
+    fn reload_into(records: &mut HashMap<AgentBackend, HashMap<String, String>>, path: &Path) {
+        let Ok(raw) = fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(file) = serde_json::from_str::<AcpConfigDefaultsFile>(&raw) else {
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(".invalid");
+            let quarantine = path.with_file_name(name);
+            if !quarantine.exists() {
+                let _ = fs::copy(path, &quarantine);
+            }
+            return;
+        };
+        *records = file.agents;
     }
 
     fn persist(&self) -> Result<()> {
@@ -1458,7 +1505,15 @@ impl AcpConfigDefaultsStore {
             version: CONFIG_DEFAULTS_VERSION,
             agents: self.records.read().clone(),
         };
-        fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
+        // Both arms clean the pid tmp (round-37 review minor): the rename
+        // arm alone left `acp-agent-defaults.json.tmp.<pid>` stranded
+        // forever after a failed write (ENOSPC, EACCES) in the long-lived
+        // GUI process.
+        let payload = serde_json::to_vec_pretty(&value)?;
+        if let Err(error) = fs::write(&tmp, payload) {
+            let _ = fs::remove_file(&tmp);
+            return Err(error.into());
+        }
         if let Err(error) = fs::rename(&tmp, &self.path) {
             let _ = fs::remove_file(&tmp);
             return Err(error.into());

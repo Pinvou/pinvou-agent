@@ -762,6 +762,20 @@ fn write(
             {
                 return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
             }
+            // Round-37 review: the source is a user-named path, so it takes
+            // the same credential-path policy every sibling ingest lane
+            // applies (`agent run --attach`, `feedback --attach`) — without
+            // it, `artifacts write s-1 notes.md --file ~/.ssh/id_rsa` copied
+            // credential content into model-readable session storage.
+            let resolved = std::fs::canonicalize(file).map_err(|error| {
+                CliError::failed(format!(
+                    "artifacts write: cannot resolve {}: {error}",
+                    file.display()
+                ))
+            })?;
+            crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
+                CliError::failed(format!("artifacts write: refusing --file: {reason}"))
+            })?;
             crate::support::read_text_file_capped(
                 file,
                 MAX_EDITABLE_MARKDOWN_BYTES,

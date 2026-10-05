@@ -1924,7 +1924,7 @@ fn probe_local_model_flag_names_a_saved_credential() {
 // Network paths: opt-in only, never run by default (AGENTS.md rule).
 // ---------------------------------------------------------------------------
 
-/// Opt-in: `cargo test -p pinvoy-cli --test models_contract -- --ignored bing_probe_hits_live_endpoint`
+/// Opt-in: `cargo test -p pinvou-cli --test models_contract -- --ignored bing_probe_hits_live_endpoint`
 /// Requires internet access. The GUI ships no search-provider test at all
 /// (see the `models` module doc), so this is the only automated check of the
 /// live Bing lane.
@@ -1951,6 +1951,10 @@ fn bing_probe_hits_live_endpoint() {
 #[ignore = "network + quota: run with a real key, e.g. METASO_API_KEY=... pinvou settings search test metaso"]
 fn search_api_probe_validates_a_live_key() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Round-37 review: an opted-in test must not run against the real
+    // ~/.pinvou3 — a persisting `UserPrefs::load` can migrate a real key
+    // into the keyring. Sandbox like every default-run test.
+    let _home = SandboxHome::new("ignored-search-probe");
     let provider =
         std::env::var("PINVOU_CLI_SEARCH_TEST_PROVIDER").unwrap_or_else(|_| "metaso".to_owned());
     let (stdout, code) = run_outcome(&[
@@ -1969,7 +1973,7 @@ fn search_api_probe_validates_a_live_key() {
 }
 
 /// Opt-in against a local vLLM/Ollama/LM Studio server:
-/// `cargo test -p pinvoy-cli --test models_contract -- --ignored probe_local_identifies_local_server`
+/// `cargo test -p pinvou-cli --test models_contract -- --ignored probe_local_identifies_local_server`
 #[test]
 #[ignore = "network (loopback): run with a local inference server on 127.0.0.1:8000"]
 fn probe_local_identifies_local_server() {

@@ -545,7 +545,12 @@ impl KnowledgeService {
                         return Ok(());
                     }
                     let roots = imports.roots(&job_id)?;
-                    let files = expand_import_roots(&roots, &cancel);
+                    // Best-effort: a failed tick is one silent beat (the
+                    // store busy for a moment), never a false stall.
+                    let heartbeat = || {
+                        let _ = imports.touch(&job_id);
+                    };
+                    let files = expand_import_roots(&roots, &cancel, &heartbeat);
                     imports.prepare_items(&job_id, &files)
                 });
                 if prepare_result.is_err() {
@@ -783,9 +788,20 @@ impl KnowledgeService {
 /// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
 /// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
 /// 剪枝遍历复用 `scanner::walk_pruned`（与全盘扫描同一排除语义）。
-fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
+fn expand_import_roots(
+    roots: &[PathBuf],
+    cancel: &AtomicBool,
+    heartbeat: &dyn Fn(),
+) -> Vec<PathBuf> {
     let ex = Excluder::default();
     let mut files = Vec::new();
+    // Round-37 review MAJOR: tick the job row every WALK_HEARTBEAT_EVERY
+    // entries. Nothing else observable moves while the walk runs (items are
+    // only staged afterwards), so a healthy walk over a pruned-heavy tree
+    // used to be indistinguishable from a wedged thread and got killed by
+    // the CLI's stall bound — the same false-positive the scan lane fixed
+    // with its pre-prune raw heartbeat.
+    let mut walked: u64 = 0;
     for root in roots {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -800,6 +816,10 @@ fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            walked += 1;
+            if walked % WALK_HEARTBEAT_EVERY == 0 {
+                heartbeat();
+            }
             if entry.file_type().is_file() {
                 files.push(entry.path().to_path_buf());
             }
@@ -807,6 +827,9 @@ fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
     }
     import_jobs::unique_existing_files(files)
 }
+
+/// Entries between walk heartbeats (the scanner lane's cadence).
+const WALK_HEARTBEAT_EVERY: u64 = 5000;
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {
@@ -1130,6 +1153,7 @@ pub async fn kb_collection_update(
     spawn_db(move || {
         l1.update_collection(id, &name, category.as_deref(), description.as_deref())
             .map_err(|e| e.to_string())
+            .map(|_changed| ())
     })
     .await
 }
@@ -1207,7 +1231,12 @@ pub async fn kb_remove_document(
     doc_id: i64,
 ) -> Result<(), String> {
     let l1 = state.l1().clone();
-    spawn_db(move || l1.remove_document(doc_id).map_err(|e| e.to_string())).await?;
+    spawn_db(move || {
+        l1.remove_document(doc_id)
+            .map_err(|e| e.to_string())
+            .map(|_deleted| ())
+    })
+    .await?;
     refresh_kb_tool_gate(&pool).await;
     Ok(())
 }
@@ -1594,7 +1623,7 @@ mod tests {
         );
         assert!(
             !root_authorizes_deletion(&walkable, 12, 1),
-            "a walk error under the root vetoes the stale sweep: the fate of              everything under the unreadable subtree is undecidable"
+            "a walk error under the root vetoes the stale sweep: the fate of everything under the unreadable subtree is undecidable"
         );
         assert!(
             !root_authorizes_deletion(&walkable, 0, 3),

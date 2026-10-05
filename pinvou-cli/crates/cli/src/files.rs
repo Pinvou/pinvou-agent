@@ -235,8 +235,13 @@ fn print_result(result: &IngestResult, output: OutputMode) -> Result<CliOutcome,
 }
 
 fn summary_lines(result: &IngestResult) -> Vec<String> {
+    // `basename` comes from a user-named path; a filename carrying a tab,
+    // newline, or ESC would forge rows or terminal escapes in the human
+    // table (feedback's own stated rule for argv-derived cells — round-37
+    // review applies it here; JSON keeps verbatim).
+    let basename = crate::support::collapse_control_characters(&result.basename);
     let mut lines = vec![
-        format!("File: {}", result.basename),
+        format!("File: {basename}"),
         format!("Kind: {}", result.kind),
         format!("Tokens: {}", result.token_estimate),
         format!("Bytes: {}", result.byte_size),

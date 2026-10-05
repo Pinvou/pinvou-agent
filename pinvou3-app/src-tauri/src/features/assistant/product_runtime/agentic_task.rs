@@ -1253,13 +1253,6 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
     }
 }
 
-/// Run prepare → submit → wait, and report. `true` in the first tuple slot
-/// means the turn was actually submitted: everything after submit (cancel,
-/// wait, report building) belongs to a session whose transcript exists, while
-/// `false` marks the never-started cases (attachment staging, submit failure,
-/// a post-prepare setup fault, setup timeout) the caller's lifecycle handling
-/// cleans up as stubs.
-#[allow(clippy::too_many_arguments)]
 /// The setup-timeout report. `submit_entered` decides `submitted` AND the
 /// error text: before the submit the turn provably never ran (setup-only
 /// wording); past that boundary the submit was in flight when the deadline
@@ -1288,6 +1281,13 @@ fn setup_timeout_report(session_id: &str, submit_entered: bool) -> AgenticTaskRe
     }
 }
 
+/// Run prepare → submit → wait, and report. `true` in the first tuple slot
+/// means the turn was actually submitted: everything after submit (cancel,
+/// wait, report building) belongs to a session whose transcript exists, while
+/// `false` marks the never-started cases (attachment staging, submit failure,
+/// a post-prepare setup fault, setup timeout) the caller's lifecycle handling
+/// cleans up as stubs.
+#[allow(clippy::too_many_arguments)]
 async fn run_turn(
     runtime: &EnginePoolRuntime,
     store: &SessionStore,
@@ -1833,16 +1833,6 @@ async fn run_turn(
 
 /// Enrich the prompt with the request's attachments using the GUI attachment
 /// pipeline: each file is staged into the session ledger root's
-/// `attachments/` directory (the same secure staging the GUI dialog and the
-/// eval bridge use), ingested through `features/files::file_ingest` (the same
-/// chip ingest), and rendered by the same product message builder the GUI
-/// chat command uses for the non-native-image path. `reference_absolute`
-/// follows the GUI chat command: when the session is bound to a real
-/// directory (`SessionRoots::bound` — the documented binding signal, not a
-/// path comparison between the two roots), staged files are referenced
-/// by absolute path. Images get the `image_analyze` hard-rule text, which the
-/// product tool allowlist always provides, so no model image-capability probe
-/// is needed.
 /// One staging batch's output: the ingested attachments for the prompt, the
 /// consumed sources, and the staged workspace copies the failure arms sweep.
 type StagedBatch = (
@@ -1888,6 +1878,18 @@ async fn join_staged_attachments(
     }
 }
 
+/// Enrich the prompt with the request's attachments using the GUI attachment
+/// pipeline: user-supplied files are staged under the session workspace's
+/// `attachments/` directory (the same secure staging the GUI dialog and the
+/// eval bridge use), ingested through `features/files::file_ingest` (the same
+/// chip ingest), and rendered by the same product message builder the GUI
+/// chat command uses for the non-native-image path. `reference_absolute`
+/// follows the GUI chat command: when the session is bound to a real
+/// directory (`SessionRoots::bound` — the documented binding signal, not a
+/// path comparison between the two roots), staged files are referenced
+/// by absolute path. Images get the `image_analyze` hard-rule text, which the
+/// product tool allowlist always provides, so no model image-capability probe
+/// is needed.
 async fn prompt_with_attachments(
     store: &SessionStore,
     session_id: &str,

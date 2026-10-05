@@ -261,6 +261,25 @@ fn poll_index_phase(phases: &[&str], timeout_secs: u64) -> serde_json::Value {
     }
 }
 
+/// [`poll_index_phase`], but returning the last observed state instead of
+/// panicking when the deadline passes: for the bounded drain, where the
+/// point is "the import thread is usually done", not "the job must land a
+/// specific phase".
+fn poll_index_phase_relaxed(phases: &[&str], timeout_secs: u64) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        let phase = state["phase"].as_str().unwrap_or_default().to_owned();
+        if phases.contains(&phase.as_str()) {
+            return state;
+        }
+        if Instant::now() >= deadline {
+            return state;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 // ---- parse-level coverage ----
 
 #[test]
@@ -1508,8 +1527,14 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
 
     // The refused commands must not have flipped the seeded job: it stays
     // on its active progression (interrupted would mean something ran the
-    // boot-recovery UPDATE against a live owner).
-    let state = poll_index_phase(&["running", "done", "done_with_errors"], 180);
+    // boot-recovery UPDATE against a live owner). Bounded drain (round-37
+    // review): wait for a terminal phase so the in-process import thread is
+    // done before TempHome unlinks the store, instead of returning while it
+    // is still ingesting — but a full-suite run loads the machine enough
+    // that a hard terminal-only wait flaked (the 400-file import raced the
+    // suite), so the drain gives up after 120 s and proceeds with whatever
+    // phase the job reached.
+    let state = poll_index_phase_relaxed(&["done", "done_with_errors"], 120);
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_ne!(
         state["phase"],
@@ -1536,7 +1561,17 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
 /// interrupted/resumable remedy, and leave the job `interrupted` on disk
 /// for a fresh invocation to read back.
 #[test]
-fn a_stalled_import_timeout_interrupts_the_job_for_resume() {
+fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
+    // Round-37 review MAJOR: the walk phase runs before any item exists, so
+    // the per-item liveness signature cannot move and a healthy walk over a
+    // pruned-heavy tree used to trip the stall bound — interrupted mid-walk
+    // on EVERY attempt, with a remedy (`index resume`) that re-walked into
+    // the same bound forever. The importer now ticks the job row's
+    // `updated_at` every 5000 walked entries and the CLI's signature reads
+    // it, so a walk that outlives the bound completes instead. (The timeout
+    // mechanism itself still fires on a genuinely frozen job — the app-side
+    // `touch` unit test pins the heartbeat's terminal-state guard, and the
+    // interrupted/park machinery stays covered by the SIGKILL-strand tests.)
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("stall-timeout");
 
@@ -1552,13 +1587,11 @@ fn a_stalled_import_timeout_interrupts_the_job_for_resume() {
 
     // A wide-and-deep tree of EMPTY directories: every entry is traversed
     // by the importer's walk (with the excluder's per-entry name checks)
-    // but yields zero files, so the observable job signature stays frozen
-    // at (done 0, total 0, failed 0, no current item) until long past the
-    // injected 300 ms bound.
+    // but yields zero files — the exact shape that used to look wedged.
     let root = home.path().join("stall-tree");
-    for a in 0..100 {
+    for a in 0..30 {
         let band = root.join(format!("a{a:03}"));
-        for b in 0..100 {
+        for b in 0..30 {
             let cell = band.join(format!("b{b:03}"));
             std::fs::create_dir_all(&cell).expect("create cell dir");
             for c in 0..10 {
@@ -1567,8 +1600,6 @@ fn a_stalled_import_timeout_interrupts_the_job_for_resume() {
         }
     }
 
-    // The add-sources child owns the import, stalls on the bound during the
-    // walk, and must interrupt its own job before failing.
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
     command
         .args([
@@ -1581,45 +1612,24 @@ fn a_stalled_import_timeout_interrupts_the_job_for_resume() {
         .env("PINVOU3_HOME", home.path())
         .env("PINVOU_NO_COLOR", "1")
         .env("PINVOU_KB_IMPORT_STALL_MILLIS", "300");
-    let outcome = command.output().expect("stalled add-sources child runs");
+    let outcome = command.output().expect("walking add-sources child runs");
     assert!(
-        !outcome.status.success(),
-        "the stalled import must exit 1, got {:?} with stdout {}",
+        outcome.status.success(),
+        "a walk with a live heartbeat must NOT trip the stall bound, got {:?} with stderr {}",
         outcome.status.code(),
-        String::from_utf8_lossy(&outcome.stdout)
+        String::from_utf8_lossy(&outcome.stderr)
     );
+
+    // The job landed `done`, and the empty harvest is disclosed (round-37
+    // review: an import of a directory of non-importable files must not
+    // read as silent success).
+    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(settled["phase"], serde_json::json!("done"));
+    assert_eq!(settled["total"], serde_json::json!(0));
     let stderr = String::from_utf8_lossy(&outcome.stderr);
     assert!(
-        stderr.contains("no progress") && stderr.contains("resumable now"),
-        "the timeout must report the interrupted/resumable remedy: {stderr}"
-    );
-
-    // The job on disk is interrupted (resumable), not stranded running:
-    // read from a fresh invocation. The stalled job is the only one (fresh
-    // store), so the latest-job read names it.
-    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
-    assert!(settled["jobId"].is_string(), "stalled job missing its id");
-    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
-    assert_eq!(settled["resumable"], serde_json::json!(true));
-
-    // The interrupt must also park the collection GUI-visibly at `pending`
-    // (documented behavior: imports interrupted by the CLI park their
-    // collection at pending instead of indexing — the close-out that resets
-    // the status belongs to the dead import thread, so without the park the
-    // GUI would show a permanently "indexing" collection until the next
-    // resume/cancel).
-    let collections = run_json(&["pinvou", "knowledge", "collections", "list"]);
-    let status = collections["collections"]
-        .as_array()
-        .expect("collections array")
-        .iter()
-        .find(|collection| collection["id"] == serde_json::json!(id))
-        .map(|collection| collection["status"].clone())
-        .expect("the stalled collection is still listed");
-    assert_eq!(
-        status,
-        serde_json::json!("pending"),
-        "an interrupted import must park its collection at pending"
+        stderr.contains("0 importable files"),
+        "the empty harvest must be disclosed on stderr: {stderr}"
     );
 }
 

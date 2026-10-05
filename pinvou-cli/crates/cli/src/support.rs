@@ -192,7 +192,12 @@ fn validate_sandbox_home(
 /// the *content* of a resource the command was pointed at — a file, stdin,
 /// an environment variable — is a host failure, exit 1, whether that
 /// content is missing, unreadable, too large, or not UTF-8. A byte cap is
-/// therefore always exit 1, from a file and from stdin alike.
+/// therefore always exit 1, from a file and from stdin alike. `action`
+/// prefixes the error; the convention is the caller's stable snake_case
+/// error code (`memory_content_file_unreadable`, `artifact_read_failed`) —
+/// a human phrase (`"feedback submit"`) renders the same failure without a
+/// scriptable prefix, so new call sites pick the code form (round-37
+/// review named the mixed conventions).
 pub fn read_text_file_capped(
     path: &Path,
     max_bytes: usize,

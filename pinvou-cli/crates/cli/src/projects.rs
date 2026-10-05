@@ -837,7 +837,12 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // resolved ONCE so all three storage lanes match in one domain — an
     // alias spelling (macOS /var/x vs /private/var/x) must not half-migrate.
     let from_display = rebind_source_display(from);
-    if from_display == to_display {
+    // Folded identity comparison (GUI 497-500, its round-20 minor 7): a
+    // case-only or separator-only spelling of the same directory is the
+    // same no-op rename, not a full case-rewriting rebind.
+    if pinvou3_lib::platform::filesystem_path_identity_key(&from_display.to_string_lossy())
+        == pinvou3_lib::platform::filesystem_path_identity_key(&to_display.to_string_lossy())
+    {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
         return rebind_report(output, Vec::new(), Vec::new(), Vec::new());
@@ -1041,18 +1046,18 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         // half genuinely skipped here is the desktop runtime work (the pool
         // restart), as the module header discloses.
         //
-        // The two halves translate with the session's PRE-sync metadata
-        // workspace when it lags the binding the scan admitted (the GUI's
-        // round-26 MAJOR-1 shape, `metadata_behind_binding`): run 1 can move
-        // the binding lanes and still fail its storage/metadata passes, so
-        // run 2 admits the session under a from that its stranded artifact
-        // and acp-state paths predate — the run-global pair maps neither,
-        // both halves persist nothing, and `set_workspace` would move the
-        // metadata while the run claims Rebound over dead paths. Loaded
-        // once here, before `set_workspace` overwrites it. A failed pre-sync
-        // load (corrupt JSON) leaves the global map in charge — the same
-        // fallback the GUI uses — and `set_workspace` below still fails
-        // honestly on the same unreadable record.
+        // Round-37 review BLOCKER (the GUI's round-26 MAJOR-1 shape done
+        // GUI-faithfully): the stale-metadata detection must run against
+        // the session's PRE-translation binding. The lanes hand back the
+        // already-translated binding, so comparing `pre_sync` against
+        // `bound_path` classifies every healthy subpath session as behind;
+        // and the per-session map must target the session's own translated
+        // binding (`new_path`), not the destination root — otherwise a
+        // session bound at `<from>/sub` has its storage halves flattened
+        // onto `to` while the physical files sit at `to/sub`. The GUI
+        // compares against its pre-rewrite snapshot; this command has no
+        // snapshot, but the pre-translation binding is exactly the lane
+        // path with the `to` prefix swapped back for `from`.
         let pre_sync_workspace = match sessions.load(session_id) {
             Ok(session) => Some(session.metadata.workspace),
             Err(error) => {
@@ -1063,20 +1068,50 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                 None
             }
         };
+        let pre_translation =
+            SessionAgentStore::rebind_target_path(bound_path, &to_display, &from_display)
+                .unwrap_or_else(|| bound_path.clone());
         let metadata_behind_binding = pre_sync_workspace.as_ref().is_some_and(|pre_sync| {
             pinvou3_lib::platform::filesystem_path_identity_key(&pre_sync.to_string_lossy())
                 .trim_end_matches('/')
                 != pinvou3_lib::platform::filesystem_path_identity_key(
-                    &bound_path.to_string_lossy(),
+                    &pre_translation.to_string_lossy(),
                 )
                 .trim_end_matches('/')
         });
-        let storage_from = match (&pre_sync_workspace, metadata_behind_binding) {
-            (Some(pre_sync), true) => pre_sync.as_path(),
-            _ => from_display.as_path(),
+        // The two halves translate with the session's PRE-sync metadata
+        // workspace only when it actually lags the binding the scan
+        // admitted (the stranded half-migration shape): run 1 can move the
+        // binding lanes and still fail its storage/metadata passes, so run
+        // 2 admits the session under a from that its stranded artifact and
+        // acp-state paths predate — the run-global pair maps neither, both
+        // halves persist nothing, and `set_workspace` would move the
+        // metadata while the run claims Rebound over dead paths. Loaded
+        // once here, before `set_workspace` overwrites it. A failed pre-sync
+        // load (corrupt JSON) leaves the global map in charge — the same
+        // fallback the GUI uses — and `set_workspace` below still fails
+        // honestly on the same unreadable record.
+        let per_session_from = match (&pre_sync_workspace, metadata_behind_binding) {
+            (Some(pre_sync), true) => Some(pre_sync.clone()),
+            _ => None,
         };
-        let translate =
-            |path: &Path| SessionAgentStore::rebind_target_path(path, storage_from, &to_display);
+        let new_path_for_storage = new_path.clone();
+        let from_display_for_storage = from_display.clone();
+        let to_display_for_storage = to_display.clone();
+        let translate = move |path: &Path| {
+            per_session_from
+                .as_ref()
+                .and_then(|storage_from| {
+                    SessionAgentStore::rebind_target_path(path, storage_from, &new_path_for_storage)
+                })
+                .or_else(|| {
+                    SessionAgentStore::rebind_target_path(
+                        path,
+                        &from_display_for_storage,
+                        &to_display_for_storage,
+                    )
+                })
+        };
         if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &translate) {
             // Same root-cause-only echo as set_workspace below (the chain
             // embeds store paths); the id reaches the user through the
@@ -1130,7 +1165,11 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         }
         // Baseline recapture, code-lane only, best-effort: the git
         // fingerprint is derivable again, a failure never blocks the rebind.
-        if code_rebound_ids.contains(session_id)
+        // The per-session arm joins the gate (GUI 1213-1228, its round-19
+        // SF-2 / round-18 MAJOR-2): a session converged via the per-session
+        // map keeps a baseline pointing into the vanished root until the
+        // recapture re-derives it.
+        if (code_rebound_ids.contains(session_id) || metadata_behind_binding)
             && let Err(error) =
                 pinvou3_lib::features::codex_acp::workspace::capture_baseline(session_id, &new_path)
         {
@@ -1206,15 +1245,22 @@ fn admit_to_lane_retry_candidate(
     let needs_metadata_sync = match sessions.load(&session_id) {
         Ok(session) => {
             // Same folded identity comparison as the GUI's to-lane scan
-            // (`filesystem_path_identity_key`): a Windows case/separator
-            // spelling drift between metadata and binding must not re-admit
-            // a healthy session for a whole-record rewrite plus a false
-            // "rebound" report entry. The other Windows deviations this
-            // module documents (`path_is_under_root`,
-            // `rebind_target_is_same_or_nested`) follow the same fold.
+            // (`filesystem_path_identity_key` + the trailing-separator trim
+            // the GUI applies to both sides, its round-14 SF-2): a Windows
+            // case/separator spelling drift between metadata and binding
+            // must not re-admit a healthy session for a whole-record
+            // rewrite plus a false "rebound" report entry. The other
+            // Windows deviations this module documents
+            // (`path_is_under_root`, `rebind_target_is_same_or_nested`)
+            // follow the same fold.
             pinvou3_lib::platform::filesystem_path_identity_key(
                 &session.metadata.workspace.to_string_lossy(),
-            ) != pinvou3_lib::platform::filesystem_path_identity_key(&bound_path.to_string_lossy())
+            )
+            .trim_end_matches('/')
+                != pinvou3_lib::platform::filesystem_path_identity_key(
+                    &bound_path.to_string_lossy(),
+                )
+                .trim_end_matches('/')
         }
         Err(_) => true,
     };

@@ -328,6 +328,11 @@ where
     let (mut destination, path, candidate) =
         reserve_unique_staged_file(&directory, format!("{stem}{suffix}"), stem, &suffix)?;
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        // The reservation created a zero-byte file; a rejected target must
+        // not leave it behind (the same litter rule the file lane's
+        // identical arm applies — round-37 review).
+        drop(destination);
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     if writer(&mut destination, &path).is_err() {

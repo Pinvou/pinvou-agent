@@ -212,7 +212,16 @@ fn create_refuses_an_oversized_prompt_file() {
 }
 
 fn create_task(home: &TempHome, name: &str) -> serde_json::Value {
-    let prompt = write_prompt_file(home, &format!("{name}.md"), "Summarize the reports.");
+    // The prompt FILE name stays derived from a sanitized label: a hostile
+    // name carries \n/\t/ESC, which cannot form a file name on NTFS/Windows,
+    // so the suite could never run green there (the sibling DST test gates
+    // itself #[cfg(unix)] for the same reason — round-37 review). The
+    // hostile string still reaches the store through `--name`.
+    let label: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let prompt = write_prompt_file(home, &format!("{label}.md"), "Summarize the reports.");
     run_json(&[
         "scheduled",
         "create",
@@ -1371,11 +1380,10 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
     let run_id = value["id"].as_str().unwrap().to_owned();
     // Memory organize runs own no conversation session.
     assert_eq!(value["sessionId"], serde_json::Value::Null);
-    assert!(
-        matches!(value["status"].as_str(), Some("completed") | Some("failed")),
-        "{}",
-        value
-    );
+    // Round-37 review: `run_json` asserts ExitCode::Success before this
+    // point, so a `"failed"` arm here is unreachable — a failed run exits 1
+    // and the helper panics first. Expect completed outright.
+    assert_eq!(value["status"], serde_json::json!("completed"), "{}", value);
     let runs = run_json(&["scheduled", "runs", &task_id]);
     let runs = runs["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 1);
@@ -1384,7 +1392,7 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
     assert!(
         def["last_run_at"].is_string(),
-        "the deleted task must stamp last_run_at for the history archive"
+        "the run must stamp last_run_at on the task definition"
     );
     let _ = home;
 }
