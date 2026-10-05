@@ -1,4 +1,6 @@
-use codewhale_secrets::{DefaultKeyringStore, Secrets, SecretsError};
+use codewhale_secrets::{
+    DefaultKeyringStore, LEGACY_SECRET_BACKEND_ENV, SECRET_BACKEND_ENV, Secrets, SecretsError,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(test)]
@@ -273,6 +275,31 @@ pub struct SystemCredentialStore {
     fallback_services: Arc<Mutex<HashMap<String, ()>>>,
 }
 
+/// Whether the ambient environment explicitly selects the file-backed secret
+/// store: `CODEWHALE_SECRET_BACKEND` (or, when the primary variable is unset
+/// or blank, its legacy alias) set to one of the facade's file values
+/// (`file`/`local`/`json`). Mirrors the facade's `auto_detect` selection
+/// precedence and value matching; unset, blank, system aliases and unknown
+/// values all read `false`, leaving the keyring-first policy in `secrets_for`
+/// untouched.
+fn secret_backend_selection_is_file() -> bool {
+    let configured = std::env::var(SECRET_BACKEND_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var(LEGACY_SECRET_BACKEND_ENV).ok());
+    let Some(value) = configured
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "file" | "local" | "json"
+    )
+}
+
 impl SystemCredentialStore {
     pub fn new() -> Self {
         Self::default()
@@ -314,6 +341,21 @@ impl SystemCredentialStore {
             "[credential_store] secrets_for cache miss service={}",
             service
         );
+        // An explicit file-backend selection (`CODEWHALE_SECRET_BACKEND=file`,
+        // the CodeWhale facade's documented knob — also the knob the CLI
+        // contract suites set to sandbox credential reads) must not be
+        // silently ignored by the keyring-first policy below. Any other value
+        // (unset / system aliases / unknown) keeps that policy unchanged.
+        if secret_backend_selection_is_file() {
+            log::info!(
+                "[credential_store] explicit file backend selected service={} elapsed_ms={}",
+                service,
+                started_at.elapsed().as_millis()
+            );
+            let arc = Arc::new(Secrets::file_backed());
+            cache.insert(service.to_string(), arc.clone());
+            return arc;
+        }
         // Test hermeticity valve (marketplace reconcile hang, 2026-10-03):
         // placed AFTER the per-store cache consult above so the fake-backend
         // tests (inject_fake_secrets) are unaffected, and BEFORE the OS
@@ -1167,6 +1209,56 @@ mod tests {
         assert_eq!(reference.service, "pinvou3-mcp-secret");
         assert_eq!(reference.account, "mcp:iwencai:env:IWENCAI_API_KEY");
         assert_eq!(reference.version, 1);
+    }
+
+    /// Round-39 review (M3): `secrets_for` must honor an explicit
+    /// `CODEWHALE_SECRET_BACKEND=file` selection instead of silently probing
+    /// the OS keyring — the knob the facade documents and the CLI contract
+    /// suites set to sandbox credential reads. Discriminated via the backend
+    /// label, so the test never touches the real keychain.
+    #[test]
+    fn secrets_for_honors_explicit_file_backend_selection() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+            "CODEWHALE_HOME",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-secret-selection-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+            std::env::set_var("CODEWHALE_HOME", &home);
+        }
+
+        let store = SystemCredentialStore::new();
+        let secrets = store.secrets_for("pinvou3-file-selection-probe");
+        assert!(
+            secrets.store.backend_name().contains("file-based"),
+            "an explicit file selection must select the file backend, got: {}",
+            secrets.store.backend_name()
+        );
+
+        // The legacy alias selects the file backend too.
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK.
+        unsafe {
+            std::env::remove_var("CODEWHALE_SECRET_BACKEND");
+            std::env::set_var("DEEPSEEK_SECRET_BACKEND", "local");
+        }
+        let store = SystemCredentialStore::new();
+        let secrets = store.secrets_for("pinvou3-file-selection-probe-legacy");
+        assert!(
+            secrets.store.backend_name().contains("file-based"),
+            "the legacy alias must select the file backend too, got: {}",
+            secrets.store.backend_name()
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

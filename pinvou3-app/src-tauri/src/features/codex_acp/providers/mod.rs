@@ -1075,6 +1075,21 @@ impl ProviderManager {
         // closure as `switch` (a peer switch landing between the read and
         // the persist used to leave config/store disagreeing).
         let _section = self.store.section_lock();
+        // Round-39 review: the update pre-check ran outside this flock (the
+        // credential work between the two locks can park on a keychain
+        // prompt), so a peer delete landing in that window used to be
+        // resurrected by `upsert_locked` — reporting `has_credential: true`
+        // from the stale `existing` clone while the real credential was
+        // already gone. Re-validate under the held lock: updating a record a
+        // peer removed fails honestly instead.
+        if provider_id.is_some()
+            && self
+                .store
+                .record_fresh_locked(agent, record.id.as_str())
+                .is_none()
+        {
+            anyhow::bail!("Provider 不存在: {}", record.id);
+        }
         if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
