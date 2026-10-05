@@ -1390,6 +1390,19 @@ fn collections_add_sources(
     // the follow-up state read fails; the reported job must then not be
     // passed off as the fresh import.
     let previous_job = preexisting.job_id;
+    // Round-38 review: canonicalize the enqueued roots exactly like the scan
+    // lane (this lane used to persist them verbatim). A relative source was
+    // stored as typed and `index resume` from another CWD re-resolved it
+    // against the new CWD — a different file, or a read failure landing the
+    // item in `done_with_errors`; a symlinked source keyed its documents
+    // under the link-prefixed path, so re-adding the same content via the
+    // canonical path created a second document. A canonicalize failure here
+    // is a vanish race (the metadata pre-flight passed on the same name):
+    // keep the verbatim name and let the import's own walk report it.
+    let paths: Vec<PathBuf> = paths
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .collect();
     // Disclosed residual (same sub-second race class the id-taking
     // `cancel_index_job` documents): a job a desktop app starts on this
     // collection between the pre-check above and `start_index` carries a

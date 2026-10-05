@@ -5353,4 +5353,59 @@ mod tests {
         );
         assert!(store.entries().is_empty(), "the search key must be gone");
     }
+
+    /// The same pin for `settings search set --clear` (round-38 review: the
+    /// two model lanes had commit-failure defer tests; the search lane, same
+    /// shape, had none): the keyring delete waits until after the prefs
+    /// commit — a failed save must leave the secret in place with no
+    /// `delete:` logged, since the still-present prefs entry references it.
+    #[cfg(unix)]
+    #[test]
+    fn search_clear_defers_the_keyring_delete_until_after_the_commit() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _home = TempHome::new("search-clear-order");
+        let _key = TempEnv::set("METASO_API_KEY", "sk-search-defer");
+        let store = RecordingStore::new();
+
+        let outcome = search_set(
+            &store,
+            SearchProvider::Metaso,
+            &Some("METASO_API_KEY".to_owned()),
+            false,
+            false,
+            OutputMode::Human,
+        )
+        .expect("set succeeds");
+        assert!(outcome.stdout.contains("credential: configured"));
+
+        // Same failure mechanism as the remove lane: a read-only data dir
+        // blocks the atomic write's staging while reads keep working.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+            .expect("make the data dir read-only");
+        let result = search_set(
+            &store,
+            SearchProvider::Metaso,
+            &None,
+            true,
+            true,
+            OutputMode::Human,
+        );
+        // Restore write permission first so TempHome's cleanup can delete.
+        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore the data dir");
+        let error = result.expect_err("must fail: the settings commit fails");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let operations = store.operations();
+        assert!(
+            !operations.iter().any(|op| op.starts_with("delete:")),
+            "the clear's keyring delete is deferred behind the commit; a failed save \
+             must not delete: {operations:?}"
+        );
+        assert!(
+            store.entries().contains(&"sk-search-defer".to_owned()),
+            "the secret must survive the failed clear: {:?}",
+            store.entries()
+        );
+    }
 }

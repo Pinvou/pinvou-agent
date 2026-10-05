@@ -507,6 +507,13 @@ mod imp {
         // Phase 2 — bounded grace. The policy is `grace_decision`, a pure
         // function the unit tests pin; this loop is only its effect.
         let started = Instant::now();
+        // Groups already asked to stop. Phase 1 TERMed its snapshot; a group
+        // that registers between that snapshot and a later one (the same
+        // sub-millisecond class the spawn window closes for the snapshot
+        // itself) must get its own polite TERM here instead of waiting for
+        // the deadline's SIGKILL (round-38 review).
+        let mut asked: std::collections::HashSet<libc::pid_t> =
+            snapshot_spawn_safe().into_iter().collect();
         loop {
             // Same spawn-window discipline as phase 1: a spawn completing
             // during the grace is registered before this snapshot sees it.
@@ -514,6 +521,16 @@ mod imp {
                 .into_iter()
                 .filter(|pgid| group_alive(*pgid))
                 .collect();
+            for pgid in &survivors {
+                if asked.insert(*pgid) {
+                    // SAFETY: kill(2) to a group we registered; ESRCH is
+                    // fine to ignore — the same first ask phase 1 gave the
+                    // earlier registrants.
+                    unsafe {
+                        libc::kill(-*pgid, libc::SIGTERM);
+                    }
+                }
+            }
             match grace_decision(
                 started.elapsed().as_millis() as u64,
                 GRACE_MS,
@@ -531,6 +548,22 @@ mod imp {
                         }
                     }
                     break;
+                }
+            }
+        }
+
+        // Round-38 review: the process is about to die by its own hand
+        // (phase 3 below). A group registered inside the final
+        // snapshot→re-raise window is in no snapshot any loop will take
+        // again — without this sweep it is orphaned exactly when every
+        // earlier registrant was killed. The group had the whole grace to
+        // exit on its TERM, so this last pass escalates directly; ESRCH
+        // (already gone) is fine to ignore.
+        for pgid in snapshot_spawn_safe() {
+            if group_alive(pgid) {
+                // SAFETY: kill(2) to a group we registered.
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
                 }
             }
         }

@@ -582,7 +582,10 @@ pub(crate) fn to_package_id(raw: &str) -> String {
 /// hoist): one `available_tools()` walk serves the whole id list instead of
 /// one per entry. `pub(crate)` since round-37 P3 (review #455): the builtin
 /// writer guard hoists the same snapshot for its normalization loop.
-pub(crate) fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
+/// `pub` since round-38: the CLI's `plugins enable/disable` normalize two id
+/// lists per scope and hoists the same snapshot instead of re-walking per
+/// entry (the anti-pattern this hoist exists for).
+pub fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
     // Known-pack shield (review #455 round-23 MINOR 1): a stored entry that
     // names a physically present pack dir IS that pack and must not be

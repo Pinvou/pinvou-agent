@@ -39,6 +39,11 @@ pub use download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT;
 // spelling drift between metadata and binding must not re-admit a healthy
 // session for a whole-record rewrite.
 pub use os::filesystem_path_identity_key;
+pub use os::path_identity_is_same_or_nested;
+// Round-38: the headless CLI's `projects rebind` nesting rejection runs the
+// same folded keys through the same component-boundary predicate the GUI's
+// command layer uses — a raw `Path::starts_with` copy had drifted (Windows
+// case-only spellings slipped past the nested arm).
 // Same crate-boundary shape as the re-exports above: the headless CLI's
 // file-persisting lanes (`artifacts write`, `feedback submit`) were the last
 // holders of a drifting local stage-then-rename copy; they now consume the
