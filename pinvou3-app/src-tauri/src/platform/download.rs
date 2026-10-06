@@ -182,9 +182,16 @@ pub fn redact_url_credentials_in_text(text: &str) -> String {
     };
     let mut result = String::with_capacity(text.len());
     let mut rest = text;
+    // Round-42 review: take the EARLIEST scheme occurrence, not the first
+    // scheme in list order — `find_map` over `["https://", "http://"]` lets
+    // a later `https://` anywhere in the text win over an earlier
+    // `http://user:pass@…`, pushing that userinfo through unredacted (the
+    // exact input this function exists to scrub: multi-candidate download
+    // error chains embed several URLs).
     while let Some(position) = ["https://", "http://"]
         .iter()
-        .find_map(|scheme| rest.find(scheme))
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
     {
         let (before, after) = rest.split_at(position);
         result.push_str(before);
@@ -919,5 +926,45 @@ mod tests {
             assert_eq!(redacted, "<invalid URL>", "{invalid_with_userinfo}");
             assert!(!redacted.contains("user:secret"), "{redacted}");
         }
+    }
+
+    /// Round-42 review: the free-text scan must redact the EARLIEST URL,
+    /// not prefer `https://` by list order — a download error chain that
+    /// embeds an `http://user:pass@mirror…` before any `https://` URL used
+    /// to leak that userinfo verbatim.
+    #[test]
+    fn redact_in_text_redacts_the_earliest_url_not_the_preferred_scheme() {
+        // http first, https later: the pre-fix iteration order redacted only
+        // the https URL and passed the userinfo-bearing http URL through.
+        let mixed = "failed fetching (http://user:pass@mirror.internal/pkg.tgz) \
+                     caused by (https://registry.example/x.tar.gz)";
+        let redacted = redact_url_credentials_in_text(mixed);
+        assert!(
+            !redacted.contains("user:pass"),
+            "the earliest URL must be redacted regardless of scheme: {redacted}"
+        );
+        assert!(
+            redacted.contains("http://mirror.internal/pkg.tgz"),
+            "{redacted}"
+        );
+        assert!(
+            redacted.contains("https://registry.example/x.tar.gz"),
+            "{redacted}"
+        );
+
+        // The https-first order keeps working, delimiters still bound the
+        // URL run, and non-URL text passes through.
+        let https_first = redact_url_credentials_in_text(
+            "see https://user:key@safe.example/a then http://plain.example/b, done",
+        );
+        assert!(!https_first.contains("user:key"), "{https_first}");
+        assert!(
+            https_first.contains("http://plain.example/b, done"),
+            "{https_first}"
+        );
+        assert_eq!(
+            redact_url_credentials_in_text("no urls in here"),
+            "no urls in here"
+        );
     }
 }

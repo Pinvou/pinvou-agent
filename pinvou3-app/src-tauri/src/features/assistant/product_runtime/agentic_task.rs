@@ -1584,7 +1584,24 @@ async fn run_turn(
                 // staged write outlives the unwind (the handle is owned
                 // outside the dropped setup future — see
                 // `staging_in_flight`).
-                join_staged_attachments(&mut staging_in_flight).await;
+                // Round-42 review: mirror the timeout arm's sweep — the join
+                // alone used to discard the staged copies, so a panic landing
+                // after staging completed but before the submit boundary
+                // left the batch unreferenced in the session's attachments
+                // dir (bounded litter, but nothing reaped it). Before the
+                // boundary nothing ran that could reference the copies; past
+                // it the pins stay and so does the sweep skip.
+                if let Some(copies) = join_staged_attachments(&mut staging_in_flight).await {
+                    staged_attachment_copies = copies;
+                }
+                if !submit_entered.load(Ordering::SeqCst) {
+                    sweep_unreferenced_staged_copies(
+                        store,
+                        session_id,
+                        existing_session,
+                        &staged_attachment_copies,
+                    );
+                }
                 resume_unwind_after_pinned_restore(&submit_entered, panic, |reason| {
                     restore_pre_run_pins(
                         runtime,
