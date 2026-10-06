@@ -22,6 +22,7 @@ pub mod files;
 pub mod knowledge;
 pub mod marketplace;
 pub mod memory;
+pub mod messaging;
 pub mod monitor;
 pub mod multiagent;
 pub mod personas;

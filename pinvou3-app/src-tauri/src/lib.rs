@@ -1187,6 +1187,19 @@ pub fn run() {
                     // （回到 lazy spawn 语义，下次发消息重建 + 注水历史）。
                     pool.start_idle_reaper();
                     eprintln!("[pinvou3-app] engine pool ready (lazy spawn per session)");
+                    // Cross-session messaging delivery watcher
+                    // (features::messaging): drains the spool backlog written
+                    // by the session-reader MCP server
+                    // (send_message_to_session), then polls. The watcher
+                    // consults the session-messaging feature switch every
+                    // poll (switch off pauses delivery) and gates
+                    // ACP/code-session targets through the shared AcpPool.
+                    // The app lifetime is the watcher lifetime.
+                    features::messaging::spawn_delivery_watcher(
+                        pool.clone(),
+                        acp_pool_for_capabilities.clone(),
+                        store_for_engine.clone(),
+                    );
                     match remote_control_manager.resume() {
                         Ok(true) => eprintln!("[pinvou3-app] persistent Web access resumed"),
                         Ok(false) => {}

@@ -191,7 +191,7 @@ def main():
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
-        "session-reader": {"read_session", "list_sessions"},
+        "session-reader": {"read_session", "list_sessions", "send_message_to_session"},
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
@@ -226,6 +226,37 @@ def main():
             deleted = content_json(rpc.call("tools/call", {"name": "delete_note", "arguments": {"path": "测试/自动化", "confirm": True}}))
             assert deleted.get("type") == "obsidian_deleted" and not Path(vault, "测试", "自动化.md").exists()
     print("✅ obsidian: 创建/读取/搜索/人在环删除全旅程")
+
+    with tempfile.TemporaryDirectory(prefix="pinvou-session-reader-send-") as home:
+        sessions = Path(home, "sessions")
+        sessions.mkdir(parents=True)
+        for sid, title in (("src0001", "源会话"), ("tgt0001", "目标会话")):
+            (sessions / f"{sid}.json").write_text(json.dumps({
+                "metadata": {"id": sid, "title": title, "updated_at": "2026-09-28T00:00:00Z", "message_count": 1},
+                "messages": [],
+            }, ensure_ascii=False), encoding="utf-8")
+        with RpcServer(MCP_ROOT / "session-reader", {"PINVOU3_HOME": home}) as rpc:
+            sent = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "tgt0001", "text": "跨会话交接", "from_session": "src0001", "idempotency_key": "k1"},
+            }))
+            assert sent.get("delivery") == "pending" and sent.get("toSession") == "tgt0001", sent
+            duplicate = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "tgt0001", "text": "跨会话交接", "from_session": "src0001", "idempotency_key": "k1"},
+            }))
+            assert duplicate.get("duplicate") is True, duplicate
+            spooled = sorted(Path(home, "messaging", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            record = json.loads(spooled[0].read_text(encoding="utf-8"))
+            assert record["to_session"] == "tgt0001" and record["from_session"] == "src0001", record
+            assert record["from_title"] == "源会话" and record["text"] == "跨会话交接", record
+            isolated = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "sched-run1", "text": "hi"},
+            }))
+            assert "not readable" in isolated.get("error", ""), isolated
+    print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-artifacts-") as artifacts:
         env = {"PINVOU3_SESSION_ARTIFACTS": artifacts}

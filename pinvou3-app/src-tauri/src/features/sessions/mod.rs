@@ -47,7 +47,7 @@ mod scheduled;
 mod sidecars;
 mod store;
 mod transcript;
-mod validators;
+pub(crate) mod validators;
 mod workspace_bindings;
 
 #[cfg(test)]
