@@ -536,6 +536,41 @@ fn invalid_usage_maps_to_exit_code_two() {
     assert_eq!(ExitCode::Usage.as_i32(), 2);
 }
 
+/// Round-41 review: exit code 2 is the contract scripts branch on, and it is
+/// produced by `main`'s process-exit path (`error.exit_code().as_i32()` and
+/// the decode-arguments early exit) — a layer the library-level
+/// `invalid_usage_maps_to_exit_code_two` never executes. This pins the real
+/// binary's process exit code for both refusal classes. Neither path touches
+/// the store, so no `PINVOU3_HOME` fixture is needed.
+#[test]
+fn usage_failures_exit_two_through_the_real_binary() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .arg("__no_such_family__")
+        .output()
+        .expect("spawn the pinvou binary");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+            .arg(std::ffi::OsStr::from_bytes(b"\xff\xfe"))
+            .output()
+            .expect("spawn the pinvou binary");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[test]
 fn unrecognized_output_value_falls_through_to_usage_error() {
     // Outside `benchmark submission gaia` (which consumes `--output <file>` as

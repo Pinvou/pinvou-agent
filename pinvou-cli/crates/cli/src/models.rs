@@ -3103,6 +3103,7 @@ fn search_set<S: CredentialStore>(
             return Err(prefs_error(error));
         }
     };
+    let had_reference = reference_to_delete.is_some();
     if clear {
         // Only after the prefs save succeeded — deleting first would leave
         // the prefs entry pointing at a credential that no longer exists if
@@ -3122,7 +3123,15 @@ fn search_set<S: CredentialStore>(
         }
     }
     let action = if clear {
-        "cleared"
+        if had_reference {
+            "cleared"
+        } else {
+            // Round-41 review: a keyless provider (bing) or a never-configured
+            // one has no stored credential — reporting "cleared" was a
+            // success-shaped no-op, against the same doctrine that refuses
+            // empty edits elsewhere in this file.
+            "unchanged"
+        }
     } else if stored.is_some() {
         "configured"
     } else {

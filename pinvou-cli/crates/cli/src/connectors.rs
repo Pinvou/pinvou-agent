@@ -696,7 +696,7 @@ fn run_cli_bounded(
     // exits only — a panic between spawn and the paired forget (thread
     // spawn/allocation below) used to leave the group registered for a later
     // interrupt to SIGTERM at a recycled pgid (round-39 review).
-    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     // Lossy like the GUI's `String::from_utf8_lossy`: vendor CLIs (wecom /
@@ -1096,16 +1096,10 @@ fn scope_state_disabled(kind: ConnectorKind) -> bool {
 /// direction must not fire on the switch alone either — only the marker or
 /// the absence of a connection does. A probe error counts as not-connected,
 /// exactly like the GUI's `ready_probe` folds `run_probe` errors to false
-/// (feishu.rs `is_user_ready`, wecom.rs `is_ready`, …).
-fn gui_skill_gate_shows(kind: ConnectorKind) -> bool {
-    gui_skill_gate_shows_with(kind, cli_connected(kind.spec()).unwrap_or(false))
-}
-
-/// Round-40 review: connected-aware form of [`gui_skill_gate_shows`]. The
-/// callers that probe the connection anyway (`set_enabled`, `apply_skills`)
-/// used to spawn a SECOND identical `auth status` child through the gate —
-/// on a wedged shim each probe burns the full timeout, so one disable
-/// blocked ~2x. Thread the verdict through instead.
+/// (feishu.rs `is_user_ready`, wecom.rs `is_ready`, …). Round-41 review: the
+/// probe is always threaded in by the callers (`gui_skill_gate_shows_with`)
+/// — the zero-argument form that spawned its own probe was dead and its
+/// double-probe cost was the reason the `_with` form exists.
 fn gui_skill_gate_shows_with(kind: ConnectorKind, connected: bool) -> bool {
     !legacy_disabled_marker(kind) && connected
 }
@@ -2184,7 +2178,7 @@ fn run_npm_attempt(
     // RAII bracket per the supervise module's rule (see `run_cli_bounded`):
     // the paired forgets below answer the ordinary exits, the guard covers
     // everything a panic could skip.
-    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     let start = Instant::now();
     loop {
         // An OS-level wait error leaves the child's state unknown, and a
@@ -2288,6 +2282,21 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
         // hash matched and `present()` still runs in
         // `ensure_cli_with`/"安装完成但无法执行" — so install=true here
         // regardless of which branch produced the bytes (round-18 finding 3).
+        // Round-41 review: the license side-file must not depend on WHICH
+        // branch produced the bytes. A transient failure in the late write
+        // (after the binary rename) used to leave a hash-matched install
+        // whose every later run took this early return with no license on
+        // disk — unrecoverable by re-running ensure. The writer is an
+        // idempotent overwrite, so re-attempting it here heals the gap; a
+        // persistent failure fails the command exactly like the late write
+        // does (a redistribution-compliance gap must not silently succeed).
+        pinvou3_lib::features::write_managed_license(&version_dir, &artifact.name).map_err(
+            |error| {
+                CliError::failed(format!(
+                    "connector installed, but its license file could not be written: {error}"
+                ))
+            },
+        )?;
         return Ok(());
     }
 
@@ -2695,7 +2704,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
         .map_err(|error| CliError::failed(format!("cannot list archive with tar: {error}")))?;
     // RAII bracket (see `run_cli_bounded`): the drain-thread spawn below
     // sits between the supervised spawn and the paired forget.
-    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     // The listing is drained on a thread and the BOUNDED WAIT drives the
     // lane, the same order `run_cli_bounded` uses. In the previous order
     // (blocking read, then wait) a tar that produced under the cap and
@@ -2764,7 +2773,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     let mut child = crate::support::supervise::spawn_supervised(&mut extract)
         .map_err(|error| CliError::failed(format!("cannot extract archive with tar: {error}")))?;
     // RAII bracket, same as the listing lane above.
-    let mut group = crate::support::supervise::GroupGuard::arm(child.id());
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     // Same wait-first discipline as the listing lane above: the bounded
     // wait drives the deadline, the drainer thread keeps the pipe empty
     // (one byte past the cap is KEPT so an over-size member is detectable

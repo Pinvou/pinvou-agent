@@ -1362,7 +1362,7 @@ where
         .is_err()
     {
         anyhow::bail!(
-            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a              second runtime, and this helper must stay the process's only host lane"
+            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a second runtime, and this helper must stay the process's only host lane"
         );
     }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1520,7 +1520,7 @@ where
         .is_err()
     {
         anyhow::bail!(
-            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a              second runtime, and this helper must stay the process's only host lane"
+            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a second runtime, and this helper must stay the process's only host lane"
         );
     }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
