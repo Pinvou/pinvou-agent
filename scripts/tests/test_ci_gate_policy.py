@@ -22,14 +22,35 @@ def _extract_quoted_paths(block):
     Round-40 review M4: 单引号形式之外还要认双引号形式——一条
     `- "pinvou-cli/**"` 若对提取器不可见,下面所有基于提取结果的 pin
     (存在性、死条目、成员、workflow 排除)都会被同一条目绕过。
+
+    Round-41 review M8: 条目行尾的同列注释不再制造盲区——
+    `- '!pinvou-cli/**' # trim scope` 对 dorny 是一条排除项,旧提取器
+    (要求行以引号收尾)却看不见它。引号内出现的 `#` 属于路径本身
+    (YAML 规范:注释以引号后的 `#` 开始),因此先取引号闭包、再剥其后的
+    注释。凡是引用形式的条目行(`- '…'` / `- "…"` 开头)却匹配不上
+    引号闭包正则的,一律视为未识别形状直接让断言红掉——那正是"提取器
+    看不见 → 下方全部 pin 可被同一条目绕过"的形状。其余列表行(作业步骤
+    `- name:`、`- uses:`、裸 needs 等)不是路径条目,维持原样忽略——
+    有些调用切片覆盖整个 job,历史行为依赖这一点。
     """
     paths = []
+    unrecognized = []
     for line in block.splitlines():
         stripped = line.strip()
-        if stripped.startswith("- '") and stripped.endswith("'"):
-            paths.append(stripped[3:-1])
-        elif stripped.startswith('- "') and stripped.endswith('"'):
-            paths.append(stripped[3:-1])
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.match(r"""^- ('(.*)'|"(.*)")(?:\s+#.*)?$""", stripped)
+        if match:
+            paths.append(match.group(2) if match.group(2) is not None else match.group(3))
+        elif stripped.startswith("- '") or stripped.startswith('- "'):
+            unrecognized.append(stripped)
+    if unrecognized:
+        raise AssertionError(
+            "unrecognized quoted path-filter entry(ies); the extractor cannot "
+            "parse them, so every extractor-based pin below would be bypassable "
+            "by the same entry — fix the quoting or move prose to a comment "
+            "line: " + "; ".join(unrecognized)
+        )
     return paths
 
 
@@ -317,6 +338,36 @@ class CiGatePolicyTests(unittest.TestCase):
                 _is_covered_by_trigger(target, unrouted_filter),
                 f"未路由的双引号读取 {target} 不应被无关 filter 覆盖",
             )
+
+    def test_path_extractor_sees_trailing_comment_entries(self):
+        # Round-41 review M8 回归锁:行尾同列注释曾让整条条目对提取器
+        # 不可见——`- '!pinvou-cli/**' # trim scope` 对 dorny 是一条真实
+        # 排除项,而旧提取器要求行以引号收尾,于是 cli_rust 的可达性、
+        # 必需成员与 workflow 排除 pin 全部被同一条目绕过(经变异验证,
+        # 43 个测试全绿)。引号闭包正则必须把带注释的条目原样解析出来,
+        # 且引用形式却无法解析的形状必须让断言红掉而不是被静默忽略。
+        block = (
+            "          paths:\n"
+            "            - 'pinvou-cli/**'\n"
+            "            - '!pinvou-cli/docs/**' # trim the docs subtree\n"
+            '            - "pinvou-cli/Cargo.lock"  # lock pin\n'
+            "            - 'pinvou-cli/a#b/**' # hash inside the quotes is literal\n"
+        )
+        entries = _extract_quoted_paths(block)
+        self.assertEqual(
+            entries,
+            [
+                "pinvou-cli/**",
+                "!pinvou-cli/docs/**",
+                "pinvou-cli/Cargo.lock",
+                "pinvou-cli/a#b/**",
+            ],
+            "带行尾注释的条目必须被完整解析(dorny 看得见,提取器也必须看得见)",
+        )
+        with self.assertRaises(AssertionError):
+            # 引用形式但引号在本行不闭合:该行对 YAML 是坏的,对旧提取器
+            # 是"静默忽略",对现在必须红。
+            _extract_quoted_paths("            - 'pinvou-cli/unclosed\n")
 
     def test_trigger_coverage_respects_exclusions(self):
         # dorny/paths-filter(some-with-excludes)的语义是"至少一条正向
