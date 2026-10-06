@@ -167,7 +167,10 @@ pub const MESSAGE_BLOCK_CONTRACT_LINES: [&str; 2] = [
 /// Build the delivered user-turn text: sender header block + body. The block
 /// layout mirrors the session-mention contract: header line, contract lines,
 /// one JSON line, blank line, then the body (which may itself be
-/// multi-line).
+/// multi-line). Cap note: the server-side title clip counts characters
+/// (code points) while the JS card slices UTF-16 — an emoji-heavy title can
+/// display slightly shorter than 200 rendered units; both bounds agree on
+/// the reject side.
 pub fn build_session_message_block(
     from_session: Option<&str>,
     from_title: Option<&str>,
@@ -527,6 +530,26 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         .to_string();
     let done_marker = done_dir().join(format!("{stem}.json"));
     if done_marker.exists() {
+        // A1 (round-4): this skip is a disposition of an accepted message —
+        // same-user spool surgery or a stale-backup replay lands here, and
+        // without an audit record the message disappears silently. Audit
+        // into the target workspace (the record's target is already
+        // validated at this point) before the caller removes the file.
+        let detail = serde_json::json!({
+            "tool": MESSAGING_TOOL_FULL_NAME,
+            "to_session": message.to_session,
+            "from_session": message.from_session,
+            "outcome": "already_delivered_skip",
+            "chars": message.text.trim().chars().count(),
+        });
+        if let Ok(roots) = store.session_roots(&message.to_session) {
+            crate::features::assistant::audit::append(
+                &roots.execution,
+                "session_message",
+                "app",
+                detail,
+            );
+        }
         return Processed::Done;
     }
     match delivery.deliver(&message).await {
@@ -667,11 +690,16 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         }
     }
     for path in files {
+        // A non-UTF-8 file name can never be processed or keyed — it would
+        // silently consume a pending-ceiling slot forever (round-4 C5):
+        // quarantine it immediately instead.
         let Some(name) = path
             .file_name()
             .and_then(|n| n.to_str())
             .map(str::to_string)
         else {
+            log::warn!("[messaging] quarantining non-UTF-8 spool name {:?}", path);
+            quarantine(&path);
             continue;
         };
         if !retries.due(&name) {
@@ -916,6 +944,74 @@ mod spool_pipeline_tests {
         assert!(!spool.join("bad.json").exists());
     }
 
+    /// Round-4 B2': the audit trail is a claimed working gate — pin the
+    /// quarantine audit output on the poison and pending-cap paths (the
+    /// record lands in the target session's execution root).
+    #[tokio::test]
+    async fn poison_quarantine_writes_an_audit_record() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // A parseable record with a valid target but an over-cap body:
+        // validate() poisons it while audit_quarantine still has a target
+        // workspace to audit (unparseable records take the documented
+        // no-target carve-out).
+        let mut hostile =
+            serde_json::from_str::<SpooledMessage>(&record_json("bad", None)).unwrap();
+        hostile.text = "x".repeat(MAX_MESSAGE_TEXT_CHARS + 1);
+        std::fs::write(
+            spool.join("bad.json"),
+            serde_json::to_vec(&hostile).unwrap(),
+        )
+        .unwrap();
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        let sessions = sessions_store();
+        let exec_root = sessions
+            .session_roots("tgt0001")
+            .expect("roots for a syntactically valid target")
+            .execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
+        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        let audit = exec_root.join("workflow_audit.jsonl");
+        let content = std::fs::read_to_string(&audit).unwrap_or_default();
+        assert!(
+            content.contains("\"session_message\"") && content.contains("\"quarantined\""),
+            "the poison disposition must be audited: {content}"
+        );
+    }
+
+    /// Round-4 B2' (pending-cap arm): the ceiling's excess quarantine is
+    /// audited into the target workspace too.
+    #[tokio::test]
+    async fn pending_cap_excess_is_audited() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        for i in 0..=(MAX_PENDING_FILES as u32) {
+            let name = format!("c{i:05}.json");
+            std::fs::write(spool.join(&name), record_json(&name, None)).unwrap();
+        }
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        let sessions = sessions_store();
+        let exec_root = sessions.session_roots("tgt0001").expect("roots").execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
+        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        let audit = exec_root.join("workflow_audit.jsonl");
+        let content = std::fs::read_to_string(&audit).unwrap_or_default();
+        assert!(
+            content.contains("pending-file ceiling"),
+            "the ceiling quarantine must be audited: {content}"
+        );
+    }
+
     #[tokio::test]
     async fn oversize_file_is_quarantined_before_read() {
         let _home = TempHome::new();
@@ -1071,6 +1167,68 @@ mod spool_pipeline_tests {
             !Path::new("/tmp/pinvou-evil.json").exists(),
             "no file may be created outside the done namespace"
         );
+    }
+
+    /// Round-4 B1': the REAL gate inputs, store-backed — an ACP-backend
+    /// record and a code-mode native record are what the production
+    /// `DeliveryGates for AcpPool` consults (`is_acp` rides the same
+    /// `agents()` backend read; `is_code_session` is the sidecar mode).
+    /// Flipping the production gate to `Ok(())` removes exactly these
+    /// consultations, which the source pin below then fails.
+    #[test]
+    fn real_gate_inputs_reject_acp_and_code_sessions() {
+        use crate::features::codex_acp::{AgentBackend, CodexWorkspaceKind, SessionAgentStore};
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-messaging-gate-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SessionAgentStore::for_test(dir.join("session-agents.json"));
+        store
+            .set_acp_workspace(
+                "acp-tgt",
+                AgentBackend::ClaudeAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .expect("bind acp record");
+        store
+            .bind_code_native_session("code-tgt", CodexWorkspaceKind::Temporary, None)
+            .expect("bind code record");
+        assert!(
+            store.backend("acp-tgt").is_acp(),
+            "an ACP-backend record is what the gate's is_acp consults"
+        );
+        assert!(
+            store.is_code_session("code-tgt"),
+            "a code-mode record is what the gate's is_code_session consults"
+        );
+        assert!(
+            !store.backend("chat-tgt").is_acp() && !store.is_code_session("chat-tgt"),
+            "an ordinary chat session passes both gate inputs"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-4 B1', source pin: the production gate must consult both the
+    /// ACP-backend read and the sidecar code-mode read — deleting either
+    /// call (or short-circuiting the gate to Ok) turns this red.
+    #[test]
+    fn production_delivery_gate_consults_both_checks() {
+        let source = include_str!("mod.rs");
+        let impl_start = source
+            .find("impl DeliveryGates for crate::features::codex_acp::AcpPool")
+            .or_else(|| source.find("impl DeliveryGates for AcpPool"))
+            .expect("the production DeliveryGates impl must exist");
+        let body = &source[impl_start..impl_start + 700];
+        let is_acp = body
+            .find("self.is_acp(session_id)")
+            .expect("is_acp consult");
+        let code = body
+            .find("self.agents().is_code_session(session_id)")
+            .expect("code-session consult");
+        assert!(is_acp < code, "both consultations live in the gate body");
     }
 
     /// The ACP/code gate is the delivery-time mirror of chat.rs's manual-path

@@ -76,6 +76,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiAuxChat',
     'uiBuiltinFeatures',
     'uiSessionMention',
+    'uiSessionMessage',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
@@ -197,6 +198,16 @@ for (const language of ['zh', 'en', 'ja']) {
   }
   for (const fnKey of ['chipRemove', 'cardJump']) {
     assert.equal(typeof dict[language].uiSessionMention[fnKey], 'function', `${language}.uiSessionMention.${fnKey} must be a function`);
+    // uiSessionMessage (delivered-message sender card copy): every key must
+    // exist and the fn-shaped entries must be functions — a drifted key
+    // crashes UserBubble's copy.from call for every delivered message
+    // (round-4 C1).
+    for (const key of ['fromUnknown', 'jump', 'unavailable']) {
+      assert.ok(dict[language].uiSessionMessage[key], `${language}.uiSessionMessage.${key} must exist`);
+    }
+    for (const fnKey of ['from']) {
+      assert.equal(typeof dict[language].uiSessionMessage[fnKey], 'function', `${language}.uiSessionMessage.${fnKey} must be a function`);
+    }
   }
   // Count guard (round-15 m4): ja replaces the whole section object, so a
   // ja-missing key renders undefined rather than falling back — pin the
