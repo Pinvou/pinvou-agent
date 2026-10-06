@@ -212,6 +212,19 @@ test("the repair script only mutates an isolated, marked RUSTUP_HOME", () => {
   // The marker value must be verified, not just the filename: a torn write
   // must be rejected instead of adopted for destructive repair.
   assert.match(rustToolchainGuard, /pinvou3-managed-rustup-v1/u);
+  // The written marker and the verified marker must be pinned as the same
+  // literal at both sites: changing only the written value made every fresh
+  // home self-reject while the existence pin above stayed green.
+  assert.match(
+    rustToolchainGuard,
+    /Set-Content -LiteralPath \$managedMarker `\s*\r?\n\s*-Value "pinvou3-managed-rustup-v1"/u,
+    "the marker creation must write the pinned marker value",
+  );
+  assert.match(
+    rustToolchainGuard,
+    /\$markerValue -ne "pinvou3-managed-rustup-v1"/u,
+    "the marker verification must compare the pinned marker value",
+  );
   assert.match(rustToolchainGuard, /Invalid managed RUSTUP_HOME marker/u);
   assert.match(rustToolchainGuard, /non-empty unmarked RUSTUP_HOME/u);
   // A repair with RUSTUP_HOME unset must refuse before any path resolution:
@@ -327,6 +340,14 @@ test("stream drains and probe exit codes cannot abort or false-pass the repair",
 test("the repair is bounded overall and survives a stalled kill", () => {
   assert.match(rustToolchainGuard, /RepairTimeoutSeconds = 1500/u);
   assert.match(rustToolchainGuard, /exceeded its \{0\}s budget/u);
+  // The budget must be an actual deadline comparison, not only an error
+  // message: gating the throw behind `if ($false)` previously kept every
+  // suite green while the repair wandered unbounded.
+  assert.match(
+    rustToolchainGuard,
+    /\[DateTime\]::UtcNow -ge \$repairDeadline/u,
+    "the repair budget must be enforced by a deadline check",
+  );
   assert.match(rustToolchainGuard, /\[ValidateRange\(1, 7200\)\]/u);
   // The bounded ranges must stay attached to their parameters: without them
   // a 0/negative timeout makes WaitForExit(0) degenerate into an instant
@@ -428,6 +449,13 @@ test("the repair script retries across download sources with bounded attempts", 
   );
   assert.match(rustToolchainGuard, /"toolchain", "install"/u);
   assert.match(rustToolchainGuard, /"--profile", "minimal"/u);
+  // The install must carry rustup's own flags, not just its components:
+  // dropping --no-self-update let the "isolated" repair mutate the shared
+  // rustup installation via a self-update, and dropping --force changed
+  // rustup's component-completeness behavior over partially-installed
+  // directories; both mutations previously kept every suite green.
+  assert.match(rustToolchainGuard, /"--no-self-update"/u);
+  assert.match(rustToolchainGuard, /"--force"/u);
   assert.match(rustToolchainGuard, /"toolchain", "uninstall"/u);
   // The uninstall reset must be bounded like the install: it is the one
   // rustup call over ~1 GB of files, and an unbounded reset outlasts the
