@@ -225,6 +225,13 @@ jobs:
               - 'pinvou-cli/.cargo/**'
               - 'pinvou-cli/**/*.manifest'
               - 'CodeWhale'
+              # Round-42 review: tauri-build parses this config in EVERY
+              # pinvou3-tauri compile, so it is a compile input of every CLI
+              # leg (the workflow's own comment says the CLI legs run "same
+              # tauri_build resource check") — a schema-breaking config-only
+              # PR used to skip every Rust/CLI compile leg pre-merge because
+              # the file routed only to release_contract/pet/frontend.
+              - 'pinvou3-app/src-tauri/tauri.conf.json'
               # This workflow file is deliberately excluded from cli_rust
               # (policy: workflow changes must not drag in the full app test
               # suite; test_ci_gate_policy pins this). A workflow-only change
@@ -1837,7 +1844,41 @@ jobs:
             }
             echo "WINDOWS_RUST_TIMING phase=regression step=test-filter-$index elapsed_seconds=$((SECONDS-started)) status=0"
           done
-          echo "WINDOWS_RUST_TIMING phase=regression step=filter-suite elapsed_seconds=$((SECONDS-total_started)) status=0"
+            echo "WINDOWS_RUST_TIMING phase=regression step=filter-suite elapsed_seconds=$((SECONDS-total_started)) status=0"
+
+      # Round-42 review: the pinvou-cli workspace's own cfg(windows) unit
+      # tests previously ran on NO CI leg — the Linux cli-test leg cannot
+      # compile them, and the all-targets-check leg above only type-checks
+      # them (Linux never compiles the platform-gated module, so "Linux
+      # already exercises this behavior" does not hold for it). This step
+      # makes the two regression pins real: the BatBadBut std-batch
+      # hardening lock (windows_batch_tests) and the adapter-gaia Windows
+      # FileIdentity seams. Zero-match guards keep a rename from becoming a
+      # silent pass (same rule as the filter suite above); the run stays
+      # filtered rather than running the whole CLI lib suite because those
+      # tests have never executed on Windows and onboarding them all belongs
+      # to a dedicated change.
+      - name: pinvou-cli Windows-gated unit tests
+        if: ${{ matrix.phase == 'regression' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          run_filtered() {
+            log="/tmp/pinvou_cli_windows_tests.log"
+            cargo "$@" 2>&1 | tee "$log"
+            grep -qE 'running [1-9][0-9]* tests?' "$log" || {
+              echo "FAIL: filter '$*' matched 0 tests (a renamed test must not become a silent pass)" >&2
+              exit 1
+            }
+            grep -q "^test result: ok" "$log" || {
+              echo "FAIL: filter '$*' had failing tests" >&2
+              exit 1
+            }
+          }
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked windows_batch_tests
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked dataset_windows
+          echo "WINDOWS_RUST_TIMING phase=regression step=cli-windows-tests elapsed_seconds=$((SECONDS-started)) status=0"
 
   macos-rust-check:
     name: macos-rust-check
@@ -2030,7 +2071,11 @@ jobs:
   # cannot recur here.
   # Still compile-only (no test execution): cli-test already runs the CLI
   # contract suite on Linux, and executing it here too would double the macOS
-  # runner minutes for a second copy of behavior Linux already exercises.
+  # runner minutes for a second copy of behavior Linux already exercises —
+  # sound while no #[cfg(all(test, target_os = "macos"))] module exists (the
+  # round-42 audit found none); the Windows leg now RUNS its platform-gated
+  # pinvou-cli tests for exactly the reason this rationale does not extend
+  # there: a platform-gated test compiles on no other leg at all.
   # Triggers: ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
   # (a PR that is green alone can still combine into a macOS-only compile break,
   # and Linux cannot type-check #[cfg(target_os = "macos")] code, so "Linux

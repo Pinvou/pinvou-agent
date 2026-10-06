@@ -542,15 +542,24 @@ class CiGatePolicyTests(unittest.TestCase):
         cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
         )[0]
-        self.assertIn(
-            "- 'pinvou-cli/**/*.rs'",
-            cli_paths,
+        # Round-42 review: membership pins assert against the EXTRACTOR's
+        # parsed entries, not the raw slice — a trailing comment quoting the
+        # same path (`# was '- 'pinvou-cli/**/Cargo.lock''`) satisfied the
+        # raw assertIn while the extractor (and dorny) saw no entry, so a
+        # deleted entry kept every pin green. The extractor also fails
+        # closed on unrecognized quoting shapes.
+        cli_rust_entries_probe = _extract_quoted_paths(cli_paths)
+
+        def assert_extracted_entry(entry: str, message: str) -> None:
+            self.assertIn(entry, cli_rust_entries_probe, message)
+
+        assert_extracted_entry(
+            "pinvou-cli/**/*.rs",
             "cli_rust must match the real crate directory (pinvou-cli)",
         )
-        self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
-        self.assertIn(
-            "- 'pinvou-cli/**/Cargo.lock'",
-            cli_paths,
+        assert_extracted_entry("pinvou-cli/**/Cargo.toml", "cli_rust must route the Cargo.toml set")
+        assert_extracted_entry(
+            "pinvou-cli/**/Cargo.lock",
             "every CLI leg builds --locked, so a lockfile-only change (a "
             "dependency bump, a resolver rewrite) changes exactly what they "
             "compile; without this entry such a PR skips cli-test, "
@@ -561,22 +570,20 @@ class CiGatePolicyTests(unittest.TestCase):
         # sources. .cargo/config.toml feeds EVERY CLI build (a resolver,
         # target, or rustflags change compiles differently everywhere), and
         # build.rs embeds the exe manifest into the Windows binary.
-        self.assertIn(
-            "- 'pinvou-cli/.cargo/**'",
-            cli_paths,
+        assert_extracted_entry(
+            "pinvou-cli/.cargo/**",
             "cli_rust must route pinvou-cli/.cargo: config.toml changes what "
             "every CLI leg compiles; without this entry such a PR skips "
             "cli-test, cli-lint, windows-rust-test AND macos-cli-check on "
             "'skipped'",
         )
-        self.assertIn(
-            "- 'pinvou-cli/**/*.manifest'",
-            cli_paths,
+        assert_extracted_entry(
+            "pinvou-cli/**/*.manifest",
             "cli_rust must route the exe manifest: build.rs embeds it into "
             "the Windows binary, and without this entry a manifest-only PR "
             "runs no CLI leg at all",
         )
-        self.assertIn("- 'CodeWhale'", cli_paths)
+        assert_extracted_entry("CodeWhale", "cli_rust must route the foundation gitlink")
         # Round-38: every literal cli_rust filter entry must name a path that
         # EXISTS in the repository. The round-37 mcp-servers entry shipped as
         # `pinvoy3-app/...` (a typo), which no glob ever matches — the entry
@@ -737,6 +744,33 @@ class CiGatePolicyTests(unittest.TestCase):
             "            windows_codex:", maxsplit=1
         )[1].split("            pet:", maxsplit=1)[0]
         assert_group_paths_reachable(windows_codex_paths, "windows_codex")
+
+        # Round-42 review: the sweep now covers EVERY filter group in the
+        # changes block, not just the three that originally motivated it —
+        # a dead dir/** spelling in rust_code, release_contract, pet,
+        # frontend, relay, acp_runtime, rust_full or the dependency groups
+        # silently skipped the legs that group owns, exactly like the
+        # round-37 pinvoy3-app class. Groups are split sequentially in
+        # declaration order, so a NEW group appended without updating this
+        # list still gets covered as long as it sits between two known
+        # neighbors; the pairs below mirror the workflow's order.
+        group_bounds = [
+            ("rust_code", "rust_dependencies"),
+            ("rust_dependencies", "rust_full"),
+            ("rust_full", "cli_rust"),
+            ("cli_rust", "knowledge_rust"),
+            ("knowledge_dependencies", "release_contract"),
+            ("release_contract", "pet"),
+            ("pet", "frontend"),
+            ("frontend", "relay"),
+            ("relay", "acp_runtime"),
+            ("acp_runtime", "windows_codex"),
+        ]
+        for group, next_group in group_bounds:
+            block = changes.split(f"            {group}:", maxsplit=1)[1].split(
+                f"            {next_group}:", maxsplit=1
+            )[0]
+            assert_group_paths_reachable(block, group)
 
         cli_test = _without_yaml_comments(
             self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
@@ -1021,6 +1055,26 @@ class CiGatePolicyTests(unittest.TestCase):
             "and test targets alike — so the product-backend-off cfg arms "
             "cannot rot silently",
         )
+        # Round-42 review: the substring pin above is satisfied by an
+        # APPENDED feature toggle — `--no-default-features --features
+        # product-backend` keeps the pinned text while compiling the
+        # feature-on config, silently un-guarding the refusal arms. Pin the
+        # absence of the re-enable on the featureless step.
+        featureless_steps = [
+            line
+            for line in cli_lint.splitlines()
+            if "--no-default-features" in line
+        ]
+        self.assertTrue(featureless_steps, "the featureless check step must exist")
+        for line in featureless_steps:
+            self.assertNotIn(
+                "--features",
+                line,
+                "the featureless check must not re-enable features on the "
+                "same invocation: `--no-default-features --features "
+                "product-backend` satisfies the substring pin while "
+                "compiling the feature-on config: {line}",
+            )
         # Independent cache keyed to the compiler mode (clippy-driver
         # artifacts are not reusable by the rustc test compilers — same
         # parallel-job split as rust-lint vs rust-test).
@@ -1190,7 +1244,36 @@ class CiGatePolicyTests(unittest.TestCase):
                 for line in block.splitlines()
                 if 'cat "$probe/a.err" "$probe/b.err" >&2 || true' not in line
             )
-            for idiom in ("|| true", "|| :", "|| exit 0"):
+            # Round-42 review: the `|| echo` scan exempts exactly ONE
+            # documented best-effort step per job — the ci-memory-setup
+            # (zram) invocation, whose failure legitimately warns instead of
+            # failing the leg. The exemption is BY NAME: the excised line
+            # must invoke the setup script, so a new `|| echo` on any other
+            # line still fails the pin, and if the setup step is renamed the
+            # exemption stops matching and its `|| echo` becomes a failure
+            # that must be re-adjudicated.
+            setup_lines = [
+                line
+                for line in block.splitlines()
+                if "|| echo" in line and "ci-memory-" in line
+            ]
+            self.assertLessEqual(
+                len(setup_lines),
+                1,
+                f"{name}: at most one ci-memory-setup line may carry `|| echo`",
+            )
+            block = "\n".join(
+                line for line in block.splitlines() if line not in setup_lines
+            )
+            # Round-42 review: the workflow's own best-effort idiom
+            # (`|| echo "::warning::…"`) belongs in this scan too — appended
+            # to a gate command it turns any failure into a warning line and
+            # a green step, exactly like `|| true`. Each gate command line
+            # must not carry ANY `||` redirect of its exit status; the two
+            # documented exceptions stay pinned to their own lines (the
+            # lld-probe diagnostic above and the ci-memory-setup step, whose
+            # name is asserted on main).
+            for idiom in ("|| true", "|| :", "|| exit 0", "|| echo"):
                 self.assertNotIn(
                     idiom,
                     block,
