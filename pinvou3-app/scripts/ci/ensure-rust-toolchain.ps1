@@ -321,9 +321,11 @@ try {
           $null = $process.WaitForExit(5000)
 
           # Bounded drain: a surviving handle holder could otherwise stall
-          # the stream reads past the per-attempt timeout.
-          $null = $stdoutTask.Wait(10000)
-          $null = $stderrTask.Wait(10000)
+          # the stream reads past the per-attempt timeout. A faulted read
+          # task throws AggregateException out of Wait(); the attempt is
+          # already failed here, so only its output is lost.
+          try { $null = $stdoutTask.Wait(10000) } catch [System.AggregateException] { }
+          try { $null = $stderrTask.Wait(10000) } catch [System.AggregateException] { }
           $stdoutText = ""
           if ($stdoutTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $stdoutText = $stdoutTask.Result }
           $stderrText = ""
@@ -340,15 +342,17 @@ try {
           return 124
         }
 
-        # Bounded drain on the success path too: a faulted read task must not
-        # throw past the exit-code classification, and an inherited pipe
-        # handle must not hang a completed process's output read.
-        $null = $stdoutTask.Wait(10000)
-        $null = $stderrTask.Wait(10000)
+        # Bounded drain on the success path too: a faulted read task is
+        # completed but not RanToCompletion, so an IsCompleted guard would
+        # still let .Result rethrow past the exit-code classification; only
+        # a RanToCompletion read may contribute output, and an inherited
+        # pipe handle must not hang a completed process's output read.
+        try { $null = $stdoutTask.Wait(10000) } catch [System.AggregateException] { }
+        try { $null = $stderrTask.Wait(10000) } catch [System.AggregateException] { }
         $stdoutText = ""
-        if ($stdoutTask.IsCompleted) { $stdoutText = $stdoutTask.Result }
+        if ($stdoutTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $stdoutText = $stdoutTask.Result }
         $stderrText = ""
-        if ($stderrTask.IsCompleted) { $stderrText = $stderrTask.Result }
+        if ($stderrTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $stderrText = $stderrTask.Result }
         $nativeOutput = @($stdoutText, $stderrText) -join "`n"
         $nativeOutput -split '[\r\n]+' | ForEach-Object {
           if (-not [string]::IsNullOrWhiteSpace($_)) {
@@ -368,6 +372,10 @@ try {
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
+      # A native command that cannot start (AV lock, blocked executable)
+      # never updates $LASTEXITCODE, so a stale 0 from an earlier call would
+      # false-pass the probe classification below; seed a failing code.
+      $LASTEXITCODE = 1
       & $rustupPath @Arguments 2>&1 | ForEach-Object {
         $message = if ($_ -is [System.Management.Automation.ErrorRecord]) {
           $_.Exception.Message
@@ -432,14 +440,14 @@ try {
     $repairSucceeded = $false
     $repairFailures = @()
     # Checked between attempts, so the worst case is this budget plus one
-    # bounded install attempt; without it four sources could wander for
-    # over an hour before anything gives up.
+    # bounded install attempt and its bounded uninstall reset; without it
+    # four sources could wander for over an hour before anything gives up.
     $repairDeadline = [DateTime]::UtcNow.AddSeconds($RepairTimeoutSeconds)
     foreach ($source in $repairSources) {
       Set-RustupSource -Source $source
       foreach ($attempt in 1..$RepairAttemptsPerSource) {
         if ([DateTime]::UtcNow -ge $repairDeadline) {
-          $repairFailures += "$($source.Name) attempt $attempt (repair budget of $RepairTimeoutSeconds s exhausted)"
+          $repairFailures += "$($source.Name) (repair budget of $RepairTimeoutSeconds s exhausted before attempt $attempt)"
           throw (
             (
               "[rustup] Rust toolchain repair exceeded its {0}s budget; attempts: {1}. " +

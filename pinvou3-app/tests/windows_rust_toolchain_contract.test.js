@@ -293,6 +293,37 @@ test("the toolchain probes use the --version long form", () => {
   );
 });
 
+test("stream drains and probe exit codes cannot abort or false-pass the repair", () => {
+  // A faulted read task IS completed, so an IsCompleted guard still lets
+  // .Result rethrow past the exit-code classification; both drains on both
+  // the timeout and success paths must guard with RanToCompletion.
+  assert.equal(
+    (rustToolchainGuard.match(/TaskStatus\]::RanToCompletion/gu) || []).length,
+    4,
+    "stdout and stderr reads on both the timeout and success paths must guard with RanToCompletion",
+  );
+  assert.doesNotMatch(
+    rustToolchainGuard,
+    /\.IsCompleted/u,
+    "an IsCompleted guard admits faulted tasks whose .Result rethrows",
+  );
+  // Wait(10000) itself throws AggregateException for an in-window fault; all
+  // four bounded drains must swallow it instead of aborting the repair.
+  assert.equal(
+    (rustToolchainGuard.match(/catch \[System\.AggregateException\]/gu) || []).length,
+    4,
+    "all four bounded stream drains must tolerate a faulted read task",
+  );
+  // A native command that cannot start never updates $LASTEXITCODE, so the
+  // unbounded probe path must seed a failing code: a stale 0 from an earlier
+  // call would otherwise false-pass the completeness gate.
+  assert.match(
+    rustToolchainGuard,
+    /\$LASTEXITCODE = 1\s*\r?\n\s*& \$rustupPath @Arguments/u,
+    "the probe path must seed $LASTEXITCODE before invoking rustup",
+  );
+});
+
 test("the repair is bounded overall and survives a stalled kill", () => {
   assert.match(rustToolchainGuard, /RepairTimeoutSeconds = 1500/u);
   assert.match(rustToolchainGuard, /exceeded its \{0\}s budget/u);
