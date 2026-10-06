@@ -21,12 +21,12 @@
 ```bash
 # 通过英文逗号分隔传入多个 open_id
 tmeet control call \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --users "open_id1,open_id2"
 
 # 重复传入 --users 参数
 tmeet control call \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --users "open_id1" \
   --users "open_id2"
 ```
@@ -58,25 +58,25 @@ tmeet control call \
 ```bash
 # 踢出普通成员（默认允许重新入会）
 tmeet control kick \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --users "open_id1,open_id2"
 
 # 重复传入 --users 参数
 tmeet control kick \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --users "open_id1" \
   --users "open_id2"
 
 # 同时踢出普通成员、Sip 设备、Pstn 设备
 tmeet control kick \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --users "open_id1" \
   --sip-users "ms_open_id_sip1" \
   --pstn-users "ms_open_id_pstn1"
 
 # 不允许被踢成员重新入会
 tmeet control kick \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --allow-rejoin=false \
   --users "open_id1,open_id2"
 ```
@@ -112,25 +112,25 @@ tmeet control kick \
 ```bash
 # 将等候室成员移入会议
 tmeet control waiting-room \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --operate-type enter-meeting \
   --users "open_id1,open_id2"
 
 # 将会中成员移回等候室
 tmeet control waiting-room \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --operate-type back-to-waiting \
   --users "open_id1,open_id2"
 
 # 将等候室成员移出（踢出会议），不允许再次加入
 tmeet control waiting-room \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --operate-type expel \
   --users "open_id1,open_id2"
 
 # 将等候室成员移出，允许再次加入会议
 tmeet control waiting-room \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --operate-type expel \
   --allow-rejoin \
   --users "open_id1,open_id2"
@@ -138,14 +138,14 @@ tmeet control waiting-room \
 # 将等候室成员移出，显式不允许再次加入会议
 # 注意：bool 类型显式设为 false 时必须使用等号语法 --allow-rejoin=false，不能写成 --allow-rejoin false
 tmeet control waiting-room \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --operate-type expel \
   --allow-rejoin=false \
   --users "open_id1,open_id2"
 
 # 同时操作 sip 设备和 pstn 设备
 tmeet control waiting-room \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --operate-type expel \
   --sip-users "ms_open_id_sip1" \
   --pstn-users "ms_open_id_pstn1"

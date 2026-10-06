@@ -127,23 +127,23 @@ tmeet meeting create \
 
 ```bash
 # 修改会议主题
-tmeet meeting update --meeting-id "100000000" --subject "新主题"
+tmeet meeting update --meeting-id "6953553464429888300" --subject "新主题"
 
 # 修改时间
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --start "2026-04-10T15:00:00+08:00" \
   --end "2026-04-10T16:00:00+08:00"
 
 # 修改入会限制并开启等候室
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --join-type 3 \
   --waiting-room
 
 # 修改周期规则（必须传 --meeting-type 1）
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --meeting-type 1 \
   --subject "每周站会（新主题）" \
   --recurring-type 2 \
@@ -152,7 +152,7 @@ tmeet meeting update \
 
 # 只修改周期性会议中的某一场子会议时间（不修改周期规则）
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --meeting-type 1 \
   --sub-meeting-id "200000001" \
   --start "2026-04-17T10:00:00+08:00" \
@@ -160,25 +160,25 @@ tmeet meeting update \
 
 # 在原邀请列表上追加成员
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id4,open_id5" \
   --invitees-type add
 
 # 从原邀请列表移除指定成员
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id1" \
   --invitees-type remove
 
 # 整体覆盖邀请列表
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id1,open_id2,open_id3" \
   --invitees-type replace
 
 # 显式关闭音频水印 / 自动文字转写（注意必须使用 = 形式传 false）
 tmeet meeting update \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --audio-watermark=false \
   --auto-asr=false
 ```
@@ -216,16 +216,16 @@ tmeet meeting update \
 
 ```bash
 # 取消普通会议
-tmeet meeting cancel --meeting-id "100000000"
+tmeet meeting cancel --meeting-id "6953553464429888300"
 
 # 取消周期性会议的某个子会议
 tmeet meeting cancel \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --sub-meeting-id "200000001"
 
 # 取消整场周期性会议
 tmeet meeting cancel \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --meeting-type 1
 ```
 
@@ -243,7 +243,7 @@ tmeet meeting cancel \
 
 ```bash
 # 通过会议 ID 查询（优先级更高）
-tmeet meeting get --meeting-id "100000000"
+tmeet meeting get --meeting-id "6953553464429888300"
 
 # 通过会议码查询
 tmeet meeting get --meeting-code "123456789"
@@ -424,11 +424,11 @@ tmeet meeting search \
 
 ```bash
 # 获取会议受邀者列表
-tmeet meeting invitees-list --meeting-id "100000000"
+tmeet meeting invitees-list --meeting-id "6953553464429888300"
 
 # 分页获取（翻下一页）
 tmeet meeting invitees-list \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --page-token "<next_page_token>" \
   --page-size 30
 ```
@@ -457,12 +457,12 @@ tmeet meeting invitees-list \
 ```bash
 # 通过英文逗号分隔传入多个 open_id
 tmeet meeting invitees-add \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id1,open_id2"
 
 # 重复传入 --invitees 参数
 tmeet meeting invitees-add \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id1" \
   --invitees "open_id2"
 ```
@@ -488,7 +488,7 @@ tmeet meeting invitees-add \
 
 ```bash
 tmeet meeting invitees-remove \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id1,open_id2"
 ```
 
@@ -511,7 +511,7 @@ tmeet meeting invitees-remove \
 
 ```bash
 tmeet meeting invitees-replace \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --invitees "open_id1,open_id2,open_id3"
 ```
 
