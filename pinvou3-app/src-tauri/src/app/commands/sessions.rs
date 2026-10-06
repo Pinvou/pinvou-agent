@@ -225,9 +225,12 @@ pub(crate) const SESSION_MESSAGE_CONTRACT_LINES: [&str; 2] = [
 ];
 
 /// Strip a leading received-message sender block and return the remaining
-/// body. Unparseable or tampered lookalikes return the input unchanged (the
-/// same tolerance as the JS splitter). Used by auto-titling so a session
-/// woken by a delivered message is never named after the sender contract.
+/// body. Unparseable or tampered lookalikes return the input unchanged
+/// (tolerance mirrors the JS splitter's dirty-data arms; one deliberate
+/// divergence: the Rust side is not CRLF-tolerant — unreachable today, the
+/// engine's persistence is LF-normalized). Used by auto-titling so a
+/// session woken by a delivered message is never named after the sender
+/// contract.
 pub(crate) fn strip_session_message_block(text: &str) -> &str {
     // Mirror of the JS splitter's 64 KB JSON-line pre-check, counted in
     // UTF-16 code units to match the JS string `length` exactly.
@@ -255,9 +258,6 @@ pub(crate) fn strip_session_message_block(text: &str) -> &str {
     };
     if !value.is_object() {
         return text;
-    }
-    if rest.find('\n').is_none() {
-        return "";
     }
     if after.is_empty() {
         return "";
@@ -2074,4 +2074,51 @@ mod web_projection_tests {
             "no host path component may cross the web boundary"
         );
     }
+}
+/// Round-4 B3': the titler strips the message block OUTERMOST-first —
+/// a delivered message wraps a body that may itself start with a
+/// mention block. Feeding [message][mention][text] through
+/// first_send_title_source must yield exactly `text`; swapping the
+/// strip order anywhere resurrects the round-3 sidebar-title bug.
+#[test]
+fn first_send_title_source_strips_message_then_mention() {
+    let mention_block = format!(
+        "{SESSION_MENTION_BLOCK_HEADER}\n{}\n\n",
+        ["[\"src0001\"]"].join("\n")
+    );
+    // A genuine mention block: header + its contract lines + JSON array.
+    let mention_inner = [
+        SESSION_MENTION_BLOCK_HEADER.to_string(),
+        SESSION_MENTION_CONTRACT_LINES
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "[{\"sessionId\":\"src0001\",\"title\":\"t\"}]".to_string(),
+        String::new(),
+    ]
+    .join("\n");
+    let message_inner = [
+        SESSION_MESSAGE_BLOCK_HEADER.to_string(),
+        SESSION_MESSAGE_CONTRACT_LINES
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        "{\"sessionId\":\"src0001\",\"title\":\"t\"}".to_string(),
+        String::new(),
+    ]
+    .join("\n");
+    // Each inner block ends with the blank separator line (the join of a
+    // trailing empty element yields one newline; the block contract needs
+    // the JSON line + blank line before what follows).
+    let message_inner = format!("{message_inner}\n");
+    let mention_inner = format!("{mention_inner}\n");
+    let wrapped = format!("{message_inner}{mention_inner}真正的正文");
+    let _ = &mention_block;
+    assert_eq!(
+        first_send_title_source(&wrapped, None),
+        "真正的正文",
+        "both blocks strip outermost-first, leaving the body"
+    );
 }

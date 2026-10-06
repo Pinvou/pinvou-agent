@@ -77,6 +77,17 @@ test('CRLF-normalized history still parses (header, contract lines, blank line)'
   assert.equal(split.text, '正文\n');
 });
 
+test('auto-title strip ORDER (round-4 B3\'): the message block strips outermost-first, before the mention block, in both bridges', () => {
+  for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
+    const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    const message = source.indexOf('splitMessage(titleText)');
+    const mention = source.indexOf('splitMention(titleText)');
+    assert.ok(message !== -1, `${rel}: the message strip must exist`);
+    assert.ok(mention !== -1, `${rel}: the mention strip must exist`);
+    assert.ok(message < mention, `${rel}: the message block must strip BEFORE the mention block`);
+  }
+});
+
 test('auto-title contract: both bridges strip the received-message block via the same window-global parser', () => {
   for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
     const source = readFileSync(new URL(rel, import.meta.url), 'utf8');

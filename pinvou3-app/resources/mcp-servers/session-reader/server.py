@@ -979,8 +979,12 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
 
     Idempotency (contract §6): with an idempotency_key the spool file name is the
     sha256 of "<from_session>|<to_session>|<idempotency_key>", so a retried call
-    overwrites the same pending file instead of enqueuing a duplicate delivery;
-    a key without from_session is rejected so the namespace is never global.
+    overwrites (replaces) the same pending file instead of enqueuing a duplicate
+    delivery; a key without from_session is rejected so the namespace is never
+    global. from_session is a claimable parameter (existence-checked, never
+    bound to the calling session): an honest retry is collision-free, a caller
+    naming a victim as sender replaces the victim's pending message — the
+    unauthenticated-sender boundary, disclosed in the contract.
     """
     to_session = str(to_session or "").strip()
     text = str(text or "").strip()
@@ -1030,6 +1034,13 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
     else:
         spool_id = uuid.uuid4().hex
     target = os.path.join(spool_dir, "%s.json" % spool_id)
+    done_marker = os.path.join(spool_dir, ".done", "%s.json" % spool_id)
+    # Truthful duplicate answer (review M5, round-4 C5 answer-first): a
+    # done-marker from an earlier delivery of the same idempotency identity
+    # wins over the pending-file probe — consulted BEFORE the spool rewrite,
+    # so an already-delivered retry answers "delivered" without touching the
+    # spool (and cannot fail with a spurious not-writable error).
+    already_delivered = os.path.exists(done_marker)
     duplicate = os.path.exists(target)
     payload = _spool_payload(
         spool_id,
@@ -1054,11 +1065,6 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
             "(multibyte text counts bytes, not characters — shorten the message)"
             % (MAX_MESSAGE_SPOOL_BYTES // 1024)
         )
-    # Truthful duplicate answer (review M5): a done-marker from an earlier
-    # delivery of the same idempotency identity wins over the pending-file
-    # probe — the marker means the message already landed (the watcher
-    # suppresses redelivery), and answering "fresh pending" here would lie.
-    already_delivered = os.path.exists(os.path.join(done_dir, "%s.json" % spool_id))
     try:
         # Atomic write (tmp + rename): the watcher must never observe a torn file.
         fd, tmp = tempfile.mkstemp(dir=spool_dir, suffix=".tmp")
@@ -1096,6 +1102,10 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
             "session (rendered there as a sender card, audited by the app); "
             "delivery is steered into the target's current turn, or starts a "
             "new turn there when idle."
+            if not duplicate else
+            "A pending message with this same idempotency identity already "
+            "existed; it has been REPLACED by this one (same spool file) — "
+            "only the latest body will deliver."
         ),
     }, None
 
