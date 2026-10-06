@@ -17,7 +17,11 @@
 //! - every delivery writes an audit record into both sessions' workspaces
 //!   (`assistant::audit`, contract §5 L1 requirement), and every quarantine
 //!   (poison, oversize, retry exhaustion, pending-cap excess) audits the
-//!   target session when its id is valid — every disposition is audited;
+//!   target session when its id is valid. Three carve-outs where no
+//!   workspace audit exists (the log line is the trace): an unparseable
+//!   record, an invalid-target record, and a valid target whose workspace
+//!   directory no longer exists (a deleted target's audit append cannot
+//!   create parents);
 //! - a delivered idempotency-keyed message leaves a marker under
 //!   `spool/.done/<file-stem>` (the stem is the sender+target-scoped key
 //!   hash), so a retried tool call cannot deliver twice across watcher
@@ -605,6 +609,22 @@ impl RetryState {
 /// (same idempotency identity quarantined before), the rename target is
 /// unique-ified with a timestamp instead of silently overwriting the earlier
 /// evidence file.
+/// Re-read a spool record for audit purposes, BOUNDED (round-5 A2): the
+/// pipeline has already refused files over `MAX_SPOOL_FILE_BYTES`, so the
+/// audit re-read must not load a multi-GB hostile blob whole — oversize (or
+/// unreadable) files audit by name+error only.
+fn read_record_for_audit(path: &Path) -> Option<SpooledMessage> {
+    let oversize = std::fs::metadata(path)
+        .map(|meta| meta.len() > MAX_SPOOL_FILE_BYTES)
+        .unwrap_or(true);
+    if oversize {
+        return None;
+    }
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
 fn quarantine(path: &Path) {
     let _ = std::fs::create_dir_all(failed_dir());
     let mut target = failed_dir().join(path.file_name().unwrap_or_default());
@@ -676,9 +696,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 "[messaging] quarantining {name}: pending-file ceiling {} exceeded",
                 MAX_PENDING_FILES
             );
-            let record = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<SpooledMessage>(&bytes).ok());
+            let record = read_record_for_audit(&path);
             if let Some(record) = record.as_ref() {
                 audit_quarantine(
                     store,
@@ -713,9 +731,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
             Processed::Poison(error) => {
                 retries.clear(&name);
                 log::warn!("[messaging] quarantining {name}: {error:#}");
-                let record = std::fs::read(&path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<SpooledMessage>(&bytes).ok());
+                let record = read_record_for_audit(&path);
                 audit_quarantine(store, record.as_ref(), &format!("{error:#}"));
                 quarantine(&path);
             }
@@ -726,9 +742,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         "[messaging] quarantining {name} after {count} delivery attempts: {error:#}"
                     );
                     retries.clear(&name);
-                    let record = std::fs::read(&path)
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<SpooledMessage>(&bytes).ok());
+                    let record = read_record_for_audit(&path);
                     audit_quarantine(
                         store,
                         record.as_ref(),
@@ -942,6 +956,69 @@ mod spool_pipeline_tests {
         assert_eq!(*fake.calls.borrow(), 0, "poison never reaches delivery");
         assert!(failed_dir().join("bad.json").exists());
         assert!(!spool.join("bad.json").exists());
+    }
+
+    /// Round-5 B1: the already_delivered_skip audit is pinned — pre-write a
+    /// done marker, run the poll, assert the skip's audit line lands in the
+    /// target workspace (and no second delivery happens).
+    #[tokio::test]
+    async fn done_marker_skip_writes_an_audit_record() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("dup.json"), record_json("dup", Some("k1"))).unwrap();
+        let sessions = sessions_store();
+        let exec_root = sessions.session_roots("tgt0001").expect("roots").execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(done_dir().join("dup.json"), b"").unwrap();
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        assert_eq!(*fake.calls.borrow(), 0, "the marker suppresses delivery");
+        let content =
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
+        assert!(
+            content.contains("\"already_delivered_skip\""),
+            "the skip disposition must be audited: {content}"
+        );
+    }
+
+    /// Round-5 B2: the retry-exhaustion quarantine's audit is pinned — a
+    /// persistently failing delivery with a pre-seeded attempt budget
+    /// quarantines and leaves the failure's audit line.
+    #[tokio::test]
+    async fn retry_exhaustion_quarantine_writes_an_audit_record() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("die.json"), record_json("die", None)).unwrap();
+        let sessions = sessions_store();
+        let exec_root = sessions.session_roots("tgt0001").expect("roots").execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let fake = FakeDelivery {
+            outcome: Err("rewind gate".into()),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        retries.attempts.insert(
+            "die.json".into(),
+            (
+                MAX_DELIVERY_ATTEMPTS - 1,
+                Instant::now() - Duration::from_secs(60),
+            ),
+        );
+        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        let content =
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
+        assert!(
+            content.contains("delivery failed after")
+                && content.contains("\"outcome\":\"quarantined\""),
+            "the exhaustion disposition must be audited: {content}"
+        );
     }
 
     /// Round-4 B2': the audit trail is a claimed working gate — pin the
