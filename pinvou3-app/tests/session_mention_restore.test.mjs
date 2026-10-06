@@ -71,7 +71,7 @@ function loadChatFeature(root) {
   return root.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
 }
 
-function makeHarness() {
+function makeHarness({ invoke: invokeOverride } = {}) {
   const state = {
     activeSessionId: 'A',
     composerDraft: '',
@@ -85,10 +85,11 @@ function makeHarness() {
   const sessionStates = {};
   const root = makeVmRoot();
   const factory = loadChatFeature(root);
+  const invoke = invokeOverride || (() => Promise.resolve({}));
   const api = factory({
     state,
     sessionStates,
-    invoke: () => Promise.resolve({}),
+    invoke,
     notify() {},
     bt(key) { return BT[key] === undefined ? key : BT[key]; },
     runSyncOnSession(sid, fn) { fn(); },
@@ -277,4 +278,44 @@ test('stripMentionBlockForComposerRestore: strips the block, keeps the body, emp
   assert.equal(shared.stripMentionBlockForComposerRestore(BLOCK_AND_BODY), '把配色用到 PPT 里');
   assert.equal(shared.stripMentionBlockForComposerRestore(REFS_ONLY_BLOCK), '');
   assert.equal(shared.stripMentionBlockForComposerRestore('纯文本'), '纯文本');
+});
+
+test('a steer_dropped inside the zap withdraw window recovers instead of going silent (round-10 M2)', async () => {
+  // Reproduces the review's interleaving: runQueuedZap splices the chip and
+  // awaits withdraw_steer; a chat:steer_dropped lands inside that window.
+  // Before the fix settleSteerDropped's chip-absent branch silently consumed
+  // the withdrawn registration (notices: [], queued: 0, composer: "").
+  let releaseWithdraw;
+  const withdrawPending = new Promise((resolve) => { releaseWithdraw = resolve; });
+  const invokeCalls = [];
+  const { state, notices, api } = makeHarness({
+    invoke: (name, args) => {
+      invokeCalls.push(name);
+      if (name === 'withdraw_steer') return withdrawPending;
+      return Promise.resolve({});
+    },
+  });
+  const item = { id: 'q1', text: REFS_ONLY_BLOCK, payloadText: null, displayText: REFS_ONLY_BLOCK, steered: true, steerId: 'st-9', attachments: [] };
+  state.queued = [item];
+
+  const run = api.interruptAndSendQueued('A', 'q1');
+  while (!invokeCalls.includes('withdraw_steer')) await new Promise((r) => setTimeout(r, 1));
+  // The dropped event lands mid-withdraw: the claim must route it to the
+  // zap recovery (a refs-only message restores nothing → the lost variant).
+  api.settleSteerDropped('A', 'st-9');
+  releaseWithdraw('not_pending');
+  const verdict = await run;
+
+  assert.equal(verdict, true, 'the zap itself reports handled (skip-resend)');
+  assert.deepEqual(state.queued, [], 'the proven-dropped chip must not be re-queued');
+  assert.equal(state.composerDraft, '', 'a refs-only message restores nothing');
+  assert.ok(notices().includes('⚠️ steerFailedLost'), `the lost variant must fire: ${JSON.stringify(notices())}`);
+  assert.equal(
+    notices().filter((t) => t.includes('steerFailedLost')).length, 1,
+    'exactly one recovery notice — no duplicate from the watchdog expiry',
+  );
+  // The reconcile watchdog was armed by settleZapSkipResend; its expiry is
+  // silent now (the registration was consumed by the recovery). Clear it so
+  // the test process does not wait out the 60s window.
+  api.clearOutcomeReconcileWatchdog('A', 'st-9');
 });
