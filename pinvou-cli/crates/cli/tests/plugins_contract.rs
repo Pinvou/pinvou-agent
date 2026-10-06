@@ -373,6 +373,38 @@ fn plugins_usage_errors_exit_two() {
         ])
         .contains("non-empty KEY")
     );
+    // Round-42 review: the value must look like an env-var NAME — a pasted
+    // literal secret is refused at parse (and never echoed) instead of
+    // riding argv until a missing-variable failure later.
+    let pasted = usage_error(&[
+        "pinvou",
+        "plugins",
+        "tools",
+        "install",
+        "w",
+        "--secret",
+        "api_key=sk-pasted-literal-1234567890",
+    ]);
+    assert!(
+        pasted.contains("environment variable"),
+        "a pasted literal must be refused as a name shape error: {pasted}"
+    );
+    assert!(
+        !pasted.contains("sk-pasted-literal"),
+        "the refusal must not echo the pasted secret: {pasted}"
+    );
+    assert!(
+        !usage_error(&[
+            "pinvou",
+            "plugins",
+            "tools",
+            "install",
+            "w",
+            "--secret",
+            "api_key=9LEADING_DIGIT"
+        ])
+        .is_empty()
+    );
     assert!(
         usage_error(&[
             "pinvou",
@@ -1235,9 +1267,11 @@ fn oauth_login_guards_and_cancel_behaviour() {
 /// with exit 1 immediately.
 #[test]
 fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("tools-secret-no-echo");
-    let (message, code) = run_err(&[
+    // Round-42 review: a value that cannot be an env-var NAME (the dashes
+    // here) is now refused at PARSE as a shape error instead of sailing to
+    // the execute-time missing-variable failure — the no-echo contract is
+    // pinned at the layer that now fires.
+    let message = usage_error(&[
         "pinvou",
         "plugins",
         "tools",
@@ -1246,18 +1280,19 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
         "--secret",
         "AMAP_KEY=pasted-plaintext-secret-not-a-variable",
     ]);
-    assert_eq!(code, ExitCode::Failed);
     assert!(
         !message.contains("pasted-plaintext-secret-not-a-variable"),
         "the diagnostics must not echo the pasted value: {message}"
     );
+    // The parse-layer refusal carries the shape rule (the config key is no
+    // longer named — the split never happened at this layer).
     assert!(
-        message.contains("AMAP_KEY"),
-        "the diagnostics must name the config key: {message}"
+        message.contains("ENV_VAR_NAME must be an environment variable NAME"),
+        "the refusal names the shape rule: {message}"
     );
     assert!(
-        message.contains("KEY=ENV_VAR_NAME"),
-        "the diagnostics must carry the KEY=ENV_VAR_NAME hint: {message}"
+        message.contains("KEY=ENV_VAR_NAME") || message.contains("--secret"),
+        "{message}"
     );
 }
 
@@ -2318,20 +2353,27 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
     // poisoned scopes/initialized entry for the refused id — such an entry
     // could never be removed through the guarded writers again.
     let file = disabled_bundles_json(home.path());
+    // Round-42 review: the shape must EXIST, not merely be absent-of-value —
+    // the old `.unwrap_or(true)` arms passed a regression that persisted a
+    // keyless `{}`, silently discarding the user's toggle state the test
+    // claims to pin (the helper above already fails on a deleted or
+    // corrupt file, so the no-key file was the remaining hole).
+    let scopes = file
+        .get("scopes")
+        .and_then(|scopes| scopes.as_object())
+        .expect("the persisted state must keep its scopes shape");
     assert!(
-        file["scopes"]
-            .as_object()
-            .map(|scopes| scopes
-                .values()
-                .all(|ids| ids.as_array().unwrap().is_empty()))
-            .unwrap_or(true),
+        scopes
+            .values()
+            .all(|ids| ids.as_array().is_some_and(|ids| ids.is_empty())),
         "a refused toggle must not persist a disabled list: {file}"
     );
+    let initialized = file
+        .get("initialized")
+        .and_then(|ids| ids.as_array())
+        .expect("the persisted state must keep its initialized shape");
     assert!(
-        file["initialized"]
-            .as_array()
-            .map(|ids| ids.is_empty())
-            .unwrap_or(true),
+        initialized.is_empty(),
         "a refused toggle must not initialize a scope: {file}"
     );
     assert!(

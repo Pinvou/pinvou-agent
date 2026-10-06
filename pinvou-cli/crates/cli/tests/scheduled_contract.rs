@@ -1002,6 +1002,24 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
     assert_eq!(all["truncated"].as_bool(), Some(true));
     let all = run_json(&["scheduled", "runs-all"]);
     assert_eq!(all["truncated"].as_bool(), Some(false));
+
+    // Round-42 review: the +1 truncation probe must not overflow —
+    // usize::MAX is a usage error (debug builds used to panic with exit 101,
+    // release builds silently read zero runs with `truncated: false`).
+    let message =
+        assert_validation_fail(&["scheduled", "runs-all", "--limit", "18446744073709551615"]);
+    assert!(
+        message.contains("too large"),
+        "the refusal names the bound: {message}"
+    );
+    let message = assert_validation_fail(&[
+        "scheduled",
+        "runs",
+        &task_id,
+        "--limit",
+        "18446744073709551615",
+    ]);
+    assert!(message.contains("too large"), "{message}");
     let _ = home;
 }
 

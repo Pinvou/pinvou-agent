@@ -1642,7 +1642,8 @@ fn memory_add_work_context_over_the_cap_reports_the_truncation() {
         &content,
     ]);
     assert!(
-        human.contains("exceed the 120-character cap") && human.contains("only the first 120"),
+        human.contains("exceed the 120-character cap")
+            && human.contains("120 of the submitted characters were stored"),
         "the human output must disclose the truncation: {human}"
     );
 }
@@ -1744,7 +1745,8 @@ fn memory_update_preferences_over_the_cap_reports_the_truncation() {
         &content,
     ]);
     assert!(
-        human.contains("exceed the 120-character cap") && human.contains("only the first 120"),
+        human.contains("exceed the 120-character cap")
+            && human.contains("120 of the submitted characters were stored"),
         "the human output must disclose the truncation: {human}"
     );
 

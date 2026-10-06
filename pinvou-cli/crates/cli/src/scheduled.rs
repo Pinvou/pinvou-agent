@@ -3143,10 +3143,19 @@ fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     let sessions = open_sessions()?;
     let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
+    // Round-42 review: `+1` for the exact-truncation probe must not overflow
+    // — `--limit 18446744073709551615` would panic in debug builds (exit 101)
+    // and silently read zero runs with `truncated: false` in release.
+    let probe_limit = effective_limit.checked_add(1).ok_or_else(|| {
+        CliError::usage(format!(
+            "--limit {effective_limit} is too large (the maximum is {})",
+            usize::MAX - 1
+        ))
+    })?;
     // Read one past the cap so `truncated` is a fact, not an assumption:
     // the foundation truncates the sortable listing BEFORE reading, so the
     // extra record costs at most one more stat.
-    let mut records = store_holder.list_runs(id, Some(effective_limit + 1))?;
+    let mut records = store_holder.list_runs(id, Some(probe_limit))?;
     let truncated = records.len() > effective_limit;
     records.truncate(effective_limit);
     let names = task_name_map(std::slice::from_ref(&def));
@@ -3177,6 +3186,13 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     let sessions = open_sessions()?;
     let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
+    // Round-42 review: same overflow guard as `runs` above.
+    let probe_limit = effective_limit.checked_add(1).ok_or_else(|| {
+        CliError::usage(format!(
+            "--limit {effective_limit} is too large (the maximum is {})",
+            usize::MAX - 1
+        ))
+    })?;
     let defs = store_holder.list_defs()?;
     let mut records: Vec<serde_json::Value> = Vec::new();
     let mut names = task_name_map(&defs);
@@ -3201,7 +3217,7 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         // with a limit set, an active run id beyond the per-task top-K no
         // longer suppresses an equal archived-twin id below — a layout only
         // a hand-crafted store can produce, since run ids are fresh per run.
-        for run in store_holder.list_runs(&task_id, Some(effective_limit + 1))? {
+        for run in store_holder.list_runs(&task_id, Some(probe_limit))? {
             active_keys.insert((
                 task_id.clone(),
                 str_field(&run, "id").unwrap_or("").to_owned(),
@@ -3440,6 +3456,74 @@ fn open_sessions_for_enrichment() -> Option<SessionStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-42 review: the sidecar stamp guard is the cross-surface
+    /// headline fix (rounds 40/41) but had no test — deleting the
+    /// `stamp.changed` check from `write_json_atomic_checked` passed the
+    /// whole suite. These pin capture/changed in both directions and the
+    /// refuse-instead-of-clobber behavior with its stable marker.
+    #[test]
+    fn sidecar_stamp_notices_a_foreign_write_and_the_write_refuses() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-stamp-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("registry.json");
+        std::fs::write(&path, br#"{"v":1}"#).unwrap();
+
+        let stamp = SidecarStamp::capture(&path);
+        assert!(
+            !stamp.changed(&path),
+            "an untouched file must not read as changed"
+        );
+
+        // Foreign write with a DIFFERENT length: detected by length even on
+        // a coarse-mtime filesystem where the nanos never move.
+        std::fs::write(&path, br#"{"v":1,"foreign":true}"#).unwrap();
+        assert!(stamp.changed(&path), "a length change must be detected");
+
+        // Same length, moved mtime: detected by the mtime half.
+        std::fs::write(&path, br#"{"v":2}"#).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let moved = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        file.set_modified(moved).unwrap();
+        drop(file);
+        assert!(
+            stamp.changed(&path),
+            "a same-length write with a moved mtime must be detected"
+        );
+
+        // created↔deleted transitions are observed both ways.
+        std::fs::remove_file(&path).unwrap();
+        assert!(stamp.changed(&path), "a deletion must be detected");
+        std::fs::write(&path, br#"{"v":1}"#).unwrap();
+
+        // The checked writer refuses instead of clobbering, naming the
+        // stable marker and leaving the file untouched. The stamp is
+        // captured on an absent path, so the existing file reads as created.
+        let absent = SidecarStamp::capture(&root.join("absent.json"));
+        let error = write_json_atomic_checked(&path, &serde_json::json!({"v": 999}), &absent)
+            .expect_err("a stamp captured on an absent file must refuse an existing file");
+        assert!(
+            error.to_string().contains("scheduled_store_busy"),
+            "the refusal carries the stable marker: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"v":1}"#,
+            "the refused write must not have touched the file"
+        );
+
+        // And a fresh stamp lets the write through.
+        let stamp = SidecarStamp::capture(&path);
+        write_json_atomic_checked(&path, &serde_json::json!({"v": 2}), &stamp).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["v"], 2, "a fresh stamp must allow the write");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn parse(arguments: &[&str]) -> Result<ScheduledCommand, CliError> {
         let mut owned: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();

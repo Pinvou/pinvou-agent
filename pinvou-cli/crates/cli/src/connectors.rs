@@ -2678,6 +2678,24 @@ fn member_path_is_safe(entry: &str) -> bool {
         .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
+/// Round-42 review: resolve `tar` explicitly on Windows. The locked
+/// Windows connector payloads are `.zip` archives, extractable only by a
+/// bsdtar — `C:\Windows\System32\tar.exe`. Resolving the bare name
+/// through PATH lets GNU tar (MSYS2/Git-for-Windows users) win, which
+/// cannot read zip at all, so `connectors ensure-cli` failed where the
+/// GUI (zip crate) succeeds. Off-Windows the behavior is unchanged: the
+/// name resolves through PATH as before.
+fn tar_program() -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let system_tar = std::path::Path::new(r"C:\Windows\System32\tar.exe");
+        if system_tar.is_file() {
+            return Command::new(system_tar);
+        }
+    }
+    Command::new("tar")
+}
+
 fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), CliError> {
     // `--` ends option parsing on every tar the CLI runs on (bsdtar and GNU
     // tar alike): without it, a member name that begins with a dash would be
@@ -2688,7 +2706,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // misplaced `--` changes the parse (`-xOf -- archive member` opens an
     // archive named "--"), so it is placed as a separator after the archive
     // operand in both child constructions (see `tar_separated_operands`).
-    let mut list = Command::new("tar");
+    let mut list = tar_program();
     list.arg("-tf")
         .arg(archive)
         .arg("--")
@@ -2757,7 +2775,7 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // MAX_BINARY_BYTES)`. It also means tar never creates paths itself, so
     // the member name cannot steer where the file lands: the caller's
     // `target` dir and the requested `member` name do.
-    let mut extract = Command::new("tar");
+    let mut extract = tar_program();
     extract
         .arg("-xOf")
         .arg(archive)
