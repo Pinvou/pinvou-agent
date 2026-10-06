@@ -795,7 +795,10 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
   // Wiring pins: the welcome-card handler and both ChatBubble onSend sites
   // (plan-card options, memory candidates) route through the shared sender —
   // deleting any of them turns this red.
-  assert.match(source, /void sendWithSessionRefs\(q\);/, 'welcome-card onSend wiring');
+  // Main-side evolution wraps the welcome-card send in error handling
+  // (Promise.resolve(...).catch) around the shared sender — either form
+  // routes through sendWithSessionRefs, never a bare sendChatMessage.
+  assert.match(source, /(?:void\s+|Promise\.resolve\()sendWithSessionRefs\(q\)/, 'welcome-card onSend wiring');
   const onSendSites = source.match(/onSend=\{sendWithSessionRefs\}/g) || [];
   assert.equal(onSendSites.length, 2, 'plan-option and memory-candidate bubbles both route through it');
   // No secondary surface dispatches sendChatMessage directly anymore.

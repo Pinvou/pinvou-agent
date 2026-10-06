@@ -58,7 +58,8 @@ import {
 } from '../attachments/paste-image.js';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
-import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
+import { SessionMentionChips, SessionMentionMenu, SessionMentionCards, SessionMessageCard } from './SessionMentionControls.jsx';
+import { splitSessionMessageBlock } from './session-message-block.js';
 import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
 import {
   buildSessionMentionBlock,
@@ -4180,7 +4181,11 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
   // users cannot accidentally edit the JSON contract line. Parsed refs pass
   // the shared choke point — dirty history (e.g. thousands of refs) must not
   // blow up the cards UI or the edit-resend rebuild.
-  const mentionSplit = splitSessionMentionBlock(item.text);
+  // A delivered cross-session message (features/messaging) carries the
+  // sender header block; parse it first so the body feeds the mention
+  // splitter and the bubble renders the sender card above the text.
+  const messageSplit = splitSessionMessageBlock(item.text);
+  const mentionSplit = splitSessionMentionBlock(messageSplit.text);
   const mentionRefs = dedupeSessionRefs(mentionSplit.refs);
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
@@ -4249,6 +4254,14 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
+            {messageSplit.sender && (
+              <SessionMessageCard
+                sender={messageSplit.sender}
+                knownSessionIds={knownSessionMentionIds}
+                onOpenSession={onOpenSessionMention}
+                copy={t.uiSessionMessage}
+              />
+            )}
             <SessionMentionCards
               refs={mentionRefs}
               knownSessionIds={knownSessionMentionIds}
