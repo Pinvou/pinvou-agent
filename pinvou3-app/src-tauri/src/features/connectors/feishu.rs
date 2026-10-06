@@ -484,7 +484,10 @@ mod tests {
     /// 版本号之后的构建信息尾巴不参与解析。
     #[test]
     fn parses_lark_versions() {
-        assert_eq!(parse_lark_version("lark-cli version 1.0.65"), Some((1, 0, 65)));
+        assert_eq!(
+            parse_lark_version("lark-cli version 1.0.65"),
+            Some((1, 0, 65))
+        );
         assert_eq!(
             parse_lark_version("lark-cli version 1.0.95 (build 2026-09-30T00:00:00Z abc1234)"),
             Some((1, 0, 95)),
