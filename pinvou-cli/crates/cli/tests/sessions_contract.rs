@@ -468,6 +468,36 @@ fn sessions_delete_removes_the_session_agent_index_record() {
 }
 
 #[test]
+fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-corrupt-index");
+    let id = create_session_fixture();
+
+    // Round-40 review: this process is a second writer of the index, so a
+    // file it cannot parse must REFUSE the record cleanup instead of the
+    // boot-owner bless-and-replace — whose empty-table persist dropped
+    // every other record. The corrupt file is left in place for repair.
+    let agents_path = home.root.join("session-agents.json");
+    std::fs::write(&agents_path, "{not json").unwrap();
+
+    let outcome = run(&["pinvou", "sessions", "delete", &id, "--yes"]);
+    assert!(
+        outcome.is_err(),
+        "the corrupt index must refuse the record cleanup"
+    );
+    let error = format!("{}", outcome.unwrap_err());
+    assert!(
+        error.contains("session-agents.json"),
+        "the refusal must name the store: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&agents_path).unwrap(),
+        "{not json",
+        "the corrupt index must be left for repair, not replaced"
+    );
+}
+
+#[test]
 fn sessions_show_limits_and_exports_transcript() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("show-export");

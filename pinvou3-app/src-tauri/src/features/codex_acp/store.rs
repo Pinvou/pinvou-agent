@@ -1215,6 +1215,43 @@ impl SessionAgentStore {
         Ok(())
     }
 
+    /// Second-process removal for the CLI's `sessions delete`
+    /// (round-40 review). The GUI lane above is always the boot-owner of
+    /// this store; the CLI is not, and the `load_or_empty` → `remove` →
+    /// `persist` sequence it used had two loss windows: a GUI session
+    /// creation landing between the CLI's load and persist was dropped
+    /// from the index by the whole-table persist, and an index that turned
+    /// corrupt was loaded as an EMPTY map whose persist threw away every
+    /// remaining record. Same discipline as the round-37 review closed for
+    /// `AcpConfigDefaultsStore`: cross-process section lock → fresh reload
+    /// → mutate → persist, and a corrupt index is REFUSED instead of being
+    /// replaced by an empty-table persist. A missing index returns
+    /// `Ok(())` without creating the file: `sessions delete` must not be
+    /// the thing that creates `session-agents.json` in a home that never
+    /// ran an ACP session.
+    pub fn remove_for_second_process(&self, session_id: &str) -> Result<()> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+        let lock_path = self.path.with_extension("json.lock");
+        let _section = super::cross_process_section_lock(&lock_path, "session-agents");
+        let raw = fs::read_to_string(&self.path)
+            .with_context(|| format!("读取 {} 失败", self.path.display()))?;
+        let mut fresh: HashMap<String, SessionAgentRecord> =
+            serde_json::from_str::<AgentStoreFile>(&raw)
+                .with_context(|| format!("解析 {} 失败", self.path.display()))?
+                .sessions;
+        fresh.remove(session_id);
+        {
+            let mut records = self.records.write();
+            *records = fresh;
+        }
+        self.persist()?;
+        // 同 `remove`：删除后清理权威 sidecar（幂等）。
+        remove_code_session_sidecar(&self.path, session_id);
+        Ok(())
+    }
+
     /// 回填缺失的原生代码会话 sidecar（启动自愈）。
     ///
     /// 两类来源：sidecar 持久化修复前构建创建的存量会话从未写过 sidecar；绑定时
@@ -1370,6 +1407,25 @@ impl AcpConfigDefaultsStore {
             .get(&backend)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Reload-backed read for the session-spawn path (round-40 review).
+    /// `get` answers from the boot-era memory map; the CLI's `code` family
+    /// rewrites `acp-agent-defaults.json` from a second process — the exact
+    /// second writer this store's section lock was built for — so a GUI
+    /// session created after that rewrite spawned with the STALE default
+    /// mode while every mutator already ran fresh. The reload reuses
+    /// [`Self::reload_into`]'s in-memory semantics WITHOUT the cross-process
+    /// section lock: a read needs no exclusion because the writers persist
+    /// by atomic rename, so a concurrent reader sees the old or the new
+    /// file whole, never torn — worst case it answers the pre-write
+    /// snapshot, which is exactly the staleness it exists to remove.
+    pub fn get_after_reload(&self, backend: AgentBackend) -> HashMap<String, String> {
+        {
+            let mut records = self.records.write();
+            Self::reload_into(&mut records, &self.path);
+        }
+        self.get(backend)
     }
 
     pub fn has_backend(&self, backend: AgentBackend) -> bool {

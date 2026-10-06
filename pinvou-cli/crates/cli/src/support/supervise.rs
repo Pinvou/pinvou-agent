@@ -87,7 +87,9 @@ pub fn install_signal_cleanup() {
 /// every Ctrl-C cleanup would ride the 5 s SIGKILL escalation — exactly the
 /// vendor-CLI-flushes-state case the grace window exists for. The child's
 /// mask is therefore reset EXPLICITLY, via a `pre_exec` closure running
-/// between fork and exec.
+/// between fork and exec; the same closure restores SIGPIPE's default
+/// disposition, which the Rust runtime sets to SIG_IGN process-wide and an
+/// exec preserves (round-40 review).
 ///
 /// Every supervised spawn site goes through this instead of a bare `spawn`.
 pub fn spawn_supervised(
@@ -97,14 +99,28 @@ pub fn spawn_supervised(
     {
         use std::os::unix::process::CommandExt;
         // SAFETY: the closure runs in the forked child before exec; it only
-        // calls sigprocmask with a zeroed-and-emptied set (no allocation, no
-        // locks held) and propagates the raw errno via the io::Result
-        // contract `pre_exec` requires.
+        // calls sigprocmask with a zeroed-and-emptied set and `signal` to
+        // restore SIGPIPE's default disposition (no allocation, no locks
+        // held) and propagates the raw errno via the io::Result contract
+        // `pre_exec` requires.
         unsafe {
             command.pre_exec(|| {
                 let mut empty: libc::sigset_t = std::mem::zeroed();
                 libc::sigemptyset(&mut empty);
                 if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Round-40 review: restore SIGPIPE's default disposition.
+                // The Rust runtime sets SIGPIPE to SIG_IGN process-wide,
+                // an IGNORED disposition survives exec, and std has no
+                // stable way to reset it — so without this, a vendor CLI
+                // whose own pipeline relies on default SIGPIPE death
+                // (`node … | head`, an npm wrapper chaining a filter)
+                // behaves differently under `pinvou` than standalone: the
+                // upstream write gets EPIPE instead of a signal kill and
+                // can spin or fail differently. SIG_DFL is async-signal-
+                // safe; the exec below resets everything else anyway.
+                if libc::signal(libc::SIGPIPE, libc::SIG_DFL) == libc::SIG_ERR {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -207,6 +223,18 @@ pub(crate) struct GroupGuard {
 impl GroupGuard {
     /// Wrap a pgid that `spawn_supervised` just registered.
     pub(crate) fn arm(pgid: u32) -> Self {
+        Self { pgid, armed: true }
+    }
+
+    /// Register a RAW-spawn child's group and wrap it. For sites that spawn
+    /// with `set_process_group` but not through `spawn_supervised` (voice's
+    /// ffmpeg/engine/ASR children): the registration this performs is the
+    /// same `register_child_group` the supervised spawn path uses, so the
+    /// interrupt watcher forwards to the group on every exit path without
+    /// each module keeping its own register/forget bracket (round-40 review
+    /// folded voice's private `SupervisedGroup` twin into this type).
+    pub(crate) fn register(pgid: u32) -> Self {
+        register_child_group(pgid);
         Self { pgid, armed: true }
     }
 
@@ -930,6 +958,46 @@ mod tests {
         assert!(
             exited.is_some(),
             "SIGTERM must reach a child spawned under a blocked spawner mask;              the pre_exec reset regressed"
+        );
+    }
+
+    /// The `pre_exec` SIGPIPE reset is load-bearing (round-40 review): the
+    /// Rust runtime sets SIGPIPE to SIG_IGN process-wide, an IGNORED
+    /// disposition survives exec, and std offers no stable reset — without
+    /// the pre_exec restore, a vendor CLI whose own pipeline relies on
+    /// default SIGPIPE death (`node … | head`) behaves differently under
+    /// `pinvou` than standalone. Linux publishes each process's
+    /// ignored-signal mask in `/proc/<pid>/status`; SIGPIPE is signal 13,
+    /// i.e. bit 13 (0x2000) of `SigIgn`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn spawned_children_start_with_default_sigpipe() {
+        use std::io::Read as _;
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg("grep '^SigIgn:' /proc/self/status");
+        command.stdout(std::process::Stdio::piped());
+        command.stderr(std::process::Stdio::null());
+        let mut child = spawn_supervised(&mut command).expect("spawn sh");
+        let mut output = String::new();
+        child
+            .stdout
+            .take()
+            .expect("piped stdout")
+            .read_to_string(&mut output)
+            .expect("read child stdout");
+        let _ = child.wait();
+        forget_child_group(child.id());
+        let line = output
+            .lines()
+            .find_map(|l| l.strip_prefix("SigIgn:"))
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned();
+        let mask = u64::from_str_radix(&line, 16).expect("hex SigIgn mask");
+        assert_eq!(
+            mask & (1 << libc::SIGPIPE),
+            0,
+            "supervised child must not inherit SIGPIPE=SIG_IGN (SigIgn={line})"
         );
     }
 

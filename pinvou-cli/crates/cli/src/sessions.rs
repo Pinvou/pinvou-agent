@@ -12,6 +12,18 @@
 //!   `set_hidden`, `is_pinned`, `is_hidden`, `delete`, `session_kind`),
 //!   the same calls the GUI commands make after their `State<'_, SessionStore>`
 //!   extraction.
+//!
+//! Boot retention caveat (round-40 review): `boot()` runs the durable
+//! retention sweep (`enforce_session_retention_locked`) BEFORE any read, so
+//! even read-only commands — `sessions list` included — can irreversibly
+//! evict over-cap unpinned sessions and reclaim orphan-aux directories
+//! exactly like the GUI's own boot does, with no per-eviction output (the
+//! `agent run` lane arms an eviction observer; the read commands do not).
+//! `headless_bridge::run_bare_host` refuses to boot the store for its
+//! status lanes for precisely this reason — a status command there must
+//! not carry the sweep. The read commands here keep the boot semantics for
+//! GUI parity ("same stores, same boot"); scripts that must not evict
+//! anything should keep the store under the per-kind cap or pin sessions.
 //! - timeline → `pinvou3_lib::platform::paths::session_timing_events` (the
 //!   path used by `features::assistant::timing::read_timeline`, which is
 //!   crate-private), parsed with the same tolerant one-JSON-object-per-line
@@ -820,27 +832,31 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // `backfill_missing_code_session_sidecars` runs over exactly
     // "record says code-session, sidecar missing" and re-creates
     // `sessions/<deleted-id>/code-session.json`, resurrecting a directory for a
-    // session that no longer exists. `SessionAgentStore::remove` also re-sweeps
+    // session that no longer exists. `remove_for_second_process` also re-sweeps
     // that sidecar, which is idempotent here.
     //
-    // The index file is only consulted when it exists: `remove` persists
-    // unconditionally, and a `sessions delete` in a home that never ran an ACP
-    // session must not be the thing that creates `session-agents.json`.
+    // Round-40 review: this process is a second writer of the index, so the
+    // removal runs under the store's cross-process section lock with a fresh
+    // reload instead of the whole-table `load_or_empty` snapshot (a GUI
+    // creation landing inside the window used to be dropped from the index,
+    // and a corrupt index used to be persisted back as an empty table). The
+    // index file is only consulted when it exists: a `sessions delete` in a
+    // home that never ran an ACP session must not be the thing that creates
+    // `session-agents.json`.
     let agents = SessionAgentStore::load_or_empty();
-    if agents.path().exists() {
-        agents.remove(id).map_err(|error| {
-            // The transcript is already gone, so this cannot roll back — but it
-            // must not be silent either (the next app boot would rebuild the
-            // ghost directory). Mirrors the GUI, which also propagates this
-            // failure after the delete has committed.
-            CliError::failed(format!(
-                "sessions delete({id}): the session was deleted but its record in {} could not \
-                 be removed ({error:#}); the desktop app will re-create \
-                 sessions/{id}/code-session.json on its next start until that record is gone",
-                agents.path().display()
-            ))
-        })?;
-    }
+    agents.remove_for_second_process(id).map_err(|error| {
+        // The transcript is already gone, so this cannot roll back — but it
+        // must not be silent either (the next app boot would rebuild the
+        // ghost directory). Mirrors the GUI, which also propagates this
+        // failure after the delete has committed. A corrupt index refuses
+        // here rather than being replaced by an empty-table persist.
+        CliError::failed(format!(
+            "sessions delete({id}): the session was deleted but its record in {} could not \
+             be removed ({error:#}); the desktop app will re-create \
+             sessions/{id}/code-session.json on its next start until that record is gone",
+            agents.path().display()
+        ))
+    })?;
     let value = serde_json::json!({ "id": id, "action": "deleted" });
     Ok(success(render(output, format!("deleted {id}"), &value)))
 }

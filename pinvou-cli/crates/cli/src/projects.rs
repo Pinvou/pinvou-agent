@@ -825,10 +825,17 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     let from_display = rebind_source_display(from);
     // Folded identity comparison (GUI 497-500, its round-20 minor 7): a
     // case-only or separator-only spelling of the same directory is the
-    // same no-op rename, not a full case-rewriting rebind.
-    if pinvou3_lib::platform::filesystem_path_identity_key(&from_display.to_string_lossy())
-        == pinvou3_lib::platform::filesystem_path_identity_key(&to_display.to_string_lossy())
-    {
+    // same no-op rename, not a full case-rewriting rebind. Round-40 review:
+    // the same trailing-separator trim the GUI applies on both sides —
+    // unreachable today (`from_display`/`to_display` come from
+    // canonicalizing validators that never emit one) but exactly the
+    // asymmetry a future validator edit would trip on, so both sides trim
+    // like the nesting predicate one line below.
+    if pinvou3_lib::platform::filesystem_path_identity_key(
+        &from_display.to_string_lossy().trim_end_matches('/'),
+    ) == pinvou3_lib::platform::filesystem_path_identity_key(
+        &to_display.to_string_lossy().trim_end_matches('/'),
+    ) {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
         return rebind_report(output, Vec::new(), Vec::new(), Vec::new());

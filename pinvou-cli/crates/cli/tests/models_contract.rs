@@ -1620,6 +1620,64 @@ fn models_show_reveal_key_names_the_credential_source() {
     );
 }
 
+/// Round-40 review MINOR: `models show`'s human block omitted the five
+/// writable metadata fields the JSON carries, so a `models edit --vendor`
+/// could not be confirmed without `--output json` — against the
+/// same-facts claim. The fields render when set, before the reveal block.
+#[test]
+fn models_show_human_carries_the_writable_metadata_fields() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("show-metadata-fields");
+    let stdout = run_ok(&[
+        "pinvou",
+        "models",
+        "add",
+        "--preset",
+        "openai_compatible",
+        "--name",
+        "Compatible",
+        "--model",
+        "glm-4.7",
+        "--base-url",
+        "https://example.invalid/api/paas/v4",
+        "--alias",
+        "GLM",
+        "--provider-kind",
+        "custom",
+        "--vendor",
+        "glm",
+        "--endpoint-mode",
+        "full_chat_completions",
+    ]);
+    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+
+    let human = run_ok(&["pinvou", "models", "show", &id]);
+    assert!(human.contains("alias: GLM"), "{human}");
+    assert!(human.contains("provider_kind: custom"), "{human}");
+    assert!(human.contains("vendor: glm"), "{human}");
+    assert!(
+        human.contains("endpoint_mode: full_chat_completions"),
+        "{human}"
+    );
+    assert!(
+        !human.contains("vision_model_id:"),
+        "an unset optional field must not render a line: {human}"
+    );
+    // The reveal block stays the tail: api_key_source/api_key come last.
+    let human = run_ok(&["pinvou", "models", "show", &id, "--reveal-key"]);
+    let vendor_pos = human.find("vendor: glm").expect("vendor line");
+    let source_pos = human.find("api_key_source:").expect("source line");
+    assert!(
+        vendor_pos < source_pos,
+        "metadata fields must render before the reveal block: {human}"
+    );
+
+    // JSON parity is unchanged.
+    let json = run_ok(&["pinvou", "--output", "json", "models", "show", &id]);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["vendor"], "glm");
+}
+
 /// `models add` used to hardcode the five optional GUI-form fields to `None`,
 /// so a CLI-created model was not expressible: `vendor` in particular stays
 /// `None` and is read for reasoning-protocol routing

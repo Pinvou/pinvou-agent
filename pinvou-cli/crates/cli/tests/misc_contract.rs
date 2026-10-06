@@ -976,6 +976,55 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
     );
 }
 
+/// Round-40 review MAJOR: `voice postprocess --text-file`/`--draft-file`
+/// ship their content to the configured model endpoint, so they carry the
+/// same credential-path refusal as `files ingest`/`feedback --body-file`.
+/// The refusal fires BEFORE the windowless host boots, so this is hermetic:
+/// a file under a credential component is refused with the artifact-crosses
+/// wording and no model call can have happened (there is no display here —
+/// a boot would fail the test differently).
+#[test]
+fn voice_postprocess_refuses_credential_path_files() {
+    let _home = HomeGuard::new("voice-postprocess-gate");
+    let secret = _home.root.join(".ssh").join("id_rsa.txt");
+    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    std::fs::write(&secret, "PRIVATE KEY").unwrap();
+    let secret = secret.to_str().unwrap().to_owned();
+
+    for lane in [
+        vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "task",
+            "--text-file",
+            &secret,
+        ],
+        vec![
+            "pinvou",
+            "voice",
+            "postprocess",
+            "--mode",
+            "edit",
+            "--text",
+            "polish this",
+            "--draft-file",
+            &secret,
+        ],
+    ] {
+        let error = match parse_args(lane.clone()) {
+            Err(error) => error,
+            Ok(parsed) => execute(parsed).expect_err("credential file must be refused"),
+        };
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("crosses the credential path component"),
+            "the refusal must name the credential-path rule: {rendered}"
+        );
+    }
+}
+
 /// OPT-IN: `voice postprocess` boots the windowless host (display required)
 /// and calls the configured model endpoint. Run with: cargo test -p
 /// pinvou-cli --test misc_contract -- --ignored voice_postprocess

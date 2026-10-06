@@ -649,6 +649,44 @@ class CiGatePolicyTests(unittest.TestCase):
             "not link the full-app test suites",
         )
 
+        # Round-40 review: the dir/**-rot class the cli_rust reachability
+        # check above closes is not cli_rust-specific. The same dead-spelling
+        # shape in knowledge_rust or windows_codex silently skips the
+        # knowledge and Windows codex legs for a change-set they own. The
+        # same sweep runs over both groups (existence + dir/** prefix);
+        # knowledge_rust's workflow-file entry is a literal that exists, and
+        # windows_codex's `private-runtimes/windows` gitlink resolves through
+        # the same .gitmodules exemption the cli_rust loop applies.
+        def assert_group_paths_reachable(group_block: str, group_name: str) -> None:
+            entries = _extract_quoted_paths(group_block)
+            self.assertTrue(entries, f"{group_name} paths 解析为空")
+            for entry in entries:
+                candidate = entry[1:] if entry.startswith("!") else entry
+                if candidate.endswith("/**"):
+                    prefix = candidate[: -len("/**")]
+                    self.assertTrue(
+                        (ROOT / prefix).is_dir(),
+                        f"{group_name} 过滤条目的目录前缀在仓库中不存在(死条目): {entry}",
+                    )
+                    continue
+                if "*" in candidate:
+                    continue
+                if candidate in submodule_paths:
+                    continue
+                self.assertTrue(
+                    (ROOT / candidate).exists(),
+                    f"{group_name} 过滤路径在仓库中不存在(死条目): {entry}",
+                )
+
+        knowledge_rust_paths = changes.split(
+            "            knowledge_rust:", maxsplit=1
+        )[1].split("            knowledge_dependencies:", maxsplit=1)[0]
+        assert_group_paths_reachable(knowledge_rust_paths, "knowledge_rust")
+        windows_codex_paths = self.pr_workflow.split(
+            "            windows_codex:", maxsplit=1
+        )[1].split("            pet:", maxsplit=1)[0]
+        assert_group_paths_reachable(windows_codex_paths, "windows_codex")
+
         cli_test = _without_yaml_comments(
             self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
                 "\n  windows-rust-test:", maxsplit=1
