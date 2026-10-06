@@ -310,12 +310,20 @@ pub(crate) async fn chat_with_reservation(
     // 也覆盖计数失败导致的 None 序号快照）。
     let mut created_snapshot_id: Option<String> = None;
     if store.is_code_session(&sid) {
+        // The turn-checkpoint label prints verbatim in the CLI ledger: strip
+        // the session-mention injection block the way titles/bubbles do, so a
+        // refs-carrying first turn labels the checkpoint with the user's text
+        // instead of the machine contract (review round-10 M1). Lookalike
+        // prose passes through unchanged, matching the strip semantics.
+        let checkpoint_label = super::sessions::strip_session_mention_block(&display_content)
+            .trim()
+            .to_string();
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store,
             &sid,
             roots.ledger.clone(),
             roots.execution.clone(),
-            display_content.clone(),
+            checkpoint_label,
             "chat",
         )
         .await;
