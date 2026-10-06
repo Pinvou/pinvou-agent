@@ -1145,24 +1145,6 @@ const ADD_PIPELINE_TEXT_MAX_CHARS: usize = 120;
 const NEVER_REASON_CAP_CHARS: usize = 80;
 
 /// Mirror of `features::memory::util::clean_text` (`pub(super)`, so the CLI
-/// cannot call it): collapse every whitespace run to one space, trim, then
-/// hard-truncate to `max_chars` characters.
-///
-/// Reproducing it is what lets `add` predict — from the ORIGINAL user input —
-/// exactly what the store will hold, instead of trusting the value the
-/// pending queue echoes back. The mirror is pinned by the add tests, which
-/// compare this prediction against what the feature layer really wrote.
-fn clean_text_like_feature(value: &str, max_chars: usize) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .chars()
-        .take(max_chars)
-        .collect()
-}
-
 /// The stderr half of the truncation disclosure shared by `memory add` and
 /// `memory update`, emitted at measurement time — before the store write — so
 /// even a command that fails later has already named the loss. One formatter
@@ -1278,7 +1260,7 @@ fn disclose_normalization(
 /// passes no matter what was lost; verifying against the user's input
 /// detects it.
 fn expected_stored_text(kind: AddKind, content: &str) -> String {
-    let enqueued = clean_text_like_feature(content, ADD_PIPELINE_TEXT_MAX_CHARS);
+    let enqueued = feature::clean_text(content, ADD_PIPELINE_TEXT_MAX_CHARS);
     match kind {
         AddKind::Preference => enqueued,
         AddKind::WorkContext => {
@@ -1467,7 +1449,7 @@ normalization (task-like or punctuation-only text is not stored)",
     // 121..=160 characters are truncated by the pending queue at 120 and the
     // warning never fired, so the tail vanished silently and the post-write
     // check (which compared against the already-truncated echo) still passed.
-    let collapsed = clean_text_like_feature(&content, usize::MAX);
+    let collapsed = feature::clean_text(&content, usize::MAX);
     let truncated = collapsed.chars().count() > ADD_PIPELINE_TEXT_MAX_CHARS;
     if truncated {
         note_truncation(
@@ -1661,18 +1643,19 @@ fn replaced_entries(before: &[(String, String)], after: &[(String, String)]) -> 
 /// store — the `clean_candidate_sentence` cap at each write site
 /// (`features/memory/io.rs`: `update_preference_unlocked`,
 /// `update_work_context_unlocked`, `update_timed_memory_unlocked`). The
-/// preference and timed constants are `pub(super)` to the app crate, so they
-/// are documented literals here; the update truncation contract test reads
-/// the stored length back from the store itself, so a drifting literal fails
-/// loudly. `None` for the two stores `parse_update` refuses: they have no
-/// writer, so there is nothing to predict.
+/// constants are re-exported from `features::memory` (round-41 review), so
+/// the caps are the store's own values instead of documented literals; the
+/// update truncation contract test still reads the stored length back from
+/// the store as the authority. `None` for the two stores `parse_update`
+/// refuses: they have no writer, so there is nothing to predict.
 fn update_writer_cap(store: MemoryStore) -> Option<usize> {
     match store {
-        // PREFERENCE_TEXT_MAX_CHARS.
-        MemoryStore::Preferences => Some(120),
+        MemoryStore::Preferences => Some(feature::PREFERENCE_TEXT_MAX_CHARS),
         MemoryStore::WorkContext => Some(feature::WORK_CONTEXT_TEXT_MAX_CHARS),
-        // TIMED_TEXT_MAX_CHARS, shared by both timed stores.
-        MemoryStore::CurrentFocus | MemoryStore::RecentActivity => Some(180),
+        // Shared by both timed stores.
+        MemoryStore::CurrentFocus | MemoryStore::RecentActivity => {
+            Some(feature::TIMED_TEXT_MAX_CHARS)
+        }
         MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => None,
     }
 }
@@ -1704,7 +1687,7 @@ impl UpdateTruncation {
     fn measure(store: MemoryStore, content: &str) -> Option<Self> {
         let cap_chars = update_writer_cap(store)?;
         Some(Self {
-            submitted_chars: clean_text_like_feature(content, usize::MAX).chars().count(),
+            submitted_chars: feature::clean_text(content, usize::MAX).chars().count(),
             cap_clause: format!("applied when the {} item is written", store.as_str()),
             cap_chars,
             post_strip_chars: feature::clean_candidate_sentence(content, usize::MAX)
@@ -2057,9 +2040,7 @@ fn pending(
                 // `truncated`/`submitted_characters` facts (round-41 review
                 // — the exact bug class the add lane fixed two hunks
                 // earlier).
-                let collapsed_count = clean_text_like_feature(reason_text, usize::MAX)
-                    .chars()
-                    .count();
+                let collapsed_count = feature::clean_text(reason_text, usize::MAX).chars().count();
                 if collapsed_count > NEVER_REASON_CAP_CHARS {
                     note_truncation(
                         "pending never --reason",
@@ -2179,8 +2160,17 @@ fn organize_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     if !feature::memory_enabled() {
+        // The gate is the `memory_enabled` pref (the locale policy only
+        // force-disables it under a non-zh-Hans language, and it defaults
+        // false even under zh-Hans) — attributing the refusal to the
+        // language alone sent a zh-Hans user with the toggle off chasing
+        // the wrong cause (round-41 review). The remedy is the CLI-writable
+        // key: `pinvou settings set memory_enabled true`.
         return Err(CliError::failed(
-            "memory_organize_disabled: memory is disabled for the current language setting (the memory feature is only available while the app language is zh-Hans)",
+            "memory_organize_disabled: the memory feature is disabled \
+             (memory_enabled = false in settings; it is force-disabled while the app \
+             language is not zh-Hans, and off by default even under zh-Hans) — enable \
+             it with `pinvou settings set memory_enabled true` under a zh-Hans UI language",
         ));
     }
     let mut organize_lock = organize_lock()?;
@@ -2225,8 +2215,11 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     // `organize_memory` → `refresh_memory_snapshot_document`): reload every
     // authoritative source and rewrite the snapshot document so it reflects
     // the organize pass. A refresh failure is a warning, never a failed
-    // organize — the GUI treats it the same way.
-    refresh_snapshot_document_after_organize();
+    // organize — the GUI treats it the same way. The rewrite's
+    // runtime-section drop is disclosed in the report (round-41 review):
+    // stderr above, plus the human note and JSON field below — the same
+    // three-channel disclosure the `overview` rewrite makes.
+    let snapshot_rewritten_without_runtime = refresh_snapshot_document_after_organize();
     let mut lines = vec![
         support::collapse_control_characters(&organize_summary(&report)),
         format!("Started: {}", report.started_at),
@@ -2236,6 +2229,13 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
             support::collapse_control_characters(&report.model)
         ),
     ];
+    if snapshot_rewritten_without_runtime {
+        lines.push(format!(
+            "Note: this organize pass rewrote snapshot.md without the runtime section \
+             (a one-shot CLI owns no active session); the desktop app restores it on \
+             its next refresh"
+        ));
+    }
     if !report.warnings.is_empty() {
         // Warnings quote store ids and pass names: collapse like every
         // other human row.
@@ -2249,7 +2249,13 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
                 .join("; ")
         ));
     }
-    let value = serde_json::to_value(&report).unwrap_or_default();
+    let mut value = serde_json::to_value(&report).unwrap_or_default();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "snapshot_rewritten_without_runtime".to_owned(),
+            serde_json::Value::Bool(snapshot_rewritten_without_runtime),
+        );
+    }
     Ok(success(render(output, lines.join("\n"), &value)))
 }
 
@@ -2261,7 +2267,10 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// problem, exactly like the GUI. The same all-sources-available gate as the
 /// overview applies: a partial read must not wipe that category from the
 /// document, so the refresh is deferred when any source is unavailable.
-fn refresh_snapshot_document_after_organize() {
+/// Returns whether the document was rewritten WITHOUT its runtime section —
+/// the organize report discloses it on both channels, the same disclosure
+/// the `overview` command makes for the identical rewrite (round-41 review).
+fn refresh_snapshot_document_after_organize() -> bool {
     let LoadedMemorySources {
         profile,
         preferences,
@@ -2282,9 +2291,9 @@ fn refresh_snapshot_document_after_organize() {
             "[memory] snapshot_refresh_deferred snapshot: memory sources unavailable; \
 snapshot refresh deferred after organize"
         );
-        return;
+        return false;
     }
-    if let Err(error) = feature::write_memory_snapshot_document(
+    match feature::write_memory_snapshot_document(
         &profile,
         &preferences,
         &work_context,
@@ -2298,7 +2307,24 @@ snapshot refresh deferred after organize"
         // passes None the same way when no session is open).
         None,
     ) {
-        note!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
+        Ok(path) => {
+            // Disclosure at the point of action (round-41 review): the
+            // rewrite drops the runtime section the desktop app wrote for
+            // its active session — the same temporary degradation the
+            // `overview` command notes three ways, so organize's report
+            // carries it too instead of only the module header.
+            note!(
+                "[memory] snapshot_rewritten_without_runtime snapshot: {} was rewritten \
+without the runtime section (a one-shot CLI owns no active session); the desktop app restores \
+it on its next refresh",
+                path.display()
+            );
+            true
+        }
+        Err(error) => {
+            note!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
+            false
+        }
     }
 }
 

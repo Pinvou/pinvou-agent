@@ -1599,10 +1599,14 @@ fn submission_gaia(
 /// Builds the inner content of a JSON string literal (without the quotes).
 /// Delegates to serde_json so every escapable code point — control characters
 /// included — is covered; a hand-written replace would miss `\t` and
-/// `\u0000`-`\u001F`.
+/// `\u0000`-`\u001F`. `str` serialization cannot fail, but the failure
+/// fallback must stay a valid (empty) string literal body rather than
+/// slicing an empty buffer into a panic (round-41 review).
 fn json_escape(value: &str) -> String {
-    let encoded = serde_json::to_string(value).unwrap_or_default();
-    encoded[1..encoded.len().saturating_sub(1)].to_owned()
+    match serde_json::to_string(value) {
+        Ok(encoded) => encoded[1..encoded.len().saturating_sub(1)].to_owned(),
+        Err(_) => String::new(),
+    }
 }
 
 #[cfg(not(feature = "product-backend"))]

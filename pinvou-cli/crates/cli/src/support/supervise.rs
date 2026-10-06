@@ -95,6 +95,21 @@ pub fn install_signal_cleanup() {
 pub fn spawn_supervised(
     command: &mut std::process::Command,
 ) -> std::io::Result<std::process::Child> {
+    // Round-41 review: a spawn racing cleanup by definition escapes every
+    // snapshot the watcher has already taken — the interrupt forward, the
+    // grace loop and the final sweep all read the registry before this
+    // point, so a group registering from here on is TERM/KILLed by no one
+    // and this process dies beside it. Refuse the spawn instead of
+    // manufacturing that orphan; the caller's normal not-found/failed
+    // handling reports it. (The `Err` also keeps a post-success probe from
+    // misreading an interrupt-torn login as `not_authenticated` forever —
+    // the process is dying either way.)
+    #[cfg(unix)]
+    if imp::cleanup_started() {
+        return Err(std::io::Error::other(
+            "interrupt cleanup in progress; spawn refused",
+        ));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -346,6 +361,13 @@ mod imp {
     /// re-raise of its conventional exit status.
     static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
+    /// Whether the watcher's cleanup has begun (round-41 review): supervised
+    /// spawns refuse once it has, since a group registering from that point
+    /// on is in no snapshot the forward/grace/sweep passes will take.
+    pub(super) fn cleanup_started() -> bool {
+        CLEANUP_STARTED.load(Ordering::Acquire)
+    }
+
     /// Bounded grace in a test-free zone: `Once` guards double installs from
     /// repeated `main` calls in tests; every install failure degrades to the
     /// unsupervised status quo instead of panicking inside `main`'s first
@@ -570,6 +592,19 @@ mod imp {
         // the snapshot waited for the register to land.
         let phase1: Vec<libc::pid_t> = snapshot_spawn_safe();
         for pgid in &phase1 {
+            // Round-41 review: probe before the TERM. Some lanes hold the
+            // registration past the reap through their drain graces (the
+            // voice engine/CLI lanes, the code auth probe), so a snapshot
+            // entry can be fully dead by the time an interrupt lands — and
+            // TERMing blind would signal whatever unrelated process group
+            // has recycled that pgid in the seconds-wide window. ESRCH
+            // (every member gone) is exactly the case the probe skips; a
+            // group that dies between the probe and the kill is the
+            // pre-existing sub-second residual, and EPERM still counts as
+            // alive (the signal-0 convention above).
+            if !group_alive(*pgid) {
+                continue;
+            }
             // SAFETY: kill(2) to a group we registered; ESRCH (already gone)
             // is fine to ignore.
             unsafe {
