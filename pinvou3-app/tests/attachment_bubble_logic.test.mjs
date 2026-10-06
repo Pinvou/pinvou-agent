@@ -112,9 +112,10 @@ assert.match(
   /splitSessionMessageBlock\(item\.text\)/,
   'UserBubble must strip the received-message sender block first (session_message_block.test.mjs covers the block contract)',
 );
-// Round-4 A2 pin: a delivered body (messageSplit.sender present) must NOT
-// feed the mention splitter — sender-controlled content renders verbatim;
-// only a non-delivered user message goes through the mention parse.
+// Round-4 A2 + round-6 R1 pins: a delivered body (messageSplit.sender
+// present) must NOT feed the mention/attachment parsers — and the
+// edit-resend PRESERVES the sender header so the replacement turn stays on
+// the delivered branch (any body shape is inert there).
 assert.match(
   chatViewSource,
   /const delivered = Boolean\(messageSplit\.sender\)/,
@@ -129,6 +130,11 @@ assert.match(
   chatViewSource,
   /delivered\s*\?\s*\{ text: mentionSplit\.text, attachments: \[\] \}\s*:\s*splitAttachmentLine\(mentionSplit\.text\)/,
   'a delivered body bypasses the attachment splitter (forged chips cannot render)',
+);
+assert.match(
+  chatViewSource,
+  /delivered && messageSplit\.sender\s*\?\s*\[\s*MESSAGE_BLOCK_HEADER,/,
+  'an edit-resend of a delivered message re-prepends the sender header (provenance preserved — no shape can re-arm the parsers)',
 );
 // Round-4 B5' pin: the sender card render + its i18n copy are wired —
 // deleting the render (or drifting the copy key) turns this red.
