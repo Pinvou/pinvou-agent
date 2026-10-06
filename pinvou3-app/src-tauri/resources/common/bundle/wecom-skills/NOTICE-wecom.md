@@ -323,3 +323,15 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 > ```
 > diff 只应报 SKILL.md(及被改的 references/*.md)differ;「Only in」之外的
 > 差异即为新的未登记分叉。
+
+### 邮件正文中间文件路径统一(2026-10-07,模型向文本审计)
+
+- **wecomcli-email/references/send-mail.md 步骤三**:`{产出目录}/mail_body_<唯一后缀>.md`
+  改为 `tmp/mail/mail_body_<唯一后缀>.md`。邮件正文是发送后即无用的中间文件,原路径把它写进
+  产出物面板根目录,违反工作环境「只有最终成品写根、中间/临时文件一律 `tmp/`」的面板语义,
+  每次发信都会污染产出物列表。
+- **wecomcli-email/references/reply-mail.md 步骤四**:`{工作目录}/temp/output/mail_reply_<唯一后缀>.md`
+  改为 `tmp/mail/mail_reply_<唯一后缀>.md`。`temp/output/` 是自创的非规范路径,同一「写正文再
+  发送」操作在 send/reply 两种教程里写法不一致;统一到 `tmp/mail/` 约定。
+- 两处均为本地修改,下次 sync 需重放;此前各轮 NOTICE 未登记过邮件正文路径(2026-09-05 第二轮
+  登记的是 30-day fiction 删除等,与本项无重叠)。

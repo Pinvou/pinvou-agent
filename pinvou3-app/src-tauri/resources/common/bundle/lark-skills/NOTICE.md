@@ -663,3 +663,27 @@ sync 需逐条重放。四域 SKILL.md frontmatter version 1.0.0 → 1.0.1
 双身份(CLI 实测仅 bot,见上);lark-im/lark-drive frontmatter 增补
 `skills: ["lark-shared"]`(引擎只消费 name/description,该键无实效,
 按上文「保持上游原样」登记决定不加)。
+
+## 阻断式 auth login 指引清理(2026-10-07,模型向文本审计)
+
+lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须走
+`--no-wait --json` 两段式(发起授权轮只发链接,下一轮再 `--device-code`)。
+2026-08-16 的「裸 auth login 导正」只修了不含 `--scope` 的 7 处;契约测试
+规则 5 对表格行与含 `--scope` 的行双重豁免,导致以下 12 处「在表格/正文里
+让模型直接跑阻塞式 `auth login --scope ...`」的指引全部漏网——模型照做
+会在回合内阻塞直至超时,用户永远看不到授权 URL。本次全部改写为 lark-shared
+指针形态(命令内联 `--no-wait --json` + 「勿跑阻塞式登录」),涉及:
+
+- lark-im:lark-im-chat-update.md、lark-im-chat-search.md、
+  lark-im-chat-list.md、lark-im-messages-search.md(顺带补上缺失的
+  `lark-cli` 前缀)、lark-im-chat-members-list.md、
+  lark-im-messages-resources-download.md、lark-im-message-enrichment.md
+- lark-drive:lark-drive-push.md(错误表 user_scope_missing 行 + 文末
+  「一次性补齐」提示)、lark-drive-export.md(99991679 行)
+- lark-wiki:lark-wiki-delete-space.md、lark-wiki-move.md(描述句改为
+  直接给出正确命令)
+
+均为本地修改,下次 sync 需重放。配套把
+`pinvou3-app/tests/connector_skills_contract.test.js` 规则 5 收紧:含
+`--scope` 的 `auth login` 行必须同时含 `--no-wait`,或属于明确的描述性/
+指针语境(prompt/hint/提示/按需授权流程/lark-shared),表格行不再豁免。

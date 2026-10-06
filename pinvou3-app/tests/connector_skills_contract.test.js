@@ -128,15 +128,40 @@ for (const f of docs) {
   }
 }
 
-// 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain；行首 `|` 的表格行为描述性语境，豁免）
+// 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain）。
+// 2026-10-07 收紧：表格行不再豁免——此前 12 处「表格里让模型跑阻塞式
+// auth login --scope」全靠该豁免漏网（模型照做会回合内阻塞到超时，用户
+// 看不到授权 URL，见 lark-skills/NOTICE.md 2026-10-07 节）。现在含 --scope
+// 的行必须内联 --no-wait，或属于描述性/指针语境（转述 CLI 提示、指向
+// lark-shared 按需授权流程）。
 // Since PR #302 the lark skills live in lark-skills/ (the old skills/ path no
 // longer exists, so this rule had been silently dead until then).
 for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
   for (const line of read(f).split("\n")) {
-    if (/^\s*\|/.test(line)) continue;
-    if (/auth login/.test(line) && !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
-      assert.fail(`${rel(f)}: lark 域裸 auth login: ${line.trim()}`);
+    if (!/auth login/.test(line)) continue;
+    // frontmatter description 是能力枚举（≤280 字符受规则 6 约束），恒为描述性语境。
+    if (/^\s*description:/.test(line)) continue;
+    // 不含 --scope 的表格行是能力枚举（如「`auth login` 等」），维持豁免；
+    // 盲点只在含可执行 --scope 形态的表格行，那些必须扫。
+    if (/^\s*\|/.test(line) && !/--scope/.test(line)) continue;
+    if (/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
+      // 可执行形态 = 反引号片段同时含 auth login 与 --scope（教模型原样运行
+      // 的命令）；规则陈述/flag 枚举（auth login 在反引号外）与转述性语境
+      // （CLI 提示、lark-shared 指路）不算。
+      if (
+        /--scope/.test(line) &&
+        !/--no-wait/.test(line)
+      ) {
+        const spans = line.match(/`[^`]+`/g) || [];
+        const teachesCommand = spans.some((s) => /auth login/.test(s) && /--scope/.test(s));
+        const descriptive = /prompt|hint|surfaces|提示|按需授权流程|lark-shared|on-demand/i.test(line);
+        if (teachesCommand && !descriptive) {
+          assert.fail(`${rel(f)}: lark auth login --scope 须内联 --no-wait（lark-shared 两段式）: ${line.trim()}`);
+        }
+      }
+      continue;
     }
+    assert.fail(`${rel(f)}: lark 域裸 auth login: ${line.trim()}`);
   }
 }
 

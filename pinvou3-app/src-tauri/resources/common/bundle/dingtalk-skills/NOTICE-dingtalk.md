@@ -242,3 +242,11 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 - `chat message send` flag 重命名后，上游自身 `conventions.md` ID 边界表仍写 `chat message list/send --group`（上游 1.0.61 原文如此），跟随上游未改；下版 sync 关注上游是否收敛。
 - doc 分片阈值本地未能以写入路径实测（connectors.lock 已升 1.0.61；1.0.61 文档分片示例按 ~30000 字符切分，倾向阈值已变更，如需确认可实机写入超长文档复核）；若实测为 10000，需回写 doc.md/doc-update.md/doc-create.md 阈值并重登记。
 - aisearch person `--keyword`/`--query` 分歧已用 1.0.61 二进制 `--help` 实测关闭：真实 flag 为 `--query`，本地已全部对齐（含 02-task/07-minutes/10-minutes-speaker-match/lite-recipes/mail）。
+
+## 模型向文本审计修复（2026-10-07）
+
+模型向文本全量审计发现以下三处本地修改，下次 sync 需重放：
+
+1. **SKILL.md 危险操作表 `calendar participant delete` → `calendar attendee delete`**：dws calendar 无 `participant` 子命令组，参会人二级子命令为 `attendee`（见 references/products/calendar.md「二级子命令」清单，全包 grep 无 participant）。原行会让模型照权威安全表执行不存在的命令，而 SKILL.md「错误处理」又禁止自行尝试替代方案，任务直接卡死。
+2. **SKILL.md 考勤行删除「（P0 已落地，部分管理类命令仍属 P1）」**：P0/P1 成熟度标记在包内无事实源，与 attendance.md「命令可用性提示」（全部子命令组已注册可用，不得以"命令不存在/不支持"拒答）相悖，可能诱发模型拒绝可用的考勤管理命令。改为指向该提示。
+3. **SKILL.md 顶部新增首用认证指引**：命令报 `AUTH_TOKEN_EXPIRED` / 未登录时先 `dws auth login`（流程见 global-reference.md 认证章节），不要因未登录断定技能不可用。此前登录指引只出现在错误处理行与文末参考列表，首用模型会在失败后才回溯。

@@ -15,6 +15,8 @@ metadata:
 
 > ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是 Cobra flags 事实源,Agent 选命令/参数约束/安全确认以 leaf Schema(`--compact`)为准,与本文档冲突时以二者为准。
 
+> 🔑 首次使用先认证:命令报 `AUTH_TOKEN_EXPIRED` / 未登录时,执行 `dws auth login` 完成登录(流程见 [global-reference.md](./references/global-reference.md) 认证章节),不要因未登录直接断定技能不可用。
+
 ## 严格禁止 (NEVER DO)
 - 不要使用 dws 命令以外的方式操作钉钉业务数据（禁止 curl、HTTP API、浏览器）。**例外**：① aitable 导入/导出/附件上传链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 申请的上传凭证、`export data` 返回的下载地址、`attachment upload` 返回的上传地址）允许用 curl 直传/直下（见 [aitable-export-import.md](./references/products/aitable/aitable-export-import.md) 与 [aitable-attachment.md](./references/products/aitable/aitable-attachment.md)）；② 按 [openapi-explorer.md](./references/products/openapi-explorer.md) 读取官方 `open.dingtalk.com/llms.txt` 文档并生成受限的 `dws api` 调用。除此之外禁止
 - 不要编造 UUID、ID 等标识符，必须从命令返回中提取
@@ -86,7 +88,7 @@ metadata:
 | `aisearch`        | AI搜问（通用找人首选）：按姓名/部门/职位/职责/上级/下级/手机号/工号维度找人，"谁负责 XX/XX 的负责人/某事项/某项目的人"统一走本产品；不含人才池/绩效/职业历程等专项 HR 场景（那些去 `hrbrain`） | [aisearch.md](./references/products/aisearch.md)               |
 | `aitable`         | AI表格：Base/数据表/字段/记录/视图/附件/图表/仪表盘/导入导出/模板搜索            | [aitable.md](./references/products/aitable.md)                 |
 | `api`             | OpenAPI 逃生舱：官方 llms.txt 分层发现，仅执行企业内部应用 App Token 服务端 API | [openapi-explorer.md](./references/products/openapi-explorer.md) |
-| `attendance`      | 考勤：打卡结果/打卡流水/考勤组查询/考勤规则/汇总统计/假期类型/假期余额（P0 已落地，部分管理类命令仍属 P1） | [attendance.md](./references/products/attendance.md)           |
+| `attendance`      | 考勤：打卡结果/打卡流水/考勤组查询/考勤规则/汇总统计/假期类型/假期余额（全部命令已注册可用，见 attendance.md「命令可用性提示」） | [attendance.md](./references/products/attendance.md)           |
 | `calendar`        | 日历：日历列表/日程/参与者/附件/响应/会议室/闲忙查询/时间建议                  | [calendar.md](./references/products/calendar.md)               |
 | `chat`            | 群聊与机器人：搜索群/建群/群成员管理/改群名/消息发送(文本/Markdown/图片/文件)/拉取消息/消息收藏/@我/特别关注/机器人群发/单聊/撤回/转发/引用回复/Webhook/机器人搜索 | [chat.md](./references/products/chat.md)                       |
 | `contact`         | 通讯录：用户查询/部门/角色/花名册（学历/家庭/银行卡/紧急联系人/合同等基础字段）/离职员工/特别关注，以及创建企业、企业账号和邀请员工；不含职业历程/绩效/人才池（那些去 `hrbrain`） | [contact.md](./references/products/contact.md)                 |
@@ -171,7 +173,7 @@ metadata:
 | `aitable` | `advperm disable` | 停用高级权限总开关（关闭后全员回退默认权限） |
 | `aitable` | `advperm role-delete` | 删除自定义角色（不可逆，系统角色禁删） |
 | `calendar` | `event delete` | 删除日程，所有参与者同步取消 |
-| `calendar` | `participant delete` | 移除日程参与者 |
+| `calendar` | `attendee delete` | 移除日程参与者 |
 | `calendar` | `room delete` | 取消会议室预定 |
 | `chat` | `group members remove` | 移除群成员 |
 | `chat` | `group dismiss` | 解散群聊（不可恢复） |
