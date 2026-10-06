@@ -3304,9 +3304,18 @@ fn providers_save(
         )));
     }
     let secret = resolve_secret(&api_key_env, api_key_stdin)?;
-    // Update merges with the existing record so unspecified fields keep their
-    // stored values (the GUI edit form prefills the same way).
-    let existing = existing.clone();
+    // Round-42 review: re-read the record AFTER the secret resolution — the
+    // stdin lane can block for an unbounded time, and merging into the
+    // boot-time snapshot used to silently revert a concurrent GUI field
+    // edit to the same record (the store's reload-under-lock only refreshes
+    // id/created_at/credential). The pre-check above already refused an
+    // unknown id before prompting; this second read is cheap and bounded.
+    let existing = provider_id.and_then(|id| manager.store().get(agent, id));
+    if let (Some(id), None) = (provider_id, existing.as_ref()) {
+        return Err(CliError::failed(format!(
+            "provider_not_found: no provider '{id}' for agent {agent}"
+        )));
+    }
     let name = name.or_else(|| existing.as_ref().map(|record| record.name.clone()));
     let base_url = base_url.or_else(|| existing.as_ref().map(|record| record.base_url.clone()));
     let model = match model {
@@ -3633,15 +3642,59 @@ fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliO
     // Round-37 review: the store's own parse failure is a Chinese chain
     // ("导入文件不是有效的 Provider JSON"); every other store lane mirrors
     // its validation in English before calling it, so pre-validate the JSON
-    // shape here and let the store only see parseable documents.
-    if let Err(error) = serde_json::from_str::<serde_json::Value>(&json) {
+    // shape here and let the store only see parseable documents. Round-42
+    // review: "parseable" for the store means an ARRAY of entry objects
+    // (its deserializer is `Vec<ImportEntry>`) — a bare `{}`, `5` or a
+    // scalar element used to pass this pre-check and fail the store's
+    // Chinese parse chain anyway.
+    let document: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(document) => document,
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "code providers import({agent}): the file is not valid provider JSON: {error}"
+            )));
+        }
+    };
+    if !document.is_array() {
         return Err(CliError::failed(format!(
-            "code providers import({agent}): the file is not valid provider JSON: {error}"
+            "code providers import({agent}): the file must contain a JSON array of provider \
+             entries, got {}",
+            json_type_name(&document)
+        )));
+    }
+    // The store deserializes `Vec<ImportEntry>`: a non-object ELEMENT fails
+    // its per-entry parse with the same Chinese chain, so the element shape
+    // is part of the English pre-check too.
+    if document
+        .as_array()
+        .is_some_and(|entries| entries.iter().any(|entry| !entry.is_object()))
+    {
+        return Err(CliError::failed(format!(
+            "code providers import({agent}): every entry in the provider JSON array must be \
+             an object"
         )));
     }
     let result = manager
         .import(agent, &json)
         .map_err(|error| store_error("providers import", agent, error))?;
+
+    /// The JSON type name for the import shape refusal (the store's own
+    /// deserializer accepts only arrays of entry objects).
+    fn json_type_name(value: &serde_json::Value) -> &'static str {
+        if value.is_null() {
+            "null"
+        } else if value.is_boolean() {
+            "a boolean"
+        } else if value.is_number() {
+            "a number"
+        } else if value.is_string() {
+            "a string"
+        } else if value.is_object() {
+            "an object"
+        } else {
+            "an array"
+        }
+    }
     let value = serde_json::json!({ "agent": agent, "result": result });
     let mut human = format!(
         "imported {}\nid conflicts: {}\nskipped: {}",

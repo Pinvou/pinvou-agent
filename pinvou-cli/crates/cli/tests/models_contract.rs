@@ -1429,8 +1429,10 @@ fn models_edit_clear_api_key_requires_yes() {
         "a refused clear must not write settings.json"
     );
 
-    // With --yes the same command proceeds and reports the credential as
-    // cleared.
+    // With --yes the same command proceeds. The fixture model is keyless
+    // (no stored credential reference), so round-42 review's doctrine
+    // alignment with `settings search set --clear` reports `unchanged` —
+    // `cleared` now means a stored reference was actually removed.
     let stdout = run_ok(&[
         "pinvou",
         "models",
@@ -1439,7 +1441,7 @@ fn models_edit_clear_api_key_requires_yes() {
         "--clear-api-key",
         "--yes",
     ]);
-    assert!(stdout.contains("credential: cleared"), "{stdout}");
+    assert!(stdout.contains("credential: unchanged"), "{stdout}");
     let prefs = load_prefs();
     let model = prefs.model_by_id("default").expect("default model");
     assert!(

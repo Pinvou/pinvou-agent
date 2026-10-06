@@ -574,6 +574,24 @@ mod tests {
         assert!(without_model.contains("Model: -"));
         assert!(with_model.contains("Online: true"));
         assert!(with_model.contains("Model: served-model"));
+
+        // Round-42 review: BOTH halves of the `online` conjunction are
+        // pinned — an unverified health status must read offline even when
+        // the process status is Ready, and a non-Ready/Busy status must
+        // read offline even when health is verified (dropping either
+        // conjunct used to pass the whole suite).
+        assert!(
+            status_payload(Some(&probe(VllmStatus::Ready, "unverified")), Some(7))
+                .0
+                .contains("Online: false"),
+            "an unverified health status must not read online"
+        );
+        assert!(
+            status_payload(Some(&probe(VllmStatus::Offline, "verified")), Some(7))
+                .0
+                .contains("Online: false"),
+            "a non-ready status must not read online even with verified health"
+        );
     }
 
     /// The process-local accumulators must not be published as if they were

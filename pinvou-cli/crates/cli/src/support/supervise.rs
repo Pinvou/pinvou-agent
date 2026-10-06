@@ -95,21 +95,6 @@ pub fn install_signal_cleanup() {
 pub fn spawn_supervised(
     command: &mut std::process::Command,
 ) -> std::io::Result<std::process::Child> {
-    // Round-41 review: a spawn racing cleanup by definition escapes every
-    // snapshot the watcher has already taken — the interrupt forward, the
-    // grace loop and the final sweep all read the registry before this
-    // point, so a group registering from here on is TERM/KILLed by no one
-    // and this process dies beside it. Refuse the spawn instead of
-    // manufacturing that orphan; the caller's normal not-found/failed
-    // handling reports it. (The `Err` also keeps a post-success probe from
-    // misreading an interrupt-torn login as `not_authenticated` forever —
-    // the process is dying either way.)
-    #[cfg(unix)]
-    if imp::cleanup_started() {
-        return Err(std::io::Error::other(
-            "interrupt cleanup in progress; spawn refused",
-        ));
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -150,6 +135,38 @@ pub fn spawn_supervised(
         // The pre_exec closure still holds no lock IN THE CHILD: it runs
         // between fork and exec and only calls sigprocmask.
         let _window = imp::spawn_window();
+        // Round-41 review: a spawn racing cleanup by definition escapes every
+        // snapshot the watcher has already taken — the interrupt forward, the
+        // grace loop and the final sweep all read the registry before this
+        // point, so a group registering from here on is TERM/KILLed by no one
+        // and this process dies beside it. Refuse the spawn instead of
+        // manufacturing that orphan; the caller's normal not-found/failed
+        // handling reports it. (The `Err` also keeps a post-success probe from
+        // misreading an interrupt-torn login as `not_authenticated` forever —
+        // the process is dying either way.) Round-42 review: the check lives
+        // INSIDE the window — checked before acquiring it, a worker thread
+        // preempted in that stretch could acquire the window after the
+        // watcher's final sweep had already completed and spawn into a
+        // registry nobody will read. Inside the window the answer is final:
+        // either the flag is already set (refuse — holding the window for
+        // the instant the drop takes is harmless) or the register below
+        // lands before the watcher's blocked-on-window snapshot proceeds.
+        if imp::cleanup_started() {
+            // Round-42 review, corrected in the same wave (caught live by
+            // the connectors interrupt suite): the mask restore is
+            // load-bearing on EVERY exit path. Phase 3's re-raise targets
+            // the PROCESS because delivery needs a thread with the family
+            // unblocked — "the main thread, whose mask spawn_supervised
+            // always restores". A refusal that kept the mask left that
+            // invariant broken: the watcher completed phase 3, its kill
+            // pended forever on a fully-blocked process, and main parked on
+            // a process that could no longer die.
+            drop(_window);
+            imp::restore_interrupt_signals(saved);
+            return Err(std::io::Error::other(
+                "interrupt cleanup in progress; spawn refused",
+            ));
+        }
         let spawned = command.spawn();
         if let Ok(child) = &spawned {
             // Round-41 review: the parent-side half of the double-setpgid
@@ -361,11 +378,40 @@ mod imp {
     /// re-raise of its conventional exit status.
     static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
+    /// Test-only override consulted first by [`cleanup_started`]
+    /// (thread-local, so parallel spawn tests are untouched).
+    #[cfg(test)]
+    thread_local! {
+        static TEST_CLEANUP_OVERRIDE: std::cell::Cell<Option<bool>> =
+            const { std::cell::Cell::new(None) };
+    }
+
     /// Whether the watcher's cleanup has begun (round-41 review): supervised
     /// spawns refuse once it has, since a group registering from that point
     /// on is in no snapshot the forward/grace/sweep passes will take.
     pub(super) fn cleanup_started() -> bool {
+        #[cfg(test)]
+        if TEST_CLEANUP_OVERRIDE
+            .with(|cell| cell.get())
+            .unwrap_or(false)
+        {
+            return true;
+        }
         CLEANUP_STARTED.load(Ordering::Acquire)
+    }
+
+    /// Test seam for the round-42 refusal test: a THREAD-LOCAL override, so
+    /// only the calling thread's `spawn_supervised` sees the flagged state —
+    /// parallel tests that spawn real children are unaffected, unlike a
+    /// global-flag flip which would refuse their in-flight spawns.
+    #[cfg(test)]
+    pub(super) fn test_set_cleanup_override(value: bool) {
+        TEST_CLEANUP_OVERRIDE.with(|cell| cell.set(Some(value)));
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_clear_cleanup_override() {
+        TEST_CLEANUP_OVERRIDE.with(|cell| cell.set(None));
     }
 
     /// Bounded grace in a test-free zone: `Once` guards double installs from
@@ -976,6 +1022,62 @@ mod tests {
     #[cfg(unix)]
     fn grace_window_value_is_pinned() {
         assert_eq!(imp::GRACE_MS, 5_000);
+    }
+
+    /// Round-41/42 review: a spawn racing cleanup must be REFUSED instead of
+    /// registering a group no watcher pass will ever read. The refusal is
+    /// exercised through a thread-local override (a global-flag flip would
+    /// refuse parallel tests' in-flight spawns): the override proves the
+    /// refusal path itself is wired and names its cause. The check's
+    /// POSITION — inside the spawn window, so a worker thread preempted
+    /// between a pre-window check and the acquisition cannot spawn after the
+    /// watcher's final sweep (round-42) — is order-of-operations inside one
+    /// function and stays review-pinned, like the other interleaving
+    /// properties in this module.
+    #[test]
+    #[cfg(unix)]
+    fn spawn_supervised_refuses_once_cleanup_has_started() {
+        imp::test_set_cleanup_override(true);
+        let mut command = std::process::Command::new("true");
+        let error =
+            spawn_supervised(&mut command).expect_err("a spawn during cleanup must be refused");
+        imp::test_clear_cleanup_override();
+        assert!(
+            error.to_string().contains("interrupt cleanup"),
+            "the refusal names the cause: {error}"
+        );
+        // The override is cleared: the refusal is lifted (the `true` child
+        // exits immediately and the guard reaps it).
+        let mut command = std::process::Command::new("true");
+        spawn_supervised(&mut command)
+            .expect("with the override cleared, the refusal must be lifted");
+
+        // The refusal must leave this thread's interrupt family UNBLOCKED:
+        // phase 3's process-targeted re-raise is deliverable only to a
+        // thread with the family unblocked, so a refusal that kept the
+        // spawner's mask would pend the watcher's final kill forever (the
+        // observed hang: watcher done, flag set, main parked, process
+        // immortal).
+        imp::test_set_cleanup_override(true);
+        let mut command = std::process::Command::new("true");
+        let _ = spawn_supervised(&mut command).expect_err("refused again");
+        imp::test_clear_cleanup_override();
+        // SAFETY: a null act reads this thread's current mask into `now`;
+        // the probe changes nothing.
+        let mut now: libc::sigset_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigprocmask(libc::SIG_BLOCK, std::ptr::null(), &mut now) },
+            0,
+            "the mask probe must work"
+        );
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            assert_eq!(
+                unsafe { libc::sigismember(&now, signal) },
+                0,
+                "a refused spawn must restore the interrupt family on this thread \
+                 (signal {signal} must not stay blocked)"
+            );
+        }
     }
 
     /// The `pre_exec` mask reset in `spawn_supervised` is load-bearing: std
