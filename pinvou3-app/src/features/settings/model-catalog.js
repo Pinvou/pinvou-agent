@@ -1258,12 +1258,16 @@ function isOpenaiReasoningFamilyModel(model) {
     || isOpenaiCodexModel(lower);
 }
 
-// Mirrors bridge.rs `openai_responses_wire_model`: GPT models for which the
-// Responses API supports function calling under OpenAI's official wording
-// (Pinvou catalog ∩ Responses support, verified 2026-09-29 against the
-// per-model pages). A hit switches to the Responses wire (bridge
-// RESPONSES_ROUTE_PROVIDER); hand-typed ids outside the catalog do not match
-// and keep the Chat wire.
+// Mirrors the model-id prefix half of bridge.rs `openai_responses_wire_model`:
+// GPT models for which the Responses API supports function calling under
+// OpenAI's official wording (Pinvou catalog ∩ Responses support, verified
+// 2026-09-29 against the per-model pages). A hit switches to the Responses
+// wire (bridge RESPONSES_ROUTE_PROVIDER); hand-typed ids outside the catalog
+// do not match and keep the Chat wire. Prefix set only: the bridge
+// additionally gates on the official endpoint host and the operator
+// DEEPSEEK_* env pins, which the tier UI does not re-check — a hand-edited
+// non-official record may show the Responses tier ladder while the engine
+// keeps the Chat wire. A mechanical test pins the two prefix sets equal.
 function isOpenaiResponsesWireModel(model) {
   const lower = String((model && model.model) || '').trim().toLowerCase();
   return lower.startsWith('gpt-6')

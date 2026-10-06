@@ -143,11 +143,16 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
 /// today, and a strictly-Responses-only feature set is exactly what the
 /// `openai_responses` preset group is the explicit opt-in for.
 fn is_official_openai_base_url(base_url: &str) -> bool {
+    // Lowercase before stripping the `/v1` suffix: the strip is
+    // case-sensitive, so `https://api.openai.com/V1` (an odd-but-legitimate
+    // spelling of the official host) must normalize to the official form
+    // rather than silently keep the Chat wire for a GPT id.
     let normalized = base_url
         .trim()
         .trim_end_matches('/')
+        .to_ascii_lowercase()
         .trim_end_matches("/v1")
-        .to_ascii_lowercase();
+        .to_string();
     matches!(normalized.as_str(), "https://api.openai.com")
 }
 
@@ -1160,9 +1165,29 @@ impl Pinvou3Bridge {
             // Custom OpenAI Responses endpoints: the whole group rides the
             // Responses wire by definition (named-custom route, see
             // `RESPONSES_ROUTE_PROVIDER`); the model id and endpoint are
-            // entirely user-entered, with no model-name matching.
-            ModelPreset::OpenaiResponses => RESPONSES_ROUTE_PROVIDER.to_string(),
+            // entirely user-entered, with no model-name matching. The same
+            // operator suppression as [`Self::uses_responses_wire`] applies,
+            // landing the group on its vendor "openai" Chat route so this
+            // arm and the wire gate stay consistent.
+            ModelPreset::OpenaiResponses if !self.responses_wire_suppressed() => {
+                RESPONSES_ROUTE_PROVIDER.to_string()
+            }
+            ModelPreset::OpenaiResponses => "openai".to_string(),
         }
+    }
+
+    /// Operator-owned overrides that suppress the Responses remap: explicit
+    /// `DEEPSEEK_PROVIDER` / `DEEPSEEK_MODEL` env pins and the
+    /// official-DeepSeek endpoint guard. Shared by
+    /// [`Self::uses_responses_wire`] and the `ModelPreset::OpenaiResponses`
+    /// arm of [`Self::provider`], so the wire gate and the engine landing
+    /// can never disagree (round-5 review: a bare `DEEPSEEK_MODEL` used to
+    /// suppress the gate while the preset arm still minted the Responses
+    /// table).
+    fn responses_wire_suppressed(&self) -> bool {
+        std::env::var("DEEPSEEK_PROVIDER").is_ok()
+            || std::env::var("DEEPSEEK_MODEL").is_ok()
+            || is_official_deepseek_base_url(&self.base_url())
     }
 
     /// Whether the current route switches to the OpenAI Responses wire (the
@@ -1183,11 +1208,10 @@ impl Pinvou3Bridge {
     /// (same env precedence as [`Self::provider`] / [`Self::model`], where
     /// the model itself is operator-owned and out of scope for the GPT
     /// prefix match); the official-DeepSeek endpoint guard likewise wins.
+    /// [`Self::provider`]'s preset arm applies the same predicate, so the
+    /// gate documented here is the sole decider of the engine landing.
     fn uses_responses_wire(&self) -> bool {
-        if std::env::var("DEEPSEEK_PROVIDER").is_ok()
-            || std::env::var("DEEPSEEK_MODEL").is_ok()
-            || is_official_deepseek_base_url(&self.base_url())
-        {
+        if self.responses_wire_suppressed() {
             return false;
         }
         let model = self.effective_model();
@@ -8306,6 +8330,84 @@ mod tests {
             i.engine_route_provider(),
             "openai",
             "env-owned model ids never drive the wire predicate"
+        );
+    }
+
+    /// The `OpenaiResponses` group arm of `provider()` applies the same
+    /// operator suppression as the wire gate: a bare `DEEPSEEK_MODEL` pin
+    /// must not leave the gate saying Chat while the engine still lands on
+    /// the named Responses table (round-5 review R2: the preset arm used to
+    /// remap unconditionally, so the pin only half-won).
+    #[test]
+    fn responses_group_yields_to_a_deepseek_model_env_pin() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut unsuppressed = fixture_bridge();
+        set_active_model(
+            &mut unsuppressed,
+            ModelPreset::OpenaiResponses,
+            "gpt-6-sol",
+            "https://relay.example.test/v1",
+            "k",
+        );
+        assert_eq!(unsuppressed.provider(), "pinvou_responses");
+        assert!(unsuppressed.uses_responses_wire());
+
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("DEEPSEEK_MODEL", "deepseek-v4-flash") };
+        assert!(!unsuppressed.uses_responses_wire());
+        assert_eq!(
+            unsuppressed.provider(),
+            "openai",
+            "the pinned model is operator-owned: the group keeps its vendor identity on the Chat wire"
+        );
+        assert_eq!(
+            unsuppressed.engine_route_provider(),
+            "openai",
+            "gate and engine landing must agree under the pin"
+        );
+    }
+
+    /// Odd-but-legitimate spellings of the official host must still count as
+    /// official: the `/v1` suffix strip is case-sensitive, so normalization
+    /// lowercases before stripping (`/V1`, `//` trails).
+    #[test]
+    fn official_openai_host_normalization_accepts_case_and_slash_variants() {
+        assert!(is_official_openai_base_url("https://api.openai.com"));
+        assert!(is_official_openai_base_url("https://api.openai.com/v1"));
+        assert!(is_official_openai_base_url("https://api.openai.com/V1"));
+        assert!(is_official_openai_base_url("https://api.openai.com/v1/"));
+        assert!(is_official_openai_base_url("  https://API.OPENAI.COM/v1  "));
+        // Aggregators and private hosts keep failing the check.
+        assert!(!is_official_openai_base_url(
+            "https://aggregator.example.test/v1"
+        ));
+        assert!(!is_official_openai_base_url("http://api.openai.com/v1"));
+    }
+
+    /// A chat-era stored `off` reaches the wire verbatim on the Responses
+    /// route (the engine maps it to low); the display-side renormalization
+    /// to `low` must not silently rewrite what the app sends.
+    #[test]
+    fn stored_off_reasoning_effort_reaches_the_responses_wire_verbatim() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiResponses,
+            "gpt-6-sol",
+            "https://relay.example.test/v1",
+            "k",
+        );
+        bridge.prefs.advanced.saved_models[0].reasoning_effort = Some("off".to_string());
+        assert!(bridge.uses_responses_wire());
+        assert_eq!(
+            bridge.request_reasoning_effort(),
+            Some("off".to_string()),
+            "the stored value passes through untouched; the engine maps off→low"
         );
     }
 
