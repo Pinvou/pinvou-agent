@@ -1631,6 +1631,30 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     .unwrap();
     std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
     std::fs::write(project.join("untracked.txt"), "brand new\n").unwrap();
+    // A file committed at HEAD and left untouched (round-40 review): this
+    // case used to fall through to the synthetic new-file diff on BOTH
+    // surfaces (both git diffs empty + the file exists → `untracked_diff`),
+    // reporting the whole content as added from /dev/null. The run helper
+    // inside `init_git_repo` is not in scope here, so the same ambient-config
+    // isolation is repeated inline.
+    std::fs::write(project.join("unchanged.txt"), "same\n").unwrap();
+    for args in [
+        &["add", "unchanged.txt"][..],
+        &["commit", "-m", "unchanged"][..],
+    ] {
+        let ok = std::process::Command::new("git")
+            .current_dir(&project)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        assert!(ok, "fixture commit of unchanged.txt failed");
+    }
 
     // Sanity: the filter really is in effect, so the equality below is being
     // asserted on a diff that the global config decided. Without the config
@@ -1654,6 +1678,20 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
         body(&app.text),
         "the CLI diff body must match the app module's line for line"
     );
+
+    // Tracked and unmodified (round-40 review): both answer with NO diff —
+    // the fallthrough used to synthesize a new-file diff asserting a change
+    // that does not exist.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "unchanged.txt"]);
+    assert_eq!(
+        cli["text"].as_str().unwrap(),
+        "",
+        "a tracked, unmodified file has no diff: {}",
+        cli["text"]
+    );
+    let app = app_workspace::workspace_diff(&id, &project, "unchanged.txt")
+        .expect("app diff for the unchanged tracked file");
+    assert_eq!(app.text, "", "the app module must agree: no diff");
 
     // Untracked file: both synthesize the same new-file diff, byte for byte.
     let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "untracked.txt"]);

@@ -771,7 +771,22 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
             combined.push_str(&unstaged);
         }
         if combined.is_empty() && path.is_file() {
-            untracked_diff(&path, &relative)?
+            // Round-40 review: the synthetic new-file diff is only correct
+            // for an UNTRACKED file. A tracked, unmodified file reached this
+            // arm too (both diffs empty) and `untracked_diff` reported the
+            // whole content as added from /dev/null — asserting a change
+            // that does not exist, on the GUI's diff view and the CLI's
+            // `code workspace diff` alike. `ls-files --error-unmatch`
+            // settles tracked-ness (it exits nonzero for an untracked
+            // path); a tracked file answers with no diff at all.
+            let tracked = git_output(&root, &["ls-files", "--error-unmatch", "--", &relative])
+                .map(|output| !output.trim().is_empty())
+                .unwrap_or(false);
+            if tracked {
+                String::new()
+            } else {
+                untracked_diff(&path, &relative)?
+            }
         } else {
             combined
         }
