@@ -60,6 +60,14 @@ import { formatAttachmentLimitError } from '../attachments/attachment-limit-erro
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { SessionMentionChips, SessionMentionMenu, SessionMentionCards, SessionMessageCard } from './SessionMentionControls.jsx';
 import { splitSessionMessageBlock } from './session-message-block.js';
+
+// Round-5 A1: strip a GENUINE leading mention block from sender-controlled
+// text before an edit-resend (identical tolerance to the composer-restore
+// strip in the bridges: only a parseable block with refs is removed).
+const stripLeadingMentionBlock = (text) => {
+  const split = splitSessionMentionBlock(String(text || ''));
+  return split.refs.length ? split.text : String(text || '');
+};
 import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
 import {
   buildSessionMentionBlock,
@@ -4208,7 +4216,23 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       const [copied, copyToClipboard] = useCopyFlash(1200);
       // Edit-resend keeps layer 2 of the feature gate: with the feature off
       // only the body is resent — the injection block is never re-injected.
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(!sessionMentionDisabled && mentionRefs.length ? buildSessionMentionBlock(mentionRefs) + tx : tx); }
+      function commit() {
+        const tx = val.trim();
+        setEditing(false);
+        if (!tx || !bridge.available) return;
+        // Round-5 A1: a DELIVERED body is sender-controlled text — the
+        // replacement turn carries no sender header, so a leading
+        // mention-shaped block would re-arm the mention/attachment parsers
+        // as first-party UI on re-render. Strip a genuine leading block
+        // from a delivered body before the resend (non-delivered messages
+        // keep the re-serialize-from-refs behavior).
+        const outgoing = !sessionMentionDisabled && mentionRefs.length
+          ? buildSessionMentionBlock(mentionRefs) + tx
+          : delivered
+            ? stripLeadingMentionBlock(tx)
+            : tx;
+        bridge.interaction.editLastTurn(outgoing);
+      }
       function copyText() {
         // Copy the body for the user: strip the mention injection block (a
         // machine contract, not human-written content); useCopyFlash is the

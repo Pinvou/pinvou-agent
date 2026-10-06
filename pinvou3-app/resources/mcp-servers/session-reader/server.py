@@ -1041,6 +1041,21 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
     # so an already-delivered retry answers "delivered" without touching the
     # spool (and cannot fail with a spurious not-writable error).
     already_delivered = os.path.exists(done_marker)
+    if already_delivered:
+        # R5-A3: answer BEFORE touching the spool — no rewrite, no spurious
+        # not-writable error, no lingering root *.json for an
+        # already-delivered retry.
+        return {
+            "ok": True,
+            "toSession": to_session,
+            "delivery": "delivered",
+            "duplicate": True,
+            "note": (
+                "A message with this idempotency key was already delivered "
+                "into the target session; the resend is suppressed (the "
+                "original delivery stands)."
+            ),
+        }, None
     duplicate = os.path.exists(target)
     payload = _spool_payload(
         spool_id,
@@ -1080,18 +1095,6 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
             raise
     except OSError:
         return None, "message queue is not writable"
-    if already_delivered:
-        return {
-            "ok": True,
-            "toSession": to_session,
-            "delivery": "delivered",
-            "duplicate": True,
-            "note": (
-                "A message with this idempotency key was already delivered "
-                "into the target session; the resend is suppressed (the "
-                "original delivery stands)."
-            ),
-        }, None
     return {
         "ok": True,
         "toSession": to_session,

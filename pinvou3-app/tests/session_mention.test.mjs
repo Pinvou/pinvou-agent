@@ -889,7 +889,10 @@ test('cascade wiring contract: ChatView gates all four layers, stops the block w
   assert.match(chatViewSource, /sessionMentionEnabled \? buildSessionMentionBlock\(sessionRefs\) : ''/);
   // Layer 2 on edit-resend: UserBubble.commit never re-injects the block when
   // the feature is off.
-  assert.match(chatViewSource, /!sessionMentionDisabled && mentionRefs\.length \? buildSessionMentionBlock\(mentionRefs\)/);
+  // Round-5 A1: the edit-resend arm still re-serializes picked refs for a
+  // non-delivered message; a delivered body takes the strip-before-resend
+  // path instead (its own pin lives in attachment_bubble_logic.test.mjs).
+  assert.match(chatViewSource, /!sessionMentionDisabled && mentionRefs\.length\s*\?\s*buildSessionMentionBlock\(mentionRefs\)/);
   // State source: listBuiltinFeatures + tools-changed hot refresh, fail-open.
   assert.match(chatViewSource, /bridge\.settings\.listBuiltinFeatures/);
   assert.match(chatViewSource, /pinvou:tools-changed/);
