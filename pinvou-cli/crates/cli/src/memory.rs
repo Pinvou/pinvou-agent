@@ -2049,15 +2049,25 @@ fn pending(
             // succeeded (stderr notes vanish into `2>/dev/null`).
             let mut truncation: Option<(usize, usize)> = None;
             if let Some(reason_text) = reason.as_deref() {
-                let submitted = reason_text.chars().count();
-                if submitted > NEVER_REASON_CAP_CHARS {
+                // Measured on the whitespace-collapsed text, the same mirror
+                // of the store's `clean_text` the add lane pins: the store
+                // collapses BEFORE taking the 80 characters, so measuring
+                // the raw argv string over-reports for input padded with
+                // newlines or runs of spaces and published false
+                // `truncated`/`submitted_characters` facts (round-41 review
+                // — the exact bug class the add lane fixed two hunks
+                // earlier).
+                let collapsed_count = clean_text_like_feature(reason_text, usize::MAX)
+                    .chars()
+                    .count();
+                if collapsed_count > NEVER_REASON_CAP_CHARS {
                     note_truncation(
                         "pending never --reason",
-                        submitted,
+                        collapsed_count,
                         NEVER_REASON_CAP_CHARS,
                         "the never-store reason field",
                     );
-                    truncation = Some((submitted, NEVER_REASON_CAP_CHARS));
+                    truncation = Some((collapsed_count, NEVER_REASON_CAP_CHARS));
                 }
             }
             let event = feature::never_pending_memory(id, reason)

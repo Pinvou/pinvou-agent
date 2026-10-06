@@ -819,6 +819,32 @@ impl SessionAgentStore {
         if from == to {
             return Ok(RebindWorkspacePrefixOutcome::default());
         }
+        // Round-41 review: `projects rebind` reaches this lane from a second
+        // process (the CLI), so the index rewrite carries the same discipline
+        // as `remove_for_second_process`: cross-process section lock → fresh
+        // reload → mutate → persist. Without it, this whole-table persist
+        // writes the store's BOOT-ERA snapshot: a GUI session bind landing
+        // while the rebind runs is silently dropped from the index (ACP
+        // sessions keep no workspace sidecar after bind, so nothing restores
+        // it — the run exits 0 and the loss is undisclosed), and a corrupt
+        // index is replaced by a (near-)empty table instead of being
+        // refused. The lock is held across the sidecar passes too — they
+        // consult the reloaded index memory through `binding_owner_exists`.
+        // Disclosed residual: the GUI's in-process mutators persist without
+        // this lock (same-process consistency is the records lock's job),
+        // so this closes the cross-process half of the hazard.
+        let lock_path = self.path.with_extension("json.lock");
+        let _section = super::cross_process_section_lock(&lock_path, "session-agents");
+        if self.path.exists() {
+            let raw = fs::read_to_string(&self.path)
+                .with_context(|| format!("读取 {} 失败", self.path.display()))?;
+            let fresh: HashMap<String, SessionAgentRecord> =
+                serde_json::from_str::<AgentStoreFile>(&raw)
+                    .with_context(|| format!("解析 {} 失败", self.path.display()))?
+                    .sessions;
+            let mut records = self.records.write();
+            *records = fresh;
+        }
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
         let mut sidecar_final_stale: Vec<String> = Vec::new();
         // Original bindings of the mutated records, kept so a persist
@@ -2054,6 +2080,129 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Round-41 review: the rebind is a second-process wholesale write, so it
+    /// must reload the index under the section lock instead of persisting its
+    /// boot-era snapshot. A GUI session bind landing after the rebind
+    /// process booted (s2 below) has no workspace sidecar to restore it —
+    /// the whole-table persist used to drop it silently.
+    #[test]
+    fn rebind_workspace_prefix_persists_a_record_bound_after_this_process_booted() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-second-process-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // `store` is the rebind process: its memory holds only s1 (the
+        // boot-era snapshot).
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(from.join("sub")).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        store
+            .set_acp_workspace(
+                "s1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+            )
+            .unwrap();
+
+        // The GUI bind landing mid-rebind: s2 enters the on-disk index only
+        // (ACP sessions keep no workspace sidecar after bind). The record is
+        // built through a real `set_acp_workspace` on a scratch store so the
+        // serialized shape stays the production one, then spliced into the
+        // index the way the GUI's own persist would have.
+        let scratch_store = SessionAgentStore {
+            path: root.join("scratch-index.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        scratch_store
+            .set_acp_workspace(
+                "s2",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.join("sub")),
+            )
+            .unwrap();
+        let mut index: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store.path).unwrap()).unwrap();
+        let scratch: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&scratch_store.path).unwrap()).unwrap();
+        index["sessions"]["s2"] = scratch["sessions"]["s2"].clone();
+        fs::write(&store.path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+        // ACP sessions keep no workspace sidecar, but the owner-existence
+        // gate reads a record file in the sidecar root — create the root the
+        // way a native session's bind would have.
+        fs::create_dir_all(code_session_sidecar_root(&store.path)).unwrap();
+        touch_owner_record(&store.path, "s1");
+        touch_owner_record(&store.path, "s2");
+
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut ids: Vec<&str> = outcome
+            .affected
+            .iter()
+            .map(|(sid, _)| sid.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["s1", "s2"]);
+
+        // Both records survive the whole-table persist, moved onto `to`.
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store.path).unwrap()).unwrap();
+        assert_eq!(
+            persisted["sessions"]["s1"]["workspace_path"].as_str(),
+            Some(to.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            persisted["sessions"]["s2"]["workspace_path"].as_str(),
+            Some(to.join("sub").to_string_lossy().as_ref()),
+            "a bind landing after this process booted must not be dropped by the rebind persist"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-41 review: a corrupt index must fail the rebind (fail-closed,
+    /// like `remove_for_second_process` and the plain lane's
+    /// REBIND_LEGACY_TABLE_CORRUPT), not be replaced by an (near-)empty
+    /// table persist that throws away every recoverable record.
+    #[test]
+    fn rebind_workspace_prefix_refuses_a_corrupt_index_instead_of_emptying_it() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-codex-rebind-corrupt-index-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        fs::write(&store.path, "{ not json").unwrap();
+
+        let outcome = store.rebind_workspace_prefix(&from, &to);
+        assert!(
+            outcome.is_err(),
+            "a corrupt index must be refused, not rewritten"
+        );
+        assert_eq!(
+            fs::read_to_string(&store.path).unwrap(),
+            "{ not json",
+            "the corrupt file is left untouched for recovery"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn rebind_repairs_index_sidecar_disagreement_on_a_rekeyed_rerun() {
         // review #463 round-8 minor 9: run 1 (from→to) delivers the index but
@@ -2154,11 +2303,14 @@ mod tests {
 
         // The run-2 persist-failure end state, constructed directly: the index
         // move rolled back to its pre-run value (`to`), the sidecar write
-        // survived (`to2`).
+        // survived (`to2`). Persisted, because round-41's fresh reload reads
+        // the DISK state — the real run-2 scenario had `to` on disk (run-1
+        // delivered it), not just in memory.
         {
             let mut records = store.records.write();
             records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
         }
+        store.persist().unwrap();
         persist_code_session_sidecar(
             &code_session_sidecar_path(&store.path, "s1"),
             &CodeSessionSidecar {

@@ -110,6 +110,39 @@ fn lock_settings_file() -> std::io::Result<SettingsFileLock> {
     Ok(SettingsFileLock { file })
 }
 
+/// [`load()`](UserPrefs::load) 的时间上限版设置文件锁：规范化持久化是一个
+/// 幂等的优化写（下次 load 会重跑迁移），所以锁被占住时跳过持久化，而不是
+/// 像 [`update_transaction`](UserPrefs::update_transaction) 那样无限阻塞——
+/// 持锁方是毫秒级临界区，正常竞争在数十毫秒内拿到；超时说明对端被挂起
+/// （SIGSTOP/ wedged），此时静默跳过比整文档旧快照写回更安全。
+const NORMALIZATION_PERSIST_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn try_lock_settings_file_bounded() -> std::io::Result<Option<SettingsFileLock>> {
+    let path = super::paths::settings_path().with_file_name("settings.json.lock");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    let deadline = std::time::Instant::now() + NORMALIZATION_PERSIST_LOCK_WAIT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(SettingsFileLock { file })),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
@@ -934,8 +967,32 @@ impl UserPrefs {
             persist_normalized,
             normalization_changed,
         ) {
-            if let Err(e) = prefs.save_unlocked() {
-                eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
+            // Round-41 review: this persist writes the WHOLE document from
+            // this load's snapshot, so without cross-process exclusion it is
+            // exactly the second-writer lost-update race
+            // [`UserPrefs::update_transaction`] closes — and the window is
+            // not sub-millisecond, because the migration arm above can touch
+            // the OS keychain (`migrate_plaintext_api_keys_with_store`)
+            // between the read and this save. A GUI/CLI
+            // `update_transaction` field commit landing in that window would
+            // be silently reverted by this stale-snapshot write. Take the
+            // same settings.json.lock, bounded: on a held lock SKIP the
+            // persist instead of writing unlocked — the normalization is
+            // idempotent and re-runs on the next load, while a stale
+            // full-document write is not recoverable.
+            match try_lock_settings_file_bounded() {
+                Ok(Some(_file_lock)) => {
+                    if let Err(e) = prefs.save_unlocked() {
+                        eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
+                    }
+                }
+                Ok(None) => eprintln!(
+                    "[pinvou3-app] settings normalization save skipped: the settings lock stayed \
+                     held for over {}s (a concurrent writer is wedged?); the migration re-runs \
+                     on the next load",
+                    NORMALIZATION_PERSIST_LOCK_WAIT.as_secs()
+                ),
+                Err(e) => eprintln!("[pinvou3-app] settings normalization save skipped: {e:#}"),
             }
         }
         prefs.sanitize_plaintext_api_keys();
@@ -982,8 +1039,12 @@ impl UserPrefs {
     /// 丢掉先写方的整个改动，两侧都 exit 0）。flock 挂在
     /// `settings.json.lock` 上，跨 load→mutate→save→reload 全程持有，
     /// 持锁进程死亡时由内核释放；持有窗口是毫秒级的一次磁盘往返，阻塞
-    /// 等待对 GUI 无感。`load()` 的规范化持久化与一次性 `save()` 不参与
-    /// 该锁：前者只写幂等的迁移结果，后者本就是整文档覆盖语义。
+    /// 等待对 GUI 无感。`load()` 的规范化持久化参与该锁但用
+    /// `try_lock_settings_file_bounded` 的时间上限变体（round-41 review：该
+    /// 持久化写的是整文档旧快照，且迁移臂会做钥匙串 I/O，读→写窗口不是亚毫秒
+    /// ——无锁时并发 `update_transaction` 的字段提交会被静默回退；锁被占住时
+    /// 跳过持久化，幂等迁移下次 load 重跑）。一次性 `save()` 仍不参与该锁：
+    /// 它本就是整文档覆盖语义。
     pub fn update_transaction<F>(mutate: F) -> Result<Self, String>
     where
         F: FnOnce(&mut Self) -> Result<(), String>,
@@ -1464,6 +1525,94 @@ mod tests {
         let persisted = std::fs::read_to_string(&settings_path).expect("read normalized prefs");
         assert!(!persisted.contains("Legacy local alias"));
 
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        match old_home {
+            // SAFETY: holding ENV_LOCK (first line of this test); restore-side
+            // env writes serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    /// Round-41 review: the load-time normalization persist writes the whole
+    /// document from this load's snapshot, so it must not land unlocked while
+    /// another process holds settings.json.lock mid-`update_transaction` —
+    /// the stale snapshot would revert that writer's committed fields. With
+    /// the lock held past the bounded wait, the persist is SKIPPED (the
+    /// legacy value survives on disk and the migration re-runs on the next
+    /// unlocked load) instead of writing the stale document.
+    #[test]
+    fn load_skips_the_normalization_persist_while_the_settings_lock_is_held() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let temporary_home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-normalization-lock-skip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        // SAFETY: holding ENV_LOCK (first line of this test); env writes in the
+        // test process are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
+
+        // Same legacy-local-alias fixture as the persisting twin above: load()
+        // observes a normalization change and wants to persist it.
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            alias: Some("Legacy local alias".into()),
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("local-model".into());
+        let settings_path = super::super::paths::settings_path();
+        let legacy_bytes = serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
+        std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
+
+        // Hold the settings.json.lock the way a concurrent `update_transaction`
+        // on the other surface would, for longer than the bounded persist's
+        // wait, and keep the guard across the load.
+        let lock_path = settings_path.with_file_name("settings.json.lock");
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .expect("open settings lock file");
+        held.lock().expect("hold the settings lock");
+
+        let loaded = UserPrefs::load();
+        // The in-memory value is still normalized (the migration is local);
+        // what must NOT happen is the whole-document persist of the stale
+        // snapshot over the concurrent writer's head.
+        assert!(loaded.active_model().unwrap().alias.is_none());
+        let persisted = std::fs::read_to_string(&settings_path).expect("read legacy prefs");
+        assert_eq!(
+            persisted, legacy_bytes,
+            "the normalization persist must be skipped while the settings lock is held"
+        );
+
+        drop(held);
         let _ = std::fs::remove_dir_all(&temporary_home);
         match old_home {
             // SAFETY: holding ENV_LOCK (first line of this test); restore-side

@@ -103,4 +103,4 @@ targetRules = ["slack-legacy-workspace-token"]
 condition = "AND"
 regexTarget = "line"
 paths = ['''^pinvou3-app/src-tauri/src/platform/credential_store\.rs$''']
-regexes = ['''xox[aprs]-shortexample''']
+regexes = ['''xox[ar]-shortexample''']
