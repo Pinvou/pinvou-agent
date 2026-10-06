@@ -2058,8 +2058,11 @@ jobs:
     # The smoke keeps the engine's production 1500 s repair budget; a
     # pathological all-sources-stall run must clip after the engine's own
     # diagnostics, not before them, so the cap needs headroom over checkout +
-    # setup + the toolchain copy + that budget.
-    timeout-minutes: 40
+    # setup + the toolchain copy, that budget, and its documented overshoot:
+    # after the final budget check the engine can still burn one bounded
+    # install attempt and one bounded uninstall reset (~650 s each in the
+    # smoke's configuration).
+    timeout-minutes: 50
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -2072,6 +2075,8 @@ jobs:
       - name: Install the configured Rust toolchain
         shell: pwsh
         run: |
+          # No --force: the runner's toolchain home is pristine, and forced
+          # reinstalls are the repair engine's own job under test below.
           $config = Get-Content pinvou3-app/src-tauri/rust-toolchain.toml -Raw
           $match = [regex]::Match($config, '(?m)^\s*channel\s*=\s*"([^"]+)"')
           if (-not $match.Success) {
