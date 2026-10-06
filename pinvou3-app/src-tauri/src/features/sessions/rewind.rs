@@ -67,6 +67,32 @@ fn lock_rewound_turns_file() -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// Non-blocking twin of [`lock_rewound_turns_file`] for callers that must
+/// degrade instead of wait: `None` means the lock is held (or the lock file
+/// could not be opened) and the caller skips with a note. Round-42 review:
+/// the purge path promised exactly this best-effort semantics but used the
+/// blocking acquire — a peer wedged while holding the flock would hang the
+/// delete/retention caller forever instead of skipping.
+fn try_lock_rewound_turns_file() -> Option<std::fs::File> {
+    let path = rewound_turns_path().with_extension("json.lock");
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return None;
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .ok()?;
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        Err(std::fs::TryLockError::Error(_)) => None,
+    }
+}
+
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
 const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 每个会话保留的回退备份条数上限（与 checkpoint LRU 上限一致），超出裁掉最老，
@@ -125,7 +151,38 @@ fn rewound_turns_path() -> PathBuf {
     crate::platform::paths::sessions_root().join(REWOUND_TURNS_FILE)
 }
 
+/// Who is responsible for the cross-process flock when a corrupt sidecar
+/// needs quarantining. Round-42 review: the unlocked READ paths
+/// (`latest_rewound_turns_record`/`rewound_turns_records`) used to rename
+/// without the lock, so a rename racing a lock-holding writer could move
+/// the writer's freshly rebuilt map (the reader had parsed stale corrupt
+/// bytes) into `corrupt-*` — hiding the newest undo records and resetting
+/// the next RMW to empty.
+#[derive(Clone, Copy)]
+enum RewindLoadMode {
+    /// The caller already holds `lock_rewound_turns_file()` (truncate /
+    /// restore / purge): the rename cannot race a peer, quarantine directly.
+    CallerHoldsLock,
+    /// Unlocked read path: take the lock only for the quarantine, and
+    /// re-read under it first — a writer that rebuilt the file since our
+    /// read wins, and the reader returns the FRESH map instead of
+    /// quarantining the peer's good bytes. A held lock means a writer is
+    /// mid-RMW: leave the file alone entirely (the writer owns its fate).
+    TryLockAndRecheck,
+}
+
 fn load_rewound_turns_map() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
+    load_rewound_turns_map_with(RewindLoadMode::CallerHoldsLock)
+}
+
+/// The unlocked-read variant: see [`RewindLoadMode::TryLockAndRecheck`].
+fn load_rewound_turns_map_for_read() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
+    load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+}
+
+fn load_rewound_turns_map_with(
+    mode: RewindLoadMode,
+) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
     let path = rewound_turns_path();
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -142,14 +199,57 @@ fn load_rewound_turns_map() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> 
             // 入口消失），胜过整个功能报错卡死。
             let quarantine =
                 path.with_extension(format!("corrupt-{}", Utc::now().format("%Y%m%d%H%M%S")));
-            eprintln!(
-                "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
-                quarantine.display()
-            );
-            if let Err(error) = std::fs::rename(&path, &quarantine) {
-                eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+            match mode {
+                RewindLoadMode::CallerHoldsLock => {
+                    eprintln!(
+                        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+                        quarantine.display()
+                    );
+                    if let Err(error) = std::fs::rename(&path, &quarantine) {
+                        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+                    }
+                    Ok(HashMap::new())
+                }
+                RewindLoadMode::TryLockAndRecheck => {
+                    match try_lock_rewound_turns_file() {
+                        Some(_lock) => {
+                            // Re-read under the lock: our corrupt bytes may be
+                            // stale — a peer writer may have already rebuilt the
+                            // file between our read and this quarantine.
+                            match std::fs::read(&path).map_err(anyhow::Error::new).and_then(
+                                |fresh| {
+                                    serde_json::from_slice(&fresh)
+                                        .map_err(anyhow::Error::new)
+                                        .map(|map: HashMap<String, Vec<RewoundTurnsRecord>>| map)
+                                },
+                            ) {
+                                Ok(fresh_map) => {
+                                    eprintln!(
+                                        "[sessions] 回退备份曾在读取后被并发写方重建，按新内容继续"
+                                    );
+                                    Ok(fresh_map)
+                                }
+                                Err(_still_corrupt) => {
+                                    eprintln!(
+                                        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+                                        quarantine.display()
+                                    );
+                                    if let Err(error) = std::fs::rename(&path, &quarantine) {
+                                        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+                                    }
+                                    Ok(HashMap::new())
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!(
+                                "[sessions] 回退备份损坏，但跨进程锁被写方持有——不动文件，按空继续（写方负责隔离或重建）: {parse_error:#}"
+                            );
+                            Ok(HashMap::new())
+                        }
+                    }
+                }
             }
-            Ok(HashMap::new())
         }
     }
 }
@@ -256,7 +356,7 @@ impl SessionStore {
     /// 最新一条回退备份记录（`undo_last_rewind` 的可反悔判定与恢复数据源）。
     pub fn latest_rewound_turns_record(&self, id: &str) -> Result<Option<RewoundTurnsRecord>> {
         validate_session_id(id)?;
-        Ok(load_rewound_turns_map()?
+        Ok(load_rewound_turns_map_for_read()?
             .get(id)
             .and_then(|records| records.last().cloned()))
     }
@@ -266,7 +366,7 @@ impl SessionStore {
     /// 落盘，记录存在即截断已生效）。
     pub fn rewound_turns_records(&self, id: &str) -> Result<Vec<RewoundTurnsRecord>> {
         validate_session_id(id)?;
-        Ok(load_rewound_turns_map()?
+        Ok(load_rewound_turns_map_for_read()?
             .get(id)
             .cloned()
             .unwrap_or_default())
@@ -357,10 +457,12 @@ impl SessionStore {
         // lock unavailable it skips with a note instead of failing the
         // delete/retention caller (a skipped purge only leaves orphaned
         // records, its documented worst case).
-        let _cross_process = match lock_rewound_turns_file() {
-            Ok(guard) => guard,
-            Err(error) => {
-                eprintln!("[sessions] rewind backup lock unavailable, purge skipped: {error:#}");
+        let _cross_process = match try_lock_rewound_turns_file() {
+            Some(guard) => guard,
+            None => {
+                eprintln!(
+                    "[sessions] rewind backup lock held by another writer, purge skipped (orphaned records are the documented worst case)"
+                );
                 return;
             }
         };

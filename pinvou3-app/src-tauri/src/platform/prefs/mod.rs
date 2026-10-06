@@ -150,9 +150,13 @@ fn try_lock_settings_file_bounded() -> std::io::Result<Option<SettingsFileLock>>
 /// defaults snapshot — the exact whole-file last-writer-wins shape the
 /// flock closed for transactions. Failure keeps the old silent-degrade
 /// contract (boot must not fail over boot defaults); returns whether a
-/// defaults file was written.
+/// defaults file was written. Round-42 review: the acquire is the BOUNDED
+/// try-lock like every other boot-adjacent consumer — the plain blocking
+/// lock let a wedged CLI holder (a SIGSTOP'd writer, a keychain prompt
+/// under `update_transaction`) stall the GUI's window indefinitely, where
+/// the defaults write is idempotent and simply retries next boot.
 pub(crate) fn save_boot_defaults_if_absent(prefs: &UserPrefs) -> bool {
-    let Ok(_file_lock) = lock_settings_file() else {
+    let Ok(Some(_file_lock)) = try_lock_settings_file_bounded() else {
         return false;
     };
     if super::paths::settings_path().exists() {
@@ -996,32 +1000,56 @@ impl UserPrefs {
             persist_normalized,
             normalization_changed,
         ) {
-            // Round-41 review: this persist writes the WHOLE document from
-            // this load's snapshot, so without cross-process exclusion it is
-            // exactly the second-writer lost-update race
-            // [`UserPrefs::update_transaction`] closes — and the window is
-            // not sub-millisecond, because the migration arm above can touch
-            // the OS keychain (`migrate_plaintext_api_keys_with_store`)
-            // between the read and this save. A GUI/CLI
-            // `update_transaction` field commit landing in that window would
-            // be silently reverted by this stale-snapshot write. Take the
-            // same settings.json.lock, bounded: on a held lock SKIP the
-            // persist instead of writing unlocked — the normalization is
-            // idempotent and re-runs on the next load, while a stale
-            // full-document write is not recoverable.
-            match try_lock_settings_file_bounded() {
-                Ok(Some(_file_lock)) => {
-                    if let Err(e) = prefs.save_unlocked() {
-                        eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
+            // Round-42 review (extends round-41 M1 to the read lane): the
+            // search migration arm sets `settings_sanitized` before the
+            // keychain move and never rolls it back, so a broken credential
+            // store still reports a normalization change here. Persisting
+            // would rewrite settings.json through `save_unlocked`'s
+            // unconditional sanitize and erase the plaintext key from its
+            // only durable location — the exact hazard
+            // [`UserPrefs::update_transaction`] refuses at its gate, reached
+            // through every persisting read (`UserPrefs::load()`). SKIP the
+            // persist instead: it is idempotent and re-runs once the
+            // credential store works again.
+            if !migration.failed_model_ids.is_empty()
+                || !migration.failed_search_providers.is_empty()
+            {
+                eprintln!(
+                    "[pinvou3-app] settings normalization save skipped: the credential store \
+                     rejected {} model and {} search credential migration(s); settings.json is \
+                     left untouched so the legacy plaintext key survives (repair the credential \
+                     store or select the file backend, then rerun)",
+                    migration.failed_model_ids.len(),
+                    migration.failed_search_providers.len()
+                );
+            } else {
+                // Round-41 review: this persist writes the WHOLE document from
+                // this load's snapshot, so without cross-process exclusion it is
+                // exactly the second-writer lost-update race
+                // [`UserPrefs::update_transaction`] closes — and the window is
+                // not sub-millisecond, because the migration arm above can touch
+                // the OS keychain (`migrate_plaintext_api_keys_with_store`)
+                // between the read and this save. A GUI/CLI
+                // `update_transaction` field commit landing in that window would
+                // be silently reverted by this stale-snapshot write. Take the
+                // same settings.json.lock, bounded: on a held lock SKIP the
+                // persist instead of writing unlocked — the normalization is
+                // idempotent and re-runs on the next load, while a stale
+                // full-document write is not recoverable.
+                match try_lock_settings_file_bounded() {
+                    Ok(Some(_file_lock)) => {
+                        if let Err(e) = prefs.save_unlocked() {
+                            eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
+                        }
                     }
+                    Ok(None) => eprintln!(
+                        "[pinvou3-app] settings normalization save skipped: the settings lock stayed \
+                         held for over {}s (a concurrent writer is wedged?); the migration re-runs \
+                         on the next load",
+                        NORMALIZATION_PERSIST_LOCK_WAIT.as_secs()
+                    ),
+                    Err(e) => eprintln!("[pinvou3-app] settings normalization save skipped: {e:#}"),
                 }
-                Ok(None) => eprintln!(
-                    "[pinvou3-app] settings normalization save skipped: the settings lock stayed \
-                     held for over {}s (a concurrent writer is wedged?); the migration re-runs \
-                     on the next load",
-                    NORMALIZATION_PERSIST_LOCK_WAIT.as_secs()
-                ),
-                Err(e) => eprintln!("[pinvou3-app] settings normalization save skipped: {e:#}"),
             }
         }
         prefs.sanitize_plaintext_api_keys();
@@ -1649,6 +1677,128 @@ mod tests {
         );
 
         drop(held);
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        match old_home {
+            // SAFETY: holding ENV_LOCK (first line of this test); restore-side
+            // env writes serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    /// Round-42 review (extends round-41 M1 to the read lane): the
+    /// load-time normalization persist must not land when the credential
+    /// migration failed. The search arm sets `settings_sanitized` before the
+    /// keychain move, so a broken store still reports a change; persisting
+    /// would run `save_unlocked`'s unconditional sanitize and erase the
+    /// plaintext key from its only durable location — through a pure
+    /// `UserPrefs::load()` (every `models list/show/test`, `settings get`
+    /// read). The persist is skipped instead and re-runs once the store
+    /// works; settings.json keeps both the legacy plaintext key and the
+    /// unrelated pending normalization.
+    #[test]
+    fn load_skips_the_normalization_persist_when_credential_migration_failed() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                // SAFETY: holding ENV_LOCK (acquired on this test's first
+                // line); restore-side env writes serialized.
+                for (name, value) in self.0.drain(..) {
+                    match value {
+                        Some(v) => unsafe { std::env::set_var(name, v) },
+                        None => unsafe { std::env::remove_var(name) },
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(vec![
+            (
+                "CODEWHALE_SECRET_BACKEND",
+                std::env::var_os("CODEWHALE_SECRET_BACKEND"),
+            ),
+            ("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME")),
+            ("HOME", std::env::var_os("HOME")),
+            ("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY")),
+        ]);
+        let temporary_home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-migration-fail-skip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        // SAFETY: holding ENV_LOCK (first line of this test); env writes in the
+        // test process are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
+        unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", "file") };
+        // A relative credential home makes the facade's file store refuse
+        // writes (same degradation the CLI write-lane contract test uses).
+        unsafe { std::env::set_var("CODEWHALE_HOME", "relative-broken-home") };
+        unsafe { std::env::set_var("HOME", "relative-broken-home") };
+        unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+
+        // Same legacy-local-alias fixture as the persisting twins (a real
+        // normalization change independent of the keychain) plus a legacy
+        // plaintext model key with no stored reference: the migration arm
+        // attempts the keychain move and fails.
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            alias: Some("Legacy local alias".into()),
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("local-model".into());
+        let settings_path = super::super::paths::settings_path();
+        let legacy_bytes = serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
+        // `SavedModel::api_key` is `skip_serializing`, so the legacy plaintext
+        // key must be injected as a value-level edit of the known-good
+        // document (same fixture technique as the CLI write-lane contract
+        // test) — that IS the legacy on-disk shape this migration scrubs.
+        let mut document: serde_json::Value =
+            serde_json::from_str(&legacy_bytes).expect("parse legacy prefs");
+        document["advanced"]["saved_models"][0]["api_key"] =
+            serde_json::Value::String("sk-legacy-plaintext-r42".to_owned());
+        let legacy_bytes =
+            serde_json::to_string_pretty(&document).expect("serialize legacy prefs with key");
+        std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
+
+        let loaded = UserPrefs::load();
+        // The in-memory record is still marked unavailable (the store said
+        // so); what must NOT happen is the whole-document persist that
+        // sanitizes the plaintext key out of its only durable copy.
+        let persisted = std::fs::read_to_string(&settings_path).expect("read legacy prefs");
+        assert!(
+            persisted.contains("sk-legacy-plaintext-r42"),
+            "a failed credential migration must keep the legacy plaintext key on disk: \
+             {persisted}"
+        );
+        assert!(
+            persisted.contains("Legacy local alias"),
+            "the whole normalization persist must be skipped on a failed migration: {persisted}"
+        );
+        assert!(loaded.active_model().unwrap().alias.is_none());
+
         let _ = std::fs::remove_dir_all(&temporary_home);
         match old_home {
             // SAFETY: holding ENV_LOCK (first line of this test); restore-side

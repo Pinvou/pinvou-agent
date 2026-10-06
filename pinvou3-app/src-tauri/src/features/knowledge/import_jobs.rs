@@ -290,6 +290,21 @@ impl ImportJobStore {
         Ok(touched > 0)
     }
 
+    /// Test seam: freeze a job row's heartbeat at a fixed epoch second — the
+    /// crashed-owner shape the freshness guards
+    /// (`KnowledgeService::start_index`,
+    /// `refuse_fresh_foreign_running_import`) must degrade to allow on.
+    #[cfg(test)]
+    pub(crate) fn test_freeze_updated_at(&self, job_id: &str, updated_at: i64) -> usize {
+        self.conn
+            .lock()
+            .execute(
+                "UPDATE knowledge_import_jobs SET updated_at=?2 WHERE id=?1",
+                params![job_id, updated_at],
+            )
+            .unwrap()
+    }
+
     /// Park a running job at `interrupted` and return whether the transition
     /// APPLIED. A `false` return means the job was already terminal (the
     /// last item finished between the caller's state read and this call),

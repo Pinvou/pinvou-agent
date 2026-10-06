@@ -536,6 +536,7 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -578,6 +579,7 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -830,9 +832,10 @@ impl SessionAgentStore {
         // index is replaced by a (near-)empty table instead of being
         // refused. The lock is held across the sidecar passes too — they
         // consult the reloaded index memory through `binding_owner_exists`.
-        // Disclosed residual: the GUI's in-process mutators persist without
-        // this lock (same-process consistency is the records lock's job),
-        // so this closes the cross-process half of the hazard.
+        // Round-42 review: the residual is now closed from the other side —
+        // every GUI mutator that whole-table-persists runs the same
+        // lock-and-reload discipline (see `lock_and_reload`), so no surface
+        // persists a stale boot-era table over a peer's committed write.
         let lock_path = self.path.with_extension("json.lock");
         let _section = super::cross_process_section_lock(&lock_path, "session-agents");
         if self.path.exists() {
@@ -1124,6 +1127,13 @@ impl SessionAgentStore {
         &self,
         targets: &[(String, PathBuf)],
     ) -> Result<Vec<String>> {
+        // Round-42 review: same whole-table-persist hazard as the other GUI
+        // mutators — the repair runs right after `rebind_workspace_prefix`
+        // released the section lock, so a concurrent writer in that window
+        // would be reverted by this whole-table persist. Lock + fresh reload
+        // covers the read phase and the `commit_index_rekeys` write (which
+        // stays lock-free for its in-rebind caller).
+        let _section = self.lock_and_reload()?;
         let mut rekeys = Vec::new();
         {
             let records = self.records.read();
@@ -1151,6 +1161,7 @@ impl SessionAgentStore {
         model_id: Option<String>,
         config_values: HashMap<String, String>,
     ) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -1175,6 +1186,7 @@ impl SessionAgentStore {
         config_id: &str,
         value_id: &str,
     ) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -1191,6 +1203,7 @@ impl SessionAgentStore {
     }
 
     pub fn clear_acp_config_value(&self, session_id: &str, config_id: &str) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let Some(record) = records.get_mut(session_id) else {
@@ -1219,6 +1232,7 @@ impl SessionAgentStore {
         {
             anyhow::bail!("恢复的 ACP 会话索引不完整");
         }
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             if records
@@ -1233,12 +1247,43 @@ impl SessionAgentStore {
     }
 
     pub fn remove(&self, session_id: &str) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         self.records.write().remove(session_id);
         self.persist()?;
         // 删除会话时同步清理权威 sidecar，避免残留的 sidecar 让重建后的索引
         // 误恢复一个已删除的原生代码会话。
         remove_code_session_sidecar(&self.path, session_id);
         Ok(())
+    }
+
+    /// Round-42 review: every whole-table persist must observe the disk
+    /// truth under the cross-process section lock. The persist rewrites the
+    /// entire `session-agents.json` from memory, so a mutator running on a
+    /// boot-era snapshot silently reverts another process's committed write
+    /// (a routine GUI config write erasing the CLI `projects rebind` index,
+    /// or a GUI bind resurrecting a CLI-deleted record). Same discipline as
+    /// the round-37/40 reviews closed for the providers store and
+    /// [`Self::remove_for_second_process`]: section lock → fresh reload →
+    /// mutate → persist, and a corrupt index is REFUSED instead of being
+    /// replaced by a stale-table persist. Returns the section guard — the
+    /// caller mutates `self.records` and calls `self.persist()` while it is
+    /// held. `rebind_workspace_prefix` keeps its own inline sequence (it
+    /// must not reload mid-translation) and [`Self::commit_index_rekeys`]
+    /// stays lock-free because its other caller already holds the lock.
+    fn lock_and_reload(&self) -> Result<Option<std::fs::File>> {
+        let lock_path = self.path.with_extension("json.lock");
+        let section = super::cross_process_section_lock(&lock_path, "session-agents");
+        if self.path.exists() {
+            let raw = std::fs::read_to_string(&self.path)
+                .with_context(|| format!("读取 {} 失败", self.path.display()))?;
+            let fresh: HashMap<String, SessionAgentRecord> =
+                serde_json::from_str::<AgentStoreFile>(&raw)
+                    .with_context(|| format!("解析 {} 失败", self.path.display()))?
+                    .sessions;
+            let mut records = self.records.write();
+            *records = fresh;
+        }
+        Ok(section)
     }
 
     /// Second-process removal for the CLI's `sessions delete`
@@ -1852,6 +1897,102 @@ mod tests {
         let record = &persisted.sessions["session-1"];
         assert!(record.mode.is_code());
         assert_eq!(record.backend, AgentBackend::Deepseek);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-42 review: every GUI mutator that whole-table-persists must
+    /// reload the disk truth under the cross-process section lock first.
+    /// A GUI store instance boot-loaded before the CLI committed its writes
+    /// used to persist that stale boot-era table back over them — a routine
+    /// config write silently reverted a completed `projects rebind` (and a
+    /// bind resurrected a CLI-deleted record), with no error anywhere.
+    #[test]
+    fn gui_mutators_reload_under_the_section_lock_instead_of_persisting_a_stale_table() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-session-agents-lock-reload-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let gui = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        gui.set_acp_session("gui-session", "acp-1".to_string(), None, HashMap::new())
+            .unwrap();
+        // The CLI is a separate process committing after the GUI booted.
+        let cli = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        cli.set_acp_session("cli-session", "acp-2".to_string(), None, HashMap::new())
+            .unwrap();
+
+        // The GUI's routine config write must observe the CLI's committed
+        // record instead of reverting it with the boot-era table.
+        gui.set_acp_config_value("gui-session", "model", "glm-5")
+            .unwrap();
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            on_disk.sessions.contains_key("cli-session"),
+            "a GUI config write must not revert the CLI's committed record: {:?}",
+            on_disk.sessions.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            on_disk.sessions["gui-session"]
+                .acp_config_values
+                .get("model"),
+            Some(&"glm-5".to_string())
+        );
+
+        // Same discipline for remove: a stale-table persist must not
+        // resurrect the CLI-side removed record.
+        cli.remove_for_second_process("cli-session").unwrap();
+        gui.bind_code_native_session("gui-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            !on_disk.sessions.contains_key("cli-session"),
+            "a GUI bind must not resurrect a CLI-removed record: {:?}",
+            on_disk.sessions.keys().collect::<Vec<_>>()
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-42 review: the lock-and-reload lanes refuse a corrupt index
+    /// (fail-closed) instead of persisting a stale table over it, matching
+    /// `remove_for_second_process` and `rebind_workspace_prefix`.
+    #[test]
+    fn gui_mutators_refuse_a_corrupt_index_instead_of_persisting_over_it() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-session-agents-corrupt-refusal-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let store = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
+            .unwrap();
+        fs::write(&path, "{not json").unwrap();
+        let corrupt_bytes = fs::read(&path).unwrap();
+
+        assert!(
+            store
+                .set_acp_config_value("session-1", "model", "glm-5")
+                .is_err(),
+            "a corrupt index must be refused, not replaced by a stale-table persist"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            corrupt_bytes,
+            "the refused write must leave the corrupt file untouched"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
