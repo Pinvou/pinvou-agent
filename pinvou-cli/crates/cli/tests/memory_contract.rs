@@ -379,6 +379,104 @@ fn memory_profile_set_get_round_trips_through_feature_io() {
     assert_eq!(value["identity"]["assistant_alias"], "Pin");
 }
 
+/// Round-40 review MAJOR: a label the profile normalizer would silently
+/// empty (here: over twelve characters) used to be persisted as an empty
+/// field with exit 0 — wiping the stored value with no note on any
+/// channel. The pre-check must refuse with the stable code and leave the
+/// stored profile untouched.
+#[test]
+fn memory_profile_set_refuses_a_label_the_normalizer_would_wipe() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("profile-wipe-refusal");
+
+    // Seed a stored value the failed update must not destroy.
+    run_ok(&["pinvou", "memory", "profile", "set", "--call-name", "Alice"]);
+
+    let error = expect_command_error(&[
+        "pinvou",
+        "memory",
+        "profile",
+        "set",
+        "--call-name",
+        "Christian Wolf",
+    ]);
+    let error = error.to_string();
+    assert!(
+        error.starts_with("memory_profile_label_rejected"),
+        "the refusal must carry the stable code: {error}"
+    );
+
+    // The stored value survived, on the same feature io the GUI reads.
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
+    assert_eq!(
+        profile.identity.call_name, "Alice",
+        "a rejected label must not wipe the stored call name"
+    );
+
+    // A label that only needs the punctuation strip still applies (the
+    // rule refuses the WIPE shape, not normalization itself).
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "profile",
+        "set",
+        "--call-name",
+        "Alice!",
+    ]);
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
+    assert_eq!(profile.identity.call_name, "Alice");
+}
+
+/// Round-40 review MINOR: `pending never --reason` truncates at the store's
+/// 80-character cap; the same dual-channel disclosure the add/update lanes
+/// carry (stderr note before the write, `truncated` fields in the output
+/// after it) must fire here too.
+#[test]
+fn pending_never_reason_over_the_cap_discloses_the_truncation() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("never-reason-cap");
+
+    // Seed one pending item to act on (the feature-layer enqueue `add`
+    // uses, minus the confirm — a confirmed row is no longer pending).
+    let item = enqueue_fixture("preference", "prefer concise answers");
+    let id = item.id;
+
+    let long_reason = "r".repeat(120);
+    let parsed = parse_args(vec![
+        "pinvou",
+        "memory",
+        "pending",
+        "never",
+        &id,
+        "--reason",
+        &long_reason,
+        "--output",
+        "json",
+    ])
+    .expect("valid never command");
+    // The stderr note goes to the process's real stderr (`note!`), which
+    // this in-process harness cannot capture; the output-channel half is
+    // the assertable contract here (the stderr half is the same
+    // `note_truncation` helper the add/update lanes' tested disclosures
+    // share).
+    let outcome = execute(parsed).expect("never with a seeded pending row");
+    assert!(
+        outcome.stdout.contains("\"truncated\":true"),
+        "the JSON must carry the truncation fact: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("\"submitted_characters\":120"),
+        "the JSON must carry the submitted count: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("\"stored_characters\":80"),
+        "the JSON must carry the stored count: {}",
+        outcome.stdout
+    );
+}
+
 /// The docs row promises the stable `memory_add_failed` code for write-time
 /// refusals (sensitive/task-like content). Round-37 review: no test drove
 /// the refusal through the CLI, so a reworded or mis-routed code passed the

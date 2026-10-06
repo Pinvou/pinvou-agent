@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -661,7 +661,12 @@ impl ProductHeadlessBackend {
 
 /// Upper bound on staged attachments; shared with the agent request path so
 /// the two headless pipelines cannot drift apart.
-pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
+/// `pub` for the headless CLI's `agent run --attach` pre-boot gate
+/// (round-40 review): the CLI refuses over-cap attachments BEFORE the
+/// windowless host boots — the exact "doomed after expensive setup" the
+/// engine-side `validate_attachments` check runs too late to prevent — and
+/// consumes these constants rather than drifting copies.
+pub const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// Per-attachment size cap in bytes (20 MiB).
 /// Same cap the staging copier (`copy_bounded` at the shared call sites)
 /// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
@@ -673,9 +678,9 @@ pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// constants are separate values — an alias can never drift and therefore
 /// can never fail the assert the comment there promises. Raise both
 /// together or the assert fires.
-pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 /// Aggregate size cap across one attachment batch (100 MiB).
-pub(crate) const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
 fn is_safe_attachment_name(name: &str) -> bool {
     !name.is_empty()
@@ -1352,6 +1357,14 @@ where
     crate::install_rustls_provider();
     crate::ensure_release_env();
     crate::startup_process_env();
+    if BARE_HOST_TAKEN
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        anyhow::bail!(
+            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a              second runtime, and this helper must stay the process's only host lane"
+        );
+    }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)
@@ -1490,6 +1503,9 @@ where
 /// panics if a runtime was already initialized in this process, so this
 /// helper must stay at-most-once per process and never run beside another
 /// host lane.
+/// Process latch for [`run_bare_host`]'s at-most-once precondition.
+static BARE_HOST_TAKEN: AtomicBool = AtomicBool::new(false);
+
 pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,
@@ -1499,6 +1515,14 @@ where
     crate::install_rustls_provider();
     crate::ensure_release_env();
     crate::startup_process_env();
+    if BARE_HOST_TAKEN
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        anyhow::bail!(
+            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a              second runtime, and this helper must stay the process's only host lane"
+        );
+    }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)

@@ -19,7 +19,9 @@
 //!   scan of its own to signal.
 //! - collections list/create/update/delete → `KnowledgeService::l1()`
 //!   (`L1Store` CRUD). Delete mirrors GUI `kb_collection_delete`:
-//!   `cancel_index_for_collection`, `delete_collection` (which cascades the
+//!   named-`cancel_index_job` of the collection's live job (read once, so
+//!   a job flipping terminal mid-delete can never re-target another
+//!   collection's import), `delete_collection` (which cascades the
 //!   collection's import-job rows), and the mount sweep stays with the
 //!   desktop app's own surface (`SessionStore` mounts live in per-process
 //!   memory, so no CLI-side sweep exists — and no session store is booted).
@@ -1312,15 +1314,32 @@ fn collections_delete(id: i64, output: OutputMode) -> Result<CliOutcome, CliErro
     // destructive by intent. It deliberately never runs the GUI's boot
     // recovery of interrupted jobs: `delete_collection` already cascades
     // every import-job row this collection owns (cancel-then-delete via
-    // `cancel_index_for_collection` for a live one, the DELETE for the
+    // the named cancel below for a live one, the DELETE for the
     // rest), so recovery would serve no purpose here and would wedge an
     // unrelated job a live desktop-app process is still importing to
     // `interrupted` on its way to a delete that does not concern it.
     let service = open_service()?;
     ensure_collection_exists(&service, id, "collections delete")?;
-    service
-        .cancel_index_for_collection(id)
-        .map_err(|error| feature_error("collections delete", error))?;
+    // Round-40 review: cancel by NAME. `cancel_index_for_collection`
+    // re-derives the target from a second `index_status()` read, so a job
+    // leaving the live tier inside that window (it finished, or the user
+    // cancelled it in the desktop app) made this delete cancel whichever
+    // job had become latest — an import the caller never named — and park
+    // its collection mid-import. Read the status once and cancel the named
+    // id while it still belongs to this collection and is live. The
+    // sub-second residual (the job flipping terminal between the read and
+    // the named cancel) is the window `cancel_index_job` already carries:
+    // a terminal job is an idempotent no-op there, never another
+    // collection's job.
+    let status = service.index_status();
+    let live_job = status
+        .job_id
+        .filter(|_| status.collection_id == id && (status.running || status.resumable));
+    if let Some(job_id) = live_job.as_deref() {
+        service
+            .cancel_index_job(job_id)
+            .map_err(|error| feature_error("collections delete", error))?;
+    }
     service
         .l1()
         .delete_collection(id)
@@ -1859,14 +1878,16 @@ fn wait_for_terminal_job(
             };
             return Err(CliError::failed(format!(
                 "{operation}: index job {job_id} is still flagged running but reported no \
-                 progress for {}s (done: {}/{}, failed: {}); either the import thread is \
-                 gone or wedged, or a quiet phase (the embedding-model load, or a source \
-                 tree whose walk outlasts this bound — raise PINVOU_KB_IMPORT_STALL_MILLIS \
-                 for huge trees) outran it — {remedy}",
+                 progress for {}s (done: {}/{}, failed: {}, in flight: {}); either the import \
+                 thread is gone or wedged, or a quiet phase (the embedding-model load, a source \
+                 tree whose walk outlasts this bound, or one file whose parse/OCR alone — its \
+                 staging only moves the counters after it finishes — outlasts the bound; raise \
+                 PINVOU_KB_IMPORT_STALL_MILLIS for huge trees) outran it — {remedy}",
                 stall_bound.as_secs(),
                 last.done,
                 last.total,
                 last.failed,
+                last.current_path.as_deref().unwrap_or("(none)")
             )));
         }
         // The poll step stays at 50 ms for real imports, but a sub-second
@@ -1888,11 +1909,15 @@ fn wait_for_terminal_job(
 /// `updated_at` leads the tuple on purpose (round-37 review MAJOR): the
 /// source-root walk and the embedder-model load run before any item exists,
 /// so the per-item counters cannot move — the importer ticks the job row
-/// during the walk (a heartbeat every 5000 entries). The model load itself
+/// during the walk (a pre-prune raw heartbeat every 5000 enumerated entries)
+/// and at each item claim. The model load itself
 /// has NO tick (nothing can run beside it in-process): a load outlasting
 /// the bound is interrupted and stays resumable — the remedy text names
 /// that quiet phase, and round-40 review scoped the docstrings claiming
-/// full coverage down to this reality.
+/// full coverage down to this reality. A single file whose parse alone
+/// outlasts the bound is the third quiet phase (the staged counters only
+/// move once the parse finishes); the stall report names it and carries the
+/// in-flight path.
 fn job_signature(state: &IndexState) -> (Option<i64>, u64, u64, u64, u64, Option<String>) {
     (
         state.updated_at,

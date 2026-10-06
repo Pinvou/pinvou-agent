@@ -641,13 +641,9 @@ fn migration_keeps_id(id: &str) -> bool {
     !crate::features::marketplace::builtin::is_builtin_tool(id)
 }
 
-/// Maps a user-supplied raw id to the package id the persisted list stores,
-/// for headless callers (the CLI's toggle read-back verification). A raw
-/// skill id is conditionally re-claimed to its owner package, so verifying
-/// against the raw id yields false positives.
-pub fn package_id_for(raw: &str) -> String {
-    to_package_id(raw)
-}
+// Round-40 review: the CLI-facing duplicate of `resolve_pack_owner_id` is
+// gone — the CLI now imports that name, so one operation has one public
+// symbol and the two cannot drift.
 
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时

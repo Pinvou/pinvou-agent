@@ -17,11 +17,11 @@ pub mod paths;
 pub mod prefs;
 pub(crate) mod process;
 // Targeted re-export: the module itself stays crate-private, but the CLI's
-// Windows kill tree needs the hardened resolution of `external_command`
-// across the crate boundary (`pinvou3_lib::platform::external_command`).
-// Item-level `pub` inside a `pub(crate)` module is capped at crate
-// visibility, so without this re-export the external consumer cannot name
-// the path.
+// Windows kill tree needs `external_command` across the crate boundary
+// (`pinvou3_lib::platform::external_command`) so both surfaces resolve a
+// bare name identically. Item-level `pub` inside a `pub(crate)` module is
+// capped at crate visibility, so without this re-export the external
+// consumer cannot name the path.
 pub use process::external_command;
 // Same crate-boundary shape as `external_command` above: the headless CLI
 // verifies downloaded artifacts (connector CLI binaries, staged voice
@@ -42,13 +42,12 @@ pub use download::redact_url_credentials_in_text;
 // The projects rebind lane folds stored paths through the OS-guaranteed
 // identity equivalence before comparing: on Windows, a case/separator
 // spelling drift between metadata and binding must not re-admit a healthy
-// session for a whole-record rewrite.
+// session for a whole-record rewrite. Round-38: its nesting rejection runs
+// the same folded keys through the same component-boundary predicate the
+// GUI's command layer uses — a raw `Path::starts_with` copy had drifted
+// (Windows case-only spellings slipped past the nested arm).
 pub use os::filesystem_path_identity_key;
 pub use os::path_identity_is_same_or_nested;
-// Round-38: the headless CLI's `projects rebind` nesting rejection runs the
-// same folded keys through the same component-boundary predicate the GUI's
-// command layer uses — a raw `Path::starts_with` copy had drifted (Windows
-// case-only spellings slipped past the nested arm).
 // Same crate-boundary shape as the re-exports above: the headless CLI's
 // file-persisting lanes (`artifacts write`, `feedback submit`) were the last
 // holders of a drifting local stage-then-rename copy; they now consume the

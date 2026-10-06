@@ -1056,6 +1056,59 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
 /// or removing the stale copies opts back into a fresh bootstrap), and
 /// unreadable-at-rest (chmod/EIO). A healthy read and a genuinely fresh
 /// bootstrap (no file, no quarantine copies) still write.
+/// Round-40 review: the foreign-write guard the app's
+/// `VersionedJsonStore::persist` carries and this CLI's read-modify-write
+/// lane lacked. Each surface previously closed only the opposite half of
+/// the race: the app refuses to persist over a foreign write it did not
+/// read, while the CLI's read→mutate→`write_json_atomic` sequence silently
+/// overwrote a GUI persist landing between its read and its rename. The
+/// stamp stats the file when the read starts and is re-checked before the
+/// rename; any observed change (including created↔deleted) refuses with a
+/// retry hint, so the caller's rerun merges against the fresh registry
+/// instead of clobbering it. Same-resolution caveat as the app's Windows
+/// arm: a same-length, same-millisecond clobber aliases the stamp — the
+/// disclosed residual of a metadata-shaped guard.
+#[derive(Clone, Copy)]
+struct SidecarStamp(Option<(u64, u128)>);
+
+impl SidecarStamp {
+    fn capture(path: &Path) -> Self {
+        Self(std::fs::metadata(path).ok().map(|metadata| {
+            (
+                metadata.len(),
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .unwrap_or(0),
+            )
+        }))
+    }
+
+    fn changed(&self, path: &Path) -> bool {
+        Self::capture(path).0 != self.0
+    }
+}
+
+/// `write_json_atomic` behind [`SidecarStamp`]: refuses instead of
+/// clobbering when the file changed since the stamp was captured.
+fn write_json_atomic_checked(
+    path: &Path,
+    value: &serde_json::Value,
+    stamp: &SidecarStamp,
+) -> Result<(), CliError> {
+    if stamp.changed(path) {
+        return Err(CliError::failed(format!(
+            "scheduled_store_busy: the registry {} changed while this command was reading it \
+             (a concurrent desktop-app write landed mid-read); nothing was written — rerun \
+             the command to merge against the fresh registry",
+            path.display()
+        )));
+    }
+    write_json_atomic(path, value)
+}
+
 fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Value, CliError> {
     let quarantine_copies_exist = |path: &Path| -> bool {
         let Some(file_name) = path.file_name() else {
@@ -2327,7 +2380,9 @@ fn write_model_binding(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let mut registry = read_registry_for_write(&store_holder.model_bindings_path(), &["tasks"])?;
+    let model_bindings_path = store_holder.model_bindings_path();
+    let stamp = SidecarStamp::capture(&model_bindings_path);
+    let mut registry = read_registry_for_write(&model_bindings_path, &["tasks"])?;
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     match model_id {
         Some(model_id) => {
@@ -2352,7 +2407,7 @@ fn write_model_binding(
             tasks.remove(id);
         }
     }
-    write_json_atomic(&store_holder.model_bindings_path(), &registry)
+    write_json_atomic_checked(&model_bindings_path, &registry, &stamp)
 }
 
 fn persist_task_kind(
@@ -2360,7 +2415,9 @@ fn persist_task_kind(
     id: &str,
     kind: Option<&str>,
 ) -> Result<(), CliError> {
-    let mut registry = read_registry_for_write(&store_holder.task_kinds_path(), &["tasks"])?;
+    let task_kinds_path = store_holder.task_kinds_path();
+    let stamp = SidecarStamp::capture(&task_kinds_path);
+    let mut registry = read_registry_for_write(&task_kinds_path, &["tasks"])?;
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     match kind {
         Some(kind) => {
@@ -2373,7 +2430,7 @@ fn persist_task_kind(
             tasks.remove(id);
         }
     }
-    write_json_atomic(&store_holder.task_kinds_path(), &registry)
+    write_json_atomic_checked(&task_kinds_path, &registry, &stamp)
 }
 
 fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -2456,7 +2513,9 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     // Same existence gate as the GUI: pin state never lingers for a deleted
     // task.
     store_holder.read_def(id)?;
-    let mut registry = read_registry_for_write(&store_holder.ui_metadata_path(), &["tasks"])?;
+    let ui_metadata_path = store_holder.ui_metadata_path();
+    let stamp = SidecarStamp::capture(&ui_metadata_path);
+    let mut registry = read_registry_for_write(&ui_metadata_path, &["tasks"])?;
     let tasks = registry_tasks_mut(&mut registry, 1)?;
     if pinned {
         let now = now_string();
@@ -2467,7 +2526,7 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     } else {
         tasks.remove(id);
     }
-    write_json_atomic(&store_holder.ui_metadata_path(), &registry)?;
+    write_json_atomic_checked(&ui_metadata_path, &registry, &stamp)?;
     let action = if pinned { "pinned" } else { "unpinned" };
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(
@@ -2601,14 +2660,15 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // rewritten from the default (the snapshot below would silently lose
     // every other task's run history), so the refusal restores the
     // provisional pause like every other blocked path.
-    let mut archive =
-        match read_registry_for_write(&store_holder.history_archive_path(), &["tasks"]) {
-            Ok(archive) => archive,
-            Err(error) => {
-                restore_status(&previous_status);
-                return Err(error);
-            }
-        };
+    let archive_path = store_holder.history_archive_path();
+    let archive_stamp = SidecarStamp::capture(&archive_path);
+    let mut archive = match read_registry_for_write(&archive_path, &["tasks"]) {
+        Ok(archive) => archive,
+        Err(error) => {
+            restore_status(&previous_status);
+            return Err(error);
+        }
+    };
     // Same newer-schema refusal as registry_tasks_mut: an archive written by
     // a newer app version must not be merged and written back. The refusal
     // restores the provisional pause like every other blocked path — a
@@ -2657,7 +2717,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         }
         archive["tasks"] = serde_json::Value::Object(merged);
     }
-    if let Err(error) = write_json_atomic(&store_holder.history_archive_path(), &archive) {
+    // Round-40 review: the commit write carries the foreign-write stamp
+    // guard like every other registry RMW — a GUI archive write landing
+    // between the snapshot read and this rename would otherwise be
+    // silently reverted. The best-effort rollback writes below stay plain:
+    // they only run after THIS write committed, and a refused rollback is
+    // disclosed like any other best-effort failure.
+    if let Err(error) = write_json_atomic_checked(&archive_path, &archive, &archive_stamp) {
         restore_status(&previous_status);
         return Err(error);
     }
@@ -2730,6 +2796,30 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             );
         }
     }
+    // Round-40 review: build the delete receipt BEFORE the sidecar cleanup,
+    // from the registries while they still hold this task's entries — the
+    // GUI deliberately maps its DTO before `task_kinds.remove(id)` ("the
+    // delete receipt keeps the kind so the frontend can render the template
+    // marker"). Mapping after the cleanup passed Null registries, so the
+    // same delete reported `kind: null` (plus absent modelId / pin /
+    // read-state enrichment) from the CLI and a real kind from the app.
+    let receipt = {
+        let sessions = open_sessions_for_enrichment();
+        let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
+        let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
+        let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
+        let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
+        map_task(
+            &def,
+            &runs,
+            sessions.as_ref(),
+            &read_state,
+            &bindings,
+            &kinds,
+            &ui_metadata,
+            &session_titles_for(sessions.as_ref()),
+        )
+    };
     for path in [
         store_holder.model_bindings_path(),
         store_holder.task_kinds_path(),
@@ -2782,18 +2872,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     }
     // Enrichment is best-effort: the delete is committed above, so a
     // sessions store boot failure must not report the delete as failed.
-    let sessions = open_sessions_for_enrichment();
-    let task = map_task(
-        &def,
-        &runs,
-        sessions.as_ref(),
-        &serde_json::Value::Null,
-        &serde_json::Value::Null,
-        &serde_json::Value::Null,
-        &serde_json::Value::Null,
-        &session_titles_for(sessions.as_ref()),
-    );
-    let mut value = task;
+    let mut value = receipt;
     value["deletedSessionIds"] = serde_json::json!([]);
     Ok(success(render(
         output,
@@ -3165,8 +3244,9 @@ viewed"
 viewed"
         )));
     }
-    let mut read_state =
-        read_registry_for_write(&store_holder.read_state_path(), &["viewed_runs"])?;
+    let read_state_path = store_holder.read_state_path();
+    let read_state_stamp = SidecarStamp::capture(&read_state_path);
+    let mut read_state = read_registry_for_write(&read_state_path, &["viewed_runs"])?;
     // Same newer-schema refusal as registry_tasks_mut: a read-state file
     // written by a newer app version must not be merged and written back.
     if read_state.is_object() {
@@ -3215,7 +3295,9 @@ viewed"
             });
         }
     }
-    write_json_atomic(&store_holder.read_state_path(), &read_state)?;
+    // Round-40 review: same foreign-write stamp guard as the other registry
+    // RMW lanes — a GUI mark-viewed landing mid-read must not be reverted.
+    write_json_atomic_checked(&read_state_path, &read_state, &read_state_stamp)?;
     let (has_unread, _) = {
         let refreshed = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
         let def = serde_json::json!({ "id": task_id });
