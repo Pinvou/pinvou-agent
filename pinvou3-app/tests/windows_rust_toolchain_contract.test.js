@@ -755,6 +755,36 @@ test("a missing or failed wrapper build stops before Cargo can overflow", (t) =>
   );
 });
 
+test("the shell selector compiles the wrapper atomically and the ignore covers its leftovers", () => {
+  // build.js's compile path is pinned behaviorally above; the selector is
+  // the other Windows entry (run-dev.sh) and only live CI executes it, so
+  // its atomicity contract is pinned statically here.
+  const selector = read("src-tauri", "scripts", "rustc-stack-wrapper-select.sh");
+  // The script has no `set -e`: a silent exit 0 after a failed rename would
+  // make run-dev.sh export a nonexistent wrapper path, or silently reuse the
+  // stale wrapper the rename was supposed to replace.
+  assert.match(
+    selector,
+    /tmp_exe="\$exe\.\$\$\.\$RANDOM\.tmp"/u,
+    "the selector must compile to a unique temporary name",
+  );
+  assert.match(
+    selector,
+    /if ! mv -f "\$tmp_exe" "\$exe"; then/u,
+    "a failed rename must fail loudly instead of exiting 0",
+  );
+  assert.equal(
+    (selector.match(/rm -f "\$tmp_exe" "\$\{tmp_exe%\.tmp\}\.pdb"/gu) || []).length,
+    2,
+    "both the compile-failure and rename-failure paths must sweep the temporary exe and pdb",
+  );
+  // Both compile sites (build.js and the selector) may leave killed-compile
+  // leftovers beside the wrapper; the ignore must cover every name shape.
+  const gitignore = fs.readFileSync(path.join(APP_ROOT, "..", ".gitignore"), "utf8");
+  assert.match(gitignore, /rustc-stack-wrapper\.exe\.\*\.tmp/u);
+  assert.match(gitignore, /rustc-stack-wrapper\.exe\.\*\.pdb/u);
+});
+
 test("the npm/Tauri entry injects the wrapper into the Tauri child environment", () => {
   assert.match(
     buildScript,

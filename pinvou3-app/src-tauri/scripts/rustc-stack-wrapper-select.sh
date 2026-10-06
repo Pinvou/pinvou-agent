@@ -50,7 +50,15 @@ case "$(uname -s)" in
         echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
         exit 1
       fi
-      mv -f "$tmp_exe" "$exe"
+      # 改名失败(并发构建正在执行旧 exe 时 Windows 会锁住目标)必须响亮报错:
+      # 本脚本无 set -e,静默退出 0 会让 run-dev.sh 导出一个不存在的 wrapper
+      # 路径,或在旧 exe 尚存时永远复用过期缓存,重新引入本分支要防的半截
+      # exe 问题。
+      if ! mv -f "$tmp_exe" "$exe"; then
+        rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
+        echo "rustc-stack-wrapper-select: 无法替换 .exe wrapper(目标被并发构建占用?);请关闭并发构建后重试" >&2
+        exit 1
+      fi
       rm -f "${tmp_exe%.tmp}.pdb"
     fi
     cygpath -m "$exe"
