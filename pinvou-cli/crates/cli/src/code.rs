@@ -1583,9 +1583,8 @@ fn command_output_with_timeout(
     let mut child = crate::support::supervise::spawn_supervised(&mut command)?;
     // Drop covers every exit below (the kill arms kill BEFORE the drop's
     // forget), so a panic can no longer leave the group registered. The
-    // underscore-prefixed binding keeps the guard alive to scope end — a
-    // bare `let _` would drop (and forget) immediately.
-    let _group = crate::support::supervise::GroupGuard::arm(child.id());
+    // reaped arm below releases the guard EARLY and explicitly.
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout = child.stdout.take();
     // The reader hands its buffer back through a channel so the wait stays
     // bounded: a vendor CLI's grandchild can inherit the pipe and outlive
@@ -1604,6 +1603,13 @@ fn command_output_with_timeout(
                 // Straggler descendants are deliberately left alone: killing
                 // a reaped child's group would race pid reuse, and this
                 // one-shot process exits right after the probe anyway.
+                // Round-41 review: the registration is released BEFORE the
+                // drain grace, the same discipline the login/logout lanes
+                // pin — the grace can hold for seconds and a grandchild
+                // inheriting the pipe is the exact case it exists for, so
+                // an interrupt in that window must not forward-signal a
+                // pgid the OS may already have recycled.
+                group.release();
                 let text = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
                 return Ok(Some((status.success(), text.trim().to_string())));
             }
@@ -2596,6 +2602,7 @@ fn login(
     // consumed the invoker's stdin before any URL existed), so its value
     // stays deferred — the wait loop below hands it to the stdin writer
     // thread only after the URL has been announced on stderr.
+    let argv_code = matches!(code, Some(LoginCodeSource::Arg(_)));
     let (code, stdin_code_deferred): (Option<String>, bool) = match code {
         Some(LoginCodeSource::Arg(raw)) => (Some(raw), false),
         Some(LoginCodeSource::Env(var)) => {
@@ -2626,7 +2633,19 @@ fn login(
     if let Some(code) = code.as_deref() {
         let trimmed = code.trim();
         if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-            return Err(CliError::usage("invalid claude authorization code"));
+            // Round-41 review: an argv `--code` value is usage-class — the
+            // invoker controls it at the command line. An env-var value is
+            // content read after parse, so the family's documented exit
+            // rule (argv-decidable → 2, env/stdin content → 1) routes it
+            // to `failed`, matching the missing/empty arms above and the
+            // deferred stdin lane's in-thread validation.
+            if argv_code {
+                return Err(CliError::usage("invalid claude authorization code"));
+            }
+            return Err(CliError::failed(
+                "code_login_code_invalid: the authorization code from the environment is empty, \
+                 over the 4096-byte limit, or carries control characters",
+            ));
         }
     }
     let executable = login_executable(agent)?;

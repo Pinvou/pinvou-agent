@@ -383,9 +383,20 @@ impl KnowledgeService {
     }
 
     pub fn cancel_index_for_collection(&self, collection_id: i64) -> Result<(), String> {
+        // Round-41 review: cancel the job CAPTURED in this first read, not a
+        // re-derived "latest" — `cancel_index` re-derives the target from a
+        // second `index_status()` read, and in the window between the two
+        // reads the named job can terminalize while an older job of ANOTHER
+        // collection becomes latest (a CLI-owned import finishing mid-read):
+        // that cross-wired cancel deleted the other collection's staged
+        // checkpoints and relabeled it ready. The named entry point
+        // (`cancel_index_job`) re-checks the captured job's own state and
+        // can never be swapped for a different job.
         let status = self.index_status();
         if status.collection_id == collection_id && (status.running || status.resumable) {
-            self.cancel_index()?;
+            if let Some(job_id) = status.job_id.as_deref() {
+                self.cancel_index_job(job_id)?;
+            }
         }
         Ok(())
     }

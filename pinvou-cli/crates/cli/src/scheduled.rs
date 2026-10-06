@@ -994,6 +994,38 @@ fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     Ok(fd_lock::RwLock::new(file))
 }
 
+/// Round-41 review: the registry read is bounded. These files sit on the
+/// GUI-shared store and the history archive grows monotonically (archived
+/// runs are never pruned by either surface), so a runaway or corrupt copy
+/// must fail with a named error instead of an unbounded slurp on every
+/// command. Generous by design: healthy registries are kilobytes; this is
+/// an OOM guard, not a content limit.
+const SCHEDULED_REGISTRY_MAX_BYTES: u64 = 128 * 1024 * 1024;
+
+/// [`std::fs::read_to_string`] behind the [`SCHEDULED_REGISTRY_MAX_BYTES`]
+/// guard: the size is checked before the read and the read itself is
+/// `take`-capped, so a file that grows between the stat and the read cannot
+/// turn into an unbounded allocation.
+fn read_registry_capped(path: &Path) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > SCHEDULED_REGISTRY_MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "the registry is {} bytes, over the {}-byte read cap",
+                metadata.len(),
+                SCHEDULED_REGISTRY_MAX_BYTES
+            ),
+        ));
+    }
+    let file = std::fs::File::open(path)?;
+    let mut capped = file.take(SCHEDULED_REGISTRY_MAX_BYTES);
+    let mut raw = String::new();
+    capped.read_to_string(&mut raw)?;
+    Ok(raw)
+}
+
 /// Reads a versioned sidecar registry (model bindings, task kinds, UI
 /// metadata, read state, history archive); a missing file is the empty
 /// default. An unreadable or wrong-shaped payload is quarantined next to the
@@ -1003,7 +1035,7 @@ fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 /// of the other tasks' data. Newer-schema files stay untouched: they take
 /// the refusal path (`ensure_supported_schema`), not quarantine.
 fn read_registry(path: &Path, keys: &[&str]) -> serde_json::Value {
-    match std::fs::read_to_string(path) {
+    match read_registry_capped(path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(value) if registry_shape_valid(&value, keys) => value,
             _ => {
@@ -1133,7 +1165,7 @@ fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Val
             path.display()
         ))
     };
-    match std::fs::read_to_string(path) {
+    match read_registry_capped(path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(value) if registry_shape_valid(&value, keys) => Ok(value),
             _ => {
@@ -2827,7 +2859,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         store_holder.task_kinds_path(),
         store_holder.ui_metadata_path(),
     ] {
-        // All three are `tasks`-keyed registries.
+        // All three are `tasks`-keyed registries. The stamp is captured when
+        // the read starts, the same discipline as every sibling RMW lane in
+        // this file (round-41 review): this loop used to be the one
+        // whole-file read→mutate→rename without the foreign-write guard, so
+        // a GUI `set_pinned`/binding commit landing between the read and the
+        // rename was silently reverted by this stale rewrite.
+        let stamp = SidecarStamp::capture(&path);
         let mut registry = read_registry(&path, &["tasks"]);
         if registry.is_null() {
             continue;
@@ -2861,8 +2899,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 // Best-effort like the rollback lanes, but not silent: the
                 // GUI poll compaction prunes the stale entry within seconds,
                 // so the impact is small — still, a skipped cleanup write
-                // contradicts the file-head no-silent-failure policy.
-                if let Err(error) = write_json_atomic(&path, &registry) {
+                // contradicts the file-head no-silent-failure policy. The
+                // checked write refuses instead of clobbering when a
+                // concurrent desktop-app write landed mid-read (round-41
+                // review: pins, bindings and kinds are not re-healed from
+                // anywhere, so a lost foreign write here is permanent).
+                if let Err(error) = write_json_atomic_checked(&path, &registry, &stamp) {
                     note!(
                         "pinvou: warning: could not clean task {id} out of {}: {error} \
                          (the GUI poll compaction will prune it)",
@@ -3082,14 +3124,33 @@ fn organize_headless() -> Result<(), String> {
     }
 }
 
+/// Round-41 review: the display lanes default their fan-out. One hourly
+/// automation writes ~8,760 run-record files a year, and `runs`/`runs-all`
+/// used to read and parse every record of every task on each invocation
+/// when no `--limit` was supplied — unbounded in store age on the family's
+/// most common command. The default caps the read at the newest
+/// [`DEFAULT_RUNS_DISPLAY_LIMIT`] records (plus the one-record probe that
+/// makes the `truncated` marker exact) and both output channels disclose
+/// it. `--limit` keeps the user in charge; the aggregate lanes (`list`'s
+/// is-running/unread facts, mark-viewed, delete's stranded check) keep
+/// reading everything — those are semantics, not display, and truncating
+/// them would report false facts.
+const DEFAULT_RUNS_DISPLAY_LIMIT: usize = 200;
+
 fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let def = store_holder.read_def(id)?;
     let sessions = open_sessions()?;
     let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
-    let records = store_holder.list_runs(id, limit)?;
+    let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
+    // Read one past the cap so `truncated` is a fact, not an assumption:
+    // the foundation truncates the sortable listing BEFORE reading, so the
+    // extra record costs at most one more stat.
+    let mut records = store_holder.list_runs(id, Some(effective_limit + 1))?;
+    let truncated = records.len() > effective_limit;
+    records.truncate(effective_limit);
     let names = task_name_map(std::slice::from_ref(&def));
-    let (lines, values) = render_runs(
+    let (mut lines, values) = render_runs(
         &sessions,
         &records,
         &read_state,
@@ -3099,9 +3160,15 @@ fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     let human = if lines.is_empty() {
         format!("No runs for scheduled task {id}.")
     } else {
+        if truncated {
+            lines.push(format!(
+                "… showing the newest {effective_limit} runs; older runs were not read \
+                 (pass a larger --limit)"
+            ));
+        }
         lines.join("\n")
     };
-    let value = serde_json::json!({ "id": id, "runs": values });
+    let value = serde_json::json!({ "id": id, "runs": values, "truncated": truncated });
     Ok(success(render(output, human, &value)))
 }
 
@@ -3109,6 +3176,7 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     let store_holder = TaskStore::new()?;
     let sessions = open_sessions()?;
     let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
+    let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
     let defs = store_holder.list_defs()?;
     let mut records: Vec<serde_json::Value> = Vec::new();
     let mut names = task_name_map(&defs);
@@ -3133,7 +3201,7 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         // with a limit set, an active run id beyond the per-task top-K no
         // longer suppresses an equal archived-twin id below — a layout only
         // a hand-crafted store can produce, since run ids are fresh per run.
-        for run in store_holder.list_runs(&task_id, limit)? {
+        for run in store_holder.list_runs(&task_id, Some(effective_limit + 1))? {
             active_keys.insert((
                 task_id.clone(),
                 str_field(&run, "id").unwrap_or("").to_owned(),
@@ -3182,10 +3250,12 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         }
     }
     records.sort_by(|a, b| record_time(b, "scheduled_for").cmp(&record_time(a, "scheduled_for")));
-    if let Some(limit) = limit {
-        records.truncate(limit);
-    }
-    let (lines, values) = render_runs(
+    // Round-41 review: same default fan-out cap as `runs`; the per-task
+    // push-down above reads the default cap plus the one-record probe, and
+    // the global truncate + `truncated` marker disclose it.
+    let truncated = records.len() > effective_limit;
+    records.truncate(effective_limit);
+    let (mut lines, values) = render_runs(
         &sessions,
         &records,
         &read_state,
@@ -3195,9 +3265,15 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     let human = if lines.is_empty() {
         "No scheduled runs.".to_owned()
     } else {
+        if truncated {
+            lines.push(format!(
+                "… showing the newest {effective_limit} runs; older runs were not read \
+                 (pass a larger --limit)"
+            ));
+        }
         lines.join("\n")
     };
-    let value = serde_json::json!({ "runs": values });
+    let value = serde_json::json!({ "runs": values, "truncated": truncated });
     Ok(success(render(output, human, &value)))
 }
 

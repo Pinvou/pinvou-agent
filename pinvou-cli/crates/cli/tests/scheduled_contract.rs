@@ -959,6 +959,52 @@ fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
     let _ = home;
 }
 
+/// Round-41 review: `runs`/`runs-all` default their fan-out and disclose it.
+/// With `--limit` the `truncated` marker is exact (a one-record probe is read
+/// past the cap); without it the newest `DEFAULT_RUNS_DISPLAY_LIMIT` records
+/// bound the read, and both output channels name the truncation.
+#[test]
+fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("runs-truncation");
+    let created = create_task(&home, "Truncated task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let runs = home.runs_dir(&task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    for index in 0..3 {
+        std::fs::write(
+            runs.join(format!("20260923T00000{index}.json")),
+            format!(
+                r#"{{"id":"run-{index}","automation_id":"{task_id}","scheduled_for":"2026-09-23T00:0{index}:00Z","status":"completed","created_at":"2026-09-23T00:0{index}:00Z"}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    // Explicit --limit: the marker is exact (2 shown, a third exists).
+    let listed = run_json(&["scheduled", "runs", &task_id, "--limit", "2"]);
+    assert_eq!(listed["runs"].as_array().map(Vec::len), Some(2));
+    assert_eq!(listed["truncated"].as_bool(), Some(true));
+
+    // Everything fits: false, and the human output carries no truncation note.
+    let listed = run_json(&["scheduled", "runs", &task_id, "--limit", "3"]);
+    assert_eq!(listed["runs"].as_array().map(Vec::len), Some(3));
+    assert_eq!(listed["truncated"].as_bool(), Some(false));
+
+    // No --limit: the default cap applies (3 records < the default cap), the
+    // marker is present either way so scripts can rely on the field.
+    let listed = run_json(&["scheduled", "runs", &task_id]);
+    assert_eq!(listed["truncated"].as_bool(), Some(false));
+
+    // runs-all carries the same marker with the same exactness.
+    let all = run_json(&["scheduled", "runs-all", "--limit", "1"]);
+    assert_eq!(all["runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(all["truncated"].as_bool(), Some(true));
+    let all = run_json(&["scheduled", "runs-all"]);
+    assert_eq!(all["truncated"].as_bool(), Some(false));
+    let _ = home;
+}
+
 /// The definition twin of the run-record gate: `status` is an
 /// `AutomationStatus` enum and the two stamps are `DateTime<Utc>`, so a
 /// hand-edited def carrying a well-typed but undecodable value must be

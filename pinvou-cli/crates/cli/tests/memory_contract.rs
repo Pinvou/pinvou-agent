@@ -477,6 +477,43 @@ fn pending_never_reason_over_the_cap_discloses_the_truncation() {
     );
 }
 
+/// Round-41 review: the cap is applied by the store to the whitespace-
+/// COLLAPSED text (`clean_text` collapses, then takes 80), so a reason that
+/// is over 80 raw characters only because of padding must NOT publish the
+/// truncation facts — measuring the raw string reported `truncated:true`
+/// with a `submitted_characters` count nothing truncated.
+#[test]
+fn pending_never_reason_padding_does_not_publish_false_truncation_facts() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("never-reason-padding");
+
+    let item = enqueue_fixture("preference", "prefer concise answers");
+    let id = item.id;
+
+    // 120 raw characters, 100 of them whitespace: the collapsed reason is
+    // 20 characters, well under the 80-character cap, so nothing is
+    // truncated and no truncation fact may appear.
+    let padded_reason = format!("{}{}", "r".repeat(20), " ".repeat(100));
+    let parsed = parse_args(vec![
+        "pinvou",
+        "memory",
+        "pending",
+        "never",
+        &id,
+        "--reason",
+        &padded_reason,
+        "--output",
+        "json",
+    ])
+    .expect("valid never command");
+    let outcome = execute(parsed).expect("never with a seeded pending row");
+    assert!(
+        !outcome.stdout.contains("\"truncated\""),
+        "a whitespace-padded reason under the collapsed cap is not truncated: {}",
+        outcome.stdout
+    );
+}
+
 /// The docs row promises the stable `memory_add_failed` code for write-time
 /// refusals (sensitive/task-like content). Round-37 review: no test drove
 /// the refusal through the CLI, so a reworded or mis-routed code passed the

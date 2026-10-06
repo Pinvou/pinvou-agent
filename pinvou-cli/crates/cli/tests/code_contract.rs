@@ -2698,11 +2698,13 @@ fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
 
 // ---- round-3 fixes: export permissions, login code-source guards ----
 
-/// Removes a providers fixture's keychain entry even when the test panics:
-/// the add lanes write the REAL OS keychain on developer machines (the file
-/// fallback only engages where the keyring probe fails, e.g. headless CI),
-/// and three tests used to leak `sk-test-*` fixtures into the developer's
-/// login keychain (round-37 review). Drop order matters: declared after
+/// Removes a providers fixture's credential entry even when the test panics.
+/// Round-41 review: this guard predates `HomeGuard` forcing
+/// `CODEWHALE_SECRET_BACKEND=file` — with that selection in place the add
+/// lanes write the SANDBOX file store, never the real OS keychain, so the
+/// leak class this guard closed (round-37) cannot recur; the guard stays as
+/// defense-in-depth for runs that opt out of the forced backend, and for
+/// documentation of the drop-order discipline. Drop order matters: declared after
 /// `_env_guard`/`_home`, it runs while ENV_LOCK is still held and
 /// `PINVOU3_HOME` still names the sandbox, so `remove` sees the sandboxed
 /// store (the keyring itself is process-global) and deletes exactly the
@@ -2894,6 +2896,36 @@ fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
     let error = pinvou_cli::execute(error)
         .expect_err("only the claude flow consumes an authorization code");
     assert_eq!(error.exit_code(), ExitCode::Usage);
+
+    // Round-41 review: an env-var value with content problems (control
+    // characters here, over-length in the sibling cap test) is a CONTENT
+    // failure — exit 1 with the family's code, not usage. Only the argv
+    // `--code` lane is usage-class.
+    // SAFETY: the test holds ENV_LOCK (established above), so env writes are
+    // serialized in-process.
+    unsafe {
+        std::env::set_var("PINVOU_CLI_TEST_BAD_CODE_VAR", "bad\u{7}code");
+    }
+    let error = parse_args([
+        "pinvou",
+        "code",
+        "login",
+        "claude",
+        "--code-env",
+        "PINVOU_CLI_TEST_BAD_CODE_VAR",
+    ])
+    .expect("parse accepts --code-env");
+    let error = pinvou_cli::execute(error)
+        .expect_err("a control-character env code must fail before spawning anything");
+    // SAFETY: same ENV_LOCK discipline as the set above.
+    unsafe {
+        std::env::remove_var("PINVOU_CLI_TEST_BAD_CODE_VAR");
+    }
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("code_login_code_invalid"),
+        "{error}"
+    );
 }
 
 /// Writes a scripted `codex` stand-in into a fresh bin directory (argv logged
@@ -3549,9 +3581,10 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
         "PINVOU_CLI_TEST_RULES_KEY",
     ]);
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
-    // The add above SUCCEEDED, so the fixture key is in the REAL OS keychain
-    // on developer machines (the file fallback only engages where the
-    // keyring probe fails). Round-39 review: no cleanup was registered —
+    // The add above SUCCEEDED, so the fixture key sits in the sandbox's
+    // FILE-backed credential store (`HomeGuard` forces
+    // `CODEWHALE_SECRET_BACKEND=file`; the real keychain is not touched).
+    // Round-39 review: no cleanup was registered —
     // every green run orphaned one `sk-test-rules-*` entry, the exact leak
     // class round-37 closed elsewhere. Drop order puts this before
     // `_env_guard`/`_home`, so `remove` still sees the sandboxed store.

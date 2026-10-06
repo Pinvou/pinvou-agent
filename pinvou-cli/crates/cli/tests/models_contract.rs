@@ -1327,7 +1327,8 @@ fn settings_search_test_without_a_key_verifies_only_credential_presence() {
 /// the user's search backend onto it.
 ///
 /// Touches no keyring: the provider has never been configured, so there is no
-/// credential reference to delete.
+/// credential reference to delete — and round-41 review reports that
+/// honestly as `unchanged` instead of a success-shaped `cleared`.
 #[test]
 fn settings_search_set_clear_does_not_switch_the_active_provider() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1353,9 +1354,12 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
     assert_eq!(
         value["provider"], "tavily",
-        "the credential that was cleared"
+        "the provider the clear targeted"
     );
-    assert_eq!(value["credential"], "cleared");
+    assert_eq!(
+        value["credential"], "unchanged",
+        "a never-configured provider has no credential to clear: {stdout}"
+    );
     assert_eq!(
         value["active_provider"], "bing",
         "clearing a key must not select its provider: {stdout}"
@@ -1505,7 +1509,10 @@ fn settings_search_set_clear_requires_yes() {
         "--yes",
     ]);
     let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
-    assert_eq!(value["credential"], "cleared", "{stdout}");
+    assert_eq!(
+        value["credential"], "unchanged",
+        "a never-configured provider has no credential to clear (round-41 review): {stdout}"
+    );
     assert_eq!(value["active_provider"], "bing", "{stdout}");
     assert_eq!(
         load_prefs().search.provider,

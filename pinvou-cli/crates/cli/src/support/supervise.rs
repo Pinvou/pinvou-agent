@@ -70,7 +70,7 @@ pub fn install_signal_cleanup() {
 ///
 /// THREAD REQUIREMENT: this is the only form a non-main thread may use. The
 /// spawn→register window below is excluded from the interrupt snapshot via
-/// [`imp::spawn_window`], so a signal arriving while any thread is inside the
+/// `imp::spawn_window`, so a signal arriving while any thread is inside the
 /// window is answered by a watcher snapshot that either already contains the
 /// fresh group or waits for the window to close first — the orphan window a
 /// raw `spawn()` + [`register_child_group`] pair would leave on a worker
@@ -137,6 +137,27 @@ pub fn spawn_supervised(
         let _window = imp::spawn_window();
         let spawned = command.spawn();
         if let Ok(child) = &spawned {
+            // Round-41 review: the parent-side half of the double-setpgid
+            // protocol. `set_process_group(0)` is executed by the CHILD
+            // between fork and exec, so between the parent's fork return —
+            // which is when the group is registered below — and the child's
+            // first scheduler slot the registered pgid does not exist yet:
+            // a watcher snapshot racing that instant forwards `kill(-pgid)`
+            // to ESRCH, `group_alive` classifies the fresh group dead, the
+            // grace loop finishes immediately, and the vendor CLI is
+            // orphaned — exactly under the fork-storm load the supervisor
+            // exists to survive. With the parent-side call, the group's
+            // existence is a fact by the time `register` runs. SAFETY:
+            // setpgid(2) on our own just-forked child, no allocation, no
+            // locks held. The result is intentionally ignored: EACCES (the
+            // child already exec'd, so its own setpgid already ran) and
+            // ESRCH (the child already exited) are the expected benign
+            // races, and any other errno leaves the child's in-child
+            // `setpgid(0, 0)` as the authority for group creation.
+            unsafe {
+                let pid = child.id() as libc::pid_t;
+                let _ = libc::setpgid(pid, pid);
+            }
             imp::register(child.id());
         }
         drop(_window);
@@ -193,7 +214,7 @@ pub fn park_while_interrupt_cleanup_concludes() {
 /// DISCIPLINE: registration is automatic inside [`spawn_supervised`], but
 /// the release half is per-site — a missed `forget` leaves a stale pgid the
 /// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Prefer the
-/// RAII [`GroupGuard`] over a new manual pair: the manual pairs answer the
+/// RAII `GroupGuard` over a new manual pair: the manual pairs answer the
 /// ordinary return paths only, and a panic between spawn and the paired
 /// forget used to leave the group registered.
 pub fn forget_child_group(pgid: u32) {
