@@ -888,9 +888,14 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
             last_progress = std::time::Instant::now();
         } else if last_progress.elapsed() >= scan_no_progress_timeout() {
             return Err(CliError::failed(format!(
+                // Round-40 review: the import twin's timeout text names the
+                // legitimate quiet phases; this one called a healthy scan on
+                // a slow mount "gone or wedged" without that disclosure.
                 "knowledge scan start: the scan is still flagged running but reported no \
-                 progress for {:?} (scanned: {}, raw: {}); the scan thread is gone or wedged — \
-                 partial results may be indexed and the completion marker was not \
+                 progress for {:?} (scanned: {}, raw: {}); the scan thread is gone or wedged, \
+                 or a quiet phase (a cold disk or slow network mount between reports) \
+                 outran this bound — raise PINVOU_KB_SCAN_STALL_MILLIS and rerun; partial \
+                 results may be indexed and the completion marker was not \
                  persisted",
                 last_progress.elapsed(),
                 state.scanned,
@@ -1830,11 +1835,20 @@ fn wait_for_terminal_job(
                     "the job was interrupted and is resumable now (`pinvou knowledge index \
                      resume {job_id}` continues it)"
                 )
-            } else if actual_phase.as_deref() == Some("done") {
+            } else if matches!(
+                actual_phase.as_deref(),
+                Some("done") | Some("done_with_errors") | Some("cancelled")
+            ) {
+                // Round-40 review: a job landing TERMINAL in the moment
+                // between the last poll and this interrupt is not "left
+                // as-is and resumable" — the remedy must match the on-disk
+                // phase, and only a genuinely still-running (or
+                // recovery-owned) job gets the relabel/cancel remedy.
                 format!(
-                    "the job reached `done` right at the deadline — the import finished \
+                    "the job reached `{}` right at the deadline — it is terminal \
                      (`pinvou knowledge index status` shows it); nothing needs resuming or \
-                     cancelling"
+                     cancelling",
+                    actual_phase.as_deref().unwrap_or("done")
                 )
             } else {
                 format!(
@@ -1872,10 +1886,13 @@ fn wait_for_terminal_job(
 /// [`wait_for_terminal_job`]). Owned so the polling loop can hold it across
 /// the re-assignment of the state it was computed from. The job-row
 /// `updated_at` leads the tuple on purpose (round-37 review MAJOR): the
-/// source-root walk and the model load run before any item exists, so the
-/// per-item counters cannot move — the importer ticks the job row instead
-/// (a walk heartbeat every 5000 entries), and only a job whose heartbeat
-/// AND counters are all frozen is treated as wedged.
+/// source-root walk and the embedder-model load run before any item exists,
+/// so the per-item counters cannot move — the importer ticks the job row
+/// during the walk (a heartbeat every 5000 entries). The model load itself
+/// has NO tick (nothing can run beside it in-process): a load outlasting
+/// the bound is interrupted and stays resumable — the remedy text names
+/// that quiet phase, and round-40 review scoped the docstrings claiming
+/// full coverage down to this reality.
 fn job_signature(state: &IndexState) -> (Option<i64>, u64, u64, u64, u64, Option<String>) {
     (
         state.updated_at,

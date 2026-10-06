@@ -323,13 +323,32 @@ fn snapshot_payload(
     // its own position rather than appended at the end.
     let mut ordered = serde_json::Map::new();
     for key in SNAPSHOT_KEYS {
-        let sampled_value = sampled
-            .remove(*key)
+        let sampled_value = match sampled.remove(*key) {
+            Some(value) => value,
             // `generated_at_ms` left the upstream snapshot (removed from
             // `MonitorSnapshot` as wire-dead for the GUI); the CLI stamps
             // the capture time itself so the published shape holds.
-            .or_else(|| (*key == "generated_at_ms").then(|| serde_json::json!(generated_at_ms)))
-            .unwrap_or(serde_json::Value::Null);
+            // `not_applicable_headless` is CLI-injected too: the marking
+            // pass below fills it after the rebuild.
+            None if *key == "generated_at_ms" => serde_json::json!(generated_at_ms),
+            None if *key == "not_applicable_headless" => serde_json::Value::Null,
+            // `cpu` is the one legitimately absent field
+            // (`skip_serializing_if` upstream) and publishes its documented
+            // null.
+            None if *key == "cpu" => serde_json::Value::Null,
+            // Round-40 review: a RENAMED/REMOVED upstream field used to be
+            // published as a structural `null` forever — indistinguishable
+            // from a sampler outage, and exactly the silent half-shape the
+            // rule at the top of this lane says is an error, not a quiet
+            // default. Fail loud and name the key, like the leftover check
+            // below.
+            None => {
+                return Err(CliError::failed(format!(
+                    "monitor snapshot: {key} is missing from the sample; the \
+                     published key shape is out of date"
+                )));
+            }
+        };
         ordered.insert((*key).to_owned(), sampled_value);
     }
     // Anything left over is an upstream field added since this list was

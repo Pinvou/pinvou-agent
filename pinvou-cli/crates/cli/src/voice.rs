@@ -858,9 +858,19 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
             Some(progress),
         )
         .map_err(|error| {
+            // Round-40 review: the adapter error embeds raw vendor stderr
+            // (brew/apt tails can carry token-shaped strings — a proxy or
+            // mirror line like `user:token@host`), and `translate_deps_error`
+            // passes unknown text through unchanged. The progress hook above
+            // redacts every streamed line and the deps lane wraps this exact
+            // error in `redact_secret` for the same reason, so the final
+            // error gets the identical scrub instead of printing verbatim
+            // what the progress stream showed as `[REDACTED]`.
             CliError::failed(format!(
                 "voice asr-install: ffmpeg: {}",
-                crate::deps::translate_deps_error(&error.to_string())
+                pinvou3_lib::platform::credential_store::redact_secret(
+                    &crate::deps::translate_deps_error(&error.to_string())
+                )
             ))
         })?;
         steps.push("installed ffmpeg".to_owned());

@@ -817,7 +817,15 @@ fn tools_install(
     // INSTALL failure itself stays log-only: a skill is an enhancement.)
     sync_after_install_or_fail("tools install", id)?;
     let mut companion_note = Vec::new();
-    let tool_package = pinvou3_lib::features::marketplace::scope::package_id_for(id);
+    // Round-40 review: one `available_tools()` walk serves the tool id and
+    // every companion's normalization — the per-entry `package_id_for`
+    // inside this loop re-walked the whole marketplace per companion (the
+    // anti-pattern the round-38 hoist in `set_enabled` closed); the same
+    // hoist pattern, same snapshot semantics.
+    let tool_snapshot =
+        pinvou3_lib::features::marketplace::MarketplaceManager::new().available_tools();
+    let tool_package =
+        pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, id);
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
@@ -826,7 +834,11 @@ fn tools_install(
                 // package was already synced by the tool-level call above,
                 // and an unconditional re-sync only adds a failure surface
                 // whose message ("consent gap") would not be true.
-                if pinvou3_lib::features::marketplace::scope::package_id_for(&sid) != tool_package {
+                if pinvou3_lib::features::marketplace::scope::to_package_id_with(
+                    &tool_snapshot,
+                    &sid,
+                ) != tool_package
+                {
                     sync_after_install_or_fail("companion skills install", &sid)?;
                 }
                 companion_note.push(sid);
@@ -908,6 +920,11 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     // is gone, the normalized lookup's gating fallback can re-own the id
     // onto a foreign pack's claim, and the removal would erase THAT pack's
     // consent rows while the stale ones survive.
+    // Round-40 review residual: each `resolve_pack_owner_id` re-walks the
+    // marketplace (the same anti-pattern the install loop hoisted away) —
+    // accepted here because uninstall is a rare destructive op over a small
+    // companion list; hoisting means a snapshot-aware lib variant, which is
+    // not worth the churn on this lane.
     let companion_owners: Vec<(String, String)> = companions
         .iter()
         .map(|sid| (sid.clone(), resolve_pack_owner_id(sid)))
@@ -1637,17 +1654,24 @@ fn meta(
     SkillMarketplaceManager::new()
         .update_display_meta(id, name.as_deref(), description.as_deref())
         .map_err(|error| feature_error("meta", id, error))?;
+    // Round-40 review: a description in play can rewrite the pack's
+    // SKILL.md (the feature layer's frontmatter sync), and the GUI's
+    // `update_bundle_display_meta` hot-refreshes exactly that lane (name-only
+    // changes skip it) — so the caveat rides on the same condition instead
+    // of `meta` being the one mutating command silent about it.
     let value = serde_json::json!({
         "id": id,
         "action": "meta_updated",
         "display_name": name,
         "display_description": description,
+        "hot_refresh": if description.is_some() { "not_broadcast" } else { "skipped_no_description" },
     });
-    Ok(success(render(
-        output,
-        format!("updated display meta for {id}"),
-        &value,
-    )))
+    let human = if description.is_some() {
+        format!("updated display meta for {id}{HOT_REFRESH_NOTE}")
+    } else {
+        format!("updated display meta for {id}")
+    };
+    Ok(success(render(output, human, &value)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2170,14 +2194,15 @@ fn set_enabled(
 
 /// Caveat appended at every mutating action point whose GUI counterpart
 /// runs `hot_refresh` (scope toggles, tool install/uninstall, skills
-/// install/update/uninstall, import, recycle restore, project-skills toggle —
-/// the matching `app/commands/marketplace.rs` / `app/commands/connectors.rs`
-/// sites): the engine pool the refresh needs is not hosted here, so a running
-/// desktop app keeps its live engines on the state they started with until
-/// they restart. Round-38 review: the note used to ride only the scope
-/// toggles, leaving install/uninstall/import/restore silent about the same
-/// gap; round-39 review closed the same gap on the skills and project-skills
-/// sites.
+/// install/update/uninstall, import, recycle restore, project-skills toggle,
+/// and `meta` with a description in play — the matching
+/// `app/commands/marketplace.rs` / `app/commands/connectors.rs` sites): the
+/// engine pool the refresh needs is not hosted here, so a running desktop
+/// app keeps its live engines on the state they started with until they
+/// restart. Round-38 review: the note used to ride only the scope toggles,
+/// leaving install/uninstall/import/restore silent about the same gap;
+/// round-39 review closed the same gap on the skills and project-skills
+/// sites; round-40 review closed it on `meta --description`.
 const HOT_REFRESH_NOTE: &str = "\nnote: no hot-refresh broadcast was sent; a running desktop app's \
      live engines keep the state they started with until they are restarted";
 

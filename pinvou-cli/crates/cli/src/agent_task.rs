@@ -1031,6 +1031,7 @@ mod tests {
                     crate::personas::StagedPersonaInjection {
                         persona_id: "user-gone".to_owned(),
                         body: "LIVE BODY".to_owned(),
+                        staged_at: 0,
                     }
                 )
             ),
@@ -1046,6 +1047,7 @@ mod tests {
                     crate::personas::StagedPersonaInjection {
                         persona_id: "user-gone".to_owned(),
                         body: "GHOST BODY".to_owned(),
+                        staged_at: 0,
                     }
                 )
             ),

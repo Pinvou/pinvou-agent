@@ -372,6 +372,7 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| CliError::usage("code respond requires a request id"))?
                 .clone();
+            require_non_flag_id(&request_id, "request")?;
             let allow = match rest.get(2).map(String::as_str) {
                 Some("allow") => true,
                 Some("deny") => false,
@@ -570,6 +571,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| CliError::usage("code providers switch requires a provider id"))?
                 .clone();
+            require_non_flag_id(&provider_id, "provider")?;
             if rest.len() > 2 {
                 return Err(CliError::usage("code providers switch accepts no options"));
             }
@@ -803,6 +805,7 @@ fn parse_checkpoints(rest: &[String]) -> Result<CodeCommand, CliError> {
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| CliError::usage("code checkpoints diff requires a checkpoint id"))?
                 .clone();
+            require_non_flag_id(&checkpoint_id, "checkpoint")?;
             if rest.len() > 3 {
                 return Err(CliError::usage("code checkpoints diff accepts no options"));
             }
@@ -1086,6 +1089,48 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
         return Err(CliError::usage("invalid session id"));
     }
     Ok(id.to_owned())
+}
+
+/// Credential-marker vocabulary from the GUI's login sanitizer
+/// (`features/codex_acp/login.rs::sanitize_kimi_login_failure_detail`): any
+/// of these in a login transcript means credential material may be present
+/// in a shape `redact_secret` cannot see — a JWT (`eyJ…`) carries no
+/// redactable prefix — and the GUI refuses to surface such detail at all.
+/// Round-40 review: the human-mode echo applies the same posture and
+/// withholds the dump instead of printing it partially scrubbed.
+const LOGIN_ECHO_WITHHOLD_MARKERS: [&str; 10] = [
+    "access_token",
+    "refresh_token",
+    "authorization:",
+    "bearer ",
+    "api_key",
+    "api-key",
+    "secret=",
+    "cookie:",
+    "user_code=",
+    "device_code=",
+];
+
+fn login_echo_withheld(combined: &str) -> bool {
+    let normalized = combined.to_ascii_lowercase();
+    LOGIN_ECHO_WITHHOLD_MARKERS
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+/// Round-40 review: a flag-shaped token in a non-session id slot is an
+/// argv-decidable mistake — refusing it at parse keeps the exit-2 usage
+/// class instead of an exit-1 store lookup for an id named after the flag
+/// (`code providers switch codex --model` used to answer
+/// `provider_not_found: no provider '--model'`). `require_session_id`
+/// applies the same discipline to session ids.
+fn require_non_flag_id(id: &str, label: &str) -> Result<(), CliError> {
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "code: expected a {label} id, got flag-shaped {id:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// Converts repeated `--model-slot SLOT=MODEL` pairs collected by
@@ -2850,7 +2895,13 @@ fn login(
         // keeps stderr free of it.
         let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
         if output == OutputMode::Human && !echoed.trim().is_empty() {
-            note!("{echoed}");
+            if login_echo_withheld(&combined) {
+                note!(
+                    "login transcript withheld: it carries credential markers the shape-based redaction cannot scrub"
+                );
+            } else {
+                note!("{echoed}");
+            }
         }
         let link_hint = match &login_url {
             Some(url) => format!("; last login link: {url}"),
@@ -2871,7 +2922,13 @@ fn login(
     // serde_json line.
     let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
     if output == OutputMode::Human && !echoed.trim().is_empty() {
-        note!("{echoed}");
+        if login_echo_withheld(&combined) {
+            note!(
+                "login transcript withheld: it carries credential markers the shape-based redaction cannot scrub"
+            );
+        } else {
+            note!("{echoed}");
+        }
     }
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
@@ -3071,11 +3128,15 @@ fn render_provider_view(agent: &str, view: &AcpProvidersView) -> String {
         view.external_active,
     )];
     for provider in &view.providers {
+        // Round-40 review: the id/name/base_url cells are user-controlled
+        // store data and go through the row sanitizer like every other
+        // vendor- or user-fed cell in this module — the row contract must
+        // not depend on which cell happened to be machine-made.
         lines.push(format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            provider.id,
-            provider.name,
-            provider.base_url,
+            crate::support::collapse_control_characters(&provider.id),
+            crate::support::collapse_control_characters(&provider.name),
+            crate::support::collapse_control_characters(&provider.base_url),
             serde_json::to_value(&provider.wire_api)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
@@ -4982,7 +5043,17 @@ fn workspace_checkout(
             git_output(&root, &["add", "-A"])?;
             let commit_args = commit_command_args(&root, message)?;
             let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();
-            git_commit_output(&root, &commit_refs)?;
+            if let Err(error) = git_commit_output(&root, &commit_refs) {
+                // Round-40 review: the stash arm restores its own state on
+                // failure; commit mode's `git add -A` has already rewritten
+                // the user's index when the commit fails (no identity, a
+                // rejecting hook), so the error must disclose the mutated
+                // tree instead of leaving it silent.
+                return Err(CliError::failed(format!(
+                    "{error}; the `git add -A` this lane ran has staged the \
+                     working tree — inspect with `git status` before continuing"
+                )));
+            }
             git_output(&root, &["checkout", branch])?;
         }
     }
@@ -5224,6 +5295,30 @@ fn workspace_diff_one(
             combined
         }
     } else if path.is_file() {
+        // Round-40 review M5: the checks above are lexical (`..` rejection +
+        // `starts_with`), which a symlink defeats — `notes.md ->
+        // ~/.ssh/id_ed25519` resolves through the workspace path. The GUI
+        // preview lane this arm mirrors canonicalizes and re-checks
+        // containment (`resolve_existing_path` →
+        // `ensure_path_within_workspace`); do the same before opening. (The
+        // git-lane `untracked_diff` above shares this hole byte-for-byte
+        // with the app's own `untracked_diff` — that half is an upstream
+        // fix, not a CLI-only divergence.)
+        let canonical_root = std::fs::canonicalize(root).map_err(|error| {
+            CliError::failed(format!(
+                "code workspace diff: cannot resolve the workspace: {error}"
+            ))
+        })?;
+        let canonical = std::fs::canonicalize(&path).map_err(|error| {
+            CliError::failed(format!(
+                "code workspace diff: cannot resolve {relative}: {error}"
+            ))
+        })?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(CliError::failed(
+                "code workspace diff: path escapes the workspace through a symlink",
+            ));
+        }
         match file_kind(&path) {
             // Mirror the GUI preview lane: read at most PREVIEW_LIMIT+1 bytes
             // and convert lossily instead of loading arbitrary multi-gigabyte

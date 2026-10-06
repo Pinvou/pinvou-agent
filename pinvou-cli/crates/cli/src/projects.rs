@@ -1161,6 +1161,17 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                     "[projects] rebind set_workspace failed: {}",
                     error.root_cause()
                 );
+                // Round-40 review: the ghost re-probe below the Ok arm is
+                // the GUI's round-24 parity for BOTH save arms
+                // (app/commands/projects.rs re-probes absence in the error
+                // arm too) — a retention delete landing between this loop's
+                // pre-check and the failing save must not push a freshly
+                // dead id into `failed_session_ids` any more than into the
+                // rebound list. Report accuracy only (a rerun's owner gates
+                // exclude the dead id either way).
+                if sessions.durable_session_record_is_absent(session_id) {
+                    continue;
+                }
                 failed_session_ids.push(session_id.clone());
             }
         }
