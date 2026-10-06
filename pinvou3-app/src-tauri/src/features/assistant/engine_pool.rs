@@ -3560,13 +3560,19 @@ impl EnginePool {
         }
         // The transcript item keeps the delivered block text: the sender-card
         // renderer requires the cross-session header at the very start.
-        let display_message = user_display_message(content);
+        let display_message = user_display_message(&content);
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
+        // Round-6 R4: expert matching sees the DELIVERED BODY only — never
+        // the persona-prepended engine content. The multiagent invariant
+        // ("match on the user's original text, not the assembled injection")
+        // is pinned for the chat and interaction paths; the delivered
+        // sender-block envelope is injected framing exactly like the persona
+        // card and must not participate in role matching.
         let expert_candidates = expert_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.available_role_lines(&engine_content))
+            .map(|snapshot| snapshot.available_role_lines(&content))
             .unwrap_or_default();
         let mode = self.store.mode_state(session_id).mode.to_app_mode();
         match self
