@@ -1097,7 +1097,16 @@ fn scope_state_disabled(kind: ConnectorKind) -> bool {
 /// exactly like the GUI's `ready_probe` folds `run_probe` errors to false
 /// (feishu.rs `is_user_ready`, wecom.rs `is_ready`, …).
 fn gui_skill_gate_shows(kind: ConnectorKind) -> bool {
-    !legacy_disabled_marker(kind) && cli_connected(kind.spec()).unwrap_or(false)
+    gui_skill_gate_shows_with(kind, cli_connected(kind.spec()).unwrap_or(false))
+}
+
+/// Round-40 review: connected-aware form of [`gui_skill_gate_shows`]. The
+/// callers that probe the connection anyway (`set_enabled`, `apply_skills`)
+/// used to spawn a SECOND identical `auth status` child through the gate —
+/// on a wedged shim each probe burns the full timeout, so one disable
+/// blocked ~2x. Thread the verdict through instead.
+fn gui_skill_gate_shows_with(kind: ConnectorKind, connected: bool) -> bool {
+    !legacy_disabled_marker(kind) && connected
 }
 
 /// Removes a legacy `<id>_disabled` marker if one is present. This is the
@@ -1602,7 +1611,7 @@ fn set_enabled(
     // able to restore it (the show direction needs the app's embedded
     // bundle). A probe error counts as not-connected here exactly like the
     // GUI's ready probes fold `run_probe` errors to false.
-    let skills_should_show = gui_skill_gate_shows(kind);
+    let skills_should_show = gui_skill_gate_shows_with(kind, connected);
     // The hide direction is the CLI's to perform (see `hide_connector_skills`)
     // — a `disable` that left the skill tree on disk would keep the engine
     // offering commands the switch just turned off, until the desktop app
@@ -1669,7 +1678,7 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     // "not connected" (the visible outcome is the same: skills stay hidden),
     // instead of failing the whole command on a missing binary.
     let connected = cli_connected(spec).unwrap_or(false);
-    let visible = gui_skill_gate_shows(kind);
+    let visible = gui_skill_gate_shows_with(kind, connected);
     if visible {
         // The GUI's `apply_skills` (skill_gate) fails the command with the
         // shared consent-failure marker instead of letting the connector go
@@ -1764,7 +1773,11 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
                 }
                 LogoutGate::NotInstalled => {
                     bundle_store_on_disconnected(spec.id);
-                    json!({ "ok": true, "id": spec.id, "installed": false })
+                    // Round-40 review: `removed` rides every lane so a JSON
+                    // consumer scripting over `connectors logout <id>` sees
+                    // one shape — wecom already carried it; `installed`
+                    // stays for the probe verdict this branch encodes.
+                    json!({ "ok": true, "id": spec.id, "installed": false, "removed": false })
                 }
                 LogoutGate::Installed => {
                     let (ok, _, _) = run_cli_bounded(spec, args, logout_deadline)?;
@@ -1775,7 +1788,7 @@ fn logout(kind: ConnectorKind, yes: bool, output: OutputMode) -> Result<CliOutco
                         )));
                     }
                     bundle_store_on_disconnected(spec.id);
-                    json!({ "ok": true, "id": spec.id, "installed": true })
+                    json!({ "ok": true, "id": spec.id, "installed": true, "removed": true })
                 }
             }
         }
@@ -2309,7 +2322,15 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
                     let _ = std::fs::remove_file(&archive);
                     causes.push(format!("{label}: archive checksum mismatch"));
                 }
-                Err(error) => causes.push(format!("{label}: {error}")),
+                // Round-40 review: the labels-only rule above promises
+                // never to echo a candidate URL (mirror prefixes can carry
+                // userinfo) — reqwest's error Display embeds it, so the
+                // cause gets the platform's free-text scrub before joining
+                // the aggregate.
+                Err(error) => causes.push(format!(
+                    "{label}: {}",
+                    pinvou3_lib::platform::redact_url_credentials_in_text(&error.to_string())
+                )),
             }
         }
         if !verified {
@@ -2369,10 +2390,14 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
         // Flush the staged binary before the destination rename — the GUI's
         // installer syncs both stages (round-39 review: same torn-binary
         // window the download sync above closes). The staging file was
-        // created by rename, so the flush goes through a fresh handle; fsync
-        // on a read-only fd flushes the file's data on every supported
-        // platform.
-        std::fs::File::open(&staging)
+        // created by rename, so the flush goes through a fresh handle; it
+        // must be a WRITE handle — on Windows `sync_all` maps to
+        // `FlushFileBuffers`, which needs one and denies a read-only handle
+        // (round-40 review; the GUI installer syncs its write handle the
+        // same way).
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&staging)
             .and_then(|file| file.sync_all())
             .map_err(|error| {
                 CliError::failed(format!("cannot flush the staged connector binary: {error}"))
@@ -2496,7 +2521,12 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
         .map_err(|error| CliError::failed(format!("cannot build download client: {error}")))?
         .get(parsed)
         .send()
-        .map_err(|error| CliError::failed(format!("connector download failed: {error}")))?;
+        .map_err(|error| {
+            CliError::failed(format!(
+                "connector download failed: {}",
+                pinvou3_lib::platform::redact_url_credentials_in_text(&error.to_string())
+            ))
+        })?;
     if !response.status().is_success() {
         return Err(CliError::failed(format!(
             "connector download failed with HTTP {}",
@@ -2874,7 +2904,14 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 deadline,
             )?;
             if !ok {
-                return Err(CliError::failed("feishu auth login did not return a link"));
+                // Round-40 review: phase 1 and the timeout paths attach the
+                // captured vendor output; this arm dropped it, so a failed
+                // authorize left the user with no vendor reason at all.
+                return Err(CliError::failed(format!(
+                    "feishu auth login did not return a link{}{}",
+                    captured_notes(&notes),
+                    vendor_output_tail(spec, &tail)
+                )));
             }
             let payload = parse_json(&stdout).or_else(|| parse_json(&stderr));
             let url = [
@@ -3796,7 +3833,11 @@ fn ima_connect(
 ) -> Result<CliOutcome, CliError> {
     let client_id = std::env::var(client_id_env).map_err(|_| {
         CliError::failed(format!(
-            "client id environment variable {client_id_env} is not set"
+            // Round-40 review: distinguish set-but-non-UTF-8 from unset,
+            // like `resolve_secret`'s documented lanes — "is not set" for a
+            // variable the environment does carry sends the operator
+            // hunting in the wrong place.
+            "client id environment variable {client_id_env} is not set or not valid UTF-8"
         ))
     })?;
     let api_key = resolve_secret(&api_key_env, api_key_stdin)?.ok_or_else(|| {

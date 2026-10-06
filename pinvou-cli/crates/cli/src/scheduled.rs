@@ -22,15 +22,21 @@
 //!   disclosed narrow window (the CLI takes no lock the GUI honors;
 //!   round-37 review corrected the earlier "neither side" claim).
 //! - quarantine policy per store mirrors the GUI's `QuarantineStrategy`
-//!   (Rename for bindings/kinds/read-state/archive) with TWO divergences:
+//!   (Rename for bindings/kinds/read-state/archive) with THREE divergences:
 //!   a corrupt `task-ui-metadata.json` is renamed aside here on every read
 //!   path, while the GUI logs that store's corruption in place — the
 //!   behavior stays safe (the mutation path then refuses; the app's next
 //!   persist heals the absent path), it just is not byte-identical to the
-//!   GUI's per-store choice; and a NEWER-schema sidecar is refused on the
+//!   GUI's per-store choice; a NEWER-schema sidecar is refused on the
 //!   CLI's write paths (`ensure_sidecar_schema`) where the GUI renames it
 //!   aside and later overwrites the canonical path from its booted memory —
-//!   the CLI's refusal leaves the newer payload in place untouched.
+//!   the CLI's refusal leaves the newer payload in place untouched; and
+//!   per-entry wrong-typed payloads inside a structurally valid registry
+//!   (say `"viewed_runs": {"t": "bogus"}`) are healed per-key in memory on
+//!   the CLI's read-modify paths where the GUI's typed decode of the same
+//!   bytes quarantines the WHOLE file — the more-preserving direction,
+//!   deliberate and pinned by contract test (round-40 review: the doc
+//!   claimed exactly two divergences).
 //! - run-record persistence for terminal CLI runs (`save_run` is private in
 //!   the foundation; the CLI stores the identical record shape under the
 //!   identical sortable file name, so the GUI's `list_runs` co-reads them).
@@ -3032,12 +3038,17 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         // sortable file listing BEFORE reading (`list_runs(id, limit)`),
         // so the sort+truncate below returns identical rows without
         // reading every historical run file of every task. The union of
-        // per-task top-K contains the global top-K because both orderings
-        // agree today: every writer sets `scheduled_for = created_at` at
-        // record creation, so the foundation's `created_at` truncation and
-        // this merge's `scheduled_for` sort cannot disagree (a hand-edited
-        // record with `scheduled_for != created_at` could — accepted,
-        // like the twin narrowing below). One narrowing, accepted:
+        // per-task top-K contains the global top-K only while the orderings
+        // agree: the regular writers set `scheduled_for = created_at` at
+        // record creation, but the foundation's misfire catch-up writer
+        // (`automation_manager.rs` sweep, within AUTOMATION_MISFIRE_GRACE_SECS)
+        // writes `scheduled_for = due_at` with `due_at < created_at` — for
+        // such a record the per-task `created_at` truncation and this
+        // merge's `scheduled_for` sort CAN disagree, so with a limit set the
+        // globally newest record may lose to a misfire catch-up record
+        // (round-40 review: the comment used to claim only hand-edited
+        // records could disagree; the narrowing is real, accepted like the
+        // twin below, and exact without a limit). One narrowing, accepted:
         // with a limit set, an active run id beyond the per-task top-K no
         // longer suppresses an equal archived-twin id below — a layout only
         // a hand-crafted store can produce, since run ids are fresh per run.

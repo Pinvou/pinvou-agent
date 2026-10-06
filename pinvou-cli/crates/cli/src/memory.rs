@@ -817,8 +817,13 @@ fn profile_get(output: OutputMode) -> Result<CliOutcome, CliError> {
         "call_name: {}\nassistant_alias: {}\nlanguage: {}\nupdated_at: {}",
         one_line(&profile.identity.call_name),
         one_line(&profile.identity.assistant_alias),
-        profile.conventions.language,
-        profile.updated_at,
+        // Round-40 review: `language` is user-settable store data the GUI
+        // normalization does not fully scrub, so it gets the same row
+        // collapse as the identity cells (the row contract must not depend
+        // on which cell happened to be machine-made). `updated_at` is
+        // RFC3339 the store writes, collapsed for the same consistency.
+        one_line(&profile.conventions.language),
+        one_line(&profile.updated_at),
     );
     let value = serde_json::to_value(&profile).unwrap_or_default();
     Ok(success(render(output, human, &value)))
@@ -931,8 +936,13 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                 &pending.iter().map(render_pending).collect::<Vec<_>>(),
             );
             for (topic, detail) in &cleanup_warnings {
+                // Round-40 review: the detail composes filesystem paths, so
+                // it goes through the same collapse as every other
+                // warning renderer — a control character in an unremovable
+                // file's name must not forge a human row.
                 lines.push(format!(
-                    "warning: memory_topic_cleanup_required ({topic}): {detail}"
+                    "warning: memory_topic_cleanup_required ({topic}): {}",
+                    crate::support::collapse_control_characters(detail)
                 ));
             }
             let value = serde_json::json!({
@@ -1348,7 +1358,12 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
             // classification the personas sibling applies to its
             // `--file`/`--stdin` empty body.
             Some(path) => Err(CliError::failed(format!(
-                "memory add: the file {} holds no non-whitespace content",
+                // Round-40 review: same read lane, same code convention —
+                // every other failure of this lane codes as
+                // `memory_content_file_unreadable`; the empty-body refusal
+                // was the one unclassifiable exit-1 for a script matching
+                // `^memory_[a-z_]+:`.
+                "memory_content_file_empty: the file {} holds no non-whitespace content",
                 path.display()
             ))),
         };
@@ -1540,6 +1555,12 @@ the memory profile instead)",
             collapsed.chars().count(),
             expected.chars().count(),
         );
+        // Round-40 review: the contract requires truncation AND
+        // normalization disclosed on stderr AND in the output — the update
+        // lane carries both halves (`note_normalization` at its mirror
+        // site); the add lane was missing the stderr half, so a
+        // stderr-capturing consumer saw an unexplained shrink.
+        note_normalization("add", collapsed.chars().count(), expected.chars().count());
     }
     if !replaced.is_empty() {
         if let Some(object) = value.as_object_mut() {

@@ -17,11 +17,18 @@ PUBLIC_SUBMODULE_VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
 
 
 def _extract_quoted_paths(block):
-    """提取 YAML 块中 `- 'path'` 形式的路径条目(保持文本序)。"""
+    """提取 YAML 块中 `- 'path'` / `- "path"` 形式的路径条目(保持文本序)。
+
+    Round-40 review M4: 单引号形式之外还要认双引号形式——一条
+    `- "pinvou-cli/**"` 若对提取器不可见,下面所有基于提取结果的 pin
+    (存在性、死条目、成员、workflow 排除)都会被同一条目绕过。
+    """
     paths = []
     for line in block.splitlines():
         stripped = line.strip()
         if stripped.startswith("- '") and stripped.endswith("'"):
+            paths.append(stripped[3:-1])
+        elif stripped.startswith('- "') and stripped.endswith('"'):
             paths.append(stripped[3:-1])
     return paths
 
@@ -527,6 +534,22 @@ class CiGatePolicyTests(unittest.TestCase):
         # check keeps the pin from outliving the path again.
         cli_rust_entries = _extract_quoted_paths(cli_paths)
         self.assertTrue(cli_rust_entries, "cli_rust paths 解析为空")
+        # Round-40 review M4: cli_rust must route on POSITIVE entries only.
+        # The filter runs with dorny's `predicate-quantifier: some-with-excludes`,
+        # where one negated entry (`- '!pinvou-cli/**'`) makes cli_rust false
+        # for every matching change — and rust_full does not cover CLI `.rs`
+        # files, so a single added line would skip cli-test, cli-lint,
+        # windows-rust-test and macos-cli-check for all CLI-only PRs while
+        # required-gate passes on `skipped`. The extractor above now also
+        # sees double-quoted entries, so the quote style cannot hide a
+        # negation from this pin either. Exclusions belong in rust_full,
+        # which owns them today (feedback/personas/pet).
+        for entry in cli_rust_entries:
+            self.assertFalse(
+                entry.startswith("!"),
+                f"cli_rust must not carry negation entries (one '!...' line "
+                f"silently disables every CLI gate): {entry}",
+            )
         # Submodule gitlinks are not checked out everywhere this suite runs
         # (fast-gate needs no CodeWhale tree), so their existence is pinned
         # by .gitmodules instead of the working tree.

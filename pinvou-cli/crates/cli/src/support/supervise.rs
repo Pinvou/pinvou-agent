@@ -365,24 +365,47 @@ mod imp {
         // The double cast (fn item → raw pointer → sighandler_t) is the
         // lint-approved spelling of "handler address"; a direct
         // fn-to-integer cast is the shape the lint exists for.
-        // SIGINT/SIGTERM install unconditionally (the conventional choice:
-        // an inherited SIG_IGN for them is rare and interactive shells do
-        // not set it). SIGHUP is the one that must RESPECT an inherited
-        // SIG_IGN: `nohup pinvou connectors connect …` in the foreground
-        // runs with SIGHUP ignored by the caller's explicit choice, and
-        // installing the handler here made terminal-close kill a job the
-        // user deliberately detached (a round-27 review regression against
-        // the pre-CLI status quo).
+        // SIGTERM installs unconditionally: nothing but the caller's own
+        // kill sends it, and the cleanup it drives is the contract.
+        // SIGINT probes first (round-40 review): POSIX requires a
+        // non-interactive shell without job control to start background
+        // commands with SIGINT ignored — `sh -c 'pinvou code login kimi &'`
+        // in a CI step runs exactly that way, and installing the handler
+        // made the shell's `^C` (shared foreground process group) tear down
+        // a job the caller deliberately detached. The SIGHUP branch below
+        // exists for the same class of reason and now has its sibling.
+        // SIGHUP is the one that must RESPECT an inherited SIG_IGN:
+        // `nohup pinvou connectors connect …` in the foreground runs with
+        // SIGHUP ignored by the caller's explicit choice, and installing
+        // the handler here made terminal-close kill a job the user
+        // deliberately detached (a round-27 review regression against the
+        // pre-CLI status quo).
         // SAFETY: signal(2) with a plain handler address; no preconditions.
         // The disposition probe (null sigaction) reads without installing.
         unsafe {
-            libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+            if !inherited_signal_is_ignored(libc::SIGINT) {
+                libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+            }
             libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
             if inherited_sighup_is_ignored() {
                 // Leave SIGHUP ignored, exactly as the caller arranged it.
             } else {
                 libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
             }
+        }
+    }
+
+    /// Whether `signal` arrived at this process with SIG_IGN installed (a
+    /// null sigaction probe reads the disposition without touching it).
+    fn inherited_signal_is_ignored(signal: libc::c_int) -> bool {
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(signal, std::ptr::null(), &mut action) != 0 {
+                // A failing probe must not silently downgrade cleanup:
+                // install the handler as before.
+                return false;
+            }
+            action.sa_sigaction as usize == libc::SIG_IGN as usize
         }
     }
 
