@@ -2186,13 +2186,67 @@
   }
 
   // web+tauriChat 共享
-  // web+tauriChat 共享
   function sessionMentionSplitter() {
     return (typeof window !== "undefined") && window.__PINVOU_SESSION_MENTION__ &&
       window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
   }
 
-  // web+tauriChat 共享
+  // web+tauriChat 共享. Composer restores (steer-failure, session-switch
+  // mid-send, materialize abort) hand text back to the user: the
+  // session-mention injection block is a machine contract and the chips were
+  // consumed by the send attempt, so the block is stripped on restore instead
+  // of leaking raw JSON into the input. One shared implementation for both
+  // platform lanes (round-8 minor 10 — the strip-on-restore rule used to live
+  // as two verbatim lane copies behind the window global); the splitter is
+  // still read lazily at call time because features publish it after the
+  // bridge scripts boot.
+  function stripMentionBlockForComposerRestore(text) {
+    const raw = String(text || "");
+    const splitMention = sessionMentionSplitter();
+    if (typeof splitMention !== "function") return raw;
+    const split = splitMention(raw);
+    // Gate on `matched`, not refs.length: a structurally valid block that
+    // parses to zero refs is still a block (the Rust titler and the bubble
+    // strip both treat it as one) — the restores must not hand the raw JSON
+    // contract back for it.
+    return split && split.matched ? split.text.trim() : raw;
+  }
+
+  // web+tauriChat 共享. Block-aware part of queuedPayloadEnvelope: splits
+  // <block><body> user text against a payload that really carries the block
+  // at its head. Returns undefined when the shape does not apply (no parser,
+  // no refs, refs-only text, prefixed payload, ambiguous body anchor).
+  function blockAwarePayloadEnvelope(user, payload) {
+    const splitMention = sessionMentionSplitter();
+    if (typeof splitMention !== "function") return null;
+    const split = splitMention(user);
+    if (!split || !split.refs.length || !split.text) return null;
+    const blockText = user.slice(0, user.length - split.text.length);
+    // The block-aware shape only exists when the queued payload really
+    // carries the block at its head: a guide/scaffold-prefixed payload
+    // anchors the block later, and slicing from blockText.length then
+    // cuts into the middle of the original block's JSON (round-8 M2).
+    // The body anchor is the TRIMMED body — interior leading whitespace
+    // in the stored body survives the whole-string trim, so the
+    // untrimmed form never matched the payload's embed and made the
+    // queued edit deterministically impossible. Anything else falls
+    // back to the legacy refusal instead of a corrupt envelope.
+    const body = split.text.trim();
+    if (!body || !payload.startsWith(blockText)) return null;
+    // Anchor on the FIRST occurrence after the block, and only when it
+    // is unique — the legacy exact-match path refused ambiguous
+    // payloads, and a body string that also occurs inside the template
+    // scaffold would silently land the edit at the boilerplate spot.
+    const bodyIndex = payload.indexOf(body, blockText.length);
+    if (bodyIndex < blockText.length || payload.includes(body, bodyIndex + 1)) return null;
+    return {
+      blockPrefix: blockText,
+      before: payload.slice(blockText.length, bodyIndex),
+      after: payload.slice(bodyIndex + body.length),
+      blockAware: true,
+    };
+  }
+
   function queuedPayloadEnvelope(userText, payloadText, meta) {
     const user = String(userText || "");
     const payload = String(payloadText == null ? user : payloadText);
@@ -2223,29 +2277,8 @@
       // and body (rebuiltQueuedFromEnvelope) so the payload keeps the
       // send-time shape — block at the head, body at its original anchor —
       // with the edited refs honored instead of the queued ones.
-      const splitMention = sessionMentionSplitter();
-      if (typeof splitMention === "function") {
-        const split = splitMention(user);
-        if (split && split.refs.length && split.text) {
-          const blockText = user.slice(0, user.length - split.text.length);
-          // Anchor on the FIRST occurrence after the block, and only when it
-          // is unique — the legacy exact-match path refused ambiguous
-          // payloads, and a body string that also occurs inside the template
-          // scaffold would silently land the edit at the boilerplate spot.
-          const bodyIndex = payload.indexOf(split.text, blockText.length);
-          if (
-            bodyIndex >= blockText.length &&
-            !payload.includes(split.text, bodyIndex + 1)
-          ) {
-            return {
-              blockPrefix: blockText,
-              before: payload.slice(blockText.length, bodyIndex),
-              after: payload.slice(bodyIndex + split.text.length),
-              blockAware: true,
-            };
-          }
-        }
-      }
+      const blockEnvelope = blockAwarePayloadEnvelope(user, payload);
+      if (blockEnvelope) return blockEnvelope;
       return payload === user ? { before: "", after: "" } : null;
     }
     return {
@@ -2272,11 +2305,6 @@
   }
 
   // web+tauriChat 共享
-  // web+tauriChat 共享. Block-aware envelopes reassemble as
-  // <edited block><scaffold><edited body><tail>: the edited text carries the
-  // freshly gated `<block><body>` (same edit-resend gate as the bubble
-  // editor), and a raw body without a leading block means the feature was off
-  // at save time — the block is dropped with it.
   function rebuiltQueuedFromEnvelope(envelope, userText) {
     const raw = String(userText == null ? "" : userText);
     if (envelope.blockAware) {
@@ -2305,6 +2333,7 @@
     if (!envelope || typeof envelope.before !== "string" || typeof envelope.after !== "string") return null;
     return rebuiltQueuedFromEnvelope(envelope, userText);
   }
+
 
   // web+tauriChat 共享
   function getComposerDraft() {
@@ -2624,7 +2653,6 @@
   async function testImageInputCapability(model, baseUrl, apiKey, modelId) {
     return invoke("test_image_input_capability", { model, baseUrl, apiKey, modelId: modelId || null });
   }
-
 
   // web+tauriInteraction 共享
   async function refreshSuperPerm() {
