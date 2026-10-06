@@ -425,30 +425,45 @@ mod tests {
     }
 
     /// Feature registry: session-reader's tool_features aggregate into
-    /// session-mention / long-memory with correct plugin and tool ownership;
-    /// everything is enabled by default.
+    /// session-mention / long-memory (the two read tools) and
+    /// session-messaging (the send tool) with correct plugin and tool
+    /// ownership; everything is enabled by default.
     #[test]
     fn registry_aggregates_session_reader_features() {
         with_temp_home(|| {
             let registry = feature_registry();
             let ids: Vec<&str> = registry.iter().map(|f| f.id.as_str()).collect();
-            assert_eq!(ids, ["long-memory", "session-mention"], "sorted output");
+            assert_eq!(
+                ids,
+                ["long-memory", "session-mention", "session-messaging"],
+                "sorted output"
+            );
             for feature in &registry {
                 assert_eq!(feature.plugins, ["session-reader".to_string()]);
-                assert_eq!(
-                    feature.tools,
-                    [
-                        "mcp_session-reader_list_sessions".to_string(),
-                        "mcp_session-reader_read_session".to_string()
-                    ]
-                );
                 assert!(feature.enabled, "default (no state) is all enabled");
             }
+            let read_tools = [
+                "mcp_session-reader_list_sessions".to_string(),
+                "mcp_session-reader_read_session".to_string(),
+            ];
+            for id in ["long-memory", "session-mention"] {
+                let feature = registry.iter().find(|f| f.id == id).unwrap();
+                assert_eq!(feature.tools, read_tools, "{id} owns the read tools");
+            }
+            let messaging = registry
+                .iter()
+                .find(|f| f.id == "session-messaging")
+                .unwrap();
+            assert_eq!(
+                messaging.tools,
+                ["mcp_session-reader_send_message_to_session".to_string()]
+            );
         });
     }
 
     /// Union semantics: disabling only one of two features removes nothing;
-    /// disabling both removes both tools.
+    /// disabling both removes both tools. The send tool obeys the same
+    /// semantics against its single feature (session-messaging).
     #[test]
     fn union_semantics_gate_tool_removal() {
         with_temp_home(|| {
@@ -463,7 +478,8 @@ mod tests {
                 "long-memory is still enabled, so neither tool may be removed"
             );
 
-            // Both off: read_session / list_sessions are removed.
+            // Both read features off: read_session / list_sessions are
+            // removed; the send tool stays (session-messaging still on).
             set_feature_enabled("long-memory", false).unwrap();
             assert_eq!(
                 feature_disabled_tool_names(),
@@ -473,9 +489,23 @@ mod tests {
                 ]
             );
 
-            // Re-enable one: the removal lifts.
+            // Messaging off too: the send tool is removed as well.
+            set_feature_enabled("session-messaging", false).unwrap();
+            assert_eq!(
+                feature_disabled_tool_names(),
+                [
+                    "mcp_session-reader_list_sessions".to_string(),
+                    "mcp_session-reader_read_session".to_string(),
+                    "mcp_session-reader_send_message_to_session".to_string()
+                ]
+            );
+
+            // Re-enable one read feature: only the send tool stays removed.
             set_feature_enabled("long-memory", true).unwrap();
-            assert!(feature_disabled_tool_names().is_empty());
+            assert_eq!(
+                feature_disabled_tool_names(),
+                ["mcp_session-reader_send_message_to_session".to_string()]
+            );
         });
     }
 

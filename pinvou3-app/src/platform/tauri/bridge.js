@@ -1239,6 +1239,13 @@ function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduled
         // auto-titling; the single source of the contract parsing is
         // features/chat/session-mention.js (published via the window global —
         // classic-script bridges do not import features back).
+        // The received cross-session message block (features/messaging
+        // delivery of send_message_to_session) is stripped OUTERMOST first —
+        // the sender block wraps the body and the body may itself start with
+        // a mention block; the order matches chat.rs's
+        // first_send_title_source and UserBubble's parse order.
+        const splitMessage = window.__PINVOU_SESSION_MESSAGE__ && window.__PINVOU_SESSION_MESSAGE__.splitSessionMessageBlock;
+        if (splitMessage) titleText = splitMessage(titleText).text.trim();
         const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
         if (splitMention) titleText = splitMention(titleText).text.trim();
         if (titleText) {

@@ -437,6 +437,7 @@ export const dictZh = {
         uiCodex: codexZh,
         uiAcpProviders: acpProvidersZh,
         uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveToUngrouped:'移到未分组', alreadyUngrouped:'已在未分组', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话，并已将文件夹 ${folder} 加入项目`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败' , rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindUpToDate:'没有需要重绑定的会话', rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次` , rebindCarryoverPending:n=>`${n} 个会话已迁移但其运行时尚未完成切换，请空闲后重试一次`, rebindRetryRemaining:'重试剩余会话', rebindFailedSessions:'失败会话', rebindInProgress:'另一个目录重绑定正在进行中' , rebindBusyHint:'这些会话仍在回合中，等待其空闲后重试', rebindToRoot:'目标不能是文件系统根目录，请改选普通文件夹', rebindToNested:'新旧目录不能相互嵌套', rebindToUnusable:'目标文件夹不可用，请重新选择', rebindRootsConflict:'该文件夹与其它项目的文件夹重叠，请选择这些项目文件夹之外的目录', rebindRootsPersist:'无法把重绑定结果写入磁盘，请检查磁盘空间与权限后重试', rebindRuntimeStarting:'有智能体进程正在启动，暂时无法检查会话状态，请稍后重试', rebindLegacyTableUnsynced:'未移动任何内容：会话记录同步失败。请将该目录设为可写后重试', rebindLegacyTableCorrupt:'未移动任何内容：旧版会话记录表已损坏。请修复或删除该文件后重试', rebindRootsExpand:'展开全部失效文件夹', rebindRootsCollapse:'只保留第一个失效文件夹' },
+
         uiCodexWorkspace: { changes:{added:'新增',modified:'修改',deleted:'删除',renamed:'重命名',copied:'复制',conflict:'冲突',untracked:'未跟踪',unknown:'文件'}, origins:{session:'本会话',preexisting:'会话前已有',preexisting_modified:'会话前已有 · 本会话继续修改',unknown:'来源未记录'}, addedPath:path=>`已添加 ${path}`, addPath:path=>`添加 ${path} 到对话`, added:'已添加到对话', add:'添加到对话', back:'返回工作区列表', copyPath:'复制相对路径', reveal:'在文件管理器中显示', open:'用系统应用打开', reading:'正在读取…', noDiff:'没有可显示的文本差异',  unsupported:'该文件不支持内置预览。', openHint:'可以用系统应用打开。', truncated:'内容过大，当前只显示前一部分。',   title:'工作区', temporary:'临时工作区', refresh:'刷新工作区', close:'关闭工作区', files:'文件', changed:'更改', search:'搜索文件', noFiles:'没有匹配文件', noBaseline:'该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。', branch:'分支', staged:'已暂存', noChanges:'工作区没有更改', copyContent:'复制内容', copied:'已复制', closeViewer:'关闭预览', loadFailed:'文件读取失败', resizeWidth:'调整弹窗宽度', resizeHeight:'调整弹窗高度', resizeCorner:'调整弹窗大小，双击恢复默认', fontDecrease:'减小字号', fontIncrease:'增大字号', openInNewWindow:'使用代码阅读器打开', diffSuffix:'(差异)', readerTitle:'代码阅读器', readerEmpty:'从工作区文件弹窗选择「使用代码阅读器打开」，文件会在此以标签页累积。', closeTab:'关闭标签页', noSessionChanges:'创建会话后，这里会列出本会话对项目的更改。' },
 
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本', updateCheckFailed: '检查失败', updateInstallFailed: '更新失败',
@@ -651,7 +652,7 @@ dictZh.uiToolDetails.showRawErrors = true;
 // 注:weather/iwencai/wecom-bot 的 zh label 由泛化的「API Key/Webhook Key」改为与
 // manifest 逐字一致的具体文案——这是用户可见的文案改进(#575 有意为之,非零变化)。
 Object.assign(dictZh.uiToolDetails.tools, {
-  'session-reader':{ title:'会话读取', subtitle:'只读读取本机其他会话的历史记录', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史：在输入框 @ 引用某个会话后，AI 按需翻页读取其内容（默认安装，纯本地读取会话文件，不联网、不上传）。内置插件不可卸载；会话读取能力可经内置功能开关关闭。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
+  'session-reader':{ title:'会话读取', subtitle:'读取本机其他会话的历史记录；可向其他会话发送消息', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史（在输入框 @ 引用某个会话后按需翻页读取），并可向其他会话投递消息（以发送卡片形式送达；默认安装，纯本地读取会话文件，不联网、不上传，投递写入审计）。卸载后 @ 引用会话将无法被读取。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'高德 Web 服务 API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
   iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'问财 API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },
   card3:{ title:'QQ邮箱 API', subtitle:'智能邮件收发与线程提炼', desc:'提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。' },
@@ -687,12 +688,14 @@ dictZh.uiBuiltinPlugins = {
   versionNote:'随应用升级',
   dataAccessLabel:'数据访问范围',
   levels:{ L0:'只读：不修改任何状态，内容标注为不可信', L1:'写入：会产生用户可见的副作用（如发消息、建任务）', L2:'破坏性：删除/覆盖等不可逆操作，需显式授权' },
-  dataAccess:{ 'sessions.read':'本机会话存储（只读）' },
+  dataAccess:{ 'sessions.read':'本机会话存储（只读）', 'sessions.write':'向本机其他会话发送消息（写入）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
 // §3.3 hook): reused by future per-feature settings pages for the "feature
 // disabled" degradation of existing entry points.
+
+dictZh.uiBuiltinFeatures = { disabledNotice:'该内置功能已关闭，相关入口与能力已停用。' };
 
 Object.assign(dictZh.uiCodexWorkspace, { showRawErrors:true, operationFailed:'工作区操作失败，请重试' });
 
@@ -922,6 +925,7 @@ dictZh.uiArtifacts = {
 };
 
 dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的会话', dropHint:'松开即可引用该会话', chipRemove:name=>`移除引用 ${name}`, cardJump:label=>`打开会话：${label}`, cardUnavailable:'会话已删除', cardDisabled:'功能已关闭', disabledNotice:'会话引用功能已关闭，引用不会随消息发送' };
+dictZh.uiSessionMessage = { from:name=>`来自会话：${name}`, fromUnknown:'来自另一个会话', jump:name=>`打开会话：${name}`, unavailable:'会话已删除' };
 Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 

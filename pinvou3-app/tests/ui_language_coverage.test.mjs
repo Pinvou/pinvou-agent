@@ -74,6 +74,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiToolDetails',
     'uiBuiltinPlugins',
     'uiAuxChat',
+    'uiBuiltinFeatures',
     'uiSessionMention',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
