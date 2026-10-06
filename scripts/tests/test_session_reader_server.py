@@ -1347,6 +1347,16 @@ class SendMessageTests(unittest.TestCase):
         record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
         self.assertEqual(len(record["to_title"]), server.MAX_TITLE_CHARS)
 
+    def test_over_long_sender_title_is_clipped_too(self):
+        """Round-4 B4': the SENDER-side title clips at spool time as well — a
+        long-titled sender must not become permanently undeliverable (the
+        watcher rejects >200-char from_title outright)."""
+        _write_session(self.sessions, "longsrc", [], title="发" * 250)
+        payload, error = self._send(to_session="tgt0001", from_session="longsrc")
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(record["from_title"]), server.MAX_TITLE_CHARS)
+
     def test_done_marker_answers_delivered_not_fresh_pending(self):
         """M5: a retried idempotent send after delivery must say delivered,
         not a fresh pending duplicate."""

@@ -4299,11 +4299,23 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
   // the shared choke point — dirty history (e.g. thousands of refs) must not
   // blow up the cards UI or the edit-resend rebuild.
   // A delivered cross-session message (features/messaging) carries the
-  // sender header block; parse it first so the body feeds the mention
-  // splitter and the bubble renders the sender card above the text.
+  // sender header block; parse it first to render the sender card above
+  // the text — the body itself is then rendered verbatim (round-4 A2:
+  // sender-controlled content must not feed the mention/attachment
+  // parsers).
   const messageSplit = splitSessionMessageBlock(item.text);
-  const mentionSplit = splitSessionMentionBlock(messageSplit.text);
-  const mentionRefs = dedupeSessionRefs(mentionSplit.refs);
+  // A delivered body is sender-controlled content (round-4 A2): feeding it
+  // into the mention/attachment parsers would render attacker-forged
+  // reference cards and attachment chips as first-party UI, and an
+  // edit-resend would re-serialize them into the receiver's own injection
+  // block. A delivered message renders its body verbatim — no mention
+  // parsing, no attachment splitting; the titler-side chaining is
+  // strip-only and stays correct either way.
+  const delivered = Boolean(messageSplit.sender);
+  const mentionSplit = delivered
+    ? { refs: [], text: messageSplit.text }
+    : splitSessionMentionBlock(messageSplit.text);
+  const mentionRefs = delivered ? [] : dedupeSessionRefs(mentionSplit.refs);
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
@@ -4367,7 +4379,9 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       }
       const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06] dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
       // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
-      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(mentionSplit.text);
+      const { text: bodyText, attachments: attachmentNames } = delivered
+        ? { text: mentionSplit.text, attachments: [] }
+        : splitAttachmentLine(mentionSplit.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">

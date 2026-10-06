@@ -180,7 +180,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   immediately** (the scheduled-task wake precedent — the receiving session's model
   sees the message at once and may reply by calling the same tool). Delivery never
   writes the target's session file directly: the MCP server validates and spools
-  (`~/.pinvou3/messaging/spool/<uuid>.json`), and an app-side Rust watcher performs
+  (`~/.pinvou3/messaging/spool/<spool-id>.json`), and an app-side Rust watcher performs
   the steer/dispatch through the engine pool, so the persistence actor's
   last-writer-wins snapshots can never clobber an external edit. The delivered text
   carries a machine-readable sender header block (the session-mention block pattern
@@ -191,7 +191,12 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   optional `idempotency_key` (requires `from_session`, so the namespace is
   never global); the spool file is named by the sender+target-scoped sha256 of
   `"<from_session>|<to_session>|<key>"`, so a retried call replaces its own
-  pending message and can never clobber another session's (transient delivery
+  pending message and cannot clobber another session's without claiming that
+  session's identity — `from_session` is existence-checked, never bound to
+  the calling session, so an honest retried send is collision-free while a
+  caller that names a victim as its sender replaces the victim's queued
+  message (delivered under the victim's claimed identity; disclosed as the
+  unauthenticated-sender boundary, transient delivery
   failures retry with backoff; poison files are quarantined under
   `messaging/spool/failed/`).
 - **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
