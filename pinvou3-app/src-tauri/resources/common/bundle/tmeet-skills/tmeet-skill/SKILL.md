@@ -270,7 +270,7 @@ tmeet
 
 ```bash
 # 默认紧凑格式（模型解析场景推荐，省略 --format 即可）
-tmeet meeting get --meeting-id 123456789
+tmeet meeting get --meeting-id 6953553464429888300
 
 # 美化缩进格式（需要直接展示给用户阅读时使用）
 tmeet meeting list --start 2026-03-12T00:00:00+08:00 --end 2026-03-12T23:59:59+08:00 --format json-pretty
@@ -296,7 +296,7 @@ tmeet meeting list --start 2026-03-12T00:00:00+08:00 --end 2026-03-12T23:59:59+0
 tmeet meeting list --start 2026-03-12T00:00:00+08:00 --end 2026-03-12T23:59:59+08:00 --compact
 
 # 同时启用精简字段 + 美化排版（便于用户直接阅读关键信息）
-tmeet record list --meeting-id 123456789 --compact --format json-pretty
+tmeet record list --meeting-id 6953553464429888300 --compact --format json-pretty
 ```
 
 > **使用准则**：
@@ -333,11 +333,11 @@ tmeet record list --meeting-id 123456789 --compact --format json-pretty
 
 ```bash
 # 1) 首次查询（不传 --page-token）
-tmeet record list --meeting-id "100000000" --page-size 30 --compact
+tmeet record list --meeting-id "6953553464429888300" --page-size 30 --compact
 
 # 2) 从响应中取出 data.next_page_token，继续翻页
 tmeet record list \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --page-token "<next_page_token>" \
   --page-size 30 --compact
 ```
