@@ -75,6 +75,13 @@ pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
 // with this function, so a local copy would drift into false
 // "not materialized" failures.
 pub use self::util::clean_candidate_sentence;
+// The CLI `memory add` predicts the enqueue normalization (and `update`
+// predicts the per-store writer caps) from the original input — the store-
+// authoritative contract tests read the store back as the authority, and
+// these re-exports keep the CLI from hand-mirroring the values (round-41
+// review).
+pub use self::io::{PREFERENCE_TEXT_MAX_CHARS, TIMED_TEXT_MAX_CHARS};
+pub use self::util::clean_text;
 // The CLI `memory add` rejects profile-shaped preference text before
 // enqueueing (the confirm path marks it confirmed but writes nothing), and
 // `memory pending confirm` reports that no-op instead of printing success.

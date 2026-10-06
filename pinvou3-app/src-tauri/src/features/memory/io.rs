@@ -52,9 +52,9 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
 /// the CLI's `memory add` verification: comparing against a locally
 /// duplicated cap would re-create the false `memory_add_not_materialized`
 /// failure the shared normalization fixed if the cap ever changes.
-pub(super) const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
+pub const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
 pub const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
-pub(super) const TIMED_TEXT_MAX_CHARS: usize = 180;
+pub const TIMED_TEXT_MAX_CHARS: usize = 180;
 
 pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnMemoryCapture>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, TurnMemoryCapture>>> = OnceLock::new();

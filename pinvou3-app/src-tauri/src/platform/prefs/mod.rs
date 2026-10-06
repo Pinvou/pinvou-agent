@@ -143,6 +143,24 @@ fn try_lock_settings_file_bounded() -> std::io::Result<Option<SettingsFileLock>>
     }
 }
 
+/// Boot-bootstrap write (the GUI's `!exists → save()` default snapshot).
+/// The exists-check and the write are one step under the same cross-process
+/// flock as `update_transaction` (round-41 review): a CLI settings write
+/// landing between the check and the save used to be overwritten by the
+/// defaults snapshot — the exact whole-file last-writer-wins shape the
+/// flock closed for transactions. Failure keeps the old silent-degrade
+/// contract (boot must not fail over boot defaults); returns whether a
+/// defaults file was written.
+pub(crate) fn save_boot_defaults_if_absent(prefs: &UserPrefs) -> bool {
+    let Ok(_file_lock) = lock_settings_file() else {
+        return false;
+    };
+    if super::paths::settings_path().exists() {
+        return false;
+    }
+    prefs.save_unlocked().is_ok()
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
@@ -913,6 +931,17 @@ impl UserPrefs {
     }
 
     fn load_unlocked(persist_normalized: bool) -> Self {
+        Self::load_unlocked_with_migration(persist_normalized).0
+    }
+
+    /// `load_unlocked` plus the plaintext→keychain migration outcome. The
+    /// transactional save path needs it (round-41 review M1): on a migration
+    /// failure the plaintext key is still in memory only, and the in-memory
+    /// sanitize below means a subsequent `save_unlocked` would rewrite
+    /// settings.json without it — erasing the credential from its only
+    /// durable location. Callers that persist must refuse first (same gate
+    /// as the GUI's `prepare_prefs_for_save`).
+    fn load_unlocked_with_migration(persist_normalized: bool) -> (Self, CredentialMigrationResult) {
         let path = super::paths::settings_path();
         let raw = std::fs::read_to_string(&path).ok();
         let system_locale = crate::platform::os::current_system_locale();
@@ -996,7 +1025,7 @@ impl UserPrefs {
             }
         }
         prefs.sanitize_plaintext_api_keys();
-        parsed.prefs
+        (parsed.prefs, migration)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -1052,7 +1081,14 @@ impl UserPrefs {
         let _guard = lock_user_prefs();
         let _file_lock = lock_settings_file()
             .map_err(|error| format!("acquire settings lock failed: {error}"))?;
-        let mut prefs = Self::load_unlocked(false);
+        let (mut prefs, migration) = Self::load_unlocked_with_migration(false);
+        // round-41 review M1：迁移失败时明文 key 只存在于内存，而 save_unlocked
+        // 无条件 sanitize 后整文档落盘——凭据会从它唯一的持久位置被抹掉，写入方
+        // 还报成功。与 GUI `prepare_prefs_for_save` 同一闸门：拒绝整个事务，
+        // settings.json 保持原样，等用户修复凭据存储（或切 file 后端）再写。
+        if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
+            return Err("credential store unavailable; please reconfigure API Key".to_string());
+        }
         mutate(&mut prefs)?;
         prefs
             .save_unlocked()

@@ -229,7 +229,9 @@ pub fn browser_session_mcp_json(session_id: &str) -> PathBuf {
 /// Stable FNV-1a 64-bit digest over raw bytes. Shared building block for
 /// stable local identifiers derived from session IDs; callers format the
 /// returned value (e.g. `{value:016x}`) for their own file/label needs.
-pub(crate) fn fnv1a64(data: &[u8]) -> u64 {
+/// `pub` (round-41 review): the CLI's plugin-id fallback derives the same
+/// stable stem hash the GUI does, from the shared digest.
+pub fn fnv1a64(data: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in data {
         hash ^= u64::from(*byte);

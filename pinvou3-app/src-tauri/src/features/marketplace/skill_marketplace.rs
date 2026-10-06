@@ -1840,7 +1840,10 @@ fn read_skill_name(md_path: &Path) -> Option<String> {
 
 /// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
 /// `pub(crate)`：统一插件导入（plugin_import）的裸技能回退复用同一解析口径。
-pub(crate) fn read_skill_name_from_str(content: &str) -> Option<String> {
+/// `pub` (round-41 review): the CLI's `plugins skills install/import` uses
+/// the very frontmatter reader the GUI pipeline runs, so a fallback-name
+/// decision cannot drift between surfaces.
+pub fn read_skill_name_from_str(content: &str) -> Option<String> {
     let mut lines = content.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -2605,7 +2608,9 @@ pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> 
 /// 把任意字符串（文件名 stem 等）净化为合法技能名：非 `[a-zA-Z0-9_-]` 字符 → `-`，
 /// 掐头去尾的 `-` 去掉、截 64；空结果兜底 "skill"。`pub(crate)`：单 .md 导入的
 /// 文件名兜底命名用。
-pub(crate) fn sanitize_skill_name(name: &str) -> String {
+/// `pub` (round-41 review): the CLI import fallback names skills through
+/// the same sanitizer the GUI stores, byte-for-byte.
+pub fn sanitize_skill_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
