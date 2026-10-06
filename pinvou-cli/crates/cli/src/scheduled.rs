@@ -742,7 +742,9 @@ impl TaskStore {
     fn read_def(&self, id: &str) -> Result<serde_json::Value, CliError> {
         let path = self.def_path(id)?;
         if !path.exists() {
-            return Err(CliError::failed(format!("scheduled_task_not_found: {id}")));
+            return Err(CliError::failed(format!(
+                "{SCHEDULED_TASK_NOT_FOUND}: {id}"
+            )));
         }
         let record = self.manager()?.get_automation(id).map_err(|error| {
             CliError::failed(format!(
@@ -3199,6 +3201,13 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     Ok(success(render(output, human, &value)))
 }
 
+/// The family's unknown-id marker, single-sourced between the producer
+/// (`read_def`) and the one consumer that BRANCHES on it (`mark_viewed`'s
+/// history-archive fallback): the branch used to re-type the literal at the
+/// call site, so a wording change on either side silently routed a corrupt
+/// live definition to the archive lane (round-40 review).
+const SCHEDULED_TASK_NOT_FOUND: &str = "scheduled_task_not_found";
+
 fn mark_viewed(task_id: &str, run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let sessions = open_sessions()?;
@@ -3212,7 +3221,7 @@ fn mark_viewed(task_id: &str, run_id: &str, output: OutputMode) -> Result<CliOut
     // archive branch.
     let runs = match store_holder.read_def(task_id) {
         Ok(_) => store_holder.list_runs(task_id, None)?,
-        Err(error) if error.to_string().starts_with("scheduled_task_not_found") => {
+        Err(error) if error.to_string().starts_with(SCHEDULED_TASK_NOT_FOUND) => {
             let archive = read_registry(&store_holder.history_archive_path(), &["tasks"]);
             archive
                 .get("tasks")

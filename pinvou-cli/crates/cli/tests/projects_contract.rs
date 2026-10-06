@@ -1826,3 +1826,187 @@ fn projects_move_refuses_aux_session_ids_like_the_gui() {
         "{error}"
     );
 }
+
+/// Round-40 review: `rebind` to a destination that does not exist must wear
+/// the typed `REBIND_TO_UNUSABLE` marker (the validator failure mapped at
+/// projects.rs's to-lane gate), and nothing may move. No contract test
+/// exercised this arm — a regression that dropped the mapping for a raw
+/// `project_error` kept the suite green while scripts matching the typed
+/// markers broke.
+#[test]
+fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-to-unusable");
+    let from_dir = make_root_dir("rebind-unusable-from");
+    let from = std::fs::canonicalize(&from_dir).unwrap();
+    let to = from
+        .parent()
+        .unwrap()
+        .join("rebind-never-created-destination");
+
+    run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "UnusableTarget",
+        "--root",
+        from.to_str().unwrap(),
+    ]);
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, from.clone())
+        .expect("create session");
+    let id = session.metadata.id;
+    sessions
+        .bind_session_workspace(&id, from.clone())
+        .expect("bind workspace");
+    drop(sessions);
+
+    let outcome = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ]);
+    let error = outcome.expect_err("rebind to a missing destination must refuse");
+    assert!(
+        error.to_string().contains("REBIND_TO_UNUSABLE"),
+        "the refusal must carry the typed marker: {error}"
+    );
+
+    // Nothing moved: the binding sidecar still names the old root.
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&id)
+            .join("workspace-binding.json"),
+    )
+    .expect("binding sidecar still on disk");
+    assert!(
+        sidecar.contains(from.to_str().unwrap()),
+        "nothing may move on a refused rebind: {sidecar}"
+    );
+}
+
+/// Round-40 review: rebinding onto another project's existing root would
+/// produce overlapping project roots — the preflight partition refuses with
+/// the typed `REBIND_ROOTS_CONFLICT` copy before any session binding moves.
+/// Like the missing-destination arm above, this arm had no contract test.
+#[test]
+fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("rebind-roots-conflict");
+    let from_dir = make_root_dir("rebind-conflict-from");
+    let to_dir = make_root_dir("rebind-conflict-to");
+    let from = std::fs::canonicalize(&from_dir).unwrap();
+    let to = std::fs::canonicalize(&to_dir).unwrap();
+
+    run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Moving",
+        "--root",
+        from.to_str().unwrap(),
+    ]);
+    run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "Occupied",
+        "--root",
+        to.to_str().unwrap(),
+    ]);
+
+    let outcome = run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ]);
+    let error = outcome.expect_err("rebinding onto an occupied root must refuse");
+    assert!(
+        error.to_string().contains("REBIND_ROOTS_CONFLICT"),
+        "the refusal must carry the typed conflict marker: {error}"
+    );
+
+    // Both projects keep their own roots.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    let roots: Vec<String> = list["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|project| {
+            project["roots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|root| root["path"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        roots.contains(&from.to_str().unwrap().to_owned())
+            && roots.contains(&to.to_str().unwrap().to_owned()),
+        "both roots must survive the refused rebind: {roots:?}"
+    );
+}
+
+/// Round-40 review: tier-2 auto-group resolution (workspace bound under a
+/// project root, no explicit assignment, longest root wins) had no positive
+/// contract test — only the negative ungroup refusals exercised the wiring.
+/// A regression there (passing the session-record path instead of the
+/// session's workspace, or the `Some(None)` short-circuit leaking into tier
+/// 2) would refuse ungroups the GUI's dialog allows — the family's most
+/// irreversible write silently diverging from the GUI.
+#[test]
+fn projects_move_ungroups_a_tier2_auto_grouped_session() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-tier2-ungroup");
+    let root_dir = make_root_dir("rebind-tier2-root");
+    let root = std::fs::canonicalize(&root_dir).unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "AutoGroup",
+        "--root",
+        root.to_str().unwrap(),
+    ]);
+    let _project_id = value["id"].as_str().unwrap().to_owned();
+
+    // The session's workspace sits UNDER the project root, and no explicit
+    // assignment is created — resolution must come from tier 2.
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, root.join("sub"))
+        .expect("create session");
+    let id = session.metadata.id;
+    sessions
+        .bind_session_workspace(&id, root.join("sub"))
+        .expect("bind workspace");
+    drop(sessions);
+
+    // The ungroup gate resolves the session through tier 2 and lets the
+    // explicit-opt-out write through.
+    let value = run_json(&["pinvou", "projects", "move", &id, "--yes"]);
+    assert!(
+        value.get("project_id").is_none() || value["project_id"].is_null(),
+        "an ungroup resolves to no project: {value}"
+    );
+
+    // The explicit ungroup entry now exists: a repeated ungroup is refused
+    // (the gate's "already ungrouped" arm), proving the entry was written.
+    let outcome = run(&["pinvou", "projects", "move", &id, "--yes"]);
+    let error = outcome.expect_err("the ungroup entry must pin the explicit opt-out");
+    assert!(error.to_string().contains("not in a project"), "{error}");
+    let _ = home;
+}

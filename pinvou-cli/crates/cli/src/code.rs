@@ -5290,7 +5290,21 @@ fn workspace_diff_one(
             combined.push_str(&unstaged);
         }
         if combined.is_empty() && path.is_file() {
-            untracked_diff(&path, &relative)?
+            // Round-40 review: the synthetic new-file diff is only correct
+            // for an UNTRACKED file — a tracked, unmodified file reached
+            // this arm too and `untracked_diff` reported the whole content
+            // as added from /dev/null. The app's `workspace_diff` carries
+            // the same arm and the same `ls-files --error-unmatch` fix
+            // (root-fixed there, mirrored here — the differential pin test
+            // now covers the tracked-unmodified case).
+            let tracked = git_output(root, &["ls-files", "--error-unmatch", "--", &relative])
+                .map(|output| !output.trim().is_empty())
+                .unwrap_or(false);
+            if tracked {
+                String::new()
+            } else {
+                untracked_diff(&path, &relative)?
+            }
         } else {
             combined
         }
