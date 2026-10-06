@@ -11,7 +11,7 @@
 //! - a poll watcher picks spool files up, re-validates them (server-side
 //!   defense in depth — the spool directory is user-writable), and delivers
 //!   through the engine pool;
-//! - delivery semantics: target mid-turn → [`EnginePool::steer`] into the
+//! - delivery semantics: target mid-turn → `EnginePool::steer` into the
 //!   current turn; target idle / engine not live → a new turn dispatched
 //!   immediately (the scheduled-task wake precedent);
 //! - every delivery writes an audit record into both sessions' workspaces
@@ -25,7 +25,7 @@
 //! - poison files (schema drift, hostile content, oversize) are quarantined
 //!   under `spool/failed/` immediately; *transient* delivery failures (rewind
 //!   gates, engine spawn errors) retry with backoff and only quarantine after
-//!   [`MAX_DELIVERY_ATTEMPTS`];
+//!   `MAX_DELIVERY_ATTEMPTS`;
 //! - the watcher honors the `session-messaging` feature switch each poll:
 //!   switch off hides the tool **and** pauses delivery (pending files wait).
 //!
@@ -36,7 +36,7 @@
 //!   foundation when the target turn is cancelled or the engine evicted
 //!   (`chat:steer_dropped`); the messaging path treats steer-Ok as final and
 //!   does not yet correlate that event.
-//! - **Retry budget is per-process**: [`RetryState`] lives in memory, so a
+//! - **Retry budget is per-process**: `RetryState` lives in memory, so a
 //!   watcher restart gives a permanently-failing file a fresh attempt budget
 //!   (a crash loop re-buys ~10 attempts per boot — bounded by boot cadence).
 //!
@@ -345,7 +345,7 @@ impl SpoolDelivery for PoolDelivery<'_> {
 /// the normal idle signal (no live engine / no active turn accepting), so the
 /// fallback dispatches a fresh turn — the two paths together implement the
 /// contract §6 queue/steer decision (busy → steer, idle → wake). Both paths
-/// are bounded by [`DELIVERY_TIMEOUT`] so a wedged engine cannot stall the
+/// are bounded by `DELIVERY_TIMEOUT` so a wedged engine cannot stall the
 /// watcher; a timeout surfaces as a transient error and is retried.
 pub async fn deliver_spooled_message(
     pool: &EnginePool,
@@ -551,7 +551,7 @@ struct RetryState {
 
 impl RetryState {
     /// Whether a transiently-failing file is due for another attempt
-    /// (linear backoff from [`MIN_BACKOFF`], capped at [`MAX_BACKOFF`]).
+    /// (linear backoff from `MIN_BACKOFF`, capped at `MAX_BACKOFF`).
     fn due(&self, name: &str) -> bool {
         match self.attempts.get(name) {
             Some((count, last)) => {
@@ -619,7 +619,7 @@ fn messaging_switched_on() -> bool {
 /// Watch loop body: process every pending spool file in the deterministic
 /// directory order (hex names sort stably but carry no time order),
 /// quarantining poison files immediately and transient failures after
-/// [`MAX_DELIVERY_ATTEMPTS`] spread-out attempts.
+/// `MAX_DELIVERY_ATTEMPTS` spread-out attempts.
 async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
     delivery: &D,
     gates: &G,
