@@ -699,14 +699,57 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
             // Re-check the persona under the lock: an equip that landed
             // between the unlocked read and this lock may have staged a
             // different persona, whose pair must survive the sweep.
-            let mut lock = equip_state_lock()?;
-            let _guard = lock.write().map_err(|error| {
-                CliError::failed(format!("cannot lock the persona equip state: {error}"))
-            })?;
-            let fresh =
-                crate::support::read_text_file_capped(&path, MAX_SIDECAR_BYTES, "personas delete")
-                    .ok()
-                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+            //
+            // Round-40 review: lock-infrastructure failures degrade to the
+            // sweep-errors channel like every other sweep failure instead of
+            // aborting `personas delete` AFTER the card has already
+            // committed — an abort here discarded the partial report, and
+            // the rerun hits the existence gate before the sweep can ever
+            // run, so the stuck sidecars survived with no disclosure.
+            let mut lock = match equip_state_lock() {
+                Ok(lock) => lock,
+                Err(error) => {
+                    sweep_errors.push(format!("{session_id}: {error}"));
+                    continue;
+                }
+            };
+            let guard = lock.write();
+            let _guard = match guard {
+                Ok(guard) => guard,
+                Err(error) => {
+                    sweep_errors.push(format!(
+                        "{session_id}: cannot lock the persona equip state: {error}"
+                    ));
+                    continue;
+                }
+            };
+            // The locked re-read feeds the same no-silent-skip invariant as
+            // the unlocked read above: a sidecar that exists but cannot be
+            // inspected at the moment of removal is recorded as a sweep
+            // error, not skipped (only the concurrent-unequip NotFound — the
+            // file now gone — is the legitimate skip).
+            let fresh = match crate::support::read_text_file_capped(
+                &path,
+                MAX_SIDECAR_BYTES,
+                "personas delete",
+            ) {
+                Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        sweep_errors.push(format!(
+                            "{session_id}: the sidecar turned unreadable before removal: {error}"
+                        ));
+                        continue;
+                    }
+                },
+                Err(_) if !path.exists() => None,
+                Err(error) => {
+                    sweep_errors.push(format!(
+                        "{session_id}: the sidecar turned unreadable before removal: {error}"
+                    ));
+                    continue;
+                }
+            };
             let still_matches = fresh
                 .as_ref()
                 .and_then(|value| value.get("persona_id"))
@@ -795,12 +838,19 @@ pub(crate) fn equipped_persona_anchor(session_id: &str) -> Option<String> {
 
 /// A staged one-shot body together with the persona id it was staged from —
 /// the pair the sidecar carries. The turn lane needs the id to re-check the
-/// card pool before injecting (see [`staged_persona_turn`]).
+/// card pool before injecting (see [`staged_persona_turn`]). `staged_at` is
+/// the stage-time stamp (nanos since the Unix epoch; `0` on legacy sidecars
+/// written before the field existed): because `equip_body_injection` is
+/// deterministic from the card, re-equipping the SAME card with an UNCHANGED
+/// body writes a byte-identical pair, and a value-only guard cannot tell
+/// that restage from the pair a running turn already read — the stamp can
+/// (round-40 review M6).
 #[cfg(feature = "product-backend")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StagedPersonaInjection {
     pub(crate) persona_id: String,
     pub(crate) body: String,
+    pub(crate) staged_at: u64,
 }
 
 /// What the next `agent run --session` turn should do with the session's
@@ -923,7 +973,15 @@ fn staged_persona_injection_at(path: &std::path::Path) -> Option<StagedPersonaIn
         .and_then(serde_json::Value::as_str)
         .filter(|body| !body.trim().is_empty())
         .map(str::to_owned)?;
-    Some(StagedPersonaInjection { persona_id, body })
+    let staged_at = value
+        .get("staged_at")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    Some(StagedPersonaInjection {
+        persona_id,
+        body,
+        staged_at,
+    })
 }
 
 /// Path-resolved core of [`consume_pending_persona_injection`].
@@ -967,10 +1025,20 @@ fn consume_staged_persona_injection_at(
     let Some(body) = staged_body else {
         return Ok(());
     };
+    let staged_at = value
+        .get("staged_at")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     // Lost-update guard: only the exact pair the consuming turn read is
     // spent. A mid-run restage (a new `equip`) keeps its body for the next
     // run instead of being cleared by a consume that never injected it.
-    if persona_id != expected.persona_id || body != expected.body {
+    // `staged_at` participates because `equip_body_injection` is
+    // deterministic from the card: re-equipping the SAME card with an
+    // UNCHANGED body produces a byte-identical pair a value-only guard
+    // cannot distinguish from the spent one (round-40 review M6); the
+    // stage stamp is what makes that restage visible.
+    if persona_id != expected.persona_id || body != expected.body || staged_at != expected.staged_at
+    {
         return Ok(());
     }
     let payload = serde_json::json!({ "persona_id": persona_id, "pending_body": null });
@@ -989,6 +1057,19 @@ const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
 /// The body budget the sidecar cap is computed from — the same 4 MiB the
 /// CLI's own persona write paths enforce.
 const MAX_EQUIP_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Nanos since the Unix epoch, saturating at 0 if the clock is before it —
+/// the stage stamp [`persist_equipped_persona`] writes and the consume
+/// guard compares.
+fn unix_nanos_now() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default()
+}
 
 /// Refuses a card whose RAW body is over the budget the sidecar cap is
 /// computed from.
@@ -1075,7 +1156,18 @@ fn persist_equipped_persona(
             ))
         })?;
     }
-    let payload = serde_json::json!({ "persona_id": persona_id, "pending_body": pending_body });
+    let payload = serde_json::json!({
+        "persona_id": persona_id,
+        "pending_body": pending_body,
+        // Stage-time stamp: the consume's exact-pair guard compares it so a
+        // mid-run restage of the same card with the same body (a
+        // byte-identical pair, since `equip_body_injection` is deterministic
+        // from the card) is still recognized as NEWER staging and survives
+        // the running turn's consume (round-40 review M6). Nanos give the
+        // stamp enough resolution that two human-paced equips never
+        // collide; `0` is the legacy-sidecar sentinel on the read side.
+        "staged_at": unix_nanos_now(),
+    });
     let bytes = serde_json::to_vec(&payload).map_err(|error| {
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
     })?;
@@ -1678,6 +1770,7 @@ mod tests {
         let any_expected = StagedPersonaInjection {
             persona_id: "any".to_owned(),
             body: "any".to_owned(),
+            staged_at: 0,
         };
         consume_staged_persona_injection_at(&missing, &any_expected)
             .expect("a missing sidecar must consume as a no-op");
@@ -1777,18 +1870,64 @@ mod tests {
             other => panic!("the newer staging must survive, got {other:?}"),
         }
 
-        // The newer pair is spent normally by ITS consuming run.
-        consume_pending_persona_injection(
-            session_id,
-            &StagedPersonaInjection {
-                persona_id: "pinvou-card-creator".to_owned(),
-                body: "newer body".to_owned(),
-            },
-        )
-        .unwrap();
+        // The newer pair is spent normally by ITS consuming run: the next
+        // run re-reads the sidecar (stamp included) and that exact pair —
+        // not a value-reconstructed one — is spent.
+        let newer = match staged_persona_turn(session_id) {
+            Some(StagedPersonaTurn::Inject(injection)) => injection,
+            other => panic!("the newer staging must still be present, got {other:?}"),
+        };
+        consume_pending_persona_injection(session_id, &newer).unwrap();
         assert!(
             staged_persona_turn(session_id).is_none(),
             "the matching pair must be spent one-shot"
+        );
+    }
+
+    /// Round-40 review M6: re-equipping the SAME card with an UNCHANGED body
+    /// writes a byte-identical pair (`equip_body_injection` is deterministic
+    /// from the card), so the value-only guard used to mistake that restage
+    /// for the pair the running turn had already read and injected — the
+    /// consume nulled a body no turn ever injected, breaking equip's
+    /// "applies to the next agent run" promise. The stage stamp is what
+    /// distinguishes the two.
+    #[cfg(feature = "product-backend")]
+    #[test]
+    fn an_identical_body_restage_survives_the_consume() {
+        let _home = TempHome::new("consume-race-identical");
+        let session_id = "consume-race-identical";
+        persist_equipped_persona(session_id, "pinvou-card-creator", "unchanged body").unwrap();
+        let expected = match staged_persona_turn(session_id) {
+            Some(StagedPersonaTurn::Inject(injection)) => injection,
+            other => panic!("the fixture must stage an injection, got {other:?}"),
+        };
+
+        // The user re-equips the same card mid-run: same id, same body,
+        // NEW stamp.
+        persist_equipped_persona(session_id, "pinvou-card-creator", "unchanged body").unwrap();
+        let restaged = staged_persona_injection_at(&equip_state_path(session_id).unwrap())
+            .expect("the restage must be readable");
+        assert_eq!(restaged.body, expected.body, "same card, same body");
+        assert_ne!(
+            restaged.staged_at, expected.staged_at,
+            "the stage stamp is what makes the restage distinguishable"
+        );
+
+        // The running turn's consume must not clear the restage.
+        consume_pending_persona_injection(session_id, &expected).unwrap();
+        match staged_persona_turn(session_id) {
+            Some(StagedPersonaTurn::Inject(injection)) => assert_eq!(
+                injection.staged_at, restaged.staged_at,
+                "the identical-body restage must survive the turn's consume"
+            ),
+            other => panic!("the identical-body restage must survive, got {other:?}"),
+        }
+
+        // The restaged pair is spent normally by ITS consuming run.
+        consume_pending_persona_injection(session_id, &restaged).unwrap();
+        assert!(
+            staged_persona_turn(session_id).is_none(),
+            "the restaged pair must be spent one-shot"
         );
     }
 

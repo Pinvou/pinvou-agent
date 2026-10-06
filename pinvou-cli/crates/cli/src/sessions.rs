@@ -22,6 +22,13 @@
 //!   (the CLI never owns a live engine, so non-terminal workers report as
 //!   interrupted, matching a stopped GUI process).
 //!
+//! Row-set caveat (round-40 review): `list` keeps every non-hidden record,
+//! while the GUI chat sidebar additionally filters out native-code/ACP
+//! sessions — those appear here as extra rows labeled `kind: "chat"` with no
+//! distinguishing marker. Record-level operations behave identically; only
+//! the row set and the label differ, and scripting a strict diff against the
+//! sidebar will see them.
+//!
 //! Cross-process caveat: the GUI serializes its mutations behind in-process
 //! locks that a separate CLI process cannot see. A CLI `rename`/`pin` on a
 //! session the GUI is ACTIVELY streaming rewrites the whole transcript JSON
@@ -749,14 +756,43 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
     // hidden on disk, still pinned on disk — exit 0, and the stale pin then
     // keeps the session exempt from retention forever. `restore` has no such
     // side effect, so only the archive direction is re-checked.
-    if hidden && store.is_pinned(id) {
-        return sidecar_not_persisted(
-            verb,
-            id,
-            "pinned-sessions",
-            "pinned",
-            "the pin-clear half of the archive did not land",
-        );
+    // Round-40 review: the half-landed guard protects the DURABLE retention
+    // exemption, so it consults the durable registry (file first, booted map
+    // as fallback — the reader retention's sweep uses), not
+    // `store.is_pinned`'s in-memory cache: a pin the desktop app wrote after
+    // this CLI booted never entered that cache, and a failed pin-clear
+    // rolls the cache back even when the durable file still holds the pin,
+    // so the cache answered "unpinned" for a half-landed archive and let it
+    // exit 0. An unreadable registry (None) refuses the report too: claiming
+    // success while the durable pin state cannot be verified is the exact
+    // half-landed shape this guard exists to catch.
+    if hidden {
+        match store.durable_pinned_sessions() {
+            // The durable registry answers: still pinned -> half-landed.
+            Some(pins) => {
+                if pins.contains(id) {
+                    return sidecar_not_persisted(
+                        verb,
+                        id,
+                        "pinned-sessions",
+                        "pinned",
+                        "the pin-clear half of the archive did not land",
+                    );
+                }
+            }
+            // Unreadable registry: the pin-clear cannot be verified -
+            // refuse rather than claim success over unverifiable durable
+            // state.
+            None => {
+                return sidecar_not_persisted(
+                    verb,
+                    id,
+                    "pinned-sessions",
+                    "pinned",
+                    "the pinned-sessions registry could not be read, so the pin-clear half of the archive cannot be verified",
+                );
+            }
+        }
     }
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(output, format!("{action} {id}"), &value)))

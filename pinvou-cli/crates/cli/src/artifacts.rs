@@ -239,6 +239,19 @@ fn require_session_and_path(rest: &[String]) -> Result<(String, String), CliErro
             "artifacts command requires a session id and a relative path",
         ));
     }
+    // Round-40 review: the session id carries `[A-Za-z0-9_-]`, so a
+    // flag-shaped token passes it and dies later as an exit-1
+    // `artifact_not_found` (e.g. `artifacts read s-1 --stdin` reading
+    // `--stdin` as the path). An option-like token is an argv-decidable
+    // mistake — refuse it at parse with the exit-2 usage class, the same
+    // discipline `files ingest` applies to its PATH slot.
+    for (slot, token) in [("session id", &rest[0]), ("PATH", &rest[1])] {
+        if token.starts_with('-') {
+            return Err(CliError::usage(format!(
+                "artifacts command requires a {slot}, got the option-like token {token:?}"
+            )));
+        }
+    }
     Ok((rest[0].clone(), rest[1].clone()))
 }
 

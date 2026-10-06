@@ -7,9 +7,12 @@
 //! same feature-layer building blocks the GUI commands in
 //! `pinvou3-app/src-tauri/src/app/commands/settings.rs` use:
 //! `pinvou3_lib::platform::prefs::UserPrefs` load -> mutate -> save via
-//! `update_transaction` (process lock + atomic write + migrations +
-//! memory-locale policy) and `pinvou3_lib::platform::credential_store` for
-//! API keys. No Tauri host is booted.
+//! `update_transaction` (cross-process flock + in-process lock + atomic
+//! write + migrations + memory-locale policy — round-40 review M7 gave the
+//! transaction an OS-level lock because this family made the CLI the second
+//! writer process of settings.json) and
+//! `pinvou3_lib::platform::credential_store` for API keys. No Tauri host is
+//! booted.
 //!
 //! Two of the three network paths mirror a real GUI counterpart, and the
 //! third has none — the distinction matters because it decides what the
@@ -1430,6 +1433,10 @@ fn edit<S: CredentialStore>(
     // only then fail — the same pre-check ordering `code providers update`
     // applies to its unknown-id refusal. An unreadable prefs store defers to
     // the transaction below, which owns the real error surface for that.
+    // `UserPrefs::load` persists normalization migrations, so this
+    // pre-check can rewrite settings.json before the command fails — the
+    // same disclosed trade-off the `remove` lane carries (idempotent
+    // migrations only; round-40 review names it here too).
     if UserPrefs::load().model_by_id(id).is_none() {
         return Err(CliError::failed(format!("model not found: {id}")));
     }
@@ -2569,7 +2576,13 @@ fn probe_local<S: CredentialStore>(
     // misclassification this flag exists to prevent comes back.
     let named_model_key = match model_id {
         Some(id) => {
-            let prefs = safe_prefs(store);
+            // Round-40 review: this row renders ok/code/detail/http_status
+            // only, so it loads prefs WITHOUT the all-models keychain
+            // refresh (`safe_prefs`) its rows never render — the same
+            // conversion the round-39 review applied to `test_connection`
+            // and the active-model arm; the key resolves for exactly this
+            // one model via `resolve_saved_model_key` below.
+            let prefs = plain_prefs();
             let model = find_model(&prefs, id)?;
             let key = resolve_saved_model_key(store, &model)
                 .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?

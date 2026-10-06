@@ -33,8 +33,17 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// directories for the duration of the test and restores the previous values
 /// on drop. `HOME` isolation keeps `ProviderManager`'s per-CLI config writers
 /// (`~/.codex`, `~/.claude`) and the kimi data root inside the sandbox.
+/// Round-40 review: the guard also forces `CODEWHALE_SECRET_BACKEND=file`,
+/// the same isolation the connectors/models contract guards apply — with the
+/// variable unset the credential store is keyring-first, and the keyring is
+/// an OS service no HOME redirection reaches, so the seeded `providers add`
+/// fixtures would write their fixture keys into the developer's real
+/// keychain on every run (the `KeyringCleanup` guards are best-effort
+/// cleanup, not isolation). The file backend roots inside the sandboxed
+/// `CODEWHALE_HOME`.
 struct HomeGuard {
     previous: (
+        Option<OsString>,
         Option<OsString>,
         Option<OsString>,
         Option<OsString>,
@@ -63,6 +72,7 @@ impl HomeGuard {
             std::env::var_os("USERPROFILE"),
             std::env::var_os("HOMEDRIVE"),
             std::env::var_os("HOMEPATH"),
+            std::env::var_os("CODEWHALE_SECRET_BACKEND"),
         );
         // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
         // are serialized in-process.
@@ -70,6 +80,7 @@ impl HomeGuard {
             std::env::set_var("PINVOU3_HOME", &root);
             std::env::set_var("CODEWHALE_HOME", root.join("codewhale"));
             std::env::set_var("HOME", root.join("home"));
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
             // Round-39 review (M2): the app's `user_home_dir` reads
             // USERPROFILE (then HOMEDRIVE+HOMEPATH) FIRST on Windows, and the
             // provider manager roots the codex/claude config writers there —
@@ -92,13 +103,14 @@ impl HomeGuard {
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
-        let (pinvou, codewhale, home, profile, homedrive, homepath) = (
+        let (pinvou, codewhale, home, profile, homedrive, homepath, secret_backend) = (
             &self.previous.0,
             &self.previous.1,
             &self.previous.2,
             &self.previous.3,
             &self.previous.4,
             &self.previous.5,
+            &self.previous.6,
         );
         // SAFETY: ENV_LOCK is held by the owning test.
         unsafe {
@@ -125,6 +137,10 @@ impl Drop for HomeGuard {
             match homepath {
                 Some(value) => std::env::set_var("HOMEPATH", value),
                 None => std::env::remove_var("HOMEPATH"),
+            }
+            match secret_backend {
+                Some(value) => std::env::set_var("CODEWHALE_SECRET_BACKEND", value),
+                None => std::env::remove_var("CODEWHALE_SECRET_BACKEND"),
             }
         }
         let _ = std::fs::remove_dir_all(&self.root);
@@ -839,6 +855,38 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
         vec!["pinvou", "code", "respond", "s-1", "req-1"],
         vec!["pinvou", "code", "respond", "s-1", "req-1", "maybe"],
         vec!["pinvou", "code", "../escape", "x"],
+        // Round-40 review: the run timeout ceiling (7 days) and the 0
+        // refusal are parse-level — the in-module constant test pins only
+        // the clamp equality, so deleting the check here stayed green.
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt-file",
+            "b",
+            "--timeout-secs",
+            "0",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt-file",
+            "b",
+            "--timeout-secs",
+            "604801",
+        ],
+        // Round-40 review: flag-shaped tokens in the non-session id slots
+        // are usage errors, not exit-1 store lookups.
+        vec!["pinvou", "code", "providers", "switch", "codex", "--model"],
+        vec!["pinvou", "code", "checkpoints", "diff", "s-1", "--yes"],
+        vec!["pinvou", "code", "respond", "s-1", "--deny", "allow"],
     ];
     for arguments in &invalid {
         let error = usage_error(arguments);
@@ -1616,6 +1664,66 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
         cli["text"].as_str().unwrap(),
         app.text,
         "untracked synthetic diffs must be identical"
+    );
+}
+
+/// Round-40 review M5: the non-git diff arm resolves files through the
+/// workspace path, so a symlink INSIDE the workspace pointing OUTSIDE it
+/// (`notes.md -> ~/.ssh/id_ed25519`) must be refused the same way the GUI
+/// preview lane refuses it (`resolve_existing_path` →
+/// `ensure_path_within_workspace`), not read through. The lexical `..`/
+/// `starts_with` checks cannot see the link, so containment is re-checked
+/// on the canonicalized pair. Unix-only: `std::os::unix::fs::symlink`.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("diff-symlink");
+    let project = home.root.join("project-diff-symlink");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_code_session_fixture(Some(&project));
+
+    // Control: a plain file inside the workspace still diffs.
+    std::fs::write(project.join("inside.txt"), "plain\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "inside.txt"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("plain"),
+        "an inside file must still diff: {}",
+        cli["text"]
+    );
+
+    // The attack: a workspace path that resolves to the (simulated) secret
+    // outside the workspace. The diff must refuse, naming the symlink, and
+    // the secret must never reach the output.
+    let secret = home.root.join("home").join("secret.txt");
+    std::fs::write(&secret, "TOP SECRET\n").unwrap();
+    symlink(&secret, project.join("leak.md")).unwrap();
+    let parsed = parse_args(
+        [
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "leak.md",
+            "--output",
+            "json",
+        ]
+        .to_vec(),
+    )
+    .expect("diff parses");
+    let error = execute(parsed).expect_err("an escaping symlink must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("symlink") && message.contains("escapes the workspace"),
+        "the refusal must name the symlink escape: {message}"
+    );
+    assert!(
+        !message.contains("TOP SECRET"),
+        "the secret must not leak into the error: {message}"
     );
 }
 
