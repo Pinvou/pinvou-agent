@@ -3269,17 +3269,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   toolId={welcomeToolId}
                   t={t}
                   onSend={(q) => {
-                    // opt-in is unified inside sendChatMessage (R8-2: chip and
-                    // free input share one path); this handler only sends. Note
-                    // (round-25 minor 7): unlike handleSend, the chip path does
-                    // NOT restore the blocked-abort draft — that gap is the
-                    // registered chip-prefill item, not an intended match.
-                    // References picked in the composer ride welcome-card
-                    // sends too (sendWithSessionRefs never rejects: the
-                    // bridge surfaces failures itself).
-                    Promise.resolve(sendWithSessionRefs(q)).catch((err) => {
-                      console.warn("[pinvou3][chat-ui] welcome-card send failed", err);
-                    });
+                    // Lifecycle ownership stays with sendChatMessage: its
+                    // consumeWelcomeOptIn machinery consumes the one-shot
+                    // welcome state at attempt start, so this handler must
+                    // not pre-clear it. References picked in the composer
+                    // ride welcome-card sends too; sendWithSessionRefs never
+                    // rejects (its internal rejection arm surfaces failures
+                    // with main's console.warn intent), so a bare call is
+                    // enough (round-10 welcome-card resolution).
+                    void sendWithSessionRefs(q);
                   }}
                 />
               </div>
