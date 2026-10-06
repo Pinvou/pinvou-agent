@@ -33,7 +33,11 @@ pub(super) fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn clean_text(value: &str, max_chars: usize) -> String {
+/// `pub` + re-exported from `features::memory` (round-41 review): the CLI's
+/// `memory add` predicts the enqueue normalization from the ORIGINAL input,
+/// so it needs the very function the queue runs — a local copy drifted the
+/// moment either side changed.
+pub fn clean_text(value: &str, max_chars: usize) -> String {
     collapse_whitespace(value)
         .trim()
         .chars()

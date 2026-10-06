@@ -493,9 +493,12 @@ impl Pinvou3Bridge {
         crate::platform::startup::mark("bridge_boot:prefs_load:start");
         let prefs = UserPrefs::load();
         crate::platform::startup::mark("bridge_boot:prefs_load:done");
-        if !paths::settings_path().exists() {
-            prefs.save().ok();
-        }
+        // Round-41 review: the exists-check and the defaults write are one
+        // locked step now — a CLI settings write landing between them used
+        // to be overwritten by this boot-defaults snapshot (the whole-file
+        // last-writer-wins shape the settings flock closed for
+        // `update_transaction`).
+        prefs::save_boot_defaults_if_absent(&prefs);
         let this = Self {
             prefs,
             bundle,

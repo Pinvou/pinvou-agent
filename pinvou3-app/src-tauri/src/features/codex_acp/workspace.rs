@@ -348,12 +348,22 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
     // file into place (the same rule the providers store's `persist_locked`
     // documents).
     let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    {
+    // Round-41 review: BOTH failure arms clean the pid tmp — a File::create
+    // or write failure (ENOSPC, EACCES) strands `…tmp.<pid>` forever because
+    // a different-pid run never reuses it (only the rename arm cleaned up;
+    // the sibling AcpConfigDefaultsStore persist got the same two-arm fix in
+    // round-37).
+    let staged = (|| -> anyhow::Result<()> {
         let mut file = fs::File::create(&temporary)
             .with_context(|| format!("创建工作区基线失败: {}", temporary.display()))?;
         file.write_all(&payload)
             .with_context(|| format!("写入工作区基线失败: {}", temporary.display()))?;
         file.sync_all().ok();
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
     }
     if let Err(error) = fs::rename(&temporary, &path) {
         let _ = fs::remove_file(&temporary);
