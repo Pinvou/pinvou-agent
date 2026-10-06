@@ -1362,6 +1362,7 @@ class SendMessageTests(unittest.TestCase):
         not a fresh pending duplicate."""
         self._send(from_session="src0001", idempotency_key="k9")
         spool = self._spooled()[0]
+        before = len(self._spooled())
         done = self.messaging / "spool" / ".done"
         done.mkdir(parents=True, exist_ok=True)
         (done / (spool.stem + ".json")).write_bytes(b"")
@@ -1369,6 +1370,10 @@ class SendMessageTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(payload["delivery"], "delivered")
         self.assertTrue(payload["duplicate"])
+        # Round-6 R3: the delivered answer must come with ZERO ADDITIONAL
+        # spool writes — the retry neither replaces the pending file nor
+        # lingers as a new root *.json.
+        self.assertEqual(len(self._spooled()), before)
 
 
 class SendMessageFeatureGateTests(unittest.TestCase):

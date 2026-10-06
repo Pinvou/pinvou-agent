@@ -17,11 +17,12 @@
 //! - every delivery writes an audit record into both sessions' workspaces
 //!   (`assistant::audit`, contract §5 L1 requirement), and every quarantine
 //!   (poison, oversize, retry exhaustion, pending-cap excess) audits the
-//!   target session when its id is valid. Three carve-outs where no
+//!   target session when its id is valid. Five carve-outs where no
 //!   workspace audit exists (the log line is the trace): an unparseable
-//!   record, an invalid-target record, and a valid target whose workspace
+//!   record, an invalid-target record, a valid target whose workspace
 //!   directory no longer exists (a deleted target's audit append cannot
-//!   create parents);
+//!   create parents), an oversize file (refused before parse — no target
+//!   is knowable), and a non-UTF-8 spool name (quarantined before read);
 //! - a delivered idempotency-keyed message leaves a marker under
 //!   `spool/.done/<file-stem>` (the stem is the sender+target-scoped key
 //!   hash), so a retried tool call cannot deliver twice across watcher
@@ -491,6 +492,7 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
     delivery: &D,
     gates: &G,
     store: &crate::features::sessions::SessionStore,
+    skip_audited: &mut std::collections::HashSet<String>,
 ) -> Processed {
     let poisoned = |error: anyhow::Error| Processed::Poison(error);
     let size = match std::fs::metadata(path).map(|meta| meta.len()) {
@@ -538,21 +540,26 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         // same-user spool surgery or a stale-backup replay lands here, and
         // without an audit record the message disappears silently. Audit
         // into the target workspace (the record's target is already
-        // validated at this point) before the caller removes the file.
-        let detail = serde_json::json!({
-            "tool": MESSAGING_TOOL_FULL_NAME,
-            "to_session": message.to_session,
-            "from_session": message.from_session,
-            "outcome": "already_delivered_skip",
-            "chars": message.text.trim().chars().count(),
-        });
-        if let Ok(roots) = store.session_roots(&message.to_session) {
-            crate::features::assistant::audit::append(
-                &roots.execution,
-                "session_message",
-                "app",
-                detail,
-            );
+        // validated at this point) before the caller removes the file —
+        // once per name per process (a persistently failing remove must
+        // not append a line every poll; round-6 recommended).
+        if !skip_audited.contains(&stem) {
+            let detail = serde_json::json!({
+                "tool": MESSAGING_TOOL_FULL_NAME,
+                "to_session": message.to_session,
+                "from_session": message.from_session,
+                "outcome": "already_delivered_skip",
+                "chars": message.text.trim().chars().count(),
+            });
+            if let Ok(roots) = store.session_roots(&message.to_session) {
+                crate::features::assistant::audit::append(
+                    &roots.execution,
+                    "session_message",
+                    "app",
+                    detail,
+                );
+            }
+            skip_audited.insert(stem);
         }
         return Processed::Done;
     }
@@ -574,6 +581,10 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, (u32, Instant)>,
+    /// Names whose marker-skip audit has been written this process (round-6
+    /// recommended): a persistently failing remove must not append another
+    /// skip line every 1s poll (~86k/day).
+    skip_audited: std::collections::HashSet<String>,
 }
 
 impl RetryState {
@@ -611,8 +622,9 @@ impl RetryState {
 /// evidence file.
 /// Re-read a spool record for audit purposes, BOUNDED (round-5 A2): the
 /// pipeline has already refused files over `MAX_SPOOL_FILE_BYTES`, so the
-/// audit re-read must not load a multi-GB hostile blob whole — oversize (or
-/// unreadable) files audit by name+error only.
+/// audit re-read must not load a multi-GB hostile blob whole. Oversize,
+/// unreadable, and non-UTF-8-named files have no workspace-audit arm — the
+/// `log::warn!` line is their only trace (the module doc's carve-out list).
 fn read_record_for_audit(path: &Path) -> Option<SpooledMessage> {
     let oversize = std::fs::metadata(path)
         .map(|meta| meta.len() > MAX_SPOOL_FILE_BYTES)
@@ -668,6 +680,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
     gates: &G,
     store: &crate::features::sessions::SessionStore,
     retries: &mut RetryState,
+    skip_audited: &mut std::collections::HashSet<String>,
 ) {
     if !messaging_switched_on() {
         return;
@@ -723,7 +736,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         if !retries.due(&name) {
             continue;
         }
-        match process_spool_file(&path, delivery, gates, store).await {
+        match process_spool_file(&path, delivery, gates, store, skip_audited).await {
             Processed::Done => {
                 retries.clear(&name);
                 let _ = std::fs::remove_file(&path);
@@ -806,7 +819,9 @@ pub fn spawn_delivery_watcher(
         let mut last_prune = Instant::now();
         loop {
             let delivery = PoolDelivery(&pool);
-            let poll = process_pending_spool(&delivery, &acp, &store, &mut retries);
+            let mut skip_audited = std::collections::HashSet::new();
+            let poll =
+                process_pending_spool(&delivery, &acp, &store, &mut retries, &mut skip_audited);
             if let Err(panic) = std::panic::AssertUnwindSafe(poll).catch_unwind().await {
                 log::error!("[messaging] delivery watcher poll panicked: {panic:?}");
             }
@@ -925,7 +940,14 @@ mod spool_pipeline_tests {
         };
         let mut retries = RetryState::default();
         let sessions = sessions_store();
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert!(
             !spool.join("abc.json").exists(),
             "delivered file is removed"
@@ -936,7 +958,14 @@ mod spool_pipeline_tests {
         // Same idempotency identity returns under a new poll: the marker wins
         // and the file is dropped WITHOUT a second delivery.
         std::fs::write(spool.join("abc.json"), record_json("abc", Some("k1"))).unwrap();
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 1, "done marker suppresses redelivery");
         assert!(!spool.join("abc.json").exists());
     }
@@ -952,7 +981,14 @@ mod spool_pipeline_tests {
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
-        process_pending_spool(&fake, &AllowAllGates, &sessions_store(), &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 0, "poison never reaches delivery");
         assert!(failed_dir().join("bad.json").exists());
         assert!(!spool.join("bad.json").exists());
@@ -977,7 +1013,14 @@ mod spool_pipeline_tests {
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 0, "the marker suppresses delivery");
         let content =
             std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
@@ -1011,7 +1054,14 @@ mod spool_pipeline_tests {
                 Instant::now() - Duration::from_secs(60),
             ),
         );
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         let content =
             std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
         assert!(
@@ -1052,7 +1102,14 @@ mod spool_pipeline_tests {
             .expect("roots for a syntactically valid target")
             .execution;
         std::fs::create_dir_all(&exec_root).unwrap();
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         let audit = exec_root.join("workflow_audit.jsonl");
         let content = std::fs::read_to_string(&audit).unwrap_or_default();
         assert!(
@@ -1080,7 +1137,14 @@ mod spool_pipeline_tests {
         let sessions = sessions_store();
         let exec_root = sessions.session_roots("tgt0001").expect("roots").execution;
         std::fs::create_dir_all(&exec_root).unwrap();
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         let audit = exec_root.join("workflow_audit.jsonl");
         let content = std::fs::read_to_string(&audit).unwrap_or_default();
         assert!(
@@ -1100,7 +1164,14 @@ mod spool_pipeline_tests {
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
-        process_pending_spool(&fake, &AllowAllGates, &sessions_store(), &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 0);
         assert!(failed_dir().join("big.json").exists());
     }
@@ -1150,7 +1221,14 @@ mod spool_pipeline_tests {
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
-        process_pending_spool(&fake, &AllowAllGates, &sessions_store(), &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(
             *fake.calls.borrow(),
             MAX_PENDING_FILES,
@@ -1184,7 +1262,14 @@ mod spool_pipeline_tests {
                 Instant::now() - Duration::from_secs(60),
             ),
         );
-        process_pending_spool(&fake, &AllowAllGates, &sessions, &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 1);
         assert!(
             failed_dir().join("slow.json").exists(),
@@ -1208,7 +1293,14 @@ mod spool_pipeline_tests {
         retries
             .attempts
             .insert("r.json".into(), (3, Instant::now()));
-        process_pending_spool(&fake, &AllowAllGates, &sessions_store(), &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(
             *fake.calls.borrow(),
             0,
@@ -1234,7 +1326,14 @@ mod spool_pipeline_tests {
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
-        process_pending_spool(&fake, &AllowAllGates, &sessions_store(), &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 1, "the message itself still delivers");
         assert!(
             done_dir().join("hostile.json").exists(),
@@ -1338,7 +1437,14 @@ mod spool_pipeline_tests {
             calls: Rc::new(RefCell::new(0)),
         };
         let mut retries = RetryState::default();
-        process_pending_spool(&fake, &RejectCodeTargets, &sessions_store(), &mut retries).await;
+        process_pending_spool(
+            &fake,
+            &RejectCodeTargets,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
         assert_eq!(*fake.calls.borrow(), 0, "code-owned target never delivers");
         assert!(failed_dir().join("code.json").exists());
     }
