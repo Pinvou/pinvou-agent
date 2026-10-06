@@ -789,8 +789,12 @@ fn write(
             crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
                 CliError::failed(format!("artifacts write: refusing --file: {reason}"))
             })?;
+            // Read the CANONICAL path — it is what was policy-checked
+            // (round-41 review); the original spelling would let a symlink
+            // swapped between the two calls route unverified content past
+            // the refusal into model-readable session storage.
             crate::support::read_text_file_capped(
-                file,
+                &resolved,
                 MAX_EDITABLE_MARKDOWN_BYTES,
                 "artifacts write",
             )?

@@ -2268,6 +2268,18 @@ fn providers_round_trip_against_temp_home() {
     ])
     .unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
+    // Round-41 review M4: the keyless-switch refusal is the family's own
+    // English mirror (stable code, ASCII-only), not the store's untranslated
+    // "Provider 未配置 API key，无法切换" this flow used to leak.
+    let message = error.to_string();
+    assert!(
+        message.contains("provider_api_key_missing"),
+        "the keyless switch must carry the stable code: {message}"
+    );
+    assert!(
+        message.is_ascii(),
+        "store messages are mirrored in English at this boundary: {message}"
+    );
     let raw = std::fs::read_to_string(&store_path).unwrap();
     assert!(
         !raw.contains("current_provider_id"),

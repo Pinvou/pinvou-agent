@@ -1795,15 +1795,6 @@ struct ConnectionProbe {
     http_status: Option<u16>,
 }
 
-fn models_probe_url(base_url: &str) -> String {
-    format!("{}/models", base_url.trim_end_matches('/'))
-}
-
-fn is_anthropic_host(url: &reqwest::Url) -> bool {
-    url.host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
-}
-
 fn connection_result(
     ok: bool,
     code: &'static str,
@@ -1921,12 +1912,13 @@ fn render_probe_outcome(probe: &ConnectionProbe, output: OutputMode) -> CliOutco
 }
 
 fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
-    let parsed_url = match reqwest::Url::parse(&models_probe_url(base_url)) {
-        Ok(url) => url,
-        Err(error) => {
-            return connection_result(false, "invalid_url", Some(error.to_string()), None);
-        }
-    };
+    let parsed_url =
+        match reqwest::Url::parse(&pinvou3_lib::model_probe::models_probe_url(base_url)) {
+            Ok(url) => url,
+            Err(error) => {
+                return connection_result(false, "invalid_url", Some(error.to_string()), None);
+            }
+        };
     let Some(client) = connection_client() else {
         return connection_result(false, "client_error", None, None);
     };
@@ -1958,7 +1950,7 @@ fn connection_probe_request(
 ) -> reqwest::blocking::RequestBuilder {
     let mut request = client.get(parsed_url.clone());
     if !key.trim().is_empty() {
-        request = if is_anthropic_host(parsed_url) {
+        request = if pinvou3_lib::model_probe::is_anthropic_api_url(&parsed_url) {
             request
                 .header("x-api-key", key.trim())
                 .header("anthropic-version", "2023-06-01")
@@ -2032,12 +2024,13 @@ fn is_loopback_url(raw: &str, origin: UrlOrigin) -> Result<bool, CliError> {
 }
 
 /// Strips a trailing `/v1` so native endpoints (`/api/tags`, `/props`, ...)
-/// are reached at the API root; mirrors `strip_v1_suffix`.
+/// are reached at the API root. The rule lives in the app's
+/// `model_probe::strip_v1_suffix` (re-exported through the round-41 facade
+/// widening); this wrapper only flattens its `Option<String>` (always
+/// `Some` by construction) so the local call sites keep their `String`
+/// shape.
 fn strip_v1_suffix(url: &str) -> String {
-    let trimmed = url.trim_end_matches('/');
-    trimmed
-        .strip_suffix("/v1")
-        .map_or_else(|| trimmed.to_owned(), str::to_owned)
+    pinvou3_lib::model_probe::strip_v1_suffix(url).unwrap_or_default()
 }
 
 /// One process-wide blocking client per probe lane, mirroring how the GUI
@@ -2847,7 +2840,14 @@ fn settings_set(
     // variant (`load_unlocked(true)`), which re-runs `migrate_models` and
     // `migrate_plaintext_api_keys_with_store` (a keyring write path) and can
     // rewrite settings.json as a side effect of reporting one boolean.
+    // The language-arm note below needs the PRE-save memory_enabled (the
+    // locale policy may revert it during this very save). It's captured at
+    // the top of the transaction closure — reading it with a second
+    // `UserPrefs::load()` would be the persisting variant, the exact
+    // keyring-write side effect this command's round-37 note rework removed.
+    let mut memory_enabled_before = false;
     let saved = UserPrefs::update_transaction(|prefs| {
+        memory_enabled_before = prefs.memory_enabled;
         match (key, value.clone()) {
             (SettingsKey::Theme, SettingsValue::Theme(v)) => prefs.theme = v,
             (SettingsKey::ColorScheme, SettingsValue::ColorScheme(v)) => prefs.color_scheme = v,
@@ -2883,21 +2883,29 @@ fn settings_set(
     // The prefs layer may normalize a request back (the memory-locale policy
     // reverts `memory_enabled true` under a non-zh-Hans UI language); say so
     // instead of printing a plain success for a no-op.
-    let note = if let (SettingsKey::MemoryEnabled, SettingsValue::Bool(requested)) = (&key, &value)
-    {
-        let effective = saved.memory_enabled;
-        (effective != *requested).then(|| {
-            // No "note: " prefix here: the human renderer adds it for
-            // stderr-adjacent display, and in JSON the sentence lands in a
-            // field already NAMED `note` — the old shape serialized
-            // `"note": "note: ..."` (round-37 review).
-            format!(
-                "the memory locale policy kept memory_enabled = {effective} (memory \
+    let note = match (&key, &value) {
+        (SettingsKey::MemoryEnabled, SettingsValue::Bool(requested)) => {
+            let effective = saved.memory_enabled;
+            (effective != *requested).then(|| {
+                // No "note: " prefix here: the human renderer adds it for
+                // stderr-adjacent display, and in JSON the sentence lands in a
+                // field already NAMED `note` — the old shape serialized
+                // `"note": "note: ..."` (round-37 review).
+                format!(
+                    "the memory locale policy kept memory_enabled = {effective} (memory \
+                     features require the zh-Hans UI language)"
+                )
+            })
+        }
+        // Round-41 review: the same policy silently reverts memory_enabled
+        // when THIS write sets a non-zh-Hans language — disclose it exactly
+        // like the direct `memory_enabled` key instead of a plain success.
+        (SettingsKey::Language, _) => (memory_enabled_before && !saved.memory_enabled).then(|| {
+            "the memory locale policy kept memory_enabled = false (memory \
                  features require the zh-Hans UI language)"
-            )
-        })
-    } else {
-        None
+                .to_owned()
+        }),
+        _ => None,
     };
     let key_name = SettingsKey::ALL
         .iter()
@@ -3816,7 +3824,8 @@ mod tests {
             ("https://api.example.com/v1", false),
             ("https://opencode.ai/docs", false),
         ] {
-            let parsed = reqwest::Url::parse(&models_probe_url(base_url)).unwrap();
+            let parsed =
+                reqwest::Url::parse(&pinvou3_lib::model_probe::models_probe_url(base_url)).unwrap();
             let request = connection_probe_request(client, &parsed, base_url, "sk-test")
                 .build()
                 .unwrap();
