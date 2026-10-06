@@ -473,7 +473,17 @@ fn download_from_url(
         .get(url.clone())
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("下载 {} 失败: {e}", artifact.name))?;
+        // Round-40 review: the reqwest error embeds the requested URL
+        // (`... for url (...)`); the aggregation below is echoed to the
+        // user, so userinfo a mirror prefix carried gets scrubbed here like
+        // the invalid-candidate arm above already does.
+        .map_err(|e| {
+            format!(
+                "下载 {} 失败: {}",
+                artifact.name,
+                crate::platform::download::redact_url_credentials_in_text(&e.to_string())
+            )
+        })?;
     if response
         .content_length()
         .is_some_and(|length| length > MAX_ARCHIVE_BYTES)

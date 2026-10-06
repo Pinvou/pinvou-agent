@@ -578,16 +578,16 @@ pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
 
-/// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
-/// hoist): one `available_tools()` walk serves the whole id list instead of
-/// one per entry.
-/// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
+/// `to_package_id` over a pre-walked tool snapshot (round-23 MINOR 3
 /// hoist): one `available_tools()` walk serves the whole id list instead of
 /// one per entry. `pub(crate)` since round-37 P3 (review #455): the builtin
 /// writer guard hoists the same snapshot for its normalization loop.
 /// `pub` since round-38: the CLI's `plugins enable/disable` normalize two id
-/// lists per scope and hoists the same snapshot instead of re-walking per
-/// entry (the anti-pattern this hoist exists for).
+/// lists per scope and hoist the same snapshot instead of re-walking per
+/// entry (the anti-pattern this hoist exists for). The wrapper above is
+/// spelled out rather than intra-doc-linked because it is `pub(crate)` — a
+/// public doc linking a private item fails the `-D warnings` rustdoc gate
+/// (round-40 review).
 pub fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
     // Known-pack shield (review #455 round-23 MINOR 1): a stored entry that

@@ -607,7 +607,12 @@ impl SessionStore {
     /// absence inherits the fault discipline; the cost is that a stale boot
     /// map can over-protect a session another process legitimately unpinned
     /// until this process next mutates or restarts (the safe direction).
-    pub(crate) fn durable_pinned_sessions(&self) -> Option<std::collections::HashSet<String>> {
+    /// Round-40 review: `pub` for the pinvou-cli sessions family — the CLI
+    /// archive's half-landed guard must consult the DURABLE registry (a pin
+    /// the desktop app wrote after the CLI booted is invisible to the
+    /// in-memory cache, which is also what a failed pin-clear rolls back
+    /// to), the same reader retention's sweep uses.
+    pub fn durable_pinned_sessions(&self) -> Option<std::collections::HashSet<String>> {
         let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
         let parsed = std::fs::read_to_string(&file).ok().and_then(|content| {
             parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions")
