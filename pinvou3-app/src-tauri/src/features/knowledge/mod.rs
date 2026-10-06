@@ -468,6 +468,39 @@ impl KnowledgeService {
             if previous.resumable {
                 return previous;
             }
+            // Round-40 review: a RUNNING job this process does not own is a
+            // second-process importer (the CLI's knowledge family writes the
+            // same store). Starting here launched a second embedder over the
+            // same collection — two models in memory and interleaved
+            // upsert/chunk DELETE-INSERT on the same paths. The CLI guards
+            // its own lane against a running store; the GUI side of the
+            // two-writer world was unguarded. Liveness is the job-row
+            // heartbeat the import thread ticks on the walk and at every
+            // item claim (the same signal the CLI's stall watcher reads):
+            // refuse only while that row is FRESH, so a crashed CLI's frozen
+            // row degrades to a normal GUI start instead of pinning the
+            // collection forever — that regression risk is why the guard was
+            // one-sided until the heartbeat existed. The bound is 2× the
+            // CLI's default stall bound, generous against the one quiet
+            // window (a single file's parse); a false allow in that window
+            // is the previously-disclosed behavior, a false allow on a dead
+            // process is what the freshness check exists to prevent, and a
+            // false refusal is what 2× buys margin against.
+            if previous.running {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or(i64::MAX);
+                let age_secs = previous
+                    .updated_at
+                    .map(|updated| now_secs.saturating_sub(updated))
+                    // An unmeasurable row cannot prove liveness: fail open to
+                    // the pre-guard behavior instead of wedging the button.
+                    .unwrap_or(i64::MAX);
+                if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
+                    return previous;
+                }
+            }
         }
         let job_id = match self.imports.create(collection_id, &roots) {
             Ok(id) => id,
@@ -842,6 +875,13 @@ fn expand_import_roots(
     }
     import_jobs::unique_existing_files(files)
 }
+
+/// Freshness bound for the job-row heartbeat in [`KnowledgeService::start_index`]:
+/// a running job whose row moved within this window is treated as a LIVE
+/// second-process importer and a GUI start refuses; older (a crashed CLI) is
+/// stale and degrades to a normal start. 2× the CLI's default 300 s stall
+/// bound — see the start_index comment for the failure-direction trade.
+const IMPORT_HEARTBEAT_ALIVE_SECS: i64 = 600;
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {
