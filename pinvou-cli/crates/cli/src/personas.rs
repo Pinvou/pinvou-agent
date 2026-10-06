@@ -12,7 +12,15 @@
 //! Error-copy note: the GUI returns Chinese messages ("未知专家面具",
 //! "只能删除自制卡", "卡牌不存在"); the CLI surfaces the same failure
 //! conditions as exit-code 1 errors with English copy (developer tool, all
-//! CLI output is English per the CLI spec).
+//! CLI output is English per the CLI spec). One leak the CLI cannot
+//! intercept (round-40 review): a corrupt/unparsable user card makes the
+//! LIBRARY print `[pinvou3-app] 用户卡 …解析失败,本轮沿用缓存` to stderr
+//! from `features::personas::load_user_cards` on EVERY personas command —
+//! app-branded Chinese outside this module's translation seam (`translate_
+//! persona_error` covers returned errors, not these prints). JSON stdout
+//! stays clean; silencing the print needs an upstream quiet
+//! degraded-card channel (CodeWhale/foundation first per the fork
+//! boundaries).
 //!
 //! Equip-state note (headless deviation): the GUI keeps `active_persona` /
 //! `pending_persona_body` in `SessionModeState`, which is deliberately
@@ -819,6 +827,16 @@ fn equipped_persona_id(session_id: &str) -> Option<String> {
 /// carries the full persona; an orphaned card resolves to nothing here by
 /// the same `get` miss). Chinese copy is the GUI's own anchor text — this
 /// rides the model prompt, not the CLI's user-facing output.
+///
+/// Disclosed divergence (round-40 review): the GUI's per-turn persona
+/// state has a second half this lane does not reproduce — a
+/// `conversational_only` card also EMPTIES the tool table for the turn
+/// (`persona_conversational` → `restrict_tools_for_turn` in
+/// `engine_pool`). The headless anchor reproduces only the text; a
+/// conversational card equipped headless still gets the full tool table,
+/// with the card body as the only "don't use tools" steer. Hardening that
+/// needs a tool-restriction field on `AgenticTaskRequest` (app-side
+/// surface) and is deliberately not smuggled into this lane.
 #[cfg(feature = "product-backend")]
 pub(crate) fn equipped_persona_anchor(session_id: &str) -> Option<String> {
     let persona_id = equipped_persona_id(session_id)?;
@@ -913,21 +931,56 @@ pub(crate) fn note_deferred_staged_injection(session_id: &str) {
     let Ok(path) = equip_state_path(session_id) else {
         return;
     };
-    let Some(staged) = staged_persona_injection_at(&path) else {
-        return;
-    };
-    if get(&staged.persona_id).is_some() {
-        // Resolvable now — either it was injected this run or the pool
-        // recovered; neither is the deferred class.
+    if let Some(staged) = staged_persona_injection_at(&path) {
+        if get(&staged.persona_id).is_some() {
+            // Resolvable now — either it was injected this run or the pool
+            // recovered; neither is the deferred class.
+            return;
+        }
+        if !pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
+            note!(
+                "personas: session {session_id} has a staged persona body for '{}' that was NOT \
+                 injected: the persona pool could not be read, so the run cannot verify the card \
+                 still exists (fail-open). The body stays staged for the next run; `personas \
+                 active` shows the equipped card",
+                staged.persona_id
+            );
+        }
         return;
     }
-    if !pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
+    // Round-40 review: the WORN-card arm of the same seam. The sidecar
+    // carries a persona_id but nothing is staged, so the run was steered
+    // only by `equipped_persona_anchor` — which just resolved to nothing
+    // (the caller gates on `injection.is_none()`). Two shapes were silent
+    // here while every sibling surface discloses: a faulted persona pool
+    // (the staged arm above notes the identical fault, and `personas
+    // active` fails loudly in the same state) and an orphaned worn card
+    // (the card was deleted elsewhere after its body was consumed — the
+    // staged orphan warns and names the id, this one just vanished). Both
+    // mean every `agent run --session` runs without identity steering
+    // while the sidecar still names a card.
+    let Some(persona_id) = equipped_persona_id(session_id) else {
+        return;
+    };
+    if get(&persona_id).is_some() {
+        // Resolvable card but no anchor material — the anchor text itself
+        // came back empty, which `equip_anchor` does not produce for a
+        // live card; nothing actionable to disclose.
+        return;
+    }
+    if pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
         note!(
-            "personas: session {session_id} has a staged persona body for '{}' that was NOT \
-             injected: the persona pool could not be read, so the run cannot verify the card \
-             still exists (fail-open). The body stays staged for the next run; `personas \
-             active` shows the equipped card",
-            staged.persona_id
+            "personas: session {session_id} wears persona card '{}' that no longer exists in \
+             any pool, so its per-turn anchor is not applied; the run proceeds unsteered until \
+             the card is unequipped (`pinvou personas unequip {session_id}`)",
+            persona_id
+        );
+    } else {
+        note!(
+            "personas: session {session_id} wears persona card '{}' but the persona pool could \
+             not be read, so the per-turn anchor could not be verified (fail-open): this run \
+             may be missing the card's steering; `personas active` shows the equipped card",
+            persona_id
         );
     }
 }

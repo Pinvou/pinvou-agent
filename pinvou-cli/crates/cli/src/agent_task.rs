@@ -348,12 +348,53 @@ fn run_agent(
                     resolved.display()
                 )));
             }
+            // Round-40 review: the per-file cap is also pre-boot. The
+            // engine-side `validate_attachments` enforces the same limit,
+            // but only after the whole windowless host booted — a 10 GiB
+            // `--attach` used to pass this gate and die with
+            // `agent_attachment_too_large` after the expensive setup, the
+            // exact outcome the regular-file pre-boot check above exists
+            // to prevent. The limit is the app's own constant (not a
+            // copy), so the two cannot drift.
+            let size = std::fs::metadata(&resolved)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if size > pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES {
+                return Err(CliError::failed(format!(
+                    "agent_attachment_too_large: attachment {} is {size} bytes (limit {})",
+                    resolved.display(),
+                    pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES
+                )));
+            }
             Ok(pinvou3_lib::agentic_task::AgenticTaskAttachment {
                 path: resolved,
                 remove_after_ingest: false,
             })
         })
         .collect::<Result<Vec<_>, CliError>>()?;
+    // Round-40 review: count and total budgets get the same pre-boot gate
+    // with the engine's own error codes, for the same reason.
+    if attachments.len() > pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENTS {
+        return Err(CliError::failed(format!(
+            "agent_attachment_too_many: at most {} attachments are supported (got {})",
+            pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENTS,
+            attachments.len()
+        )));
+    }
+    let total_bytes: u64 = attachments
+        .iter()
+        .map(|attachment| {
+            std::fs::metadata(&attachment.path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    if total_bytes > pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENTS_TOTAL_BYTES {
+        return Err(CliError::failed(format!(
+            "agent_attachment_too_large: attachments total {total_bytes} bytes (limit {})",
+            pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENTS_TOTAL_BYTES
+        )));
+    }
     let request = pinvou_product_backend::AgenticTaskRequest {
         // The consumed persona body travels inside the prompt (prepended
         // above, same point the GUI injects): the headless engine call has

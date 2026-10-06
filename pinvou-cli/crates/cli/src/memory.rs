@@ -835,6 +835,32 @@ fn profile_set(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
+    // Round-40 review: refuse a label the profile normalizer would silently
+    // empty BEFORE building the patch. `MemoryProfile::normalize` maps a
+    // rejected label (over twelve characters after the punctuation and
+    // particle strip, question-shaped, sensitive/task-like) to "" and the
+    // update persists it — a misspelled `--call-name "Christian Wolf"`
+    // destroyed the stored value with exit 0 and no note on any channel,
+    // the exact loss class this family refuses up front everywhere else.
+    // The rule runs by value against the store's own normalizer
+    // (`profile_label_would_be_wiped`), never a local copy.
+    for (topic, value) in [
+        ("call_name", &call_name),
+        ("assistant_alias", &assistant_alias),
+    ] {
+        if value
+            .as_deref()
+            .is_some_and(|label| feature::profile_label_would_be_wiped(label, topic))
+        {
+            return Err(CliError::failed(format!(
+                "memory_profile_label_rejected: the {} label does not survive the profile \
+                 normalization (at most twelve characters after the punctuation/particle \
+                 strip, no question shapes, not task-like); nothing was written — supply a \
+                 shorter label (clearing a stored field stays a desktop-app action)",
+                topic
+            )));
+        }
+    }
     let patch = feature::ProfilePatch {
         call_name,
         assistant_alias,
@@ -1059,6 +1085,27 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
             )
         }
     };
+    // Round-40 review: the aggregate `memory list` prints these warnings in
+    // BOTH modes, while the per-store lane carried them in JSON only — a
+    // human `memory list --store preferences` saw nothing about the store
+    // the GUI keeps warning about (the module comment below the aggregate
+    // arm states why they must not be dropped at all). Same collapsed
+    // warning row, same shape.
+    let mut items = items;
+    for warning in &cleanup_warnings {
+        let topic = warning
+            .get("topic")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let detail = warning
+            .get("detail")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        items.push(format!(
+            "warning: memory_topic_cleanup_required ({topic}): {}",
+            crate::support::collapse_control_characters(detail)
+        ));
+    }
     Ok((
         items,
         serde_json::json!({ "items": value, "cleanup_warnings": cleanup_warnings }),
@@ -1088,6 +1135,14 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
 /// value against the feature layer's observable behavior — it asserts the
 /// stored length against the store itself — so this cannot drift unnoticed.
 const ADD_PIPELINE_TEXT_MAX_CHARS: usize = 120;
+
+/// The never-store reason cap: `never_pending_memory` stores
+/// `clean_text(reason, 80)` — another `pub(super)` literal the CLI cannot
+/// name, so this mirror follows the `ADD_PIPELINE_TEXT_MAX_CHARS` pattern:
+/// plain literal, disclosed in the module docs, and pinned against the
+/// feature layer's observable stored length by
+/// `pending_never_reason_over_the_cap_discloses_the_truncation`.
+const NEVER_REASON_CAP_CHARS: usize = 80;
 
 /// Mirror of `features::memory::util::clean_text` (`pub(super)`, so the CLI
 /// cannot call it): collapse every whitespace run to one space, trim, then
@@ -1983,13 +2038,44 @@ fn pending(
             }
         }
         PendingAction::Never => {
+            // Round-40 review: the store truncates the reason at 80
+            // characters (`clean_text(s, 80)` in `never_pending_memory`)
+            // and the write event carries no reason at all, so an
+            // over-long `--reason` silently lost its tail — against this
+            // family's contract that truncation is disclosed on stderr AND
+            // in the output. Both halves of the add lane's disclosure fire
+            // here: the stderr note before the write (state the cap
+            // outcome, not a claim) and the output-channel fields after it
+            // succeeded (stderr notes vanish into `2>/dev/null`).
+            let mut truncation: Option<(usize, usize)> = None;
+            if let Some(reason_text) = reason.as_deref() {
+                let submitted = reason_text.chars().count();
+                if submitted > NEVER_REASON_CAP_CHARS {
+                    note_truncation(
+                        "pending never --reason",
+                        submitted,
+                        NEVER_REASON_CAP_CHARS,
+                        "the never-store reason field",
+                    );
+                    truncation = Some((submitted, NEVER_REASON_CAP_CHARS));
+                }
+            }
             let event = feature::never_pending_memory(id, reason)
                 .map_err(|error| feature_error("pending", error))?
                 .ok_or_else(|| not_found(MemoryStore::Pending, id))?;
-            (
-                format!("Marked pending as never: {id}"),
-                serde_json::json!({ "id": id, "result": "never", "event": serde_json::to_value(&event).unwrap_or_default() }),
-            )
+            let mut human = format!("Marked pending as never: {id}");
+            let mut value = serde_json::json!({ "id": id, "result": "never", "event": serde_json::to_value(&event).unwrap_or_default() });
+            if let Some((submitted, stored)) = truncation {
+                disclose_truncation(
+                    &mut value,
+                    &mut human,
+                    submitted,
+                    stored,
+                    NEVER_REASON_CAP_CHARS,
+                    "the never-store reason field",
+                );
+            }
+            (human, value)
         }
     };
     Ok(success(render(output, human, &value)))

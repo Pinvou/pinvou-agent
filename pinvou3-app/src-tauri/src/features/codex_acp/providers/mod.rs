@@ -4,6 +4,13 @@
 //! 维护 Provider 条目（base URL / wire 协议 / API key / 模型），一键切换并改写
 //! 各 CLI 自身的配置文件，支持恢复官方登录。API key 不落仓库、不落日志、不落
 //! 明文 JSON——只以 `CredentialReference` 存系统凭据库（导入导出文件除外）。
+//!
+// architecture-guard: allow-target-cfg -- the config backup must be created
+// with 0600 from the first byte (it copies the user's real plaintext-key
+// CLI config); the create-time mode bit is a unix-only OpenOptions flag,
+// and routing the create through a platform adapter would split the
+// create_new + AlreadyExists no-op semantics this backup's idempotence
+// relies on.
 
 mod claude;
 mod codex;
@@ -738,14 +745,28 @@ fn backup_once(path: &Path) -> Result<()> {
     // exists, which is all this helper promises.
     let permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
     let mut source = fs::File::open(path)?;
-    let mut destination = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&backup)
-    {
-        Ok(destination) => destination,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(error) => return Err(error).with_context(|| format!("备份 {} 失败", backup.display())),
+    let mut destination = {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // Round-40 review: the backup carries the user's REAL
+            // claude/codex/kimi CLI config (plaintext keys) — created with
+            // the default umask it was 0644 until the best-effort mode
+            // restore below ran, and stayed 0644 forever if the process
+            // died in between. Same no-0644-window rule the `atomic_write`
+            // tmp documents; mode applies at create time, and the restore
+            // below still gives the file the SOURCE's mode for parity.
+            options.mode(0o600);
+        }
+        match options.open(&backup) {
+            Ok(destination) => destination,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("备份 {} 失败", backup.display()));
+            }
+        }
     };
     std::io::copy(&mut source, &mut destination)
         .with_context(|| format!("备份 {} 失败", path.display()))?;
@@ -1278,22 +1299,12 @@ impl ProviderManager {
     /// 删除当前 Provider 后的回退：记录已从 store 移除，显式传入 removed 记录
     /// 供 revert 精确清理（例如 codex 顶层 model 只在与被删 Provider 的 model
     /// 相同时删除）。
-    pub fn switch_official_after_removal(
-        &self,
-        agent: &str,
-        removed: &ProviderRecord,
-    ) -> Result<()> {
-        validate_agent(agent)?;
-        // 与 switch/save/delete 同锁（flock 纪律同 `switch_official`）。
-        let lock = self.switch_lock(agent);
-        let _switch_guard = lock.lock();
-        let _section = self.store.section_lock();
-        self.switch_official_after_removal_fresh(agent, removed)
-    }
-
-    /// [`Self::switch_official_after_removal`] for a caller that already
-    /// holds both the per-agent switch lock and the section flock
-    /// (`delete`'s revert arm).
+    // Round-40 review: the public lock-then-delegate wrapper is gone —
+    // `delete`'s revert arm is the only caller and it already holds both
+    // locks, so the wrapper had no live caller and a second entry point
+    // into the locked region is one more way to bypass the discipline.
+    /// Revert-to-official for `delete`'s arm, a caller that already
+    /// holds both the per-agent switch lock and the section flock.
     fn switch_official_after_removal_fresh(
         &self,
         agent: &str,

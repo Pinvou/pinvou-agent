@@ -1080,7 +1080,8 @@ fn legacy_disabled_marker(kind: ConnectorKind) -> bool {
 /// off"), so an any-scope read would report a perfectly enabled connector as
 /// switched off right after `apply-skills`.
 fn scope_state_disabled(kind: ConnectorKind) -> bool {
-    let package_id = pinvou3_lib::features::marketplace::scope::package_id_for(kind.as_str());
+    let package_id =
+        pinvou3_lib::features::marketplace::scope::resolve_pack_owner_id(kind.as_str());
     pinvou3_lib::features::marketplace::load_disabled_bundles()
         .iter()
         .any(|id| id == &package_id || id == kind.as_str())
@@ -1584,7 +1585,7 @@ fn set_enabled(
     // DenyAll code scope are separate decisions (docs/capability-governance.md),
     // and `status` reads the plain scope. Same load-modify-save as the GUI and
     // `plugins enable/disable --scope plain`; a failed write fails the command.
-    let package_id = pinvou3_lib::features::marketplace::scope::package_id_for(spec.id);
+    let package_id = pinvou3_lib::features::marketplace::scope::resolve_pack_owner_id(spec.id);
     let scope = pinvou3_lib::features::marketplace::ConnectorScope::Plain;
     let mut ids = pinvou3_lib::features::marketplace::load_disabled_bundles_for(scope);
     if enabled {
@@ -2062,9 +2063,12 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     // tree. The guard releases when this function returns.
     let mut install_lock = open_install_lock()?;
     // Blocking acquire, by design (round-37 review): the holder's whole
-    // critical section is bounded (two npm attempts ≤ 2×180s, download
-    // ≤ 900s, tar ≤ 120s), so a loser's wait is bounded in practice by
-    // ~25 minutes of legitimate concurrent install work. Residual, known:
+    // critical section is bounded (two npm attempts ≤ 2×180s, native-lane
+    // download ≤ 3 candidate URLs × 900s each, tar ≤ 120s, plus hashing),
+    // so a loser's wait is bounded in practice by ~50 minutes of
+    // legitimate concurrent install work (round-40 review corrected the
+    // arithmetic: the download loop's mirror + official retries multiply
+    // the 900s budget, they do not share it). Residual, known:
     // a holder that is SIGSTOP'd or wedged OUTSIDE those phases blocks a
     // second ensure-cli indefinitely — the user's own terminal shows the
     // stopped process, and the GUI takes no part in this lock.
@@ -2219,9 +2223,11 @@ fn run_npm_attempt(
 
 /// Headless mirror of `native_installer::ensure_native_cli` for the
 /// lock-table CLIs (lark-cli / wecom-cli / dws). Differences (disclosed in
-/// the module doc): extraction uses the system `tar` and the license
-/// side-files the app writes are skipped; both SHA-256 verifications are
-/// identical to the GUI path.
+/// the module doc): extraction uses the system `tar`; both SHA-256
+/// verifications are identical to the GUI path. The license side-files the
+/// GUI writes are NO LONGER skipped (round-40 review): the same writer
+/// runs over the same version dir, so a CLI-provisioned machine carries
+/// the same `licenses/` copies.
 /// Opens (creating if needed) the cross-process `locks/connector-install.lock`
 /// both install lanes serialize on. One copy of the directory-create, open
 /// and error strings — the fd_lock write guard borrows its `RwLock`, so the
@@ -2442,6 +2448,22 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
     }
     let _ = std::fs::remove_dir_all(&extract_dir);
     staging_result?;
+    // Round-40 review: the license side-files the GUI installer writes next
+    // to every managed binary. The CLI skipped them, so a machine
+    // provisioned only through `pinvou connectors ensure-cli` held pinned
+    // third-party binaries with no license text anywhere — a
+    // redistribution-compliance gap that silently succeeded. Same writer,
+    // same `licenses/` location derived from the version dir; a failure
+    // fails the install like the GUI's own installer, and the npm-lane
+    // connectors (no bundled license text) keep the unknown-connector
+    // refusal they have there.
+    pinvou3_lib::features::write_managed_license(&version_dir, &artifact.name).map_err(
+        |error| {
+            CliError::failed(format!(
+                "connector installed, but its license file could not be written: {error}"
+            ))
+        },
+    )?;
     Ok(())
 }
 
@@ -4048,9 +4070,9 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         Some(_) => Vec::new(),
         None => {
             use pinvou3_lib::features::marketplace::scope::{
-                package_id_for, remove_bundle_from_disabled_scopes_exact,
+                remove_bundle_from_disabled_scopes_exact, resolve_pack_owner_id,
             };
-            let package_id = package_id_for(IMA_SKILL_ID);
+            let package_id = resolve_pack_owner_id(IMA_SKILL_ID);
             match remove_bundle_from_disabled_scopes_exact(&package_id) {
                 Ok(()) => Vec::new(),
                 Err(error) => vec![format!("consent cleanup: {error}")],

@@ -4711,7 +4711,13 @@ impl AcpPool {
         let desired_config_values = if saved.acp_session_id.is_some() {
             saved_config_values(&saved)
         } else {
-            self.config_defaults.get(backend)
+            // Round-40 review: fresh read. The CLI's `code` family rewrites
+            // the defaults store from a second process; a boot-era memory
+            // answer spawned new sessions with a stale default mode after
+            // exactly the second-writer write this store's section lock was
+            // built for. (`get_after_reload` needs no cross-process lock —
+            // the writers persist by atomic rename.)
+            self.config_defaults.get_after_reload(backend)
         };
         // Record whether spawn resumed or created the session so restart recovery
         // can report whether history survived. Missing or failed load creates fresh.

@@ -1734,6 +1734,27 @@ fn show<S: CredentialStore>(
         credential_state_str(model.credential_state),
         model.has_secret,
     );
+    // Round-40 review: the five writable metadata fields `model_entry_json`
+    // carries and `models add`/`edit` accept (`vendor` drives
+    // reasoning-protocol routing) were absent from the human block, so a
+    // `models edit --vendor glm` gave the user no way to confirm the write
+    // without `--output json` — against the same-facts claim. Rendered
+    // only when set, after the fixed fields and before the reveal block,
+    // so `api_key_source`/`api_key` stay the last lines.
+    for (field, value) in [
+        ("alias", model.alias.as_deref()),
+        ("provider_kind", model.provider_kind.as_deref()),
+        ("vendor", model.vendor.as_deref()),
+        ("endpoint_mode", model.endpoint_mode.as_deref()),
+        ("vision_model_id", model.vision_model_id.as_deref()),
+    ] {
+        if let Some(value) = value {
+            human.push_str(&format!(
+                "\n{field}: {}",
+                collapse_control_characters(value)
+            ));
+        }
+    }
     if reveal_key {
         let value = match revealed.flatten() {
             Some(key) => key,

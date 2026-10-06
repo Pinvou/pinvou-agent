@@ -26,6 +26,7 @@ pub(crate) mod connectors;
 // a drifting copy.
 pub use connectors::{
     GITHUB_ASSET_MIRROR_PREFIX_ENV, append_cli_install_log, rotate_cli_install_log_if_oversized,
+    write_managed_license,
 };
 // `pub` for the headless CLI (`pinvou artifacts list`): the deliverable
 // extension whitelist and the category mapping must be ONE table shared

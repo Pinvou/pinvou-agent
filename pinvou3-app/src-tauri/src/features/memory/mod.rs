@@ -31,6 +31,10 @@ pub use self::types::{
     ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot,
     TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture, WorkContextFile,
 };
+// Round-40 review: the CLI's `memory profile set` refuses a label the
+// profile normalization would silently empty, by value — a replicated rule
+// copy would drift from the store's own normalizer.
+pub use self::types::profile_label_would_be_wiped;
 
 // ---- 路径访问器（io）----
 // E2E 集成测试（src-tauri/tests/memory_e2e.rs）经 crate 根使用其中一部分，

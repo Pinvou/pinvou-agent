@@ -102,7 +102,7 @@
 //!   `save_disabled_bundles_for` (the same load-modify-save the GUI's
 //!   `set_disabled_skills` / `set_disabled_connectors` persist through, with
 //!   the requested state verified on the exact list handed to the writer) /
-//!   `set_project_skills_enabled`, with `scope::package_id_for` normalizing
+//!   `set_project_skills_enabled`, with `scope::resolve_pack_owner_id` normalizing
 //!   ids for the verification. The load and the save are two separate
 //!   in-process critical sections, so a desktop-app write to the same file
 //!   landing in between is last-writer-wins (see docs/pinvou-cli.md, Known
@@ -780,10 +780,15 @@ will enable it by default — turn it off in the tools list: {error}"
 
 /// Stale consent rows keep a reinstalled pack switched off, so a failed
 /// cleanup must not read as success either (the GUI surfaces the same
-/// failure after its own success commit). `package_id` is the
-/// already-resolved owner id — callers snapshot it before any directory
-/// disappears, because the normalized lookup of a deleted id can be
-/// re-owned by a foreign pack's claim and erase the wrong rows.
+/// failure after its own success commit). `operation` carries the caller's
+/// landed/aborted claim — the post-uninstall sites say "landed" (the GUI's
+/// own success-then-fail shape); the PRE-uninstall companion site says
+/// "aborted" because there the tool is still installed (round-40 review:
+/// the shared "landed" wording was false for that call site).
+/// `package_id` is the already-resolved owner id — callers snapshot it
+/// before any directory disappears, because the normalized lookup of a
+/// deleted id can be re-owned by a foreign pack's claim and erase the
+/// wrong rows.
 fn remove_scope_rows_or_fail(operation: &str, package_id: &str) -> Result<(), CliError> {
     remove_bundle_from_disabled_scopes_exact(package_id).map_err(|error| {
         CliError::failed(format!(
@@ -818,7 +823,7 @@ fn tools_install(
     sync_after_install_or_fail("tools install", id)?;
     let mut companion_note = Vec::new();
     // Round-40 review: one `available_tools()` walk serves the tool id and
-    // every companion's normalization — the per-entry `package_id_for`
+    // every companion's normalization — the per-entry id normalization
     // inside this loop re-walked the whole marketplace per companion (the
     // anti-pattern the round-38 hoist in `set_enabled` closed); the same
     // hoist pattern, same snapshot semantics.
@@ -907,7 +912,7 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     // refusal, the exact partial mutation the §3.1 server-side rejection
     // exists to prevent. Refuse before touching anything.
     if pinvou3_lib::features::marketplace::builtin::is_builtin_tool(
-        &pinvou3_lib::features::marketplace::scope::package_id_for(id),
+        &pinvou3_lib::features::marketplace::scope::resolve_pack_owner_id(id),
     ) {
         return Err(feature_error(
             "tools uninstall",
@@ -937,7 +942,15 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         SkillMarketplaceManager::new()
             .uninstall(sid)
             .map_err(|error| feature_error("tools uninstall", id, error))?;
-        remove_scope_rows_or_fail("tools uninstall", owner)?;
+        // Round-40 review: this cleanup runs BEFORE `mgr.uninstall`, so its
+        // failure means the tool is still installed — the shared "landed"
+        // wording was false here (the GUI's equivalent propagates the raw
+        // storage error with no landed claim). The pre-uninstall call site
+        // gets its own operation string that says the uninstall aborted.
+        remove_scope_rows_or_fail(
+            "tools uninstall (aborted while cleaning companion consent rows)",
+            owner,
+        )?;
     }
     mgr.uninstall(id)
         .map_err(|error| feature_error("tools uninstall", id, error))?;
@@ -1956,7 +1969,28 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             // an optional credential is never touched here: a store failure
             // or a first-touch keyring prompt for a secret the verdict never
             // reads would fail or interrupt the command for nothing.
-            for spec in bundle.credentials.iter().filter(|spec| spec.required) {
+            // Round-40 review: one keyring touch per UNIQUE key, mirroring
+            // the GUI's `bundle_readiness_with_store` pre-read (which
+            // dedupes by key before reading). A manifest declaring one key
+            // with multiple targets made the CLI read the same secret twice
+            // — an extra OS-keyring touch (a possible macOS access prompt)
+            // the GUI never makes. The first declaration wins, the same
+            // find-first semantics the `lookup` closure below keeps.
+            let mut seen_keys: Vec<&str> = Vec::new();
+            let required_specs: Vec<_> = bundle
+                .credentials
+                .iter()
+                .filter(|spec| spec.required)
+                .filter(|spec| {
+                    if seen_keys.contains(&spec.key.as_str()) {
+                        false
+                    } else {
+                        seen_keys.push(&spec.key);
+                        true
+                    }
+                })
+                .collect();
+            for spec in required_specs {
                 let present = if !bundle.installed {
                     false
                 } else {
@@ -2089,7 +2123,7 @@ fn set_enabled(
     // Round-38 review: one `available_tools()` walk serves the target id,
     // the retain's normalization, and the read-back verification — the same
     // hoist the lib made for its own multi-entry lists (round-23 MINOR 3);
-    // the per-entry `package_id_for` here had reintroduced it.
+    // the per-entry id normalization here had reintroduced it.
     let tool_snapshot =
         pinvou3_lib::features::marketplace::MarketplaceManager::new().available_tools();
     let packages =

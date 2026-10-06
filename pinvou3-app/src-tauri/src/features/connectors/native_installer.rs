@@ -336,6 +336,19 @@ fn write_license(bin_dir: &Path, name: &str) -> Result<(), String> {
         .map_err(|e| format!("写入连接器许可证失败: {e}"))
 }
 
+/// Round-40 review: the headless CLI's `connectors ensure-cli` installs the
+/// same pinned native payloads into the same `assets_cli_dir` layout but
+/// used to skip the license side-files the GUI installer writes next to
+/// them — a machine provisioned only through the CLI held pinned
+/// third-party binaries with no license text anywhere. This exposes the
+/// GUI's writer unchanged (same texts, same `licenses/` location derived
+/// from the version dir) so both surfaces ship identical license
+/// side-files; the unknown-connector error keeps the npm-lane connectors
+/// (tmeet) out, which have no bundled license text.
+pub fn write_managed_license(bin_dir: &Path, connector: &str) -> Result<(), String> {
+    write_license(bin_dir, connector)
+}
+
 fn load_lock() -> Result<ConnectorLock, String> {
     let lock_json = crate::platform::connector_lock::lock_json();
     if lock_json.is_empty() {

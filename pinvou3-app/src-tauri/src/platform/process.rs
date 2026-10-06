@@ -148,10 +148,14 @@ fn external_command_for(executable: &Path, windows: bool) -> Command {
 /// 必须经 `cmd /D /S /C`，否则探测、登录或启动 Agent 时会被当成原生可执行文件。
 /// Shared with the pinvou-cli kill tree (`support.rs` Windows arm) through
 /// the targeted `platform::external_command` re-export — the `process`
-/// module itself stays crate-private. A planted `taskkill.exe` in the
-/// working directory must not win PATH resolution on a platform where exe
-/// search historically includes it — the hardened
-/// `external_application_path` resolution is the point of sharing.
+/// module itself stays crate-private. The point of sharing is *resolution
+/// parity*, not hardening: `external_application_path` only normalizes
+/// `\\?\`/UNC spellings and returns a bare name like `taskkill` verbatim,
+/// so a bare-name caller resolves exactly as it does for the GUI's own
+/// `kill_pid_tree` (app dir → CWD → System32 → PATH). A caller that needs a
+/// planted-`taskkill.exe`-in-CWD defense must resolve
+/// `%SystemRoot%\System32\taskkill.exe` itself — this helper deliberately
+/// does not invent a stricter PATH policy the GUI does not have.
 ///
 /// The Windows `.cmd`/`.bat` branch keeps the manual `cmd /D /S /C` wrap
 /// (unlike the CLI's own `build_command`, which delegates to std's hardened

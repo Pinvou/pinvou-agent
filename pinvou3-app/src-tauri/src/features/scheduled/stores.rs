@@ -466,12 +466,33 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 }
             }
             Err(error) => {
-                log::warn!(
-                    "Unable to read {} {}: {error}{}",
-                    T::LABEL,
-                    path.display(),
-                    T::WARN_SUFFIX
-                );
+                // Round-40 review: rate-limit this warn. In a persistently
+                // unreadable environment (a restore that left the store
+                // root un-chownable, say) every reload re-fails here, and
+                // the GUI poll's several lookups per tick turned one
+                // environment problem into warn spam for the process's
+                // whole lifetime — base warned once at boot and never
+                // re-read, while the stamping deliberately re-consults. A
+                // 60-second cooldown per store type keeps the failure
+                // visible without the amplification. The static inside
+                // this generic fn monomorphizes per `T`, so each store
+                // type carries its own clock.
+                static LAST_WARN_MS: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0);
+                let last = LAST_WARN_MS.load(std::sync::atomic::Ordering::Relaxed);
+                if now_ms.saturating_sub(last) > 60_000 {
+                    LAST_WARN_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                    log::warn!(
+                        "Unable to read {} {}: {error}{}",
+                        T::LABEL,
+                        path.display(),
+                        T::WARN_SUFFIX
+                    );
+                }
                 DiskRead::Failed {
                     quarantined: false,
                     io_error: true,
@@ -636,7 +657,11 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             // Scoped short hold: persist_migrated() below takes a read
             // lock, and parking_lot locks are not reentrant.
             let mut state = self.registry.write();
-            if FileStamp::of(self.path.as_ref()) != stamp {
+            // One re-stat serves both checks below (round-40 review): the
+            // equality gate AND the never-created ABSENT pricing — binding
+            // it once halves the stats this already-held write lock pays.
+            let current = FileStamp::of(self.path.as_ref());
+            if current != stamp {
                 return;
             }
             *state = registry;
@@ -650,7 +675,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             // re-stat under the lock above already proved the file is still
             // absent; a foreign write that recreates it yields a real
             // stamp, which never equals the sentinel.
-            if stamp.is_none() && FileStamp::of(self.path.as_ref()).is_none() {
+            if stamp.is_none() && current.is_none() {
                 *self.seen.write() = Some(FileStamp::ABSENT);
             } else {
                 *self.seen.write() = stamp;
@@ -763,11 +788,11 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         Ok(())
     }
 
-    /// Apply this store's quarantine policy to an invalid payload at `path`.
     /// Applies this store's quarantine policy and reports whether the
     /// canonical file was renamed AWAY (Rename strategy, rename succeeded) —
     /// the fact the absent-file read arm needs to keep memory over an empty
-    /// default.
+    /// default. (Round-40 review: the stale first summary line that used to
+    /// sit above this one is gone.)
     pub(crate) fn handle_invalid(path: &Path, reason: &str) -> bool {
         match T::QUARANTINE {
             QuarantineStrategy::LogInPlace => {

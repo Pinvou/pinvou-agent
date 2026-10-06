@@ -578,6 +578,18 @@ impl KnowledgeService {
                             break;
                         }
                     };
+                    // Round-40 review: mark the claim on the job row. The
+                    // embed-batch phase moves the item row per batch (the
+                    // CLI's stall tuple reads `current_chunks_done`), but
+                    // between the walk's last tick and the first batch the
+                    // job row was frozen across claim + parse start; a
+                    // best-effort touch here keeps the row honest about a
+                    // live thread. A single file whose PARSE alone outlasts
+                    // the stall bound stays frozen inside
+                    // `file_ingest::ingest` — the CLI's stall report names
+                    // that quiet phase and carries the in-flight path
+                    // instead of pretending the bound cannot hit it.
+                    let _ = imports.touch(&job_id);
                     match l1.ingest_import_item(
                         &job_id,
                         item.id,
@@ -787,7 +799,7 @@ impl KnowledgeService {
 /// 后台索引入口的补载实现已上收到 `KnowledgeService::
 /// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
 /// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
-/// 剪枝遍历复用 `scanner::walk_pruned`（与全盘扫描同一排除语义）。
+/// 剪枝遍历复用 `scanner::walk_pruned_with`（与全盘扫描同一排除语义）。
 fn expand_import_roots(
     roots: &[PathBuf],
     cancel: &AtomicBool,
@@ -795,13 +807,20 @@ fn expand_import_roots(
 ) -> Vec<PathBuf> {
     let ex = Excluder::default();
     let mut files = Vec::new();
-    // Round-37 review MAJOR: tick the job row every WALK_HEARTBEAT_EVERY
-    // entries. Nothing else observable moves while the walk runs (items are
-    // only staged afterwards), so a healthy walk over a pruned-heavy tree
-    // used to be indistinguishable from a wedged thread and got killed by
-    // the CLI's stall bound — the same false-positive the scan lane fixed
-    // with its pre-prune raw heartbeat.
-    let mut walked: u64 = 0;
+    // Round-37 review MAJOR: tick the job row while the walk runs. Nothing
+    // else observable moves during the walk (items are only staged
+    // afterwards), so a healthy walk used to be indistinguishable from a
+    // wedged thread and got killed by the CLI's stall bound — the same
+    // false-positive the scan lane fixed with its pre-prune raw heartbeat.
+    // Round-40 review MAJOR: the tick must be PRE-prune. Counting only the
+    // entries that survive the Excluder left a root that is one huge flat
+    // directory of excluded files (disk images, backups — the scan lane's
+    // `raw_heartbeat_ticks_on_a_pruned_heavy_tree` shape) enumerating for
+    // minutes with nothing to count: the job row stayed frozen and the
+    // CLI's stall bound interrupted a healthy walk on every attempt.
+    // `walk_pruned_with` invokes the callback on its own RAW_HEARTBEAT
+    // cadence over every enumerated entry, prune survivors or not; one
+    // callback = one job-row touch.
     for root in roots {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -812,13 +831,9 @@ fn expand_import_roots(
         }
         // 导入侧沿用「错误即跳过」：导入的目的是收录可读文件，单个不可读
         // 子树不否定其余条目（与全盘扫描的删除授权不同，那边必须否决）。
-        for entry in scanner::walk_pruned(root, &ex).flatten() {
+        for entry in scanner::walk_pruned_with(root, &ex, |_| heartbeat()).flatten() {
             if cancel.load(Ordering::Relaxed) {
                 break;
-            }
-            walked += 1;
-            if walked % WALK_HEARTBEAT_EVERY == 0 {
-                heartbeat();
             }
             if entry.file_type().is_file() {
                 files.push(entry.path().to_path_buf());
@@ -827,9 +842,6 @@ fn expand_import_roots(
     }
     import_jobs::unique_existing_files(files)
 }
-
-/// Entries between walk heartbeats (the scanner lane's cadence).
-const WALK_HEARTBEAT_EVERY: u64 = 5000;
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {

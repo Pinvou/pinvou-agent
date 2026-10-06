@@ -488,31 +488,6 @@ fn wait_bounded(
     }
 }
 
-/// Bracket for one spawned child's process-group supervision (voice's
-/// children are all `set_process_group` spawns): registers the group with
-/// `support::supervise` at construction and deregisters it on drop, so every
-/// exit path — normal completion, the bounded-wait timeout kill, an early
-/// error return — pairs the registration with a forget exactly the way
-/// `code.rs`'s login lane does it by hand and `support/supervise.rs`
-/// documents for spawn sites. A Ctrl-C that lands while a voice child is
-/// alive is forwarded to its group instead of orphaning it.
-struct SupervisedGroup {
-    pid: u32,
-}
-
-impl SupervisedGroup {
-    fn new(child: &std::process::Child) -> Self {
-        crate::support::supervise::register_child_group(child.id());
-        Self { pid: child.id() }
-    }
-}
-
-impl Drop for SupervisedGroup {
-    fn drop(&mut self) {
-        crate::support::supervise::forget_child_group(self.pid);
-    }
-}
-
 /// Removes a staged private file when dropped — the `TempWrapperZip`
 /// convention from `plugins.rs`, applied to this module's three staged paths:
 /// the 0600 input wav ([`write_temp_wav`]), the 0600 normalized conversion,
@@ -539,7 +514,7 @@ fn ffmpeg_available() -> bool {
         .stderr(std::process::Stdio::null());
     crate::support::set_process_group(&mut command);
     // `spawn_supervised` closes the spawn→register window (see
-    // `support/supervise.rs`): the `SupervisedGroup::new` register below is
+    // `support/supervise.rs`): the `GroupGuard::register` bracket below is
     // then the idempotent belt.
     let Ok(mut child) = crate::support::supervise::spawn_supervised(&mut command) else {
         return false;
@@ -548,7 +523,7 @@ fn ffmpeg_available() -> bool {
     // while even this short-lived ffmpeg runs must take it down with this
     // CLI instead of orphaning it behind its own process group (the same
     // bracket `code.rs`'s login lane installs by hand).
-    let _supervised = SupervisedGroup::new(&child);
+    let _supervised = crate::support::supervise::GroupGuard::register(child.id());
     wait_bounded(&mut child, FFMPEG_PROBE_TIMEOUT)
         .map(|status| status.success())
         .unwrap_or(false)
@@ -1604,7 +1579,7 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
                 // Same supervised bracket as every other spawned child: a
                 // Ctrl-C during the conversion takes the ffmpeg group down
                 // with this CLI.
-                let _supervised = SupervisedGroup::new(&convert);
+                let _supervised = crate::support::supervise::GroupGuard::register(convert.id());
                 wait_bounded(&mut convert, FFMPEG_CONVERT_TIMEOUT)
                     .map(|status| status.success())
                     .unwrap_or(false)
@@ -1655,7 +1630,7 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // same trade the connectors login lane documents for keeping the
     // registration through its drain (it is what takes pipe-holding
     // straggler descendants down with a Ctrl-C).
-    let _supervised_engine = SupervisedGroup::new(&child);
+    let _supervised_engine = crate::support::supervise::GroupGuard::register(child.id());
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
@@ -1738,7 +1713,7 @@ fn spawn_asr_engine(
     normalized: &Path,
 ) -> Result<std::process::Child, CliError> {
     // `spawn_supervised` closes the spawn→register window (see
-    // `support/supervise.rs`); the caller's `SupervisedGroup::new` register
+    // `support/supervise.rs`); the caller's `GroupGuard::register` bracket
     // is then the idempotent belt.
     crate::support::supervise::spawn_supervised(command).map_err(|error| {
         let _ = std::fs::remove_file(normalized);
@@ -1869,7 +1844,7 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         })?;
     // The supervised bracket for this spawn, pairing registration with the
     // forget on every exit below (see the local-engine lane).
-    let _supervised_cli = SupervisedGroup::new(&child);
+    let _supervised_cli = crate::support::supervise::GroupGuard::register(child.id());
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
     let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
@@ -2336,9 +2311,32 @@ fn postprocess(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
+    // Round-40 review: the gated-file-read rule this PR applies everywhere
+    // else user-pointed file content enters a model context — `feedback
+    // submit` gates even its never-leaving-the-machine body file ("a
+    // scripted `--body-file ~/.aws/credentials` is the same footgun"),
+    // `files ingest` refuses credential locations outright, `agent run
+    // --attach` gates — and docs/pinvou-cli.md lists the gated lanes.
+    // `--text-file` was the one missing lane, and its content IS the
+    // payload: a scripted alias could ship a credential file verbatim to
+    // the configured model endpoint. Same shape as the feedback lane:
+    // canonicalize (symlink-accurate), then the sensitive-path refusal.
+    let gate_file = |path: &Path, role: &str| -> Result<PathBuf, CliError> {
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            CliError::failed(format!(
+                "voice postprocess: cannot resolve {role} file {}: {error}",
+                path.display()
+            ))
+        })?;
+        crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
+            CliError::failed(format!("voice postprocess: refusing {role} file: {reason}"))
+        })?;
+        Ok(canonical)
+    };
     let raw_input = match (text, text_file) {
         (Some(text), _) => text,
         (None, Some(file)) => {
+            gate_file(&file, "text")?;
             crate::support::read_text_file_capped(&file, 64 * 1024, "voice postprocess")?
         }
         // The parser enforces exactly one text source, but `execute` is a
@@ -2356,11 +2354,14 @@ fn postprocess(
     // (`truncate_voice_postprocess_input` is applied to the draft there too).
     let draft_input = match (draft, draft_file) {
         (Some(draft), _) => Some(draft),
-        (None, Some(file)) => Some(crate::support::read_text_file_capped(
-            &file,
-            64 * 1024,
-            "voice postprocess",
-        )?),
+        (None, Some(file)) => {
+            gate_file(&file, "draft")?;
+            Some(crate::support::read_text_file_capped(
+                &file,
+                64 * 1024,
+                "voice postprocess",
+            )?)
+        }
         (None, None) => None,
     };
     let draft_text = draft_input
