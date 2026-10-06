@@ -151,8 +151,10 @@ pub const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 /// HTTPS gate anyway and never requested. Lives in platform so the candidate
 /// download loops of the connectors and marketplace features can share it
 /// (features must not depend on each other), and both must skip candidates
-/// the same way.
-pub(crate) fn redact_url_credentials(url_text: &str) -> String {
+/// the same way. `pub` for the crate-boundary re-export in `platform::mod`
+/// (round-40 review: the CLI's download aggregation consumes the same
+/// redactor instead of a drifting copy).
+pub fn redact_url_credentials(url_text: &str) -> String {
     let mut parsed = match reqwest::Url::parse(url_text) {
         Ok(parsed) => parsed,
         Err(_) => return "<invalid URL>".to_string(),
@@ -162,6 +164,36 @@ pub(crate) fn redact_url_credentials(url_text: &str) -> String {
         let _ = parsed.set_password(None);
     }
     parsed.to_string()
+}
+
+/// Round-40 review: free-text form of [`redact_url_credentials`]. Error
+/// `Display` impls embed the requested URL (`reqwest` prints
+/// `... for url (https://...)`), and the connectors' labels-only aggregation
+/// rule promises never to echo a candidate URL — mirror prefixes can carry
+/// userinfo. Scans the text for embedded `http(s)://` runs (bounded by the
+/// usual delimiters) and redacts userinfo in each; non-URL text passes
+/// through unchanged. Same crate-boundary re-export as the single-URL form.
+pub fn redact_url_credentials_in_text(text: &str) -> String {
+    let delimiters = |c: char| {
+        matches!(
+            c,
+            ' ' | '\t' | '\n' | '\r' | ')' | '"' | '\'' | ';' | ',' | '<' | '>'
+        )
+    };
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(position) = ["https://", "http://"]
+        .iter()
+        .find_map(|scheme| rest.find(scheme))
+    {
+        let (before, after) = rest.split_at(position);
+        result.push_str(before);
+        let end = after.find(delimiters).unwrap_or(after.len());
+        result.push_str(&redact_url_credentials(&after[..end]));
+        rest = &after[end..];
+    }
+    result.push_str(rest);
+    result
 }
 
 pub(crate) async fn download_to_part_with_verify(

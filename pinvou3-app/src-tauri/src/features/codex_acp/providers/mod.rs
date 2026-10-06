@@ -477,20 +477,11 @@ impl AcpProvidersStore {
         })
     }
 
-    /// Fresh read of the current id AND its record in one critical section —
-    /// the shape `switch_official_locked` needs: deriving the revert target
-    /// from a stale `current`/record pair rewrites the config for a provider
-    /// a peer already removed or un-currented.
-    fn current_and_record_after_reload(
-        &self,
-        agent: &str,
-    ) -> (Option<String>, Option<ProviderRecord>) {
-        let _section = self.section_lock();
-        self.current_and_record_fresh_locked(agent)
-    }
-
-    /// [`Self::current_and_record_after_reload`] for a caller that already
-    /// holds the section lock (see [`Self::upsert_locked`]).
+    /// Fresh read of the current id AND its record in one critical section.
+    /// Deriving the revert target from a stale `current`/record pair
+    /// rewrites the config for a provider a peer already removed or
+    /// un-currented. (Round-40 review removed the `_after_reload` wrapper —
+    /// it had zero callers; the fresh-locked form is the only consumer.)
     fn current_and_record_fresh_locked(
         &self,
         agent: &str,
@@ -1024,12 +1015,19 @@ impl ProviderManager {
             .map(|record| record.id.clone())
             .unwrap_or_else(generate_provider_id);
         let reference = CredentialReference::for_acp_provider(agent, &id);
+        // Round-40 review: track what THIS call wrote so the under-lock bail
+        // below can take it back — the credential work runs before the
+        // section lock (it can park on a keychain prompt), and a peer delete
+        // landing in that window must not leave the just-written key in the
+        // keychain under a reference no record names any more.
+        let mut written_credential: Option<CredentialReference> = None;
         let credential = match api_key_action {
             CredentialEditAction::Replace => {
                 let key = api_key
                     .as_deref()
                     .with_context(|| "替换 Provider key 时 api_key 不能为空")?;
                 self.credentials.set(&reference, key)?;
+                written_credential = Some(reference.clone());
                 Some(reference)
             }
             CredentialEditAction::KeepExisting => match self.credentials.get(&reference)? {
@@ -1037,6 +1035,7 @@ impl ProviderManager {
                 None => match api_key {
                     Some(key) => {
                         self.credentials.set(&reference, &key)?;
+                        written_credential = Some(reference.clone());
                         Some(reference)
                     }
                     None => existing
@@ -1088,6 +1087,13 @@ impl ProviderManager {
                 .record_fresh_locked(agent, record.id.as_str())
                 .is_none()
         {
+            // Take back exactly the key this call wrote (best-effort: the
+            // primary job of this path is the honest bail). The DELETE
+            // action already removed its key; KeepExisting without a write
+            // has nothing to remove.
+            if let Some(wrote) = &written_credential {
+                self.credentials.delete(wrote).ok();
+            }
             anyhow::bail!("Provider 不存在: {}", record.id);
         }
         if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {

@@ -268,13 +268,17 @@ impl ImportJobStore {
     }
 
     /// Walk-phase heartbeat (round-37 review MAJOR): the source-root walk
-    /// and the embedder load run before any item exists, so the per-item
-    /// progress the CLI's liveness signature reads cannot move and a
-    /// healthy import used to look wedged. Tick the job row's `updated_at`
-    /// — a column both surfaces already read — so the CLI's stall detector
-    /// sees life through exactly those phases. Guarded to non-terminal
-    /// states so a terminal row's feed ordering is untouched. Best-effort:
-    /// the caller treats a failed tick as one silent beat, not a stall.
+    /// runs before any item exists, so the per-item progress the CLI's
+    /// liveness signature reads cannot move and a healthy import used to
+    /// look wedged. Tick the job row's `updated_at` — a column both
+    /// surfaces already read — so the CLI's stall detector sees life
+    /// through the walk. Round-40 review: the doc used to claim the
+    /// embedder load is covered too; it is NOT (nothing can tick beside
+    /// that in-process call) — a load outlasting the stall bound lands
+    /// `interrupted`/resumable, and the CLI's timeout remedy names that
+    /// quiet phase. Guarded to non-terminal states so a terminal row's
+    /// feed ordering is untouched. Best-effort: the caller treats a failed
+    /// tick as one silent beat, not a stall.
     pub fn touch(&self, job_id: &str) -> rusqlite::Result<bool> {
         let c = self.conn.lock();
         let now = now();

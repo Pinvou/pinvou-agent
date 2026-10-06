@@ -1615,6 +1615,17 @@ async fn run_turn(
                 // record facts instead: the pins restore only when the
                 // transcript revision is unchanged since the pre-submit
                 // snapshot (nothing landed); unknown keeps them.
+                // Round-40 review: the staged-copy sweep joins the same
+                // admission gate the pin restore right above uses. An
+                // ADMITTED turn can sit undurably-appended for the
+                // forwarder's whole lag window; sweeping on the still-empty
+                // record then deletes the staged `attachments/<file>` copies
+                // the forwarder's write will reference, reopening the
+                // session with dangling attachment paths. Unreferenced-copy
+                // litter from a crashed admitted run is bounded and
+                // self-healing (the next run's staging); dangling
+                // transcript references are not — litter is the safe
+                // direction, same trade the pin restore makes.
                 if !submit_err_admitted_turn(
                     store,
                     session_id,
@@ -1631,13 +1642,13 @@ async fn run_turn(
                         "failure",
                     )
                     .await;
+                    sweep_unreferenced_staged_copies(
+                        store,
+                        session_id,
+                        existing_session,
+                        &staged_attachment_copies,
+                    );
                 }
-                sweep_unreferenced_staged_copies(
-                    store,
-                    session_id,
-                    existing_session,
-                    &staged_attachment_copies,
-                );
                 return (false, Err(error));
             }
         },

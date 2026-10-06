@@ -77,6 +77,39 @@ fn lock_user_prefs() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// `settings.json` 读-改-写事务的跨进程写者锁（见
+/// [`UserPrefs::update_transaction`]）。
+///
+/// 锁文件是 settings.json 的兄弟文件：每个 PINVOU3_HOME 一把，GUI 与 CLI
+/// 天然竞争同一把。只用 OS 锁裁决，锁文件本身永不删除——崩溃进程残留的
+/// 空文件不会阻塞下一个写者。持有方是毫秒级临界区，用阻塞 `lock()`
+/// （Unix flock / Windows LockFileEx，与 organize/install 锁同一类原语）
+/// 而不是 try+busy：设置写入偶发排队几毫秒比把并发写报成失败更可用。
+struct SettingsFileLock {
+    file: std::fs::File,
+}
+
+impl Drop for SettingsFileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn lock_settings_file() -> std::io::Result<SettingsFileLock> {
+    let path = super::paths::settings_path().with_file_name("settings.json.lock");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    file.lock()?;
+    Ok(SettingsFileLock { file })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
@@ -949,6 +982,16 @@ impl UserPrefs {
     /// 在同一临界区内读取磁盘最新偏好、修改指定字段并写回。
     ///
     /// 闭包必须只修改自己负责的设置域，避免把调用方持有的整份旧快照写回。
+    ///
+    /// 读-改-写跨进程串行化（round-40 review M7）：CLI 是 settings.json 的
+    /// 第二个写者进程（`pinvou models add/edit/remove/use-model`、
+    /// `settings set`），进程内 `USER_PREFS_LOCK` 够不到另一个进程；没有
+    /// OS 级锁时两个进程的整文档读-改-写是静默 last-writer-wins（后写方
+    /// 丢掉先写方的整个改动，两侧都 exit 0）。flock 挂在
+    /// `settings.json.lock` 上，跨 load→mutate→save→reload 全程持有，
+    /// 持锁进程死亡时由内核释放；持有窗口是毫秒级的一次磁盘往返，阻塞
+    /// 等待对 GUI 无感。`load()` 的规范化持久化与一次性 `save()` 不参与
+    /// 该锁：前者只写幂等的迁移结果，后者本就是整文档覆盖语义。
     pub fn update_transaction<F>(mutate: F) -> Result<Self, String>
     where
         F: FnOnce(&mut Self) -> Result<(), String>,
@@ -987,6 +1030,8 @@ impl UserPrefs {
         C: FnOnce(),
     {
         let _guard = lock_user_prefs();
+        let _file_lock = lock_settings_file()
+            .map_err(|error| format!("acquire settings lock failed: {error}"))?;
         let mut prefs = Self::load_unlocked(false);
         mutate(&mut prefs)?;
         prefs

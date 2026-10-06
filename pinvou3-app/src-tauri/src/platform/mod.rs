@@ -34,6 +34,11 @@ pub use download::NPM_MIRROR_REGISTRY;
 // budget was sized for ("slow links need ~150 KB/s to finish"); a drifting
 // local 600 s constant timed installs out where the GUI succeeds.
 pub use download::ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT;
+/// Round-40 review: the CLI's connector download aggregation and the app's
+/// installer share the same userinfo redactor (single-URL and free-text
+/// forms) instead of drifting copies.
+pub use download::redact_url_credentials;
+pub use download::redact_url_credentials_in_text;
 // The projects rebind lane folds stored paths through the OS-guaranteed
 // identity equivalence before comparing: on Windows, a case/separator
 // spelling drift between metadata and binding must not re-admit a healthy
