@@ -419,11 +419,22 @@ fn model_path() -> PathBuf {
 /// this process-global memo.
 fn model_available() -> bool {
     let spec = model_spec();
-    let path = model_path();
-    let Ok(meta) = std::fs::metadata(&path) else {
+    model_available_verified(&model_path(), spec.expected_size, spec.sha256)
+}
+
+/// The `model_available` mechanics on explicit arguments, so the gate can be
+/// pinned hermetically with a small fabricated file (`model_available` itself
+/// pins the shipped model's 182–254 MiB size + sha256, unconstructible in a
+/// test). The round-41 M3 env handoff and the availability probe share this
+/// one verdict.
+fn model_available_verified(path: &Path, expected_size: u64, expected_sha256: &str) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
         return false;
     };
-    type CacheKey = (PathBuf, u64, Option<std::time::SystemTime>);
+    // The expectation is part of the key: two probes of the same file with
+    // different pinned digests must not read each other's verdict (the
+    // shipped probe and the hermetic test feed different specs).
+    type CacheKey = (PathBuf, u64, Option<std::time::SystemTime>, u64, String);
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(CacheKey, bool)>>> =
         std::sync::OnceLock::new();
     // A panic while this memo is held leaves nothing inconsistent behind (the
@@ -433,13 +444,19 @@ fn model_available() -> bool {
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let key: CacheKey = (path.clone(), meta.len(), meta.modified().ok());
+    let key: CacheKey = (
+        path.to_path_buf(),
+        meta.len(),
+        meta.modified().ok(),
+        expected_size,
+        expected_sha256.to_owned(),
+    );
     if let Some((cached_key, available)) = entry.as_ref() {
         if *cached_key == key {
             return *available;
         }
     }
-    let available = meta.len() == spec.expected_size && file_is_sha256(&path, spec.sha256);
+    let available = meta.len() == expected_size && file_is_sha256(path, expected_sha256);
     *entry = Some((key, available));
     available
 }
@@ -1626,10 +1643,12 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // whose leader this command already reaped. Scope note, honestly stated:
     // the registration LIVES until the bracket drops at function scope —
     // including the drain-grace window after the reap — so an interrupt in
-    // that window can still forward to the (dead leader's) pgid; that is the
-    // same trade the connectors login lane documents for keeping the
-    // registration through its drain (it is what takes pipe-holding
-    // straggler descendants down with a Ctrl-C).
+    // that window can still forward to the (dead leader's) pgid. That
+    // forward is safe since the round-41 review: the watcher's phase 1
+    // probes each group with signal 0 before TERMing, so a fully-dead
+    // group is skipped instead of signalling whatever recycled the pgid,
+    // and keeping the registration is what takes pipe-holding straggler
+    // descendants down with a Ctrl-C.
     let _supervised_engine = crate::support::supervise::GroupGuard::register(child.id());
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -1812,10 +1831,19 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Mirror the GUI: the engine's own model path is passed through the env
-    // when it is installed locally. Deliberately stricter than the GUI's
-    // `is_file()` gate: the CLI hands the path over only when it passes the
-    // sha256 integrity check, so a present-but-corrupt model is not passed
-    // to the external ASR tool here (disclosed deviation, round-39 review).
+    // when it is installed locally (the app's `apply_local_asr_model_env`,
+    // pinned by the app's `local_asr_env_points_wrapper_to_resolved_model_path`;
+    // the app-shipped wrapper's model resolution reads the variable first).
+    // Deliberately stricter than the GUI's `is_file()` gate: the CLI hands
+    // the path over only when `model_available` — the size + pinned-sha256
+    // check — passes, so a present-but-corrupt model is neither used nor
+    // passed to the external ASR tool here (round-41 review M3: round-39
+    // deleted the handoff behind a comment that still claimed it exists;
+    // without it the wrapper resolves its model differently than the
+    // desktop app on the same config).
+    if model_available() {
+        command_line.env("PINVOU3_SENSEVOICE_MODEL", model_path());
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt as _;
@@ -3918,5 +3946,47 @@ mod staged_part_tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod round41_model_gate_tests {
+    use super::model_available_verified;
+
+    /// The M3 env handoff only fires on `model_available`'s verdict, so the
+    /// verdict's mechanics get a hermetic pin here (the shipped spec's
+    /// 182-254 MiB model is unconstructible in a test): exact size AND
+    /// digest, refusing a wrong size, a same-size wrong digest (the
+    /// corrupt-model case the handoff must not pass), and a missing file.
+    #[test]
+    fn model_available_verified_enforces_size_and_sha256() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-voice-gate-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model.gguf");
+        std::fs::write(&path, b"pinvou-round41-model-bytes").unwrap();
+        let len = std::fs::metadata(&path).unwrap().len();
+        let digest = pinvou3_lib::platform::sha256_file(&path).unwrap();
+
+        assert!(model_available_verified(&path, len, &digest));
+        assert!(
+            !model_available_verified(&path, len - 1, &digest),
+            "wrong size"
+        );
+        assert!(
+            !model_available_verified(&path, len, &"0".repeat(64)),
+            "same size, wrong digest (corrupt model) is refused"
+        );
+        assert!(
+            !model_available_verified(&dir.join("absent.gguf"), len, &digest),
+            "missing file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

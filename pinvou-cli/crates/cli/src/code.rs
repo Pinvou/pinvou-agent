@@ -3459,6 +3459,25 @@ fn providers_switch(
             "provider_not_found: no provider '{provider_id}' for agent {agent}"
         )));
     }
+    // Round-41 review M4: pre-check credential presence the same way —
+    // keyless providers are a first-class import product, so `import →
+    // switch` is a normal flow, and without this gate the store's
+    // untranslated "Provider 未配置 API key，无法切换" reached the terminal
+    // verbatim (the sibling save rules are mirrored in English and pinned
+    // `is_ascii` by tests). Same read the store's switch gate makes
+    // (`api_key` folds a credential-read error into "absent"), so the two
+    // cannot disagree; the store re-checks authoritatively under its lock.
+    if manager
+        .api_key(agent, provider_id)
+        .unwrap_or(None)
+        .is_none()
+    {
+        return Err(CliError::failed(format!(
+            "provider_api_key_missing: provider '{provider_id}' for agent {agent} has no \
+             stored API key; save one first with `pinvou code providers add --agent {agent} \
+             --id {provider_id} --api-key-env/--api-key-stdin`"
+        )));
+    }
     manager
         .switch(agent, provider_id)
         .map_err(|error| store_error("providers switch", provider_id, error))?;
@@ -5470,6 +5489,19 @@ fn require_native_code_session(
         return Err(CliError::failed(format!(
             "code_checkpoints_requires_native_code_session: only native code sessions support \
              checkpoints (session {session})"
+        )));
+    }
+    // Round-41 review: pre-gate scheduled-run sessions here, BEFORE the
+    // checkpoint machinery touches the working tree. A code-mode record on a
+    // SCHED- session (no current writer produces one — this is
+    // defense-in-depth) used to pass this gate, restore the tree in step 1,
+    // and then fail deterministically in `truncate_to_user_turn`'s own
+    // refusal — with retry advice that can never succeed and a fresh
+    // PreRestore checkpoint minted per attempt.
+    if matches!(store.session_kind(session), Ok(SessionKind::ScheduledRun)) {
+        return Err(CliError::failed(format!(
+            "code_checkpoints_requires_native_code_session: scheduled-run sessions do not \
+             support checkpoints (session {session})"
         )));
     }
     let roots = store

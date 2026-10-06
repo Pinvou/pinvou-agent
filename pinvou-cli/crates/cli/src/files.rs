@@ -133,7 +133,11 @@ pub fn execute(command: FilesCommand, output: OutputMode) -> Result<CliOutcome, 
 
 /// `--output PATH`: the extracted markdown (or an empty file when the ingest
 /// produced only a placeholder, mirroring the GUI which would send no text)
-/// is written to the file; stdout carries the summary fields.
+/// is written to the file. The JSON output embeds the full verbatim markdown
+/// either way (the family's verbatim-JSON rule) — with `--output` the
+/// extraction therefore appears both on disk and in the JSON; only the human
+/// mode collapses to the summary fields (round-41 review: the old doc
+/// claimed stdout carried the summary fields unconditionally).
 fn write_file(
     result: &IngestResult,
     destination: &std::path::Path,

@@ -1465,7 +1465,7 @@ fn collections_add_sources(
              then re-run this command"
         };
         return Err(CliError::failed(format!(
-            "knowledge collections add-sources: index job {} (collection {}, phase {phase}) \
+            "knowledge_add_sources_blocked: index job {} (collection {}, phase {phase}) \
              blocks collection {id} and the requested sources were NOT enqueued ({remedy})",
             state.job_id.as_deref().unwrap_or("none"),
             state.collection_id,
@@ -1476,7 +1476,7 @@ fn collections_add_sources(
     // import was created and the requested sources were never enqueued.
     if state.job_id == previous_job && !state.running {
         return Err(CliError::failed(format!(
-            "knowledge index start failed: collection {id} has no freshly created index \
+            "knowledge_index_start_failed: collection {id} has no freshly created index \
              job (latest: {}, running: {}); the requested sources were not enqueued",
             state.job_id.as_deref().unwrap_or("none"),
             state.running
@@ -1484,7 +1484,7 @@ fn collections_add_sources(
     }
     let Some(job_id) = state.job_id.clone() else {
         return Err(CliError::failed(format!(
-            "knowledge index start failed: collection {id} reported no index job id; the \
+            "knowledge_index_start_failed: collection {id} reported no index job id; the \
              requested sources were not enqueued"
         )));
     };
@@ -1812,6 +1812,9 @@ fn wait_for_terminal_job(
 ) -> Result<IndexState, CliError> {
     let stall_bound = import_no_progress_timeout();
     let mut last = named_job_state(service, job_id, "status")?;
+    // Consecutive failed status polls; reset on every good poll (round-41
+    // review, see the poll tail below).
+    let mut read_errors: u32 = 0;
     // Observable-progress signature: items completed, items total, the file
     // currently being parsed and its chunk counter. Any of them moving
     // resets the liveness clock.
@@ -1899,7 +1902,48 @@ fn wait_for_terminal_job(
         let step =
             std::cmp::min(Duration::from_millis(50), stall_bound / 2).max(Duration::from_millis(1));
         std::thread::sleep(step);
-        last = named_job_state(service, job_id, "status")?;
+        // Round-41 review: a transient store-read error used to abort the
+        // whole wait — and the import thread lives in this same one-shot
+        // process, so the exit killed it mid-item and left exactly the
+        // "job flagged running with no owner" state this command's contract
+        // excludes. Tolerate a short burst of failed polls (a sustained
+        // cross-process SQLite write burst can outrun the 5s busy_timeout);
+        // if the failures persist, interrupt the job — the stall arm's
+        // route, landing it `interrupted` + resumable on disk — and only
+        // then fail.
+        const READ_ERROR_TOLERANCE: u32 = 10;
+        match named_job_state(service, job_id, "status") {
+            Ok(state) => {
+                read_errors = 0;
+                last = state;
+            }
+            Err(error) => {
+                read_errors += 1;
+                if read_errors < READ_ERROR_TOLERANCE {
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                let interrupted = service.interrupt_index(job_id).is_ok();
+                let remedy = if interrupted {
+                    format!(
+                        "the job was interrupted and is resumable (`pinvou knowledge index \
+                         resume {job_id}` continues it)"
+                    )
+                } else {
+                    format!(
+                        "the interrupt could not land either; the job is left as-is on disk \
+                         and stays resumable once a recovery-owning process (the desktop \
+                         app's next start) relabels it, or `pinvou knowledge index cancel \
+                         {job_id}` drops it"
+                    )
+                };
+                return Err(CliError::failed(format!(
+                    "{operation}: index job {job_id} status stayed unreadable across \
+                     {READ_ERROR_TOLERANCE} consecutive polls ({error}); the wait cannot own \
+                     the job to completion — {remedy}",
+                )));
+            }
+        }
     }
 }
 

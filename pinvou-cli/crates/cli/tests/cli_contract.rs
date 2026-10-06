@@ -295,7 +295,20 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     ])
     .unwrap();
     let error = execute(parsed).unwrap_err();
-    assert_ne!(error.to_string(), "gaia_worktree_unavailable");
+    // Round-41 review: stronger than the old `!= "gaia_worktree_unavailable"`
+    // one-liner — the round-38 regression this test guards made fetch demand
+    // git metadata on a non-repository home before ever looking at the
+    // source. The contract: the missing SNAPSHOT is the cause (a gaia-family
+    // error), and no git/worktree wording surfaces at all.
+    let message = error.to_string();
+    assert!(
+        !message.contains("worktree") && !message.contains("git"),
+        "non-repository home must not surface a git/worktree error: {message}"
+    );
+    assert!(
+        message.starts_with("gaia_"),
+        "expected a gaia-family error for a missing snapshot, got: {message}"
+    );
 
     drop(_restore_cwd);
     drop(_restore);

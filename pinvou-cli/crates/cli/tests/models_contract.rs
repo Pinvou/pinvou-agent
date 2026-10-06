@@ -721,6 +721,16 @@ fn settings_enforces_the_memory_locale_policy_through_the_prefs_layer() {
     run_ok(&["pinvou", "settings", "set", "language", "zh-Hans"]);
     run_ok(&["pinvou", "settings", "set", "memory_enabled", "true"]);
     assert!(load_prefs().memory_enabled);
+
+    // Round-41 review: flipping the LANGUAGE to a non-zh-Hans value also
+    // reverts memory_enabled on save — the command must disclose it with
+    // the same note the direct key gets, not print a plain success.
+    let stdout = run_ok(&["pinvou", "settings", "set", "language", "en"]);
+    assert!(
+        stdout.contains("memory locale policy kept memory_enabled = false"),
+        "the language flip must carry the locale-policy note: {stdout}"
+    );
+    assert!(!load_prefs().memory_enabled);
 }
 
 #[test]
@@ -2220,4 +2230,78 @@ fn search_provider_surface_matches_gui() {
         parse_args(["pinvou", "settings", "search", "test", provider].to_vec())
             .unwrap_or_else(|error| panic!("provider {provider} must parse: {error}"));
     }
+}
+
+/// Round-41 review M1: on a broken credential store, a settings write used to
+/// silently strip a legacy plaintext API key — the load-time migration failed
+/// (only recorded, never gated), the in-memory sanitize cleared the key, and
+/// `save_unlocked` rewrote the whole file without it, exit 0. The transaction
+/// now refuses like the GUI's own `prepare_prefs_for_save`, and the file
+/// keeps the key. The store is broken hermetically: a RELATIVE
+/// `CODEWHALE_HOME` makes the file backend refuse the path and degrade to a
+/// write-refusing empty store, so `store.set` fails without touching any
+/// real keychain.
+#[test]
+fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_store_fails() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = SandboxHome::new("m1-broken-store");
+    let mut homes: Vec<(&'static str, Option<std::ffi::OsString>)> = Vec::new();
+    for name in ["CODEWHALE_HOME", "HOME"] {
+        homes.push((name, std::env::var_os(name)));
+        unsafe { std::env::set_var(name, home.root.join("secrets-home")) };
+    }
+    struct RestoreHomes(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for RestoreHomes {
+        fn drop(&mut self) {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(v) => unsafe { std::env::set_var(name, v) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
+            }
+        }
+    }
+    let _homes = RestoreHomes(homes);
+    let _backend = RestoreEnvVar(
+        "CODEWHALE_SECRET_BACKEND",
+        std::env::var_os("CODEWHALE_SECRET_BACKEND"),
+    );
+    unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", "file") };
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+
+    // A healthy store writes fine: add a keyless model so the CLI itself
+    // authors a valid settings.json, then inject a legacy plaintext key into
+    // the record it created (value-level edit of a known-good document, so
+    // the fixture cannot drift from the real serde shape).
+    let stdout = run_ok(ADD_ARGS);
+    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let settings = home.root.join("settings.json");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    let model = document["advanced"]["saved_models"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["id"] == id.as_str())
+        .expect("the added model is in the file");
+    model["api_key"] = serde_json::Value::String("sk-legacy-plaintext-m1".to_owned());
+    std::fs::write(&settings, serde_json::to_string_pretty(&document).unwrap()).unwrap();
+
+    // Break the store and write: the transaction refuses, naming the cause.
+    unsafe { std::env::set_var("CODEWHALE_HOME", "relative-broken-home") };
+    let (message, code) = run_err(&["pinvou", "settings", "set", "theme", "liquid-dark"]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(
+        message.contains("credential store unavailable"),
+        "the refusal must name the cause: {message}"
+    );
+    // The critical half: the legacy plaintext key is still on disk.
+    let on_disk = std::fs::read_to_string(&settings).unwrap();
+    assert!(
+        on_disk.contains("sk-legacy-plaintext-m1"),
+        "the refusal must preserve the legacy plaintext key: {on_disk}"
+    );
 }

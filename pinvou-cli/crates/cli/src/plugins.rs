@@ -53,7 +53,8 @@
 //!   `.markdown` skill files (wrapped into a root-SKILL.md zip like the GUI's
 //!   `import_skill_md_content`), and SKILL.md directories (zipped the same
 //!   way; the GUI has no directory input). Single-file fallback id derivation
-//!   mirrors the GUI's `sanitize_skill_name` + FNV-1a `stable_stem_hash`.
+//!   reuses the GUI's `sanitize_skill_name` + FNV-1a digest (both re-exported
+//!   from the app crate, round-41 review).
 //!   The pre-pipeline wrap reads are bounded per file and cumulatively by the
 //!   pipeline's own package limit (including the frontmatter the wrapper
 //!   prepends, which is charged in place of the raw SKILL.md it replaces), and
@@ -2554,59 +2555,26 @@ fn wrap_markdown_skill(content: &str, filename: &str) -> String {
     format!("---\nname: {fallback}\n---\n\n{content}")
 }
 
-/// Mirrors `skill_marketplace::read_skill_name_from_str` (pub(crate) in the
-/// app): frontmatter `name:` from a leading `---` block.
+/// Frontmatter `name:` from a leading `---` block — the app pipeline's own
+/// reader (round-41 review: re-exported instead of a hand mirror, so a
+/// frontmatter-rule change lands here with the GUI).
 fn frontmatter_name(content: &str) -> Option<String> {
-    let mut lines = content.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    for line in lines {
-        let trimmed = line.trim();
-        if trimmed == "---" {
-            break;
-        }
-        if let Some(rest) = trimmed.strip_prefix("name:") {
-            let value = rest.trim().trim_matches('"').trim_matches('\'').trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-        }
-    }
-    None
+    pinvou3_lib::features::marketplace::skill_marketplace::read_skill_name_from_str(content)
 }
 
-/// Mirrors `skill_marketplace::sanitize_skill_name`: `[A-Za-z0-9_-]`, other
-/// characters collapse to `-`, trimmed, max 64 chars, empty → "skill".
+/// `[A-Za-z0-9_-]`, other characters collapse to `-`, trimmed, max 64 chars,
+/// empty → "skill" — the app's sanitizer directly (round-41 review).
 fn sanitize_skill_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .take(64)
-        .collect();
-    let trimmed = cleaned.trim_matches('-');
-    if trimmed.is_empty() {
-        "skill".to_owned()
-    } else {
-        trimmed.to_owned()
-    }
+    pinvou3_lib::features::marketplace::skill_marketplace::sanitize_skill_name(name)
 }
 
-/// Mirrors the GUI's FNV-1a 64-bit `stable_stem_hash`: deterministic,
-/// cross-platform stable id derivation for non-sanitizable file names.
+/// Deterministic, cross-platform stable id derivation for non-sanitizable
+/// file names — the GUI's FNV-1a digest, shared (round-41 review).
 fn stable_stem_hash(stem: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in stem.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    format!(
+        "{:016x}",
+        pinvou3_lib::platform::paths::fnv1a64(stem.as_bytes())
+    )
 }
 
 /// CRC-32 (IEEE 802.3, reflected), bitwise — enough for a handful of small

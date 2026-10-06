@@ -2038,3 +2038,79 @@ fn monitor_snapshot_produces_a_one_shot_sample() {
         serde_json::json!(["/self_perf", "/app/session_uptime_secs"])
     );
 }
+
+/// Round-41 review: `feedback submit --attach` used to accept a DIRECTORY —
+/// `metadata().len()` on one reports the inode size, and the entry lands in a
+/// receipt that stays on disk forever. Every sibling ingest lane enforces the
+/// regular-file rule; the attachment lane now does too.
+#[test]
+fn feedback_attach_refuses_directories() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("feedback-dir-attach");
+    let scoped = ScopedHomeDir::new("feedback-dir-attach");
+    let attachment_dir = scoped.dir.join("not-a-file");
+    std::fs::create_dir_all(&attachment_dir).unwrap();
+    let body = scoped.dir.join("body.md");
+    std::fs::write(&body, "body text\n").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "feedback",
+        "submit",
+        "--type",
+        "issue",
+        "--title",
+        "t",
+        "--body-file",
+        body.to_str().unwrap(),
+        "--attach",
+        attachment_dir.to_str().unwrap(),
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("feedback_submit_not_a_file"),
+        "the refusal must carry the stable code: {error}"
+    );
+    // Nothing was registered: no receipt exists for a refused submit.
+    let receipts = home.root.join("feedback").join("receipts");
+    assert!(
+        !receipts.exists(),
+        "a refused attachment must not leave a receipt: {}",
+        receipts.display()
+    );
+}
+
+/// Round-41 review: `files ingest --output` no-overwrite contract was
+/// implemented and documented but untested — the only export lane without
+/// the refusal pin, so deleting the refusal would have passed the suite.
+#[test]
+fn files_ingest_output_refuses_overwrite_and_cleans_up_on_failure() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("files-ingest-no-overwrite");
+    let scoped = ScopedHomeDir::new("files-ingest-no-overwrite");
+    let markdown_fixture = scoped.dir.join("notes.md");
+    std::fs::write(&markdown_fixture, "# Heading\n\nBody.\n").unwrap();
+    let output_file = home.root.join("extracted.md");
+    std::fs::write(&output_file, "PRECIOUS EXISTING CONTENT\n").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "files",
+        "ingest",
+        markdown_fixture.to_str().unwrap(),
+        "--output",
+        output_file.to_str().unwrap(),
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("refusing to overwrite"),
+        "the refusal must match the sibling export lanes' wording: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output_file).unwrap(),
+        "PRECIOUS EXISTING CONTENT\n",
+        "the existing destination must be untouched"
+    );
+}

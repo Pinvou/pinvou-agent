@@ -153,23 +153,36 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     })?;
     // The body is validated further down — oversized bodies are REJECTED,
     // not truncated; the cap only stops an unbounded file from being loaded
-    // in the first place.
+    // in the first place. The CANONICAL path is what was policy-checked
+    // (round-41 review): reading the original spelling would let a symlink
+    // swapped in between the two calls route unverified content past the
+    // refusal.
     let description =
-        crate::support::read_text_file_capped(&submit.body_file, 64 * 1024, "feedback submit")?;
+        crate::support::read_text_file_capped(&body_canonical, 64 * 1024, "feedback submit")?;
     let mut attachments = Vec::new();
     // Rendered back to the user below. The request itself is consumed by the
     // feature call, so the summary is built here while the data is still
     // owned locally.
     let mut attachment_rows = Vec::new();
     for path in &submit.attachments {
-        let size = std::fs::metadata(path)
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "feedback submit: cannot read attachment {}: {error}",
-                    path.display()
-                ))
-            })?
-            .len();
+        // Round-41 review: only regular files are registered. The GUI picker
+        // cannot produce a directory, `metadata().len()` on one reports the
+        // inode size, and the entry would land in a receipt that stays on
+        // disk forever — the same regular-file rule every sibling ingest
+        // lane enforces.
+        let attachment_meta = std::fs::metadata(path).map_err(|error| {
+            CliError::failed(format!(
+                "feedback submit: cannot read attachment {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !attachment_meta.is_file() {
+            return Err(CliError::failed(format!(
+                "feedback_submit_not_a_file: attachment {} is not a regular file",
+                path.display()
+            )));
+        }
+        let size = attachment_meta.len();
         // Nothing is read or uploaded here — only the path is recorded — but
         // it is recorded into a receipt that stays on disk forever, and the
         // GUI's attachment picker refuses these locations outright. A CLI that
