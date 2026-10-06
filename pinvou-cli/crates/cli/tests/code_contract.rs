@@ -328,15 +328,28 @@ fn init_git_repo(label: &str) -> Option<PathBuf> {
     // developer's global/system config (aliases, hooks, credential helpers)
     // must not decide whether the fixture repository builds.
     let devnull = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let run = |args: &[&str]| {
-        std::process::Command::new("git")
+    // Round-42 review: only a MISSING git binary (spawn io::Error) may skip
+    // the test — a PRESENT-but-failing git (a broken fixture, a shim that
+    // errors, a regressed config isolation) used to be swallowed into the
+    // same silent skip, green-boarding the destructive checkout --yes gate
+    // and every other git-dependent pin. A failing git now fails the test.
+    let run = |args: &[&str]| -> bool {
+        match std::process::Command::new("git")
             .current_dir(&root)
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", devnull)
             .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        {
+            Ok(output) if output.status.success() => true,
+            Ok(output) => panic!(
+                "git {args:?} failed in the fixture repo (a present-but-failing \
+                 git is a test failure, not an environment skip): {:?}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("git {args:?} could not be spawned: {error}"),
+        }
     };
     let skip = |reason: &str| -> Option<PathBuf> {
         eprintln!("skipping: git unavailable ({reason})");
@@ -2245,6 +2258,40 @@ fn providers_round_trip_against_temp_home() {
     assert_eq!(value["result"]["imported"], 1);
     let raw = std::fs::read_to_string(&store_path).unwrap();
     assert!(raw.contains("Imported"));
+
+    // Round-42 review: a parseable-but-wrong-shape document must be refused
+    // in ENGLISH by the CLI pre-check, not by the store's Chinese parse
+    // chain ("导入文件不是有效的 Provider JSON") — the round-37 boundary
+    // rule extends to the array shape and the error stays ascii-only.
+    for shape in ["{}", "[1]", "5", "\"text\""] {
+        std::fs::write(&import_file, shape).unwrap();
+        let error = run(&[
+            "pinvou",
+            "code",
+            "providers",
+            "import",
+            "--agent",
+            "codex",
+            import_file.to_str().unwrap(),
+        ])
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let message = error.to_string();
+        assert!(
+            message.contains("JSON array"),
+            "shape {shape} must be refused in English by the pre-check: {message}"
+        );
+        assert!(
+            message.is_ascii(),
+            "no Chinese store chain may surface through the import lane: {message}"
+        );
+    }
+    // Restore the valid fixture so the rest of the flow is untouched.
+    std::fs::write(
+        &import_file,
+        r#"[{"name":"Imported","baseUrl":"https://relay.example.com","wireApi":"anthropic"}]"#,
+    )
+    .unwrap();
 
     // switch without a stored key fails honestly and leaves the state alone;
     // the imported provider is the hermetic keyless one (the add above now

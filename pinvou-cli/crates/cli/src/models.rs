@@ -1527,6 +1527,7 @@ fn edit<S: CredentialStore>(
         }
         return Err(prefs_error(error));
     }
+    let had_stored_reference = reference_to_delete.is_some();
     if let Some(reference) = reference_to_delete
         && let Err(error) = store.delete(&reference)
     {
@@ -1539,7 +1540,15 @@ fn edit<S: CredentialStore>(
     let credential = if replacement.as_ref().is_some_and(|key| !key.is_empty()) {
         "replaced"
     } else if clear_api_key {
-        "cleared"
+        // Round-42 review: mirror `settings search set --clear`'s doctrine —
+        // a model with no stored credential reference has nothing to clear,
+        // and reporting "cleared" was a success-shaped no-op. `cleared` now
+        // means the stored reference was actually removed.
+        if had_stored_reference {
+            "cleared"
+        } else {
+            "unchanged"
+        }
     } else {
         "unchanged"
     };
@@ -4954,9 +4963,12 @@ mod tests {
         )
         .expect("edit succeeds");
         assert_eq!(outcome.exit_code, ExitCode::Success);
+        // Round-42 review: no stored reference → nothing was cleared, so the
+        // receipt says `unchanged` (the search lane's doctrine) instead of a
+        // success-shaped no-op `cleared`.
         assert!(
-            outcome.stdout.contains("credential: cleared"),
-            "the clear must still report itself: {}",
+            outcome.stdout.contains("credential: unchanged"),
+            "a keyless model's clear must report unchanged, not cleared: {}",
             outcome.stdout
         );
         assert!(

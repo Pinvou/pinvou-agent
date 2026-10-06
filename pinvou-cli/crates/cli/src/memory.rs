@@ -1186,10 +1186,16 @@ fn disclose_truncation(
             serde_json::json!(stored_chars),
         );
     }
+    // Round-42 review: not "only the first N characters" — when the
+    // submission also carries a 请记住-style prefix, the writer strips it
+    // BEFORE capping, so the stored text is not a prefix of the submission
+    // and the prefix claim was false in the combined case. State the counts
+    // without the substring claim; both single-cause lanes stay accurate.
     human.push_str(&format!(
         "\nNote: the submitted {submitted_chars} characters exceed the \
-         {cap_chars}-character cap {cap_clause}; only the first {stored_chars} \
-         characters were stored"
+         {cap_chars}-character cap {cap_clause}; {stored_chars} of the \
+         submitted characters were stored (after the prefix strip, when one \
+         applied, the stored text need not be a leading substring)"
     ));
 }
 

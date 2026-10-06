@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(collapse_control_characters("a\nb"), "a b");
     }
     use super::{
-        collapse_block_control_characters, collapse_control_characters, decode_arguments,
+        ENV_LOCK, collapse_block_control_characters, collapse_control_characters, decode_arguments,
         emit_report, json_failure_payload, resolve_secret, validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
@@ -975,11 +975,17 @@ mod tests {
     /// UTF-8", the same distinction `validate_sandbox_home` draws for
     /// `PINVOU3_HOME`: a set-but-non-UTF-8 variable is a different problem
     /// with a different fix, and the old `_ =>` collapsed both into "is not
-    /// set". Pinned without the env lock: unique variable name plus a
-    /// save-and-restore guard, like the sibling test below it.
+    /// set". Round-42 review: held under `ENV_LOCK` like every other
+    /// env-mutating test in this binary — a unique variable name defeats
+    /// logical interference, not the `setenv`×`getenv` data race the
+    /// `unsafe` calls exist for, and sibling tests read the process env
+    /// concurrently under the same lock.
     #[cfg(unix)]
     #[test]
     fn resolve_secret_env_lane_distinguishes_not_unicode_from_not_set() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         use std::os::unix::ffi::OsStrExt as _;
         const VAR: &str = "PINVOU_CLI_TEST_RESOLVE_SECRET_NOT_UTF8";
         struct RestoreVar(Option<std::ffi::OsString>);
@@ -1023,12 +1029,18 @@ mod tests {
     /// (`export KEY=$(printf '%s\n' …)` without a chomp, a file mounted by a
     /// CI secret store, most `.env` loaders); storing it verbatim put that
     /// "\n" into the credential, and every signed request 401'd while the
-    /// read paths still trimmed — the failure was self-masking.
+    /// read paths still trimmed — the failure was self-masking. Held under
+    /// `ENV_LOCK` (round-42 review): same data-race reasoning as the
+    /// sibling test above.
     #[test]
     fn resolve_secret_env_lane_trims_the_stored_value() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         const VAR: &str = "PINVOU_CLI_TEST_RESOLVE_SECRET_ENV";
-        // Unique name + save-and-restore guard: this is the only test in the
-        // binary reading the variable, so it needs no cross-test env lock.
+        // Unique name + save-and-restore guard keeps the variable itself
+        // isolated; the lock serializes the env writes against every other
+        // test in this binary.
         struct RestoreVar(Option<std::ffi::OsString>);
         impl Drop for RestoreVar {
             fn drop(&mut self) {

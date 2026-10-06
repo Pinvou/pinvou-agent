@@ -515,6 +515,27 @@ fn parse_secret_pair(value: &str) -> Result<(String, String), CliError> {
             "plugins tools install --secret requires non-empty KEY and ENV_VAR_NAME",
         ));
     }
+    // Round-42 review: the value must look like an env-var NAME. The docs
+    // promise "the argv carries only the variable NAME"; without a shape
+    // gate a pasted literal secret (`--secret api_key=sk-...`) sailed
+    // through parsing and failed later as a missing variable — after
+    // riding argv. The pattern is the conventional export name: letters,
+    // digits, underscore, not starting with a digit. Names outside it
+    // exist (`$HOME` is bash syntax, not an env-var name; bytes outside
+    // this set cannot be exported by any POSIX shell without printf
+    // tricks), so refusing is fail-fast, not a capability loss.
+    let name_is_sound = env_var.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && env_var
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !name_is_sound {
+        return Err(CliError::usage(
+            "plugins tools install --secret: ENV_VAR_NAME must be an environment variable \
+             NAME (letters, digits, underscore, not starting with a digit) — the secret \
+             itself never belongs on argv"
+                .to_owned(),
+        ));
+    }
     Ok((key.to_owned(), env_var.to_owned()))
 }
 
@@ -1348,6 +1369,20 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             path.display()
         )));
     }
+    // Round-42 review: the pipeline takes the path as `&str` (lossy-converted
+    // at the call site), so a non-UTF-8 file name passed every pre-check and
+    // then failed INSIDE the lib on the U+FFFD-mangled path with an unmapped
+    // Chinese open error. Refuse up front as a usage error instead.
+    let path_str = match path.to_str() {
+        Some(path_str) => path_str,
+        None => {
+            return Err(CliError::usage(
+                "plugins import: the path must be valid UTF-8 (the importer hands it to the \
+                 shared package pipeline as text)"
+                    .to_owned(),
+            ));
+        }
+    };
     // The raw file name becomes the package display name in bundles.json, so
     // it gets the same invisible-character hygiene as the GUI's display
     // values (mirror of `features/marketplace/store.rs
@@ -1514,7 +1549,14 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     } else {
         import_path = path.to_path_buf();
     }
-    let result = plugin_import::import_plugin_package(&import_path.to_string_lossy(), &display);
+    // The wrapper-zip lane's temp name is CLI-generated ASCII; the direct
+    // lane's path is the validated `path_str` from above.
+    let pipeline_path: &str = if import_path == path {
+        path_str
+    } else {
+        import_path.to_str().unwrap_or(path_str)
+    };
+    let result = plugin_import::import_plugin_package(pipeline_path, &display);
     // Dropping the armed guard removes the wrapper; every earlier failure
     // path already removed it through Drop.
     drop(temp_zip);
