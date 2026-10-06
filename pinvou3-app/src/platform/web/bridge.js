@@ -1263,8 +1263,11 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
     if (!token) token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     return "download_web_" + token;
   }
+  // The setActive parameter is retained positionally (three call sites) but
+  // unused since focus handling moved out of the load path — underscore per
+  // the biome unused-parameter convention.
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
-  async function loadSessionForClient(sid, setActive, diagnostics) {
+  async function loadSessionForClient(sid, _setActive, diagnostics) {
     diagnostics = diagnostics || {};
     diagnostics.transport_kind = "web_chunked_rpc";
     diagnostics.started_at_ms = Date.now();
