@@ -36,6 +36,17 @@ See the `AgenticTaskRequest` struct docs in `agentic_task.rs` for the exact erro
 
 Prerequisites: the `settings.json` of the sandbox `PINVOU3_HOME` needs an active model (any OpenAI-compatible endpoint works, `preset = "openai_compatible"`); `PINVOU3_ALLOW_SHELL=1` pins shell authorization without relying on prefs. There is no per-turn tool-call cap; runaway protection stays with the engine's per-turn bounds — a default 200-step budget and a 1-hour per-turn wall clock (foundation defaults), plus this command's `--timeout-secs` watchdog that cancels the turn and still emits a report. If your scripts still export `PINVOU3_MAX_TOOL_CALLS`, delete the export: the knob is no longer read, and a one-line stderr warning reminds you once per process when it is present.
 
+## Tool surface
+
+The run's tool surface is the GUI's own gating: when the shared home has
+indexed knowledge content (or reachable remote knowledge connections), the
+turn can call `kb_search`/`kb_open_source` under the same `kb_tools_usable`
+gate the desktop app uses. This is a round-41 disclosure, not a regression:
+before this PR the headless gate was unsatisfiable and kb tools were denied
+on every headless run; now every run also opens the knowledge database on
+the way up (which can surface an interrupted import's recovery state).
+Computer use is never constructed headless (its consent flow needs a window).
+
 ## Shared-home cross-process consistency (known limitation)
 
 Headless runs and the desktop app share one `PINVOU3_HOME` session store, and nothing in this layer takes a cross-process lock (flock) yet. The main `<session_id>.json` records are written last-writer-wins per file: an interleaved run can lose the losing writer's transcript tail. The session sidecar files (`_pinned_sessions.json`, `_hidden_sessions.json`, `_session_models.json`, `_session_mode_states.json`, multi-agent flags) serialize with **per-process io mutexes only**: each mutation is a whole-file load→mutate→atomic-rename. The sidecars fare better than the main records in that writes merge id-level mutations against the current file content — untouched ids survive — but two simultaneous writers can still lose an update. A pin can therefore still be lost in a two-process race even though both writers reported success:
