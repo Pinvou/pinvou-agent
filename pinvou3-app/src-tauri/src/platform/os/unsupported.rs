@@ -271,7 +271,7 @@ pub fn disable_super_permission() -> Result<(), String> {
 }
 
 pub fn super_permission_turn_reminder() -> &'static str {
-    "当前系统不支持 Linux sudo 超级权限开关。需要管理员权限时,请使用系统提供的管理员方式执行,不要尝试 sudo/apt/systemctl/pkexec。"
+    "当前系统不支持超级权限开关。需要管理员权限的操作,请引导用户使用系统提供的管理员方式执行,不要尝试提权变通。"
 }
 
 /// Unsupported platforms have no bundled Node.js runtime; consumers fall back to PATH.
