@@ -1,8 +1,15 @@
 # The main conversation remains the overall coordinator. The inherited
-# EngineConfig(max_spawn_depth = 2) permits one nested child layer, while a
-# positive per-call maxDepth/max_depth override could widen that ceiling again
-# at each level. Reject positive overrides and keep the session cap authoritative.
-# This hook is attached only to multi-agent sessions.
+# EngineConfig(max_spawn_depth = 2) caps children at two levels. Since
+# foundation #5253 a per-call max_depth can only NARROW the inherited cap
+# (the engine clamps to min(inherited, parent_depth + requested)), so a
+# positive override can no longer widen the ceiling; this hook still keeps
+# the session cap authoritative in multi-agent sessions (the bundle-0.20
+# decision: positive overrides are intercepted) and must state that truth.
+# Attached only to multi-agent sessions.
+#
+# Deny contract: exit 2 + single-line stdout JSON {"decision":"deny",
+# "reason":...}. The engine reads the reason only from stdout JSON; stderr
+# never reaches the model.
 
 $ErrorActionPreference = "Stop"
 
@@ -15,8 +22,8 @@ $hasOpaqueWorkflowSource = $toolName -eq "workflow" -and [regex]::IsMatch(
 )
 
 if ($hasOpaqueWorkflowSource) {
-    [Console]::Error.WriteLine(
-        "Multi-agent mode requires inline workflow script/plan input so child depth can be enforced; source_path is unavailable."
+    [Console]::Out.WriteLine(
+        '{"decision":"deny","reason":"Multi-agent mode requires inline workflow script/plan input so child depth can be enforced; a source_path (or path) file reference is unavailable. Inline the script/plan instead."}'
     )
     exit 2
 }
@@ -30,9 +37,11 @@ $hasPositiveDepth = switch ($toolName) {
         break
     }
     "workflow" {
+        # Inline JS tasks may pass the depth override in camelCase (maxDepth)
+        # or snake_case (max_depth — the TaskOptions serde alias).
         [regex]::IsMatch(
             $toolArgs,
-            '((?<!\\)"max_depth"\s*:|maxDepth\s*:)\s*[1-9][0-9]*'
+            '(?<!\\)("max_depth"\s*:|(?<![A-Za-z_])max_depth\s*:|maxDepth\s*:)\s*[1-9][0-9]*'
         )
         break
     }
@@ -40,8 +49,8 @@ $hasPositiveDepth = switch ($toolName) {
 }
 
 if ($hasPositiveDepth) {
-    [Console]::Error.WriteLine(
-        "Multi-agent mode allows at most two child levels. Positive depth overrides can widen the inherited cap; omit max_depth to inherit the session limit, or set it to 0 for a leaf."
+    [Console]::Out.WriteLine(
+        '{"decision":"deny","reason":"Multi-agent mode caps children at two levels. A per-call max_depth can only narrow that cap (the engine clamps it) and is rejected here to keep the session cap authoritative; omit max_depth to inherit the session limit, or set it to 0 for a leaf."}'
     )
     exit 2
 }

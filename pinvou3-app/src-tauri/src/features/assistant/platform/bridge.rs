@@ -3682,9 +3682,9 @@ mod tests {
         // work semantics.
         let prompt = bridge.build_session_system_prompt("sess-plain-bound");
         assert!(prompt.contains("用户选择的工作目录"), "应渲染绑定环境段");
-        assert!(!prompt.contains("自动落到本会话专属工作目录"));
+        assert!(!prompt.contains("自动落到工作区"));
         let plain_prompt = bridge.build_session_system_prompt("sess-plain");
-        assert!(plain_prompt.contains("自动落到本会话专属工作目录"));
+        assert!(plain_prompt.contains("自动落到工作区"));
 
         let _ = std::fs::remove_dir_all(&base);
     }

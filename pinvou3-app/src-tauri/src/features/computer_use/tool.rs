@@ -2114,7 +2114,8 @@ impl ToolSpec for ComputerUseTool {
          (origin top-left); take a screenshot first and reuse its coordinate space. \
          Every action that touches the mouse or keyboard (mouse_move, scroll, clicks, keys, \
          typing) requires a per-session grant from the user; the grant stays valid until \
-         revoked. Before an activation action runs (clicks, drags, mouse down/up, typing, \
+         revoked or until the session's engine is recycled (e.g. reaped after idle), in \
+         which case the user must grant again. Before an activation action runs (clicks, drags, mouse down/up, typing, \
          keys), its target is screened against a consequential-control denylist \
          (financial/send/delete/submit/consent categories) and password fields; a hit \
          pauses the action until the user confirms it via confirm_id. Screening is \

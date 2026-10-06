@@ -94,8 +94,9 @@ for entry in payload.split(b"\0"):
 ' || login_env_rc=$?
 
 if (( login_env_rc == 124 )); then
-    # 若 timeout 恰好杀在 `env -0` 输出途中，marker 之后的**部分**变量仍会
-    # 到达过滤器，所以措辞是"may be incomplete"而非绝对"NOT injected"。
-    printf 'pinvou3-shell-env: login shell env collection hit the 15s timeout; PATH/SDK env was NOT injected or may be incomplete (slow profile init?)\n' >&2
+    # rc=124 沿 pipefail 上抛后，引擎侧 collect_shell_env 对非零退出的 hook
+    # **整体丢弃输出**（部分变量也到不了），所以是确定性 NOT injected，
+    # 不存在"部分注入"形态；措辞避免暗示变量可能半途生效。
+    printf 'pinvou3-shell-env: login shell env collection hit the 15s timeout; PATH/SDK env was NOT injected (partial output discarded; slow profile init?)\n' >&2
 fi
 exit "$login_env_rc"

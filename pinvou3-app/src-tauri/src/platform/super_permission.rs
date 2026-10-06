@@ -51,7 +51,7 @@ pub fn is_enabled() -> bool {
 /// 真正的开/关指令由 [`turn_reminder`] 每 turn 注入(`build_send_message_op`),
 /// 始终实时。这里只留一句指引,把状态判断交给 per-turn reminder。
 pub fn instruction_block() -> &'static str {
-    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(实时,以那里为准)。"
+    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(执行模式每轮附带,实时,以那里为准;Plan 模式只读、不执行命令,无需关心此开关)。"
 }
 
 /// 每 turn 注入 `<system-reminder>` 的超级权限状态指令。

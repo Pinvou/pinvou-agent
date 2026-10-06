@@ -27,9 +27,12 @@ $argsText = if ($env:DEEPSEEK_TOOL_ARGS) { $env:DEEPSEEK_TOOL_ARGS } else { "" }
 # so marketplace packages such as `wecom-bot` are not caught merely because an
 # ID or display name contains a skill-connector alias.
 if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_templates") {
-    $skillConnectorNamePattern = '"(?:wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
+    # (?i) keeps the match case-insensitive so capitalized echoes ("Feishu",
+    # "Wecom") hit too; .NET regex is case-sensitive by default, unlike the
+    # lowercased-args approach on the .sh side.
+    $skillConnectorNamePattern = '"(?i:wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
     if ($argsText -match $skillConnectorNamePattern) {
-        $denyJson = '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
+        $denyJson = '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources / list_mcp_resource_templates 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         # 经标准输出流写 UTF-8 无 BOM：上游按 UTF-8 解码 stdout 且 serde_json 拒绝
         # BOM 前缀；PS 5.1 控制台默认 ANSI(GBK)，WriteLine 会把中文转成乱码。
         # 不设 [Console]::OutputEncoding：无控制台句柄的宿主里 setter 会抛，

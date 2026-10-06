@@ -16,5 +16,5 @@ pub fn disable_super_permission() -> Result<(), String> {
 }
 
 pub fn super_permission_turn_reminder() -> &'static str {
-    "macOS 不支持超级权限开关。需要 root 的操作请引导用户在终端手动执行。"
+    "macOS 不支持超级权限开关。**禁止用 sudo**(应用内会被 execpolicy 直接拒绝)。需要 root 的操作请引导用户在系统终端手动执行。"
 }

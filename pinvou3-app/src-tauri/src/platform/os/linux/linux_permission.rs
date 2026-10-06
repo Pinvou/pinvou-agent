@@ -25,9 +25,9 @@ pub fn disable_super_permission() -> Result<(), String> {
 
 pub fn super_permission_turn_reminder() -> &'static str {
     if super_permission_is_enabled() {
-        "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包/服务用 `sudo apt install`/`sudo systemctl`。仍不要碰密钥/凭证(`~/.ssh`、含 `credentials`/`id_rsa`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。"
+        "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`visudo`、`crontab -e` 等持久化操作仍会被安全策略拒绝,不要尝试)。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。"
     } else {
-        "超级权限【已关闭】。**禁止用 sudo**(会被立即拒绝（execpolicy Deny）,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 系统权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。"
+        "超级权限【已关闭】。**禁止用 sudo**(会被立即拒绝（execpolicy Deny）,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。"
     }
 }
 

@@ -147,7 +147,28 @@ pub(crate) use crate::platform::connector_skills::{
 ///       the semantic bump is required for connected users to refresh
 ///       at startup (otherwise the refresh waits for the post-first-frame
 ///       refresh_connector_auth_gates backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.32-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.33: model-facing text audit fixes across the bundle (no upstream sync).
+/// Skill trees: dws danger-table row corrected to `calendar attendee delete`,
+/// stale P0/P1 attendance marker dropped, first-use auth pointer added
+/// (NOTICE-dingtalk.md); wecomcli-email send/reply body files unified to
+/// tmp/mail/ so intermediate mail bodies stop landing in the artifact-panel
+/// root (NOTICE-wecom.md); 12 lark sites rewritten from blocking
+/// `auth login --scope` to the lark-shared `--no-wait --json` split-flow
+/// form (lark-skills/NOTICE.md; connector contract rule 5 tightened to
+/// match). Hooks: multiagent_depth_guard now emits its deny reason as stdout
+/// JSON (the engine reads reasons only from stdout; stderr never reaches the
+/// model) with a truthful narrow-only rationale (foundation #5253 min-clamp)
+/// and covers the workflow snake_case alias; deny_sensitive_paths names both
+/// blocked tools, matches connector aliases case-insensitively, and its
+/// header now documents the real fail-closed contract (the .sh is
+/// content-hashed and self-invalidates; the depth guard is not hashed, so it
+/// rides this bump). Built-in visual-design skill: real images allowed via
+/// local download only (no external URLs), matching the poster scene;
+/// present_artifact protocol stated once. Next free slot after 0.32.
+/// Skill trees are excluded from the content hash, so the semantic bump is
+/// required for connected users to refresh at startup (otherwise the refresh
+/// waits for the post-first-frame refresh_connector_auth_gates backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.33-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
@@ -169,19 +190,32 @@ pub const INSTRUCTIONS_SHARED_MD: &str =
 /// ("remember this") would get the guided confirmation 「已记下」 ("noted") while the
 /// background writes no memory — exactly violating rule 3 of the section, 「不编造已记住
 /// 的内容」 ("never fabricate remembered content"). So the skeleton keeps only the
-/// placeholder line, and the session render layer fills the body or drops the whole line
-/// based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
+/// placeholder line, and the session render layer fills the body or an explicit
+/// off-notice based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
 /// `{{PINVOU3_SUDO_INSTRUCTION}}`'s lifecycle (setting changes take effect on new sessions).
 const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 - 用户明确要你记住(「记住」「记一下」「帮我记下」/\"remember this\" 之类):**简短确认已记下,同轮照常把任务做完**;要点由应用后台在回合结束后写入长期记忆(个别情况会先请用户确认),无需你复述或调用工具。\n\
 - 对「以后都…」这类没有明说「记」的偏好表述:自然回应即可,不要断言已记住,是否入库由后台判断。\n\
 - **不编造、不夸大已记住的内容**;不确定是否已记住就如实说,别假装记得。与当下指令冲突时以当下指令为准(权威顺序见「底线」)。\n\n";
 
+/// Off-state fill for the same placeholder: memory is off by default (and
+/// force-disabled for non-Simplified-Chinese users), so the default session has
+/// no 「用户记忆」 section at all. Without this line the model's default behavior
+/// on 「记住」 is still a confirmation ("sure, noted") while nothing persists —
+/// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. English
+/// is used deliberately: it is the engine's prompt-law language and this line
+/// ships to every locale, including locales where the memory feature is hidden.
+const MEMORY_OFF_NOTICE_MD: &str = "- Long-term memory is OFF in this session: if the user asks you to remember something, tell them it can be enabled in Settings (memory is only available for Simplified Chinese) instead of claiming you saved it.\n\n";
+
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
-/// [`MEMORY_SECTION_MD`] when memory is on, an empty string when off (the placeholder
-/// line's own newline makes the whole line disappear).
+/// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
+/// when off so the model never claims a memory write that will not happen.
 pub(crate) fn memory_section(enabled: bool) -> &'static str {
-    if enabled { MEMORY_SECTION_MD } else { "" }
+    if enabled {
+        MEMORY_SECTION_MD
+    } else {
+        MEMORY_OFF_NOTICE_MD
+    }
 }
 
 /// Work-mode layer: the `## 工作环境` section for artifact-panel and tmp/ semantics, the
@@ -856,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_section_renders_verbatim_when_enabled_and_vanishes_when_disabled() {
+    fn memory_section_renders_verbatim_when_enabled_and_off_notice_when_disabled() {
         // Enabled: the whole section body lands in the skeleton verbatim with no
         // placeholder left; the section directly follows the baseline section.
         let enabled =
@@ -867,14 +901,18 @@ mod tests {
         // The section's trailing blank line catches the mode-layer environment placeholder,
         // preserving the original inter-section blank line.
         assert!(enabled.contains("权威顺序见「底线」)。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
-        // Disabled: the whole line disappears, no blank line or placeholder left; exactly
-        // one blank line remains between the baseline section and the mode-layer
-        // environment section.
+        // Disabled: the section body is replaced by the truthful off-notice (no
+        // 「用户记忆」 header, no placeholder left, exactly one blank line between the
+        // baseline section and the mode-layer environment section).
         let disabled =
             INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(false));
-        assert!(!disabled.contains("用户记忆"));
+        assert!(disabled.contains(MEMORY_OFF_NOTICE_MD));
+        assert!(!disabled.contains("## 用户记忆"));
+        assert!(!disabled.contains("已记下"));
         assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
-        assert!(disabled.contains("语气平实,少感叹号与最高级。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
+        assert!(disabled.contains(
+            "语气平实,少感叹号与最高级。\n\n- Long-term memory is OFF in this session: if the user asks you to remember something, tell them it can be enabled in Settings (memory is only available for Simplified Chinese) instead of claiming you saved it.\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
+        ));
     }
 
     #[test]
@@ -951,7 +989,7 @@ mod tests {
         // The bound variant's existence does not affect unbound rendering: the
         // default work instructions keep their original semantics.
         let rendered = instructions_md();
-        assert!(rendered.contains("自动落到本会话专属工作目录"));
+        assert!(rendered.contains("自动落到工作区"));
         assert!(!rendered.contains("用户选择的工作目录"));
     }
 
@@ -1365,9 +1403,14 @@ mod tests {
 
         let positive = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
         assert_eq!(positive.status.code(), Some(2));
+        // The engine reads the deny reason ONLY from stdout JSON (turn_loop
+        // fold_tool_call_before_results); stderr never reaches the model, so
+        // the guidance must ride the stdout contract.
+        let positive_stdout = String::from_utf8_lossy(&positive.stdout);
         assert!(
-            String::from_utf8_lossy(&positive.stderr).contains("at most two child levels"),
-            "拒绝原因必须能指导模型重试: {positive:?}"
+            positive_stdout.contains("\"decision\":\"deny\"")
+                && positive_stdout.contains("caps children at two levels"),
+            "拒绝原因必须以 stdout JSON 抵达模型并能指导重试: {positive:?}"
         );
 
         let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
@@ -1384,7 +1427,7 @@ mod tests {
         assert_eq!(
             positive_one.status.code(),
             Some(2),
-            "正数覆盖会让嵌套代理逐层扩大上限，必须拒绝"
+            "多智能体会话固定两层,正数覆盖一律拦截(bundle 0.20 决策;引擎 #5253 起覆盖本就只能收窄,拦截保持会话上限权威)"
         );
 
         let alias = run_depth_guard(
@@ -1410,6 +1453,20 @@ mod tests {
             r#"{"script":"return task({ description: 'x', maxDepth: 1 });"}"#,
         );
         assert_eq!(workflow.status.code(), Some(2));
+
+        // Inline JS also accepts the snake_case serde alias; the guard must
+        // catch it too (it previously matched only the quoted "max_depth" or
+        // camelCase maxDepth forms).
+        let workflow_snake = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"script":"return task({ description: 'x', max_depth: 2 });"}"#,
+        );
+        assert_eq!(
+            workflow_snake.status.code(),
+            Some(2),
+            "inline JS 的 snake_case max_depth 覆盖同样必须拦截: {workflow_snake:?}"
+        );
 
         let opaque_workflow = run_depth_guard(
             &bundle,
