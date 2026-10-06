@@ -1467,7 +1467,11 @@ impl ProviderManager {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 },
             ) {
-                Ok(true) => result.imported += 1,
+                // Round-42 review: `imported` is counted only AFTER the
+                // credential write below — the rollback arm used to leave
+                // the pre-incremented count standing, so a credential
+                // failure reported the entry as both imported and skipped.
+                Ok(true) => {}
                 Ok(false) => {
                     // Lost the check→act race (round-36 review): a peer
                     // import landed the same id between this loop's fresh
@@ -1510,6 +1514,7 @@ impl ProviderManager {
                 result.skipped += 1;
                 continue;
             }
+            result.imported += 1;
         }
         Ok(result)
     }

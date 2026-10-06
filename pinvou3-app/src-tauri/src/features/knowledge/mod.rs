@@ -530,6 +530,7 @@ impl KnowledgeService {
         if active.is_some() {
             return Err("已有知识集导入任务正在运行".into());
         }
+        refuse_fresh_foreign_running_import(&self.imports, Some(&job_id))?;
         self.imports.resume(&job_id).map_err(|e| e.to_string())?;
         *active = Some(job_id.clone());
         drop(active);
@@ -542,6 +543,7 @@ impl KnowledgeService {
         if active.is_some() {
             return Err("已有知识集导入任务正在运行".into());
         }
+        refuse_fresh_foreign_running_import(&self.imports, Some(&job_id))?;
         self.imports
             .retry_item(&job_id, item_id)
             .map_err(|e| e.to_string())?;
@@ -885,6 +887,47 @@ fn expand_import_roots(
         }
     }
     import_jobs::unique_existing_files(files)
+}
+
+/// Round-42 review: `resume_index`/`retry_index_item` launch an importer
+/// thread exactly like [`KnowledgeService::start_index`], so they carry the
+/// same cross-process freshness guard — a FRESH running job row means
+/// another process's importer is live, and a second importer here is the
+/// two-embedder/interleaved-upsert hazard the start_index guard names
+/// (the CLI's resume/retry lanes refuse a running job; the GUI's own
+/// `active_import` check only covers this process). A frozen row (crashed
+/// owner) degrades to allow: the store's state transitions plus the CLI's
+/// stall interruption stay the recovery paths. `requested_job` is exempt —
+/// resuming a job that is genuinely running is already refused by the
+/// store's state transitions, and returning that refusal instead would
+/// name the wrong remedy.
+fn refuse_fresh_foreign_running_import(
+    imports: &import_jobs::ImportJobStore,
+    requested_job: Option<&str>,
+) -> Result<(), String> {
+    if let Ok(Some(previous)) = imports.latest_state() {
+        let foreign = previous
+            .job_id
+            .as_deref()
+            .map(|id| Some(id) != requested_job)
+            .unwrap_or(true);
+        if previous.running && foreign {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(i64::MAX);
+            let age_secs = previous
+                .updated_at
+                .map(|updated| now_secs.saturating_sub(updated))
+                // An unmeasurable row cannot prove liveness: fail open to
+                // the pre-guard behavior instead of wedging the button.
+                .unwrap_or(i64::MAX);
+            if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
+                return Err("已有知识集导入任务正在运行".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Freshness bound for the job-row heartbeat in [`KnowledgeService::start_index`]:
@@ -2009,5 +2052,49 @@ mod tests {
             "after+before composes into a half-open window: {window:?}"
         );
         assert_eq!(window[0].name, "new.txt");
+    }
+
+    /// Round-42 review: resume/retry launch an importer thread exactly like
+    /// start_index, so a FRESH foreign running row must refuse (two
+    /// embedders, interleaved upsert/chunk DELETE-INSERT), a FROZEN row
+    /// (crashed owner) must degrade to allow, and the requested job's own
+    /// running row is exempt (the store's state transitions refuse it with
+    /// the accurate remedy).
+    #[test]
+    fn resume_and_retry_refuse_a_fresh_foreign_running_import() {
+        let db = Store::open_in_memory().unwrap();
+        let conn = db.conn_arc();
+        let jobs = import_jobs::ImportJobStore::new(conn.clone());
+        let l1store = l1::L1Store::new(conn);
+        let collection_id = l1store.create_collection("测试", None, None).unwrap();
+
+        // A live foreign importer: a preparing row promoted to running (the
+        // same promotion launch_import performs) ticks a fresh heartbeat.
+        let foreign = jobs
+            .create(collection_id, &[std::path::PathBuf::from("/tmp")])
+            .unwrap();
+        jobs.prepare_items(&foreign, &[std::path::PathBuf::from("/tmp/a.txt")])
+            .unwrap();
+        assert!(jobs.state(&foreign).unwrap().running);
+
+        let err = refuse_fresh_foreign_running_import(&jobs, Some("other-job"))
+            .expect_err("a fresh foreign running import must refuse a resume");
+        assert!(
+            err.contains("正在运行"),
+            "the refusal names the running import: {err}"
+        );
+        assert!(refuse_fresh_foreign_running_import(&jobs, None).is_err());
+
+        // The requested job itself is exempt: the store's state transitions
+        // (resume from `interrupted` only) give the accurate refusal.
+        assert!(refuse_fresh_foreign_running_import(&jobs, Some(&foreign)).is_ok());
+
+        // A crashed owner's frozen row degrades to allow (recovery paths
+        // stay reachable).
+        jobs.test_freeze_updated_at(&foreign, 1000);
+        assert!(
+            refuse_fresh_foreign_running_import(&jobs, Some("other-job")).is_ok(),
+            "a frozen running row must not pin resume/retry forever"
+        );
     }
 }
