@@ -374,8 +374,13 @@ try {
     try {
       # A native command that cannot start (AV lock, blocked executable)
       # never updates $LASTEXITCODE, so a stale 0 from an earlier call would
-      # false-pass the probe classification below; seed a failing code.
-      $LASTEXITCODE = 1
+      # false-pass the probe classification below. The seed must write the
+      # GLOBAL: a bare assignment creates a function-local $LASTEXITCODE that
+      # shadows the one the engine writes for the native command, so every
+      # probe would read the seeded failure forever (proven on a real
+      # windows-latest run: every post-install probe reported every command
+      # missing).
+      $global:LASTEXITCODE = 1
       & $rustupPath @Arguments 2>&1 | ForEach-Object {
         $message = if ($_ -is [System.Management.Automation.ErrorRecord]) {
           $_.Exception.Message

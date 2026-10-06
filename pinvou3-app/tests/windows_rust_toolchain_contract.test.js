@@ -329,11 +329,18 @@ test("stream drains and probe exit codes cannot abort or false-pass the repair",
   );
   // A native command that cannot start never updates $LASTEXITCODE, so the
   // unbounded probe path must seed a failing code: a stale 0 from an earlier
-  // call would otherwise false-pass the completeness gate.
+  // call would otherwise false-pass the completeness gate. The seed must
+  // write the global: a bare function-local assignment shadows the engine's
+  // write and made every probe fail on a real windows-latest run.
   assert.match(
     rustToolchainGuard,
-    /\$LASTEXITCODE = 1\s*\r?\n\s*& \$rustupPath @Arguments/u,
-    "the probe path must seed $LASTEXITCODE before invoking rustup",
+    /\$global:LASTEXITCODE = 1\s*\r?\n\s*& \$rustupPath @Arguments/u,
+    "the probe path must seed the global $LASTEXITCODE before invoking rustup",
+  );
+  assert.doesNotMatch(
+    rustToolchainGuard,
+    /(^|\s)\$LASTEXITCODE = 1/u,
+    "a function-local $LASTEXITCODE seed shadows the engine-written global",
   );
 });
 
