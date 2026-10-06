@@ -48,7 +48,10 @@ pub mod automation_foundation {
 /// facade: only the entries the CLI actually consumes are re-exported, and
 /// the GUI keeps calling `crate::core::model_endpoint` directly.
 pub mod model_probe {
-    pub use crate::core::model_endpoint::{is_opencode_gateway_base_url, opencode_session_id_for};
+    pub use crate::core::model_endpoint::{
+        is_anthropic_api_url, is_opencode_gateway_base_url, models_probe_url,
+        opencode_session_id_for, strip_v1_suffix,
+    };
 }
 
 use crate::app::commands;

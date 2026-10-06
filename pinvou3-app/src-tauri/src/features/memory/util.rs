@@ -26,7 +26,11 @@ pub(super) fn clean_scalar(value: &str) -> String {
     clean_text(value, 200)
 }
 
-pub(super) fn clean_text(value: &str, max_chars: usize) -> String {
+/// `pub` + re-exported from `features::memory` (round-41 review): the CLI's
+/// `memory add` predicts the enqueue normalization from the ORIGINAL input,
+/// so it needs the very function the queue runs — a local copy drifted the
+/// moment either side changed.
+pub fn clean_text(value: &str, max_chars: usize) -> String {
     value
         .split_whitespace()
         .collect::<Vec<_>>()
