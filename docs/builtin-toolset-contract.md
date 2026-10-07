@@ -199,15 +199,20 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   unauthenticated-sender boundary, transient delivery
   failures retry with backoff; poison files are quarantined under
   `messaging/spool/failed/`).
-- **Disclosed limitations (session-reader send, 2026-09)**: sender identity is
-  model-supplied and unauthenticated — the working gates are the app's
-  mutating-tool approval posture at call time and the watcher-side isolated
-  sender/target validation, plus the audit log; the registered typed Ask rule
-  is the enforcement point awaiting the approval-mode split, not the
-  `from_session` field; delivery is at-least-once (a crash between delivery and the done-marker write replays on
+- **Disclosed limitations (session-reader send)**: sender identity is
+  model-supplied and unauthenticated — the working gates are the layered
+  validation (the watcher-side isolated sender/target checks and the
+  per-delivery ACP/code gate) plus the audit log; there is no per-call
+  confirmation under the current full-auto approval (the registered typed
+  Ask rule is the latent pin awaiting the approval-mode split, not the
+  `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
   next boot); a steer accepted against a mid-turn target can still be dropped
   by the foundation when that turn is cancelled (the `chat:steer_dropped`
-  window is not yet correlated); receive-side historical sender cards have no
+  window is not yet correlated); a mid-delivery keyed retry re-queues the
+  newest body (bytes re-verified before the terminal marker); the dispatch
+  arm has a slow-spawn double-deliver window (a >30s engine spawn that
+  completes after the timeout fires plus a retry duplicates the message);
+  receive-side historical sender cards have no
   "feature off" degradation yet and the `session-messaging` switch is
   settings.json-only (no UI) — both follow the session-mention precedent and
   land with the feature's own settings page.
@@ -247,7 +252,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; gated by the app's mutating-tool approval posture at call time + audit log; a typed execpolicy Ask rule is registered for the approval-mode split but does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log (no per-call confirmation exists under the current full-auto approval; a typed Ask rule is registered as the latent approval-mode-split pin); a typed execpolicy Ask rule is registered for the approval-mode split but does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---

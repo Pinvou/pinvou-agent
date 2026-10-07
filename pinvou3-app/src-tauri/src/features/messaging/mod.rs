@@ -563,8 +563,28 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         }
         return Processed::Done;
     }
+    // The spool bytes captured at read time (round-7 Q4): a keyed retry
+    // landing mid-delivery os.replace's the file with a NEW body while the
+    // old one is still in flight — delivering it and then removing the
+    // path would destroy the newest body permanently. Re-verify before
+    // committing the terminal marker: if the file changed (or vanished and
+    // reappeared) under us, leave it for the next poll instead.
+    let original_bytes = std::fs::read(path).ok();
     match delivery.deliver(&message).await {
         Ok(outcome) => {
+            let unchanged = std::fs::read(path)
+                .ok()
+                .map(|current| original_bytes.as_deref() == Some(current.as_slice()))
+                .unwrap_or(false);
+            if !unchanged {
+                // The record was replaced mid-delivery: re-queue the NEW
+                // bytes (the delivery that just landed was the old body —
+                // audited below so the trail shows both).
+                audit_delivery(store, &message, outcome);
+                return Processed::Retry(anyhow::anyhow!(
+                    "spool record replaced mid-delivery; re-queuing the newest body"
+                ));
+            }
             audit_delivery(store, &message, outcome);
             if message.idempotency_key.is_some() {
                 let _ = std::fs::create_dir_all(done_dir());
@@ -581,10 +601,6 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, (u32, Instant)>,
-    /// Names whose marker-skip audit has been written this process (round-6
-    /// recommended): a persistently failing remove must not append another
-    /// skip line every 1s poll (~86k/day).
-    skip_audited: std::collections::HashSet<String>,
 }
 
 impl RetryState {
@@ -718,6 +734,11 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 );
             }
             quarantine(&path);
+            // Round-7 Q1: the quarantined tail's retry entries clear too —
+            // an orphaned entry leaks forever otherwise.
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                retries.attempts.remove(name);
+            }
         }
     }
     for path in files {
@@ -816,10 +837,13 @@ pub fn spawn_delivery_watcher(
     tauri::async_runtime::spawn(async move {
         prune_stale_state();
         let mut retries = RetryState::default();
+        // Round-7 Q1: created ONCE per process, outside the poll loop —
+        // the round-6 version re-created it every poll, making the dedup
+        // inert.
+        let mut skip_audited: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut last_prune = Instant::now();
         loop {
             let delivery = PoolDelivery(&pool);
-            let mut skip_audited = std::collections::HashSet::new();
             let poll =
                 process_pending_spool(&delivery, &acp, &store, &mut retries, &mut skip_audited);
             if let Err(panic) = std::panic::AssertUnwindSafe(poll).catch_unwind().await {

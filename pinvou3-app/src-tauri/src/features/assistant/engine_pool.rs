@@ -3541,6 +3541,14 @@ impl EnginePool {
         content: String,
     ) -> Result<()> {
         let reservation = self.reserve_turn(session_id)?;
+        // Round-7 Q2: expert matching sees the delivered BODY only. The
+        // round-6 version passed the full block (header + contract lines +
+        // sender JSON + body) — the fixed envelope text scored a containment
+        // boost for any expert card named e.g. "Session"/"Message" on every
+        // delivery, and the model-supplied sender title fed term scoring.
+        // Strip the block the same way the receiver does.
+        let match_text =
+            crate::features::sessions::delivered_body_for_matching(&content).to_string();
         // First-turn persona guard: the chat command prepends the full
         // persona card body once via take_pending_turn_injections (the
         // per-turn light anchor in send_reserved_user_message is not enough
@@ -3561,15 +3569,9 @@ impl EnginePool {
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
-        // Round-6 R4: expert matching sees the DELIVERED BODY only — never
-        // the persona-prepended engine content. The multiagent invariant
-        // ("match on the user's original text, not the assembled injection")
-        // is pinned for the chat and interaction paths; the delivered
-        // sender-block envelope is injected framing exactly like the persona
-        // card and must not participate in role matching.
         let expert_candidates = expert_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.available_role_lines(&content))
+            .map(|snapshot| snapshot.available_role_lines(&match_text))
             .unwrap_or_default();
         let mode = self.store.mode_state(session_id).mode.to_app_mode();
         match self
