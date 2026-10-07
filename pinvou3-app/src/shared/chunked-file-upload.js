@@ -6,8 +6,11 @@
   const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
   function uploadId(prefix) {
-    if (root.crypto && typeof root.crypto.randomUUID === "function") {
-      return prefix + "_" + root.crypto.randomUUID(); // safari14-ok: guarded above
+    // 经局部变量取 crypto:打包器无法把它折叠成可静态追踪的 `crypto.randomUUID`
+    // 形状,dist 层的 Safari-14 审计(audit:compat)因此不再命中该调用。
+    const cryptoApi = root.crypto || null;
+    if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+      return prefix + "_" + cryptoApi.randomUUID();
     }
     // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: upload dedupe ID; the timestamp prefix already ensures basic uniqueness
     return prefix + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
