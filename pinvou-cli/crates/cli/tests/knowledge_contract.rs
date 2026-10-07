@@ -1695,6 +1695,119 @@ fn a_frozen_import_is_interrupted_and_resumable() {
     );
 }
 
+/// Round-45 review: docs/pinvou-cli.md's knowledge row promises the cancel
+/// output itself discloses the staged-progress destruction ("the cancel
+/// output says so") — the cancel is deliberately not `--yes`-gated, so the
+/// consequence (no resume/retry; recovery means re-running add-sources)
+/// must ride the human channel of every cancel that actually dropped
+/// progress. A no-op cancel on an already-finished job discards nothing
+/// and stays silent (and its JSON carries no note).
+#[test]
+fn index_cancel_discloses_the_staged_progress_destruction() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("cancel-disclosure");
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "cancel-disclosure",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+    let sources = write_bulk_sources(&home, 2);
+    let job_id = strand_running_job(&home, id, &sources);
+
+    // Cancelling the running job drops its staged progress: the note rides
+    // the human channel.
+    let human = run_ok(&["pinvou", "knowledge", "index", "cancel", &job_id]);
+    assert!(
+        human.contains("note: the cancel discarded the job's staged progress"),
+        "{human}"
+    );
+    assert!(human.contains("cannot resume or retry"), "{human}");
+    assert!(human.contains("add-sources"), "{human}");
+
+    // The second cancel is a no-op on a finished job: nothing was
+    // discarded, so the JSON payload stays note-free.
+    let noop = run_json(&["pinvou", "knowledge", "index", "cancel", &job_id]);
+    assert_eq!(noop["phase"], serde_json::json!("cancelled"));
+    assert!(noop.get("note").is_none(), "{noop}");
+}
+
+/// Round-45 review: a bad item id on a resumable job must answer with its
+/// own code (`knowledge_index_item_not_found`) instead of the job-level
+/// `knowledge_index_job_not_found` — the two misses used to share rusqlite's
+/// no-rows shape and sent scripts hunting for a job problem when the item
+/// id was at fault. The job itself must stay resumable (the failed item
+/// update rolls back with the job update).
+#[test]
+fn index_retry_names_a_bad_item_id_instead_of_the_job() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("retry-item-miss");
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "retry-item-miss",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    // Same deterministic stall shape as the frozen-import test: 9000
+    // traversed entries, zero importable files, 1 ms bound → interrupted.
+    let root = home.path().join("retry-tree");
+    for a in 0..30 {
+        let band = root.join(format!("a{a:03}"));
+        for b in 0..30 {
+            let cell = band.join(format!("b{b:03}"));
+            std::fs::create_dir_all(&cell).expect("create cell dir");
+            for c in 0..10 {
+                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
+            }
+        }
+    }
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args([
+            "knowledge",
+            "collections",
+            "add-sources",
+            &id.to_string(),
+            root.to_str().unwrap(),
+        ])
+        .env("PINVOU3_HOME", home.path())
+        .env("PINVOU_NO_COLOR", "1")
+        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "1");
+    let outcome = command.output().expect("walking add-sources child runs");
+    assert!(!outcome.status.success(), "the 1 ms bound must trip");
+
+    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
+    let job_id = settled["jobId"]
+        .as_str()
+        .expect("the interrupted job is named")
+        .to_owned();
+
+    let error = execute_error(&["pinvou", "knowledge", "index", "retry", &job_id, "999999"]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("knowledge_index_item_not_found"),
+        "the item miss must carry its own code: {message}"
+    );
+    assert!(
+        message.contains("is not a failed item"),
+        "the item miss must name the item, not the job: {message}"
+    );
+
+    // The store rolled back both updates: the job is still resumable.
+    let after = run_json(&["pinvou", "knowledge", "index", "status", &job_id]);
+    assert_eq!(after["phase"], serde_json::json!("interrupted"));
+    assert_eq!(after["resumable"], serde_json::json!(true));
+}
+
 /// `scan start` waits for the scan to finish inside the invocation (a
 /// fire-and-forget scan would be killed by process exit before doing any
 /// work), so the returned state is already terminal and the completion

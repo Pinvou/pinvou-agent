@@ -7,18 +7,21 @@
 //! `assigned_session_ids`, and for `rebind`: `begin_rebind`,
 //! `plan_rebind_roots`, `rebind_roots`, `rebind_source_display`,
 //! `SessionAgentStore::rebind_workspace_prefix`,
-//! `SessionStore::rebind_workspace_bindings`, `SessionStore::set_workspace`). The list JSON is a
+//! `SessionStore::plan_rebind_workspace_bindings` +
+//! `SessionStore::apply_rebind_workspace_bindings` (the split forms both
+//! surfaces drive), `SessionStore::set_workspace`). The list JSON is a
 //! CLI-shaped superset of the GUI wire DTO: the GUI's `ProjectListItem`
-//! deliberately omits per-root `available` and the `created_at`/`updated_at`
-//! timestamps from the wire, while the CLI renders them (`id`, `name`,
-//! `roots` with per-root `path`, `position`, `created_at`, `updated_at`,
-//! `assigned_session_count`) plus the full `assignments` map. Additive only:
-//! every GUI field name is preserved. Pure storage: no Tauri host, no
-//! engine.
+//! omits the `created_at`/`updated_at` timestamps from the wire (its
+//! per-root `available` field is part of the wire DTO — restored by
+//! #463's round-14 review), while the CLI renders them (`id`, `name`,
+//! `roots` with per-root `path`, `position`, `available`, `created_at`,
+//! `updated_at`, `assigned_session_count`) plus the full `assignments` map.
+//! Additive only: every GUI field name is preserved. Pure storage: no Tauri
+//! host, no engine.
 //!
-//! The per-root `available` field the CLI adds back costs one `stat(2)` per
-//! root per list row — the cost the GUI dropped the field to avoid. See
-//! [`project_item`] for why that is kept and why it is not memoized.
+//! The per-root `available` field costs one `stat(2)` per root per list row
+//! on both surfaces. See [`project_item`] for why that is kept and why it
+//! is not memoized.
 //!
 //! Headless deviations, disclosed:
 //! - `move` always passes `add_workspace_root = None`: folding the session's
@@ -393,12 +396,13 @@ fn open_session_store() -> Result<SessionStore, CliError> {
 /// per-root availability and the explicit member count (`from_project`).
 ///
 /// Cost of the `available` field, at the point of action: `is_dir()` is one
-/// `stat(2)` per root per row, and the GUI deliberately dropped the field from
-/// its wire DTO to avoid exactly that ("连带省去列表路径的逐个 is_dir() stat",
-/// `app/commands/projects.rs`). On a network mount each of those stats can
+/// `stat(2)` per root per row on BOTH surfaces — the GUI's wire DTO carries
+/// the same field (restored by #463's round-14 review, `ProjectRootStatus`)
+/// and pays the same stat; only the timestamps are omitted from the wire.
+/// On a network mount each of those stats can
 /// block for as long as the mount takes to answer, so a `projects list` over
 /// an unreachable NFS/SMB root is as slow as the mount, not as slow as the
-/// store. The CLI keeps the field anyway — a headless caller has no other way
+/// store. The headless CLI keeps the field — a headless caller has no other way
 /// to learn a root went missing — and it is NOT memoized across rows on
 /// purpose: `validate_roots` rejects a root that is the same as, or nested
 /// under, a root of any other project, so no two rows in one listing can ever
@@ -790,6 +794,24 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
 /// pre-rewrite snapshot (see the module header). Per-session failures never
 /// abort the run: like the GUI, they are reported (`failed_session_ids`) and
 /// a rerun converges them; only a store call failing outright exits 1.
+
+/// Round-45 review: the post-lane codex fence reads the on-disk index
+/// fresh. ACP binds persist index-only, so the disk is the only shared
+/// truth a second process has: a session the GUI binds under `from` after
+/// this run's lane reload is invisible to the lane's in-memory instance,
+/// and the fence would keep reporting `0 failed` for exactly the class it
+/// exists to catch. The GUI's own fence reads its live in-process pool; a
+/// second process only has the disk. Extracted so the freshness contract
+/// is testable without driving a full rebind.
+fn fence_stragglers_from_disk(from_display: &Path, final_stale: &mut Vec<String>) {
+    let fence_agents = SessionAgentStore::load_or_empty();
+    for (session_id, _) in fence_agents.sessions_under_workspace(from_display) {
+        if !final_stale.contains(&session_id) {
+            final_stale.push(session_id);
+        }
+    }
+}
+
 fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Argument-shape validation first (pure path checks, no store access —
     // the same order `move` uses for its session-id gate): a malformed
@@ -929,11 +951,14 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // scan, so without this fence the run would report `rebound N
     // (0 failed)` while the index record still names the vanished directory.
     // Same contains-guard, same pure addition of NEW hits.
-    for (session_id, _) in agents.sessions_under_workspace(&from_display) {
-        if !final_stale.contains(&session_id) {
-            final_stale.push(session_id);
-        }
-    }
+    // Round-45 review: the rescan must re-read the index FROM DISK. The
+    // lane's `agents` instance was loaded before the codex lane took its
+    // lock, and ACP binds persist index-only, so a session the GUI binds
+    // under `from` after that reload is invisible to the stale instance —
+    // the fence would keep reporting `0 failed` for exactly the class it
+    // exists to catch. The GUI's own fence reads its live in-process pool;
+    // a second process only has the disk.
+    fence_stragglers_from_disk(&from_display, &mut final_stale);
     // SavedSession metadata replay over the union of what the two lanes
     // actually rewrote (the GUI's metadata_rebind_targets minus the
     // pre-rewrite snapshot — see the module header): every pre-existing
@@ -1352,6 +1377,77 @@ fn rebind_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinvou3_lib::features::codex_acp::AgentBackend;
+
+    /// Round-45 review: the codex fence must see bindings persisted to disk
+    /// after an earlier in-process load — a GUI bind landing between the
+    /// lane's reload and the fence is exactly the straggler the fence
+    /// exists to report, and ACP binds persist index-only, so only a fresh
+    /// disk read can see it.
+    #[test]
+    fn codex_fence_sees_bindings_persisted_after_an_earlier_load() {
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-cli-projects-fence-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp home");
+        let previous = std::env::var_os("PINVOU3_HOME");
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let from = root.join("from-dir");
+        std::fs::create_dir_all(&from).expect("create from dir");
+
+        // An instance loaded before the bind exists — the lane's stale view.
+        let stale = SessionAgentStore::empty_without_loading();
+        let mut final_stale: Vec<String> = Vec::new();
+        fence_stragglers_from_disk(&from, &mut final_stale);
+        assert!(
+            final_stale.is_empty(),
+            "no bindings exist yet: {final_stale:?}"
+        );
+
+        // The concurrent GUI writer binds a session under `from` on disk.
+        // The fence's owner gate stats the session's SavedSession record
+        // (`<home>/sessions/<id>.json`, never parsed on this path), so the
+        // fixture plants a minimal one — exactly the file a real session
+        // boot would have left behind.
+        let sessions_root = root.join("sessions");
+        std::fs::create_dir_all(&sessions_root).expect("create sessions root");
+        std::fs::write(sessions_root.join("fence-session.json"), "{}")
+            .expect("plant the owner record");
+        let writer = SessionAgentStore::load_or_empty();
+        writer
+            .set_acp_workspace(
+                "fence-session",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+            )
+            .expect("bind the session under from");
+
+        // The stale instance still sees nothing under `from` — the bug
+        // shape the fence used to have.
+        assert!(
+            stale.sessions_under_workspace(&from).is_empty(),
+            "the pre-bind instance must not see the on-disk binding"
+        );
+        // The disk-backed fence does, which is what makes the documented
+        // "a rerun converges them" reachable for this class.
+        fence_stragglers_from_disk(&from, &mut final_stale);
+        assert_eq!(final_stale, vec!["fence-session".to_owned()]);
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn project_fixture(name: &str, roots: Vec<PathBuf>) -> Project {
         let now = chrono::Utc::now();

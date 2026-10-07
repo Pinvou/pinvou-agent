@@ -843,7 +843,10 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // index file is only consulted when it exists: a `sessions delete` in a
     // home that never ran an ACP session must not be the thing that creates
     // `session-agents.json`.
-    let agents = SessionAgentStore::load_or_empty();
+    // Round-45 review: path-sourcing only — the removal channel re-reads under
+    // the lock, so an empty instance that never touches disk avoids printing
+    // the app-side "starting empty" stderr line a corrupt index would emit here.
+    let agents = SessionAgentStore::empty_without_loading();
     agents.remove_for_second_process(id).map_err(|error| {
         // The transcript is already gone, so this cannot roll back — but it
         // must not be silent either (the next app boot would rebuild the
