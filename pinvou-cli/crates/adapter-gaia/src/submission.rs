@@ -10,13 +10,10 @@ use benchmark_core::{
 use rand::random;
 use serde::Serialize;
 
-use crate::GaiaDataset;
-use crate::fetch::{create_private_file, is_link_or_reparse};
+use crate::fetch::create_private_file;
+use crate::fs_guard::is_link_or_reparse;
+use crate::{GAIA_DURABLE_PREDICTION_TYPE, GaiaDataset};
 
-/// Durable private prediction type tag shared with the GAIA adapter and scorer.
-/// Core persists the resolved candidate answer under this concrete content type,
-/// which is the run-bound scorer tag used to reopen predictions offline.
-const GAIA_DURABLE_PREDICTION_TYPE: &str = "utf8-text/v1";
 const MAX_TASKS: usize = 128;
 const MAX_ANSWER_BYTES: usize = 64 * 1024;
 const MAX_SUBMISSION_BYTES: u64 = 16 * 1024 * 1024;

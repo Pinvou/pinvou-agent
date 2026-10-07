@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -15,8 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
+use crate::fs_guard::{FileIdentity, is_link_or_reparse, path_identity};
 use crate::{
-    GAIA_DATASET_REVISION, GAIA_PARQUET_SIZE, GAIA_SCORER_REVISION, GaiaDataset, GaiaDatasetError,
+    GAIA_DATASET_REVISION, GAIA_PARQUET_SHA256_BYTES, GAIA_PARQUET_SIZE, GAIA_SCORER_REVISION,
+    GaiaDataset, GaiaDatasetError,
 };
 
 const GAIA_REPO_ID: &str = "gaia-benchmark/GAIA";
@@ -217,32 +219,6 @@ pub struct SnapshotDownloadRequest<'a> {
     remaining_budget: u64,
 }
 
-impl SnapshotDownloadRequest<'_> {
-    pub fn repo_id(&self) -> &str {
-        self.repo_id
-    }
-
-    pub fn revision(&self) -> &str {
-        self.revision
-    }
-
-    pub fn remote_path(&self) -> &str {
-        self.remote_path
-    }
-
-    pub fn token(&self) -> &SecretText {
-        self.token
-    }
-
-    pub fn expected(&self) -> &SnapshotFileMetadata {
-        self.expected
-    }
-
-    pub fn remaining_budget(&self) -> u64 {
-        self.remaining_budget
-    }
-}
-
 impl fmt::Debug for SnapshotDownloadRequest<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -264,24 +240,6 @@ pub struct SnapshotPreflightRequest<'a> {
     remote_paths: &'a [PathBuf],
     token: &'a SecretText,
     scratch_root: &'a Path,
-}
-
-impl SnapshotPreflightRequest<'_> {
-    pub fn repo_id(&self) -> &str {
-        self.repo_id
-    }
-
-    pub fn revision(&self) -> &str {
-        self.revision
-    }
-
-    pub fn remote_paths(&self) -> &[PathBuf] {
-        self.remote_paths
-    }
-
-    pub fn token(&self) -> &SecretText {
-        self.token
-    }
 }
 
 impl fmt::Debug for SnapshotPreflightRequest<'_> {
@@ -661,7 +619,7 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
     }
 
     pub fn acquire(&self, source: GaiaSource) -> Result<GaiaAcquisition, GaiaFetchError> {
-        self.acquire_expected(source, GAIA_PARQUET_SIZE, production_digest())
+        self.acquire_expected(source, GAIA_PARQUET_SIZE, GAIA_PARQUET_SHA256_BYTES)
     }
 
     pub fn verify_offline(
@@ -671,7 +629,7 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
         self.verify_ready(
             snapshot_root.as_ref(),
             GAIA_PARQUET_SIZE,
-            production_digest(),
+            GAIA_PARQUET_SHA256_BYTES,
         )
     }
 
@@ -682,7 +640,7 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
         self.verify_source_expected(
             snapshot_root.as_ref(),
             GAIA_PARQUET_SIZE,
-            production_digest(),
+            GAIA_PARQUET_SHA256_BYTES,
             &OFFICIAL_LEVEL1_ATTACHMENTS,
         )
     }
@@ -787,7 +745,7 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
         let dataset = verify_dataset(&canonical_source, expected_size, expected_digest)
             .map_err(classify_import_verification)?;
         let trusted: &[TrustedAttachmentSpec] =
-            if expected_size == GAIA_PARQUET_SIZE && expected_digest == production_digest() {
+            if expected_size == GAIA_PARQUET_SIZE && expected_digest == GAIA_PARQUET_SHA256_BYTES {
                 &OFFICIAL_LEVEL1_ATTACHMENTS
             } else {
                 #[cfg(any(test, feature = "test-support"))]
@@ -1004,14 +962,6 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
             &GAIA_DATASET_REVISION[..12]
         ))
     }
-}
-
-fn production_digest() -> [u8; 32] {
-    [
-        0x5e, 0x57, 0x4b, 0x0f, 0xae, 0xb4, 0x60, 0x3b, 0x81, 0x6e, 0x42, 0x6c, 0xf7, 0xc7, 0xae,
-        0xfb, 0x1f, 0xe3, 0x98, 0xd3, 0x2f, 0x9c, 0x48, 0x61, 0xe1, 0xa4, 0xe3, 0x30, 0x4f, 0x2b,
-        0x12, 0x81,
-    ]
 }
 
 fn verify_dataset(
@@ -1926,104 +1876,6 @@ fn overlaps(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
-#[cfg(unix)]
-pub(crate) fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-
-#[cfg(windows)]
-pub(crate) fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    metadata.file_type().is_symlink()
-        || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(any(unix, windows)))]
-pub(crate) fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-
-#[cfg(unix)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ObjectIdentity {
-    device: u64,
-    inode: u64,
-}
-
-#[cfg(windows)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ObjectIdentity {
-    volume: u32,
-    index: u64,
-}
-
-#[cfg(not(any(unix, windows)))]
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ObjectIdentity;
-
-#[cfg(unix)]
-fn path_identity(path: &Path) -> Result<ObjectIdentity, ()> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
-    Ok(ObjectIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
-
-#[cfg(windows)]
-fn path_identity(path: &Path) -> Result<ObjectIdentity, ()> {
-    use std::mem::MaybeUninit;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, GetFileInformationByHandle, OPEN_EXISTING,
-    };
-
-    let wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            std::ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            std::ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(());
-    }
-    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-    let succeeded = unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) };
-    unsafe { CloseHandle(handle) };
-    if succeeded == 0 {
-        return Err(());
-    }
-    let information = unsafe { information.assume_init() };
-    let identity = ObjectIdentity {
-        volume: information.dwVolumeSerialNumber,
-        index: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
-    };
-    if identity.index == 0 {
-        return Err(());
-    }
-    Ok(identity)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn path_identity(_path: &Path) -> Result<ObjectIdentity, ()> {
-    Ok(ObjectIdentity)
-}
-
 struct AcquisitionLock {
     file: File,
 }
@@ -2072,9 +1924,9 @@ fn open_private_lock_file(path: &Path) -> Result<File, ()> {
 
 struct OwnedDirectory {
     parent: PathBuf,
-    parent_identity: ObjectIdentity,
+    parent_identity: FileIdentity,
     path: PathBuf,
-    identity: ObjectIdentity,
+    identity: FileIdentity,
     armed: std::cell::Cell<bool>,
 }
 

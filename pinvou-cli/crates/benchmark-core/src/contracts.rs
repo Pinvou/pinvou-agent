@@ -122,7 +122,6 @@ impl BenchmarkDescriptor {
 #[derive(Clone, Debug)]
 pub struct BenchmarkTask {
     task_id: String,
-    category: Option<String>,
     level: Option<String>,
     execution: ExecutionRequest,
 }
@@ -130,22 +129,17 @@ pub struct BenchmarkTask {
 impl BenchmarkTask {
     pub fn new(
         task_id: impl Into<String>,
-        category: Option<String>,
         level: Option<String>,
         execution: ExecutionRequest,
     ) -> Self {
         Self {
             task_id: task_id.into(),
-            category,
             level,
             execution,
         }
     }
     pub fn task_id(&self) -> &str {
         &self.task_id
-    }
-    pub fn category(&self) -> Option<&str> {
-        self.category.as_deref()
     }
     pub fn level(&self) -> Option<&str> {
         self.level.as_deref()
@@ -475,17 +469,10 @@ impl BenchmarkPlan {
 }
 
 #[derive(Clone, Debug)]
-pub struct RunContext {
-    run_id: String,
-}
+pub struct RunContext;
 impl RunContext {
-    pub fn new(run_id: impl Into<String>) -> Self {
-        Self {
-            run_id: run_id.into(),
-        }
-    }
-    pub fn run_id(&self) -> &str {
-        &self.run_id
+    pub fn new(_run_id: impl Into<String>) -> Self {
+        Self
     }
 }
 

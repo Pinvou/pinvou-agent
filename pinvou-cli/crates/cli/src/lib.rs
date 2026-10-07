@@ -902,7 +902,7 @@ fn publish_gaia_score_artifacts(
     let mut score_bytes =
         serde_json::to_vec(&score).map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
     score_bytes.push(b'\n');
-    publish_or_verify_bytes(store, "score.json", &score_bytes)?;
+    publish_or_verify_score_bytes(store, &score_bytes)?;
 
     let accuracy = comparable_accuracy
         .map(|value| format!("{value:.6}"))
@@ -1325,8 +1325,8 @@ fn integration_layer(outcome: &TaskOutcome) -> &'static str {
     }
 }
 
-fn publish_or_verify_bytes(store: &RunStore, name: &str, expected: &[u8]) -> Result<(), CliError> {
-    let path = store.run_dir().join(name);
+fn publish_or_verify_score_bytes(store: &RunStore, expected: &[u8]) -> Result<(), CliError> {
+    let path = store.run_dir().join("score.json");
     if path.exists() {
         let existing =
             std::fs::read(path).map_err(|_| CliError::failed("gaia_score_artifact_failed"))?;
@@ -1334,9 +1334,6 @@ fn publish_or_verify_bytes(store: &RunStore, name: &str, expected: &[u8]) -> Res
             return Err(CliError::failed("gaia_score_artifact_conflict"));
         }
         return Ok(());
-    }
-    if name != "score.json" {
-        return Err(CliError::failed("gaia_score_artifact_failed"));
     }
     publish_score_json(store, expected)
         .map_err(core_error)
