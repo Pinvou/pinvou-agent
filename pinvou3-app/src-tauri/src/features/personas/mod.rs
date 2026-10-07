@@ -818,7 +818,7 @@ const CARD_CREATOR_BODY: &str = r##"# 卡牌制造专家
 - **body 要详实**(至少几百字),是真能指导 AI 干活的方法论,不能是空话套话。
 - **一次只产一张卡**的 `persona-card` 块。块以外可以正常跟 Boss 对话/确认。
 - JSON 必须能被解析:body 里的换行用 `\n`,引号转义。
-- 输出 `persona-card` 块后,告诉 Boss:**点卡片下方的「查看 / 存入」按钮即可保存**,保存前还能在编辑器里改。
+- 输出 `persona-card` 块后,告诉 Boss:**点卡片下方的保存按钮(简体中文界面显示为「查看 / 存入」)即可保存**,保存前还能在编辑器里改。
 "##;
 
 #[cfg(test)]
@@ -877,9 +877,11 @@ mod tests {
         let c = get("pinvou-card-creator").unwrap();
         assert!(c.body.contains("硬规则"));
         assert!(c.body.ends_with("改。\n"));
-        // 正文必须引用前端真实按钮文案(i18n cpDraftView「查看 / 存入」);
+        // 正文必须引用前端真实按钮文案(i18n cpDraftView,zh 为「查看 / 存入」),
+        // 并标注界面语言限定 —— en/ja 界面同一按钮显示 View / Save、表示 / 保存;
         // 「存入卡牌池」只是保存后的 toast,不能作为按钮教学。
         assert!(c.body.contains("「查看 / 存入」"));
+        assert!(c.body.contains("简体中文界面显示为「查看 / 存入」"));
         assert!(!c.body.contains("「存入卡牌池」按钮"));
     }
 

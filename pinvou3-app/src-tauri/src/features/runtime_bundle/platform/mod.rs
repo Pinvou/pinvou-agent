@@ -151,14 +151,18 @@ pub(crate) use crate::platform::connector_skills::{
 /// Skill trees: dws danger-table row, five reference files, and the
 /// calendar_schedule_meeting.py script all stopped citing the nonexistent
 /// `calendar participant *` (`attendee` + `--attendees` is the real
-/// surface), stale P0/P1 attendance marker dropped, first-use auth pointer
-/// added (NOTICE-dingtalk.md); wecomcli-email send/reply body files unified
+/// surface), stale P0/P1 attendance marker dropped, non-blocking auth
+/// guidance added across SKILL.md first-use pointer, global-reference.md,
+/// event.md, and the attendance_report_checkin.py error outputs (NOTICE-dingtalk.md);
+/// wecomcli-email send/reply body files unified
 /// to tmp/mail/ so intermediate mail bodies stop landing in the
 /// artifact-panel root (NOTICE-wecom.md); tmeet example `--meeting-id`
 /// placeholders moved from the 9-digit meeting-code form to the 19-digit
-/// meeting-id form, 54 sites (NOTICE-tmeet.md); 14 lark sites rewritten from
-/// blocking `auth login --scope` to the lark-shared `--no-wait --json`
-/// split-flow form (lark-skills/NOTICE.md; connector contract rule 5
+/// meeting-id form, 54 sites, and the agent_init invocation path is now
+/// Skill-root-qualified (NOTICE-tmeet.md); 20 lark sites across 19 files
+/// rewritten from blocking `auth login --scope` to the lark-shared
+/// `--no-wait --json` split-flow form or carrier-pointer-only phrasing
+/// (lark-skills/NOTICE.md; connector contract rule 5
 /// tightened to match). Hooks:
 /// multiagent_depth_guard now emits its deny reason as stdout
 /// JSON (the engine reads reasons only from stdout; stderr never reaches the
@@ -171,7 +175,10 @@ pub(crate) use crate::platform::connector_skills::{
 /// deny_sensitive_paths.ps1, and shell_env.sh are not hashed and ride this
 /// bump). Built-in visual-design skill: real images allowed via
 /// local download only (no external URLs), matching the poster scene;
-/// present_artifact protocol stated once. Next free slot after 0.32.
+/// present_artifact protocol stated once. mcp-servers browser protocol text
+/// aligned with the enforced URL gate and uid lifetime (browser-wrapper-protocol.mjs,
+/// browser-core-protocol.mjs; MCP server scripts are rewritten on every boot
+/// and do not depend on this bump). Next free slot after 0.32.
 /// Skill trees are excluded from the content hash, so the semantic bump is
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
@@ -212,7 +219,7 @@ const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 /// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. Chinese
 /// is used to match the all-Chinese instruction file this line embeds into (the
 /// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
-const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、需切换到简体中文界面才能在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
+const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅在简体中文界面提供,若当前界面非简体中文需先切换后再在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
 
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
 /// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
@@ -918,7 +925,7 @@ mod tests {
         assert!(!disabled.contains("已记下"));
         assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
         assert!(disabled.contains(
-            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、需切换到简体中文界面才能在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
+            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅在简体中文界面提供,若当前界面非简体中文需先切换后再在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
         ));
     }
 
@@ -1383,6 +1390,17 @@ mod tests {
                 Some(2),
                 "exact skill-connector names must be redirected: {output:?}"
             );
+            // The stdout JSON reason is the model's only corrective copy (the
+            // engine folds deny reasons from stdout alone). Pinning the reason
+            // text also pins the script's UTF-8 stdout encoding: a writer that
+            // regresses to the console codepage would fail this byte match on
+            // Windows (PS 5.1 consoles emit GBK without an explicit UTF-8
+            // StreamWriter) while still exiting 2.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("list_mcp_resources 或 list_mcp_resource_templates"),
+                "deny reason must reach stdout as intact UTF-8 JSON: {stdout:?}"
+            );
         }
         for args in [
             r#"{"server":"wecom-bot"}"#,
@@ -1521,7 +1539,9 @@ mod tests {
         // Prose that merely mentions max_depth next to a quote or paren is not
         // an override: the bare-snake-case class must stay identical across the
         // .sh and .ps1 guards (a looser Windows class used to false-deny these).
-        // Each CI leg runs its native script, so this pins both platforms.
+        // CI executes this test natively on both hook platforms: the Linux
+        // rust-test leg runs the full lib suite (.sh), and the Windows
+        // regression leg runs this filter via its native filter list (.ps1).
         let workflow_prose =
             run_depth_guard(&bundle, "workflow", r#"{"note":"max_depth: 2 here"}"#);
         assert!(

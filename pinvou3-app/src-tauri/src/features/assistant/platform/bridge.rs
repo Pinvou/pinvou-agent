@@ -345,11 +345,15 @@ impl Pinvou3Bridge {
     /// On first launch a default `settings.json` is written so users/
     /// developers can conveniently hand-edit advanced.
     ///
-    /// **workspace is now `$HOME`** (phase C adjustment) — so the AI can use
-    /// read_file/glob to find the user's real files on Desktop/Documents/
-    /// Downloads. The companion sensitive-directory ban is guided in
-    /// `bundle/instructions.md`; hard interception later goes through a
-    /// deepseek-tui hook registration.
+    /// **Default `workspace` is `$HOME`**, but the per-session engine workspace
+    /// is resolved through `SessionRoots` (`roots.execution`, see
+    /// `build_engine_config_for_session_roots`): session-private for unbound
+    /// plain sessions, the bound directory for bound/code sessions. The engine
+    /// prints the resolved `Current workspace` every turn;
+    /// instructions-work.md teaches relative paths against that value and
+    /// locates the user's real files under `$HOME`. The companion
+    /// sensitive-directory ban is guided in `bundle/instructions-*.md`; hard
+    /// interception goes through the deny-sensitive-paths hook registration.
     ///
     /// The session artifacts dir `PINVOU3_SESSION_ARTIFACTS` is NOT injected here:
     /// boot runs in the multi-threaded phase, and process env writes are
