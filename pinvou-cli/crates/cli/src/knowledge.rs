@@ -2388,14 +2388,23 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
                 for collection in &collections {
                     lines.push(format!(
                         "{}\t{}\t{}\tdocs={}",
-                        server_id,
+                        // Round-44 review: server_id takes the same collapse
+                        // discipline as the name cell — a misbehaving server
+                        // must not be able to forge rows/columns through the
+                        // connection's stored id. (The collection id is an
+                        // i64 from the wire schema; JSON keeps the raw
+                        // values.)
+                        crate::support::collapse_control_characters(&server_id),
                         collection.id,
                         crate::support::collapse_control_characters(&collection.name),
                         collection.doc_count
                     ));
                 }
                 if collections.is_empty() {
-                    lines.push(format!("{server_id}\tno remote collections"));
+                    lines.push(format!(
+                        "{}\tno remote collections",
+                        crate::support::collapse_control_characters(&server_id)
+                    ));
                 }
                 results.push(serde_json::json!({
                     "server_id": server_id,
@@ -2405,7 +2414,8 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
             }
             Err(error) => {
                 lines.push(format!(
-                    "{server_id}\terror: {}",
+                    "{}\terror: {}",
+                    crate::support::collapse_control_characters(&server_id),
                     crate::support::collapse_control_characters(&error)
                 ));
                 errors.push(serde_json::json!({ "server_id": server_id, "error": error }));

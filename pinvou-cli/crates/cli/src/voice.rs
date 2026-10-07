@@ -1643,12 +1643,18 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // whose leader this command already reaped. Scope note, honestly stated:
     // the registration LIVES until the bracket drops at function scope —
     // including the drain-grace window after the reap — so an interrupt in
-    // that window can still forward to the (dead leader's) pgid. That
-    // forward is safe since the round-41 review: the watcher's phase 1
-    // probes each group with signal 0 before TERMing, so a fully-dead
-    // group is skipped instead of signalling whatever recycled the pgid,
-    // and keeping the registration is what takes pipe-holding straggler
-    // descendants down with a Ctrl-C.
+    // that window can still forward to the (dead leader's) pgid. The
+    // watcher's phase 1 probes each group with signal 0 before TERMing, so
+    // a fully-dead group is skipped, and keeping the registration is what
+    // takes pipe-holding straggler descendants down with a Ctrl-C. The
+    // residual is the same one `supervise.rs` discloses for its own
+    // probe→kill window, WIDENED to the drain-grace duration: if the pgid
+    // is recycled by a new process group during the hold, the probe reads
+    // the innocent group alive and the escalation targets it (round-44
+    // review — the previous wording presented that residual as closed). The
+    // trade is deliberate: taking stragglers down on Ctrl-C outranks a
+    // pid-recycling-scale misdirect, and connectors/code make the opposite
+    // release-before-drain trade for their own drain shapes.
     let _supervised_engine = crate::support::supervise::GroupGuard::register(child.id());
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();

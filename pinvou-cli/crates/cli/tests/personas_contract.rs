@@ -163,6 +163,45 @@ fn write_body_file(label: &str, body: &str) -> PathBuf {
     path
 }
 
+/// Round-44 review: the body file is a model-context lane (the card body is
+/// injected verbatim into the next turn's prompt on equip), so it joins the
+/// gated-read rule — a credential-path file must be refused before any store
+/// write.
+#[test]
+fn personas_create_refuses_a_credential_location_body_file() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("create-credential-body");
+    let file = home.root.join(".aws").join("credentials");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n",
+    )
+    .unwrap();
+
+    let parsed = parse_args([
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        "Leaky",
+        "--file",
+        file.to_str().unwrap(),
+    ])
+    .expect("the create line parses");
+    let error = execute(parsed).expect_err("a credential-path body file must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(error.to_string().contains("refusing body file"), "{error}");
+
+    // And nothing was stored: the refused body must not become a card. The
+    // refusal fires before any store open, so the personas dir may not even
+    // exist yet — a missing directory is zero cards, not a failure.
+    let cards = std::fs::read_dir(home.user_personas_dir())
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(cards, 0, "the refused body must not persist as a card");
+}
+
 // ── parse-level coverage ────────────────────────────────────────────────────
 
 #[test]
