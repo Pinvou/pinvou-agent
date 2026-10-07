@@ -1129,6 +1129,8 @@ impl Store {
             device_id: scope.map(|_| device_id.to_string()),
             created_at,
             expires_at,
+            // 刚创建的请求必然未决议;字段本身是旧客户端线上兼容项(model.rs)。
+            resolved_at: None,
         })
     }
 
@@ -1726,6 +1728,8 @@ fn map_collection(row: &rusqlite::Row<'_>) -> rusqlite::Result<Collection> {
         deleted_at: row.get(6)?,
         doc_count: row.get(7)?,
         chunk_count: row.get(8)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        total_bytes: 0,
     })
 }
 
@@ -1739,6 +1743,9 @@ fn map_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
         sha256: row.get(5)?,
         status: row.get(6)?,
         n_chunks: row.get(7)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        created_at: 0,
+        updated_at: 0,
         deleted_at: row.get(8)?,
         error: row.get(9)?,
         already_exists: false,
@@ -1761,6 +1768,9 @@ fn map_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceGrant> {
         id: row.get(0)?,
         name: row.get(1)?,
         scope: parse_scope(&row.get::<_, String>(2)?),
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        created_at: 0,
+        last_seen_at: None,
         revoked: row.get(3)?,
     })
 }
@@ -1803,6 +1813,8 @@ fn map_join_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<JoinRequestReco
         device_id: scope.and_then(|_| row.get(5).ok()),
         created_at: row.get(6)?,
         expires_at: row.get(7)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        resolved_at: None,
     })
 }
 

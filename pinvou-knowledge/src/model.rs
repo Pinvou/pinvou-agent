@@ -30,11 +30,20 @@ pub struct ServerInfo {
     pub protocol_version: u32,
     #[serde(default)]
     pub tls_ca: String,
+    /// 2026-10 前发布的客户端把本字段定义为 serde 必需(无 default),服务端一旦
+    /// 停止序列化,混合版本对端(LAN 发现 / 独立 knowledge-host)首次接触即
+    /// `missing field 'initialized'`。`#[serde(default)]` 只保新客户端的缺键容错,
+    /// 兼容旧客户端靠的是服务端继续序列化(见 wire_compat_tests)。
+    #[serde(default)]
+    pub initialized: bool,
     pub ready: bool,
     /// 模型文件是否已在磁盘上。懒装载语义下 `ready` 只反映「已进内存」,
     /// 挂载方据此字段判断可用性(首次检索会按需装载)。旧服务器无此字段。
     #[serde(default)]
     pub model_present: bool,
+    /// 旧客户端必需字段,同 `initialized`(线上兼容,勿删)。
+    #[serde(default)]
+    pub model: String,
 }
 
 fn default_protocol_version() -> u32 {
@@ -106,6 +115,10 @@ pub struct JoinRequestRecord {
     pub device_id: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
+    /// 旧客户端必需字段(serde 无 default,勿删)。不下发,置 None 仅保线上
+    /// 兼容(见 wire_compat_tests)。
+    #[serde(default)]
+    pub resolved_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +152,10 @@ pub struct Collection {
     pub status: String,
     pub doc_count: i64,
     pub chunk_count: i64,
+    /// 旧客户端必需字段(serde 无 default,勿删)。当前不下发真实体积,置 0
+    /// 仅保线上兼容(见 wire_compat_tests)。
+    #[serde(default)]
+    pub total_bytes: i64,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
@@ -155,6 +172,12 @@ pub struct Document {
     pub sha256: String,
     pub status: String,
     pub n_chunks: i64,
+    /// 旧客户端必需字段(serde 无 default,勿删)。不下发真实时间戳,置 0
+    /// 仅保线上兼容(见 wire_compat_tests)。
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
     pub deleted_at: Option<i64>,
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -242,6 +265,12 @@ pub struct DeviceGrant {
     pub id: String,
     pub name: String,
     pub scope: AccessScope,
+    /// 旧客户端必需字段(serde 无 default,勿删)。不再读真实时间,置 0
+    /// 仅保线上兼容(见 wire_compat_tests)。
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub last_seen_at: Option<i64>,
     pub revoked: bool,
 }
 
@@ -266,4 +295,110 @@ pub struct ModelStatus {
     pub ready: bool,
     pub downloading: bool,
     pub error: Option<String>,
+}
+
+// 2026-10 前发布的客户端把若干响应字段定义为 serde 必需(结构里无 #[serde(default)])。
+// 服务端一旦停止序列化这些键,混合版本对端(LAN 发现本就是跨机场景;Linux 独立
+// knowledge-host helper 可能落后于 app 升级)首次接触即在版本检查之前死于
+// `missing field …`——旧客户端先反序列化 /api/v1/info,再看 protocol_version。
+// 以下测试钉住:兼容键必须始终出现在序列化输出;`#[serde(default)]` 只负责
+// 新客户端面对缺键时的容错,替代不了服务端继续序列化。
+#[cfg(test)]
+mod wire_compat_tests {
+    use super::*;
+
+    #[test]
+    fn server_info_keeps_legacy_fields_on_the_wire() {
+        let info = ServerInfo {
+            server_id: "server".into(),
+            identity: "identity".into(),
+            name: "PINVOU Knowledge".into(),
+            version: "0.0.0".into(),
+            protocol_version: 2,
+            tls_ca: String::new(),
+            initialized: true,
+            ready: false,
+            model_present: true,
+            model: "bge-m3".into(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        for key in ["initialized", "model", "ready", "modelPresent"] {
+            assert!(json.get(key).is_some(), "legacy key missing on wire: {key}");
+        }
+        // 缺键对已带 #[serde(default)] 的新客户端无害。
+        let minimal: ServerInfo = serde_json::from_value(serde_json::json!({
+            "serverId": "server",
+            "name": "PINVOU Knowledge",
+            "version": "0.0.0",
+            "protocolVersion": 2,
+            "ready": true,
+        }))
+        .unwrap();
+        assert!(!minimal.initialized);
+        assert_eq!(minimal.model, "");
+    }
+
+    #[test]
+    fn row_models_keep_legacy_fields_on_the_wire() {
+        let collection = Collection {
+            id: 1,
+            name: "c".into(),
+            description: None,
+            status: "ok".into(),
+            doc_count: 0,
+            chunk_count: 0,
+            total_bytes: 0,
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+        };
+        let document = Document {
+            id: 1,
+            collection_id: 1,
+            name: "d".into(),
+            ext: None,
+            size: 0,
+            sha256: String::new(),
+            status: "ok".into(),
+            n_chunks: 0,
+            created_at: 0,
+            updated_at: 0,
+            deleted_at: None,
+            error: None,
+            already_exists: false,
+        };
+        let grant = DeviceGrant {
+            id: "g".into(),
+            name: "device".into(),
+            scope: AccessScope::Read,
+            created_at: 0,
+            last_seen_at: None,
+            revoked: false,
+        };
+        let request = JoinRequestRecord {
+            id: "j".into(),
+            device_name: "device".into(),
+            status: JoinRequestStatus::Pending,
+            scope: None,
+            share_id: None,
+            device_id: None,
+            created_at: 0,
+            expires_at: 0,
+            resolved_at: None,
+        };
+        let collection = serde_json::to_value(&collection).unwrap();
+        let document = serde_json::to_value(&document).unwrap();
+        let grant = serde_json::to_value(&grant).unwrap();
+        let request = serde_json::to_value(&request).unwrap();
+        for (json, key) in [
+            (&collection, "totalBytes"),
+            (&document, "createdAt"),
+            (&document, "updatedAt"),
+            (&grant, "createdAt"),
+            (&grant, "lastSeenAt"),
+            (&request, "resolvedAt"),
+        ] {
+            assert!(json.get(key).is_some(), "legacy key missing on wire: {key}");
+        }
+    }
 }

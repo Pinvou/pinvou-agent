@@ -278,8 +278,20 @@ impl KnowledgeService {
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol_version: 2,
             tls_ca: self.tls.ca_encoded.clone(),
+            // initialized/model 是 2026-10 前客户端的 serde 必需字段,必须继续
+            // 下发真实值(见 model.rs 的兼容说明与 wire_compat_tests)。
+            initialized: self
+                .store
+                .list_devices()
+                .map(|devices| {
+                    devices
+                        .iter()
+                        .any(|device| device.scope.is_owner() && !device.revoked)
+                })
+                .unwrap_or(false),
             ready: self.ready(),
             model_present: self.model_directory_complete(),
+            model: MODEL_NAME.to_string(),
         })
     }
 

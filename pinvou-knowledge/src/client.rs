@@ -1171,8 +1171,10 @@ mod tests {
             version: "0.8.1".to_string(),
             protocol_version: 2,
             tls_ca: "ca".to_string(),
+            initialized: false,
             ready: false,
             model_present: false,
+            model: String::new(),
         };
         let mut pinned = first.clone();
         pinned.ready = true;
