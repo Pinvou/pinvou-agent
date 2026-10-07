@@ -648,9 +648,12 @@ class CiGatePolicyTests(unittest.TestCase):
         # deleting one is a CLI source change in all but name — and
         # macos-cli-check, the leg whose reason for existing is exactly those
         # per-target files, is the first thing skipped without this entry.
-        self.assertIn(
-            "- 'pinvou3-app/src-tauri/resources/platforms/**'",
-            cli_paths,
+        # Round-43 review: these pins join the round-42 extractor discipline —
+        # a raw `assertIn("- 'path'", slice)` is satisfied by a trailing
+        # comment quoting the same path while dorny sees no entry, so the
+        # deleted entry kept every pin green.
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/resources/platforms/**",
             "the connector lock tables are include_str!'d into the CLI; "
             "without this entry a lock-table PR runs no CLI leg at all",
         )
@@ -659,9 +662,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # (panicking when absent) and native_installer.rs include_str!s the
         # dws LICENSE — a bundle-resource-only rename must not skip the CLI
         # legs any more than a lock-table edit does.
-        self.assertIn(
-            "- 'pinvou3-app/src-tauri/resources/common/bundle/**'",
-            cli_paths,
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/resources/common/bundle/**",
             "the bundle resources are build.rs/include_str! inputs of every "
             "pinvou3-tauri compile; without this entry a bundle-resource PR "
             "runs no CLI leg at all",
@@ -672,15 +674,13 @@ class CiGatePolicyTests(unittest.TestCase):
         # spec doc. `pub mod marketplace;` is unconditional, so a rename in
         # either must not skip every compile leg while required-gate passes
         # on skipped.
-        self.assertIn(
-            "- 'pinvou3-app/resources/mcp-servers/**'",
-            cli_paths,
+        assert_extracted_entry(
+            "pinvou3-app/resources/mcp-servers/**",
             "mcp_catalog.rs include_str!s the app-level mcp-servers tree; "
             "without this entry an mcp-servers PR runs no CLI leg at all",
         )
-        self.assertIn(
-            "- 'docs/plugin-package-spec.md'",
-            cli_paths,
+        assert_extracted_entry(
+            "docs/plugin-package-spec.md",
             "marketplace.rs include_str!s the plugin package spec; without "
             "this entry a spec-doc PR runs no CLI leg at all",
         )
@@ -688,21 +688,28 @@ class CiGatePolicyTests(unittest.TestCase):
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust
         # gate at all).
-        self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
-        self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
-        self.assertIn(
-            "- 'pinvou3-app/src-tauri/src/features/pet/**'",
-            cli_paths,
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/features/feedback/**",
+            "feedback changes must gate through the CLI suite",
+        )
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/features/personas/**",
+            "personas changes must gate through the CLI suite",
+        )
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/features/pet/**",
             "pet is exempted from rust_full like feedback/personas, so pet Rust "
             "changes must gate through the CLI suite too",
         )
         # Policy: the workflow file itself is deliberately excluded from
         # cli_rust — workflow edits must not link the full-app test suites
         # (this test enforces that). cli-test changes are instead validated
-        # by the next cli_rust PR / the merge queue.
+        # by the next cli_rust PR / the merge queue. Extractor-based so a
+        # trailing-comment-disguised ENTRY fails this pin (fail closed) the
+        # same way a deleted one does.
         self.assertNotIn(
-            "- '.github/workflows/pr-check.yml'",
-            cli_paths,
+            ".github/workflows/pr-check.yml",
+            cli_rust_entries_probe,
             "cli_rust must not include the workflow file: workflow edits must "
             "not link the full-app test suites",
         )
@@ -832,6 +839,31 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "-p adapter-gaia --features test-support --all-targets --locked",
             windows_rust_steps,
+        )
+        # Round-42 review: the pinvou-cli workspace's own cfg(windows) unit
+        # tests EXECUTE here, filtered. Round-43 review: pin the STEP and all
+        # three filters — deleting the step (or one filter) must fail the
+        # policy suite instead of silently orphaning the Windows pins again
+        # (the ACL filter's absence is exactly how a third cfg(windows) test
+        # ended up running on no leg at all).
+        self.assertIn(
+            "- name: pinvou-cli Windows-gated unit tests",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked windows_batch_tests",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked dataset_windows",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked fetch_windows_acl",
+            windows_rust_steps,
+            "the Windows ACL privacy round-trip test must stay gated to this "
+            "leg — it is the crate's only cfg(windows) ACL pin and ran on no "
+            "leg before this filter existed",
         )
 
         # macOS-gated CLI code must type-check somewhere: cli-test is
@@ -1070,10 +1102,13 @@ class CiGatePolicyTests(unittest.TestCase):
             self.assertNotIn(
                 "--features",
                 line,
+                # Round-43 review: this message interpolates the offending
+                # line — without the f-prefix a real failure printed a
+                # literal "{line}" instead of the step.
                 "the featureless check must not re-enable features on the "
                 "same invocation: `--no-default-features --features "
                 "product-backend` satisfies the substring pin while "
-                "compiling the feature-on config: {line}",
+                f"compiling the feature-on config: {line}",
             )
         # Independent cache keyed to the compiler mode (clippy-driver
         # artifacts are not reusable by the rustc test compilers — same

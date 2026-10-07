@@ -1834,7 +1834,9 @@ jobs:
             'features::monitor::platform::windows_memory::tests::' \
             'features::monitor::platform::windows_gpu::tests::' \
             'features::remote_control::platform::windows::tests::' \
-            'features::computer_use::platform::windows::tests::'; do
+            'features::computer_use::platform::windows::tests::' \
+            'failed_probe_never_deletes_an_existing_store_windows' \
+            'features::voice_shortcut::platform::tests::'; do
             index=$((index+1))
             started=$SECONDS
             "$test_exe" "$filter" --test-threads=1 2>&1 | tee /tmp/windows_regression.log
@@ -1851,13 +1853,14 @@ jobs:
       # compile them, and the all-targets-check leg above only type-checks
       # them (Linux never compiles the platform-gated module, so "Linux
       # already exercises this behavior" does not hold for it). This step
-      # makes the two regression pins real: the BatBadBut std-batch
-      # hardening lock (windows_batch_tests) and the adapter-gaia Windows
-      # FileIdentity seams. Zero-match guards keep a rename from becoming a
-      # silent pass (same rule as the filter suite above); the run stays
-      # filtered rather than running the whole CLI lib suite because those
-      # tests have never executed on Windows and onboarding them all belongs
-      # to a dedicated change.
+      # makes the regression pins real: the BatBadBut std-batch
+      # hardening lock (windows_batch_tests), the adapter-gaia Windows
+      # FileIdentity seams (dataset_windows), and — round-43 review — the
+      # orphaned Windows ACL privacy round-trip in the same crate. Zero-match
+      # guards keep a rename from becoming a silent pass (same rule as the
+      # filter suite above); the run stays filtered rather than running the
+      # whole CLI lib suite because those tests have never executed on
+      # Windows and onboarding them all belongs to a dedicated change.
       - name: pinvou-cli Windows-gated unit tests
         if: ${{ matrix.phase == 'regression' }}
         shell: bash
@@ -1878,6 +1881,7 @@ jobs:
           }
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked windows_batch_tests
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked dataset_windows
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked fetch_windows_acl
           echo "WINDOWS_RUST_TIMING phase=regression step=cli-windows-tests elapsed_seconds=$((SECONDS-started)) status=0"
 
   macos-rust-check:
