@@ -148,14 +148,17 @@ pub(crate) use crate::platform::connector_skills::{
 ///       at startup (otherwise the refresh waits for the post-first-frame
 ///       refresh_connector_auth_gates backfill).
 /// 0.33: model-facing text audit fixes across the bundle (no upstream sync).
-/// Skill trees: dws danger-table row corrected to `calendar attendee delete`,
-/// stale P0/P1 attendance marker dropped, first-use auth pointer added
-/// (NOTICE-dingtalk.md); wecomcli-email send/reply body files unified to
-/// tmp/mail/ so intermediate mail bodies stop landing in the artifact-panel
-/// root (NOTICE-wecom.md); 12 lark sites rewritten from blocking
-/// `auth login --scope` to the lark-shared `--no-wait --json` split-flow
-/// form (lark-skills/NOTICE.md; connector contract rule 5 tightened to
-/// match). Hooks: multiagent_depth_guard now emits its deny reason as stdout
+/// Skill trees: dws danger-table row, four reference recipes, and the
+/// calendar_schedule_meeting.py script all stopped citing the nonexistent
+/// `calendar participant *` (`attendee` + `--attendees` is the real
+/// surface), stale P0/P1 attendance marker dropped, first-use auth pointer
+/// added (NOTICE-dingtalk.md); wecomcli-email send/reply body files unified
+/// to tmp/mail/ so intermediate mail bodies stop landing in the
+/// artifact-panel root (NOTICE-wecom.md); 14 lark sites rewritten from
+/// blocking `auth login --scope` to the lark-shared `--no-wait --json`
+/// split-flow form (lark-skills/NOTICE.md; connector contract rule 5
+/// tightened to match). Hooks:
+/// multiagent_depth_guard now emits its deny reason as stdout
 /// JSON (the engine reads reasons only from stdout; stderr never reaches the
 /// model) with a truthful narrow-only rationale (foundation #5253 min-clamp)
 /// and covers the workflow snake_case alias; deny_sensitive_paths names both

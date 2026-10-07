@@ -28,10 +28,13 @@ $argsText = if ($env:DEEPSEEK_TOOL_ARGS) { $env:DEEPSEEK_TOOL_ARGS } else { "" }
 # ID or display name contains a skill-connector alias.
 if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_templates") {
     # PowerShell -match is already case-insensitive, so capitalized echoes
-    # ("Feishu", "Wecom") hit too; the inline (?i:) is belt-and-braces that
-    # keeps the pattern case-insensitive even under a different matching
-    # operator. (The .sh twin lowercases the args instead.)
-    $skillConnectorNamePattern = '"(?i:wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
+    # ("Feishu", "Wecom") hit too. Do NOT add scoped inline options like
+    # (?i:...): this script runs under Windows PowerShell 5.1 (.NET
+    # Framework), which rejects them ("Unrecognized grouping construct") and
+    # — under $ErrorActionPreference = "Stop" — dies before printing, so the
+    # strict registration fails CLOSED on every list_mcp_resources* call.
+    # (The .sh twin lowercases the args instead.)
+    $skillConnectorNamePattern = '"(wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
     if ($argsText -match $skillConnectorNamePattern) {
         $denyJson = '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 或 list_mcp_resource_templates 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         # 经标准输出流写 UTF-8 无 BOM：上游按 UTF-8 解码 stdout 且 serde_json 拒绝

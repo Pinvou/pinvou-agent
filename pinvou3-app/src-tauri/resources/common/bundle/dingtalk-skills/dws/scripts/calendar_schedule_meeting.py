@@ -111,18 +111,18 @@ def main():
     if args.users and event_id:
         print('\n👥 添加参与者...')
         r = run_dws([
-            'calendar', 'participant', 'add',
+            'calendar', 'attendee', 'add',
             '--event', event_id,
-            '--users', args.users,
+            '--attendees', args.users,
             '--format', 'json',
         ], dry_run=args.dry_run)
         if r:
             print(f"  ✓ 已添加参与者: {args.users}")
     elif args.users and args.dry_run:
         run_dws([
-            'calendar', 'participant', 'add',
+            'calendar', 'attendee', 'add',
             '--event', '<EVENT_ID>',
-            '--users', args.users,
+            '--attendees', args.users,
             '--format', 'json',
         ], dry_run=True)
 

@@ -184,7 +184,7 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
 19. **`references/tmeet-control.md` waiting-room 节确认要求补强**：⚠️ 行补
     「`expel`（移出踢出）等同踢人，执行前必须列明目标成员」，与 SKILL.md
     确认表补行（第 15 条）口径一致。
-20. **meeting-id 示例占位符全量替换（SKILL.md 与 4 篇 references，55 处）**：
+20. **meeting-id 示例占位符全量替换（SKILL.md 与 4 篇 references，54 处）**：
     原 9 位数字示例 `100000000` 按本包格式准则（`references/tmeet-minutes.md`
     「meeting-code 与 meeting-id 的区别」：9~12 位数字是会议号 meeting-code，
     meeting-id 为 13 位以上数字字符串）属会议号形态，照抄示例会把

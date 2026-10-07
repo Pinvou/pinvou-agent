@@ -49,10 +49,13 @@ const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
 
 /// 解析 `lark-cli --version` 输出为三段语义版本。输出形如
 /// `lark-cli version 1.0.65`(程序名与版本之间夹着字面量 `version`),故按
-/// 「首个可解析为 semver3 的空白分隔 token」取值,顺序保证版本号先于任何
-/// 构建元数据出现。
+/// tmeet 同款口径锚定 `version` 标记、只解析其后的 token;不取「首个可解析
+/// token」,否则更新提示等前导数字噪声会被误当成版本号,门静默放行旧版。
 fn parse_lark_version(s: &str) -> Option<(u64, u64, u64)> {
-    s.split_whitespace().find_map(cc::parse_semver3)
+    let marker = s.split_whitespace().position(|t| t == "version")?;
+    s.split_whitespace()
+        .nth(marker + 1)
+        .and_then(cc::parse_semver3)
 }
 
 /// Installed lark-cli version, if the `--version` probe runs and parses.
@@ -500,6 +503,13 @@ mod tests {
         );
         // 两段式按共享口径补 0(不因假想的「1.1」误判未装触发降级重装)。
         assert_eq!(parse_lark_version("lark-cli version 1.1"), Some((1, 1, 0)));
+        // 版本号前面的数字噪声(更新提示/日期)不参与解析,锚定 `version`
+        // 标记后取值——取「首个可解析 token」会把这类前导数字误当版本号,
+        // 门静默放行旧版。
+        assert_eq!(
+            parse_lark_version("2026.10.01 update check, version 1.0.95"),
+            Some((1, 0, 95))
+        );
         assert_eq!(parse_lark_version("hello"), None);
         // 纯噪声(无版本段)不解析出误值。
         assert_eq!(parse_lark_version("error: something"), None);
