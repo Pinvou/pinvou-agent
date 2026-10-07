@@ -57,10 +57,13 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// The system-prefix blocklist, imported from
 /// `platform::path_policy::BLOCKED_PREFIXES` for the same reason.
 ///
-/// Only consulted for paths the user names freely — today that is
-/// `feedback submit --attach/--body-file` and `agent run --attach`. The
-/// artifact lanes skip it; see the module docs for why it cannot apply
-/// inside session storage.
+/// Only consulted for paths the user names freely — the round-45 lane set is
+/// `files ingest`, `artifacts read`/`write`, `feedback submit
+/// --attach/--body-file`, `agent run --attach`, `memory add --file`, `voice
+/// postprocess --text-file/--draft-file`, and `personas create/update
+/// --file`. See the module docs for the session-storage caveat: targets
+/// already proved inside session storage take the component half
+/// ([`crosses_sensitive_component`]) while the prefix half cannot apply.
 use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
 
 /// Mirror of the component half of `path_policy::check_sensitive_components`.

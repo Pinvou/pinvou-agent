@@ -1249,7 +1249,7 @@ fn collections_update(
         .l1()
         .list_collections()
         .map_err(|error| feature_error("collections update", error))?;
-    let Some(existing) = collections.iter().find(|collection| collection.id == id) else {
+    if !collections.iter().any(|collection| collection.id == id) {
         // One stable code for the family's not-found class: the concurrent
         // race arm below reports the same condition as
         // `knowledge_collection_not_found`, so the pre-check must not split
@@ -1257,13 +1257,21 @@ fn collections_update(
         return Err(CliError::failed(format!(
             "knowledge_collection_not_found: collection {id} not found"
         )));
-    };
-    let name = name.unwrap_or_else(|| existing.name.clone());
-    let category = category.or_else(|| existing.category.clone());
-    let description = description.or_else(|| existing.description.clone());
+    }
+    // Round-45 review: the write is partial — only the provided columns join
+    // the SET list (`update_collection_fields`), so a concurrent rename or
+    // category edit between this process's read and write is no longer
+    // reverted by stale merged values. The rows-affected check below still
+    // catches a concurrent delete. The pre-check read stays only to answer
+    // the not-found class with one stable code (round-39).
     let changed = service
         .l1()
-        .update_collection(id, &name, category.as_deref(), description.as_deref())
+        .update_collection_fields(
+            id,
+            name.as_deref(),
+            category.as_deref(),
+            description.as_deref(),
+        )
         .map_err(|error| feature_error("collections update", error))?;
     if !changed {
         // Round-37 review: the pre-check can lose a race with a concurrent
@@ -1273,15 +1281,22 @@ fn collections_update(
             "knowledge_collection_not_found: collection {id} no longer exists"
         )));
     }
+    // Round-45 review: the payload reports exactly what the caller changed
+    // (the write is partial now), not a read-merge of the row.
+    let mut payload = serde_json::json!({ "id": id });
+    if let Some(name) = &name {
+        payload["name"] = serde_json::json!(name);
+    }
+    if let Some(category) = &category {
+        payload["category"] = serde_json::json!(category);
+    }
+    if let Some(description) = &description {
+        payload["description"] = serde_json::json!(description);
+    }
     Ok(success(render(
         output,
         format!("updated collection {id}"),
-        &serde_json::json!({
-            "id": id,
-            "name": name,
-            "category": category,
-            "description": description,
-        }),
+        &payload,
     )))
 }
 
@@ -1671,9 +1686,28 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
             pre.running
         )
     };
-    let human = format!("{header}\n{}", render_index_state(&state));
+    // Round-45 review: the cancel is deliberately not gated behind `--yes`
+    // and drops the job's staged chunks, so the output itself carries the
+    // consequence (docs/pinvou-cli.md's knowledge row promises exactly
+    // this): a cancelled job can never `resume` or `retry`, and recovery
+    // means re-running `add-sources` from scratch. A no-op cancel on a
+    // finished job discards nothing and stays silent.
+    let note = if was_active {
+        Some(
+            "the cancel discarded the job's staged progress; a cancelled job \
+             cannot resume or retry — recovery means re-running add-sources \
+             from scratch",
+        )
+    } else {
+        None
+    };
+    let mut human = format!("{header}\n{}", render_index_state(&state));
     let mut value = serde_json::to_value(&state).unwrap_or_default();
     value["phase"] = serde_json::json!(display_phase(&state));
+    if let Some(note) = note {
+        human.push_str(&format!("\nnote: {note}"));
+        value["note"] = serde_json::json!(note);
+    }
     Ok(success(render(output, human, &value)))
 }
 
@@ -1755,9 +1789,14 @@ fn index_retry(job_id: &str, item_id: i64, output: OutputMode) -> Result<CliOutc
 /// operations (`resume`/`retry`): an unknown or non-resumable job id answers
 /// with rusqlite's `QueryReturnedNoRows`; name the real cause instead of
 /// leaking the raw driver message (the same code `index failed` uses).
+/// Round-45 review: an item-level miss on a perfectly resumable job (a bad
+/// item id) carries the store's "is not a failed item" marker and must map
+/// to its own code, not the job-not-found one.
 fn index_state_result(result: Result<IndexState, String>) -> Result<IndexState, CliError> {
     result.map_err(|error| {
-        if error.contains("Query returned no rows") {
+        if error.contains("is not a failed item") {
+            CliError::failed(format!("knowledge_index_item_not_found: {error}"))
+        } else if error.contains("Query returned no rows") {
             CliError::failed(
                 "knowledge_index_job_not_found: no resumable index job for the requested id"
                     .to_owned(),

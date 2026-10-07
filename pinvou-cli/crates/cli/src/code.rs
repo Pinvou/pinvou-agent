@@ -3772,9 +3772,38 @@ fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliO
     // `skipped: N` with no reason).
     for entry_error in &result.errors {
         human.push_str("\nerror: ");
-        human.push_str(&crate::support::collapse_control_characters(entry_error));
+        let translated = translate_import_entry_error(entry_error);
+        human.push_str(&crate::support::collapse_control_characters(&translated));
     }
     Ok(success(render(output, human, &value)))
+}
+
+/// Translates the two per-entry import failure wrappers the app-side import
+/// loop builds, so this lane's human output stays English end to end.
+///
+/// Round-45: `features/codex_acp/providers/mod.rs::import` pushes its
+/// per-entry failures as `format!("保存 {entry_name} 失败: {error:#}")` (the
+/// record save) and `format!("写入 {entry_name} 密钥失败: {error:#}")` (the
+/// keyring write), and the render loop above surfaced them verbatim — CJK in
+/// an otherwise-English terminal surface the contract test pins `is_ascii`
+/// ("no Chinese store chain may surface through the import lane"). Same
+/// boundary rule as `files::translate_ingest_error`: the enumerated store
+/// messages get English copy at the CLI boundary, and anything unrecognized
+/// passes through unchanged — a failure the CLI cannot name is still worth
+/// more to the user than a dropped one. Must be revisited if the app-side
+/// wrappers ever gain a third shape.
+fn translate_import_entry_error(error: &str) -> String {
+    if let Some(rest) = error.strip_prefix("保存 ") {
+        if let Some((name, cause)) = rest.split_once(" 失败: ") {
+            return format!("failed to save {name}: {cause}");
+        }
+    }
+    if let Some(rest) = error.strip_prefix("写入 ") {
+        if let Some((name, cause)) = rest.split_once(" 密钥失败: ") {
+            return format!("failed to write the {name} key: {cause}");
+        }
+    }
+    error.to_owned()
 }
 
 // ── code sessions ───────────────────────────────────────────────────────────
@@ -6263,5 +6292,41 @@ max_context_size = 1000
             &config.replace("max_context_size = 1000", "max_context_size = 0"),
             false
         ));
+    }
+
+    #[test]
+    fn translate_import_entry_error_maps_the_two_app_wrappers_and_passes_the_rest_through() {
+        // The exact format! shapes the app-side import loop builds
+        // (`features/codex_acp/providers/mod.rs::import`) — the entry name
+        // and cause are arbitrary (the name is user data, the cause a
+        // store/OS chain), so both are variable here.
+        let name = "Relay A";
+        let cause = "store closed: io error";
+        assert_eq!(
+            translate_import_entry_error(&format!("保存 {name} 失败: {cause}")),
+            format!("failed to save {name}: {cause}")
+        );
+        assert_eq!(
+            translate_import_entry_error(&format!("写入 {name} 密钥失败: {cause}")),
+            format!("failed to write the {name} key: {cause}")
+        );
+
+        // Anything else passes through unchanged — including an English
+        // message, a near-miss wrapper (right prefix, wrong separator), and
+        // a failure whose name part is empty.
+        let passthrough_cases = [
+            "provider_api_key_missing: no stored API key",
+            "保存 Relay A 失败(no separator)",
+            "写入 密钥失败: nothing",
+            "写入 ABC 密钥失败",
+            "",
+        ];
+        for case in passthrough_cases {
+            assert_eq!(
+                translate_import_entry_error(case),
+                case,
+                "an unrecognized message must pass through unchanged: {case:?}"
+            );
+        }
     }
 }

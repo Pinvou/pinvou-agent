@@ -495,6 +495,40 @@ fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table(
         "{not json",
         "the corrupt index must be left for repair, not replaced"
     );
+
+    // Round-45 review: the delete only needs the index's PATH, so it must
+    // not load the corrupt file — the app-side `load_or_empty` prints a
+    // zh "starting empty" stderr line on exactly this corruption, which
+    // polluted the refusal output the user has to act on. The in-process
+    // harness cannot capture that stderr, so this runs the real binary
+    // (inheriting the fixture home) against a fresh session (the refusal
+    // above still deleted the first one at the store level).
+    let subprocess_id = create_session_fixture();
+    // Re-corrupt the index in case the fixture creation touched it.
+    std::fs::write(&agents_path, "{not json").unwrap();
+    let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["sessions", "delete", &subprocess_id, "--yes"])
+        .output()
+        .expect("spawn the pinvou binary");
+    assert_eq!(
+        spawned.status.code(),
+        Some(1),
+        "the corrupt index must still refuse: {}",
+        String::from_utf8_lossy(&spawned.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&spawned.stdout),
+        String::from_utf8_lossy(&spawned.stderr)
+    );
+    assert!(
+        !combined.contains("starting empty"),
+        "path-sourcing the index must not print the app-side boot recovery line: {combined}"
+    );
+    assert!(
+        combined.contains("session-agents.json"),
+        "the refusal must still name the store: {combined}"
+    );
 }
 
 #[test]

@@ -193,11 +193,13 @@ fn validate_sandbox_home(
 /// an environment variable — is a host failure, exit 1, whether that
 /// content is missing, unreadable, too large, or not UTF-8. A byte cap is
 /// therefore always exit 1, from a file and from stdin alike. `action`
-/// prefixes the error; the convention is the caller's stable snake_case
-/// error code (`memory_content_file_unreadable`, `artifact_read_failed`) —
-/// a human phrase (`"feedback submit"`) renders the same failure without a
-/// scriptable prefix, so new call sites pick the code form (round-37
-/// review named the mixed conventions).
+/// prefixes the error; the actual convention is two-shaped by caller:
+/// helper-routed resource failures carry a stable snake_case code
+/// (`memory_content_file_unreadable`, `artifact_read_failed`), while
+/// family-verb refusals render as human phrases (`"feedback submit"`);
+/// docs/pinvou-cli.md tells scripts to match the documented per-command
+/// exit codes, not message text (round-37 named the mix; round-45
+/// reworded this comment to describe it).
 pub fn read_text_file_capped(
     path: &Path,
     max_bytes: usize,
@@ -240,7 +242,8 @@ pub fn read_text_file_capped(
         CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
     })?;
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64 + 1)
+    // Round-45 review: saturate so a usize::MAX cap ("unbounded") neither panics in debug nor wraps to take(0) in release.
+    file.take((max_bytes as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| {
             CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
@@ -297,7 +300,8 @@ pub fn read_bytes_capped(path: &Path, max_bytes: usize, action: &str) -> Result<
         CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
     })?;
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64 + 1)
+    // Round-45 review: saturate so a usize::MAX cap ("unbounded") neither panics in debug nor wraps to take(0) in release.
+    file.take((max_bytes as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| {
             CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
@@ -868,7 +872,8 @@ mod tests {
     }
     use super::{
         ENV_LOCK, collapse_block_control_characters, collapse_control_characters, decode_arguments,
-        emit_report, json_failure_payload, resolve_secret, validate_sandbox_home,
+        emit_report, json_failure_payload, read_bytes_capped, read_text_file_capped,
+        resolve_secret, validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};
@@ -1178,6 +1183,36 @@ mod tests {
         let decoded = decode_arguments(raw).expect("argv[0] is loss-converted, not refused");
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[1], "--version");
+    }
+
+    /// Round-45 review: a usize::MAX cap means "read the whole file" — the
+    /// old `max_bytes as u64 + 1` overflowed there (debug panic, release
+    /// wrap to take(0), i.e. a silent empty read). Reverting the
+    /// `saturating_add` fails this test (or panics under debug assertions).
+    #[test]
+    fn capped_readers_treat_usize_max_as_unbounded_instead_of_overflowing() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-support-cap-max-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("payload.txt");
+        std::fs::write(&path, b"small payload").unwrap();
+
+        let text = read_text_file_capped(&path, usize::MAX, "probe_failed")
+            .expect("a usize::MAX cap must read the file, not overflow");
+        assert_eq!(
+            text, "small payload",
+            "the full content must come back, not an empty read"
+        );
+        let bytes = read_bytes_capped(&path, usize::MAX, "probe_failed")
+            .expect("a usize::MAX cap must read the file, not overflow");
+        assert_eq!(bytes, b"small payload");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

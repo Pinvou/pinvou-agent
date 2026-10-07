@@ -1606,6 +1606,117 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
     let _ = home;
 }
 
+/// Round-45 review: legacy files carry no version and every CLI writer adds
+/// one (`ensure_sidecar_schema` documents the rule), so a version-less
+/// read-state file mutated by mark-viewed must land on disk WITH the
+/// app-side serde default (schema 2) — the GUI's typed deserializer relies
+/// on it for future-version refusals.
+#[test]
+fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("mark-viewed-versionless");
+    let created = create_task(&home, "Versioned read-state task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // A completed run bound to a real scheduled-run session, so the run is
+    // actually viewable and the command reaches the registry write.
+    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
+    let session = store
+        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
+            task_id: task_id.clone(),
+            model: "default-model".to_owned(),
+            model_id: None,
+            workspace: home
+                .path()
+                .join("scheduled")
+                .join(&task_id)
+                .join("workspace"),
+            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
+            allow_shell: false,
+            trust_mode: true,
+            auto_approve: true,
+        })
+        .unwrap();
+    let session_id = session.metadata.id.clone();
+    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(&task_id).join("done-1.json"),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": "done-1",
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z",
+            "started_at": "2026-09-10T08:00:01.000Z",
+            "ended_at": "2026-09-10T08:05:00.000Z",
+            "task_id": "foundation-task-1",
+            "thread_id": session_id,
+            "turn_id": "turn-1",
+            "error": null
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // A legacy version-less read-state file (pre-versioning app build).
+    let read_state = home.root.join("scheduled-runs").join("read-state.json");
+    std::fs::create_dir_all(home.root.join("scheduled-runs")).unwrap();
+    std::fs::write(
+        &read_state,
+        serde_json::json!({ "viewed_runs": {} }).to_string(),
+    )
+    .unwrap();
+
+    run_json(&["scheduled", "mark-viewed", &task_id, "done-1"]);
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&read_state).unwrap()).unwrap();
+    assert_eq!(
+        rewritten["schema_version"].as_u64(),
+        Some(2),
+        "the rewrite must stamp the app-side current schema version: {rewritten}"
+    );
+    assert_eq!(
+        rewritten["viewed_runs"][&task_id][0].as_str(),
+        Some("done-1")
+    );
+    let _ = home;
+}
+
+/// Round-45 review: delete's sidecar-cleanup rewrite is a raw registry
+/// write-back, so a version-less registry it rewrites must gain the
+/// app-side current schema version (1 for bindings/kinds/ui-metadata) the
+/// same way every other CLI writer stamps one.
+#[test]
+fn delete_cleanup_rewrite_adds_schema_version_to_a_versionless_registry() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("delete-versionless-registry");
+    let created = create_task(&home, "Versioned cleanup task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // A legacy version-less kind registry holding this task's entry, so the
+    // cleanup actually removes something and rewrites the file.
+    let kinds_path = home.path().join("automations").join("task-kinds.json");
+    std::fs::create_dir_all(home.path().join("automations")).unwrap();
+    std::fs::write(
+        &kinds_path,
+        serde_json::json!({ "tasks": { task_id.clone(): { "kind": "chat" } } }).to_string(),
+    )
+    .unwrap();
+
+    run_json(&["scheduled", "delete", &task_id, "--yes"]);
+    let rewritten: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&kinds_path).unwrap()).unwrap();
+    assert_eq!(
+        rewritten["schema_version"].as_u64(),
+        Some(1),
+        "the cleanup rewrite must stamp the app-side current schema version: {rewritten}"
+    );
+    assert!(
+        rewritten["tasks"].get(&task_id).is_none(),
+        "the stale entry must be gone: {rewritten}"
+    );
+    let _ = home;
+}
+
 /// A history archive that is a valid object but lacks the `tasks` key must
 /// still receive the deleted task's run snapshot instead of silently
 /// dropping the history.
