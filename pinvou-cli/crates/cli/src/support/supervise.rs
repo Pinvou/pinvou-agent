@@ -282,13 +282,15 @@ impl GroupGuard {
         Self { pgid, armed: true }
     }
 
-    /// Register a RAW-spawn child's group and wrap it. For sites that spawn
-    /// with `set_process_group` but not through `spawn_supervised` (voice's
-    /// ffmpeg/engine/ASR children): the registration this performs is the
-    /// same `register_child_group` the supervised spawn path uses, so the
-    /// interrupt watcher forwards to the group on every exit path without
-    /// each module keeping its own register/forget bracket (round-40 review
-    /// folded voice's private `SupervisedGroup` twin into this type).
+    /// Wrap a child spawned through `spawn_supervised` when the site needs
+    /// explicit early-release or scope-held registration semantics (voice's
+    /// ffmpeg/engine/ASR children). The supervised spawn already registered
+    /// the pgid inside its spawn window, so the `register_child_group` call
+    /// here is an idempotent belt — the reason to use this constructor is
+    /// the explicit guard, not the registration (round-40 review folded
+    /// voice's private `SupervisedGroup` twin into this type; round-44
+    /// review reworded the doc, which described a raw-spawn caller class
+    /// that no longer exists).
     pub(crate) fn register(pgid: u32) -> Self {
         register_child_group(pgid);
         Self { pgid, armed: true }

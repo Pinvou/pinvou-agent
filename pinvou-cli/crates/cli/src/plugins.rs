@@ -2216,16 +2216,6 @@ fn set_enabled(
         } else if !ids.iter().any(|existing| existing == &packages) {
             ids.push(packages.clone());
         }
-        // Verified on the NORMALIZED projection of the exact list handed to
-        // the writer, which is what it persists and what every later read
-        // resolves: an entry whose ownership flipped (a companion skill id
-        // still spelled raw) normalizes onto `packages` too, and an enable
-        // that only dropped the exact spelling would otherwise report success
-        // while the package stayed disabled.
-        let recorded = ids.iter().any(|existing| {
-            pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, existing)
-                == packages
-        });
         pinvou3_lib::features::marketplace::save_disabled_bundles_for(connector_scope, &ids)
             .map_err(|error| {
                 CliError::failed(format!(
@@ -2235,11 +2225,23 @@ fn set_enabled(
                     applied_scopes_suffix(&applied)
                 ))
             })?;
-        // Only reachable if the mutation above did not leave the list in the
-        // requested state — storage errors already surfaced through the `?`.
-        // Fail closed in both directions: an enable that did not stick
-        // re-activates the package, and a lost disable leaves it ACTIVE while
-        // the caller sees success.
+        // Round-44 review: verify against a REAL read-back of what the writer
+        // persisted — the previous check recomputed the same pure function
+        // over the same in-memory list, so the guard below was dead code and
+        // `persistence_verified: true` was asserted without verification.
+        // The read-back is resolved over the same normalized projection the
+        // mutation used (an entry whose ownership flipped normalizes onto
+        // `packages` too, and the writer re-normalizes with its own fresh
+        // `available_tools()` walk), and it only runs after storage errors
+        // already surfaced through the `?`. Fail closed in both directions:
+        // an enable that did not stick re-activates the package, and a lost
+        // disable leaves it ACTIVE while the caller sees success.
+        let persisted =
+            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
+        let recorded = persisted.iter().any(|existing| {
+            pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, existing)
+                == packages
+        });
         if recorded == enabled {
             return Err(CliError::failed(format!(
                 "plugins {action}: could not persist {id} for scope {} (the resolved \

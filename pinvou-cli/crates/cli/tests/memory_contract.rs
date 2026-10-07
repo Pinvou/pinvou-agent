@@ -2397,13 +2397,17 @@ fn memory_add_refuses_a_credential_location_file() {
         "{error}"
     );
 
-    // And nothing was stored.
+    // And nothing was stored. The pending queue resolves under the `user/`
+    // component of the home (round-44 review: the previous assertion missed
+    // that component, so `.exists()` was always false and the pin was
+    // vacuous).
+    let pending = home
+        .path()
+        .join("user")
+        .join("memory")
+        .join("_pending.jsonl");
     assert!(
-        !home.path().join("memory").join("_pending.jsonl").exists()
-            || std::fs::read_to_string(home.path().join("memory").join("_pending.jsonl"))
-                .unwrap()
-                .trim()
-                .is_empty(),
+        !pending.exists() || std::fs::read_to_string(&pending).unwrap().trim().is_empty(),
         "the refused file must not enqueue a memory item"
     );
 }

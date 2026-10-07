@@ -857,6 +857,15 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             agents.path().display()
         ))
     })?;
+    // Round-44 review: the GUI's delete cascade also prunes the session's
+    // `projects.json` assignment (the `session_deleted_hook` registered in
+    // the desktop composition root); without this the dead id stayed in
+    // `projects list` forever in a CLI-only workflow. Mirror the hook
+    // best-effort — a persist failure is noted by the store itself and must
+    // not fail the delete (the desktop boot's `retain_sessions` reconciles
+    // the rest). Same disclosed whole-file store discipline as every
+    // `pinvou projects` command.
+    pinvou3_lib::features::projects::ProjectStore::boot().forget_session(id);
     let value = serde_json::json!({ "id": id, "action": "deleted" });
     Ok(success(render(output, format!("deleted {id}"), &value)))
 }
