@@ -865,6 +865,28 @@ class CiGatePolicyTests(unittest.TestCase):
             "leg — it is the crate's only cfg(windows) ACL pin and ran on no "
             "leg before this filter existed",
         )
+        # Round-44 review: benchmark-core's cfg(windows) security pins (the
+        # DPAPI fail-closed blob tests and the Windows ACL parse pin) ran on
+        # NO leg either — `-p benchmark-core` appeared in no workflow, the
+        # same orphan class the ACL filter's absence created. Pin both
+        # module filters: deleting the step or one filter must fail the
+        # policy suite instead of silently orphaning the pins again.
+        self.assertIn(
+            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p benchmark-core --lib --locked private_prediction::tests::windows_",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p benchmark-core --lib --locked windows_private_acl::tests::",
+            windows_rust_steps,
+        )
+        # The zero-match guard bodies are load-bearing — a renamed test must
+        # FAIL the step, not pass silently — so pin them alongside the
+        # filters they protect (round-44 review).
+        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", windows_rust_steps)
+        self.assertIn('grep -q "^test result: ok"', windows_rust_steps)
+        self.assertIn(
+            "a renamed test must not become a silent pass", windows_rust_steps
+        )
 
         # macOS-gated CLI code must type-check somewhere: cli-test is
         # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
@@ -1671,6 +1693,11 @@ class CiGatePolicyTests(unittest.TestCase):
             "Windows 测试二进制导入诊断": "regression",
             "CodeWhale Windows PowerShell regressions": "regression",
             "Windows 原子替换状态机回归": "regression",
+            # Round-44 review: the step carries all the CLI workspace's
+            # Windows-gated pins, so its routing condition is load-bearing —
+            # an `if: false` (or an unmatchable condition) would silently
+            # skip it while every text pin below stays green.
+            "pinvou-cli Windows-gated unit tests": "regression",
             # Shared setup runs on both legs.
             "初始化公共底座 submodule": None,
             "Cargo cache": None,
@@ -1695,6 +1722,32 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
         self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
         self.assertNotIn("actions/setup-node", windows_rust_test)
+    def test_windows_regression_loop_pins_the_round43_and_round44_app_filters(self):
+        # Round-44 review: six app-side cfg(windows) tests ran on no leg —
+        # three in the dependencies platform module, two in codex_acp's
+        # platform module, and the headless-bridge attachment security gate
+        # (whose cfg(not(windows)) sibling DOES run on Linux rust-test). The
+        # round-43 additions to this loop were themselves never pinned by
+        # the policy suite, so a filter deletion would have gone unpunished.
+        # Pin the loop's round-43/44 additions and its zero-match guard;
+        # deleting one must fail the suite instead of silently orphaning the
+        # pins again.
+        windows_rust_test = _without_yaml_comments(
+            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
+                "\n  macos-rust-check:", maxsplit=1
+            )[0]
+        )
+        for needle in [
+            "'failed_probe_never_deletes_an_existing_store_windows' \\",
+            "'features::voice_shortcut::platform::tests::' \\",
+            "'app::commands::dependencies::platform::windows::tests::' \\",
+            "'features::codex_acp::platform::windows::tests::' \\",
+            "'windows_attachment_runtime_stays_security_gated'; do",
+            # The loop's zero-match guard is load-bearing (a renamed test
+            # must fail the step, not pass silently).
+            "回归过滤器 '$filter' 匹配 0 个测试",
+        ]:
+            self.assertIn(needle, windows_rust_test)
 
     def test_memory_setup_disk_swap_is_mandatory(self):
         # Disk swap is mandatory (2026-09-19): with the zram pool capped at
