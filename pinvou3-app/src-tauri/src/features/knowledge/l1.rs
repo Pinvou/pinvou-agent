@@ -260,6 +260,47 @@ impl L1Store {
         Ok(changed > 0)
     }
 
+    /// Partial variant of [`Self::update_collection`]: only the provided
+    /// columns join the SET list (plus the `updated_at` stamp). Round-45
+    /// review: the CLI's update lane used to read-merge-write the whole row,
+    /// so a concurrent rename between its read and write was silently
+    /// reverted by stale merged values — a partial UPDATE leaves columns the
+    /// caller omitted (and concurrent edits to them) untouched, while the
+    /// rows-affected return still catches a concurrent delete.
+    pub fn update_collection_fields(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        category: Option<&str>,
+        description: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        let mut set_clauses: Vec<String> = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for (column, value) in [
+            ("name", name),
+            ("category", category),
+            ("description", description),
+        ] {
+            if let Some(value) = value {
+                set_clauses.push(format!("{}=?{}", column, values.len() + 1));
+                values.push(Box::new(value.to_owned()));
+            }
+        }
+        set_clauses.push(format!("updated_at=?{}", values.len() + 1));
+        values.push(Box::new(now()));
+        values.push(Box::new(id));
+        let sql = format!(
+            "UPDATE collections SET {} WHERE id=?{}",
+            set_clauses.join(","),
+            values.len()
+        );
+        let changed = self.conn.lock().execute(
+            &sql,
+            rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())),
+        )?;
+        Ok(changed > 0)
+    }
+
     /// 删知识集 + 其全部文档/块（chunks_fts 由触发器同步）。
     pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
         let mut c = self.conn.lock();
@@ -1070,6 +1111,42 @@ mod tests {
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
         L1Store::new(store.conn_arc()) // Unit test: plain full-text only, no embedding
+    }
+
+    /// Round-45 review: the CLI's update lane used to read-merge-write the
+    /// whole row, so a concurrent rename between its read and write was
+    /// silently reverted. The partial UPDATE must leave omitted columns (and
+    /// concurrent edits to them) untouched while keeping the rows-affected
+    /// not-found semantics.
+    #[test]
+    fn partial_collection_update_leaves_omitted_columns_untouched() {
+        let l1 = mem();
+        let id = l1
+            .create_collection("原始名", Some("cat"), Some("desc"))
+            .unwrap();
+        // Simulate the concurrent writer: a rename lands between the CLI's
+        // read and its write (the writer itself uses the partial form, so it
+        // does not clobber the other columns either).
+        l1.update_collection_fields(id, Some("并发改名"), None, None)
+            .unwrap();
+        assert!(
+            l1.update_collection_fields(id, None, None, Some("新描述"))
+                .unwrap()
+        );
+        let row = l1
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == id)
+            .unwrap();
+        assert_eq!(row.name, "并发改名");
+        assert_eq!(row.category.as_deref(), Some("cat"));
+        assert_eq!(row.description.as_deref(), Some("新描述"));
+        // An unknown id still reports not-found through rows-affected.
+        assert!(
+            !l1.update_collection_fields(999_999, Some("x"), None, None)
+                .unwrap()
+        );
     }
 
     #[test]

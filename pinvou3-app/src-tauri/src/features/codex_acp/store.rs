@@ -457,6 +457,18 @@ impl SessionAgentStore {
         }
     }
 
+    /// 一个不读盘的空实例，仅供只需要索引路径的调用方使用。Round-45 review：
+    /// `sessions delete` 只需要 `path()`，其删除通道
+    /// （`remove_for_second_process`）本来就会在锁下重读整个索引；经
+    /// `load_or_empty` 取路径会把启动恢复的「starting empty」stderr 行带进
+    /// CLI 的失败输出，正好污染用户必须手工修复的那个场景。
+    pub fn empty_without_loading() -> Self {
+        Self {
+            path: crate::platform::paths::pinvou3_home().join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     pub fn backend(&self, session_id: &str) -> AgentBackend {
         self.records
             .read()
@@ -2132,7 +2144,7 @@ mod tests {
         );
 
         let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let restored = on_disk.sessions.get("rebound-session").unwrap();
+        let restored = &on_disk.sessions["rebound-session"];
         assert_eq!(restored.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(
             restored.workspace_path.as_deref(),

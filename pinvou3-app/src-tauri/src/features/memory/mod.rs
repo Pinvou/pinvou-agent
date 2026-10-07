@@ -82,6 +82,11 @@ pub use self::util::clean_candidate_sentence;
 // review).
 pub use self::io::{PREFERENCE_TEXT_MAX_CHARS, TIMED_TEXT_MAX_CHARS};
 pub use self::util::clean_text;
+// Round-45 review: the CLI's content-entry lanes (`memory add`, `update`,
+// `pending never --reason`) refuse text carrying a memory-block marker —
+// the same boundary the organize validator and review sanitizer enforce —
+// instead of storing it into the model-visible block verbatim.
+pub use self::util::contains_memory_block_marker;
 // The CLI `memory add` rejects profile-shaped preference text before
 // enqueueing (the confirm path marks it confirmed but writes nothing), and
 // `memory pending confirm` reports that no-op instead of printing success.

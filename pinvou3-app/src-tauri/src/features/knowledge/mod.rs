@@ -556,9 +556,17 @@ impl KnowledgeService {
             return Err("已有知识集导入任务正在运行".into());
         }
         refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
-        self.imports
-            .retry_item(&job_id, item_id)
-            .map_err(|e| e.to_string())?;
+        self.imports.retry_item(&job_id, item_id).map_err(|error| {
+            // Strip the driver's "Invalid parameter name:" wrapper off
+            // the item-level miss marker (round-45) so the CLI's
+            // `knowledge_index_item_not_found` line reads cleanly.
+            let text = error.to_string();
+            if text.contains("is not a failed item") {
+                format!("knowledge index item {item_id} is not a failed item of job {job_id}")
+            } else {
+                text
+            }
+        })?;
         *active = Some(job_id.clone());
         drop(active);
         self.launch_import(job_id.clone());
@@ -621,10 +629,23 @@ impl KnowledgeService {
                     // thread must not keep claiming the items the interrupt
                     // moved back to pending and end the job fully-ingested
                     // yet `interrupted`.
-                    if infrastructure_error
-                        || cancel.load(Ordering::Relaxed)
-                        || imports.is_stopped(&job_id)
+                    let stopped = imports.is_stopped(&job_id);
+                    if infrastructure_error || cancel.load(Ordering::Relaxed) || stopped == Ok(true)
                     {
+                        break;
+                    }
+                    if let Err(_) = stopped {
+                        // Round-45 review: a status read that keeps failing is
+                        // indistinguishable from a wedged store. Breaking
+                        // without `infrastructure_error` left the row
+                        // `running`, skipped `finish`, and parked the
+                        // collection at `ready` — the exact phantom-latest
+                        // shape this family's contract excludes. Route it
+                        // through the same interrupt + infrastructure-error
+                        // path as `claim_next`'s error arm so the job lands
+                        // `interrupted` and stays resumable.
+                        let _ = imports.interrupt(&job_id);
+                        infrastructure_error = true;
                         break;
                     }
                     let item = match imports.claim_next(&job_id) {
