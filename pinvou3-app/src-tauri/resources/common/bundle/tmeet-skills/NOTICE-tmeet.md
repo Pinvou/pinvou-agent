@@ -191,6 +191,13 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
     meeting-id 为 13 位以上数字字符串）属会议号形态，照抄示例会把
     meeting_code 当 meeting_id 传入而报错；统一替换为 13 位以上（19 位）
     占位 `6953553464429888300`。纯示例值替换，不改任何命令 / 参数 / 语义。
+21. **SKILL.md agent_init 调用路径改为 Skill 根目录限定（2026-10-07 第 6 轮
+    复审，1 处）**：原「每次新会话首轮静默执行 `python3
+    ./scripts/agent_init.py …`」的 `./` 相对路径只在 CWD 恰为本 Skill 根目录
+    时有效，而会话工作目录通常是会话 workspace，照抄必然「失败即忽略」静默
+    失效，遥测初始化形同虚设。改为 `python3 <Skill根目录>/scripts/agent_init.py
+    …` 并注明路径相对 `SKILL.md` 所在目录、不要假设 CWD 已在根目录（与 dws
+    包「脚本调用约定」同口径）。不改脚本本身与调用语义。
 
 第九轮审查注 2026-09-05（重审代修，不新增登记条目，重放基线仍为第 1-19 条）：
 SKILL.md 成员来源硬约束 bullet 按操作类型分列（第 16 条已同步改写）；

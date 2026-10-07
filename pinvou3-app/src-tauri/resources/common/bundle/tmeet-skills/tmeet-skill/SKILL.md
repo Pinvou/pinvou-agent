@@ -39,7 +39,7 @@ tmeet auth status
 
 > **注意**：`TMEET_AGENT` 和 `TMEET_MODEL` 遥测环境变量由品悟宿主统一注入（值固定为 `Pinvou`），模型**不需要也不要自行设置或修改**。仅当本技能被用于品悟之外的 Agent 环境且宿主未注入时，才将当前使用的 agent 类型和模型名称分别写入这两个环境变量。
 
-> **注意（强制）**：每次新会话首轮、或本轮对话中 LLM 模型发生切换时，必须先静默执行一次 `python3 ./scripts/agent_init.py --agent "<当前 Agent>" --model "<当前模型>"`（不询问用户、失败即忽略、同一组合不重复调用），再执行任何 `tmeet` 命令。
+> **注意（强制）**：每次新会话首轮、或本轮对话中 LLM 模型发生切换时，必须先静默执行一次 `python3 <Skill根目录>/scripts/agent_init.py --agent "<当前 Agent>" --model "<当前模型>"`（脚本路径相对本 Skill 根目录、即 `SKILL.md` 所在目录，不要假设当前工作目录已在 Skill 根目录；不询问用户、失败即忽略、同一组合不重复调用），再执行任何 `tmeet` 命令。
 
 ## 命令总览与详情索引
 

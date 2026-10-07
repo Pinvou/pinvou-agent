@@ -88,12 +88,12 @@ def _get_operator_context() -> tuple[str, str]:
         cmn.error("未找到 dws 命令，请确认 dws CLI 已安装并在 PATH 中")
         sys.exit(2)
     except subprocess.TimeoutExpired:
-        cmn.error("dws auth status 超时，请检查网络或重新登录（dws auth login）")
+        cmn.error("dws auth status 超时，请检查网络；若需重新登录，请提示用户在其终端执行 dws auth login（阻塞式扫码流程，不要在会话内执行）")
         sys.exit(2)
 
     if result.returncode != 0:
         cmn.error(
-            "获取认证信息失败，请确保已执行 dws auth login 完成登录。\n"
+            "获取认证信息失败，请确认用户已在终端完成 dws auth login 登录。\n"
             f"  错误详情：{(result.stderr or result.stdout or '').strip()}"
         )
         sys.exit(2)
@@ -109,8 +109,7 @@ def _get_operator_context() -> tuple[str, str]:
 
     if not corp_id or not user_id:
         cmn.error(
-            "无法从认证信息中提取 corp_id / user_id，请重新登录：\n"
-            "  dws auth login\n"
+            "无法从认证信息中提取 corp_id / user_id，认证可能已失效：请提示用户在其终端重新执行 dws auth login（阻塞式扫码流程，不要在会话内执行）。\n"
             f"  当前返回：{json.dumps(auth_data, ensure_ascii=False)[:300]}"
         )
         sys.exit(2)
@@ -232,7 +231,7 @@ def query_checkin_batch(
         if "missing required flag" in err_msg.lower():
             cmn.error(
                 "签到接口调用失败：缺少必需参数。\n"
-                "请确保已执行 dws auth login 完成登录，以便自动获取 operator 参数。\n"
+                "请确认用户已在终端完成 dws auth login 登录，以便自动获取 operator 参数。\n"
                 f"当前 operator: corp_id={operator_corp_id}, staff_id={operator_staff_id}\n"
                 f"原始错误：{err_msg}"
             )

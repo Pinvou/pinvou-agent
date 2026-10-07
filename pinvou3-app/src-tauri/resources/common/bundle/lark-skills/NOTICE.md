@@ -685,8 +685,15 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 - 复查补漏:lark-im-flag-create.md、lark-im-feed-groups.md 两处引用 CLI
   自身提示原文的 `auth login --scope` 内联代码也改为 lark-shared 按需授权
   指针(引用的提示措辞不再保留可照抄的阻塞命令)
+- 复查补漏(第 6 轮复审,6 文件 6 处):lark-wiki-node-create.md、
+  lark-drive-import.md、lark-drive-upload.md、lark-drive-create-folder.md、
+  lark-drive-task-result.md、lark-im-chat-identity.md 的「按 lark-shared
+  按需授权流程(`auth login --scope ...`)完成登录」指针句——载体名让规则 5
+  按设计放行,但句内反引号仍嵌着可照抄的阻塞命令形态;反引号片段删除,
+  保留 lark-shared 指针并显式注明勿在会话内直接执行登录(登记第 1 项的
+  sync 复查需覆盖这些文件,防止上游原文回潮)
 
-均为本地修改,下次 sync 需重放。配套把
+合计 19 个文件 20 处,均为本地修改,下次 sync 需重放。配套把
 `pinvou3-app/tests/connector_skills_contract.test.js` 规则 5 收紧:含
 `--scope` 的 `auth login` 行必须同时含 `--no-wait`,或点名流程载体
 (lark-shared 按需授权流程;prompt/hint/提示/surfaces 等转述词不再单独豁免,
