@@ -543,7 +543,15 @@ fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 fn parse_gaia_fetch(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "fetch")?;
     let options = named_options(&values[3..], &["--token-env", "--source"])?;
-    let token_env = option(&options, "--token-env").map(str::to_owned);
+    let token_env = match option(&options, "--token-env") {
+        // Round-44 review: NAME shape gate — same doctrine as the other
+        // env-var-NAME flags.
+        Some(value) => {
+            crate::support::ensure_env_var_name("--token-env", value)?;
+            Some(value.to_owned())
+        }
+        None => None,
+    };
     let source = option(&options, "--source").map(PathBuf::from);
     if token_env.is_some() == source.is_some() {
         return Err(CliError::usage(

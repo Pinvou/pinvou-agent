@@ -410,9 +410,21 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                             )
                         })?
                         .to_owned();
+                    // Round-44 review: NAME shape gates — a pasted literal
+                    // secret must be refused at parse time (before it can be
+                    // echoed by a later not-set error), the same doctrine the
+                    // plugins --secret gate established.
+                    crate::support::ensure_env_var_name("--client-id-env", &client_id_env)?;
+                    let api_key_env = match option(&options, "--api-key-env") {
+                        Some(value) => {
+                            crate::support::ensure_env_var_name("--api-key-env", value)?;
+                            Some(value.to_owned())
+                        }
+                        None => None,
+                    };
                     Ok(ConnectorsCommand::Ima(ImaCommand::Connect {
                         client_id_env,
-                        api_key_env: option(&options, "--api-key-env").map(str::to_owned),
+                        api_key_env,
                         api_key_stdin: flags.contains(&"--api-key-stdin"),
                     }))
                 }
@@ -1345,7 +1357,12 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
                     yes_no(bool_field(entry, "skill_installed")),
                 ));
                 if let Some(note) = entry.get("note").and_then(Value::as_str) {
-                    line.push_str(&format!("\t({note})"));
+                    // Same collapse discipline as the sibling version cell:
+                    // the note embeds error-chain text (round-44 review).
+                    line.push_str(&format!(
+                        "\t({})",
+                        crate::support::collapse_control_characters(note)
+                    ));
                 }
             } else {
                 let installed = if bool_field(entry, "installed") {
@@ -1385,7 +1402,12 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
                     ));
                 }
                 if let Some(note) = entry.get("note").and_then(Value::as_str) {
-                    line.push_str(&format!("\t({note})"));
+                    // Same collapse discipline as the sibling version cell:
+                    // the note embeds error-chain text (round-44 review).
+                    line.push_str(&format!(
+                        "\t({})",
+                        crate::support::collapse_control_characters(note)
+                    ));
                 }
             }
             line
@@ -1596,9 +1618,9 @@ fn set_enabled(
         },
     )?;
     // Round-43 review: same post-save read-back verification as the plugins
-    // sibling — storage errors already surfaced through the `?`, so this is
-    // only reachable if the write did not leave the list in the requested
-    // state. Fail closed in both directions: an enable that did not stick
+    // sibling (there over the normalized projection) — storage errors
+    // already surfaced through the `?`, so this is only reachable if the
+    // write did not leave the list in the requested state. Fail closed in both directions: an enable that did not stick
     // re-activates the package, and a lost disable leaves it active while
     // the caller sees success.
     let persisted = pinvou3_lib::features::marketplace::load_disabled_bundles_for(scope);
@@ -2170,16 +2192,37 @@ fn run_npm_attempt(
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
-    let (out, err) = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(file) => match file.try_clone() {
-            Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
-            Err(_) => (Stdio::null(), Stdio::null()),
-        },
-        Err(_) => (Stdio::null(), Stdio::null()),
+    // Round-44 review: npm's output is redirected straight into this file
+    // (scrubbing in-flight would mean piping and capping the stream), so
+    // the one hardening that applies at the redirect is creation mode — a
+    // world-readable 0644 log next to the npmrc tokens it can echo is the
+    // wrong default. Unix-scoped like every other 0600 claim in this CLI.
+    let (out, err) = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let mut open_log = std::fs::OpenOptions::new();
+            open_log.create(true).append(true).mode(0o600);
+            match open_log.open(&log_path) {
+                Ok(file) => match file.try_clone() {
+                    Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
+                    Err(_) => (Stdio::null(), Stdio::null()),
+                },
+                Err(_) => (Stdio::null(), Stdio::null()),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let mut open_log = std::fs::OpenOptions::new();
+            open_log.create(true).append(true);
+            match open_log.open(&log_path) {
+                Ok(file) => match file.try_clone() {
+                    Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
+                    Err(_) => (Stdio::null(), Stdio::null()),
+                },
+                Err(_) => (Stdio::null(), Stdio::null()),
+            }
+        }
     };
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
     // Same bracket as every other long-running vendor child: the npm

@@ -396,12 +396,21 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
         // Round-43 review: the `Value` parse is the expensive half of the
         // scan, and a record without the literal `"artifacts"` key cannot
         // yield a row — a JSON object key must appear byte-for-byte for
-        // `view.get("artifacts")` to find it. Skip the parse for those
-        // records so a plain list scales with sessions that HAVE
-        // deliverables instead of with total store bytes; a transcript that
-        // merely mentions the word still carries the quoted key and parses
-        // exactly as before.
-        if !raw.contains("\"artifacts\"") {
+        // `view.get("artifacts")` to find it. A transcript that merely
+        // mentions the word still carries the quoted key and parses exactly
+        // as before. (Round-44 review: the skip removes only the parse —
+        // the capped READ still runs for every record, so a plain list
+        // still scales its I/O with total store bytes; the win is the parse
+        // half.)
+        //
+        // Round-44 review: a well-formed artifact-less record always
+        // carries `"metadata"` (the app serializes it before `artifacts`,
+        // which itself omits when empty), so a record carrying NEITHER key
+        // is corrupt in its early region — exactly the slice whose
+        // not-a-record disclosure the skip would have swallowed. Parse
+        // those (rare) so corrupt records stay disclosed; the common
+        // artifact-less well-formed record keeps skipping the parse.
+        if !raw.contains("\"artifacts\"") && raw.contains("\"metadata\"") {
             continue;
         }
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {

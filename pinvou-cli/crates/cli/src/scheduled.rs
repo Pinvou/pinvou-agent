@@ -2587,7 +2587,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 "scheduled_id_mismatch: scheduled delete({id}): the definition file's id ({}) \
                  does not match its file name; heal or remove the definition by hand before \
                  deleting",
-                other.unwrap_or("<missing>")
+                // The stored id is only constrained to be a single path
+                // component — newlines are legal in Unix filenames — so the
+                // interpolated cell takes the same collapse discipline as
+                // the rendered rows (round-44 review).
+                other
+                    .map(|value| crate::support::collapse_control_characters(value))
+                    .unwrap_or_else(|| "<missing>".to_owned())
             )));
         }
     }
@@ -3136,8 +3142,13 @@ fn organize_headless() -> Result<(), String> {
     });
     match result {
         Ok(()) => Ok(()),
+        // Round-44 review: the transport error carries the request URL, and
+        // a free-form stored base_url may embed userinfo. Scrub URLs first,
+        // then token shapes — the detail is persisted into the durable run
+        // record and re-rendered by `scheduled runs`, so token-shape
+        // redaction alone leaks `user:pass@host` userinfo.
         Err(error) => Err(pinvou3_lib::platform::credential_store::redact_secret(
-            &format!("{error:#}"),
+            &pinvou3_lib::platform::redact_url_credentials_in_text(&format!("{error:#}")),
         )),
     }
 }

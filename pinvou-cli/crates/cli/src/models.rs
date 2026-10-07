@@ -252,6 +252,20 @@ const MODEL_PRESETS: &[&str] = &[
     "xai",
 ];
 
+/// Round-44 review: every `--api-key-env` value is an environment-variable
+/// NAME; the shared shape gate refuses a pasted literal secret at parse
+/// time (usage, exit 2) instead of echoing it back from a later not-set
+/// error.
+fn gate_env_var(value: Option<&str>) -> Result<Option<String>, CliError> {
+    match value {
+        Some(value) => {
+            crate::support::ensure_env_var_name("--api-key-env", value)?;
+            Ok(Some(value.to_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
 fn parse_preset(raw: &str) -> Result<ModelPreset, CliError> {
     let preset = match raw {
         "local_vllm" => ModelPreset::LocalVllm,
@@ -617,9 +631,16 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
                      credential is used",
                 ));
             }
+            let api_key_env = match options.value("api-key-env") {
+                Some(value) => {
+                    crate::support::ensure_env_var_name("--api-key-env", value)?;
+                    Some(value.to_owned())
+                }
+                None => None,
+            };
             Ok(ModelsCommand::ProbeLocal {
                 url,
-                api_key_env: options.value("api-key-env").map(str::to_owned),
+                api_key_env,
                 model_id,
             })
         }
@@ -767,7 +788,7 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         name: options.required("name")?.trim().to_owned(),
         model: options.required("model")?.trim().to_owned(),
         base_url: options.required("base-url")?.trim().to_owned(),
-        api_key_env: options.value("api-key-env").map(str::to_owned),
+        api_key_env: gate_env_var(options.value("api-key-env"))?,
         api_key_stdin: options.has("api-key-stdin"),
         context_window,
         max_output,
@@ -822,7 +843,7 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         &["api-key-stdin", "clear-api-key", "set-active", "yes"],
     )?;
     let id = options.exactly_one_positional()?;
-    let api_key_env = options.value("api-key-env").map(str::to_owned);
+    let api_key_env = gate_env_var(options.value("api-key-env"))?;
     let api_key_stdin = options.has("api-key-stdin");
     let clear_api_key = options.has("clear-api-key");
     // Three mutually exclusive credential intents; accepting two would leave
@@ -950,7 +971,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
             }
             Ok(ModelsCommand::SearchSet {
                 provider: parse_search_provider(options.required("provider")?)?,
-                api_key_env: options.value("api-key-env").map(str::to_owned),
+                api_key_env: gate_env_var(options.value("api-key-env"))?,
                 clear: options.has("clear"),
                 yes: options.has("yes"),
             })
@@ -2563,7 +2584,11 @@ fn probe_local<S: CredentialStore>(
                 return Err(CliError::usage(format!(
                     "the active model base_url {} is not a loopback endpoint; probe-local \
                      probes loopback endpoints only — pass --url with a loopback address",
-                    model.base_url
+                    // Same collapse discipline the human rows for the same
+                    // value use: the stored base_url is user-supplied and a
+                    // control character here would forge the stderr message
+                    // (round-44 review).
+                    crate::support::collapse_control_characters(&model.base_url)
                 )));
             }
             Some(model)
@@ -3755,6 +3780,31 @@ fn resolve_search_key<S: CredentialStore>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transport_error_scrubs_url_userinfo_before_the_report() {
+        // Round-44 review pin: reqwest's Display embeds the full URL,
+        // userinfo included, and the scrubber must run before the probe
+        // report is built. A free-form stored base_url with userinfo that
+        // fails on the transport layer would otherwise echo `user:pass`
+        // into the report (and, on the scheduled/memory organize lanes,
+        // into the durable error strings). Port 1 is refused locally, so
+        // the test stays hermetic; the timeout bounds any platform whose
+        // refusal is slower.
+        let error = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client")
+            .get("http://user:pass@127.0.0.1:1/v1")
+            .send()
+            .expect_err("connecting to port 1 must fail");
+        let probe = connection_error_result(&error);
+        let detail = probe.detail.unwrap_or_default();
+        assert!(
+            !detail.contains("user:pass"),
+            "the transport detail must not carry the userinfo: {detail}"
+        );
+    }
+
     #[test]
     fn non_json_2xx_body_fails_the_search_probe_for_json_convention_providers() {
         // Round-36 review minor: a captive portal or an HTML interstitial

@@ -1083,6 +1083,46 @@ fn chat_kind_run_refuses_headless_execution_with_stable_error() {
     let _ = home;
 }
 
+/// Round-44 review pin: the round-43 split gives a PRESENT-but-unsupported
+/// kind value its own stable code and remedy (mirroring the app executor's),
+/// distinct from the kindless chat default — but the arm had zero tests, so
+/// a regression merging it back into the product-host remedy (which points
+/// the user at a run that would also fail) stayed green.
+#[test]
+fn run_refuses_a_present_but_unsupported_kind_with_the_app_remedy() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("run-unsupported-kind");
+    let created = create_task(&home, "Bogus kind task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // Hand-write a present-but-unsupported kind entry (the shape a
+    // hand-edited sidecar or a different app version leaves behind).
+    let kinds_path = home.path().join("automations").join("task-kinds.json");
+    std::fs::create_dir_all(home.path().join("automations")).unwrap();
+    std::fs::write(
+        &kinds_path,
+        serde_json::json!({
+            "schema_version": 1,
+            "tasks": { task_id.clone(): { "kind": "bogus_kind" } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let error = expect_failed(&["scheduled", "run", &task_id]);
+    assert!(
+        error.starts_with("scheduled_run_unsupported_kind"),
+        "{error}"
+    );
+    assert!(error.contains("bogus_kind"), "{error}");
+    assert!(
+        error.contains("update the app or recreate the task"),
+        "the remedy must mirror the app executor's, not point at a run that          also fails: {error}"
+    );
+    // No run record may be fabricated for the refused run.
+    assert!(!home.runs_dir(&task_id).exists());
+    let _ = home;
+}
+
 #[test]
 fn delete_refuses_while_a_run_is_active() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());

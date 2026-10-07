@@ -333,11 +333,12 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
                     option(&options, "--code").unwrap_or_default().to_owned(),
                 ))
             } else if sources[1] {
-                Some(LoginCodeSource::Env(
-                    option(&options, "--code-env")
-                        .unwrap_or_default()
-                        .to_owned(),
-                ))
+                // Round-44 review: the value is an env-var NAME; a pasted
+                // literal must be refused at parse time, not echoed back by
+                // a later not-set error.
+                let var = option(&options, "--code-env").unwrap_or_default();
+                crate::support::ensure_env_var_name("--code-env", &var)?;
+                Some(LoginCodeSource::Env(var.to_owned()))
             } else if sources[2] {
                 Some(LoginCodeSource::Stdin)
             } else {
@@ -485,7 +486,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 model: option(&options, "--model").map(str::to_owned),
                 model_slots,
                 context_window: parse_context_window(&options, "providers add")?,
-                api_key_env: option(&options, "--api-key-env").map(str::to_owned),
+                api_key_env: gate_provider_env_var(option(&options, "--api-key-env"))?,
                 api_key_stdin: flags.contains(&"--api-key-stdin"),
             })
         }
@@ -539,7 +540,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 model: option(&options, "--model").map(str::to_owned),
                 model_slots: parse_model_slot_pairs(&repeated, "providers update")?,
                 context_window: parse_context_window(&options, "providers update")?,
-                api_key_env: option(&options, "--api-key-env").map(str::to_owned),
+                api_key_env: gate_provider_env_var(option(&options, "--api-key-env"))?,
                 api_key_stdin: flags.contains(&"--api-key-stdin"),
                 delete_key: flags.contains(&"--delete-key"),
                 yes: flags.contains(&"--yes"),
@@ -1176,6 +1177,18 @@ fn parse_model_slot_pairs(
             Ok((slot.to_owned(), model.to_owned()))
         })
         .collect()
+}
+
+/// Round-44 review: the providers `--api-key-env` value is an env-var NAME;
+/// gate it at parse time so a pasted literal never rides argv.
+fn gate_provider_env_var(value: Option<&str>) -> Result<Option<String>, CliError> {
+    match value {
+        Some(value) => {
+            crate::support::ensure_env_var_name("--api-key-env", value)?;
+            Ok(Some(value.to_owned()))
+        }
+        None => Ok(None),
+    }
 }
 
 fn parse_context_window(options: &Flags, label: &str) -> Result<Option<i64>, CliError> {
@@ -3332,8 +3345,12 @@ fn providers_save(
     // this "second read" saw the same stale snapshot (the merge values
     // still came from boot time, and `upsert_locked` wholesale-replaces
     // this record). `record_after_reload` re-reads the disk state under
-    // the section lock; the residual window shrinks to the check→save
-    // gap instead of the unbounded stdin block.
+    // the section lock; the unbounded stdin block is out of the window,
+    // but the window still runs from this read to the store's persist and
+    // contains the keychain ops (which can park on a prompt) — a peer edit
+    // landing there is still wholesale-replaced, and the store's under-lock
+    // bail can still surface its untranslated refusal (the round-44
+    // wording: this is a narrowing, not a closure).
     let existing = provider_id.and_then(|id| manager.store().record_after_reload(agent, id));
     if let (Some(id), None) = (provider_id, existing.as_ref()) {
         return Err(CliError::failed(format!(
@@ -3453,13 +3470,15 @@ fn providers_remove(
     require_provider_agent(agent)?;
     require_yes(yes)?;
     let manager = open_providers()?;
-    // Pre-check in English, mirroring the update and switch lanes: the
-    // store's delete path fails an unknown id with a Chinese "not found"
-    // message that `store_error` would otherwise surface. Round-43 review:
-    // the pre-check reads FRESH (`record_after_reload` re-reads disk under
-    // the section lock) — the boot-memory `get` would refuse a provider a
-    // peer added since this process started, and green-light one a peer
-    // deleted (whose delete then surfaces the store's Chinese message).
+    // Pre-check in English, mirroring the update and switch lanes. The
+    // store's own delete treats an unknown id as an idempotent no-op
+    // (`Ok(None)` — no Chinese bail exists on this lane), so without the
+    // pre-check a typo'd id would exit 0 as a silent nothing-happened;
+    // the pre-check turns it into an honest exit-1 `provider_not_found`.
+    // Round-43 review: the pre-check reads FRESH (`record_after_reload`
+    // re-reads disk under the section lock) — the boot-memory `get` would
+    // refuse a provider a peer added since this process started and
+    // green-light one a peer deleted in the meantime.
     if manager
         .store()
         .record_after_reload(agent, provider_id)
@@ -3500,10 +3519,13 @@ fn providers_switch(
     // surfacing the lib's untranslated store message (the update lane does
     // the same before secret resolution); the lib re-checks authoritatively.
     // Round-43 review: the pre-check reads FRESH — the boot-memory `get`
-    // green-lights a provider a peer deleted, whose delete then lands during
-    // the unbounded keychain wait below and surfaces the store's Chinese
-    // "Provider 不存在" verbatim (the exact translation boundary this
-    // pre-check exists to keep); it also false-refuses a peer-added id.
+    // false-refuses a peer-added id and green-lights one a peer deleted.
+    // Round-44 wording: the fresh pre-check NARROWS the race window (the
+    // stdin/typo cases are out), it does not close it — a peer delete
+    // landing between this read and the store's under-lock bail (the window
+    // contains the keychain wait) still surfaces the store's Chinese
+    // "Provider 不存在" verbatim; that residual is disclosed, not fixed
+    // here.
     if manager
         .store()
         .record_after_reload(agent, provider_id)

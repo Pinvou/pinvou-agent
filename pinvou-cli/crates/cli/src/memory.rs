@@ -2230,8 +2230,12 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     let report = match host_result {
         Ok(report) => report,
         Err(error) => {
-            let detail =
-                pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"));
+            // Round-44 review: scrub URL userinfo before token shapes — the
+            // transport error can embed the request URL of a free-form
+            // stored base_url.
+            let detail = pinvou3_lib::platform::credential_store::redact_secret(
+                &pinvou3_lib::platform::redact_url_credentials_in_text(&format!("{error:#}")),
+            );
             return Err(map_organize_error_detail(&detail));
         }
     };

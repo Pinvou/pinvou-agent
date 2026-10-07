@@ -1098,7 +1098,7 @@ fn consume_staged_persona_injection_at(
     let bytes = serde_json::to_vec(&payload).map_err(|error| {
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
     })?;
-    // Same stage+rename/owner-only discipline as [`persist_equipped_persona`]:
+    // Same stage+rename/owner-only discipline as [`persist_equipped_persona_checked`]:
     // the retained `persona_id` is still read by `active` and the delete
     // sweep, and a concurrent reader must never observe a torn sidecar.
     pinvou3_lib::platform::atomic_write_private(path, &bytes)
@@ -1112,7 +1112,7 @@ const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
 const MAX_EQUIP_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Nanos since the Unix epoch, saturating at 0 if the clock is before it —
-/// the stage stamp [`persist_equipped_persona`] writes and the consume
+/// the stage stamp [`persist_equipped_persona_checked`] writes and the consume
 /// guard compares.
 fn unix_nanos_now() -> u64 {
     u64::try_from(
@@ -1140,7 +1140,7 @@ fn unix_nanos_now() -> u64 {
 /// body's own number made a card accepted at exactly the documented maximum
 /// impossible to equip, with a message blaming the body for exceeding a limit
 /// it does not exceed. The wrapper is still bounded: the serialized-sidecar
-/// check in [`persist_equipped_persona`] covers the whole envelope, and that
+/// check in [`persist_equipped_persona_checked`] covers the whole envelope, and that
 /// is the one the sweep's read bound actually depends on.
 fn require_equippable_body(card: &PersonaCard) -> Result<(), CliError> {
     if card.body.len() > MAX_EQUIP_BODY_BYTES {
@@ -1190,6 +1190,10 @@ fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     Ok(fd_lock::RwLock::new(file))
 }
 
+/// Test-only convenience: the production equip/unequip lanes call the
+/// checked variant directly (round-44 review removed the dead in-production
+/// wrapper; the unit tests stage through the always-true checker).
+#[cfg(test)]
 fn persist_equipped_persona(
     session_id: &str,
     persona_id: &str,
@@ -1469,11 +1473,31 @@ fn open_store() -> Result<SessionStore, CliError> {
 fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> {
     const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
     let content = match source {
-        BodySource::File(path) => crate::support::read_text_file_capped(
-            path,
-            MAX_BODY_BYTES,
-            &format!("personas {subcommand}"),
-        )?,
+        BodySource::File(path) => {
+            // Round-44 review: the body is stored as a persona card and
+            // `equip` injects it verbatim into the next turn's prompt, so
+            // this is a model-context lane and joins the gated-read rule
+            // every sibling follows (memory add --file, feedback, agent run
+            // --attach): canonicalize (symlink-accurate), then the
+            // sensitive-path refusal. The CANONICAL path is what was
+            // policy-checked, so it is also what gets read.
+            let canonical = std::fs::canonicalize(path).map_err(|error| {
+                CliError::failed(format!(
+                    "personas {subcommand}: cannot resolve body file {}: {error}",
+                    path.display()
+                ))
+            })?;
+            crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
+                CliError::failed(format!(
+                    "personas {subcommand}: refusing body file: {reason}"
+                ))
+            })?;
+            crate::support::read_text_file_capped(
+                &canonical,
+                MAX_BODY_BYTES,
+                &format!("personas {subcommand}"),
+            )?
+        }
         BodySource::Stdin => {
             // Reading one byte past the cap distinguishes "at the cap" from
             // "over it".
@@ -1516,6 +1540,59 @@ fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-44 review: the injected `session_still_exists` checker must run
+    /// inside the equip lock and BEFORE any directory or file write — a
+    /// session that vanished between the equip flow's existence check and
+    /// the stage must abort with nothing left behind. Deleting the checker
+    /// call turns this red: the stage would proceed and litter a ghost
+    /// sidecar directory for the deleted session.
+    #[test]
+    fn persist_equipped_persona_checked_aborts_before_any_write_when_the_checker_fails() {
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+            }
+        }
+        let previous = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+        let temp = std::env::temp_dir().join(format!(
+            "pinvou3-personas-checker-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).expect("temp home");
+        // SAFETY: ENV_LOCK is held for the whole test; env writes serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temp) };
+
+        let error = persist_equipped_persona_checked("gone-session", "p-1", "body", &|| {
+            Err(CliError::failed("the session is gone"))
+        })
+        .expect_err("a failed existence checker must abort the stage");
+        assert!(error.to_string().contains("the session is gone"), "{error}");
+        let sidecar = equip_state_path("gone-session").expect("sidecar path");
+        assert!(
+            !sidecar.exists(),
+            "the abort must leave no sidecar behind: {:?}",
+            std::fs::read_to_string(&sidecar)
+        );
+        if let Some(dir) = sidecar.parent() {
+            assert!(
+                !dir.exists(),
+                "the abort must not create the session sidecar directory"
+            );
+        }
+
+        drop(previous);
+        let _ = std::fs::remove_dir_all(&temp);
+    }
 
     fn parse_list(arguments: &[&str]) -> Result<PersonasCommand, CliError> {
         let owned: Vec<String> = arguments.iter().map(|value| (*value).to_owned()).collect();
@@ -1876,7 +1953,10 @@ mod tests {
 
         // A live card stages into an injectable turn: the embedded pool
         // resolves without any fixture card.
-        persist_equipped_persona(session_id, "pinvou-card-creator", "staged body").unwrap();
+        persist_equipped_persona_checked(session_id, "pinvou-card-creator", "staged body", &|| {
+            Ok(())
+        })
+        .unwrap();
         assert!(get("pinvou-card-creator").is_some(), "embedded pool");
         match staged_persona_turn(session_id) {
             Some(StagedPersonaTurn::Inject(injection)) => {

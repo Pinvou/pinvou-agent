@@ -359,6 +359,58 @@ fn files_ingest_translates_the_warning_chip_to_english() {
     );
 }
 
+/// Round-44 review: the content hard-wall's SECRET-EXTENSION lane (a `.key`
+/// classified to `redacted_secret_placeholder` — the layer that exists
+/// precisely because the path policy cannot stop `~/certs/server.key`) had
+/// no test on either surface, so a dropped translation-table entry would
+/// silently degrade to raw Chinese on this lane. Both channels are pinned:
+/// the English chip in human output and the `markdown: null` +
+/// secret-placeholder warning shape in JSON.
+#[test]
+fn files_ingest_redacts_a_secret_extension_with_the_english_chip() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("files-secret-ext");
+    let scoped = ScopedHomeDir::new("files-secret-ext");
+    let key = scoped.dir.join("server.key");
+    // PEM-ish body: the class the extension classifier exists to keep out
+    // of the ledger.
+    std::fs::write(
+        &key,
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQ\n-----END PRIVATE KEY-----\n",
+    )
+    .unwrap();
+
+    let outcome = run(&["pinvou", "files", "ingest", key.to_str().unwrap()])
+        .expect("a redacted secret placeholder is still a successful ingest");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        outcome.stdout.contains("private-key file"),
+        "the human chip must name the key/private-key class: {}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome
+            .stdout
+            .chars()
+            .any(|value| ('\u{4e00}'..='\u{9fff}').contains(&value)),
+        "no CJK GUI copy may reach CLI output: {}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome.stdout.contains("BEGIN PRIVATE KEY"),
+        "the secret body must never surface: {}",
+        outcome.stdout
+    );
+
+    let value = run_json(&["pinvou", "files", "ingest", key.to_str().unwrap()]);
+    assert!(
+        value
+            .get("markdown")
+            .is_none_or(|markdown| markdown.is_null()),
+        "a secret placeholder must not carry markdown: {value}"
+    );
+}
+
 // ── voice ───────────────────────────────────────────────────────────────────
 
 #[test]

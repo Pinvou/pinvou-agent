@@ -547,10 +547,38 @@ pub fn require_yes(confirmed: bool) -> Result<(), CliError> {
 /// over-cap stdin read alone returned 2 while the over-cap file read
 /// returned 1, so "input exceeded a byte cap" had two different exit codes
 /// depending on where the input came from.
+/// Round-44 review: every flag whose value is an environment-variable NAME
+/// (`--api-key-env`, `--code-env`, `--client-id-env`, `--token-env`) shares
+/// this parse-time shape gate — the plugins `--secret` gate's rationale
+/// verbatim. Without it a pasted literal secret rides argv (shell history,
+/// process list) and only fails later as a missing variable, with the
+/// pasted value echoed back in the failure diagnostics. The conventional
+/// export NAME is the same shape the plugins gate enforces: letters,
+/// digits, underscore, not starting with a digit; bytes outside that set
+/// cannot be exported by any POSIX shell without printf tricks, so the
+/// refusal is fail-fast, not a capability loss. The value is never echoed.
+pub fn ensure_env_var_name(flag: &str, value: &str) -> Result<(), CliError> {
+    let name_is_sound = value.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !name_is_sound {
+        return Err(CliError::usage(format!(
+            "{flag} must be an environment variable NAME (letters, digits, underscore, not \
+             starting with a digit) — the secret itself never belongs on argv"
+        )));
+    }
+    Ok(())
+}
+
 pub fn resolve_secret(
     api_key_env: &Option<String>,
     api_key_stdin: bool,
 ) -> Result<Option<String>, CliError> {
+    if let Some(var) = api_key_env.as_deref() {
+        // Belt for direct callers that bypass the parse-time gate: the
+        // not-set/empty errors below interpolate the value, so a pasted
+        // literal must never reach them.
+        ensure_env_var_name("--api-key-env", var)?;
+    }
     if api_key_env.is_some() && api_key_stdin {
         return Err(CliError::usage(
             "use only one of --api-key-env or --api-key-stdin",
