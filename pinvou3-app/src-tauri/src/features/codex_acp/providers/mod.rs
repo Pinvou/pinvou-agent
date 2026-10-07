@@ -455,13 +455,11 @@ impl AcpProvidersStore {
     /// provider's endpoint is the same config/store split-brain
     /// `current_after_reload` closed for `save`/`delete`, and injecting a
     /// removed provider's key strands the spawned session on a dead
-    /// credential. `pub(crate)`: the spawn-env decision sits in the parent
-    /// module.
-    pub(crate) fn record_after_reload(
-        &self,
-        agent: &str,
-        provider_id: &str,
-    ) -> Option<ProviderRecord> {
+    /// credential. `pub` (round-43 review): the CLI's save/switch/remove
+    /// pre-checks are decision reads too — a stale pre-check either leaks
+    /// the store's untranslated refusal or lies about a lane's effect —
+    /// so the CLI mirrors this read instead of the boot-memory `get`.
+    pub fn record_after_reload(&self, agent: &str, provider_id: &str) -> Option<ProviderRecord> {
         let _section = self.section_lock();
         self.record_fresh_locked(agent, provider_id)
     }

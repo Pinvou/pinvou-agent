@@ -143,6 +143,26 @@ fn try_lock_settings_file_bounded() -> std::io::Result<Option<SettingsFileLock>>
     }
 }
 
+/// Round-43 review: whether settings.json on disk still holds the bytes the
+/// current load started from. The normalization persist is only safe when a
+/// concurrent `update_transaction` did not commit entirely inside this
+/// load's read→lock window — a whole-document stale-snapshot write would
+/// revert that commit. An unreadable/absent file counts as changed (skip)
+/// unless the load itself saw no file either: writing defaults-shaped
+/// normalized content into a home whose settings.json vanished since load
+/// loses nothing.
+fn disk_still_holds_the_loaded_snapshot(
+    path: &std::path::Path,
+    raw_at_load: &Option<String>,
+) -> bool {
+    let disk_now = std::fs::read_to_string(path).ok();
+    match (raw_at_load, disk_now) {
+        (Some(loaded), Some(disk)) => loaded == &disk,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Boot-bootstrap write (the GUI's `!exists → save()` default snapshot).
 /// The exists-check and the write are one step under the same cross-process
 /// flock as `update_transaction` (round-41 review): a CLI settings write
@@ -1037,17 +1057,30 @@ impl UserPrefs {
                 // [`UserPrefs::update_transaction`] closes — and the window is
                 // not sub-millisecond, because the migration arm above can touch
                 // the OS keychain (`migrate_plaintext_api_keys_with_store`)
-                // between the read and this save. A GUI/CLI
-                // `update_transaction` field commit landing in that window would
-                // be silently reverted by this stale-snapshot write. Take the
-                // same settings.json.lock, bounded: on a held lock SKIP the
-                // persist instead of writing unlocked — the normalization is
-                // idempotent and re-runs on the next load, while a stale
-                // full-document write is not recoverable.
+                // between the read and this save. Take the same
+                // settings.json.lock, bounded: on a held lock SKIP the persist
+                // instead of writing unlocked. Round-43 review: the lock alone
+                // only excludes writers from here on — a field commit that
+                // landed ENTIRELY inside the read→lock window is already on
+                // disk, and writing the stale snapshot would revert it. So
+                // re-read under the lock and persist only when the disk still
+                // holds the bytes this load started from; otherwise skip (the
+                // normalization is idempotent and re-runs on the next load,
+                // while a reverted field commit is not recoverable).
                 match try_lock_settings_file_bounded() {
                     Ok(Some(_file_lock)) => {
-                        if let Err(e) = prefs.save_unlocked() {
-                            eprintln!("[pinvou3-app] settings normalization save failed: {e:#}");
+                        if disk_still_holds_the_loaded_snapshot(&path, &raw) {
+                            if let Err(e) = prefs.save_unlocked() {
+                                eprintln!(
+                                    "[pinvou3-app] settings normalization save failed: {e:#}"
+                                );
+                            }
+                        } else {
+                            eprintln!(
+                                "[pinvou3-app] settings normalization save skipped: settings.json \
+                                 changed while the migration ran (a concurrent writer committed); \
+                                 the normalization re-runs on the next load"
+                            );
                         }
                     }
                     Ok(None) => eprintln!(
@@ -1740,9 +1773,45 @@ mod tests {
             // SAFETY: holding ENV_LOCK (first line of this test); restore-side
             // env writes serialized.
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: same as above; removal serialized under ENV_LOCK.
+            // SAFETY: same as above; restore-side env writes serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    /// Round-43 review: the normalization persist re-validates under the
+    /// settings lock — a field commit that landed entirely inside this
+    /// load's read→lock window must be detected (skip), and an unchanged
+    /// disk must stay writable. Without the re-validation the whole-document
+    /// stale-snapshot write silently reverts the committed fields.
+    #[test]
+    fn disk_still_holds_the_loaded_snapshot_detects_a_concurrent_commit() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-snapshot-revalidate-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("create temporary prefs root");
+        let path = root.join("settings.json");
+        let loaded = Some("{\"theme\":\"dark\"}".to_string());
+
+        std::fs::write(&path, loaded.as_ref().unwrap()).expect("write loaded snapshot");
+        assert!(disk_still_holds_the_loaded_snapshot(&path, &loaded));
+
+        // A concurrent writer committed different bytes inside the window.
+        std::fs::write(&path, "{\"theme\":\"liquid-dark\"}").expect("write committed field");
+        assert!(
+            !disk_still_holds_the_loaded_snapshot(&path, &loaded),
+            "a committed field change must make the stale-snapshot persist skip"
+        );
+
+        // The file vanishing since load counts as changed too.
+        std::fs::remove_file(&path).expect("remove settings file");
+        assert!(!disk_still_holds_the_loaded_snapshot(&path, &loaded));
+
+        // A load that saw no file at all may still write when none appeared.
+        assert!(disk_still_holds_the_loaded_snapshot(&path, &None));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Round-42 review (extends round-41 M1 to the read lane): the
