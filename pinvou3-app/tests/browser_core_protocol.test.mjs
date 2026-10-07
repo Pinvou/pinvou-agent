@@ -111,7 +111,8 @@ test('work instructions define a durable and verified loopback preview workflow'
   // advertise a Bash background control surface and must degrade honestly
   // when no terminal session surface exists on the host.
   assert.doesNotMatch(instructions, /Bash\(action=/);
-  assert.match(instructions, /`Bash` is a model-invisible replay name in v0\.9\.12/);
+  assert.match(instructions, /`Bash` is a retired model-invisible replay name/);
+  assert.match(instructions, /is \*\*not in your tool list\*\*/);
   assert.match(instructions, /lowercase `bash` is foreground-only/);
   assert.match(instructions, /you cannot keep a server alive across turns/);
   assert.match(instructions, /present the artifact with `mcp_pinvou3_present_artifact`/);
