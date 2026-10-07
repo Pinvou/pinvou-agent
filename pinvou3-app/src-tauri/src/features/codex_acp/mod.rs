@@ -776,8 +776,15 @@ fn restore_code_native_sessions_from_sidecars(
         }
     }
     // 回填自愈：索引在而 sidecar 缺失（修复前构建的存量会话，或绑定时 sidecar
-    // 写失败）时按索引补写 sidecar，写失败逐条记日志。
-    summary.backfilled = agents.backfill_missing_code_session_sidecars();
+    // 写失败）时按索引补写 sidecar，写失败逐条记日志。Round-43 review：回填
+    // 与恢复同走 section 锁，索引损坏时拒绝（fail-closed）而不是对不可读表
+    // 回填，处理方式与上方恢复臂一致。
+    match agents.backfill_missing_code_session_sidecars() {
+        Ok(backfilled) => summary.backfilled = backfilled,
+        Err(error) => {
+            eprintln!("[pinvou3-app] native code session sidecar backfill skipped: {error:#}")
+        }
+    }
     if summary.restored > 0 {
         eprintln!(
             "[pinvou3-app] recovered {} native code session index record(s) from sidecars",
@@ -6017,7 +6024,17 @@ mod tests {
         writer
             .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
-        // 模拟辅助索引丢失：空内存索引 + 磁盘 sidecar 仍在 → 真实恢复一次。
+        // 模拟辅助索引丢失。Round-43 review：恢复臂现在在 section 锁下重读
+        // 磁盘索引，所以“索引丢失”的前提必须落在磁盘上（记录从索引文件中
+        // 移除、权威 sidecar 保留），而不仅是空内存表——否则重载后记录仍在，
+        // 恢复正确地早退。
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        raw["sessions"]
+            .as_object_mut()
+            .expect("index sessions object")
+            .remove("code-1");
+        std::fs::write(&path, raw.to_string()).unwrap();
         let agents = SessionAgentStore::for_test(path.clone());
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(

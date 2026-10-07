@@ -1328,7 +1328,16 @@ impl SessionAgentStore {
     /// 两类来源：sidecar 持久化修复前构建创建的存量会话从未写过 sidecar；绑定时
     /// sidecar 写失败只记日志未补写。索引记录 `code_session=true` 而 sidecar 缺失
     /// 时按索引补写；返回成功补写的数量（写失败已逐条记日志，不计入）。
-    pub fn backfill_missing_code_session_sidecars(&self) -> usize {
+    pub fn backfill_missing_code_session_sidecars(&self) -> Result<usize> {
+        // Round-43 review: the boot-era snapshot must not decide which
+        // sidecars are "missing" — a CLI `sessions delete` landing after
+        // this process booted removes the record AND its sidecar, and
+        // backfilling from the stale table would recreate it for a
+        // deleted session, which the next boot's restore pass then turns
+        // back into an index record. Same section discipline as every
+        // other boot-pass mutator; a corrupt index refuses (fail-closed)
+        // instead of backfilling against an unreadable table.
+        let _section = self.lock_and_reload()?;
         let records = self.records.read().clone();
         let mut backfilled = 0usize;
         for (session_id, record) in records {
@@ -1348,7 +1357,7 @@ impl SessionAgentStore {
                 eprintln!("[pinvou3-app] 回填原生代码会话 sidecar: {session_id}");
             }
         }
-        backfilled
+        Ok(backfilled)
     }
 
     /// 从权威 sidecar 恢复原生代码会话记录（辅助索引缺失/损坏时的兜底）。
@@ -1375,6 +1384,24 @@ impl SessionAgentStore {
         if record.workspace_kind == CodexWorkspaceKind::Temporary && record.workspace_path.is_some()
         {
             anyhow::bail!("恢复的原生代码会话临时目录不应保存项目工作目录");
+        }
+        // Round-43 review: this is the last whole-table-persisting mutator
+        // outside the section discipline (its ACP twin
+        // `restore_missing_acp_record` already runs it). Without the
+        // lock-and-reload, the GUI boot pass persists its boot-era table
+        // and silently reverts a CLI `sessions delete` / `projects rebind`
+        // that committed between this process's `load_or_empty` and this
+        // recovery — resurrecting the deleted record. Taking the lock here
+        // also moves the code/ACP checks onto the fresh table, so they
+        // decide on disk truth instead of the boot snapshot.
+        let _section = self.lock_and_reload()?;
+        // The caller enumerated sidecars outside the section lock; the
+        // authoritative sidecar may have been removed with its session in
+        // the meantime (`sessions delete` removes both). Restoring from the
+        // passed-in copy when the file is gone would re-create exactly the
+        // record the delete erased.
+        if read_code_session_sidecar(&self.path, session_id).is_none() {
+            return Ok(false);
         }
         {
             let mut records = self.records.write();
@@ -1957,6 +1984,140 @@ mod tests {
             "a GUI bind must not resurrect a CLI-removed record: {:?}",
             on_disk.sessions.keys().collect::<Vec<_>>()
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-43 review: `restore_missing_code_session_record` is the boot
+    /// pass's whole-table-persisting mutator, so it must run the same
+    /// lock-and-reload discipline — a peer record committed after this
+    /// process booted must survive the recovery persist, and a corrupt
+    /// index must be refused instead of being overwritten.
+    #[test]
+    fn restore_missing_code_session_record_observes_the_section_truth() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-restore-code-record-lock-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let gui = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        gui.bind_code_native_session("booted-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        // The sidecar this boot pass will restore from (index record
+        // missing — the recovery lane's premise).
+        assert!(write_code_session_sidecar(
+            &path,
+            "recovered-session",
+            CodexWorkspaceKind::Temporary,
+            None
+        ));
+        // A peer process commits a fresh bind after the GUI booted.
+        let peer = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        peer.bind_code_native_session("peer-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+
+        gui.restore_missing_code_session_record(
+            "recovered-session",
+            CodeSessionSidecar {
+                version: code_session_sidecar_version(),
+                workspace_kind: CodexWorkspaceKind::Temporary,
+                workspace_path: None,
+                bound_at: None,
+            },
+        )
+        .unwrap();
+
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            on_disk.sessions.contains_key("peer-session"),
+            "the recovery persist must not revert the peer's committed bind: {:?}",
+            on_disk.sessions.keys().collect::<Vec<_>>()
+        );
+        assert!(on_disk.sessions.contains_key("recovered-session"));
+
+        // A sidecar removed together with its session after the boot pass
+        // enumerated it must not be restored from the stale copy.
+        peer.bind_code_native_session("deleted-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        peer.remove_for_second_process("deleted-session").unwrap();
+        let stale_sidecar = CodeSessionSidecar {
+            version: code_session_sidecar_version(),
+            workspace_kind: CodexWorkspaceKind::Temporary,
+            workspace_path: None,
+            bound_at: None,
+        };
+        assert_eq!(
+            gui.restore_missing_code_session_record("deleted-session", stale_sidecar)
+                .unwrap(),
+            false,
+            "a sidecar deleted with its session must not restore the deleted record"
+        );
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(!on_disk.sessions.contains_key("deleted-session"));
+
+        // Fail-closed on a corrupt index, same as the other lock-and-reload
+        // mutators.
+        fs::write(&path, "{not json").unwrap();
+        assert!(
+            gui.restore_missing_code_session_record(
+                "recovered-session",
+                CodeSessionSidecar {
+                    version: code_session_sidecar_version(),
+                    workspace_kind: CodexWorkspaceKind::Temporary,
+                    workspace_path: None,
+                    bound_at: None,
+                },
+            )
+            .is_err(),
+            "a corrupt index must be refused, not replaced by a stale-table persist"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-43 review: the sidecar backfill decides "missing" from the
+    /// table, so it must reload under the section lock — backfilling from
+    /// the boot-era snapshot would re-create the sidecar of a session a
+    /// peer deleted (record and sidecar together), which the next boot's
+    /// restore pass would turn back into an index record.
+    #[test]
+    fn sidecar_backfill_does_not_resurrect_a_peer_deleted_session() {
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-backfill-lock-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session-agents.json");
+        let gui = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        gui.bind_code_native_session("legacy-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        // A pre-sidecar-persist build's legacy record: index in, sidecar
+        // out — exactly what the backfill exists to heal.
+        remove_code_session_sidecar(&path, "legacy-session");
+        // The peer deletes the session (record and sidecar) after boot.
+        let peer = SessionAgentStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        peer.remove_for_second_process("legacy-session").unwrap();
+
+        let backfilled = gui.backfill_missing_code_session_sidecars().unwrap();
+
+        assert_eq!(backfilled, 0);
+        assert!(
+            read_code_session_sidecar(&path, "legacy-session").is_none(),
+            "backfill must not re-create the sidecar of a deleted session"
+        );
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(!on_disk.sessions.contains_key("legacy-session"));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -3203,6 +3364,16 @@ mod tests {
                 Some(root.clone()),
             )
             .unwrap();
+        // Round-43 review: `set_acp_workspace` cleans the sidecar on success;
+        // the ACP-ownership refusal exists for the residual left behind when
+        // that cleanup failed (the boot scan cleans it later), so re-create
+        // the sidecar to exercise the refusal against the fresh table.
+        assert!(write_code_session_sidecar(
+            store.path(),
+            "session-1",
+            CodexWorkspaceKind::Project,
+            Some(root.clone())
+        ));
         assert!(
             store
                 .restore_missing_code_session_record("session-1", sidecar)
@@ -3291,7 +3462,14 @@ mod tests {
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
         let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
-        // 模拟辅助索引丢失后的首次恢复：真实恢复，返回 true。
+        // 模拟辅助索引丢失后的首次恢复：真实恢复，返回 true。Round-43 review:
+        // the restore lane now reloads the disk table under the section lock,
+        // so the lost-index premise must hold on disk (record removed from
+        // the file, authoritative sidecar kept).
+        let mut lost_index: AgentStoreFile =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        lost_index.sessions.remove("session-1");
+        fs::write(store.path(), serde_json::to_string(&lost_index).unwrap()).unwrap();
         let recovered_store = SessionAgentStore {
             path: store.path().to_path_buf(),
             records: Arc::new(RwLock::new(HashMap::new())),
@@ -3336,14 +3514,14 @@ mod tests {
             .unwrap();
         // 模拟存量会话/绑定时写失败：索引记录 code_session=true 但 sidecar 缺失。
         fs::remove_file(code_session_sidecar_path(store.path(), "session-1")).unwrap();
-        assert_eq!(store.backfill_missing_code_session_sidecars(), 1);
+        assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 1);
         let sidecar = read_code_session_sidecar(store.path(), "session-1")
             .expect("sidecar should be backfilled");
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
         // 幂等：sidecar 完好、非代码会话都不补写。
-        assert_eq!(store.backfill_missing_code_session_sidecars(), 0);
+        assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -3376,7 +3554,7 @@ mod tests {
         .unwrap();
         assert!(read_code_session_sidecar(store.path(), "session-1").is_none());
         // 按缺失处理 → 回填自愈按索引重写为当前版本。
-        assert_eq!(store.backfill_missing_code_session_sidecars(), 1);
+        assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 1);
         let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
