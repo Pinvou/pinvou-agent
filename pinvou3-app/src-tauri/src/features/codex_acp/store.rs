@@ -3513,13 +3513,30 @@ mod tests {
             path: root.join("session-agents.json"),
             records: Arc::new(RwLock::new(HashMap::new())),
         };
+        // Round-44 review: the restore validates the combination it reads
+        // from the on-disk sidecar (the passed-in copy is gone from the
+        // signature), so the malformed fixtures must be written to disk —
+        // a corrupt/foreign-written sidecar is exactly what the guard
+        // protects against now.
         // 项目 kind 但缺路径：恢复必须拒绝。
+        assert!(write_code_session_sidecar(
+            store.path(),
+            "session-1",
+            CodexWorkspaceKind::Project,
+            None
+        ));
         assert!(
             store
                 .restore_missing_code_session_record("session-1")
                 .is_err()
         );
         // 临时 kind 但带路径：恢复必须拒绝。
+        assert!(write_code_session_sidecar(
+            store.path(),
+            "session-2",
+            CodexWorkspaceKind::Temporary,
+            Some(root.clone())
+        ));
         assert!(
             store
                 .restore_missing_code_session_record("session-2")
