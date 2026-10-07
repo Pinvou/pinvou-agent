@@ -352,7 +352,9 @@ assert.match(
 );
 assert.match(
   routerSource,
-  /listenTauri\('voice-shortcut:trigger'[\s\S]*?isVoiceShortcutEventForThisWindow\(payload\)[\s\S]*?const recording = status === 'recording';[\s\S]*?if \(recording\) \{[\s\S]*?target\.trigger\(mode, \{ source: 'shortcut-stop', preserveMode: true \}\);[\s\S]*?target\.trigger\('dictation'\)/,
+  // The recording-stop / dictation tail is the shared triggerVoiceShortcutTarget
+  // helper (recording → stop with preserveMode; otherwise start 'dictation').
+  /listenTauri\('voice-shortcut:trigger'[\s\S]*?isVoiceShortcutEventForThisWindow\(payload\)[\s\S]*?const recording = status === 'recording';[\s\S]*?triggerVoiceShortcutTarget\(target, 'dictation', status, mode\)/,
   "native voice shortcut trigger must check the window label and allow recording Alt stop",
 );
 // Native routed the event to this window as the "recording window", but this
@@ -545,7 +547,10 @@ assert.match(
 );
 assert.match(
   voiceHookSource,
-  /const cancelVoiceOrPreview = useCallback[\s\S]*?editPreviewRef\.current[\s\S]*?discardEditPreview\(\)[\s\S]*?cancelVoiceInput\(\)/,
+  // closeVoice is the hook-internal alias of cancelVoice (which issues
+  // bridge.voice.cancelVoiceInput + clearVoiceInput): the contract is that
+  // the preview is dismissed before the recording teardown runs.
+  /const cancelVoiceOrPreview = useCallback[\s\S]*?editPreviewRef\.current[\s\S]*?discardEditPreview\(\)[\s\S]*?closeVoice\(\)/,
   "global voice cancel must dismiss an edit preview before cancelling an active recording",
 );
 assert.match(
@@ -799,9 +804,12 @@ vm.runInContext(
   }
 
   assert.match(chatSource, /const voiceBusy = isVoiceBusy\(voiceInput\)/);
+  // triggerVoice reuses the hook's cancelVoice (cancel + reset teardown)
+  // instead of inlining the bridge calls; the requesting_permission branch
+  // must still tear down the stale request before returning false.
   assert.match(
     voiceHookSource,
-    /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?bridge\.voice\.cancelVoiceInput\(\);[\s\S]*?return;/,
+    /if \(voiceInput\.status === 'requesting_permission'\) \{[\s\S]*?cancelVoice\(\);[\s\S]*?return false;/,
   );
 
   const startVoiceInputAt = source.indexOf("  async function startVoiceInput(");

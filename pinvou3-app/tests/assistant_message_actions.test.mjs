@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   assistantItemCopyText,
-  assistantMarkdownCopyText,
   assistantResponseAvailable,
   assistantResponseText,
   copyClipboardText,
   normalizeAssistantMessageText,
 } from '../src/features/conversation/message-clipboard.js';
+import { assistantMarkdownCopyText } from '../src/features/conversation/structured-assistant-content.js';
 import {
   assistantExportFilename,
   buildAssistantResponseExport,

@@ -314,7 +314,7 @@ assert.ok(
 assert.ok(
     /data-testid="scheduled-filter-tabs"/.test(indexHtml) &&
     /data-testid="scheduled-list-intro"/.test(indexHtml) &&
-    /\{renderTemplateSuggestions\(\)\}[\s\S]{0,120}(?:<MyTasksSection className="mb-0" \/>|\{MyTasksSection\(\{ className: 'mb-0' \}\)\})/.test(indexHtml) &&
+    /\{renderTemplateSuggestions\(\)\}[\s\S]{0,120}(?:<MyTasksSection className="mb-0" \/>|\{MyTasksSection\(\)\})/.test(indexHtml) &&
     /const DetailTaskDialog = \(\) => (?:!\(selected && detailForm\) \? null|\(selected && detailForm\) \? renderModal\()/.test(indexHtml) &&
     /const renderModal = node => modalPortalTarget \? createPortal\(node, modalPortalTarget\) : node/.test(indexHtml) &&
     /DetailTaskDialog = \(\) => (?:!\(selected && detailForm\) \? null :|\(selected && detailForm\) \?) ?renderModal\(/.test(indexHtml) &&

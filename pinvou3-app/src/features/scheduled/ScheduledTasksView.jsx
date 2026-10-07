@@ -1279,10 +1279,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
       // My Tasks 分区（原 makeMyTasksSection 工厂内联为普通渲染函数）：闭包共享本视图的
       // 过滤/加载状态；按普通函数调用而非 JSX 元素——每次渲染新建组件类型会导致子树重挂载。
-      // 唯一调用点固定传 'mb-0'，className 缺省即该值。
-      // eslint-disable-next-line @eslint-react/no-nested-component-definitions -- plain render function, never used as a JSX element (call site is MyTasksSection({ className: 'mb-0' })); the props-like signature only exists because that call form is pinned by tests
-      const MyTasksSection = ({ className = 'mb-0' } = {}) => (
-        <section className={className}>
+      // eslint-disable-next-line @eslint-react/no-nested-component-definitions -- plain render function, never used as a JSX element (call site is MyTasksSection()); the render-function form only exists because that call form is pinned by tests
+      const MyTasksSection = () => (
+        <section className="mb-0">
           <div className="mb-4 ml-1 flex items-center justify-between gap-4">
             <h2 className={`text-[13px] font-bold uppercase tracking-wider ${mutedValue}`}>{scheduledCopy.myTasks}</h2>
             <FilterTabs scheduledCopy={scheduledCopy} taskFilter={taskFilter} setTaskFilter={setTaskFilter} />
@@ -1518,7 +1517,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
               <main className="min-h-0 flex-1 overflow-y-auto pb-6 custom-scrollbar">
                 {renderTemplateSuggestions()}
-                {MyTasksSection({ className: 'mb-0' })}
+                {MyTasksSection()}
               </main>
             </div>
           </div>

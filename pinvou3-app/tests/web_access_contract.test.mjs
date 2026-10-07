@@ -872,7 +872,7 @@ assert.match(toolStoreView,
   'purge handler must fail closed in WebUI');
 assert.match(knowledgeView, /const canDownloadArtifacts = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(knowledgeView, /const canPickHostFiles = !isWeb \|\| can\('hostFilePicker'\);/);
-assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.session_id \|\| null;/);
+assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| null;/);
 assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$\{o\.path\}\|\$\{o\.mtime \|\| 0\}`;/);
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');

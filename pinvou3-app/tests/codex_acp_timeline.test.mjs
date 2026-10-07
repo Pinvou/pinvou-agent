@@ -1168,8 +1168,8 @@ try {
     && composerControls.includes(': busyProp')
     && composerControls.includes('isTauriAvailable() && !explicitMountState')
     && composerControls.includes("if (collection.source === 'remote') {")
-    && composerControls.includes('if (onMount) { onMount(collection.id); return; }')
-    && composerControls.includes('if (onUnmount) { onUnmount(); return; }')
+    && composerControls.includes('if (onMount) onMount(collection.id);')
+    && composerControls.includes('if (onUnmount) onUnmount();')
     && composerControls.includes('if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }'),
   'extracted controls must keep explicit Code mounts local while preserving the bridge fallback');
   // 等值守卫：点击已激活模式必须早退，避免代码车道 onSwitch 路径每次点击都触发

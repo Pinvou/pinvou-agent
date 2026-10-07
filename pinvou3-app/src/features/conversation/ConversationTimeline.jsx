@@ -179,6 +179,16 @@ export function ConversationStatusBadge({ status, copy }) {
   );
 }
 
+// running turn 的等待判定(时间轴行与活动指示器共用同一口径):
+// turn 上的显式标记,或 permissions/elicitations 任一未决,都视为等待用户注意。
+function turnWaitingAttention(turn) {
+  const waitingPermission = turn.waitingPermission
+    || (turn.permissions || []).some(permission => !permission.resolved);
+  const waitingInput = turn.waitingInput
+    || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
+  return { waitingPermission, waitingInput, waitingAttention: waitingPermission || waitingInput };
+}
+
 // Internal-only: the only consumer is LiveConversationActivityIndicator below.
 function ConversationActivityIndicator({
   turn,
@@ -192,11 +202,7 @@ function ConversationActivityIndicator({
   // eslint-disable-next-line react-hooks/purity -- elapsed time is a display value that naturally drifts over time; re-rendering is driven by the parent's polling of now
   const nowMs = now || Date.now();
   if (!turn || turn.status !== 'running') return null;
-  const waitingPermission = turn.waitingPermission
-    || (turn.permissions || []).some(permission => !permission.resolved);
-  const waitingInput = turn.waitingInput
-    || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
-  const waitingAttention = waitingPermission || waitingInput;
+  const { waitingPermission, waitingInput, waitingAttention } = turnWaitingAttention(turn);
   const label = waitingPermission
     ? c.waitingPermission
     : waitingInput
@@ -260,6 +266,25 @@ function TerminalBlock({ label, text }) {
     <div className="mt-3 min-w-0 max-w-full">
       <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
       <pre className="max-h-80 max-w-full overflow-auto whitespace-pre rounded-xl bg-[#F4F5F7] dark:bg-black/30 px-3 py-2.5 text-[12px] leading-5 font-mono text-gray-700 dark:text-gray-200">{text}</pre>
+    </div>
+  );
+}
+
+// search/fetch 工具卡片共用的原始输出折叠块:自带展开状态,文案走会话 copy。
+function RawOutputToggle({ rawOutput, copy }) {
+  const c = conversationCopy(copy);
+  const [rawOpen, setRawOpen] = useState(false);
+  if (!rawOutput) return null;
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setRawOpen(value => !value)}
+        className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+      >
+        {rawOpen ? c.collapseRaw : c.viewRaw}
+      </button>
+      {rawOpen && <TerminalBlock label={c.rawData} text={rawOutput} />}
     </div>
   );
 }
@@ -351,7 +376,6 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
   const details = searchToolDetails(tool);
   const state = terminalStatus(item.status);
   const [open, setOpen] = useState(false);
-  const [rawOpen, setRawOpen] = useState(false);
   const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const query = details.query || tool.title || c.webContent;
@@ -407,18 +431,7 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
           {details.compacted && (
             <div className="mt-2 text-[10px] text-gray-400">{c.resultSummaryOnly}</div>
           )}
-          {details.rawOutput && (
-            <div className="mt-2">
-              <button
-                type="button"
-                onClick={() => setRawOpen(value => !value)}
-                className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              >
-                {rawOpen ? c.collapseRaw : c.viewRaw}
-              </button>
-              {rawOpen && <TerminalBlock label={c.rawData} text={details.rawOutput} />}
-            </div>
-          )}
+          <RawOutputToggle rawOutput={details.rawOutput} copy={c} />
         </div>
       )}
     </div>
@@ -433,7 +446,6 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
   const responseWarning = details.status != null && details.status >= 400;
   const visualState = responseWarning && state !== 'failed' ? 'warning' : state;
   const [open, setOpen] = useState(false);
-  const [rawOpen, setRawOpen] = useState(false);
   const detailsId = useId();
   const duration = c.elapsed(elapsedMs(item.startedAt, item.completedAt, now));
   const toolName = String(tool.name || '').trim() || 'fetch_url';
@@ -483,18 +495,7 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
           {details.truncated && (
             <div className="mt-2 text-[10px] text-gray-400">{c.responseTruncated}</div>
           )}
-          {details.rawOutput && (
-            <div className="mt-2">
-              <button
-                type="button"
-                onClick={() => setRawOpen(value => !value)}
-                className="text-[10px] text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-              >
-                {rawOpen ? c.collapseRaw : c.viewRaw}
-              </button>
-              {rawOpen && <TerminalBlock label={c.rawData} text={details.rawOutput} />}
-            </div>
-          )}
+          <RawOutputToggle rawOutput={details.rawOutput} copy={c} />
         </div>
       )}
     </div>
@@ -896,11 +897,7 @@ function ConversationTurnView({
   // internal clock drives elapsed time, re-rendering only this one turn subtree per second.
   const tickNow = useConversationSecondClock(running);
   const effectiveNow = now || tickNow;
-  const waitingPermission = turn.waitingPermission
-    || (turn.permissions || []).some(permission => !permission.resolved);
-  const waitingInput = turn.waitingInput
-    || (turn.elicitations || []).some(elicitation => !elicitation.resolved);
-  const waitingAttention = waitingPermission || waitingInput;
+  const { waitingPermission, waitingInput, waitingAttention } = turnWaitingAttention(turn);
   const duration = c.elapsed(elapsedMs(turn.startedAt, turn.completedAt, effectiveNow));
   const showTerminalDuration = Boolean(turn.startedAt && turn.completedAt);
   const presentation = turn.presentation || turn.items || [];

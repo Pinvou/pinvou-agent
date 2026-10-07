@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle, RefreshCw, Sparkles, Terminal } from '../../components/icons.jsx';
+import { isWeb } from '../../shared/platform.js';
 import {
   runtimeInstallInProgress,
   runtimeLoginInProgress,
@@ -40,7 +41,7 @@ export function RuntimeNotice({
   if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
-    ? (copy.showRawErrors ? rawError : copy.operationFailed)
+    ? (!isWeb && copy.showRawErrors ? rawError : copy.operationFailed)
     : '';
   if (noticeMode === 'bridge_unavailable') {
     const isCodex = status.agent_id === 'codex';

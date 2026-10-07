@@ -211,8 +211,8 @@ export function formatComputerUseConfirmAction(copy, request) {
   return { description, preview, previewTooLong };
 }
 
-// Legacy action-name spellings (pre-structured payload): map them onto the
-// structured field set so both payload generations render localized.
+// 当前 Rust 结构化 payload 的规范 action 名映射：映射到渲染层的 kind，
+// 供确认弹窗本地化渲染。
 const LEGACY_ACTION_FIELDS = {
   left_click: { kind: 'click', button: 'left', clickCount: 1 },
   right_click: { kind: 'click', button: 'right', clickCount: 1 },
@@ -221,21 +221,12 @@ const LEGACY_ACTION_FIELDS = {
   triple_click: { kind: 'click', button: 'left', clickCount: 3 },
   left_mouse_down: { kind: 'mouse_down', button: 'left' },
   left_mouse_up: { kind: 'mouse_up', button: 'left' },
-  mouse_down: { kind: 'mouse_down', button: 'left' },
-  mouse_up: { kind: 'mouse_up', button: 'left' },
   left_click_drag: { kind: 'drag' },
 };
 
 function formatConfirmPoint(point) {
   if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') return null;
   return `(${point.x}, ${point.y})`;
-}
-
-function describeConfirmPointAction(template, point) {
-  if (typeof template !== 'function') return null;
-  const formatted = formatConfirmPoint(point);
-  if (!formatted) return null;
-  return template(formatted);
 }
 
 function describeClickAction(copy, request, fields) {
@@ -293,8 +284,6 @@ function describeConfirmAction(copy, request) {
       const to = formatConfirmPoint(request.endPoint);
       return from && to ? applyTemplate(fn('confirmDrag'), from, to) : null;
     }
-    case 'mouse_move':
-      return describeConfirmPointAction(fn('confirmMouseMove'), request.point);
     case 'mouse_down':
     case 'mouse_up': {
       const button = request.button || (fields && fields.button) || 'left';

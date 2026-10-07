@@ -32,7 +32,7 @@
   function updateInfoFor(bs, opts) {
     opts = opts || {};
     if (bs && bs.updateInfo && bs.updateInfo.available) return bs.updateInfo;
-    if (opts.preview) return opts.previewInfo || previewInfo();
+    if (opts.preview) return previewInfo();
     return null;
   }
 
@@ -87,7 +87,6 @@
 
   window.UpdateNoticeLogic = {
     previewEnabled,
-    previewInfo,
     updateInfoFor,
     versionKey,
     viewModel,

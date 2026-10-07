@@ -6,15 +6,13 @@
 import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
 import { dict } from '../../shared/i18n.js';
+import { personaOverlayFor } from '../../shared/persona-overlay.js';
     // 部门标签按当前 UI 语言取词(t.depts),中文词典(dict.zh.depts)兜底
 export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (dict.zh.depts && dict.zh.depts[k]) || k; }
     // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
 export function personaText(c, t) {
-      const L = t && t.langTag;
-      if (!c || !L || L === 'zh' || c.source === 'user') return c || {};
-      const overlays = window.PERSONA_I18N;
-      const tr = (overlays && overlays[c.id] && overlays[c.id][L]) || null;
-      if (!tr) return c;
+      const tr = personaOverlayFor(c, t && t.langTag);
+      if (!tr) return c || {};
       return { ...c, name: tr.name || c.name, description: tr.description || c.description };
     }
 export const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','gis','security','supply-chain','hr','legal','tool'];

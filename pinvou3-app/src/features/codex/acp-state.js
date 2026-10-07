@@ -252,7 +252,6 @@ export function projectAcpTimeline(input, options = {}) {
         if (isTerminalToolStatus(tool.status)) block.completedAt = envelope.timestamp;
       }
     } else if (type === 'plan') {
-      turn.plan = update;
       if (turn.planBlockIndex == null) {
         turn.planBlockIndex = turn.blocks.length;
         turn.blocks.push({
@@ -368,7 +367,6 @@ export function projectAcpTimeline(input, options = {}) {
   return {
     turns,
     global,
-    events,
   };
 }
 

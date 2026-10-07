@@ -219,7 +219,6 @@ const zhConfirmCopy = {
   confirmKeyChordMasked: (chord, count) => chord ? `按下组合键 ${chord} + ${count} 个隐藏字符` : `按下 ${count} 个隐藏字符`,
   confirmHoldKeyMasked: (chord, count, ms) => chord ? `按住 ${chord} + ${count} 个隐藏字符 ${ms} 毫秒` : `按住 ${count} 个隐藏字符 ${ms} 毫秒`,
   confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
-  confirmMouseMove: (point) => `移动鼠标到 ${point}`,
   confirmMouseDown: (button) => `按下${button}`,
   confirmMouseUp: (button) => `松开${button}`,
 };
@@ -294,21 +293,6 @@ assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'scroll', point: { x: 7, y: 8 } })),
   { description: 'english fallback', preview: null, previewTooLong: false },
   'a scroll confirm falls back to the summary (scroll is never screened/blocked)',
-);
-assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_move', point: { x: 9, y: 10 } })),
-  { description: '移动鼠标到 (9, 10)', preview: null, previewTooLong: false },
-  'a mouse move renders the target point',
-);
-assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'left' })),
-  { description: '按下左键', preview: null, previewTooLong: false },
-  'a mouse down renders the button',
-);
-assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_up', button: 'right' })),
-  { description: '松开右键', preview: null, previewTooLong: false },
-  'a mouse up renders the button',
 );
 // Legacy payload generation: no structured fields — the English summary is
 // the only content and must pass through verbatim.
@@ -574,7 +558,6 @@ const dialogCopy = {
   confirmKeyChord: (chord) => `Press ${chord}`,
   confirmHoldKey: (chord, ms) => `Hold ${chord} for ${ms} ms`,
   confirmDrag: (from, to) => `Drag from ${from} to ${to}`,
-  confirmMouseMove: (point) => `Move mouse to ${point}`,
   confirmMouseDown: (button) => `Press and hold the ${button} mouse button`,
   confirmMouseUp: (button) => `Release the ${button} mouse button`,
   actionFailed: (error) => `Action failed: ${error}`,

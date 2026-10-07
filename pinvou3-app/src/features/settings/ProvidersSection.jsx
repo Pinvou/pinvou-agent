@@ -647,7 +647,7 @@ export function ProvidersSection({ t }) {
               className={`rounded-xl px-3 py-2.5 text-[12px] text-red-500 shadow-lg backdrop-blur-md bg-[#FEF2F2]/95 dark:bg-[#2A1A1A]/95`}
             >
               {error}
-              <button type="button" onClick={refresh} className="ml-2 underline">{copy.retry}</button>
+              <button type="button" onClick={() => refresh(true)} className="ml-2 underline">{copy.retry}</button>
             </div>
           )}
           {notice && (
@@ -751,7 +751,7 @@ export function ProvidersSection({ t }) {
         </button>
         <button type="button"
           data-testid="acp-provider-refresh"
-          onClick={refresh}
+          onClick={() => refresh(true)}
           className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5"
         >
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />

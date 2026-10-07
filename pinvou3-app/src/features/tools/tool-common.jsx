@@ -778,6 +778,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     const TsActionBtn = ({ tool, busy, onAction, onUpdate, onEditDisplay, size = 'sm', t }) => {
       const T = tc(t);
       const isLg = size === 'lg';
+      const connectorLike = tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp;
       const actionAttrs = {
         'data-testid': 'tool-store-action',
         'data-tool-id': tool.backendId || '',
@@ -861,7 +862,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
             className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
-            {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? T.disconnect : T.uninstall}
+            {connectorLike ? T.disconnect : T.uninstall}
           </button>
         );
         // 预置技能内容落后于商店版本(App 升级带入新版)时,并列给出"更新"入口;
@@ -901,7 +902,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
           className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
-          {(tool.feishuCli || tool.wecomCli || tool.dingtalkCli || tool.tmeetCli || tool.imaOpenapi || tool.oauthMcp) ? (hasConfig ? T.configure : T.connect) : (hasConfig ? T.configure : T.install)}
+          {connectorLike ? (hasConfig ? T.configure : T.connect) : (hasConfig ? T.configure : T.install)}
         </button>
       );
     };
