@@ -95,6 +95,24 @@ test('BrowserCore navigation tools acknowledge requests without claiming page lo
   }
 });
 
+test('BrowserCore schemas state the real URL gate and uid lifetime', () => {
+  const catalog = createPinvouBrowserCoreCatalog();
+  const tools = new Map(catalog.toolsListResult.tools.map((tool) => [tool.name, tool]));
+
+  // The wrapper's Rust-mirrored gate rejects the app UI origins; schemas that
+  // omit the precondition let a model retry the exact URL the gate denies.
+  for (const name of ['new_page', 'navigate_page']) {
+    const schema = JSON.stringify(catalog.toolsListResult.tools.find((tool) => tool.name === name));
+    assert.match(schema, /tauri\.localhost/);
+    assert.match(schema, /localhost:1420/);
+  }
+  assert.match(tools.get('navigate_page').description, /Navigating invalidates all uids/);
+
+  // uids die on navigation too, not only on the next snapshot.
+  const snapshot = tools.get('take_snapshot');
+  assert.match(snapshot.description, /next snapshot or navigation/);
+});
+
 test('work instructions define a durable and verified loopback preview workflow', () => {
   const instructions = readFileSync(
     new URL('../src-tauri/resources/common/bundle/instructions-work.md', import.meta.url),

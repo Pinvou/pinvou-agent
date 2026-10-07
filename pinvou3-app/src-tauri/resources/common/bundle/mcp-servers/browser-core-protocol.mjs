@@ -28,7 +28,10 @@ const FALLBACK_SCHEMAS = {
   new_page: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: 'URL whose navigation should be requested in a new page.' },
+      url: {
+        type: 'string',
+        description: 'http or https URL (about:blank also allowed) to request in a new page; the app UI origins (tauri.localhost and the localhost:1420 dev origin) are rejected.',
+      },
       background: { type: 'boolean' },
     },
     required: ['url'],
@@ -50,7 +53,10 @@ const FALLBACK_SCHEMAS = {
     type: 'object',
     properties: {
       type: { type: 'string', enum: ['url', 'back', 'forward', 'reload'] },
-      url: { type: 'string' },
+      url: {
+        type: 'string',
+        description: 'http or https URL (about:blank also allowed) for type=url; the app UI origins (tauri.localhost and the localhost:1420 dev origin) are rejected.',
+      },
     },
     additionalProperties: true,
   },
@@ -181,8 +187,8 @@ const TOOL_DESCRIPTIONS = {
   new_page: 'Open a new task-owned browser tab and submit a URL navigation request. Success does not verify that the page loaded; use take_snapshot to verify it.',
   select_page: 'Select a task-owned page for future browser calls. The selected page becomes the user-visible active tab in the task browser; only select when cross-page work is needed.',
   close_page: 'Close a task-owned page. The last page cannot be closed.',
-  navigate_page: 'Submit URL, history, or reload navigation for the selected page. Success does not verify that the page loaded; use take_snapshot to verify it.',
-  take_snapshot: 'Take a text snapshot of the selected page with element uids valid until the next snapshot (any new snapshot — including ones returned by tools with includeSnapshot — invalidates previous uids).',
+  navigate_page: 'Submit URL, history, or reload navigation for the selected page. URL navigations accept only http, https, and about:blank (app UI origins excluded). Success does not verify that the page loaded; use take_snapshot to verify it. Navigating invalidates all uids from earlier snapshots.',
+  take_snapshot: 'Take a text snapshot of the selected page with element uids valid until the next snapshot or navigation (any new snapshot — including ones returned by tools with includeSnapshot — and any page navigation invalidate previous uids).',
   click: 'Click an element using task-local native input.',
   drag: 'Drag one element onto another using task-local native input.',
   fill: 'Fill an input using task-local native input.',
