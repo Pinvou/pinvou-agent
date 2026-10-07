@@ -428,8 +428,6 @@
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
     .streaming-cursor::after { content:"▊"; animation:blink 1s step-end infinite; margin-left:2px; }
 
-    /* Thinking animation */
-    @keyframes spin-braille { 0%{content:"⠋"} 10%{content:"⠙"} 20%{content:"⠹"} 30%{content:"⠸"} 40%{content:"⠼"} 50%{content:"⠴"} 60%{content:"⠦"} 70%{content:"⠧"} 80%{content:"⠇"} 90%{content:"⠏"} }
     /* Tool Store */
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -456,31 +454,11 @@
       .voice-pill-live::after { animation:none; content:none; }
     }
 
-    /* ===== 卡片池: tilt / spotlight / borderglow / 挂件 ===== */
-    .ap-card { transform-style: preserve-3d; transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .25s, border-color .25s; will-change: transform; position: relative; }
-    /* 鼠标跟随高光(--mx/--my 由 JS 注入) */
-    .ap-card::before {
-      content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; opacity:0;
-      transition:opacity .25s; z-index:1;
-      background: radial-gradient(380px circle at var(--mx,50%) var(--my,50%), rgba(255,255,255,.10), transparent 42%);
-    }
-    .ap-card:hover::before { opacity:1; }
-    .ap-card > * { position:relative; z-index:2; }
-    /* A 档金色 spotlight 额外柔光 */
-    .ap-card.tier-A:hover { box-shadow: 0 0 0 1px rgba(255,191,0,.35), 0 14px 40px -12px rgba(255,191,0,.30); }
-    /* 已加持: 金色流转边框 */
-    @keyframes ap-borderglow { 0%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} 50%{box-shadow:0 0 0 1px rgba(255,210,80,1),0 0 26px 0 rgba(255,190,40,.75)} 100%{box-shadow:0 0 0 1px rgba(255,170,0,.9),0 0 18px -2px rgba(255,170,0,.55)} }
-    .ap-card.equipped { border-color: rgba(255,180,30,.95) !important; animation: ap-borderglow 2.4s ease-in-out infinite; }
-    /* 挂件(lanyard) 入场 + 悬挂摆动 */
-    @keyframes lanyard-drop { 0%{ transform: translateY(-120%) rotate(-3deg); opacity:0 } 60%{ transform: translateY(6%) rotate(1.5deg) } 100%{ transform: translateY(0) rotate(0); opacity:1 } }
-    @keyframes lanyard-sway { 0%,100%{ transform: rotate(-1.3deg) } 50%{ transform: rotate(1.3deg) } }
     /* AI 造卡 banner 头像浮动 */
     @keyframes bnrFloat1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
     @keyframes bnrFloat2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
     @keyframes bnrFloat3 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
     @media (max-width: 760px){ .bnr-avatars { display: none; } }
-    .lanyard-wrap { animation: lanyard-drop .55s cubic-bezier(.2,.9,.3,1.2) both; transform-origin: top center; }
-    .lanyard-card { animation: lanyard-sway 4.5s ease-in-out infinite; transform-origin: top center; }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
     .persona-body h1, .persona-body h2, .persona-body h3 { font-weight:600; margin:.9em 0 .35em; line-height:1.3; }
     .persona-body h1 { font-size:1.15em; } .persona-body h2 { font-size:1.06em; } .persona-body h3 { font-size:1em; }
