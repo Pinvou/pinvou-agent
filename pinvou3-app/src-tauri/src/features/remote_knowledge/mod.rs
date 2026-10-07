@@ -744,7 +744,6 @@ impl RemoteKnowledgeService {
                 device_id: None,
                 created_at: pending.created_at,
                 expires_at: pending.expires_at,
-                resolved_at: Some(chrono::Utc::now().timestamp()),
             }),
         }
     }
@@ -828,10 +827,8 @@ impl RemoteKnowledgeService {
                     version: String::new(),
                     protocol_version: 2,
                     tls_ca: pending.tls_ca.clone(),
-                    initialized: true,
                     ready: false,
                     model_present: false,
-                    model: String::new(),
                 },
                 token: device_token,
                 scope,
@@ -1050,10 +1047,11 @@ impl RemoteKnowledgeService {
             .set(&reference, &paired.token)
             .map_err(|error| error.user_message())?;
 
-        let mut next = self.configured_connections();
-        next.push(connection.clone());
-        next.sort_by(|left, right| left.name.cmp(&right.name));
-        if let Err(error) = save_connections(&self.path, &next) {
+        // 复用 register/rebind 的收尾序列（按 server_id 原位替换/追加、按名称
+        // 排序、落盘并同步内存副本）。上方 ensure_server_id_not_connected 已
+        // 排除既有 server_id，这里恒走 insert_missing 的追加臂；落盘失败仍按
+        // 原样回滚刚写入的凭据（错误文案保持本路径原文）。
+        if let Err(error) = self.upsert_owner_connection(connection.clone(), true, &_persistence) {
             let rollback = if let Some(previous_token) = previous_token {
                 self.credentials.set(&reference, &previous_token)
             } else {
@@ -1067,7 +1065,6 @@ impl RemoteKnowledgeService {
                 ),
             });
         }
-        *self.connections.write() = next;
         Ok(connection)
     }
 
@@ -1534,7 +1531,6 @@ mod tests {
             tls_ca: "untrusted".to_string(),
             ca_fingerprint: "not-confirmed".to_string(),
             identity_code: "PINVOU-0000-0000-0000-0000".to_string(),
-            ready: false,
         };
 
         assert!(

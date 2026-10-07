@@ -8,13 +8,6 @@ pub fn engine_binary_name() -> &'static str {
     "sense-voice-main"
 }
 
-pub fn bundled_engine_intact(
-    _path: &std::path::Path,
-    _bundled_dir: Option<&std::path::Path>,
-) -> bool {
-    true
-}
-
 pub fn asr_tool_path() -> PathBuf {
     // 环境变量探测循环与 macos/windows 共用（platform::asr_tool_path_from_env）。
     super::asr_tool_path_from_env().unwrap_or_else(|| PathBuf::from("pinvou-asr"))

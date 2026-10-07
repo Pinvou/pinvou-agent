@@ -293,6 +293,31 @@ pub(super) fn probe_cli(backend: AgentBackend, path: Option<PathBuf>) -> Option<
         install_source,
     })
 }
+/// 统一的「探测命令退出码」语义：spawn 失败、超时或非零退出都视为 false，
+/// 超时进程 kill 后回收。命令由调用方构造（brew 用裸 `std::process::Command`、
+/// npm/CLI 用 `external_command` 的差异保留在入参层），stdio 一律接 null。
+pub(super) fn probe_exit_status(
+    mut command: std::process::Command,
+    args: &[&str],
+    timeout: Duration,
+) -> bool {
+    command.args(args);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => status.success(),
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            false
+        }
+    }
+}
 /// 探测 brew 是否已安装该 Agent 的 CLI（macOS 版本过旧时走 brew upgrade）。
 /// codex/claude-code 是 cask，kimi-code 是 formula（无 --cask）；
 /// 非 macOS 平台 brew_available 恒 false。
@@ -306,23 +331,11 @@ pub(super) fn brew_package_installed(backend: AgentBackend) -> bool {
         AgentBackend::KimiAcp => &["list", "kimi-code"],
         AgentBackend::Deepseek => return false,
     };
-    let mut command = std::process::Command::new(platform::brew_bin());
-    command
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
-    match child.wait_timeout(Duration::from_secs(10)) {
-        Ok(Some(status)) => status.success(),
-        Ok(None) | Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            false
-        }
-    }
+    probe_exit_status(
+        std::process::Command::new(platform::brew_bin()),
+        args,
+        Duration::from_secs(10),
+    )
 }
 /// 各 Agent CLI 对应的 npm 全局包名。
 pub(super) fn npm_package(backend: AgentBackend) -> Option<&'static str> {
@@ -346,23 +359,11 @@ pub(super) fn npm_global_installed(package: &str) -> bool {
     let Some(npm) = npm_executable() else {
         return false;
     };
-    let mut command = crate::platform::process::external_command(&npm);
-    command
-        .args(["ls", "-g", package, "--depth=0"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
-    match child.wait_timeout(Duration::from_secs(10)) {
-        Ok(Some(status)) => status.success(),
-        Ok(None) | Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            false
-        }
-    }
+    probe_exit_status(
+        crate::platform::process::external_command(&npm),
+        &["ls", "-g", package, "--depth=0"],
+        Duration::from_secs(10),
+    )
 }
 /// 判定已解析 CLI 的安装来源。多份并存（如同机同时有 brew cask 与官方脚本版）
 /// 时必须按「实际被解析使用的那一份」判定，否则升级会打到包管理器管理的另一份，
@@ -411,25 +412,15 @@ pub(super) fn finalize_install_source(
 pub(super) fn npm_global_root() -> Option<PathBuf> {
     let npm = npm_executable()?;
     let mut command = crate::platform::process::external_command(&npm);
-    command
-        .args(["prefix", "-g"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let mut child = command.spawn().ok()?;
-    match child.wait_timeout(Duration::from_secs(10)) {
-        Ok(Some(status)) if status.success() => {
-            let mut stdout = String::new();
-            child.stdout.take()?.read_to_string(&mut stdout).ok()?;
-            let root = stdout.trim();
-            (!root.is_empty()).then_some(PathBuf::from(root))
-        }
-        _ => {
-            let _ = child.kill();
-            let _ = child.wait();
-            None
-        }
+    command.args(["prefix", "-g"]);
+    let output = crate::platform::process::output_with_timeout(command, Duration::from_secs(10))
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let root = stdout.trim();
+    (!root.is_empty()).then_some(PathBuf::from(root))
 }
 /// 路径是否位于 npm 全局根下：unix 可执行文件链接在 <root>/bin，Windows 直接在根目录。
 pub(super) fn path_in_npm_global(path: &Path, root: &Path, windows: bool) -> bool {

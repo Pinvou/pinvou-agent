@@ -838,19 +838,16 @@ pub async fn kb_remove_document(
 #[serde(rename_all = "camelCase")]
 pub struct EmbedInfo {
     pub enabled: bool,
-    pub base_url: String,
     pub model: String,
 }
 pub fn kb_embed_info(state: State<'_, KnowledgeService>) -> EmbedInfo {
     match state.l1().embed_info() {
-        Some((base_url, model)) => EmbedInfo {
+        Some((_, model)) => EmbedInfo {
             enabled: true,
-            base_url,
             model,
         },
         None => EmbedInfo {
             enabled: false,
-            base_url: String::new(),
             model: String::new(),
         },
     }

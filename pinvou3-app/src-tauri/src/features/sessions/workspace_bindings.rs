@@ -761,9 +761,12 @@ impl SessionStore {
         outcome
     }
 
-    /// The two halves back to back (see the doc above
-    /// [`Self::plan_rebind_workspace_bindings`]): the form for callers with no
-    /// other lane to interleave between the sync and the sidecar pass.
+    /// Test-only plural convenience wrapper: production callers drive
+    /// [`Self::plan_rebind_workspace_bindings`] and
+    /// [`Self::apply_rebind_workspace_bindings`] back to back themselves (see
+    /// the doc above [`Self::plan_rebind_workspace_bindings`]); the remaining
+    /// callers are test code pinning the two-phase contract.
+    #[cfg(test)]
     pub fn rebind_workspace_bindings(
         &self,
         from: &Path,

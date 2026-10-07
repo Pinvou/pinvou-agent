@@ -393,33 +393,30 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Multi-agent session ids for the `_multi_agent.json` sidecar; only the
-    /// save path in this module consumes the snapshot.
-    fn multi_agent_session_ids(&self) -> Vec<String> {
-        let m = self.mode_states.read();
-        let mut ids: Vec<String> = m
-            .iter()
-            .filter(|(_, state)| state.multi_agent)
-            .map(|(id, _)| id.clone())
-            .collect();
-        ids.sort();
-        ids
-    }
-
-    pub fn save_multi_agent_flags(&self) -> Result<()> {
-        let _io = self.multi_agent_flags_io.lock();
-        self.save_multi_agent_flags_locked()
-    }
-
-    /// Boot-only whole-list rewrite, used after ghost cleanup re-derives the
+    /// Boot-only whole-list rewrite of `_multi_agent.json` from the
+    /// multi-agent flag snapshot, used after ghost cleanup re-derives the
     /// full id list from the file just read plus the sessions directory.
     /// Production single-flag mutations must use
     /// [`apply_multi_agent_mutation_locked`] so entries another process added
     /// after this one booted are preserved instead of reverted by a stale
     /// snapshot.
-    pub(crate) fn save_multi_agent_flags_locked(&self) -> Result<()> {
+    ///
+    /// Takes the store's `multi_agent_flags_io` mutex itself (the contract
+    /// the former `save_multi_agent_flags_locked` left to its caller): the
+    /// durable whole-list write must not interleave with a concurrent id-level
+    /// read-modify-write, or the older snapshot lands last and resurrects
+    /// removed flags.
+    pub fn save_multi_agent_flags(&self) -> Result<()> {
+        let _io = self.multi_agent_flags_io.lock();
         let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
-        let ids = self.multi_agent_session_ids();
+        let mut ids: Vec<String> = {
+            let m = self.mode_states.read();
+            m.iter()
+                .filter(|(_, state)| state.multi_agent)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        ids.sort();
         if ids.is_empty() {
             return match std::fs::remove_file(&file) {
                 Ok(()) => Ok(()),
@@ -437,66 +434,38 @@ impl SessionStore {
     /// process after this one booted (same rationale as
     /// [`Self::apply_session_mode_mutation`]).
     ///
-    /// The `_locked` suffix is the caller contract shared with
-    /// [`Self::save_multi_agent_flags_locked`]: the durable read-modify-write
-    /// must run under the store's `multi_agent_flags_io` mutex, or a
-    /// concurrent save's older snapshot lands last and resurrects removed
-    /// flags.
+    /// The `_locked` suffix is the caller contract shared with the boot-time
+    /// whole-list rewrite [`Self::save_multi_agent_flags`] (which takes the
+    /// same mutex itself): the durable read-modify-write must run under the
+    /// store's `multi_agent_flags_io` mutex, or a concurrent save's older
+    /// snapshot lands last and resurrects removed flags.
     pub(crate) fn apply_multi_agent_mutation_locked(
         upserts: &[(&str, bool)],
         removes: &[&str],
     ) -> Result<()> {
-        let file = crate::platform::paths::sessions_root().join("_multi_agent.json");
-        let mut ids: Vec<String> = if file.exists() {
-            let content =
-                std::fs::read_to_string(&file).context("read _multi_agent.json failed")?;
-            serde_json::from_str(&content).map_err(|error| {
-                // Quarantine-then-refuse, matching the other sidecar
-                // mutators: this write fails, the evidence survives aside,
-                // and the next mutation starts from an empty list.
-                let note = match crate::platform::filesystem::quarantine_corrupt_file(&file) {
-                    Ok(quarantine) => {
-                        format!("; corrupt bytes quarantined at {}", quarantine.display())
+        crate::features::sessions::sidecars::mutate_json_list_file(
+            "_multi_agent.json",
+            |ids: &mut Vec<String>| {
+                let mut changed = false;
+                for (id, enabled) in upserts {
+                    let exists = ids.iter().any(|entry| entry == id);
+                    if *enabled && !exists {
+                        ids.push((*id).to_string());
+                        ids.sort();
+                        changed = true;
+                    } else if !*enabled && exists {
+                        ids.retain(|entry| entry != id);
+                        changed = true;
                     }
-                    Err(quarantine_error) => {
-                        format!("; quarantining failed ({quarantine_error})")
-                    }
-                };
-                anyhow::Error::new(error).context(format!("parse _multi_agent.json failed{note}"))
-            })?
-        } else {
-            Vec::new()
-        };
-        let mut changed = false;
-        for (id, enabled) in upserts {
-            let exists = ids.iter().any(|entry| entry == id);
-            if *enabled && !exists {
-                ids.push((*id).to_string());
-                ids.sort();
-                changed = true;
-            } else if !*enabled && exists {
-                ids.retain(|entry| entry != id);
-                changed = true;
-            }
-        }
-        for id in removes {
-            let before = ids.len();
-            ids.retain(|entry| entry != id);
-            changed |= ids.len() != before;
-        }
-        if !changed {
-            return Ok(());
-        }
-        if ids.is_empty() {
-            return match std::fs::remove_file(&file) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error).context("remove _multi_agent.json"),
-            };
-        }
-        let json = serde_json::to_string_pretty(&ids).context("serialize multi-agent flags")?;
-        crate::platform::filesystem::atomic_write_private(&file, json.as_bytes())
-            .context("persist _multi_agent.json failed")
+                }
+                for id in removes {
+                    let before = ids.len();
+                    ids.retain(|entry| entry != id);
+                    changed |= ids.len() != before;
+                }
+                changed
+            },
+        )
     }
 
     pub fn load_multi_agent_flags(&self) {

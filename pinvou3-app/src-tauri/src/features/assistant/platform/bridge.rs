@@ -3146,7 +3146,9 @@ impl Pinvou3Bridge {
         let full_content = if reminder_body.is_empty() {
             content
         } else {
-            format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}")
+            crate::features::assistant::engine_support::wrap_system_reminder(
+                &reminder_body, &content,
+            )
         };
         let model = self.model();
         // Approval parameters come from the session policy (R-2), the same

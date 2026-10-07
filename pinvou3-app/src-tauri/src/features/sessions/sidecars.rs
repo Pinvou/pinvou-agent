@@ -176,8 +176,34 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned,
     F: FnOnce(&mut HashMap<String, T>) -> bool,
 {
+    mutate_json_file(file_name, mutate, |entries| entries.is_empty())
+}
+
+/// Same read-modify-write contract as [`mutate_json_map_file`] for the plain
+/// id-list sidecar (`_multi_agent.json`): applies `mutate` to the durable
+/// content and persists only when it reports a change.
+pub(crate) fn mutate_json_list_file<F>(file_name: &str, mutate: F) -> Result<()>
+where
+    F: FnOnce(&mut Vec<String>) -> bool,
+{
+    mutate_json_file(file_name, mutate, |entries| entries.is_empty())
+}
+
+/// Shared core of [`mutate_json_map_file`] / [`mutate_json_list_file`]: read
+/// the durable content (quarantine-then-refuse on corruption), apply `mutate`,
+/// and persist only on a reported change (empty container deletes the file,
+/// pretty JSON via `atomic_write_private`).
+fn mutate_json_file<C, F>(
+    file_name: &str,
+    mutate: F,
+    is_empty: impl Fn(&C) -> bool,
+) -> Result<()>
+where
+    C: Default + serde::Serialize + serde::de::DeserializeOwned,
+    F: FnOnce(&mut C) -> bool,
+{
     let file = crate::platform::paths::sessions_root().join(file_name);
-    let mut entries: HashMap<String, T> = if file.exists() {
+    let mut entries: C = if file.exists() {
         let content =
             std::fs::read_to_string(&file).with_context(|| format!("read {file_name}"))?;
         serde_json::from_str(&content).map_err(|error| {
@@ -194,12 +220,12 @@ where
             anyhow::Error::new(error).context(format!("parse {file_name}{note}"))
         })?
     } else {
-        HashMap::new()
+        C::default()
     };
     if !mutate(&mut entries) {
         return Ok(());
     }
-    if entries.is_empty() {
+    if is_empty(&entries) {
         return match std::fs::remove_file(&file) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),

@@ -584,17 +584,6 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     Ok(card.summary())
 }
 
-/// Delete a user card (only `user-` cards) for a caller outside the desktop
-/// app, such as the headless CLI. Which sessions equip a card is in-memory
-/// state of the running app, so this cannot clear it; the app reconciles on
-/// its own: its readers reload the pool once the file is gone, and the chat
-/// path unequips a card that no longer exists before its next turn. In-app
-/// deletes go through `delete_user_persona_with`, which clears sessions
-/// synchronously.
-pub fn delete_user_persona(id: &str) -> Result<(), String> {
-    delete_user_persona_with(id, || ())
-}
-
 /// Delete a card and run cross-feature cleanup before another operation can
 /// publish a snapshot of that card.
 pub(crate) fn delete_user_persona_with<T>(
@@ -706,6 +695,21 @@ fn is_unseen(c: char) -> bool {
                 | '\u{E0100}'..='\u{E01EF}' // 变体选择符增补
                 | '\u{E01F0}'..='\u{E0FFF}' // VS 增补之后的未分配保留（默认不可见）
         )
+}
+
+/// 用户自建文案的统一限长出口：先剥不可见字符，再按 char 计数限长并如实
+/// 标注——超出 `limit` 个字符截断并追加 `…`。与信封出口
+/// [`bounded_envelope_text`] 不同，这里不做信封标签转义：只用于不进
+/// `<system-reminder>` 信封的插值面（如专家名册投影描述）。
+pub(crate) fn bounded_visible(value: &str, limit: usize) -> String {
+    let sanitized = strip_invisible_chars(value);
+    let truncated = sanitized.chars().count() > limit;
+    let text: String = sanitized.chars().take(limit).collect();
+    if truncated {
+        format!("{text}…")
+    } else {
+        text
+    }
 }
 
 /// 把信封标签字符（`<`/`>`）转义成 `\u003c`/`\u003e`。这是不可信文案

@@ -46,26 +46,12 @@ pub use self::io::{
 pub use self::io::{
     PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, confirm_pending_memory,
     delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
-    enqueue_memory_candidate, ignore_pending_memory, list_preferences,
-    list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
-    load_profile, load_recent_activity, load_recent_work, load_work_context,
-    load_work_context_with_cleanup, memory_enabled, never_pending_memory,
-    record_turn_tool_complete, record_turn_tool_start, record_turn_user, take_turn_capture,
-    update_preference, update_profile, update_timed_memory, update_work_context,
+    enqueue_memory_candidate, ignore_pending_memory, list_preferences_with_cleanup,
+    load_current_focus, load_never_memory, load_pending_memory, load_profile, load_recent_activity,
+    load_recent_work, load_work_context, load_work_context_with_cleanup, memory_enabled,
+    never_pending_memory, record_turn_tool_complete, record_turn_tool_start, record_turn_user,
+    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
 };
-
-// ---- Stored text length cap (io) ----
-// The CLI's `memory add` validation must use the same cap constant as the
-// write side; a local copy would reintroduce a spurious
-// `memory_add_not_materialized` failure whenever the cap changes.
-pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
-
-// ---- stored-text normalization (util) ----
-// The CLI predicts the text `memory add` stores for work context and the text
-// `memory update` stores in every editable store; those writers normalize it
-// with this function, so a local copy would drift into false
-// "not materialized" failures.
-pub use self::util::clean_candidate_sentence;
 
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;

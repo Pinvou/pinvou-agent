@@ -13,6 +13,7 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::GetSystemTimes;
 
 use super::super::CpuSnapshot;
+use super::super::cpu_math::clamp_pct;
 
 static CPU_SAMPLE_STATE: OnceLock<Mutex<CpuSampleState>> = OnceLock::new();
 
@@ -177,14 +178,6 @@ fn system_usage_pct(prev: SystemTimes, current: SystemTimes) -> Option<f64> {
     Some(clamp_pct(busy_delta as f64 * 100.0 / total_delta as f64))
 }
 
-fn clamp_pct(value: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(0.0, 100.0)
-    } else {
-        0.0
-    }
-}
-
 fn cpu_name() -> Option<String> {
     read_registry_string(
         HKEY_LOCAL_MACHINE,
@@ -275,13 +268,6 @@ fn filetime_to_u64(value: FILETIME) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clamp_usage_pct_clamps_range() {
-        assert_eq!(clamp_pct(-1.0), 0.0);
-        assert_eq!(clamp_pct(42.5), 42.5);
-        assert_eq!(clamp_pct(120.0), 100.0);
-    }
 
     #[test]
     fn system_usage_from_deltas_returns_expected() {

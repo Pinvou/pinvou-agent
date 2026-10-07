@@ -259,8 +259,6 @@ fn handle_voice_shortcut_with_modifiers(
 
 #[derive(Clone, Serialize)]
 struct VoiceShortcutTriggerPayload {
-    mode: &'static str,
-    source: &'static str,
     /// Target window label (a window mounting VoiceShortcutRouter); the
     /// frontend consumes it only after checking it matches its own window.
     window_label: String,
@@ -479,8 +477,6 @@ fn emit_shortcut_event(
                 window_label,
                 "voice-shortcut:trigger",
                 VoiceShortcutTriggerPayload {
-                    mode: "dictation",
-                    source: "native",
                     window_label: window_label.to_string(),
                     recording_token: recording_token.clone(),
                     route,

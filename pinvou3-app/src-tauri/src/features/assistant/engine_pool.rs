@@ -64,7 +64,6 @@ use crate::features::assistant::engine::{
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
-use crate::features::assistant::runtime_model::PreparedRuntimeModel;
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{ScheduledRunProfile, SessionStore, transcript_revision};
 use crate::platform::prefs::{SavedModel, UserPrefs};
@@ -462,7 +461,7 @@ pub(crate) fn forward_edit_resend_with_reminder<F>(
 ) -> F {
     send(match merge_aux_zero_tool_reminder(session_id, None) {
         Some(reminder) => {
-            format!("<system-reminder>\n{reminder}\n</system-reminder>\n\n{new_message}")
+            super::engine_support::wrap_system_reminder(&reminder, &new_message)
         }
         None => new_message,
     })
@@ -1473,12 +1472,12 @@ impl ModelUpdateRevisions {
 
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedRuntimeState {
-    prepared: PreparedRuntimeModel,
+    prepared: SavedModel,
     model_update_revision: u64,
 }
 
 impl PreparedRuntimeState {
-    fn new(prepared: PreparedRuntimeModel, model_update_revision: u64) -> Self {
+    fn new(prepared: SavedModel, model_update_revision: u64) -> Self {
         Self {
             prepared,
             model_update_revision,
@@ -1854,7 +1853,7 @@ impl EnginePool {
             .active_model()
             .cloned()
             .context("No effective model is available for draft preparation")?;
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         Ok(Self::finalize_runtime_bridge(bridge, &prepared, false).await)
     }
 
@@ -1863,7 +1862,7 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
         explicit_model_override: Option<SavedModel>,
-    ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
+    ) -> Result<(Pinvou3Bridge, SavedModel, bool)> {
         Self::prepare_runtime_model_with(
             &self.store,
             self.bridge.clone(),
@@ -1884,7 +1883,7 @@ impl EnginePool {
         session_id: &str,
         scheduled_unattended: bool,
         explicit_model_override: Option<SavedModel>,
-    ) -> Result<(Pinvou3Bridge, PreparedRuntimeModel, bool)> {
+    ) -> Result<(Pinvou3Bridge, SavedModel, bool)> {
         let mut bridge = base_bridge;
         bridge.prefs = UserPrefs::load();
         Self::install_session_affinity_key(&mut bridge, session_id);
@@ -1913,7 +1912,7 @@ impl EnginePool {
         let selected = bridge
             .effective_model_owned()
             .context("No effective model is available for runtime preparation")?;
-        let prepared = PreparedRuntimeModel::unchanged(selected);
+        let prepared = selected;
         Ok((bridge, prepared, pins_scheduled_model))
     }
 
@@ -1935,10 +1934,10 @@ impl EnginePool {
     /// `probed_facts_wiring_tests`).
     async fn finalize_runtime_bridge(
         mut bridge: Pinvou3Bridge,
-        prepared: &PreparedRuntimeModel,
+        prepared: &SavedModel,
         pins_scheduled_model: bool,
     ) -> Pinvou3Bridge {
-        bridge.session_model = Some(prepared.model.clone());
+        bridge.session_model = Some(prepared.clone());
         // Local endpoints (OpenAI-compatible presets and LocalVllm presets
         // pointing at local/intranet services): probe the service type
         // (Ollama / vLLM / LM Studio / generic). An OpenaiCompatible route's
@@ -2245,7 +2244,7 @@ impl EnginePool {
             .prepare_runtime_model(session_id, scheduled_unattended, explicit_model_override)
             .await?;
         let prepare_model_ms = elapsed_ms(prepare_model_started);
-        let model_update_revision = self.model_update_revisions.current(&prepared.model.id);
+        let model_update_revision = self.model_update_revisions.current(&prepared.id);
         let prepared = PreparedRuntimeState::new(prepared, model_update_revision);
         let mcp_config_revision = self.mcp_config_revision.load(Ordering::Acquire);
 
@@ -4441,7 +4440,6 @@ mod scheduled_model_tests {
         should_still_reap_after_snapshot, turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
-    use crate::features::assistant::runtime_model::PreparedRuntimeModel;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
     use crate::platform::credential_store::{CredentialEditAction, CredentialState};
     use crate::platform::paths::tests::ENV_LOCK;
@@ -5836,7 +5834,7 @@ mod scheduled_model_tests {
         // (#385) the unsubmitted reservation survives the reclaim and the
         // message is submitted to the rebuilt engine.
         let revisions = ModelUpdateRevisions::default();
-        let prepared = PreparedRuntimeModel::unchanged(model("model-1", "wire-model"));
+        let prepared = model("model-1", "wire-model");
         let entry_state = PreparedRuntimeState::new(prepared.clone(), revisions.current("model-1"));
 
         let lifecycles = SessionTurnLifecycles::default();
@@ -5864,7 +5862,7 @@ mod scheduled_model_tests {
         // comparison from requires_rebuild_from would leave the session running on
         // the previous model's engine and no test would notice.
         let other_model_state = PreparedRuntimeState::new(
-            PreparedRuntimeModel::unchanged(model("model-2", "wire-model-2")),
+            model("model-2", "wire-model-2"),
             revisions.current("model-1"),
         );
         assert!(
@@ -8536,9 +8534,7 @@ mod scheduled_model_tests {
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]
 mod probed_facts_wiring_tests {
-    use super::{
-        CachedEntryReuse, EnginePool, PendingNativeWindow, Pinvou3Bridge, PreparedRuntimeModel,
-    };
+    use super::{CachedEntryReuse, EnginePool, PendingNativeWindow, Pinvou3Bridge};
     use crate::core::model_endpoint::{LocalServerKind, models_mock};
     use crate::platform::credential_store::CredentialState;
     use crate::platform::paths::tests::ENV_LOCK;
@@ -8967,7 +8963,7 @@ mod probed_facts_wiring_tests {
         let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
         model.base_url = mock.base_url.clone();
         let bridge = wiring_bridge(model.clone());
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
         assert_eq!(
             bridge.probed_local_kind,
@@ -9014,7 +9010,7 @@ mod probed_facts_wiring_tests {
         let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
         model.base_url = mock.base_url.clone();
         let bridge = wiring_bridge(model.clone());
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
         assert_eq!(
             bridge.probed_local_kind,
@@ -9068,7 +9064,7 @@ mod probed_facts_wiring_tests {
         let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
         model.base_url = mock.base_url.clone();
         let bridge = wiring_bridge(model.clone());
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
         assert_eq!(
             bridge.probed_local_kind,
@@ -9185,7 +9181,7 @@ mod probed_facts_wiring_tests {
         let mut model = saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
         model.base_url = mock.base_url.clone();
         let bridge = wiring_bridge(model.clone());
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
         let pending = PendingNativeWindow::from_finalized(&bridge)
             .expect("a factless Ollama route must be marked pending");
@@ -9251,7 +9247,7 @@ mod probed_facts_wiring_tests {
         let with_fact_bridge = wiring_bridge(with_fact_model.clone());
         let with_fact_bridge = EnginePool::finalize_runtime_bridge(
             with_fact_bridge,
-            &PreparedRuntimeModel::unchanged(with_fact_model),
+            &with_fact_model,
             false,
         )
         .await;
@@ -9269,7 +9265,7 @@ mod probed_facts_wiring_tests {
         let generic_bridge = wiring_bridge(generic_model.clone());
         let generic_bridge = EnginePool::finalize_runtime_bridge(
             generic_bridge,
-            &PreparedRuntimeModel::unchanged(generic_model),
+            &generic_model,
             false,
         )
         .await;
@@ -9581,7 +9577,7 @@ mod probed_facts_wiring_tests {
         let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
         model.base_url = format!("http://[::ffff:127.0.0.1]:{port}");
         let bridge = wiring_bridge(model.clone());
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
         assert_eq!(
             bridge.probed_local_kind, None,
@@ -9608,7 +9604,7 @@ mod probed_facts_wiring_tests {
         let mut model = saved_model(ModelPreset::LocalVllm, "my-model", None);
         model.base_url = mock.base_url.clone();
         let bridge = wiring_bridge(model.clone());
-        let prepared = PreparedRuntimeModel::unchanged(model);
+        let prepared = model;
         let bridge = EnginePool::finalize_runtime_bridge(bridge, &prepared, false).await;
         assert_eq!(
             bridge.session_model.as_ref().unwrap().model,

@@ -277,36 +277,33 @@ fn decode_msg_html_payload(value: &str) -> String {
 #[cfg(any(target_os = "windows", test))]
 fn decode_msg_bytes(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) {
-        return decode_utf16le(&bytes[2..]);
+        return decode_utf16(&bytes[2..], false);
     }
     if bytes.starts_with(&[0xFE, 0xFF]) {
-        return decode_utf16be(&bytes[2..]);
+        return decode_utf16(&bytes[2..], true);
     }
     if let Ok(text) = String::from_utf8(bytes.to_vec()) {
         return clean_msg_text(&text);
     }
     let nul_count = bytes.iter().filter(|byte| **byte == 0).count();
     if nul_count > bytes.len() / 4 {
-        decode_utf16le(bytes)
+        decode_utf16(bytes, false)
     } else {
         clean_msg_text(&String::from_utf8_lossy(bytes))
     }
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn decode_utf16le(bytes: &[u8]) -> String {
+fn decode_utf16(bytes: &[u8], is_big_endian: bool) -> String {
     let units: Vec<u16> = bytes
         .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect();
-    clean_msg_text(&String::from_utf16_lossy(&units))
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn decode_utf16be(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+        .map(|chunk| {
+            if is_big_endian {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            }
+        })
         .collect();
     clean_msg_text(&String::from_utf16_lossy(&units))
 }

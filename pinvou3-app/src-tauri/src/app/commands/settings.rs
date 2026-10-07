@@ -792,9 +792,7 @@ pub async fn probe_model_connection(
     };
     if !key.trim().is_empty() {
         if is_anthropic {
-            req = req
-                .header("x-api-key", key.trim())
-                .header("anthropic-version", "2023-06-01");
+            req = crate::core::model_endpoint::apply_anthropic_auth_headers(req, &key);
         } else {
             req = req.bearer_auth(key.trim());
         }
@@ -1212,14 +1210,12 @@ pub async fn run_image_capability_probe(
     };
     if is_anthropic {
         let messages_url = crate::core::model_endpoint::anthropic_messages_url(&base_url_stripped);
-        let mut req = client
-            .post(messages_url)
-            .json(&image_capability_test_payload_anthropic(&model));
-        if !key.trim().is_empty() {
-            req = req
-                .header("x-api-key", key.trim())
-                .header("anthropic-version", "2023-06-01");
-        }
+        let req = crate::core::model_endpoint::apply_anthropic_auth_headers(
+            client
+                .post(messages_url)
+                .json(&image_capability_test_payload_anthropic(&model)),
+            &key,
+        );
         return match req.send().await {
             Ok(resp) => {
                 let status = resp.status();

@@ -221,7 +221,7 @@ pub fn ensure_native_cli(name: &str) -> Result<(), String> {
 
     let binary = extract_expected_binary(&archive, &source_url, &artifact)
         .map_err(|e| format!("解压 {} 失败: {e}", artifact.name))?;
-    let actual = sha256_bytes(&binary);
+    let actual = crate::platform::hashing::sha256_hex(&binary);
     if actual != artifact.binary_sha256 {
         return Err(format!(
             "{} 可执行文件校验失败(expected {}, got {})",
@@ -592,10 +592,6 @@ fn read_limited(reader: &mut impl Read, max: u64) -> io::Result<Vec<u8>> {
 
 fn file_sha256_matches(path: &Path, expected: &str) -> bool {
     crate::platform::hashing::sha256_file(path).is_ok_and(|actual| actual == expected)
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    crate::platform::hashing::sha256_hex(bytes)
 }
 
 #[cfg(test)]

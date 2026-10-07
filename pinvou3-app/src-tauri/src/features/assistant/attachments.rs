@@ -219,15 +219,6 @@ pub(crate) fn copy_bounded(
     Ok(copied)
 }
 
-pub(crate) fn stage_image_in_workspace(
-    src: &str,
-    basename: &str,
-    workspace: &std::path::Path,
-    attachment_dir: &str,
-) -> Option<String> {
-    stage_file_in_workspace(src, basename, workspace, attachment_dir)
-}
-
 /// Reuse a session-owned attachment that is already inside the execution
 /// workspace. HTML5 desktop drops are committed there directly, so copying an
 /// image again would create an unnecessary second application-owned copy.
@@ -262,7 +253,7 @@ pub(crate) fn stage_remote_attachment_source(
     workspace: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
     let relative =
-        stage_image_in_workspace(src, basename, workspace, ".pinvou3/remote-attachments")?;
+        stage_file_in_workspace(src, basename, workspace, ".pinvou3/remote-attachments")?;
     Some(workspace.join(relative))
 }
 
@@ -530,7 +521,7 @@ fn build_message_with_attachments_in_dir_with_access(
             // 一无所知,调用前绝不描述",把模糊建议变成具体硬规则(Qwen3.6 对具体
             // 硬规则遵循好、对抽象意图无效)。
             match existing_workspace_relative_file(&a.path, workspace).or_else(|| {
-                stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+                stage_file_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
             }) {
                 Some(rel) => {
                     let rel = staged_reference(workspace, &rel, reference_absolute);
@@ -654,7 +645,7 @@ pub(crate) fn prepare_native_user_message_in_dir(
             // 暂存复用现有校验链(basename 白名单/symlink 防逃逸/create_new 防覆盖);
             // 标记路径只来自暂存结果,不接受前端直给路径(设计 §11)。
             let relative =
-                stage_image_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+                stage_file_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
                     .ok_or_else(|| {
                         format!(
                             "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
