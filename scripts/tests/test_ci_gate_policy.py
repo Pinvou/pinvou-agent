@@ -760,7 +760,9 @@ class CiGatePolicyTests(unittest.TestCase):
         # round-37 pinvoy3-app class. Groups are split sequentially in
         # declaration order, so a NEW group appended without updating this
         # list still gets covered as long as it sits between two known
-        # neighbors; the pairs below mirror the workflow's order.
+        # neighbors (a group appended after the LAST entry — today
+        # windows_codex — is the residual gap; round-45 review). The pairs
+        # below mirror the workflow's order.
         group_bounds = [
             ("rust_code", "rust_dependencies"),
             ("rust_dependencies", "rust_full"),
@@ -1707,8 +1709,30 @@ class CiGatePolicyTests(unittest.TestCase):
             with self.subTest(step=name):
                 self.assertIn(name, phase_of)
                 self.assertEqual(phase_of[name], phase)
+        # Round-45 review: `phase_of` is a dict keyed by step name, so a
+        # second step with the same name would shadow the pinned one and
+        # keep every assertion above green while the real step's routing
+        # `if` is flipped (the silent-skip bypass). Each pinned name must
+        # appear exactly once.
+        step_names = [
+            step.split("\n", 1)[0].strip()
+            for step in re.split(r"\n      - name: ", windows_rust_test)[1:]
+        ]
+        duplicated = {
+            name for name in step_names if step_names.count(name) > 1
+        }
+        self.assertEqual(
+            duplicated,
+            set(),
+            "duplicate step names shadow the phase map; the routing pins "
+            f"cannot hold: {sorted(duplicated)}",
+        )
         self.assertIn("--all-targets --features dev-tools", windows_rust_test)
-        self.assertIn("--lib --no-run --locked --message-format=json", windows_rust_test)
+        self.assertIn("--lib --no-run --locked --features benchmark-hooks --message-format=json",
+                      windows_rust_test,
+                      "round-45 review: the regression link check must compile the "
+                      "benchmark-hooks contract module, or the round-44 filter for "
+                      "windows_attachment_runtime_stays_security_gated matches 0 tests")
 
         # Both legs restore one established namespace; only regression on
         # main may save, so there is no second writer or new key.

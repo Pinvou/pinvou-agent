@@ -1313,8 +1313,10 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             build-essential pkg-config cmake \
-            time \
             libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev
+          # Keep this package list byte-identical with the cli-lint job's
+          # setup block below (round-45 review: the two blocks are copies;
+          # an entry that goes stale in one hides which are load-bearing).
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
@@ -1798,8 +1800,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $timer = [System.Diagnostics.Stopwatch]::StartNew()
+          # Round-45 review: `benchmark-hooks` must be on, or the
+          # `#[cfg(all(test, feature = "benchmark-hooks"))]` headless-bridge
+          # contract module (incl. `windows_attachment_runtime_stays_security_gated`,
+          # one of the round-44 filters below) is compiled out of this exe
+          # and its regression filter matches 0 tests. agent-backend-api and
+          # deepseek-tui already compile on this leg's toolchain via the
+          # pinvou-cli workspace leg.
           $records = @(& cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml `
-            --lib --no-run --locked --message-format=json)
+            --lib --no-run --locked --features benchmark-hooks --message-format=json)
           $cargoExit = $LASTEXITCODE
           $timer.Stop()
           Write-Host "WINDOWS_RUST_TIMING phase=regression step=cargo-test-link elapsed_seconds=$([math]::Round($timer.Elapsed.TotalSeconds)) status=$cargoExit"
@@ -1967,7 +1976,7 @@ jobs:
             }
             echo "WINDOWS_RUST_TIMING phase=regression step=test-filter-$index elapsed_seconds=$((SECONDS-started)) status=0"
           done
-            echo "WINDOWS_RUST_TIMING phase=regression step=filter-suite elapsed_seconds=$((SECONDS-total_started)) status=0"
+          echo "WINDOWS_RUST_TIMING phase=regression step=filter-suite elapsed_seconds=$((SECONDS-total_started)) status=0"
 
       # Round-42 review: the pinvou-cli workspace's own cfg(windows) unit
       # tests previously ran on NO CI leg — the Linux cli-test leg cannot
@@ -1984,6 +1993,15 @@ jobs:
       # the run stays filtered rather than running the whole CLI lib suite
       # because those tests have never executed on Windows and onboarding
       # them all belongs to a dedicated change.
+      #
+      # Round-45 review residual: three adapter-gaia tests carry INNER
+      # `#[cfg(windows)]` branches (dataset_contract.rs symlink/reparse
+      # rejection, contract_tests.rs submission symlink block) that execute
+      # on no leg — this leg runs the app lib exe only, and the
+      # dataset_contract integration binary runs only on Linux, where the
+      # Windows branches compile out. Running that binary here belongs to
+      # the same dedicated Windows-execution change as the CLI suite
+      # onboarding above.
       - name: pinvou-cli Windows-gated unit tests
         if: ${{ matrix.phase == 'regression' }}
         shell: bash
