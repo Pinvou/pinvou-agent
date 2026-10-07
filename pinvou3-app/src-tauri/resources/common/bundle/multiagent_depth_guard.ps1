@@ -23,7 +23,7 @@ $hasOpaqueWorkflowSource = $toolName -eq "workflow" -and [regex]::IsMatch(
 
 if ($hasOpaqueWorkflowSource) {
     [Console]::Out.WriteLine(
-        '{"decision":"deny","reason":"Multi-agent mode requires inline workflow script/plan input so child depth can be enforced; a source_path (or path) file reference is unavailable. Inline the script/plan instead."}'
+        '{"decision":"deny","reason":"Multi-agent mode requires the workflow source to be inlined in the call so child depth can be enforced; a source_path reference is rejected here. Inline the workflow source instead."}'
     )
     exit 2
 }
@@ -50,7 +50,7 @@ $hasPositiveDepth = switch ($toolName) {
 
 if ($hasPositiveDepth) {
     [Console]::Out.WriteLine(
-        '{"decision":"deny","reason":"Multi-agent mode caps children at two levels. A per-call max_depth can only narrow that cap (the engine clamps it) and is rejected here to keep the session cap authoritative; omit max_depth to inherit the session limit, or set it to 0 for a leaf."}'
+        '{"decision":"deny","reason":"Multi-agent mode caps children at two levels. A per-call max_depth can only narrow that cap and is rejected here to keep the session cap authoritative; omit max_depth to inherit the session limit, or set it to 0 for a leaf."}'
     )
     exit 2
 }

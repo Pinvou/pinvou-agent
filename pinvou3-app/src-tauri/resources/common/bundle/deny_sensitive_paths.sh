@@ -41,8 +41,8 @@ TOOL="${DEEPSEEK_TOOL_NAME:-unknown}"
 #    （无 MCP schema），模型却可能对它们调 list_mcp_resources / list_mcp_resource_templates
 #    去自省能力 → 必然失败 → 误判「没连上」，甚至谎称缺技能。这里拦掉并把纠正回传：
 #    fold_tool_call_before_results 在 exit 2 时只从 stdout 的 JSON {"decision":"deny",
-#    "reason":...} 取 reason 喂回模型（非 JSON stdout = passthrough，reason 落为通用
-#    文案），所以必须输出单行 JSON，引导模型改用 load_skill。
+#    "reason":...} 取 reason 喂回模型（exit 2 而 stdout 非 JSON 时 reason 落为通用
+#    文案、仍为硬拒绝），所以必须输出单行 JSON，引导模型改用 load_skill。
 #    取代原 bundle/instructions.md 常驻那条软纪律：零常驻 prompt + 现场硬反馈对小模型更准。
 #    文案刻意不回显连接器名、不列举技能/CLI 名：模型问一个不应连带知道全部，
 #    且对「已禁用」的连接器不确认其存在（disable 感知审计，泄漏面 2）。
@@ -55,7 +55,7 @@ if [[ "$TOOL" == "list_mcp_resources" || "$TOOL" == "list_mcp_resource_templates
     ARGS_LOWER="$(printf '%s' "$ARGS" | tr '[:upper:]' '[:lower:]')"
     SKILL_CONNECTOR_NAME_PATTERN='"(wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
     if [[ "$ARGS_LOWER" =~ $SKILL_CONNECTOR_NAME_PATTERN ]]; then
-        echo '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources / list_mcp_resource_templates 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
+        echo '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 或 list_mcp_resource_templates 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
         exit 2
     fi
 fi

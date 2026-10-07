@@ -20,7 +20,7 @@ tool_args="${DEEPSEEK_TOOL_ARGS:-}"
 if [ "$tool_name" = "workflow" ] &&
   printf '%s' "$tool_args" | grep -Eq '(^|[^\\])"(source_path|path)"[[:space:]]*:'; then
   printf '%s\n' \
-    '{"decision":"deny","reason":"Multi-agent mode requires inline workflow script/plan input so child depth can be enforced; a source_path (or path) file reference is unavailable. Inline the script/plan instead."}'
+    '{"decision":"deny","reason":"Multi-agent mode requires the workflow source to be inlined in the call so child depth can be enforced; a source_path reference is rejected here. Inline the workflow source instead."}'
   exit 2
 fi
 
@@ -42,7 +42,7 @@ esac
 
 if printf '%s' "$tool_args" | grep -Eq "$pattern"; then
   printf '%s\n' \
-    '{"decision":"deny","reason":"Multi-agent mode caps children at two levels. A per-call max_depth can only narrow that cap (the engine clamps it) and is rejected here to keep the session cap authoritative; omit max_depth to inherit the session limit, or set it to 0 for a leaf."}'
+    '{"decision":"deny","reason":"Multi-agent mode caps children at two levels. A per-call max_depth can only narrow that cap and is rejected here to keep the session cap authoritative; omit max_depth to inherit the session limit, or set it to 0 for a leaf."}'
   exit 2
 fi
 

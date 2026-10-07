@@ -1412,6 +1412,23 @@ mod tests {
                 && positive_stdout.contains("caps children at two levels"),
             "拒绝原因必须以 stdout JSON 抵达模型并能指导重试: {positive:?}"
         );
+        // The engine renders denial receipts through sanitize_hook_denial_reason
+        // with a 240-char cap and path-like-field redaction, so guidance that is
+        // too long gets cut mid-sentence and slashes/standalone path/file labels
+        // are destroyed. Both deny reasons must fit the budget and survive it.
+        let stdout_reason = |stdout: &str| -> String {
+            stdout
+                .trim()
+                .strip_prefix("{\"decision\":\"deny\",\"reason\":\"")
+                .and_then(|rest| rest.strip_suffix("\"}"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let depth_reason = stdout_reason(&positive_stdout);
+        assert!(
+            !depth_reason.is_empty() && depth_reason.chars().count() <= 240,
+            "深度拒绝原因必须完整通过引擎 240 字符回执上限: {depth_reason:?}"
+        );
 
         let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
         assert!(
@@ -1474,6 +1491,19 @@ mod tests {
             r#"{"source_path":"workflows/review.workflow.js"}"#,
         );
         assert_eq!(opaque_workflow.status.code(), Some(2));
+        // The opaque-source reason must survive the engine redactor: it names
+        // the parameter (source_path) without embedding slashes or standalone
+        // path/file labels, which the sanitizer replaces with [path] markers.
+        let opaque_stdout = String::from_utf8_lossy(&opaque_workflow.stdout);
+        let opaque_reason = stdout_reason(&opaque_stdout);
+        assert!(
+            opaque_reason.contains("source_path reference is rejected")
+                && !opaque_reason.contains('/')
+                && !opaque_reason.contains(" path ")
+                && !opaque_reason.contains(" file ")
+                && opaque_reason.chars().count() <= 240,
+            "opaque workflow 拒绝原因必须原样通过引擎脱敏管线: {opaque_reason:?}"
+        );
 
         cleanup(&tmp);
     }
