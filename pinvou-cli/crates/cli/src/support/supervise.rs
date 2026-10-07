@@ -244,11 +244,14 @@ pub fn park_while_interrupt_cleanup_concludes() {
 /// the OS may already have recycled for an unrelated process.
 ///
 /// DISCIPLINE: registration is automatic inside [`spawn_supervised`], but
-/// the release half is per-site — a missed `forget` leaves a stale pgid the
-/// watcher SIGTERMs without a liveness probe on the next Ctrl-C. Prefer the
-/// RAII `GroupGuard` over a new manual pair: the manual pairs answer the
-/// ordinary return paths only, and a panic between spawn and the paired
-/// forget used to leave the group registered.
+/// the release half is per-site — a missed `forget` leaves a stale pgid in
+/// the registry. Since the round-41 liveness probe the watcher skips dead
+/// registrations when TERMing (no blind signal into a recycled group), but a
+/// stale entry still rides the grace loop and consumes its recycled pgid's
+/// SIGKILL if an unrelated group is reusing it mid-grace, so the pairing
+/// still matters. Prefer the RAII `GroupGuard` over a new manual pair: the
+/// manual pairs answer the ordinary return paths only, and a panic between
+/// spawn and the paired forget used to leave the group registered.
 pub fn forget_child_group(pgid: u32) {
     #[cfg(unix)]
     {
@@ -378,8 +381,10 @@ mod imp {
     /// re-raise of its conventional exit status.
     static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
-    /// Test-only override consulted first by [`cleanup_started`]
-    /// (thread-local, so parallel spawn tests are untouched).
+    // Test-only override consulted first by [`cleanup_started`]
+    // (thread-local, so parallel spawn tests are untouched). Plain comments:
+    // rustdoc does not generate documentation for macro invocations, so the
+    // doc form only produced an `unused doc comment` warning.
     #[cfg(test)]
     thread_local! {
         static TEST_CLEANUP_OVERRIDE: std::cell::Cell<Option<bool>> =
@@ -661,12 +666,17 @@ mod imp {
         // Phase 2 — bounded grace. The policy is `grace_decision`, a pure
         // function the unit tests pin; this loop is only its effect.
         let started = Instant::now();
-        // Groups already asked to stop: EXACTLY the phase-1 snapshot, the set
-        // phase 1 actually TERMed. Seeding from a second, fresh snapshot
-        // instead marked every group registering in the between-snapshots
-        // window as already-asked without anyone having TERMed it, so it
-        // rode straight to the deadline's SIGKILL — the opposite of the
-        // polite-first delivery this window exists for (round-39 review).
+        // Groups already asked to stop: the phase-1 snapshot. Since the
+        // round-41 liveness probe that is a superset of "the set phase 1
+        // actually TERMed" — phase 1 skips dead groups without signaling
+        // them but still seeds them here, so if such a pgid is recycled by
+        // an unrelated group mid-grace, the fresh group is treated as
+        // already-asked and rides to the deadline's SIGKILL instead of
+        // receiving its own polite TERM. Seeding from a second, fresh
+        // snapshot instead marked every group registering in the
+        // between-snapshots window as already-asked without anyone having
+        // TERMed it — the same lost-polite-TERM class, wider (round-39
+        // review), so the narrower seed stays.
         let mut asked: std::collections::HashSet<libc::pid_t> = phase1.into_iter().collect();
         loop {
             // Same spawn-window discipline as phase 1: a spawn completing

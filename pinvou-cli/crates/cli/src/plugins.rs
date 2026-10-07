@@ -1030,7 +1030,16 @@ fn read_mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, Cli
     if !path.is_file() {
         return Ok(None);
     }
-    let content = std::fs::read_to_string(&path).map_err(|error| {
+    // Round-43 review: capped like every other family lane — a pathological
+    // mcp.json refuses with the read-limit error instead of being slurped
+    // whole (the keep-the-pinned-message-shape wrapper makes the helper's
+    // classification ride along).
+    let content = crate::support::read_text_file_capped(
+        &path,
+        crate::support::VENDOR_CONFIG_READ_CAP_BYTES,
+        "plugins tools",
+    )
+    .map_err(|error| {
         CliError::failed(format!(
             "plugins tools {context}: cannot read mcp.json: {error}"
         ))

@@ -2364,8 +2364,13 @@ fn postprocess(
     let raw_input = match (text, text_file) {
         (Some(text), _) => text,
         (None, Some(file)) => {
-            gate_file(&file, "text")?;
-            crate::support::read_text_file_capped(&file, 64 * 1024, "voice postprocess")?
+            // Round-43 review: read the CANONICAL path — it is what was
+            // policy-checked. Reading the original spelling would let a
+            // symlink swapped in between the two calls route unverified
+            // content past the refusal (the exact fix feedback.rs/artifacts.rs
+            // already carry).
+            let canonical = gate_file(&file, "text")?;
+            crate::support::read_text_file_capped(&canonical, 64 * 1024, "voice postprocess")?
         }
         // The parser enforces exactly one text source, but `execute` is a
         // `pub` entry point of the lib crate: a command constructed directly
@@ -2383,9 +2388,9 @@ fn postprocess(
     let draft_input = match (draft, draft_file) {
         (Some(draft), _) => Some(draft),
         (None, Some(file)) => {
-            gate_file(&file, "draft")?;
+            let canonical = gate_file(&file, "draft")?;
             Some(crate::support::read_text_file_capped(
-                &file,
+                &canonical,
                 64 * 1024,
                 "voice postprocess",
             )?)

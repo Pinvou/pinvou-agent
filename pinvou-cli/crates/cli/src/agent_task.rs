@@ -261,6 +261,13 @@ fn run_agent(
     // GUI's per-turn light anchor instead — on the GUI the equipped card
     // steers every turn, so `personas active` reporting the card must mean
     // the same thing here.
+    // Round-43 review: an orphaned staged pair is disclosed (and consumed)
+    // by the pre-run arm itself, so the deferred-injection seam below must
+    // not add its worn-card warning about the same deleted card to the
+    // same run.
+    let orphaned_staged = staged_turn
+        .as_ref()
+        .is_some_and(|(_, turn)| matches!(turn, crate::personas::StagedPersonaTurn::Orphaned(_)));
     let injection = compose_turn_prompt_injection(
         staged_turn
             .as_ref()
@@ -273,6 +280,7 @@ fn run_agent(
     // persona pool was unreadable) used to be completely silent on the run
     // that skipped it.
     if injection.is_none()
+        && !orphaned_staged
         && let Some(session_id) = session.as_deref()
     {
         crate::personas::note_deferred_staged_injection(session_id);
