@@ -746,9 +746,13 @@ fn restore_code_native_sessions_from_sidecars(
     // are defined once next to the sidecar readers, so the boot restore and
     // both rebind scans cannot drift apart again.
     for session_id in store::code_session_dir_ids(agents.path(), "native code session restore") {
-        let Some(sidecar) = store::read_code_session_sidecar(agents.path(), &session_id) else {
+        // Round-44 review: the sidecar content is re-read under the section
+        // lock inside the restore (the enumeration snapshot can be stale in
+        // both directions), so the scan only needs its existence as a
+        // pre-filter.
+        if store::read_code_session_sidecar(agents.path(), &session_id).is_none() {
             continue;
-        };
+        }
         let record = agents.get(&session_id);
         if record.mode.is_code() {
             // 索引完好无需恢复：不计入 restored，避免每次启动误报恢复信号。
@@ -764,7 +768,7 @@ fn restore_code_native_sessions_from_sidecars(
             );
             continue;
         }
-        match agents.restore_missing_code_session_record(&session_id, sidecar) {
+        match agents.restore_missing_code_session_record(&session_id) {
             Ok(true) => {
                 summary.restored += 1;
                 eprintln!("[pinvou3-app] recovered native code session index for {session_id}");
@@ -1574,13 +1578,22 @@ impl AcpPool {
             if agents.backend(session_id).is_acp() {
                 continue;
             }
-            match load_acp_recovery_record(session_id, *backend, &session_store)
-                .and_then(|record| agents.restore_missing_acp_record(session_id, record))
-            {
-                Ok(()) => eprintln!(
+            match load_acp_recovery_record(session_id, *backend, &session_store).and_then(
+                |record| {
+                    // Round-44 review: re-load the recovery source under the
+                    // store's section lock; a `sessions delete` landing between
+                    // the boot-pass read and the lock must not leave an orphan
+                    // ACP index record behind.
+                    agents.restore_missing_acp_record(session_id, record, || {
+                        load_acp_recovery_record(session_id, *backend, &session_store).is_ok()
+                    })
+                },
+            ) {
+                Ok(true) => eprintln!(
                     "[pinvou3-app] recovered {} ACP session index for {session_id}",
                     backend.display_name()
                 ),
+                Ok(false) => {}
                 Err(error) => eprintln!(
                     "[pinvou3-app] {} ACP session {session_id} remains read-only until its index can be recovered: {error:#}",
                     backend.display_name()

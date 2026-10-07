@@ -33,13 +33,6 @@ const THROTTLE_MS: u64 = 4;
 /// tree is indistinguishable from a wedged thread and gets killed mid-walk.
 const RAW_HEARTBEAT: u64 = 5000;
 
-pub(super) fn walk_pruned(
-    root: &Path,
-    ex: &Excluder,
-) -> impl Iterator<Item = walkdir::Result<DirEntry>> {
-    walk_pruned_with(root, ex, |_| {})
-}
-
 pub(super) fn walk_pruned_with(
     root: &Path,
     ex: &Excluder,

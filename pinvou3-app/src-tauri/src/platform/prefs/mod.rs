@@ -82,9 +82,10 @@ fn lock_user_prefs() -> MutexGuard<'static, ()> {
 ///
 /// 锁文件是 settings.json 的兄弟文件：每个 PINVOU3_HOME 一把，GUI 与 CLI
 /// 天然竞争同一把。只用 OS 锁裁决，锁文件本身永不删除——崩溃进程残留的
-/// 空文件不会阻塞下一个写者。持有方是毫秒级临界区，用阻塞 `lock()`
+/// 空文件不会阻塞下一个写者。用阻塞 `lock()`
 /// （Unix flock / Windows LockFileEx，与 organize/install 锁同一类原语）
-/// 而不是 try+busy：设置写入偶发排队几毫秒比把并发写报成失败更可用。
+/// 而不是 try+busy：设置写入是真正的事务、不能静默跳过，偶发排队比把
+/// 并发写报成失败更可用。
 struct SettingsFileLock {
     file: std::fs::File,
 }
@@ -1128,8 +1129,10 @@ impl UserPrefs {
     /// OS 级锁时两个进程的整文档读-改-写是静默 last-writer-wins（后写方
     /// 丢掉先写方的整个改动，两侧都 exit 0）。flock 挂在
     /// `settings.json.lock` 上，跨 load→mutate→save→reload 全程持有，
-    /// 持锁进程死亡时由内核释放；持有窗口是毫秒级的一次磁盘往返，阻塞
-    /// 等待对 GUI 无感。`load()` 的规范化持久化参与该锁但用
+    /// 持锁进程死亡时由内核释放；持有窗口通常是一次磁盘往返，但闭包内的
+    /// 钥匙串 I/O 可能把它拉长到秒级，阻塞等待在那种场景下是有感的——
+    /// 这是事务语义（不能静默跳过）换来的代价。`load()` 的规范化持久化
+    /// 参与该锁但用
     /// `try_lock_settings_file_bounded` 的时间上限变体（round-41 review：该
     /// 持久化写的是整文档旧快照，且迁移臂会做钥匙串 I/O，读→写窗口不是亚毫秒
     /// ——无锁时并发 `update_transaction` 的字段提交会被静默回退；锁被占住时
@@ -1754,6 +1757,112 @@ mod tests {
         // A load that saw no file at all may still write when none appeared.
         assert!(disk_still_holds_the_loaded_snapshot(&path, &None));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-44 review: pin the re-validation at its call site. A field
+    /// commit that lands entirely inside this load's read→lock window (the
+    /// lock is already held when the load's initial read happens, the commit
+    /// lands while the load waits, then the lock frees) must be detected by
+    /// the under-lock re-read and skipped — deleting the
+    /// `disk_still_holds_the_loaded_snapshot` gate at the persist call site
+    /// would silently revert the committed field with the stale snapshot.
+    #[test]
+    fn normalization_persist_skips_when_a_commit_lands_inside_the_read_to_lock_window() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let temporary_home = std::env::temp_dir().join(format!(
+            "pinvou3-prefs-window-commit-skip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        std::fs::create_dir_all(&temporary_home).expect("create temporary prefs home");
+        // SAFETY: holding ENV_LOCK (first line of this test); env writes in the
+        // test process are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &temporary_home) };
+
+        // Same legacy-local-alias fixture as the persisting twin: load()
+        // observes a normalization change and wants to persist it.
+        let mut prefs = UserPrefs::default();
+        prefs.advanced.saved_models.push(SavedModel {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            alias: Some("Legacy local alias".into()),
+            preset: ModelPreset::LocalVllm,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "qwen36_35b_256k".into(),
+            base_url: "http://127.0.0.1:8000/v1".into(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: None,
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.advanced.active_model_id = Some("local-model".into());
+        let settings_path = super::super::paths::settings_path();
+        let legacy_bytes = serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
+        std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
+
+        // The concurrent writer takes the lock BEFORE the load starts,
+        // commits a renamed model while the load blocks on the lock, then
+        // releases. The load's initial read necessarily happened before the
+        // commit; only the under-lock re-read can tell the two snapshots
+        // apart and skip the stale-snapshot persist.
+        let committed_bytes = {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&legacy_bytes).expect("parse legacy prefs");
+            value["advanced"]["saved_models"][0]["name"] =
+                serde_json::Value::String("Renamed by the concurrent writer".into());
+            serde_json::to_string_pretty(&value).expect("serialize committed prefs")
+        };
+        let lock_path = settings_path.with_file_name("settings.json.lock");
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let writer = {
+            let settings_path = settings_path.clone();
+            let committed_bytes = committed_bytes.clone();
+            std::thread::spawn(move || {
+                let held = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(&lock_path)
+                    .expect("open settings lock file");
+                held.lock().expect("hold the settings lock");
+                ready_tx.send(()).expect("signal the lock is held");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                std::fs::write(&settings_path, &committed_bytes).expect("commit the field");
+                drop(held);
+            })
+        };
+        ready_rx.recv().expect("the writer holds the lock");
+        UserPrefs::load();
+        writer.join().expect("the writer thread finishes");
+
+        let persisted = std::fs::read_to_string(&settings_path).expect("read settings");
+        assert_eq!(
+            persisted, committed_bytes,
+            "the commit that landed inside the read→lock window must survive the \
+             normalization persist (the re-validation must skip on drift)"
+        );
+
+        let _ = std::fs::remove_dir_all(&temporary_home);
+        match old_home {
+            // SAFETY: holding ENV_LOCK (first line of this test); restore-side
+            // env writes serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side env writes serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
     }
 
     /// Round-42 review (extends round-41 M1 to the read lane): the
