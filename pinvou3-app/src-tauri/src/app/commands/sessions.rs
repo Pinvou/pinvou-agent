@@ -232,40 +232,7 @@ pub(crate) const SESSION_MESSAGE_CONTRACT_LINES: [&str; 2] = [
 /// session woken by a delivered message is never named after the sender
 /// contract.
 pub(crate) fn strip_session_message_block(text: &str) -> &str {
-    // Mirror of the JS splitter's 64 KB JSON-line pre-check, counted in
-    // UTF-16 code units to match the JS string `length` exactly.
-    const MAX_BLOCK_JSON_LINE_CHARS: usize = 64 * 1024;
-    let mut rest = match text.strip_prefix(SESSION_MESSAGE_BLOCK_HEADER) {
-        Some(rest) if rest.starts_with('\n') => &rest[1..],
-        _ => return text,
-    };
-    for expected in SESSION_MESSAGE_CONTRACT_LINES {
-        match rest.strip_prefix(expected) {
-            Some(after) if after.starts_with('\n') => rest = &after[1..],
-            _ => return text,
-        }
-    }
-    let (json_line, after) = match rest.find('\n') {
-        Some(index) => (&rest[..index], &rest[index + 1..]),
-        // JSON line is the last line (empty-body trimmed form).
-        None => (rest, ""),
-    };
-    if json_line.encode_utf16().count() > MAX_BLOCK_JSON_LINE_CHARS {
-        return text;
-    }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
-        return text;
-    };
-    if !value.is_object() {
-        return text;
-    }
-    if after.is_empty() {
-        return "";
-    }
-    match after.strip_prefix('\n') {
-        Some(body) => body,
-        None => text,
-    }
+    crate::features::sessions::strip_session_message_block_impl(text)
 }
 
 /// Strip a leading session-mention injection block and return the remaining
