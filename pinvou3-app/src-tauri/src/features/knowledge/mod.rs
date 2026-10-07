@@ -522,7 +522,7 @@ impl KnowledgeService {
                 // `interrupted` (tier 1) before creating the new job; a
                 // failed transition must not wedge the start (the degrade's
                 // whole premise is to un-pin the button), so it only notes.
-                interrupt_frozen_foreign_row(&self.imports, previous.job_id.as_deref());
+                interrupt_frozen_foreign_row(&self.imports, &self.l1, previous.job_id.as_deref());
             }
         }
         let job_id = match self.imports.create(collection_id, &roots) {
@@ -542,7 +542,7 @@ impl KnowledgeService {
         if active.is_some() {
             return Err("已有知识集导入任务正在运行".into());
         }
-        refuse_fresh_foreign_running_import(&self.imports, Some(&job_id))?;
+        refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
         self.imports.resume(&job_id).map_err(|e| e.to_string())?;
         *active = Some(job_id.clone());
         drop(active);
@@ -555,7 +555,7 @@ impl KnowledgeService {
         if active.is_some() {
             return Err("已有知识集导入任务正在运行".into());
         }
-        refuse_fresh_foreign_running_import(&self.imports, Some(&job_id))?;
+        refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
         self.imports
             .retry_item(&job_id, item_id)
             .map_err(|e| e.to_string())?;
@@ -915,6 +915,7 @@ fn expand_import_roots(
 /// name the wrong remedy.
 fn refuse_fresh_foreign_running_import(
     imports: &import_jobs::ImportJobStore,
+    parked_collections: &l1::L1Store,
     requested_job: Option<&str>,
 ) -> Result<(), String> {
     if let Ok(Some(previous)) = imports.latest_state() {
@@ -941,7 +942,7 @@ fn refuse_fresh_foreign_running_import(
             // allowing a lane past a frozen row leaves the dead `running`
             // row ranked above every real job. Collapse it before the
             // caller proceeds.
-            interrupt_frozen_foreign_row(imports, previous.job_id.as_deref());
+            interrupt_frozen_foreign_row(imports, parked_collections, previous.job_id.as_deref());
         }
     }
     Ok(())
@@ -952,15 +953,38 @@ fn refuse_fresh_foreign_running_import(
 /// (round-43 review). Failure only notes: every caller is on a degrade path
 /// whose premise is to un-pin the lane, not to trade a phantom refusal for a
 /// real one.
-fn interrupt_frozen_foreign_row(imports: &import_jobs::ImportJobStore, job_id: Option<&str>) {
+fn interrupt_frozen_foreign_row(
+    imports: &import_jobs::ImportJobStore,
+    parked_collections: &l1::L1Store,
+    job_id: Option<&str>,
+) {
     let Some(job_id) = job_id else {
         return;
     };
+    // The pre-transition state names the collection whose "indexing" badge
+    // the dead importer left behind.
+    let pre_state = imports.state(job_id).ok();
     if !imports.interrupt(job_id) {
-        eprintln!(
-            "[pinvou3-app] stale import job {job_id} could not be interrupted before the new \
-             start; it stays in place until an explicit cancel"
-        );
+        // Round-44 review: `interrupt` reports `false` for two different
+        // facts — the guarded UPDATE actually failing (the row genuinely
+        // stays `running`) and the benign 0-row race (the job terminalized
+        // between the freshness read and the interrupt, so there is nothing
+        // left to cancel). Only the first deserves the stale-row note.
+        match imports.state(job_id) {
+            Ok(state) if !state.running => {}
+            _ => eprintln!(
+                "[pinvou3-app] stale import job {job_id} could not be interrupted before the new \
+                 start; it stays in place until an explicit cancel"
+            ),
+        }
+        return;
+    }
+    // Round-44 review: mirror `interrupt_index` — the dead importer's
+    // close-out never runs, so park the collection at "pending" (resumable)
+    // instead of leaving it "indexing" with no live job until the next
+    // resume/cancel/restart.
+    if let Some(state) = pre_state {
+        parked_collections.set_collection_status(state.collection_id, "pending");
     }
 }
 
@@ -1057,7 +1081,7 @@ fn root_authorizes_deletion(root: &Path, walked: u64, walk_errors: u64) -> bool 
     }
     // A root the walker refuses BY POLICY (its basename sits on the
     // exclusion list — `build`, `dist`, `venv`, `.cache`, …) is not "walked
-    // and empty": `walk_pruned` subjects the depth-0 root to the same skip
+    // and empty": `walk_pruned_with` subjects the depth-0 root to the same skip
     // predicate as every entry, so a readable, non-empty excluded-name root
     // also reports zero entries and zero errors. Authorizing the sweep here
     // would delete the slice of a directory nobody ever looked at while
@@ -2111,17 +2135,17 @@ mod tests {
             .unwrap();
         assert!(jobs.state(&foreign).unwrap().running);
 
-        let err = refuse_fresh_foreign_running_import(&jobs, Some("other-job"))
+        let err = refuse_fresh_foreign_running_import(&jobs, &l1store, Some("other-job"))
             .expect_err("a fresh foreign running import must refuse a resume");
         assert!(
             err.contains("正在运行"),
             "the refusal names the running import: {err}"
         );
-        assert!(refuse_fresh_foreign_running_import(&jobs, None).is_err());
+        assert!(refuse_fresh_foreign_running_import(&jobs, &l1store, None).is_err());
 
         // The requested job itself is exempt: the store's state transitions
         // (resume from `interrupted` only) give the accurate refusal.
-        assert!(refuse_fresh_foreign_running_import(&jobs, Some(&foreign)).is_ok());
+        assert!(refuse_fresh_foreign_running_import(&jobs, &l1store, Some(&foreign)).is_ok());
 
         // A crashed owner's frozen row degrades to allow (recovery paths
         // stay reachable) — and the degrade now COLLAPSES the zombie:
@@ -2130,7 +2154,7 @@ mod tests {
         // "latest" import that blocks every CLI writer (round-43 review).
         jobs.test_freeze_updated_at(&foreign, 1000);
         assert!(
-            refuse_fresh_foreign_running_import(&jobs, Some("other-job")).is_ok(),
+            refuse_fresh_foreign_running_import(&jobs, &l1store, Some("other-job")).is_ok(),
             "a frozen running row must not pin resume/retry forever"
         );
         let collapsed = jobs.state(&foreign).unwrap();
@@ -2190,5 +2214,92 @@ mod tests {
             .retry_index_item(victim, item.id)
             .expect_err("a fresh foreign running import must refuse a retry");
         assert!(err.contains("正在运行"), "{err}");
+    }
+
+    /// Round-44 review pin: the `start_index` degrade path must collapse the
+    /// frozen zombie BEFORE creating the new job (deleting the collapse call
+    /// in `start_index` alone would leave the dead `running` row as the
+    /// phantom latest import — the resume/retry guard has its own wiring
+    /// pin above, this one pins the start arm). The new job launches over an
+    /// empty root, so the spawned import thread finishes without ever
+    /// touching the embedder.
+    #[test]
+    fn start_index_collapses_a_frozen_foreign_row_before_creating_the_new_job() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("start-collapse", None, None)
+            .expect("collection");
+        let empty_root = std::env::temp_dir().join(format!(
+            "pinvou3-kb-start-collapse-empty-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&empty_root).expect("empty root");
+
+        // A crashed owner's frozen `running` row: promoted, then heartbeats
+        // frozen far past the liveness bound.
+        let zombie = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp")])
+            .expect("zombie job");
+        svc.imports
+            .prepare_items(&zombie, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare zombie item");
+        assert!(svc.imports.state(&zombie).unwrap().running);
+        svc.imports.test_freeze_updated_at(&zombie, 1000);
+
+        let started = svc.start_index(collection, vec![empty_root]);
+        assert_ne!(started.job_id, Some(zombie.clone()), "a new job must start");
+        let collapsed = svc.imports.state(&zombie).unwrap();
+        assert!(
+            !collapsed.running,
+            "the frozen zombie must be collapsed before the new job is created"
+        );
+    }
+
+    /// Round-44 review: the collapse parks the zombie's collection badge at
+    /// "pending" (the dead importer's close-out never runs), and a second
+    /// call on the now-terminal row takes the benign 0-row arm instead of
+    /// treating the already-terminal job as an interrupt failure.
+    #[test]
+    fn interrupt_frozen_foreign_row_parks_the_collection_and_stays_honest_on_a_terminal_row() {
+        let db = Store::open_in_memory().unwrap();
+        let conn = db.conn_arc();
+        let jobs = import_jobs::ImportJobStore::new(conn.clone());
+        let l1store = l1::L1Store::new(conn);
+        let collection_id = l1store.create_collection("badge", None, None).unwrap();
+        l1store.set_collection_status(collection_id, "indexing");
+        let zombie = jobs
+            .create(collection_id, &[PathBuf::from("/tmp")])
+            .unwrap();
+        jobs.prepare_items(&zombie, &[PathBuf::from("/tmp/a.txt")])
+            .unwrap();
+        assert!(jobs.state(&zombie).unwrap().running);
+
+        interrupt_frozen_foreign_row(&jobs, &l1store, Some(&zombie));
+        assert!(!jobs.state(&zombie).unwrap().running);
+        let badge = l1store
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == collection_id)
+            .unwrap();
+        assert_eq!(
+            badge.status, "pending",
+            "the parked badge must be resumable"
+        );
+
+        // Benign arm: the row is terminal now, so the second interrupt lands
+        // 0 rows and must neither re-park nor treat the race as a failure.
+        l1store.set_collection_status(collection_id, "pending");
+        interrupt_frozen_foreign_row(&jobs, &l1store, Some(&zombie));
+        let badge = l1store
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == collection_id)
+            .unwrap();
+        assert_eq!(badge.status, "pending");
     }
 }
