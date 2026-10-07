@@ -777,7 +777,12 @@ jobs:
     # 否则 deny.toml 策略改动会静默漏检 cargo-deny。
     if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.rust_code == 'true' || needs.changes.outputs.rust_dependencies == 'true') }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    # 30m 上限在缓存冷启动下不够:Cargo cache 是 save-if main-only(PR 永不保存),
+    # 且本 job 在 main 上遇到非 rust 合并(如纯前端依赖 bump)时被整体跳过、不产存档,
+    # 加上 actions 缓存池被高频小体积 npm 缓存挤占淘汰,PR 端经常 "No cache found"
+    # 冷跑(2026-10-01 前后多次冷跑在 ~30m 整点被 cancel,公开运行史可查);
+    # 缓存命中的成功运行 13-28m,不受影响。冷跑至少需要 30m 以上,60m 留出余量。
+    timeout-minutes: 60
     env:
       # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
       RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1005,7 +1010,10 @@ jobs:
       # is a redundant fallback under jammy gcc 11 (when gcc resolves ld.lld by
       # name, the -B directory precedes PATH and matches rust-lld); it stays as
       # a fallback for older toolchains and local environments.
-      # 不设 codegen-units:dev 默认 256,对 test 改动最小(不影响 release 的 codegen=1)。
+      # dev 默认 256 个 codegen units 会把大型测试 harness 展开成过多 ThinLTO 输入，
+      # 在 16GB Linux hosted runner 上放大链接峰值。收敛到 16 只影响本 CI job；
+      # release 仍使用 Cargo.toml 的 codegen-units=1，产品产物不变。
+      CARGO_PROFILE_DEV_CODEGEN_UNITS: "16"
       CARGO_PROFILE_DEV_LTO: "thin"
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--thinlto-jobs=1 -C link-arg=-Wl,--threads=1"
       # Cargo.toml [profile.dev] 固化 line-tables-only(本地调试体验);CI 改为完全
@@ -1067,6 +1075,26 @@ jobs:
       - name: 对齐 rust-toolchain.toml 锁定的工具链
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      # v0.9.12 底座升级后,dev 对依赖开 O2 时 codewhale-tui 的 LLVM IR/bitcode
+      # 体量使本 job 的 thin LTO 在 16GB Linux hosted runner 上越线:2026-09-12 起 main
+      # push 与 PR 的 rust-test 均在编译最终 crate(pinvou3-tauri lib test,单个
+      # rustc ~7GB)时被内存看门狗按可用内存阈值提前杀掉(连续 8+ 次实证)。
+      # 与 windows-rust-test job 同款缓解(见该 job 同名 step):仅在本 job 内把
+      # codewhale-tui 覆盖回 dev 默认 O0,写入 CARGO_HOME/config.toml(package 级
+      # profile 覆盖只能走 config,Cargo 无对应环境变量),不改动仓库 Cargo.toml,
+      # 本地开发与 release 产物不受影响;overflow-checks 等其余 dev 设置继承,
+      # 测试语义不变。
+      - name: dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)
+        run: |
+          config="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+          cat >> "$config" <<'EOF'
+
+          [profile.dev.package.codewhale-tui]
+          opt-level = 0
+          EOF
+          echo "appended codewhale-tui dev O0 override to $config"
+          tail -n 4 "$config"
 
       # remote_control 的真实 relay 下载 e2e 需要 node + relay 依赖,缺 node_modules/ws 时
       # 该 e2e 会自动 skip —— 装上依赖让 CI 真正执行它,而不是绿灯假过。
@@ -1212,11 +1240,26 @@ jobs:
       }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    env:
+      # The CLI workspace compiles pinvou3-tauri plus its own targets. Disable
+      # dev DWARF to keep a cold target directory within hosted-runner disk.
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           submodules: false
+
+      # A cold CLI workspace plus pinvou3-tauri exhausts the hosted runner's
+      # initial ~13 GiB. This allowlisted helper (base tier) removes only the
+      # unused Android/.NET/ghcup/Julia SDKs; memory headroom afterwards comes
+      # from zram plus the mandatory /mnt/swapfile provisioned by
+      # scripts/ci-memory-setup.sh in the next step.
+      - name: Prepare Rust disk capacity
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py
 
       # Same policy as rust-test: the Linux Rust job attempts extra memory
       # first (best effort and non-fatal; only the wrapper structure is
@@ -1459,6 +1502,26 @@ jobs:
           toolchain="$(rustup show active-toolchain | awk '{print $1}')"
           echo "version=${toolchain}" >> "$GITHUB_OUTPUT"
           rustup default "${toolchain}"
+
+      # v0.9.12 底座升级后,dev 对依赖开 O2 时 rustc/LLVM 编译 codewhale-tui(lib)
+      # 在 16GB Windows hosted runner 上越线(rustc-LLVM out of memory 回归实证);
+      # 收敛 codegen-units 又会显著拉长该 crate 的编译时长(实测,不采用)。故仅在本
+      # job 内把 codewhale-tui 覆盖回 dev 默认 O0:写入 CARGO_HOME/config.toml
+      # (package 级 profile 覆盖只能走 config,Cargo 无对应环境变量),不改动仓库
+      # Cargo.toml,本地与 Linux job 的依赖级 O2 不受影响。release 产物仍由
+      # Cargo.toml 的 release profile 决定。
+      - name: dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)
+        shell: pwsh
+        run: |
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
+          $config = Join-Path $cargoHome "config.toml"
+          Add-Content -Path $config -Value @"
+
+          [profile.dev.package.codewhale-tui]
+          opt-level = 0
+          "@
+          Write-Host "appended codewhale-tui dev O0 override to $config"
+          Get-Content -Path $config | Select-Object -Last 4
 
       # 编译 Windows 专用 .exe 栈 wrapper(源码 scripts/rustc-stack-wrapper.rs)。
       # 直接调 rustc 编译、不经 cargo,故不受本 job 的 RUSTC_WRAPPER 影响,无自举依赖。
