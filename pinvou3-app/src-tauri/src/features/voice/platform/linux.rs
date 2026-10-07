@@ -22,11 +22,15 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    let configured = asr_tool_path();
-    if configured.is_file() || crate::platform::os::command_exists(&configured.to_string_lossy()) {
-        return true;
-    }
-    voice_asr::engine_path().is_file()
+    // 就绪判定与执行路径（asr_tool_path）同判定：env 覆盖命令失效时如实报未就绪，
+    // 不落 engine——否则面板报就绪而转写仍 spawn 失效路径（见 asr_ready_decision）。
+    // 闭包只在未设 env 时进入，此时 asr_tool_path() 即执行路径的兜底值。
+    super::asr_tool_exists_with_env(|| {
+        let fallback = asr_tool_path();
+        fallback.is_file()
+            || crate::platform::os::command_exists(&fallback.to_string_lossy())
+            || voice_asr::engine_path().is_file()
+    })
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {

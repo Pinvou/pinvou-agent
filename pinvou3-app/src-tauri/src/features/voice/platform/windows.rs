@@ -42,14 +42,12 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    // 环境变量探测与执行路径（asr_tool_path）同源：platform::asr_tool_path_from_env。
-    if super::asr_tool_path_from_env()
-        .is_some_and(|p| crate::platform::os::command_exists(&p.to_string_lossy()))
-    {
-        return true;
-    }
-    crate::platform::os::windows::bundled_asr_tool_path().is_some()
-        && crate::platform::os::windows::bundled_asr_backend_path().is_some()
+    // 就绪判定与执行路径（asr_tool_path）同判定：env 覆盖命令失效时如实报未就绪，
+    // 不落 bundled——否则面板报就绪而转写仍 spawn 失效路径（见 asr_ready_decision）。
+    super::asr_tool_exists_with_env(|| {
+        crate::platform::os::windows::bundled_asr_tool_path().is_some()
+            && crate::platform::os::windows::bundled_asr_backend_path().is_some()
+    })
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {
