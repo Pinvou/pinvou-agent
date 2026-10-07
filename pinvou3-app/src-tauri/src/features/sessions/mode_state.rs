@@ -397,7 +397,7 @@ impl SessionStore {
     /// multi-agent flag snapshot, used after ghost cleanup re-derives the
     /// full id list from the file just read plus the sessions directory.
     /// Production single-flag mutations must use
-    /// [`apply_multi_agent_mutation_locked`] so entries another process added
+    /// `apply_multi_agent_mutation_locked` so entries another process added
     /// after this one booted are preserved instead of reverted by a stale
     /// snapshot.
     ///
