@@ -841,10 +841,10 @@ try {
     /else if \(mode === 'work'\) \{[\s\S]*?savePinvouModeState\(\{ mode: 'work' \}[^;]*;[\s\S]*?createNewSession\(\);[\s\S]*?setCurrentView\('chat'\)/,
     'selecting Work from the shared mode entry must return to ChatView work mode');
   assert.ok(
-    main.includes("if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();"),
+    main.includes("if (bridge.available && !bs.activeSessionId) bridge.sessions.createNewSession();"),
     'switching back from code to work keeps the original work session; only the draft state creates a new one');
   assert.ok(
-    main.includes("createPinvouModeScopeKey(bridge.activeSessionId)"),
+    main.includes("createPinvouModeScopeKey(bs.activeSessionId)"),
     'the pinvou mode is saved under the session scope when switching back to work so ChatView can read it after mounting');
   assert.ok(codexLogo.includes("brand-icons/openai.svg")
     && acpAgentLogo.includes('<CodexLogo')

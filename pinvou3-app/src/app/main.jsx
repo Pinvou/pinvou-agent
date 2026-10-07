@@ -435,7 +435,7 @@ const NAV_PREFETCH = {
         const sessionCommandToken = tracksCommandEcho
           ? browserSessionCommandEchoGuard.begin(
             options.sessionTarget,
-            bridge.activeSessionId || null,
+            bsRef.current?.activeSessionId || null,
           )
           : null;
         if (tracksSession) browserSessionTransitionPendingRef.current += 1;
@@ -1862,7 +1862,7 @@ const NAV_PREFETCH = {
           if (beforeNavigate) beforeNavigate();
           if (nextView === 'chat') setCodeModeOn(false);
           setCurrentView(nextView);
-          if (bs && bs.scheduledRunContext) setActiveChat(bridge.activeSessionId || null);
+          if (bs && bs.scheduledRunContext) setActiveChat(bs.activeSessionId || null);
           closeMobileSidebar();
           return true;
         }, {
@@ -1982,16 +1982,16 @@ const NAV_PREFETCH = {
           // user's chosen Plan — surfacing as "switch back from code to work
           // and the approval mode reverts to Yolo". Keep the original
           // session; ChatView shows its measured mode after mounting.
-          const scopeKey = bridge.activeSessionId
-            ? createPinvouModeScopeKey(bridge.activeSessionId)
+          const scopeKey = bs.activeSessionId
+            ? createPinvouModeScopeKey(bs.activeSessionId)
             : undefined;
           savePinvouModeState({ mode: 'work' }, undefined, scopeKey);
-          if (bridge.available && !bridge.activeSessionId) bridge.sessions.createNewSession();
+          if (bridge.available && !bs.activeSessionId) bridge.sessions.createNewSession();
           // While on the code page the original work session's mode may have
           // changed (the code page has its own chain), so pull a fresh value
           // before switching back — ChatView must not mount with a stale
           // modeState.
-          if (bridge.available && bridge.activeSessionId) {
+          if (bridge.available && bs.activeSessionId) {
             bridge.interaction.syncModeState().catch(() => {});
           }
           setCurrentView('chat');
