@@ -68,8 +68,9 @@ fn lark_cli_version() -> Option<(u64, u64, u64)> {
 
 /// Whether lark-cli is installed at or above [`LARK_MIN_VERSION`]; older
 /// installs count as not installed and trigger the online replacement.
-/// Failure states (spawn error, non-zero probe) fold into "unavailable",
-/// mirroring `lark_cli_probe`'s disconnect-path folding.
+/// Failure states (spawn error, non-zero probe, unparsable version output)
+/// fold into "unavailable", mirroring `lark_cli_probe`'s disconnect-path
+/// folding.
 fn lark_cli_present() -> bool {
     lark_cli_version()
         .map(|v| v >= LARK_MIN_VERSION)
@@ -492,6 +493,11 @@ mod tests {
             parse_lark_version("lark-cli version 1.0.95 (build 2026-09-30T00:00:00Z abc1234)"),
             Some((1, 0, 95)),
         );
+        // 实际 release 产物经 git describe 打 `v` 前缀(`lark-cli version v1.0.95`)。
+        assert_eq!(
+            parse_lark_version("lark-cli version v1.0.95"),
+            Some((1, 0, 95)),
+        );
         // 两段式按共享口径补 0(不因假想的「1.1」误判未装触发降级重装)。
         assert_eq!(parse_lark_version("lark-cli version 1.1"), Some((1, 1, 0)));
         assert_eq!(parse_lark_version("hello"), None);
@@ -504,25 +510,48 @@ mod tests {
     /// 安装/替换循环。
     #[test]
     fn lark_min_version_matches_platform_lock() {
-        let lock = crate::platform::connector_lock::lock_json();
-        assert!(!lock.is_empty(), "platform lock json must be embedded");
-        let parsed: Value = serde_json::from_str(lock).expect("lock json parses");
-        let entries = parsed
-            .pointer("/artifacts")
-            .and_then(|v| v.as_array())
-            .expect("lock json carries an artifacts list");
-        let lark = entries
-            .iter()
-            .find(|e| e.get("name").and_then(|v| v.as_str()) == Some("lark-cli"))
-            .expect("lock must pin lark-cli");
-        let locked = lark
-            .get("version")
-            .and_then(|v| v.as_str())
-            .expect("lark-cli lock entry carries a version");
-        assert_eq!(
-            cc::parse_semver3(locked),
-            Some(LARK_MIN_VERSION),
-            "LARK_MIN_VERSION must equal the locked lark-cli version ({locked})"
-        );
+        // All five platforms' locks must agree with the gate: lock_json() is
+        // cfg-selected to the compile target and the full cargo test run only
+        // executes on a subset of platforms, so a partial lock bump touching
+        // another platform's lark-cli entry could only be caught statically
+        // here (same rationale as native_installer's all-platform mirror test).
+        const ALL_PLATFORM_LOCKS: [&str; 5] = [
+            include_str!(
+                "../../../resources/platforms/linux/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/linux/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/windows/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+        ];
+        for lock in ALL_PLATFORM_LOCKS {
+            assert!(!lock.is_empty(), "platform lock json must be embedded");
+            let parsed: Value = serde_json::from_str(lock).expect("lock json parses");
+            let entries = parsed
+                .pointer("/artifacts")
+                .and_then(|v| v.as_array())
+                .expect("lock json carries an artifacts list");
+            let lark = entries
+                .iter()
+                .find(|e| e.get("name").and_then(|v| v.as_str()) == Some("lark-cli"))
+                .expect("lock must pin lark-cli");
+            let locked = lark
+                .get("version")
+                .and_then(|v| v.as_str())
+                .expect("lark-cli lock entry carries a version");
+            assert_eq!(
+                cc::parse_semver3(locked),
+                Some(LARK_MIN_VERSION),
+                "LARK_MIN_VERSION must equal every platform lock's lark-cli version ({locked})"
+            );
+        }
     }
 }
