@@ -335,3 +335,20 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
   发送」操作在 send/reply 两种教程里写法不一致;统一到 `tmp/mail/` 约定。
 - 两处均为本地修改,下次 sync 需重放;此前各轮 NOTICE 未登记过邮件正文路径(2026-09-05 第二轮
   登记的是 30-day fiction 删除等,与本项无重叠)。
+
+### 周期能力措辞与联系人搜索说明(2026-10-07,模型向文本审计)
+
+- **wecomcli-calendar/SKILL.md + references/calendar-create.md、
+  wecomcli-meeting/SKILL.md + references/meeting-create.md**:周期日程/会议的
+  「不支持…(API 仅支持创建单次日程 / API 层根本无此能力)」改为「产品暂未开放
+  的能力(产品范围限制)」。原绝对断言无包内事实源(各 references 仅证实读侧
+  返回 `repeat_rule` 字段,创建/更新参数表均无周期写入口),一旦上游变化即成
+  误导;改为产品范围口径后,拒绝与「引导用户在企业微信客户端手动操作」的行为
+  语义不变。
+- **wecomcli-contact/SKILL.md**:`search_mode="list"` 行由「返回全量命中列表」
+  改为「列表模式…列表可能因服务端限制未完整返回,以返回的 `hint` 字段为准,
+  `hint` 给出限制说明时必须向用户如实说明结果可能不全,不得把返回条数当作
+  准确总数」。参数行「拿到完整人员名单」同步改为「命中列表(清点 / 穷举意图)」。
+  「全量」同样是未经二进制核验的断言;返回表中 `hint`(结果限制提示)字段表明
+  截断可能发生,清点类问题必须以 `hint` 为准。
+- 以上均为本地修改,下次 sync 需重放。

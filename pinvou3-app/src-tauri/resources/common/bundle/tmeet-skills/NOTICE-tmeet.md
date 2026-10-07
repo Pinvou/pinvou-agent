@@ -75,7 +75,10 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
 条，上一段「其余 references 逐字节一致」仅描述第 1-6 条完成时点的状态。
 第八轮审查注 2026-09-05：本轮新增第 13-19 条文档缺陷修复，触及 `SKILL.md`
 与 `references/tmeet-meeting.md` / `tmeet-control.md` / `tmeet-tshoot.md`
-三篇，此后上游同步的重放基线为第 1-19 条）：
+三篇。第十轮注 2026-10-07（模型向文本审计）：本轮新增第 20 条
+（meeting-id 示例占位符全量替换），触及 `SKILL.md` 与
+`references/tmeet-control.md` / `tmeet-meeting.md` / `tmeet-record.md` /
+`tmeet-report.md` 五篇，此后上游同步的重放基线为第 1-20 条）：
 
 1. **frontmatter `description` 重写**：上游 description 长 327 字符，超过品悟
    SkillRegistry 的 280 字符截断上限，压缩为 211 字符，并按品悟契约改为
@@ -181,6 +184,12 @@ tshoot/report/control 五篇与上游一致，record.md / auth.md 的差异即�
 19. **`references/tmeet-control.md` waiting-room 节确认要求补强**：⚠️ 行补
     「`expel`（移出踢出）等同踢人，执行前必须列明目标成员」，与 SKILL.md
     确认表补行（第 15 条）口径一致。
+20. **meeting-id 示例占位符全量替换（SKILL.md 与 4 篇 references，55 处）**：
+    原 9 位数字示例 `100000000` 按本包格式准则（`references/tmeet-minutes.md`
+    「meeting-code 与 meeting-id 的区别」：9~12 位数字是会议号 meeting-code，
+    meeting-id 为 13 位以上数字字符串）属会议号形态，照抄示例会把
+    meeting_code 当 meeting_id 传入而报错；统一替换为 13 位以上（19 位）
+    占位 `6953553464429888300`。纯示例值替换，不改任何命令 / 参数 / 语义。
 
 第九轮审查注 2026-09-05（重审代修，不新增登记条目，重放基线仍为第 1-19 条）：
 SKILL.md 成员来源硬约束 bullet 按操作类型分列（第 16 条已同步改写）；
