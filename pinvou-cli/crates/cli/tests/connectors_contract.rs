@@ -652,6 +652,49 @@ fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
     assert_eq!(value["connectors"][0]["legacy_disabled_marker"], false);
 }
 
+/// Round-45: the family's runtime failures carry stable `connectors_*` code
+/// prefixes (same convention as `scheduled_store_busy` /
+/// `memory_organize_busy`) instead of human phrases only. This pins one real
+/// failing lane end to end: a legacy marker that cannot be removed (a
+/// DIRECTORY at the marker path — `remove_file` answers EISDIR/EPERM, not
+/// NotFound, so `clear_legacy_disabled_marker` propagates) must fail `enable`
+/// with exit 1, the `connectors_legacy_marker_clear_failed:` code FIRST, and
+/// the verb context still readable after it.
+///
+/// Lane choice, disclosed: the install-lock refusal
+/// (`connectors_install_lock_unavailable:`) cannot be driven by holding the
+/// lock here — the acquire is a blocking flock by design (round-37 review in
+/// `run_npm_install`), so contention makes the loser wait instead of fail,
+/// and a held-lock contract test would hang the suite. Its message text is
+/// pinned on the shared construction seam by the in-src unit test
+/// `install_lock_refusal_carries_the_code_prefix` instead.
+#[test]
+fn connectors_enable_failure_lane_reports_the_code_prefix_first() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("marker-clear-failure");
+    let _path = VendorCliGuard::new();
+
+    // The marker path occupied by a directory: the one state where the
+    // removal fails with something other than NotFound.
+    std::fs::create_dir_all(home.disabled_marker("wecom")).unwrap();
+
+    let error = run(&["pinvou", "connectors", "enable", "wecom"])
+        .expect_err("an unclearable legacy marker must fail enable, not silently keep it");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.starts_with("connectors_legacy_marker_clear_failed:"),
+        "the failure must lead with the family error code: {message}"
+    );
+    // Only the prefix changed: the verb context (which connector, which
+    // path, what failed) stays human-readable behind the code.
+    assert!(
+        message.contains("cannot clear the legacy disabled marker"),
+        "the human verb context must survive behind the code: {message}"
+    );
+    assert!(message.contains("wecom_disabled"), "{message}");
+}
+
 #[test]
 fn connectors_logout_and_apply_skills_on_uninstalled_connector_degrade_like_the_gui() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

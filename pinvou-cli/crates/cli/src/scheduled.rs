@@ -841,12 +841,20 @@ impl TaskStore {
         // content to direct readers).
         let legacy = dir.join(format!("{}.json", record.id));
         if legacy != path && legacy.exists() {
-            std::fs::remove_file(&legacy).map_err(|error| {
-                CliError::failed(format!(
-                    "scheduled_storage_unavailable: cannot remove legacy run {}: {error}",
+            // Round-45 review: the sortable record is already durable at this
+            // point; a failed twin cleanup only leaves stale content where a
+            // direct reader can see it, while failing the command here would
+            // make the `scheduled_run_unrecorded` mapping in `run` lie that
+            // the record was not persisted. Disclose the leftover twin on
+            // stderr and succeed instead.
+            if let Err(error) = std::fs::remove_file(&legacy) {
+                note!(
+                    "pinvou: warning: the run record was written, but the legacy copy {} \
+                     could not be removed ({error}); remove it manually to avoid a stale \
+                     duplicate",
                     legacy.display()
-                ))
-            })?;
+                );
+            }
         }
         Ok(())
     }
@@ -2907,6 +2915,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             .and_then(|value| value.as_object_mut())
         {
             if tasks.remove(id).is_some() {
+                // Round-45 review: the raw rewrite must also give a legacy version-less registry its schema_version (1 for bindings/kinds/ui-metadata), per `ensure_sidecar_schema`'s rule.
+                if let Some(object) = registry.as_object_mut() {
+                    object
+                        .entry("schema_version")
+                        .or_insert_with(|| serde_json::json!(1));
+                }
                 // Best-effort like the rollback lanes, but not silent: the
                 // GUI poll compaction prunes the stale entry within seconds,
                 // so the impact is small — still, a skipped cleanup write
@@ -3391,6 +3405,12 @@ viewed"
     if !read_state.get("viewed_runs").is_some_and(Value::is_object) {
         read_state["viewed_runs"] = serde_json::json!({});
     }
+    // Round-45 review: legacy files carry no version and every CLI writer adds one (`ensure_sidecar_schema`); the app's serde default for this file is schema 2.
+    read_state
+        .as_object_mut()
+        .expect("read_state normalized to an object above")
+        .entry("schema_version")
+        .or_insert_with(|| serde_json::json!(2));
     {
         let viewed = read_state["viewed_runs"]
             .as_object_mut()
@@ -3894,5 +3914,63 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-45 review: after the sortable record is durably written, a
+    /// failed legacy-twin cleanup must not fail `save_run` — the command
+    /// would report the run as unrecorded while the record IS on disk.
+    /// Deleting the `note!`-and-Ok fallback (back to the `?` mapping) fails
+    /// this test: the twin here is a directory, which `remove_file` refuses
+    /// on every platform, so the old code propagated the error instead.
+    #[test]
+    fn save_run_succeeds_when_the_legacy_twin_cannot_be_removed() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-scheduled-twin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = TaskStore { home: root.clone() };
+        let run_id = "run-twin-1";
+        // The legacy twin (`<run_id>.json`) exists as a DIRECTORY, so
+        // `remove_file` fails on all platforms while `.exists()` holds.
+        let legacy_twin = store
+            .runs_dir_for("task-twin")
+            .unwrap()
+            .join(format!("{run_id}.json"));
+        std::fs::create_dir_all(&legacy_twin).unwrap();
+
+        let record = serde_json::json!({
+            "schema_version": 1,
+            "id": run_id,
+            "automation_id": "task-twin",
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z",
+            "started_at": "2026-09-10T08:00:01.000Z",
+            "ended_at": "2026-09-10T08:05:00.000Z",
+            "task_id": serde_json::Value::Null,
+            "thread_id": serde_json::Value::Null,
+            "turn_id": serde_json::Value::Null,
+            "error": serde_json::Value::Null,
+        });
+        store
+            .save_run(&record)
+            .expect("a failed twin cleanup must not fail the durable save");
+
+        // The sortable record (chrono `{stamp}-{run_id}.json`) is on disk.
+        let sortable = store
+            .runs_dir_for("task-twin")
+            .unwrap()
+            .join(format!("20260910T080000000Z-{run_id}.json"));
+        assert!(
+            sortable.exists(),
+            "the durable record must exist: {}",
+            sortable.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

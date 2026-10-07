@@ -887,9 +887,12 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
     support::sandbox_home()?;
     match store {
         Some(store) => {
-            let (item_lines, value) = load_store_items(store)?;
+            // Round-45 review: the header count must be the ITEM count — the
+            // cleanup warnings render as rows below the items, not as items.
+            let (item_lines, warning_lines, value) = load_store_items(store)?;
             let mut lines = vec![format!("{} ({})", store.as_str(), item_lines.len())];
             lines.extend(item_lines);
+            lines.extend(warning_lines);
             Ok(success(render(output, lines.join("\n"), &value)))
         }
         None => {
@@ -993,13 +996,17 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
     }
 }
 
-/// Loads one store for `memory list --store`, returning the human item lines
-/// and the JSON DTO array mirroring the GUI shapes.
+/// Loads one store for `memory list --store`, returning the human item lines,
+/// the human warning rows (kept SEPARATE so the caller's `(N)` header counts
+/// items only — round-45 review), and the JSON DTO array mirroring the GUI
+/// shapes.
 ///
 /// Every store returns the same `{items, cleanup_warnings}` envelope so a
 /// `--output json` consumer never has to branch on the shape per store;
 /// stores without a cleanup sweep report an empty `cleanup_warnings` array.
-fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Value), CliError> {
+fn load_store_items(
+    store: MemoryStore,
+) -> Result<(Vec<String>, Vec<String>, serde_json::Value), CliError> {
     let io_error = |error| feature_error("list", error);
     let (items, value, cleanup_warnings) = match store {
         MemoryStore::Preferences => {
@@ -1090,24 +1097,28 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
     // human `memory list --store preferences` saw nothing about the store
     // the GUI keeps warning about (the module comment below the aggregate
     // arm states why they must not be dropped at all). Same collapsed
-    // warning row, same shape.
-    let mut items = items;
-    for warning in &cleanup_warnings {
-        let topic = warning
-            .get("topic")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        let detail = warning
-            .get("detail")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        items.push(format!(
-            "warning: memory_topic_cleanup_required ({topic}): {}",
-            crate::support::collapse_control_characters(detail)
-        ));
-    }
+    // warning row, same shape. Round-45 review: the rows come back in their
+    // own vec so the caller's header counts items only.
+    let warning_lines: Vec<String> = cleanup_warnings
+        .iter()
+        .map(|warning| {
+            let topic = warning
+                .get("topic")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let detail = warning
+                .get("detail")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            format!(
+                "warning: memory_topic_cleanup_required ({topic}): {}",
+                crate::support::collapse_control_characters(detail)
+            )
+        })
+        .collect();
     Ok((
         items,
+        warning_lines,
         serde_json::json!({ "items": value, "cleanup_warnings": cleanup_warnings }),
     ))
 }
@@ -1129,8 +1140,10 @@ fn load_store_items(store: MemoryStore) -> Result<(Vec<String>, serde_json::Valu
 /// pending-queue cap rather than either store constant. It is a plain literal
 /// because the feature layer does not export the pending-queue cap: the 120
 /// in `pending_item_from_suggestion` is an unnamed literal, and
-/// `PREFERENCE_TEXT_MAX_CHARS` — which happens to share the value — is
-/// `pub(super)` and in any case describes a different, later stage.
+/// `PREFERENCE_TEXT_MAX_CHARS` — which happens to share the value — is now
+/// `pub` and re-exported by the feature layer, but still describes a
+/// different, later stage (round-45 review updated this remark; the
+/// pending-queue cap remains the honest one to name).
 /// `memory_add_work_context_over_the_cap_reports_the_truncation` pins the
 /// value against the feature layer's observable behavior — it asserts the
 /// stored length against the store itself — so this cannot drift unnoticed.
@@ -1144,7 +1157,6 @@ const ADD_PIPELINE_TEXT_MAX_CHARS: usize = 120;
 /// `pending_never_reason_over_the_cap_discloses_the_truncation`.
 const NEVER_REASON_CAP_CHARS: usize = 80;
 
-/// Mirror of `features::memory::util::clean_text` (`pub(super)`, so the CLI
 /// The stderr half of the truncation disclosure shared by `memory add` and
 /// `memory update`, emitted at measurement time — before the store write — so
 /// even a command that fails later has already named the loss. One formatter
@@ -1375,6 +1387,27 @@ fn diverged_candidate(
     )))
 }
 
+/// Round-45 review: the runtime memory block is delimited by
+/// `<pinvou_user_memory>` markers (`features/memory/render.rs`), so text
+/// carrying the marker substring could forge or prematurely close that
+/// boundary inside the model-visible block — an injection channel. Every
+/// CLI lane that writes user-authored text into a store the block renders
+/// (preferences, work-context, both timed stores) refuses such content
+/// before any state change. The GUI's own add path does not gate markers
+/// (pre-existing); the CLI refuses the injection vector on the scriptable
+/// lane. `memory pending never --reason` is deliberately NOT gated: the
+/// never store does not render into the block (render.rs reads
+/// preferences/work_context/current_focus/recent_activity/recent_work only).
+fn refuse_memory_block_marker(lane: &str, content: &str) -> Result<(), CliError> {
+    if feature::contains_memory_block_marker(content) {
+        return Err(CliError::failed(format!(
+            "memory_marker_refused: {lane} content contains a <pinvou_user_memory> block \
+             marker that could forge the runtime memory boundary; remove it and retry"
+        )));
+    }
+    Ok(())
+}
+
 /// Adds a memory item through the same pipeline the GUI uses: enqueue the
 /// candidate into `_pending.jsonl` and immediately confirm it so the item is
 /// materialized into its authoritative store.
@@ -1429,6 +1462,10 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
             ))),
         };
     }
+    // Round-45 review: fail before any state change — an add always lands in
+    // a store the runtime block renders (preference or work-context), so
+    // marker text must never reach the pending queue either.
+    refuse_memory_block_marker("add", &content)?;
     // Fail before any state change: preference-shaped profile text (the
     // feature heuristic `looks_like_profile_preference_text`, Chinese-only
     // needles) is intentionally NOT materialized by the confirm path —
@@ -1760,6 +1797,10 @@ fn update(
     if content.trim().is_empty() {
         return Err(CliError::usage("memory update requires non-empty content"));
     }
+    // Round-45 review: every updatable store renders into the runtime memory
+    // block, so marker text is refused before any state change (same gate
+    // and code as `add`).
+    refuse_memory_block_marker("update", content)?;
     // Same fail-before-the-write classification as `add`: every editable
     // store's writer normalizes the patch text with `clean_candidate_sentence`
     // (preferences, work context and both timed stores all do) and rejects the

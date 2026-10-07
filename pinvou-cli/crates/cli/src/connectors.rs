@@ -1127,8 +1127,12 @@ fn clear_legacy_disabled_marker(spec: &VendorSpec) -> Result<(), CliError> {
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        // Round-45: code-prefixed per the family error-code convention
+        // (stable `connectors_*` codes; scripts could previously only tell
+        // the exit class apart). The verb context stays in the human text.
         Err(error) => Err(CliError::failed(format!(
-            "connectors {}: cannot clear the legacy disabled marker {}: {error}",
+            "connectors_legacy_marker_clear_failed: {}: cannot clear the legacy disabled \
+             marker {}: {error}",
             spec.id,
             path.display()
         ))),
@@ -2102,9 +2106,7 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     // a holder that is SIGSTOP'd or wedged OUTSIDE those phases blocks a
     // second ensure-cli indefinitely — the user's own terminal shows the
     // stopped process, and the GUI takes no part in this lock.
-    let _install_guard = install_lock
-        .write()
-        .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
+    let _install_guard = install_lock.write().map_err(install_lock_unavailable)?;
     // npm is an npm.cmd shim on Windows; resolve the candidate and wrap the
     // spawn the same way every other vendor CLI child is wrapped.
     let npm = crate::support::binary_candidates("npm")
@@ -2154,8 +2156,10 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
         return Ok(false);
     }
     let log_path = pinvou3_home().join("cli-install.log");
+    // Round-45: code-prefixed per the family error-code convention; the
+    // causes and log path stay as the human explanation.
     Err(CliError::failed(format!(
-        "npm install failed: {}; log at {}",
+        "connectors_npm_install_failed: npm install failed: {}; log at {}",
         causes.join("; "),
         log_path.display()
     )))
@@ -2300,6 +2304,24 @@ fn open_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     Ok(fd_lock::RwLock::new(install_lock_file))
 }
 
+/// The install-lock acquisition refusal, shared by both lanes that take the
+/// lock (the npm lane's `run_npm_install` and `ensure_native_cli`) — one
+/// copy of the message, same rule as [`open_install_lock`]'s directory-create
+/// and open strings. Round-45: code-prefixed per the family error-code
+/// convention; the human explanation follows the code.
+///
+/// Reachability note for tests: the acquire is a BLOCKING flock by design
+/// (round-37 review above), so contention makes the loser wait rather than
+/// fail — this arm fires only on a hard flock error (e.g. EINTR). The
+/// contract therefore pins the message text on this seam (unit test
+/// `install_lock_refusal_carries_the_code_prefix`) instead of a
+/// lock-contention lane that could never deterministically reach the arm.
+fn install_lock_unavailable(error: impl std::fmt::Display) -> CliError {
+    CliError::failed(format!(
+        "connectors_install_lock_unavailable: cannot acquire the install lock: {error}"
+    ))
+}
+
 // Returns `Result<()>`: both arms used to return an always-`Ok(true)` whose
 // two-valued `Ok(false)` semantics died when the verdict tail became
 // unconditional — a vestigial bool a future caller could misread (round-39
@@ -2314,9 +2336,7 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
     // payloads are SHA-256-pinned and installed by atomic rename, so the
     // outcome remains correct) — see docs/pinvou-cli.md Known limitations.
     let mut install_lock = open_install_lock()?;
-    let _install_guard = install_lock
-        .write()
-        .map_err(|error| CliError::failed(format!("cannot acquire the install lock: {error}")))?;
+    let _install_guard = install_lock.write().map_err(install_lock_unavailable)?;
 
     let (platform, artifacts) = load_lock()?;
     let artifact = artifacts
@@ -2363,6 +2383,20 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
     let staging_dir = assets_staging_dir().join(&platform);
     std::fs::create_dir_all(&staging_dir)
         .map_err(|error| CliError::failed(format!("cannot create staging directory: {error}")))?;
+    // Round-45: an install killed by a signal never unwinds, so the cleanup
+    // closures at the extract/staging sites below never run, and their
+    // pre-cleans only ever touch the CURRENT pid's paths — a dead pid's
+    // `<name>-extract-<pid>/` and `.{name}.installing-<pid>` sat in these two
+    // directories forever because no later run swept them. Sweep both before
+    // anything new lands in them.
+    #[cfg(unix)]
+    {
+        // Windows keeps the current-pid pre-cleans the two sites below do,
+        // but this crate has no kill()-style existence probe for it, so its
+        // dead-pid debris stays — disclosed residual.
+        sweep_dead_pid_debris(&staging_dir);
+        sweep_dead_pid_debris(&version_dir);
+    }
     let archive_ext = if artifact.url.ends_with(".zip") {
         "zip"
     } else {
@@ -2392,7 +2426,13 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
                         break;
                     }
                     let _ = std::fs::remove_file(&archive);
-                    causes.push(format!("{label}: archive checksum mismatch"));
+                    // Round-45: code-prefixed per the family error-code
+                    // convention; the checksum phrase stays in the human
+                    // text (the download aggregate joins these causes).
+                    causes.push(format!(
+                        "{label}: connectors_archive_checksum_mismatch: archive checksum \
+                         mismatch against the reviewed SHA-256"
+                    ));
                 }
                 // Round-40 review: the labels-only rule above promises
                 // never to echo a candidate URL (mirror prefixes can carry
@@ -2537,6 +2577,100 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
     sha256_file(path)
         .map(|actual| actual == expected)
         .unwrap_or(false)
+}
+
+/// Removes install debris left by a DEAD process: `<name>-extract-<pid>`
+/// directories in the staging dir and `.{filename}.installing-<pid>` files in
+/// the version dir. Round-45: a signal-killed install never unwinds, so the
+/// cleanup closures at the two sites in [`ensure_native_cli`] never run, and
+/// the pre-cleans there touch only the CURRENT pid's paths — every
+/// SIGKILL/SIGTERM'd or crashed install leaked an extract dir and possibly a
+/// staged binary that no later run ever removed. Each entry's suffix names
+/// the writer's pid; the kernel is asked (`kill(pid, 0)`) whether that pid
+/// still exists, and only entries whose pid is gone are removed, with a
+/// stderr note per removal (via [`crate::note`], the closed-stderr-safe
+/// macro). Unix only — see the call site for the Windows residual.
+#[cfg(unix)]
+fn sweep_dead_pid_debris(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // An unreadable directory (a racing sweep, a sandbox) leaves
+        // everything in place; the ensure path still pre-cleans the current
+        // pid's own paths at the sites below.
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = debris_pid(&entry.file_name().to_string_lossy()) else {
+            continue;
+        };
+        if pid_is_alive(pid) {
+            continue;
+        }
+        let path = entry.path();
+        // The DirEntry's cached type does not follow symlinks: a planted
+        // symlink is unlinked itself, never its target (same rule as the
+        // stale-download part sweep).
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        let removed = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if removed.is_ok() {
+            crate::note!(
+                "note: removed connector install debris left by dead process {pid}: {}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Parses the pid from a debris name's trailing `-extract-<pid>` /
+/// `-installing-<pid>` suffix. The staged-binary writer spells its temp file
+/// `.{filename}.installing-<pid>` (dot separator), so both spellings of the
+/// `installing` marker are accepted; the name before the marker and the pid
+/// digits must both be non-empty, so ordinary binaries (the version dir also
+/// holds `<filename>` and `licenses/`) and half-spelled names never match.
+#[cfg(unix)]
+fn debris_pid(name: &str) -> Option<u32> {
+    let (head, pid) = name.rsplit_once('-')?;
+    if pid.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let stem = head
+        .strip_suffix("-extract")
+        .or_else(|| head.strip_suffix("-installing"))
+        .or_else(|| head.strip_suffix(".installing"))?;
+    if stem.is_empty() {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// `kill(pid, 0)` probes existence without delivering a signal: `Ok` means
+/// the process exists, `EPERM` means it exists under another user — both
+/// count as alive so a sweep never touches a running install's paths (a
+/// shared home must not have one user's sweep deleting another user's
+/// in-flight staging file). Everything else — `ESRCH`, and the out-of-range
+/// rejection some kernels answer with `EINVAL` — counts as dead.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        // Above i32::MAX: never a real pid, never something this crate
+        // stamped (std::process::id() always converts).
+        return false;
+    };
+    // A pid of 0 would probe this process GROUP and -1 every signallable
+    // process, so 0 is answered as alive without the call: the writers stamp
+    // real pids, and a hand-crafted `-extract-0` must not be deleted on a
+    // guess. (Signal 0 itself delivers nothing; the special meanings only
+    // change the permission answer.)
+    if pid == 0 {
+        return true;
+    }
+    // SAFETY: libc::kill is a direct kill(2) wrapper; no memory is touched,
+    // and signal 0 performs only the existence/permission check.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
 }
 
 /// Finds the first regular file with `name` under `dir` (the walker does not
@@ -3922,7 +4056,11 @@ fn ima_secret_ref(name: &str) -> CredentialReference {
 }
 
 fn credential_error(error: impl std::fmt::Display) -> CliError {
-    CliError::failed(format!("ima credential store unavailable: {error}"))
+    // Round-45: code-prefixed per the family error-code convention; the
+    // store's own detail stays as the human explanation.
+    CliError::failed(format!(
+        "connectors_ima_credential_store_unavailable: ima credential store unavailable: {error}"
+    ))
 }
 
 /// Mirror of `ima_connect`: network-validate the credentials against the ima
@@ -4206,6 +4344,7 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExitCode;
     use std::ffi::OsString;
 
     // ── install-lane hash gate (round-38 review: the gate primitive had no
@@ -4728,5 +4867,120 @@ mod tests {
             safe_auth_log_line(&long, false).map(|line| line.chars().count()),
             Some(320)
         );
+    }
+
+    // ── install-lock refusal message (round-45 error-code convention) ───
+    // Both lanes that take the cross-process install lock build the refusal
+    // through `install_lock_unavailable`; the contention lane itself cannot
+    // be driven by a test (the acquire is a blocking flock by design, so a
+    // held lock makes the loser WAIT — see the helper's doc comment), so the
+    // code prefix is pinned on the one seam both call sites share. Reverting
+    // either call site to a hand-rolled human phrase fails this test only if
+    // the seam is kept, and the contract test
+    // `connectors_enable_failure_lane_reports_the_code_prefix_first` covers
+    // the family's code-first shape end to end on a drivable lane.
+
+    #[test]
+    fn install_lock_refusal_carries_the_code_prefix() {
+        let error = install_lock_unavailable("flock: resource temporarily unavailable");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let message = error.to_string();
+        assert!(
+            message.starts_with("connectors_install_lock_unavailable:"),
+            "the refusal must lead with the family error code: {message}"
+        );
+        // Only the prefix changed: the human explanation (and the underlying
+        // OS error) stays behind the code.
+        assert!(
+            message.contains(
+                "cannot acquire the install lock: flock: resource temporarily \
+                              unavailable"
+            ),
+            "the human explanation must survive behind the code: {message}"
+        );
+    }
+
+    // ── dead-pid install debris sweep (round-45) ─────────────────────────
+    // A signal-killed install never unwinds, so its extract/staging cleanup
+    // closures never run; only the current pid's paths are pre-cleaned by
+    // the ensure path. The sweeper is the unit: entries whose
+    // `-extract-<pid>` / `-installing-<pid>` suffix names a pid the kernel
+    // no longer has are removed, everything else survives.
+
+    #[cfg(unix)]
+    fn debris_fixture(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-connectors-debris-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sweep_removes_debris_whose_pid_the_kernel_no_longer_has() {
+        let dir = debris_fixture("dead");
+        // Far above every platform's pid range (macOS caps at 99999, Linux
+        // at pid_max ≤ 2^22), so the pid cannot be alive — and pid 0 must
+        // never appear here: kill(0, 0) probes the caller's whole process
+        // group, so a "pid 0" fixture would say nothing about the sweep.
+        let dead_dir = dir.join("dws-extract-99999999");
+        std::fs::create_dir_all(&dead_dir).unwrap();
+        let dead_file = dir.join(".dws.installing-99999999");
+        std::fs::write(&dead_file, b"partial binary").unwrap();
+
+        sweep_dead_pid_debris(&dir);
+
+        assert!(
+            !dead_dir.exists(),
+            "a dead pid's extract directory must be swept"
+        );
+        assert!(
+            !dead_file.exists(),
+            "a dead pid's staging file must be swept"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn sweep_leaves_the_current_process_debris_and_non_matching_entries() {
+        let dir = debris_fixture("alive");
+        let current = std::process::id();
+        let live_dir = dir.join(format!("dws-extract-{current}"));
+        std::fs::create_dir_all(&live_dir).unwrap();
+        let live_file = dir.join(format!(".dws.installing-{current}"));
+        std::fs::write(&live_file, b"partial binary").unwrap();
+        // Non-matching siblings: the real binary the version dir also holds,
+        // and a debris-shaped name whose suffix is not a pid.
+        let unrelated = dir.join("dws");
+        std::fs::write(&unrelated, b"binary").unwrap();
+        let not_a_pid = dir.join("dws-extract-notapid");
+        std::fs::write(&not_a_pid, b"binary").unwrap();
+
+        sweep_dead_pid_debris(&dir);
+
+        assert!(
+            live_dir.exists(),
+            "the current pid's extract debris must survive its own run's sweep"
+        );
+        assert!(
+            live_file.exists(),
+            "the current pid's staging debris must survive its own run's sweep"
+        );
+        assert!(
+            unrelated.exists(),
+            "an entry without a debris suffix must survive the sweep"
+        );
+        assert!(
+            not_a_pid.exists(),
+            "a debris-shaped name with no pid digits must survive the sweep"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
