@@ -1363,6 +1363,7 @@ class SendMessageTests(unittest.TestCase):
         self._send(from_session="src0001", idempotency_key="k9")
         spool = self._spooled()[0]
         before = len(self._spooled())
+        first_stat = spool.stat()
         done = self.messaging / "spool" / ".done"
         done.mkdir(parents=True, exist_ok=True)
         (done / (spool.stem + ".json")).write_bytes(b"")
@@ -1370,10 +1371,14 @@ class SendMessageTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(payload["delivery"], "delivered")
         self.assertTrue(payload["duplicate"])
-        # Round-6 R3: the delivered answer must come with ZERO ADDITIONAL
-        # spool writes — the retry neither replaces the pending file nor
-        # lingers as a new root *.json.
+        # Round-7 Q3: assert STATE, not count — a same-name os.replace
+        # rewrite leaves the count unchanged (the round-6 count-only pin
+        # passed against the buggy code). The first send's file must be
+        # byte-identically untouched: same inode, same mtime.
         self.assertEqual(len(self._spooled()), before)
+        after_stat = self._spooled()[0].stat()
+        self.assertEqual(after_stat.st_ino, first_stat.st_ino)
+        self.assertEqual(after_stat.st_mtime_ns, first_stat.st_mtime_ns)
 
 
 class SendMessageFeatureGateTests(unittest.TestCase):
