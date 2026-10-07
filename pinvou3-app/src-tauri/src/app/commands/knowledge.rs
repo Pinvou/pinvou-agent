@@ -27,8 +27,8 @@ pub(super) fn build_kb_agentic_guide(collection_names: &[String]) -> String {
     format!(
         "<system-reminder>\n\
          本会话启用了本地或远程知识集{titles}。涉及这些资料/文档的问题,你**必须先调用 \
-         `kb_search` 工具**检索(两个工具已随本会话注册;若不在你的工具列表,说明本会话已禁用\
-         知识集工具,`tool_search` 也无法找回,此时按无知识集处理并如实告知用户),再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
+         `kb_search` 工具**检索(`kb_search`/`kb_open_source` 默认延迟加载,不在当前工具\
+         列表时先 `tool_search` 激活),再**严格基于返回的片段**作答并注明来源文件;检索不到相关\
          内容就如实告诉用户「未在知识集中找到」,**绝不凭记忆编造**。片段足够时直接回答;\
          只有需要同一来源的相邻内容时才用 `kb_open_source(source_ref=...)`,不要对 XLSX/\
          DOCX/PPTX 等来源用 `read` 直接读取或用 `bash` 全量展开。与本地资料无关的闲聊/常识\
