@@ -1524,7 +1524,9 @@ mod tests {
     fn every_classify_tool_failure_code_passes_validated_tool_failure_code() {
         use super::super::classify_tool_failure;
         assert_eq!(
-            validated_tool_failure_code(classify_tool_failure("per-turn tool-call budget exhausted")),
+            validated_tool_failure_code(classify_tool_failure(
+                "per-turn tool-call budget exhausted"
+            )),
             Some("tool_call_budget_exhausted")
         );
         assert_eq!(

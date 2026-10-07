@@ -3147,7 +3147,8 @@ impl Pinvou3Bridge {
             content
         } else {
             crate::features::assistant::engine_support::wrap_system_reminder(
-                &reminder_body, &content,
+                &reminder_body,
+                &content,
             )
         };
         let model = self.model();

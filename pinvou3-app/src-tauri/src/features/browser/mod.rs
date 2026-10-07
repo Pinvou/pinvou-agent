@@ -4585,12 +4585,7 @@ impl BrowserManager {
             caller_epoch.wrapper_instance_nonce(),
         ) {
             return Err(join_rollback_error(
-                self.rollback_staged_agent_tab(
-                    app,
-                    browser_session_id,
-                    &tab_token,
-                    &creation_id,
-                ),
+                self.rollback_staged_agent_tab(app, browser_session_id, &tab_token, &creation_id),
                 error,
             ));
         }
@@ -4600,12 +4595,7 @@ impl BrowserManager {
             .authorize_popup_agent_operation(retained)
         {
             return Err(join_rollback_error(
-                self.rollback_staged_agent_tab(
-                    app,
-                    browser_session_id,
-                    &tab_token,
-                    &creation_id,
-                ),
+                self.rollback_staged_agent_tab(app, browser_session_id, &tab_token, &creation_id),
                 "Popup Agent operation holder expired".to_string(),
             ));
         }
@@ -4638,12 +4628,7 @@ impl BrowserManager {
             caller_epoch.wrapper_instance_nonce(),
         ) {
             return Err(join_rollback_error(
-                self.rollback_staged_agent_tab(
-                    app,
-                    browser_session_id,
-                    &tab_token,
-                    &creation_id,
-                ),
+                self.rollback_staged_agent_tab(app, browser_session_id, &tab_token, &creation_id),
                 error,
             ));
         }
@@ -4653,12 +4638,7 @@ impl BrowserManager {
             .authorize_popup_agent_operation(retained)
         {
             return Err(join_rollback_error(
-                self.rollback_staged_agent_tab(
-                    app,
-                    browser_session_id,
-                    &tab_token,
-                    &creation_id,
-                ),
+                self.rollback_staged_agent_tab(app, browser_session_id, &tab_token, &creation_id),
                 "Popup Agent operation holder expired".to_string(),
             ));
         }

@@ -644,14 +644,13 @@ pub(crate) fn prepare_native_user_message_in_dir(
         if a.kind == "image" {
             // 暂存复用现有校验链(basename 白名单/symlink 防逃逸/create_new 防覆盖);
             // 标记路径只来自暂存结果,不接受前端直给路径(设计 §11)。
-            let relative =
-                stage_file_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
-                    .ok_or_else(|| {
-                        format!(
-                            "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
-                            a.basename
-                        )
-                    })?;
+            let relative = stage_file_in_workspace(&a.path, &a.basename, workspace, attachment_dir)
+                .ok_or_else(|| {
+                    format!(
+                        "图片 {} 暂存到 workspace 失败,无法原生发送。请重新选择图片。",
+                        a.basename
+                    )
+                })?;
             let abs = workspace.join(&relative);
             segment.push_str(&format!(
                 "### {} (image, {} bytes)\n",

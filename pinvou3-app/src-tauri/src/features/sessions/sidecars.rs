@@ -193,11 +193,7 @@ where
 /// the durable content (quarantine-then-refuse on corruption), apply `mutate`,
 /// and persist only on a reported change (empty container deletes the file,
 /// pretty JSON via `atomic_write_private`).
-fn mutate_json_file<C, F>(
-    file_name: &str,
-    mutate: F,
-    is_empty: impl Fn(&C) -> bool,
-) -> Result<()>
+fn mutate_json_file<C, F>(file_name: &str, mutate: F, is_empty: impl Fn(&C) -> bool) -> Result<()>
 where
     C: Default + serde::Serialize + serde::de::DeserializeOwned,
     F: FnOnce(&mut C) -> bool,

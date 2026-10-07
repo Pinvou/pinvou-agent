@@ -413,8 +413,8 @@ pub(super) fn npm_global_root() -> Option<PathBuf> {
     let npm = npm_executable()?;
     let mut command = crate::platform::process::external_command(&npm);
     command.args(["prefix", "-g"]);
-    let output = crate::platform::process::output_with_timeout(command, Duration::from_secs(10))
-        .ok()?;
+    let output =
+        crate::platform::process::output_with_timeout(command, Duration::from_secs(10)).ok()?;
     if !output.status.success() {
         return None;
     }

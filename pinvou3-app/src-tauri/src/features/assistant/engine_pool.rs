@@ -460,9 +460,7 @@ pub(crate) fn forward_edit_resend_with_reminder<F>(
     send: impl FnOnce(String) -> F,
 ) -> F {
     send(match merge_aux_zero_tool_reminder(session_id, None) {
-        Some(reminder) => {
-            super::engine_support::wrap_system_reminder(&reminder, &new_message)
-        }
+        Some(reminder) => super::engine_support::wrap_system_reminder(&reminder, &new_message),
         None => new_message,
     })
 }
@@ -9245,12 +9243,8 @@ mod probed_facts_wiring_tests {
             saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
         with_fact_model.base_url = loaded_finalize.base_url.clone();
         let with_fact_bridge = wiring_bridge(with_fact_model.clone());
-        let with_fact_bridge = EnginePool::finalize_runtime_bridge(
-            with_fact_bridge,
-            &with_fact_model,
-            false,
-        )
-        .await;
+        let with_fact_bridge =
+            EnginePool::finalize_runtime_bridge(with_fact_bridge, &with_fact_model, false).await;
         assert_eq!(
             PendingNativeWindow::from_finalized(&with_fact_bridge),
             None,
@@ -9263,12 +9257,8 @@ mod probed_facts_wiring_tests {
             saved_model(ModelPreset::OpenaiCompatible, "my-model", Some("custom"));
         generic_model.base_url = generic.base_url.clone();
         let generic_bridge = wiring_bridge(generic_model.clone());
-        let generic_bridge = EnginePool::finalize_runtime_bridge(
-            generic_bridge,
-            &generic_model,
-            false,
-        )
-        .await;
+        let generic_bridge =
+            EnginePool::finalize_runtime_bridge(generic_bridge, &generic_model, false).await;
         assert_eq!(
             bridge.probed_local_kind,
             Some(LocalServerKind::Ollama),
