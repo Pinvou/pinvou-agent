@@ -365,11 +365,71 @@ assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由�
 // `task add-participant`/`remove-participant` 是另一真实命令组、todo
 // `--participants` flag、`--role-types ...participant` 与 minutes 的
 // `participants` API 字段名均不含 `calendar participant`，不受影响。
-for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
-  for (const line of read(f).split("\n")) {
+// 2026-10-07 第 5 轮复审收紧：历史缺陷的真实形状不是连续写法——危险表的
+// 「`calendar` | `participant delete`」单元格拆分、07-minutes 的
+// 「`calendar event list` + `participant list`」跨反引号拆分、脚本的
+// argv 数组 ['calendar', 'participant', 'add'] 都逃过连续子串匹配（8 处
+// 历史缺陷里本规则原本只能抓到 4 处，两处 PR 内回归恰在其中）。现在把
+// 引号/表格竖线/逗号/括号归一成空白再匹配（覆盖单元格拆分与 argv 形态），
+// 并增补第二形态：participant 后紧跟动词的命令形引用（覆盖跨反引号拆分；
+// todo 的连字符命令 add-participant 与 --participants flag 均不匹配）。
+// .py 脚本一并纳入扫描（连续 grep 与 .md-only 扫描都抓不到 argv 数组）。
+const dwsTexts = files.filter(
+  (f) =>
+    rel(f).includes("dingtalk-skills") &&
+    /\.(md|py)$/i.test(path.basename(f)) &&
+    !path.basename(f).startsWith("NOTICE"),
+);
+const unquoteDws = (line) => line.replace(/[`'"|,[\](){}]/g, " ");
+const DWS_PARTICIPANT_VERB =
+  /\bparticipant\s+(?:list|add|delete|get|set|remove|update|create)\b/;
+const scanDwsParticipant = (text) => {
+  for (const line of text.split("\n")) {
+    const t = unquoteDws(line);
+    if (/calendar\s+participant(?![\w-])/.test(t))
+      return `残留不存在的 calendar participant 命令（应为 calendar attendee + --attendees）: ${line.trim()}`;
+    if (DWS_PARTICIPANT_VERB.test(t))
+      return `残留不存在的 participant 命令形引用（dws 参会人二级命令是 attendee）: ${line.trim()}`;
+  }
+  return null;
+};
+for (const f of dwsTexts) {
+  const violation = scanDwsParticipant(read(f));
+  if (violation) assert.fail(`${rel(f)}: ${violation}`);
+}
+
+// 规则 10 盲点自检：四个曾漏网/曾回归的历史形状必须保持「必失败」，现行
+// 合法形态必须保持「必通过」（全部经由与 pack 扫描同一实现 scanDwsParticipant
+// 判定——归一化被改坏时固定装置必须跟着变红，而不是静默失效）。
+{
+  const dwsOldForms = [
+    // 危险表单元格拆分（SKILL.md 旧形，首轮修复对象）
+    "| `calendar` | `participant delete` | 删除参会人 |",
+    // 跨反引号拆分（07-minutes 旧形，第二轮 MAJOR）
+    "| 分钟纪要摘要 | `calendar event list` + `participant list` |",
+    // 脚本 argv 数组（calendar_schedule_meeting.py 旧形，第二轮 BLOCKER）
+    "run_dws(['calendar', 'participant', 'add', '--event', ev, '--users', uid])",
+    // 连续写法（03-meeting/minutes/10-minutes/lite-recipes 旧形）
+    "```bash\ndws calendar participant add --event ev1 --users u1\n```",
+  ];
+  for (const text of dwsOldForms) {
     assert.ok(
-      !/calendar\s+participant/.test(line),
-      `${rel(f)}: 残留不存在的 calendar participant 命令（应为 calendar attendee + --attendees）: ${line.trim()}`,
+      scanDwsParticipant(`${text}\n`) !== null,
+      `dws 旧形必须判违例: ${text.split("\n")[0]}`,
+    );
+  }
+  const dwsOkForms = [
+    "`dws calendar attendee add --event ev1 --attendees u1,u2`",
+    "`dws todo task add-participant --event ev1 --participants u1`",
+    "返回的 `participants` 字段为空时提示无参会人",
+    "`--role-types creator,executor,participant` 枚举参会角色",
+    "所有 calendar participants 会收到日程变更通知",
+  ];
+  for (const text of dwsOkForms) {
+    assert.equal(
+      scanDwsParticipant(`${text}\n`),
+      null,
+      `dws 合法形态不得误伤: ${text}`,
     );
   }
 }

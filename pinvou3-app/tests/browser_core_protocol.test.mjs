@@ -128,6 +128,39 @@ test('work instructions define a durable and verified loopback preview workflow'
   assert.match(instructions, /private-network, or localhost addresses/);
 });
 
+test('shared instructions keep the deferred-tool doctrine, credential red line, and real settings path', () => {
+  const shared = readFileSync(
+    new URL('../src-tauri/resources/common/bundle/instructions-shared.md', import.meta.url),
+    'utf8',
+  );
+
+  // 2026-10-07 audit: the old absolutist rule ("absent from the list = absent")
+  // contradicted the deferred-tool carve-outs taught by every other layer. The
+  // base rule must keep the tool_search activation step (with the mcp_boot
+  // connecting clause) so a literal model still tries activation before
+  // concluding a deferred tool does not exist. Nothing pins this file's other
+  // layers, so this line would otherwise silently regress.
+  assert.match(
+    shared,
+    /先 `tool_search` 激活——`tool_search` 也找不到[，,]才是真的没有/,
+  );
+  assert.match(shared, /搜索结果带 `mcp_boot` connecting/);
+
+  // The per-turn super-permission reminders realigned their credential list to
+  // this static red line (added `.env` on the reminder side, `/etc/sudoers` on
+  // the doctrine side); the two lists must not drift apart again.
+  const redLine = shared.split('\n').find((l) => l.includes('密钥凭证禁读禁写'));
+  assert.ok(redLine, 'shared instructions: credential red line missing');
+  for (const token of ['~/.ssh', 'id_rsa', 'credentials', '.env', 'token', '/etc/shadow', '/etc/sudoers']) {
+    assert.ok(redLine.includes(token), `credential red line is missing ${token}: ${redLine?.trim()}`);
+  }
+
+  // The old 【设置 → 系统权限】 path does not exist anywhere in the UI; the
+  // super-permission section lives at 设置 → 权限与环境 → 高级执行权限.
+  assert.match(shared, /【设置 → 权限与环境 → 高级执行权限】/);
+  assert.doesNotMatch(shared, /【设置 ?→ ?系统权限/);
+});
+
 test('page runtime exposes DOM-only capabilities and no host bridge', () => {
   const source = readFileSync(
     new URL('../src-tauri/resources/common/bundle/mcp-servers/browser-core-runtime.js', import.meta.url),

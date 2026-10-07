@@ -690,4 +690,6 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 `pinvou3-app/tests/connector_skills_contract.test.js` 规则 5 收紧:含
 `--scope` 的 `auth login` 行必须同时含 `--no-wait`,或点名流程载体
 (lark-shared 按需授权流程;prompt/hint/提示/surfaces 等转述词不再单独豁免,
-可描述性按剥锚后的纯文本判定),表格行不再豁免,围栏内命令行同样扫描。
+可描述性按剥锚后的纯文本判定),表格行不再豁免,围栏内命令行同样扫描
+(围栏内无载体名豁免:必须内联 `--no-wait`,指向 lark-shared 的描述句
+不能替围栏里的可执行行解围)。
