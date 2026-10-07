@@ -511,6 +511,18 @@ impl KnowledgeService {
                 if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
                     return previous;
                 }
+                // Round-43 review: a frozen running row is provably
+                // ownerless (its heartbeat is older than 2× the CLI stall
+                // bound), but leaving it in `running` while a new job starts
+                // makes the DEAD row the phantom "latest" import —
+                // `latest_state` ranks running above every other state, so
+                // the progress surface would report the dead job forever and
+                // every CLI writer on the store would be refused until an
+                // explicit cancel or an app restart. Collapse it to
+                // `interrupted` (tier 1) before creating the new job; a
+                // failed transition must not wedge the start (the degrade's
+                // whole premise is to un-pin the button), so it only notes.
+                interrupt_frozen_foreign_row(&self.imports, previous.job_id.as_deref());
             }
         }
         let job_id = match self.imports.create(collection_id, &roots) {
@@ -925,9 +937,31 @@ fn refuse_fresh_foreign_running_import(
             if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
                 return Err("已有知识集导入任务正在运行".into());
             }
+            // Round-43 review: same phantom-latest hazard as start_index —
+            // allowing a lane past a frozen row leaves the dead `running`
+            // row ranked above every real job. Collapse it before the
+            // caller proceeds.
+            interrupt_frozen_foreign_row(imports, previous.job_id.as_deref());
         }
     }
     Ok(())
+}
+
+/// Collapse a provably-ownerless frozen `running` row to `interrupted` so it
+/// stops outranking live jobs in [`ImportJobStore::latest_state`]'s ordering
+/// (round-43 review). Failure only notes: every caller is on a degrade path
+/// whose premise is to un-pin the lane, not to trade a phantom refusal for a
+/// real one.
+fn interrupt_frozen_foreign_row(imports: &import_jobs::ImportJobStore, job_id: Option<&str>) {
+    let Some(job_id) = job_id else {
+        return;
+    };
+    if !imports.interrupt(job_id) {
+        eprintln!(
+            "[pinvou3-app] stale import job {job_id} could not be interrupted before the new \
+             start; it stays in place until an explicit cancel"
+        );
+    }
 }
 
 /// Freshness bound for the job-row heartbeat in [`KnowledgeService::start_index`]:
@@ -2090,11 +2124,71 @@ mod tests {
         assert!(refuse_fresh_foreign_running_import(&jobs, Some(&foreign)).is_ok());
 
         // A crashed owner's frozen row degrades to allow (recovery paths
-        // stay reachable).
+        // stay reachable) — and the degrade now COLLAPSES the zombie:
+        // a dead `running` row outranks every real job in `latest_state`'s
+        // ordering, so leaving it in place would make it the phantom
+        // "latest" import that blocks every CLI writer (round-43 review).
         jobs.test_freeze_updated_at(&foreign, 1000);
         assert!(
             refuse_fresh_foreign_running_import(&jobs, Some("other-job")).is_ok(),
             "a frozen running row must not pin resume/retry forever"
         );
+        let collapsed = jobs.state(&foreign).unwrap();
+        assert!(
+            !collapsed.running,
+            "the frozen zombie must be collapsed to interrupted, not left as the phantom latest"
+        );
+        assert!(collapsed.resumable);
+    }
+
+    /// Round-43 review wiring pin: the resume/retry ENTRY POINTS must run
+    /// the fresh-foreign guard (`refuse_fresh_foreign_running_import`) —
+    /// deleting the guard calls would leave the helper test green while two
+    /// embedders launch over one store. In a test process
+    /// `active_import` is empty, so the only way these entry points can
+    /// answer with the guard's running-import refusal is through the guard.
+    #[test]
+    fn resume_index_and_retry_item_refusals_come_from_the_fresh_foreign_guard() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("guard-wiring", None, None)
+            .expect("collection");
+
+        // A live foreign importer: a preparing row promoted to running.
+        let foreign = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp")])
+            .expect("job");
+        svc.imports
+            .prepare_items(&foreign, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare one item");
+        assert!(svc.imports.state(&foreign).unwrap().running);
+
+        // The requested job for the entry points: a resumable interrupted
+        // job, so the refusal can only come from the foreign-running guard.
+        let victim = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/b.txt")])
+            .expect("victim job");
+        svc.imports
+            .prepare_items(&victim, &[PathBuf::from("/tmp/b.txt")])
+            .expect("prepare victim item");
+        let item = svc
+            .imports
+            .claim_next(&victim)
+            .expect("claim")
+            .expect("one item");
+        svc.imports.interrupt(&victim);
+        assert!(svc.imports.state(&victim).unwrap().resumable);
+
+        let err = svc
+            .resume_index(victim.clone())
+            .expect_err("a fresh foreign running import must refuse a resume");
+        assert!(err.contains("正在运行"), "{err}");
+        let err = svc
+            .retry_index_item(victim, item.id)
+            .expect_err("a fresh foreign running import must refuse a retry");
+        assert!(err.contains("正在运行"), "{err}");
     }
 }

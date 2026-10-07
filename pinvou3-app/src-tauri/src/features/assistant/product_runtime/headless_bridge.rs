@@ -1503,7 +1503,9 @@ where
 /// panics if a runtime was already initialized in this process, so this
 /// helper must stay at-most-once per process and never run beside another
 /// host lane.
-/// Process latch for [`run_bare_host`]'s at-most-once precondition.
+/// Process latch for the at-most-once precondition shared by BOTH host
+/// lanes — [`run_bare_host`] and [`run_windowless_host`] (round-43 review
+/// doc fix: the comment used to name only the bare lane).
 static BARE_HOST_TAKEN: AtomicBool = AtomicBool::new(false);
 
 pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
