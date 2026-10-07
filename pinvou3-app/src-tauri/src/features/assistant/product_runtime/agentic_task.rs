@@ -1859,8 +1859,6 @@ async fn run_turn(
     }
 }
 
-/// Enrich the prompt with the request's attachments using the GUI attachment
-/// pipeline: each file is staged into the session ledger root's
 /// One staging batch's output: the ingested attachments for the prompt, the
 /// consumed sources, and the staged workspace copies the failure arms sweep.
 type StagedBatch = (

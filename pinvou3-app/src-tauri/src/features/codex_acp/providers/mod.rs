@@ -1067,7 +1067,7 @@ impl ProviderManager {
                 None
             }
         };
-        let record = ProviderRecord {
+        let mut record = ProviderRecord {
             id,
             name,
             base_url,
@@ -1081,6 +1081,16 @@ impl ProviderManager {
                 .map(|record| record.created_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         };
+        // Round-44 review: the KeepExisting arms decide from the pre-lock
+        // keychain read and the pre-lock record clone (the credential work
+        // runs before the section lock because it can park on a keychain
+        // prompt). A peer `--delete-key` landing in that window removes the
+        // keychain entry AND clears the record's credential; re-derive the
+        // carried reference from the fresh record under the held lock so
+        // the upsert cannot resurrect a `has_credential: true` whose
+        // keychain entry is already gone.
+        let keep_existing_carry = matches!(api_key_action, CredentialEditAction::KeepExisting)
+            && written_credential.is_none();
         // 编辑**生效中**的 Provider 必须同步重写 CLI 配置，否则 base_url/模型
         // 不生效、生效区展示陈旧（评审中危项）。与 switch 同锁防交错；current
         // 判定必须移入锁内（复审 N1）：否则「锁外判定 current==A → 并发 switch
@@ -1100,12 +1110,12 @@ impl ProviderManager {
         // from the stale `existing` clone while the real credential was
         // already gone. Re-validate under the held lock: updating a record a
         // peer removed fails honestly instead.
-        if provider_id.is_some()
-            && self
-                .store
-                .record_fresh_locked(agent, record.id.as_str())
-                .is_none()
-        {
+        let fresh_record = if provider_id.is_some() {
+            self.store.record_fresh_locked(agent, record.id.as_str())
+        } else {
+            None
+        };
+        if provider_id.is_some() && fresh_record.is_none() {
             // Take back exactly the key this call wrote (best-effort: the
             // primary job of this path is the honest bail). The DELETE
             // action already removed its key; KeepExisting without a write
@@ -1114,6 +1124,9 @@ impl ProviderManager {
                 self.credentials.delete(wrote).ok();
             }
             anyhow::bail!("Provider 不存在: {}", record.id);
+        }
+        if keep_existing_carry {
+            record.credential = fresh_record.and_then(|fresh| fresh.credential);
         }
         if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
             let key = self.api_key(agent, &record.id)?;
