@@ -15,7 +15,7 @@ metadata:
 
 > ⚠️ 命令与 flag 以当前 dws 二进制为准:`dws <cmd> --help` 是 Cobra flags 事实源,Agent 选命令/参数约束/安全确认以 leaf Schema(`--compact`)为准,与本文档冲突时以二者为准。
 
-> 🔑 首次使用先认证:命令报 `AUTH_TOKEN_EXPIRED` / 未登录时,执行 `dws auth login` 完成登录(流程见 [global-reference.md](./references/global-reference.md) 认证章节),不要因未登录直接断定技能不可用。
+> 🔑 首次使用先认证:命令报 `AUTH_TOKEN_EXPIRED` / 未登录时,不要在会话内直接跑 `dws auth login`——它是阻塞式扫码设备流,会一直等待授权直至超时,用户看不到扫码链接。把命令交给用户在其终端自行执行(流程见 [global-reference.md](./references/global-reference.md) 认证章节),完成后再继续;不要因未登录直接断定技能不可用。
 
 ## 严格禁止 (NEVER DO)
 - 不要使用 dws 命令以外的方式操作钉钉业务数据（禁止 curl、HTTP API、浏览器）。**例外**：① aitable 导入/导出/附件上传链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 申请的上传凭证、`export data` 返回的下载地址、`attachment upload` 返回的上传地址）允许用 curl 直传/直下（见 [aitable-export-import.md](./references/products/aitable/aitable-export-import.md) 与 [aitable-attachment.md](./references/products/aitable/aitable-attachment.md)）；② 按 [openapi-explorer.md](./references/products/openapi-explorer.md) 读取官方 `open.dingtalk.com/llms.txt` 文档并生成受限的 `dws api` 调用。除此之外禁止

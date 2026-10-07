@@ -484,8 +484,9 @@ mod tests {
     use super::*;
 
     /// `--version` 输出 → 三段版本号。lark-cli 的输出在程序名与版本号之间夹
-    /// 字面量 `version`(`lark-cli version 1.0.65`),按「首个可解析 token」取值;
-    /// 版本号之后的构建信息尾巴不参与解析。
+    /// 字面量 `version`(`lark-cli version 1.0.65`),按 `version` 标记锚定取值
+    /// (按「首个可解析 token」会把输出前部的日期噪声当成版本号);版本号之后
+    /// 的构建信息尾巴不参与解析。
     #[test]
     fn parses_lark_versions() {
         assert_eq!(

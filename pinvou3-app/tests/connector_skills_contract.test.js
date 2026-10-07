@@ -188,8 +188,8 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
   }
 }
 
-// 规则 5 盲点自检：四个曾漏网的历史形态必须保持「必失败」，两种现行合法
-// 指针形态必须保持「必通过」（防下次收紧/放松时静默回退）。
+// 规则 5 盲点自检：五个曾漏网的历史形态必须保持「必失败」，现行合法
+// 形态必须保持「必通过」（防下次收紧/放松时静默回退）。
 {
   const fencedOldForms = [
     // 围栏内可执行行（message-enrichment 旧形）
@@ -202,6 +202,8 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
     "| 99991679 | `hint: auth login --scope \"drive:drive\"` |",
     // 裸 hint 转述（feed-groups 旧形）
     "If a required scope is missing, the CLI surfaces a hint such as `lark-cli auth login --scope \"im:feed_group_v1:write\"`.",
+    // 流程载体名只落在代码段里（剥锚后可描述性判定必须仍然生效）
+    "重新执行 `lark-cli auth login --scope \"docs:wiki\"`（详见 `lark-shared`）",
   ];
   for (const line of fencedOldForms) {
     assert.ok(

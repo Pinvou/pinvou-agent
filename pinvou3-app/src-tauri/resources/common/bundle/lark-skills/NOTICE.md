@@ -688,5 +688,6 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 
 均为本地修改,下次 sync 需重放。配套把
 `pinvou3-app/tests/connector_skills_contract.test.js` 规则 5 收紧:含
-`--scope` 的 `auth login` 行必须同时含 `--no-wait`,或属于明确的描述性/
-指针语境(prompt/hint/提示/按需授权流程/lark-shared),表格行不再豁免。
+`--scope` 的 `auth login` 行必须同时含 `--no-wait`,或点名流程载体
+(lark-shared 按需授权流程;prompt/hint/提示/surfaces 等转述词不再单独豁免,
+可描述性按剥锚后的纯文本判定),表格行不再豁免,围栏内命令行同样扫描。

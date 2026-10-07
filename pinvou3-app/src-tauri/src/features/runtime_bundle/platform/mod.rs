@@ -148,13 +148,15 @@ pub(crate) use crate::platform::connector_skills::{
 ///       at startup (otherwise the refresh waits for the post-first-frame
 ///       refresh_connector_auth_gates backfill).
 /// 0.33: model-facing text audit fixes across the bundle (no upstream sync).
-/// Skill trees: dws danger-table row, four reference recipes, and the
+/// Skill trees: dws danger-table row, five reference files, and the
 /// calendar_schedule_meeting.py script all stopped citing the nonexistent
 /// `calendar participant *` (`attendee` + `--attendees` is the real
 /// surface), stale P0/P1 attendance marker dropped, first-use auth pointer
 /// added (NOTICE-dingtalk.md); wecomcli-email send/reply body files unified
 /// to tmp/mail/ so intermediate mail bodies stop landing in the
-/// artifact-panel root (NOTICE-wecom.md); 14 lark sites rewritten from
+/// artifact-panel root (NOTICE-wecom.md); tmeet example `--meeting-id`
+/// placeholders moved from the 9-digit meeting-code form to the 19-digit
+/// meeting-id form, 54 sites (NOTICE-tmeet.md); 14 lark sites rewritten from
 /// blocking `auth login --scope` to the lark-shared `--no-wait --json`
 /// split-flow form (lark-skills/NOTICE.md; connector contract rule 5
 /// tightened to match). Hooks:
@@ -208,7 +210,7 @@ const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 /// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. Chinese
 /// is used to match the all-Chinese instruction file this line embeds into (the
 /// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
-const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知可在设置中开启记忆(该功能仅简体中文界面提供),不要声称已保存。\n\n";
+const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、可在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
 
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
 /// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
@@ -914,7 +916,7 @@ mod tests {
         assert!(!disabled.contains("已记下"));
         assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
         assert!(disabled.contains(
-            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知可在设置中开启记忆(该功能仅简体中文界面提供),不要声称已保存。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
+            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、可在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
         ));
     }
 
@@ -1486,6 +1488,17 @@ mod tests {
             workflow_snake.status.code(),
             Some(2),
             "inline JS 的 snake_case max_depth 覆盖同样必须拦截: {workflow_snake:?}"
+        );
+
+        // Prose that merely mentions max_depth next to a quote or paren is not
+        // an override: the bare-snake-case class must stay identical across the
+        // .sh and .ps1 guards (a looser Windows class used to false-deny these).
+        // Each CI leg runs its native script, so this pins both platforms.
+        let workflow_prose =
+            run_depth_guard(&bundle, "workflow", r#"{"note":"max_depth: 2 here"}"#);
+        assert!(
+            workflow_prose.status.success(),
+            "正文里提及 max_depth 不构成覆盖,不得误拦: {workflow_prose:?}"
         );
 
         let opaque_workflow = run_depth_guard(

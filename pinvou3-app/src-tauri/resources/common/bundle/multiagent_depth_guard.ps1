@@ -1,7 +1,8 @@
 # The main conversation remains the overall coordinator. The inherited
 # EngineConfig(max_spawn_depth = 2) caps children at two levels. Since
 # foundation #5253 a per-call max_depth can only NARROW the inherited cap
-# (the engine clamps to min(inherited, parent_depth + requested)), so a
+# (the engine clamps to min(inherited, child_depth + requested), where
+# child_depth is the spawning child's own depth), so a
 # positive override can no longer widen the ceiling; this hook still keeps
 # the session cap authoritative in multi-agent sessions (the bundle-0.20
 # decision: positive overrides are intercepted) and must state that truth.
@@ -41,7 +42,7 @@ $hasPositiveDepth = switch ($toolName) {
         # or snake_case (max_depth — the TaskOptions serde alias).
         [regex]::IsMatch(
             $toolArgs,
-            '(?<!\\)("max_depth"\s*:|(?<![A-Za-z_])max_depth\s*:|maxDepth\s*:)\s*[1-9][0-9]*'
+            '(?<!\\)("max_depth"\s*:|(?<=[{,\s])max_depth\s*:|maxDepth\s*:)\s*[1-9][0-9]*'
         )
         break
     }
