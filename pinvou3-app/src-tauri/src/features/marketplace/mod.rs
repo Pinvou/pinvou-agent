@@ -8150,6 +8150,88 @@ mod tests {
         });
     }
 
+    /// Windows 内置解释器使用隔离环境，普通商店重装不能把上传 manifest 的任意
+    /// `pip_dependencies` 当作可信下载指令。首次上传仍只告警并完成供给；卸载后从
+    /// 卡片普通重装时必须明确拒绝，避免再次产生“安装成功但 import 必然失败”。
+    /// 回归重点：拒绝发生在登记写入之前，installed.json 与 mcp.json 两个登记面
+    /// 都不得留下幽灵条目。双臂均入 CI：Linux rust-test 跑 warn-skip 臂（重装
+    /// 成功且两个登记面都必须重建，幽灵断言的镜像面），windows-rust-test
+    /// regression leg 经
+    /// `features::marketplace::tests::reinstall_upload_with_unlocked_pip_dependencies_contract`
+    /// 过滤器跑拒绝臂（过滤器有 0-match 守卫，改名不会静默空跑）。
+    #[test]
+    fn reinstall_upload_with_unlocked_pip_dependencies_contract() {
+        with_temp_home(|| {
+            write_tool_manifest(
+                "up-pip-reinstall",
+                r#"{
+                    "id":"up-pip-reinstall","name":"Up","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"],
+                    "pip_dependencies":["pinvou3-nonexistent-pkg-xyz"]
+                }"#,
+            );
+            let mgr = MarketplaceManager::new();
+            mgr.install_upload(
+                "up-pip-reinstall",
+                store::BundleSource::Upload("up-pip-reinstall.zip".to_string()),
+            )
+            .unwrap();
+            mgr.uninstall("up-pip-reinstall").unwrap();
+            // Upload 卸载 = 整包进回收站（回收站契约），重装前先取回目录；
+            // 登记由下方 install 重建。
+            recycle_bin::RecycleBin::new()
+                .take_back("up-pip-reinstall")
+                .unwrap();
+            // 全局 pip stub 的失败安全阀：若本测试在 set 与 take 之间断言失败，
+            // Drop 会把 stub 清零，避免陈旧的合成结果泄漏给同一测试二进制里
+            // 后续真正会调 pip 的测试（CI 单线程串行，泄漏会表现为误导性连锁红）。
+            struct ResetPipStubOnDrop;
+            impl Drop for ResetPipStubOnDrop {
+                fn drop(&mut self) {
+                    connectors::set_next_pip_install_result_for_test(0);
+                }
+            }
+            let _reset_pip_stub = ResetPipStubOnDrop;
+            // 保险：万一 fail-closed 门禁回归，拦截真实 pip 子进程（不触网）。
+            connectors::set_next_pip_install_result_for_test(1);
+
+            let reinstall = mgr.install("up-pip-reinstall", &std::collections::HashMap::new());
+            // Runtime check (capabilities::is_windows)：与
+            // untrusted_upload_dependencies_* 同款，维持架构守卫的
+            // rust_target_cfg_outside_adapter 零基线。
+            if crate::platform::capabilities::is_windows() {
+                let error = reinstall.unwrap_err();
+                assert!(error.contains("未经过 Windows 可验证依赖锁"), "{error}");
+                assert!(
+                    !mgr.installed_ids()
+                        .contains(&"up-pip-reinstall".to_string()),
+                    "拒绝重装不得在 installed.json 留下幽灵注册"
+                );
+                assert!(
+                    read_mcp_json()["servers"].get("up-pip-reinstall").is_none(),
+                    "拒绝重装不得在 mcp.json 留下幽灵 server 条目"
+                );
+            } else {
+                // warn-skip 臂：重装成功，且登记必须被重建。
+                reinstall.unwrap();
+                assert!(
+                    mgr.installed_ids()
+                        .contains(&"up-pip-reinstall".to_string()),
+                    "warn-skip 重装必须重建 installed.json 登记"
+                );
+                assert!(
+                    read_mcp_json()["servers"].get("up-pip-reinstall").is_some(),
+                    "warn-skip 重装必须重建 mcp.json server 条目"
+                );
+            }
+            assert_eq!(
+                connectors::take_pending_pip_install_result_for_test(),
+                1,
+                "untrusted pip declaration must never reach pip"
+            );
+        });
+    }
+
     /// 回归（六轮评审 R1）：手写自定义 MCP（migrate_custom_mcp_layout 从旧布局
     /// 强迁、无 plugin.json、install 镜像登记为 Preset）卸载必须保留
     /// `bundles/<id>/` 目录 —— 内嵌目录无对应 spec，删除即丢失用户唯一副本。
