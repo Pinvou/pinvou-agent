@@ -289,7 +289,7 @@ test('a steer_dropped inside the zap withdraw window recovers instead of going s
   const withdrawPending = new Promise((resolve) => { releaseWithdraw = resolve; });
   const invokeCalls = [];
   const { state, notices, api } = makeHarness({
-    invoke: (name, args) => {
+    invoke: (name) => {
       invokeCalls.push(name);
       if (name === 'withdraw_steer') return withdrawPending;
       return Promise.resolve({});
@@ -299,23 +299,34 @@ test('a steer_dropped inside the zap withdraw window recovers instead of going s
   state.queued = [item];
 
   const run = api.interruptAndSendQueued('A', 'q1');
-  while (!invokeCalls.includes('withdraw_steer')) await new Promise((r) => setTimeout(r, 1));
+  // Bounded wait: a regression that prevents the withdraw invoke must fail
+  // fast instead of hanging the whole suite (round-10 must-fix 3).
+  for (let waited = 0; waited < 5000 && !invokeCalls.includes('withdraw_steer'); waited += 10) {
+    await new Promise((r) => { setTimeout(r, 10); });
+  }
+  assert.ok(invokeCalls.includes('withdraw_steer'), 'the withdraw invoke must have started');
   // The dropped event lands mid-withdraw: the claim must route it to the
   // zap recovery (a refs-only message restores nothing → the lost variant).
-  api.settleSteerDropped('A', 'st-9');
-  releaseWithdraw('not_pending');
-  const verdict = await run;
+  try {
+    api.settleSteerDropped('A', 'st-9');
+    releaseWithdraw('not_pending');
+    const verdict = await run;
 
-  assert.equal(verdict, true, 'the zap itself reports handled (skip-resend)');
-  assert.deepEqual(state.queued, [], 'the proven-dropped chip must not be re-queued');
-  assert.equal(state.composerDraft, '', 'a refs-only message restores nothing');
-  assert.ok(notices().includes('⚠️ steerFailedLost'), `the lost variant must fire: ${JSON.stringify(notices())}`);
-  assert.equal(
-    notices().filter((t) => t.includes('steerFailedLost')).length, 1,
-    'exactly one recovery notice — no duplicate from the watchdog expiry',
-  );
-  // The reconcile watchdog was armed by settleZapSkipResend; its expiry is
-  // silent now (the registration was consumed by the recovery). Clear it so
-  // the test process does not wait out the 60s window.
-  api.clearOutcomeReconcileWatchdog('A', 'st-9');
+    assert.equal(verdict, true, 'the zap itself reports handled (skip-resend)');
+    assert.deepEqual(state.queued, [], 'the proven-dropped chip must not be re-queued');
+    assert.equal(state.composerDraft, '', 'a refs-only message restores nothing');
+    const noticeTexts = notices();
+    assert.ok(
+      noticeTexts.includes('⚠️ steerFailedLost'),
+      `the lost variant must fire: ${JSON.stringify(noticeTexts)}`,
+    );
+    assert.equal(
+      noticeTexts.filter((t) => t.includes('steerFailedLost')).length, 1,
+      'exactly one recovery notice — no duplicate from the watchdog expiry',
+    );
+  } finally {
+    // A failed assertion must not leave a real 60s watchdog timer stretching
+    // the red run.
+    api.clearOutcomeReconcileWatchdog('A', 'st-9');
+  }
 });

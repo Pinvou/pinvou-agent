@@ -14,26 +14,6 @@ import vm from 'node:vm';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.join(here, '..');
 
-function loadChatFeature(root) {
-  const context = vm.createContext({
-    window: root,
-    globalThis: root,
-    setTimeout,
-    clearTimeout,
-    console,
-  });
-  vm.runInContext(
-    fs.readFileSync(path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
-    context,
-    { filename: 'src/shared/bridge-shared-helpers.js' },
-  );
-  vm.runInContext(
-    fs.readFileSync(path.join(appRoot, 'src', 'platform', 'tauri', 'bridge', 'chat.js'), 'utf8'),
-    context,
-    { filename: 'src/platform/tauri/bridge/chat.js' },
-  );
-  return root.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
-}
 
 test('a steer_dropped inside the zap withdraw window recovers instead of going silent', async () => {
   const state = {
