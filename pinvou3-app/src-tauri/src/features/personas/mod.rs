@@ -876,7 +876,11 @@ mod tests {
         // 确保 r##".."## 原始串没被 "#色 提前终止 —— body 完整。
         let c = get("pinvou-card-creator").unwrap();
         assert!(c.body.contains("硬规则"));
-        assert!(c.body.ends_with("改。\n") || c.body.contains("存入卡牌池"));
+        assert!(c.body.ends_with("改。\n"));
+        // 正文必须引用前端真实按钮文案(i18n cpDraftView「查看 / 存入」);
+        // 「存入卡牌池」只是保存后的 toast,不能作为按钮教学。
+        assert!(c.body.contains("「查看 / 存入」"));
+        assert!(!c.body.contains("「存入卡牌池」按钮"));
     }
 
     #[test]

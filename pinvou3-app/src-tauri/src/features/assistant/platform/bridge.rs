@@ -575,8 +575,9 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
-            // The user memory section is filled or dropped with the memory toggle (off by
-            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // The user memory placeholder is filled with the section or the off-notice
+            // per the memory toggle (off by default plus force-off for en/ja, see the
+            // memory_section comment). Replaced
             // at the session render layer rather than inside the OnceLock instructions_md,
             // so a setting change takes effect on new sessions; old session prompts are
             // left unchanged.

@@ -202,10 +202,10 @@ const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 /// force-disabled for non-Simplified-Chinese users), so the default session has
 /// no 「用户记忆」 section at all. Without this line the model's default behavior
 /// on 「记住」 is still a confirmation ("sure, noted") while nothing persists —
-/// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. English
-/// is used deliberately: it is the engine's prompt-law language and this line
-/// ships to every locale, including locales where the memory feature is hidden.
-const MEMORY_OFF_NOTICE_MD: &str = "- Long-term memory is OFF in this session: if the user asks you to remember something, tell them it can be enabled in Settings (memory is only available for Simplified Chinese) instead of claiming you saved it.\n\n";
+/// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. Chinese
+/// is used to match the all-Chinese instruction file this line embeds into (the
+/// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
+const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知可在设置中开启记忆(该功能仅简体中文界面提供),不要声称已保存。\n\n";
 
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
 /// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
@@ -911,7 +911,7 @@ mod tests {
         assert!(!disabled.contains("已记下"));
         assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
         assert!(disabled.contains(
-            "语气平实,少感叹号与最高级。\n\n- Long-term memory is OFF in this session: if the user asks you to remember something, tell them it can be enabled in Settings (memory is only available for Simplified Chinese) instead of claiming you saved it.\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
+            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知可在设置中开启记忆(该功能仅简体中文界面提供),不要声称已保存。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
         ));
     }
 
