@@ -7,12 +7,14 @@
 //! before it creates a join request.
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+
+use crate::net_policy::{is_rfc1918, is_tailscale_ipv6, is_ula};
 
 pub const SERVICE_TYPE: &str = "_pinvou-kb._tcp.local.";
 
@@ -20,8 +22,6 @@ pub const SERVICE_TYPE: &str = "_pinvou-kb._tcp.local.";
 #[serde(rename_all = "camelCase")]
 pub struct LanDiscoveryCandidate {
     pub endpoint: String,
-    /// Display-only metadata from mDNS. It is not an authenticated server name.
-    pub advertised_name: String,
 }
 
 /// Keeps the responder alive for the lifetime of the server process.
@@ -95,13 +95,6 @@ pub fn discover_lan_candidates(timeout: Duration) -> Result<Vec<LanDiscoveryCand
         {
             continue;
         }
-        let advertised_name = service
-            .get_property_val_str("name")
-            .unwrap_or("PINVOU Knowledge")
-            .trim()
-            .chars()
-            .take(120)
-            .collect::<String>();
         for address in service
             .get_addresses()
             .iter()
@@ -114,10 +107,7 @@ pub fn discover_lan_candidates(timeout: Duration) -> Result<Vec<LanDiscoveryCand
             };
             found
                 .entry(endpoint.clone())
-                .or_insert(LanDiscoveryCandidate {
-                    endpoint,
-                    advertised_name: advertised_name.clone(),
-                });
+                .or_insert(LanDiscoveryCandidate { endpoint });
         }
     }
     let _ = daemon.stop_browse(SERVICE_TYPE);
@@ -129,22 +119,9 @@ pub fn is_discoverable_lan_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => is_rfc1918(address),
         IpAddr::V6(address) => {
-            let first = address.segments()[0];
-            !address.is_loopback() && (first & 0xfe00) == 0xfc00 && !is_tailscale_ipv6(address)
+            !address.is_loopback() && is_ula(address) && !is_tailscale_ipv6(address)
         }
     }
-}
-
-fn is_rfc1918(address: Ipv4Addr) -> bool {
-    let octets = address.octets();
-    octets[0] == 10
-        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-        || (octets[0] == 192 && octets[1] == 168)
-}
-
-fn is_tailscale_ipv6(address: std::net::Ipv6Addr) -> bool {
-    let segments = address.segments();
-    segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
 }
 
 #[cfg(test)]

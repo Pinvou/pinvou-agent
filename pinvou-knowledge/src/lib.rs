@@ -4,7 +4,11 @@
 //! 服务端通过 [`KnowledgeService`] 持有源文档、索引与授权状态。
 
 use std::fs::{File, OpenOptions, TryLockError};
+use std::io::Read;
 use std::path::Path;
+
+use base64::Engine;
+use sha2::Digest;
 
 #[cfg(feature = "discovery")]
 pub mod discovery;
@@ -12,6 +16,7 @@ pub mod embedding;
 pub mod model;
 #[cfg(feature = "client")]
 pub mod model_download;
+mod net_policy;
 #[cfg(feature = "server")]
 pub mod parser;
 #[cfg(feature = "server")]
@@ -40,6 +45,39 @@ pub const EXPECTED_SERVER_ID_HEADER: &str = "x-pinvou-expected-server-id";
 pub(crate) const MAX_VECTOR_DIMENSIONS: usize = 4096;
 #[cfg(feature = "server")]
 pub(crate) const MAX_VECTOR_BLOB_BYTES: usize = MAX_VECTOR_DIMENSIONS * std::mem::size_of::<f32>();
+
+/// 客户端与服务器共用的随机凭据生成：加密安全随机字节经 URL-safe Base64
+/// （无填充）编码。两侧 feature 门不同，因此放在无门的 crate 根。
+pub(crate) fn random_secret(bytes: usize) -> String {
+    use rand::Rng;
+    let mut value = vec![0_u8; bytes];
+    rand::rng().fill_bytes(&mut value);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
+}
+
+/// 小写十六进制 SHA-256 摘要，用于设备令牌、加入凭据等哈希比对。
+pub(crate) fn sha256_hex(value: &[u8]) -> String {
+    sha2::Sha256::digest(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// 以固定大小缓冲流式计算已打开文件的 SHA-256 十六进制摘要，供备份清单与
+/// 模型下载校验共用。失败时返回原始 IO 错误，由调用方决定错误文案。
+pub(crate) fn hash_file_sha256(file: &mut File, buffer_size: usize) -> std::io::Result<String> {
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0_u8; buffer_size];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
 
 #[cfg(feature = "server")]
 pub(crate) fn managed_relative_path(value: &str) -> Option<&Path> {

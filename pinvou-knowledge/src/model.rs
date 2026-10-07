@@ -30,13 +30,11 @@ pub struct ServerInfo {
     pub protocol_version: u32,
     #[serde(default)]
     pub tls_ca: String,
-    pub initialized: bool,
     pub ready: bool,
     /// 模型文件是否已在磁盘上。懒装载语义下 `ready` 只反映「已进内存」,
     /// 挂载方据此字段判断可用性(首次检索会按需装载)。旧服务器无此字段。
     #[serde(default)]
     pub model_present: bool,
-    pub model: String,
 }
 
 fn default_protocol_version() -> u32 {
@@ -108,7 +106,6 @@ pub struct JoinRequestRecord {
     pub device_id: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
-    pub resolved_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,7 +139,6 @@ pub struct Collection {
     pub status: String,
     pub doc_count: i64,
     pub chunk_count: i64,
-    pub total_bytes: i64,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
@@ -159,8 +155,6 @@ pub struct Document {
     pub sha256: String,
     pub status: String,
     pub n_chunks: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
     pub deleted_at: Option<i64>,
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -214,6 +208,8 @@ pub struct SearchHit {
     pub document_name: String,
     pub text: String,
     pub ord: i64,
+    /// RRF 融合排序在服务端内部使用，不下发给客户端。
+    #[serde(default, skip_serializing)]
     pub score: f64,
 }
 
@@ -246,8 +242,6 @@ pub struct DeviceGrant {
     pub id: String,
     pub name: String,
     pub scope: AccessScope,
-    pub created_at: i64,
-    pub last_seen_at: Option<i64>,
     pub revoked: bool,
 }
 

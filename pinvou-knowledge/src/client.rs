@@ -5,7 +5,6 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use futures_util::StreamExt;
-use rand::Rng;
 use reqwest::{Method, StatusCode, multipart};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -14,6 +13,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::MAX_UPLOAD_BYTES;
 use crate::model::*;
+use crate::net_policy::{is_rfc1918, is_tailnet, is_tailscale_ipv6, is_ula};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_IDENTITY_RESPONSE_BYTES: usize = 64 * 1024;
@@ -83,7 +83,6 @@ pub struct RemoteKnowledgeProbe {
     pub ca_fingerprint: String,
     /// A compact, human-comparable rendering of the same CA fingerprint.
     pub identity_code: String,
-    pub ready: bool,
 }
 
 impl KnowledgeClient {
@@ -239,12 +238,7 @@ impl KnowledgeClient {
             tls_ca: info.tls_ca,
             identity_code: identity_code_from_fingerprint(&ca_fingerprint),
             ca_fingerprint,
-            ready: verified.ready,
         })
-    }
-
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
     }
 
     pub async fn health(&self) -> Result<ServerInfo, String> {
@@ -765,11 +759,11 @@ fn required_share_material(value: Option<String>) -> Result<String, String> {
 }
 
 pub fn new_join_credentials() -> NewJoinCredentials {
-    let device_token = random_client_secret(32);
+    let device_token = crate::random_secret(32);
     NewJoinCredentials {
-        device_token_hash: hash_client_secret(&device_token),
+        device_token_hash: crate::sha256_hex(device_token.as_bytes()),
         device_token,
-        claim_secret: random_client_secret(32),
+        claim_secret: crate::random_secret(32),
     }
 }
 
@@ -777,19 +771,6 @@ fn required_share_value(value: Option<String>, label: &str) -> Result<String, St
     value
         .filter(|value| !value.trim().is_empty() && value.len() <= 512)
         .ok_or_else(|| format!("分享连接缺少{label}"))
-}
-
-fn random_client_secret(bytes: usize) -> String {
-    let mut value = vec![0u8; bytes];
-    rand::rng().fill_bytes(&mut value);
-    URL_SAFE_NO_PAD.encode(value)
-}
-
-fn hash_client_secret(value: &str) -> String {
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 pub(crate) fn normalize_endpoint(value: &str) -> Result<String, String> {
@@ -955,27 +936,6 @@ fn same_probed_server_identity(first: &ServerInfo, pinned: &ServerInfo) -> bool 
         && first.name == pinned.name
         && first.protocol_version == pinned.protocol_version
         && first.tls_ca == pinned.tls_ca
-}
-
-fn is_rfc1918(address: std::net::Ipv4Addr) -> bool {
-    let octets = address.octets();
-    octets[0] == 10
-        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
-        || (octets[0] == 192 && octets[1] == 168)
-}
-
-fn is_tailnet(address: std::net::Ipv4Addr) -> bool {
-    let octets = address.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
-}
-
-fn is_ula(address: std::net::Ipv6Addr) -> bool {
-    (address.segments()[0] & 0xfe00) == 0xfc00
-}
-
-fn is_tailscale_ipv6(address: std::net::Ipv6Addr) -> bool {
-    let segments = address.segments();
-    segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
 }
 
 fn is_tailscale_dns_name(host: &str) -> bool {
@@ -1211,10 +1171,8 @@ mod tests {
             version: "0.8.1".to_string(),
             protocol_version: 2,
             tls_ca: "ca".to_string(),
-            initialized: true,
             ready: false,
             model_present: false,
-            model: "bge-m3".to_string(),
         };
         let mut pinned = first.clone();
         pinned.ready = true;

@@ -16,6 +16,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::MAX_UPLOAD_BYTES;
 use crate::model::*;
+use crate::net_policy::{is_tailnet, is_ula};
 use crate::service::KnowledgeService;
 use crate::store::DeviceMutationError;
 
@@ -713,9 +714,6 @@ async fn search(
     // 廉价校验先于装载门:空查询直接 200 []、超量知识集选择 400,不触发
     // 568MB 冷装载,也不因模型不可用把应答变成 503(与 boot 同步装载时代的
     // 行为一致)。
-    // 廉价校验先于装载门:空查询直接 200 []、超量知识集选择 400,不触发
-    // 568MB 冷装载,也不因模型不可用把应答变成 503(与 boot 同步装载时代的
-    // 行为一致)。
     if let Some(hits) =
         KnowledgeService::precheck_search(&request).map_err(ApiError::bad_request)?
     {
@@ -764,18 +762,16 @@ async fn source_window(
 fn is_private_network_ip(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => {
-            let octets = address.octets();
             address.is_private()
                 || address.is_loopback()
                 || address.is_link_local()
-                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+                || is_tailnet(address)
         }
         IpAddr::V6(address) => {
             if let Some(address) = address.to_ipv4_mapped() {
                 return is_private_network_ip(IpAddr::V4(address));
             }
-            let first = address.segments()[0];
-            address.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+            address.is_loopback() || is_ula(address) || (address.segments()[0] & 0xffc0) == 0xfe80
         }
     }
 }
@@ -809,7 +805,7 @@ fn is_private_network_host(uri: &Uri, headers: &HeaderMap) -> bool {
     if let Ok(address) = host.parse::<IpAddr>() {
         return is_private_network_ip(address);
     }
-    [".local", ".lan", ".internal", ".home.arpa", ".ts.net"]
+    crate::net_policy::PRIVATE_HOST_SUFFIXES
         .iter()
         .any(|suffix| host.ends_with(suffix))
 }
