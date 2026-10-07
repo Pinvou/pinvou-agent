@@ -224,7 +224,14 @@ impl ImportJobStore {
             params![job_id, item_id, now],
         )?;
         if item_changed == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
+            // Round-45 review: the job-level and item-level misses must not
+            // share `QueryReturnedNoRows` — a script keying on the CLI's
+            // `knowledge_index_job_not_found` code would take the wrong
+            // branch for a bad item id on a perfectly resumable job. The
+            // CLI maps this marker to `knowledge_index_item_not_found`.
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "knowledge index item {item_id} is not a failed item of job {job_id}"
+            )));
         }
         tx.commit()
     }
@@ -375,18 +382,22 @@ impl ImportJobStore {
     /// that is merely slow must not keep claiming the items `interrupt()`
     /// moved back to pending and end the job fully-ingested yet
     /// `interrupted`, which would force a no-op `index resume` purely to
-    /// reconcile the state. A read error keeps the loop's fail-safe
-    /// direction (assume stopped).
-    pub fn is_stopped(&self, job_id: &str) -> bool {
-        self.conn
-            .lock()
-            .query_row(
-                "SELECT state NOT IN ('preparing','running') \
-                 FROM knowledge_import_jobs WHERE id=?1",
-                params![job_id],
-                |r| r.get::<_, bool>(0),
-            )
-            .unwrap_or(true)
+    /// reconcile the state.
+    ///
+    /// Round-45 review: a read error is reported to the caller instead of
+    /// being folded into `true` — an unreadable status read is
+    /// indistinguishable from a wedged store, and silently treating it as
+    /// "stopped" let the loop exit without `infrastructure_error`, leaving
+    /// the row `running` with a `ready` collection badge. The caller routes
+    /// the error through the same interrupt + infrastructure-error path as
+    /// `claim_next`'s error arm.
+    pub fn is_stopped(&self, job_id: &str) -> rusqlite::Result<bool> {
+        self.conn.lock().query_row(
+            "SELECT state NOT IN ('preparing','running') \
+             FROM knowledge_import_jobs WHERE id=?1",
+            params![job_id],
+            |r| r.get::<_, bool>(0),
+        )
     }
 
     pub fn finish(&self, job_id: &str) -> rusqlite::Result<()> {
@@ -766,6 +777,61 @@ mod tests {
         };
         assert_eq!(states[0], (first.id, "pending".into()));
         assert_eq!(states[1], (second.id, "failed".into()));
+    }
+
+    /// Round-45 review: an item-level miss (bad item id on a resumable job)
+    /// must not share `QueryReturnedNoRows` with the job-level miss — the
+    /// CLI maps that shape to `knowledge_index_job_not_found`, which sent
+    /// scripts hunting for a job problem when the item id was at fault.
+    #[test]
+    fn retry_item_distinguishes_an_item_miss_from_a_job_miss() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        jobs.prepare_items(&job_id, &[PathBuf::from("/tmp/a.md")])
+            .unwrap();
+        let item = jobs.claim_next(&job_id).unwrap().unwrap();
+        jobs.mark_failed(&job_id, item.id, "失败");
+        jobs.finish(&job_id).unwrap();
+
+        let error = jobs.retry_item(&job_id, 999_999).unwrap_err();
+        assert!(
+            error.to_string().contains("is not a failed item"),
+            "item miss must carry the item-level marker, got: {error}"
+        );
+        // The failed item update rolled back: the job stays resumable.
+        let state: String = {
+            let c = jobs.conn.lock();
+            c.query_row(
+                "SELECT state FROM knowledge_import_jobs WHERE id=?1",
+                params![job_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(state, "done_with_errors");
+
+        // The job-level miss keeps the driver's no-rows shape the CLI
+        // already maps to `knowledge_index_job_not_found`.
+        let error = jobs.retry_item("no-such-job", item.id).unwrap_err();
+        assert!(matches!(error, rusqlite::Error::QueryReturnedNoRows));
+    }
+
+    /// Round-45 review: an unreadable status read must surface as `Err` for
+    /// the ingest loop to route through interrupt + infrastructure_error —
+    /// folding it into `true` broke the loop without `infrastructure_error`
+    /// and left a zombie `running` row under a `ready` collection badge.
+    #[test]
+    fn is_stopped_reports_read_errors_instead_of_failing_open() {
+        let (jobs, _l1, collection_id) = setup();
+        let job_id = jobs.create(collection_id, &[]).unwrap();
+        assert_eq!(jobs.is_stopped(&job_id).unwrap(), false);
+        jobs.cancel(&job_id).unwrap();
+        assert_eq!(jobs.is_stopped(&job_id).unwrap(), true);
+        {
+            let c = jobs.conn.lock();
+            c.execute("DROP TABLE knowledge_import_jobs", []).unwrap();
+        }
+        assert!(jobs.is_stopped(&job_id).is_err());
     }
 
     #[test]
