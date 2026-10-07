@@ -273,7 +273,12 @@ pub(super) fn append_memory_review_diagnostic_to(
 /// so the substring exposure is accepted rather than parsed around.
 pub(super) fn memory_review_error_stage(error: &anyhow::Error) -> &'static str {
     let message = format!("{error:#}").to_ascii_lowercase();
-    if message.contains("parse memory review") || message.contains("memory review response json") {
+    if message.contains("parse memory review")
+        || message.contains("memory review response json")
+        // 空响应与坏 JSON 同属响应内容异常（organize 侧同口径报错），归
+        // parse_failed 而非落到 apply_failed。
+        || message.contains("empty response")
+    {
         "parse_failed"
     } else if message.contains("chat/completions")
         || message.contains("memory review client")
