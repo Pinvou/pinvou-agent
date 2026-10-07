@@ -132,36 +132,100 @@ for (const f of docs) {
 // 2026-10-07 收紧：表格行不再豁免——此前 12 处「表格里让模型跑阻塞式
 // auth login --scope」全靠该豁免漏网（模型照做会回合内阻塞到超时，用户
 // 看不到授权 URL，见 lark-skills/NOTICE.md 2026-10-07 节）。现在含 --scope
-// 的行必须内联 --no-wait，或属于描述性/指针语境（转述 CLI 提示、指向
-// lark-shared 按需授权流程）。
+// 的行必须内联 --no-wait，或属于点名流程载体的描述性/指针语境（指向
+// lark-shared 按需授权流程）。同轮复审再堵三个漏网形态：代码围栏内的
+// 可执行行（最该扫的语境此前完全不可见）；「描述性」误判——hint/prompt
+// 等字段名出现在行内代码段里就让整行豁免（改按剥锚后的纯文本判定）；
+// 只转述 CLI 提示而不点名流程载体（裸 prompt/hint/surfaces/提示 不再
+// 豁免——wiki 两处与 flag-create/feed-groups 旧句正是靠它漏网）。
 // Since PR #302 the lark skills live in lark-skills/ (the old skills/ path no
 // longer exists, so this rule had been silently dead until then).
+const larkAuthLoginViolation = (line, inFence) => {
+  if (!/auth login/.test(line)) return null;
+  // 代码围栏是最可执行语境：含 --scope 的围栏行必须内联 --no-wait，无
+  // 描述性豁免（--device-code 第二步不带 --scope，不受影响）。
+  if (inFence) {
+    return /--scope/.test(line) && !/--no-wait/.test(line)
+      ? "fenced `auth login --scope` 须内联 --no-wait（lark-shared 两段式）"
+      : null;
+  }
+  // frontmatter description 是能力枚举（≤280 字符受规则 6 约束），恒为描述性语境。
+  if (/^\s*description:/.test(line)) return null;
+  // 不含 --scope 的表格行是能力枚举（如「`auth login` 等」），维持豁免；
+  // 盲点只在含可执行 --scope 形态的表格行，那些必须扫。
+  if (/^\s*\|/.test(line) && !/--scope/.test(line)) return null;
+  if (
+    !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(
+      line,
+    )
+  ) {
+    return "lark 域裸 auth login";
+  }
+  if (!/--scope/.test(line) || /--no-wait/.test(line)) return null;
+  // 可执行形态 = 反引号片段同时含 auth login 与 --scope（教模型原样运行
+  // 的命令）；规则陈述/flag 枚举（auth login 在反引号外）不算。
+  const spans = line.match(/`[^`]+`/g) || [];
+  if (!spans.some((s) => /auth login/.test(s) && /--scope/.test(s))) return null;
+  // 描述性 = 剥锚后的纯文本点名流程载体（lark-shared 按需授权流程）。
+  // hint/prompt/提示/surfaces 这类 CLI 提示转述词不再单独豁免：旧行的
+  // error 字段名 hint 出现在代码段里、或「CLI 会提示重新执行 …」的转述句，
+  // 都曾让整行漏网，而它们恰恰是要模型照抄的阻塞命令。
+  const descriptive = /按需授权流程|lark-shared|on-demand/i.test(stripAnchors(line));
+  return descriptive
+    ? null
+    : "lark auth login --scope 须内联 --no-wait（lark-shared 两段式）";
+};
+
 for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
+  let inFence = false;
   for (const line of read(f).split("\n")) {
-    if (!/auth login/.test(line)) continue;
-    // frontmatter description 是能力枚举（≤280 字符受规则 6 约束），恒为描述性语境。
-    if (/^\s*description:/.test(line)) continue;
-    // 不含 --scope 的表格行是能力枚举（如「`auth login` 等」），维持豁免；
-    // 盲点只在含可执行 --scope 形态的表格行，那些必须扫。
-    if (/^\s*\|/.test(line) && !/--scope/.test(line)) continue;
-    if (/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
-      // 可执行形态 = 反引号片段同时含 auth login 与 --scope（教模型原样运行
-      // 的命令）；规则陈述/flag 枚举（auth login 在反引号外）与转述性语境
-      // （CLI 提示、lark-shared 指路）不算。
-      if (
-        /--scope/.test(line) &&
-        !/--no-wait/.test(line)
-      ) {
-        const spans = line.match(/`[^`]+`/g) || [];
-        const teachesCommand = spans.some((s) => /auth login/.test(s) && /--scope/.test(s));
-        const descriptive = /prompt|hint|surfaces|提示|按需授权流程|lark-shared|on-demand/i.test(line);
-        if (teachesCommand && !descriptive) {
-          assert.fail(`${rel(f)}: lark auth login --scope 须内联 --no-wait（lark-shared 两段式）: ${line.trim()}`);
-        }
-      }
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
       continue;
     }
-    assert.fail(`${rel(f)}: lark 域裸 auth login: ${line.trim()}`);
+    const violation = larkAuthLoginViolation(line, inFence);
+    if (violation) assert.fail(`${rel(f)}: ${violation}: ${line.trim()}`);
+  }
+}
+
+// 规则 5 盲点自检：四个曾漏网的历史形态必须保持「必失败」，两种现行合法
+// 指针形态必须保持「必通过」（防下次收紧/放松时静默回退）。
+{
+  const fencedOldForms = [
+    // 围栏内可执行行（message-enrichment 旧形）
+    "lark-cli auth login --scope \"im:message.reactions:read\"",
+  ];
+  const plainOldForms = [
+    // 裸「提示」转述（wiki delete-space/move 旧形）
+    "| 异常 | 处理：CLI 会直接**提示**重新执行 `lark-cli auth login --scope \"docs:wiki\"` |",
+    // hint 字段名落在代码段内（drive-export 99991679 行旧形）
+    "| 99991679 | `hint: auth login --scope \"drive:drive\"` |",
+    // 裸 hint 转述（feed-groups 旧形）
+    "If a required scope is missing, the CLI surfaces a hint such as `lark-cli auth login --scope \"im:feed_group_v1:write\"`.",
+  ];
+  for (const line of fencedOldForms) {
+    assert.ok(
+      larkAuthLoginViolation(line, true) !== null,
+      `围栏旧形必须判违例: ${line}`,
+    );
+  }
+  for (const line of plainOldForms) {
+    assert.ok(
+      larkAuthLoginViolation(line, false) !== null,
+      `非围栏旧形必须判违例: ${line}`,
+    );
+  }
+  const okForms = [
+    "可提示用户按 [`lark-shared`](../../lark-shared/SKILL.md) 的按需授权流程（`auth login --scope ...`）完成登录",
+    "If missing, run the login per the lark-shared on-demand split-flow (`--no-wait --json`), never the blocking in-turn login",
+    "1. 执行 `lark-cli auth login --scope \"xxx\" --no-wait --json`（必须加 `--no-wait --json`）",
+  ];
+  for (const line of okForms) {
+    assert.equal(
+      larkAuthLoginViolation(line, false),
+      null,
+      `合法指针形态不得误伤: ${line}`,
+    );
   }
 }
 

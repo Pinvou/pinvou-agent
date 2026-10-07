@@ -682,6 +682,9 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
   「一次性补齐」提示)、lark-drive-export.md(99991679 行)
 - lark-wiki:lark-wiki-delete-space.md、lark-wiki-move.md(描述句改为
   直接给出正确命令)
+- 复查补漏:lark-im-flag-create.md、lark-im-feed-groups.md 两处引用 CLI
+  自身提示原文的 `auth login --scope` 内联代码也改为 lark-shared 按需授权
+  指针(引用的提示措辞不再保留可照抄的阻塞命令)
 
 均为本地修改,下次 sync 需重放。配套把
 `pinvou3-app/tests/connector_skills_contract.test.js` 规则 5 收紧:含

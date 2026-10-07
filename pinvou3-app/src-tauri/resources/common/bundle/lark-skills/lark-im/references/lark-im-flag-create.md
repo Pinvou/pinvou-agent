@@ -48,7 +48,7 @@ The server only accepts these `(item_type, flag_type)` pairs:
 
 - Required scopes: `im:feed.flag:write`, `im:message.group_msg:get_as_user`, `im:message.p2p_msg:get_as_user`, `im:chat:read`
 - The message/chat read scopes are used when `--flag-type feed` is used without explicit `--item-type` so the CLI can auto-detect chat type.
-- If missing, CLI will prompt with `lark-cli auth login --scope "..."`
+- If missing, CLI will prompt for that scope; run the login per the lark-shared on-demand split-flow (`--no-wait --json`), never the blocking in-turn login
 
 ## Note
 
