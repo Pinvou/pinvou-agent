@@ -20,6 +20,10 @@ $generatedConfigPath = Join-Path $tauriRoot "target\windows-runtime\tauri.genera
 $runtimeDescriptorPath = Join-Path $tauriRoot "target\windows-runtime\runtime-descriptor.json"
 $onnxDevDescriptorPath = Join-Path $tauriRoot "target\windows-runtime\onnx-dev-descriptor.json"
 $stagingParent = Join-Path $tauriRoot "target\windows-runtime"
+# Source-metadata cache marker for the submodule checkout (per-lock, shared by
+# all stage ids) and the workspace-wide resolver serialization lock.
+$sourceVerificationMarkerPath = Join-Path $stagingParent ".verified-lock"
+$resolverLockPath = Join-Path $stagingParent ".resolver.lock"
 
 if ([string]::IsNullOrWhiteSpace($LockFile)) {
   $LockFile = $defaultLockFile
@@ -61,6 +65,22 @@ function Write-Utf8WithoutBom {
   }
   $encoding = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Write-Utf8Atomically {
+  param([string]$Path, [string]$Content)
+
+  $parent = Split-Path -Parent $Path
+  if ($parent) {
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+  }
+  $temporaryPath = Join-Path $parent ("." + [System.IO.Path]::GetFileName($Path) + ".tmp-" + [System.Guid]::NewGuid().ToString("N"))
+  try {
+    Write-Utf8WithoutBom -Path $temporaryPath -Content $Content
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+  } finally {
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Assert-ChildPath {
@@ -265,6 +285,60 @@ function Get-VerifiedOnnxManifest {
   return $manifest
 }
 
+function Get-CachedVerifiedManifest {
+  param([switch]$VerifyContent)
+
+  # The source marker is only written after a full Get-VerifiedManifest pass
+  # (including the VC++ version check) and binds the lock file SHA-256, so a
+  # changed lock invalidates it. Identity failures below stay fatal; per-file
+  # mismatches just fall back to full verification.
+  if (-not (Test-VerificationMarker -Path $sourceVerificationMarkerPath)) {
+    return $null
+  }
+
+  # A vanished checkout would surface as a raw git error from the identity
+  # check below; decline the cache so the full path raises the actionable
+  # "not initialized" message instead.
+  if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
+    return $null
+  }
+
+  $actualCommit = Assert-RuntimeIdentity
+
+  $manifestPath = Get-RuntimeManifestPath
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    return $null
+  }
+  if ((Get-Sha256 -Path $manifestPath) -ne [string]$lock.manifest.sha256) {
+    return $null
+  }
+
+  $manifest = Read-CompatibleRuntimeManifest -ManifestPath $manifestPath
+  foreach ($entry in $manifest.files) {
+    $sourcePath = Join-Path $RuntimeRoot ([string]$entry.path).Replace('/', '\')
+    Assert-ChildPath -Root $RuntimeRoot -Path $sourcePath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+      return $null
+    }
+    if (Test-LfsPointer -Path $sourcePath) {
+      return $null
+    }
+    if ([long](Get-Item -LiteralPath $sourcePath).Length -ne [long]$entry.bytes) {
+      return $null
+    }
+    if ($VerifyContent -and (Get-Sha256 -Path $sourcePath) -ne [string]$entry.sha256) {
+      return $null
+    }
+  }
+
+  if ($VerifyContent) {
+    Write-Host ("Revalidated cached Windows runtime content: {0} files at {1}" -f $manifest.files.Count, $actualCommit)
+  } else {
+    Write-Host ("Reused Windows runtime verification metadata: {0} files at {1}" -f $manifest.files.Count, $actualCommit)
+  }
+  return $manifest
+}
+
 function Find-ComponentArchive {
   param([string]$PayloadRoot, [string]$Pattern, [string]$Label)
   $matches = @(Get-ChildItem -LiteralPath $PayloadRoot -File -Filter $Pattern)
@@ -378,7 +452,7 @@ function Get-RuntimeDescriptorContent {
 
 function Write-RuntimeDescriptor {
   param($Manifest, [string]$StageId)
-  Write-Utf8WithoutBom -Path $runtimeDescriptorPath -Content (Get-RuntimeDescriptorContent -Manifest $Manifest -StageId $StageId)
+  Write-Utf8Atomically -Path $runtimeDescriptorPath -Content (Get-RuntimeDescriptorContent -Manifest $Manifest -StageId $StageId)
 }
 
 function Get-StageInventoryContent {
@@ -690,7 +764,7 @@ function Assert-FreshStagePythonDependencies {
 
 function Write-TauriOverlay {
   param([string]$StageId)
-  Write-Utf8WithoutBom -Path $generatedConfigPath -Content (Get-TauriOverlayContent -StageId $StageId)
+  Write-Utf8Atomically -Path $generatedConfigPath -Content (Get-TauriOverlayContent -StageId $StageId)
 }
 
 function Test-VerifiedStageReusable {
@@ -890,7 +964,7 @@ function Stage-OnnxRuntime {
     }
     Move-Item -LiteralPath $temporaryRoot -Destination $onnxStageRoot
     $finalDylib = Join-Path $onnxStageRoot "onnxruntime\onnxruntime.dll"
-    Write-Utf8WithoutBom -Path $onnxDevDescriptorPath -Content (Get-OnnxDevDescriptorContent -StageId $stageId -DylibPath $finalDylib)
+    Write-Utf8Atomically -Path $onnxDevDescriptorPath -Content (Get-OnnxDevDescriptorContent -StageId $stageId -DylibPath $finalDylib)
   } finally {
     Remove-Item -LiteralPath $temporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -898,22 +972,79 @@ function Stage-OnnxRuntime {
   Write-Host ("Generated ONNX development descriptor: {0}" -f $onnxDevDescriptorPath)
 }
 
+function Enter-ResolverLock {
+  param([int]$TimeoutSeconds = 120)
+
+  New-Item -ItemType Directory -Path $stagingParent -Force | Out-Null
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while ($true) {
+    try {
+      return [System.IO.File]::Open(
+        $resolverLockPath,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+      )
+    } catch [System.IO.IOException] {
+      if ([DateTime]::UtcNow -ge $deadline) {
+        throw "Timed out waiting for the Windows runtime resolver lock: $resolverLockPath"
+      }
+      Start-Sleep -Milliseconds 200
+    }
+  }
+}
+
+function Invoke-RuntimeResolution {
+  if ($Mode -eq "StageOnnx") {
+    Stage-OnnxRuntime -Manifest (Get-VerifiedOnnxManifest)
+    return
+  }
+
+  $verifiedManifest = $null
+  $sourceMetadataWasCached = $false
+  if (-not $Force) {
+    # Stage trusts the cached source metadata and skips per-file SHA-256
+    # hashing; Validate always re-hashes every locked source file.
+    $verifiedManifest = Get-CachedVerifiedManifest -VerifyContent:($Mode -eq "Validate")
+    $sourceMetadataWasCached = $null -ne $verifiedManifest
+  }
+
+  if ($null -eq $verifiedManifest) {
+    $verifiedManifest = Get-VerifiedManifest
+    Write-Utf8Atomically -Path $sourceVerificationMarkerPath -Content (Get-VerificationMarkerContent)
+  }
+
+  if ($Mode -ne "Stage") {
+    return
+  }
+
+  if (-not $Force -and (Test-VerifiedStageReusable -Manifest $verifiedManifest)) {
+    Write-Host ("Reused verified Windows runtime staging: {0}" -f $stagingRoot)
+    Write-Host ("Reused Tauri overlay: {0}" -f $generatedConfigPath)
+    Write-Host ("Reused runtime descriptor: {0}" -f $runtimeDescriptorPath)
+    return
+  }
+
+  if ($sourceMetadataWasCached) {
+    # The staging rebuild copies bytes from the submodule, so the cheap
+    # size-only cache is not enough here: re-hash the source payloads first.
+    Write-Host "Cached staging failed integrity checks; revalidating source payloads before rebuilding."
+    $verifiedManifest = Get-VerifiedManifest
+    Write-Utf8Atomically -Path $sourceVerificationMarkerPath -Content (Get-VerificationMarkerContent)
+  }
+
+  Stage-Submodule -Manifest $verifiedManifest
+}
+
 if ($ImportFunctionsOnly) {
   return
 }
 
-$verifiedManifest = if ($Mode -eq "StageOnnx") { Get-VerifiedOnnxManifest } else { Get-VerifiedManifest }
-if (-not $Force) {
-  if ($Mode -eq "Stage" -and (Test-VerifiedStageReusable -Manifest $verifiedManifest)) {
-    Write-Host ("Reused verified Windows runtime staging: {0}" -f $stagingRoot)
-    Write-Host ("Reused Tauri overlay: {0}" -f $generatedConfigPath)
-    Write-Host ("Reused runtime descriptor: {0}" -f $runtimeDescriptorPath)
-    exit 0
+$resolverLock = Enter-ResolverLock
+try {
+  Invoke-RuntimeResolution
+} finally {
+  if ($null -ne $resolverLock) {
+    $resolverLock.Dispose()
   }
-}
-
-if ($Mode -eq "Stage") {
-  Stage-Submodule -Manifest $verifiedManifest
-} elseif ($Mode -eq "StageOnnx") {
-  Stage-OnnxRuntime -Manifest $verifiedManifest
 }

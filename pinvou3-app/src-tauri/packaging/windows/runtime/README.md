@@ -24,14 +24,23 @@ ONNX Runtime 组件到 `target/windows-runtime/<commit>-<manifest-sha>-onnx-dev/
 展开 Node、Python、ASR、OCR、Pandoc 等完整安装包资源；结果带指纹缓存，后续启动直接复用。
 
 `runtime:windows:init` 只在当前 checkout 与主仓库 gitlink 不一致时更新 runtime submodule；gitlink 未变化时直接复用。
+初始化与 runtime staging 共用 `target/windows-runtime/.resolver.lock`（120 秒超时）串行化，避免并发调用相互覆盖缓存。
 脚本会检查受 LFS 管理的实际文件，只有仍存在 pointer 时才按路径执行 `git lfs pull`，并输出
-`pinvou3-windows-runtime-<commit>` 形式的 Jenkins 缓存键。
+`pinvou3-windows-runtime-v5-<commit>-<lock-sha-prefix>` 形式的 Jenkins 缓存键；lock 文件内容变化或缓存 schema
+升级时不会复用旧缓存，lock 文件缺失时脚本直接失败。并发调用等待 `.resolver.lock` 最多 120 秒，超时即失败退出，
+稍后重试即可。
 
 校验内容包括 submodule commit、gitlink、origin URL、工作树状态、manifest SHA-256、文件大小与 SHA-256，以及受管理 ZIP 解压后的逐文件清单。解析器支持 schema 1 与 schema 2：schema 2 的 `stagedFiles` 记录生命周期快照，取自 payload 复制、各组件解压、按需分发的 ASR 主模型移除之后，派生文件生成与 payload 清理之前；校验会同时拒绝缺失与多余的暂存文件。
 
-每次构建都会按 runtime manifest 复核源文件的大小和 SHA-256。staging 内的 `.verified-lock` 绑定 runtime commit、manifest
-SHA-256、lock 文件 SHA-256 和目标平台，`.verified-stage.json` 则记录全部展开文件的路径、大小和 SHA-256；任一暂存产物变化
-或使用 `-Force`，都会自动回退到原子 staging。已验证并解包的 payload 以及 ASR 主模型不会留在 staging 中。
+完整校验通过后，脚本会在 `target/windows-runtime/.verified-lock` 记录 runtime commit、manifest SHA-256、lock 文件
+SHA-256 和目标平台，作为 submodule 源校验元数据缓存：Stage 模式命中缓存时只按 lock 复核源文件大小，跳过逐文件
+SHA-256；Validate 模式仍对全部锁定源文件重新哈希。lock 文件或 submodule 身份（commit、gitlink、origin、工作树状态）
+变化都会使该缓存失效；身份校验失败会直接报错终止，通过后才执行上一句所述的 Stage 大小复核或 Validate 整体重哈希。
+staging 内的 `.verified-lock` 绑定 runtime commit、manifest SHA-256、lock 文件 SHA-256 和目标平台，`.verified-stage.json`
+则记录全部展开文件的路径、大小和 SHA-256；任一暂存产物变化或使用 `-Force`，都会自动回退到原子 staging。当仅缓存元数据
+命中而暂存产物需要重建时，会先对源文件重新执行完整 SHA-256 校验再复制。runtime descriptor、Tauri overlay 和 ONNX 开发
+descriptor 以临时文件加原子替换写入，避免并发或中断留下半写文件。已验证并解包的 payload 以及 ASR 主模型不会留在
+staging 中。
 
 验证后的运行时写入：
 

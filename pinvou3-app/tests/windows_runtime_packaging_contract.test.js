@@ -140,8 +140,12 @@ for (const contract of [
   "Assert-WindowsRuntimeStagedFilesExact",
   "System.IO.Compression.ZipFile",
   "Write-Utf8WithoutBom",
+  "Write-Utf8Atomically",
   "Test-StageInventory",
   ".verified-stage.json",
+  "Get-CachedVerifiedManifest",
+  "Enter-ResolverLock",
+  ".resolver.lock",
   "Get-RuntimeDescriptorContent",
   "onnxRuntimeDylib",
   'delivery = "download-on-first-use"',
@@ -238,7 +242,100 @@ assert.match(initScript, /--include=/);
 assert.match(initScript, /\[switch\]\$OnnxOnly/);
 assert.match(initScript, /GIT_LFS_SKIP_SMUDGE/);
 assert.match(initScript, /onnxruntime-win-x64-\*-runtime\.zip/);
-assert.match(initScript, /pinvou3-windows-runtime-\$expectedCommit/);
+assert.match(initScript, /pinvou3-windows-runtime-\$cacheSchema-\$expectedCommit/);
+assert.match(
+  initScript,
+  /\$lockSha256\.Substring\(0, 16\)/u,
+  "the Jenkins cache key must embed the lock content hash so lock changes invalidate it",
+);
+assert.match(initScript, /Get-RuntimeLockSha256/);
+assert.match(initScript, /Enter-RuntimeResolverLock/);
+assert.match(
+  initScript,
+  /\$cacheSchema = "v5"/u,
+  "the cache schema literal must stay pinned so a bump is a conscious, reviewed edit",
+);
+assert.ok(
+  initScript.includes('$resolverLockPath = Join-Path $resolverCacheRoot ".resolver.lock"') &&
+    runtimeScript.includes('$resolverLockPath = Join-Path $stagingParent ".resolver.lock"'),
+  "submodule initialization and runtime staging must share the same workspace lock",
+);
+assert.ok(
+  initScript.includes(
+    '$resolverCacheRoot = Join-Path $repoRoot "pinvou3-app\\src-tauri\\target\\windows-runtime"',
+  ) && runtimeScript.includes('$stagingParent = Join-Path $tauriRoot "target\\windows-runtime"'),
+  "the two scripts' lock-directory derivations must stay identical, not just the lock file name",
+);
+assert.match(
+  runtimeScript,
+  /\$sourceVerificationMarkerPath = Join-Path \$stagingParent "\.verified-lock"/u,
+);
+assert.match(
+  runtimeScript,
+  /Get-CachedVerifiedManifest -VerifyContent:\(\$Mode -eq "Validate"\)/u,
+  "Stage may trust cached source metadata; Validate must re-hash the locked content",
+);
+assert.ok(
+  runtimeScript.includes(
+    "if ($VerifyContent -and (Get-Sha256 -Path $sourcePath) -ne [string]$entry.sha256)",
+  ),
+  "the Validate-mode content re-hash guard must stay inside Get-CachedVerifiedManifest, not just at its call site",
+);
+// The size-only cache is safe only while the cached path re-runs the full
+// runtime identity check itself (marker match alone must never authorize
+// per-file sizes), and a vanished checkout must decline to the full path so
+// the actionable "not initialized" message survives the cache. Pin the call
+// ordering inside Get-CachedVerifiedManifest's own body; removing either the
+// checkout guard or the identity re-check there must fail here loudly.
+const cachedFnStart = runtimeScript.indexOf("function Get-CachedVerifiedManifest");
+const cachedMarkerIdx = runtimeScript.indexOf(
+  "Test-VerificationMarker -Path $sourceVerificationMarkerPath",
+  cachedFnStart,
+);
+const cachedCheckoutIdx = runtimeScript.indexOf(
+  "Test-Path -LiteralPath $RuntimeRoot -PathType Container",
+  cachedFnStart,
+);
+const cachedIdentityIdx = runtimeScript.indexOf("Assert-RuntimeIdentity", cachedFnStart);
+const cachedSizeIdx = runtimeScript.indexOf(
+  "$sourcePath).Length -ne [long]$entry.bytes",
+  cachedFnStart,
+);
+assert.ok(
+  cachedFnStart !== -1 &&
+    cachedMarkerIdx > cachedFnStart &&
+    cachedCheckoutIdx > cachedMarkerIdx &&
+    cachedIdentityIdx > cachedCheckoutIdx &&
+    cachedSizeIdx > cachedIdentityIdx,
+  "the cached path must decline to the full path when the checkout is gone and re-run the runtime identity check between the marker check and the per-file size loop, not trust sizes on the marker alone",
+);
+assert.ok(
+  runtimeScript.includes("param([int]$TimeoutSeconds = 120)") &&
+    initScript.includes("param([int]$TimeoutSeconds = 120)"),
+  "both lock holders must keep the same default 120s waiter timeout (the documented fail-and-retry contract)",
+);
+assert.match(
+  runtimeScript,
+  /^\$resolverLock = Enter-ResolverLock$/mu,
+  "the lock call site must invoke the shared 120s default (no per-call -TimeoutSeconds override)",
+);
+assert.match(
+  initScript,
+  /^\$resolverLock = Enter-RuntimeResolverLock$/mu,
+  "the lock call site must invoke the shared 120s default (no per-call -TimeoutSeconds override)",
+);
+assert.equal(
+  (runtimeScript.match(/Write-Utf8Atomically -Path \$sourceVerificationMarkerPath/gu) || []).length,
+  2,
+  "the workspace source-metadata marker must be rewritten on both the full-verify and the cached-rebuild paths",
+);
+assert.match(runtimeScript, /Write-Utf8Atomically -Path \$runtimeDescriptorPath/u);
+assert.match(runtimeScript, /Write-Utf8Atomically -Path \$generatedConfigPath/u);
+assert.match(
+  runtimeScript,
+  /Write-Utf8Atomically -Path \$onnxDevDescriptorPath/u,
+  "the ONNX dev descriptor is shared-visibility state and must be written atomically",
+);
 assert.match(initScript, /\$previousErrorActionPreference = \$ErrorActionPreference/);
 assert.match(initScript, /\$ErrorActionPreference = "Continue"/);
 assert.match(initScript, /\$exitCode = \$LASTEXITCODE/);
