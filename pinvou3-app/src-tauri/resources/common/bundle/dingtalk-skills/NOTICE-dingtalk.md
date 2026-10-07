@@ -247,6 +247,6 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 模型向文本全量审计发现以下三处本地修改，下次 sync 需重放：
 
-1. **SKILL.md 危险操作表 `calendar participant delete` → `calendar attendee delete`**：dws calendar 无 `participant` 子命令组，参会人二级子命令为 `attendee`（见 references/products/calendar.md「二级子命令」清单，全包 grep 无 participant）。原行会让模型照权威安全表执行不存在的命令，而 SKILL.md「错误处理」又禁止自行尝试替代方案，任务直接卡死。
+1. **`calendar participant *` → `calendar attendee *`（5 处）**：SKILL.md 危险操作表 `participant delete`，references/products/minutes.md（`participant list`）、best_practices/03-meeting.md（`participant add`）、best_practices/10-minutes-speaker-match.md（`participant list`）、best_practices/lite-recipes.md（`participant add`）。dws calendar 无 `participant` 子命令组，参会人二级子命令为 `attendee`（见 references/products/calendar.md「二级子命令」清单；sync 后须 grep 复查 `calendar participant` 全包无残留——todo 模块的 `task add-participant`/`remove-participant` 是另一真实命令组，不受影响）。原行会让模型照权威安全表/recipe 执行不存在的命令，而 SKILL.md「错误处理」又禁止自行尝试替代方案，任务直接卡死。
 2. **SKILL.md 考勤行删除「（P0 已落地，部分管理类命令仍属 P1）」**：P0/P1 成熟度标记在包内无事实源，与 attendance.md「命令可用性提示」（全部子命令组已注册可用，不得以"命令不存在/不支持"拒答）相悖，可能诱发模型拒绝可用的考勤管理命令。改为指向该提示。
 3. **SKILL.md 顶部新增首用认证指引**：命令报 `AUTH_TOKEN_EXPIRED` / 未登录时先 `dws auth login`（流程见 global-reference.md 认证章节），不要因未登录断定技能不可用。此前登录指引只出现在错误处理行与文末参考列表，首用模型会在失败后才回溯。

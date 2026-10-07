@@ -46,7 +46,7 @@
 
 | 优先级 | 路径               | 做什么                                                                                               |
 | ------ | ------------------ | ---------------------------------------------------------------------------------------------------- |
-| ① 最高 | 日程参与人         | 从听记 info 提取会议时间 → `dws calendar event list --start <会议开始-30min> --end <会议结束+30min>` → 匹配同时段日程 → `dws calendar participant list --event <eventId>` → 获取参与人姓名列表，与转写中匿名发言人做数量/顺序对照 |
+| ① 最高 | 日程参与人         | 从听记 info 提取会议时间 → `dws calendar event list --start <会议开始-30min> --end <会议结束+30min>` → 匹配同时段日程 → `dws calendar attendee list --event <eventId>` → 获取参与人姓名列表，与转写中匿名发言人做数量/顺序对照 |
 | ② 高   | 通讯录 + 组织架构  | `dws aisearch person --query <姓名> --dimension name` → 部门/职级/上级/汇报关系                    |
 | ③ 高   | 聊天记录           | `dws chat message list` 获取与目标人的近期 IM 消息 → 工作内容/语言风格/职责线索                       |
 | ④ 兜底 | 本人文档           | `dws drive search --query <姓名>` 取前 3 篇标题+摘要 → 角色精确信号                                   |
