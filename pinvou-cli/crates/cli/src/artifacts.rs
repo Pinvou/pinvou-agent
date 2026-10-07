@@ -393,6 +393,17 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
                 continue;
             }
         };
+        // Round-43 review: the `Value` parse is the expensive half of the
+        // scan, and a record without the literal `"artifacts"` key cannot
+        // yield a row — a JSON object key must appear byte-for-byte for
+        // `view.get("artifacts")` to find it. Skip the parse for those
+        // records so a plain list scales with sessions that HAVE
+        // deliverables instead of with total store bytes; a transcript that
+        // merely mentions the word still carries the quoted key and parses
+        // exactly as before.
+        if !raw.contains("\"artifacts\"") {
+            continue;
+        }
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {
             // Corrupt JSON is the same undecidable slice: disclosed, then
             // skipped.

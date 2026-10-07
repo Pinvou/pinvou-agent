@@ -2349,6 +2349,13 @@ fn providers_round_trip_against_temp_home() {
     assert_eq!(value["containsPlaintextKeys"], true);
     let exported = std::fs::read_to_string(&export_file).unwrap();
     assert!(exported.contains("Relay B"));
+    // Round-43 review: pin the secret-resolution lane by its output — the
+    // payload flag is hardcoded, so only the key bytes prove the export
+    // carried the resolved credential.
+    assert!(
+        exported.contains("sk-test-roundtrip-1234567890"),
+        "the exported file must carry the resolved plaintext key"
+    );
 
     // remove --yes deletes the entry; the store stays parseable.
     let value = run_json(&[
@@ -2906,11 +2913,19 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     assert_eq!(value["containsPlaintextKeys"], true);
     let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "an exported key file must be 0600");
+    let exported_fresh = std::fs::read_to_string(&fresh).unwrap();
     assert!(
-        std::fs::read_to_string(&fresh)
-            .unwrap()
-            .contains("Exported relay"),
+        exported_fresh.contains("Exported relay"),
         "the fresh export must carry the provider payload"
+    );
+    // Round-43 review: the export's entire purpose is the plaintext key —
+    // `containsPlaintextKeys` is hardcoded `true` in the payload, so only
+    // the key BYTES in the file pin the secret-resolution lane (a
+    // resolution that silently returned empty would otherwise keep this
+    // test green while exporting a keyless file).
+    assert!(
+        exported_fresh.contains("sk-test-export-key-1234567890"),
+        "the exported file must carry the resolved plaintext key"
     );
 }
 

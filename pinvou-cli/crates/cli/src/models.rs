@@ -1843,7 +1843,14 @@ fn connection_http_result(status: reqwest::StatusCode) -> ConnectionProbe {
 }
 
 fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
-    let raw = redact_secret(&error.to_string());
+    // Round-43 review: reqwest's Display embeds the full URL, userinfo
+    // included, and `redact_secret`'s generic heuristic needs a digit — a
+    // `http://user:pass@host` base_url on a transport error would reach the
+    // report verbatim. The purpose-built scrubber (the connectors lanes
+    // already apply it) strips URL userinfo before the token-shape pass.
+    let raw = redact_secret(&pinvou3_lib::platform::redact_url_credentials_in_text(
+        &error.to_string(),
+    ));
     let lower = raw.to_lowercase();
     let code = if error.is_timeout() {
         "timeout"
