@@ -998,7 +998,11 @@ fn auto_write_profile_suggestion(
 pub(super) fn parse_llm_memory_review(content: &str) -> Result<LlmMemoryReview> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
-        return Ok(LlmMemoryReview::default());
+        // Empty content (missing choices / non-string content / refusal / content
+        // filtering) is a transport- or model-side anomaly, not "no items": treat it
+        // as a failure to avoid producing a fake successful no_change outcome. A
+        // semantic no-op is emitting {"items":[]}.
+        return Err(anyhow!("memory review returned an empty response"));
     }
     match serde_json::from_str::<LlmMemoryReview>(trimmed) {
         Ok(review) => Ok(review),
