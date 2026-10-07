@@ -1418,8 +1418,9 @@ fn v1_models_owned_by_matches(v: &serde_json::Value, expected: &str) -> bool {
 /// Messages API 版本头，与连接测试同一口径。
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// Anthropic 原生协议鉴权头对（`x-api-key` + `anthropic-version`）的单一装配点：
-/// 官方端点不接受 Bearer。key 为空时不加任何头（探测点"无凭据裸发"的现状）。
+/// Anthropic 原生协议鉴权头对（`x-api-key` + `anthropic-version`）在探测/图片探测/
+/// monitor 路径的统一装配点：官方端点不接受 Bearer。key 为空时不加任何头（探测点
+/// "无凭据裸发"的现状）。注意：Messages 正文装配另有站点，未收拢到这里。
 pub(crate) fn apply_anthropic_auth_headers(
     req: reqwest::RequestBuilder,
     api_key: &str,

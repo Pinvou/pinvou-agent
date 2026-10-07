@@ -67,7 +67,6 @@ function emptyTurn(id) {
     tools: [],
     toolIndex: {},
     toolBlockIndex: {},
-    plan: null,
     planBlockIndex: null,
     permissions: [],
     permissionBlockIndex: {},

@@ -213,7 +213,7 @@ export function formatComputerUseConfirmAction(copy, request) {
 
 // 当前 Rust 结构化 payload 的规范 action 名映射：映射到渲染层的 kind，
 // 供确认弹窗本地化渲染。
-const LEGACY_ACTION_FIELDS = {
+const CANONICAL_ACTION_FIELDS = {
   left_click: { kind: 'click', button: 'left', clickCount: 1 },
   right_click: { kind: 'click', button: 'right', clickCount: 1 },
   middle_click: { kind: 'click', button: 'middle', clickCount: 1 },
@@ -247,8 +247,8 @@ function describeConfirmAction(copy, request) {
   const fn = (key) => (typeof copy[key] === 'function' ? copy[key] : null);
   let name = typeof request.actionName === 'string' ? request.actionName : '';
   let fields = null;
-  if (LEGACY_ACTION_FIELDS[name]) {
-    fields = LEGACY_ACTION_FIELDS[name];
+  if (CANONICAL_ACTION_FIELDS[name]) {
+    fields = CANONICAL_ACTION_FIELDS[name];
     name = fields.kind;
   }
   switch (name) {

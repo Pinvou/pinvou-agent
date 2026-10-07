@@ -76,7 +76,8 @@ export const desktopOnlyBridgeApi = {
   // on the web (the webAccessAdmin capability bit is always false).
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
   // One-click install of missing dependencies elevates via pkexec apt and is unavailable on the web (the dependencyInstall
-  // capability bit is always false); the re-check (check_dependencies) is shared by both hosts.
+  // capability bit is always false); the re-check (check_dependencies) is desktop-only too, and the web hides the
+  // whole dependency section behind that capability bit.
   dependencies: ['installDependencies'],
 };
 

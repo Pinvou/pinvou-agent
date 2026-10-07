@@ -471,6 +471,8 @@ impl BenchmarkPlan {
 #[derive(Clone, Debug)]
 pub struct RunContext;
 impl RunContext {
+    /// 兼容保留的构造签名：run_id 已收敛到 RunManifest（run 目录命名等），
+    /// RunContext 本身不再携带；参数仅为免改调用点而保留，直接忽略。
     pub fn new(_run_id: impl Into<String>) -> Self {
         Self
     }
