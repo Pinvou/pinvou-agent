@@ -758,6 +758,15 @@ function hasStoredCredential(record) {
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formGroup = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
+      // Custom-entry description for the provider model picker and the catalog
+      // picker: both key off the same group fields (key/providerKind/preset).
+      const customModelDescFor = (group, copy) => (group && group.key === 'tencent_token_plan'
+        ? copy.customTokenPlanDesc
+        : (group && group.providerKind === PROVIDER_KIND_CODING_PLAN
+          ? copy.customCodingPlanDesc
+          : (group && group.preset === 'local_vllm'
+            ? copy.customLocalDesc
+            : (group && group.preset === 'openai_compatible' ? copy.customCompatibleDesc : copy.customModelDesc))));
       const renderProviderModelField = () => {
         const items = activeProvider ? activeProvider.items : [];
         const known = items.some(item => !item.custom && catalogItemMatchesModel(item, model));
@@ -811,7 +820,7 @@ function hasStoredCredential(record) {
                       <span className="min-w-0 flex-1">
                         <span className={`block text-[14px] leading-5 truncate ${active ? ('text-[#007AFF] dark:text-[#64B5F6]') : ('text-[#1C1C1E] dark:text-[#F2F2F7]')}`}>{item.custom ? ((activeProvider && settingsCopy.customModelTitles[activeProvider.key]) || settingsCopy.customModelTitle(selectedProvider)) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
                         {item.desc && <span className={`block mt-0.5 text-[12px] leading-[16px] truncate text-[#8A8A8E] dark:text-[#8E8E93]`}>{item.custom
-                          ? (activeProvider && activeProvider.key === 'tencent_token_plan' ? settingsCopy.customTokenPlanDesc : (activeProvider && activeProvider.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (activeProvider.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (activeProvider.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))))
+                          ? customModelDescFor(activeProvider, settingsCopy)
                           : (settingsCopy.modelDescriptions[item.desc] || item.desc)}</span>}
                       </span>
                       {active && <Check size={17} strokeWidth={2.4} className={'text-[#007AFF] dark:text-[#64B5F6]'} />}
@@ -912,7 +921,7 @@ function hasStoredCredential(record) {
                   const active = preset === group.preset && !item.custom && catalogItemMatchesModel(item, model);
                   const itemTitle = item.custom ? (settingsCopy.customModelTitles[group.key] || settingsCopy.customModelTitle(presetProviderLabel(group.preset, t))) : item.title;
                   const itemDescription = item.custom
-                    ? (group.key === 'tencent_token_plan' ? settingsCopy.customTokenPlanDesc : (group.providerKind === PROVIDER_KIND_CODING_PLAN ? settingsCopy.customCodingPlanDesc : (group.preset === 'local_vllm' ? settingsCopy.customLocalDesc : (group.preset === 'openai_compatible' ? settingsCopy.customCompatibleDesc : settingsCopy.customModelDesc))))
+                    ? customModelDescFor(group, settingsCopy)
                     : (settingsCopy.modelDescriptions[item.desc] || item.desc);
                   return (
                     <button
@@ -2507,7 +2516,7 @@ function hasStoredCredential(record) {
               </IOSSection>
             )}
             {canUseComputerUse && <ComputerUseSettingSection t={t} />}
-            <div id="settings-dependencies">
+            {canInstallDependencies && <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}
                 footer={usesHomebrewDependencyInstaller ? t.depInstallNoteMac : (usesBundledDependencyInstaller ? t.depInstallNoteWindows : t.depInstallNote)}
@@ -2537,7 +2546,7 @@ function hasStoredCredential(record) {
                   </IOSRow>
                 )}
               </IOSSection>
-            </div>
+            </div>}
           </>
         );
       };
