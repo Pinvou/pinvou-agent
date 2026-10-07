@@ -7,7 +7,7 @@
 // @returns {{ name: string, description: string } | null} overlay 词条,无则 null
 export function personaOverlayFor(card, lang) {
   if (!card || !lang || lang === 'zh' || card.source === 'user') return null;
-  const overlays = typeof window !== 'undefined' ? window.PERSONA_I18N : null;
+  const overlays = typeof window === 'undefined' ? null : window.PERSONA_I18N;
   const entry = overlays && overlays[card.id];
   return (entry && entry[lang]) || null;
 }

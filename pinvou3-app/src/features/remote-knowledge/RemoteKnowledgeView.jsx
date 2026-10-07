@@ -266,6 +266,11 @@ function RemoteKnowledgeView({ t }) {
     ? (uploadInProgress ? t.remoteKbCollapse : t.remoteKbDone)
     : t.remoteKbCancel;
 
+  const closeUploadDialog = useCallback(() => {
+    if (!uploadHasStarted) setPublishDraft(null);
+    setShowUploadDialog(false);
+  }, [uploadHasStarted]);
+
   const documentStatusLabel = status => ({
     pending: t.remoteKbStatusPending,
     ready: t.remoteKbStatusReady,
@@ -644,7 +649,7 @@ function RemoteKnowledgeView({ t }) {
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [closeOwnerPanel, confirmation, documentToTrash, finishConfirmation, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
+  }, [closeOwnerPanel, closeUploadDialog, confirmation, documentToTrash, finishConfirmation, isBusy, joinFeedback?.status, showCollectionCreator, showConnector, showOwnerPanel, showPublishDialog, showRecoveryCode, showRestoreDialog, showUploadDialog, uploadHasStarted]);
   // Escape / outside-click close for the add-content menu; escapeOnWindow keeps the original window-level keydown listener,
   // preserving the original ordering against the popover Escape chain above (closeOnEscape).
   useOutsidePointerClose(
@@ -1133,11 +1138,6 @@ function RemoteKnowledgeView({ t }) {
   }
 
   const asPathList = value => (Array.isArray(value) ? value : (value ? [value] : []));
-
-  function closeUploadDialog() {
-    if (!uploadHasStarted) setPublishDraft(null);
-    setShowUploadDialog(false);
-  }
 
   async function chooseUploadFiles() {
     if (uploadInProgress) return;
