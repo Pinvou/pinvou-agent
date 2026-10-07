@@ -1387,7 +1387,25 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
     let content = match source {
         AddSource::Inline(content) => content,
         AddSource::File(path) => {
-            support::read_text_file_capped(&path, 64 * 1024, "memory_content_file_unreadable")?
+            // Round-43 review: join the gated-file-read rule this PR applies
+            // everywhere else user-pointed file content enters a model
+            // context (voice postprocess, feedback submit, files ingest,
+            // agent run --attach): canonicalize (symlink-accurate), then the
+            // sensitive-path refusal. Memory content is rendered into the
+            // organize prompt verbatim, so a scripted
+            // `--file ~/.aws/credentials` would otherwise store the secret
+            // head into a store later LLM calls consume. The CANONICAL path
+            // is what was policy-checked, so it is also what gets read.
+            let canonical = std::fs::canonicalize(&path).map_err(|error| {
+                CliError::failed(format!(
+                    "memory add: cannot resolve content file {}: {error}",
+                    path.display()
+                ))
+            })?;
+            crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
+                CliError::failed(format!("memory add: refusing content file: {reason}"))
+            })?;
+            support::read_text_file_capped(&canonical, 64 * 1024, "memory_content_file_unreadable")?
         }
     };
     if content.trim().is_empty() {

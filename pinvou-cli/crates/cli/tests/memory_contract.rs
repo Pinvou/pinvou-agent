@@ -2364,3 +2364,46 @@ fn memory_add_whitespace_only_file_body_is_a_host_failure() {
         expect_command_error(&["pinvou", "memory", "add", "preference", "--content", "   "]);
     assert!(error.to_string().contains("non-empty content"), "{error}");
 }
+
+/// Round-43 review: `memory add --file` joins the gated-file-read rule —
+/// the content is rendered into the organize prompt verbatim, so a
+/// credential-location file must be refused before it becomes a stored
+/// item later LLM calls consume.
+#[test]
+fn memory_add_refuses_a_credential_location_file() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("add-credential-file");
+    let file = home.path().join(".aws").join("credentials");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n",
+    )
+    .unwrap();
+
+    let parsed = parse_args([
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--file",
+        file.to_str().unwrap(),
+    ])
+    .expect("the add line parses");
+    let error = execute(parsed).expect_err("a credential-path file must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("refusing content file"),
+        "{error}"
+    );
+
+    // And nothing was stored.
+    assert!(
+        !home.path().join("memory").join("_pending.jsonl").exists()
+            || std::fs::read_to_string(home.path().join("memory").join("_pending.jsonl"))
+                .unwrap()
+                .trim()
+                .is_empty(),
+        "the refused file must not enqueue a memory item"
+    );
+}

@@ -1853,7 +1853,14 @@ fn codex_authenticated(executable: &Path) -> bool {
         return true;
     }
     let home = pinvou3_lib::platform::paths::user_home_dir();
-    if let Ok(raw) = std::fs::read_to_string(home.join(".codex").join("config.toml")) {
+    // Round-43 review: capped like every other family lane — an over-cap
+    // config degrades to the same "cannot confirm authentication" answer a
+    // parse failure gives.
+    if let Ok(raw) = crate::support::read_text_file_capped(
+        &home.join(".codex").join("config.toml"),
+        crate::support::VENDOR_CONFIG_READ_CAP_BYTES,
+        "code codex config",
+    ) {
         // Mirror of `providers::codex_config_relay_env_key_present`: the relay
         // provider counts only while it is the active `model_provider` and its
         // `env_key` is non-empty — a relay provider that was configured but
@@ -1907,10 +1914,20 @@ fn kimi_authenticated() -> bool {
         return true;
     }
     let root = kimi_data_root();
-    let oauth_credentials_valid =
-        std::fs::read_to_string(root.join("credentials").join("kimi-code.json"))
-            .is_ok_and(|raw| kimi_credentials_valid(&raw));
-    let Ok(config) = std::fs::read_to_string(root.join("config.toml")) else {
+    // Round-43 review: capped like every other family lane — an over-cap
+    // file degrades to the same "cannot confirm authentication" answer a
+    // parse failure gives.
+    let oauth_credentials_valid = crate::support::read_text_file_capped(
+        &root.join("credentials").join("kimi-code.json"),
+        crate::support::VENDOR_CONFIG_READ_CAP_BYTES,
+        "code kimi credentials",
+    )
+    .is_ok_and(|raw| kimi_credentials_valid(&raw));
+    let Ok(config) = crate::support::read_text_file_capped(
+        &root.join("config.toml"),
+        crate::support::VENDOR_CONFIG_READ_CAP_BYTES,
+        "code kimi config",
+    ) else {
         return false;
     };
     kimi_runtime_config_ready(&config, oauth_credentials_valid)
@@ -3309,8 +3326,15 @@ fn providers_save(
     // boot-time snapshot used to silently revert a concurrent GUI field
     // edit to the same record (the store's reload-under-lock only refreshes
     // id/created_at/credential). The pre-check above already refused an
-    // unknown id before prompting; this second read is cheap and bounded.
-    let existing = provider_id.and_then(|id| manager.store().get(agent, id));
+    // unknown id before prompting. Round-43 review: the re-read must be a
+    // FRESH one — the plain `get` reads only the in-memory map loaded at
+    // `open_providers`, so nothing between the two `get`s reloaded it and
+    // this "second read" saw the same stale snapshot (the merge values
+    // still came from boot time, and `upsert_locked` wholesale-replaces
+    // this record). `record_after_reload` re-reads the disk state under
+    // the section lock; the residual window shrinks to the check→save
+    // gap instead of the unbounded stdin block.
+    let existing = provider_id.and_then(|id| manager.store().record_after_reload(agent, id));
     if let (Some(id), None) = (provider_id, existing.as_ref()) {
         return Err(CliError::failed(format!(
             "provider_not_found: no provider '{id}' for agent {agent}"
@@ -3431,8 +3455,16 @@ fn providers_remove(
     let manager = open_providers()?;
     // Pre-check in English, mirroring the update and switch lanes: the
     // store's delete path fails an unknown id with a Chinese "not found"
-    // message that `store_error` would otherwise surface.
-    if manager.store().get(agent, provider_id).is_none() {
+    // message that `store_error` would otherwise surface. Round-43 review:
+    // the pre-check reads FRESH (`record_after_reload` re-reads disk under
+    // the section lock) — the boot-memory `get` would refuse a provider a
+    // peer added since this process started, and green-light one a peer
+    // deleted (whose delete then surfaces the store's Chinese message).
+    if manager
+        .store()
+        .record_after_reload(agent, provider_id)
+        .is_none()
+    {
         return Err(CliError::failed(format!(
             "provider_not_found: no provider '{provider_id}' for agent {agent}"
         )));
@@ -3440,17 +3472,21 @@ fn providers_remove(
     let removed = manager
         .delete(agent, provider_id)
         .map_err(|error| store_error("providers remove", provider_id, error))?;
+    // The human line must not claim a removal that did not happen (a peer
+    // delete landing before ours leaves nothing to remove; the JSON field
+    // already reports `removed: false`).
+    let human = if removed.is_some() {
+        format!("removed {provider_id} from {agent}")
+    } else {
+        format!("{provider_id} was already absent from {agent}")
+    };
     let value = serde_json::json!({
         "agent": agent,
         "action": "removed",
         "provider_id": provider_id,
         "removed": removed.is_some(),
     });
-    Ok(success(render(
-        output,
-        format!("removed {provider_id} from {agent}"),
-        &value,
-    )))
+    Ok(success(render(output, human, &value)))
 }
 
 fn providers_switch(
@@ -3463,7 +3499,16 @@ fn providers_switch(
     // Pre-check the id so the common typo path reports in English instead of
     // surfacing the lib's untranslated store message (the update lane does
     // the same before secret resolution); the lib re-checks authoritatively.
-    if manager.store().get(agent, provider_id).is_none() {
+    // Round-43 review: the pre-check reads FRESH — the boot-memory `get`
+    // green-lights a provider a peer deleted, whose delete then lands during
+    // the unbounded keychain wait below and surfaces the store's Chinese
+    // "Provider 不存在" verbatim (the exact translation boundary this
+    // pre-check exists to keep); it also false-refuses a peer-added id.
+    if manager
+        .store()
+        .record_after_reload(agent, provider_id)
+        .is_none()
+    {
         return Err(CliError::failed(format!(
             "provider_not_found: no provider '{provider_id}' for agent {agent}"
         )));

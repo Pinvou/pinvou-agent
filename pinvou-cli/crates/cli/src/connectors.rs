@@ -1595,6 +1595,20 @@ fn set_enabled(
             ))
         },
     )?;
+    // Round-43 review: same post-save read-back verification as the plugins
+    // sibling — storage errors already surfaced through the `?`, so this is
+    // only reachable if the write did not leave the list in the requested
+    // state. Fail closed in both directions: an enable that did not stick
+    // re-activates the package, and a lost disable leaves it active while
+    // the caller sees success.
+    let persisted = pinvou3_lib::features::marketplace::load_disabled_bundles_for(scope);
+    if persisted.iter().any(|id| id == &package_id) == enabled {
+        return Err(CliError::failed(format!(
+            "connectors {}: could not persist the plain-scope disabled set (the resolved set \
+             did not take the requested state)",
+            spec.id
+        )));
+    }
     let connected = cli_connected(spec).unwrap_or(false);
     // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
     // the connection state + the legacy `<id>_disabled` marker

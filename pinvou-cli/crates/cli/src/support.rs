@@ -255,6 +255,13 @@ pub fn read_text_file_capped(
         .map_err(|_| CliError::failed(format!("{action}: {} is not valid UTF-8", path.display())))
 }
 
+/// Round-43 review: read cap for the fixed-path vendor config files the CLI
+/// only parses for readiness probes (codex config.toml, kimi config and
+/// credentials, mcp.json). A file this size is pathological; over-cap
+/// degrades exactly like a parse failure on the readiness lanes and refuses
+/// on the mcp.json lane, instead of being slurped whole.
+pub const VENDOR_CONFIG_READ_CAP_BYTES: usize = 16 * 1024 * 1024;
+
 /// The byte twin of [`read_text_file_capped`] — same regular-file gate and
 /// `take`-bounded read for payloads the CLI only verifies or re-emits
 /// (round-38 review: the benchmark artifact lanes were the last unbounded
@@ -263,11 +270,22 @@ pub fn read_text_file_capped(
 /// has grown, not a format limit, so callers pass their existing failure
 /// code as `action` and keep their contract stable.
 pub fn read_bytes_capped(path: &Path, max_bytes: usize, action: &str) -> Result<Vec<u8>, CliError> {
-    let meta = std::fs::metadata(path).map_err(|error| {
-        CliError::failed(format!(
+    // Round-43 review: same error classification as the text twin —
+    // collapsing every metadata failure into "cannot inspect" sends the
+    // user hunting for a typo when the real cause is EACCES on a parent
+    // directory or a symlink loop; the exit class stays 1 for all of them.
+    let meta = std::fs::metadata(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            CliError::failed(format!("{action}: {} does not exist", path.display()))
+        }
+        std::io::ErrorKind::PermissionDenied => CliError::failed(format!(
+            "{action}: {} cannot be read: permission denied",
+            path.display()
+        )),
+        _ => CliError::failed(format!(
             "{action}: cannot inspect {}: {error}",
             path.display()
-        ))
+        )),
     })?;
     if !meta.is_file() {
         return Err(CliError::failed(format!(
@@ -738,6 +756,15 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
                     Err(_) => break,
                 }
             }
+        } else {
+            // Round-43 review: a taskkill that never ran (not on PATH, AV
+            // interference) must not be silent — the direct child kill below
+            // still lands, but the descendants survive with no trace of why.
+            crate::note!(
+                "pinvou: warning: could not spawn taskkill for process-group cleanup of pid {}; \
+                 descendant processes may outlive this run",
+                child.id()
+            );
         }
     }
     let _ = child.kill();

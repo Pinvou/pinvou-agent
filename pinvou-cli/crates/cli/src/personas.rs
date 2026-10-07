@@ -1195,6 +1195,21 @@ fn persist_equipped_persona(
     persona_id: &str,
     pending_body: &str,
 ) -> Result<(), CliError> {
+    persist_equipped_persona_checked(session_id, persona_id, pending_body, &|| Ok(()))
+}
+
+/// Round-43 review: the production variant re-validates session existence
+/// INSIDE the equip lock. The equip lane's pre-check runs before the lock,
+/// so a GUI session delete landing in between would otherwise materialize
+/// `sessions/<id>/persona_equipped.json` under a record-less ghost dir that
+/// `unequip`/`active` then refuse to touch; the checker runs while the lock
+/// is held, shrinking the window to the check→write gap.
+fn persist_equipped_persona_checked(
+    session_id: &str,
+    persona_id: &str,
+    pending_body: &str,
+    session_still_exists: &dyn Fn() -> Result<(), CliError>,
+) -> Result<(), CliError> {
     let path = equip_state_path(session_id)?;
     // Hold across the whole stage: a concurrent consume's read→clear pair
     // must not interleave with this write (see [`equip_state_lock`]).
@@ -1202,6 +1217,7 @@ fn persist_equipped_persona(
     let _guard = lock.write().map_err(|error| {
         CliError::failed(format!("cannot lock the persona equip state: {error}"))
     })?;
+    session_still_exists()?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|error| {
             CliError::failed(format!(
@@ -1286,7 +1302,15 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
         Some(persona_id.to_owned()),
         Some(injection.clone()),
     );
-    persist_equipped_persona(session_id, persona_id, &injection)?;
+    persist_equipped_persona_checked(session_id, persona_id, &injection, &|| {
+        store.load(session_id).map_err(|error| {
+            CliError::failed(format!(
+                "personas equip: session {session_id} was deleted while the equip was staging \
+                 ({error})"
+            ))
+        })?;
+        Ok(())
+    })?;
     let mut value = summary_value(&summary, "equip")?;
     value["session_id"] = serde_json::json!(session_id);
     value["applies_to_next_turn"] = serde_json::json!(true);

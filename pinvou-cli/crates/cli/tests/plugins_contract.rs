@@ -1259,12 +1259,9 @@ fn oauth_login_guards_and_cancel_behaviour() {
     );
 }
 
-/// A user who pastes the plaintext secret where the env-var NAME belongs gets
-/// a failed variable lookup, and that failure must not echo the pasted value
-/// back into the diagnostics — it names only the config key plus the
-/// KEY=ENV_VAR_NAME hint. Hermetic: `resolve_secrets` runs before any
-/// marketplace/network access, so the missing variable fails the command
-/// with exit 1 immediately.
+/// A user who pastes the plaintext secret where the env-var NAME belongs is
+/// refused at PARSE with the shape rule, and that refusal must not echo the
+/// pasted value back into the diagnostics.
 #[test]
 fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
     // Round-42 review: a value that cannot be an env-var NAME (the dashes
@@ -1293,6 +1290,29 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
     assert!(
         message.contains("KEY=ENV_VAR_NAME") || message.contains("--secret"),
         "{message}"
+    );
+
+    // Round-43 review: restore the execute-time lane pin the round-42
+    // rewrite dropped — a VALID env-var NAME whose variable is unset still
+    // fails at execute (`resolve_secrets` runs before any marketplace or
+    // network access), and the refusal names the missing variable plus the
+    // KEY=ENV_VAR_NAME hint instead of anything value-shaped.
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("tools-secret-unset-var");
+    let _amap = RestoreEnvVar("PINVOU_CLI_TEST_AMAP_KEY", None);
+    let (message, code) = run_err(&[
+        "pinvou",
+        "plugins",
+        "tools",
+        "install",
+        "weather",
+        "--secret",
+        "AMAP_KEY=PINVOU_CLI_TEST_AMAP_KEY",
+    ]);
+    assert_eq!(code, ExitCode::Failed, "{message}");
+    assert!(
+        message.contains("config key AMAP_KEY") && message.contains("is not set"),
+        "the refusal names the missing variable lane: {message}"
     );
 }
 

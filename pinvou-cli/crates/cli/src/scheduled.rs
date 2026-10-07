@@ -2756,7 +2756,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // between the snapshot read and this rename would otherwise be
     // silently reverted. The best-effort rollback writes below stay plain:
     // they only run after THIS write committed, and a refused rollback is
-    // disclosed like any other best-effort failure.
+    // disclosed like any other best-effort failure. Residual (round-43
+    // review): a rollback write is itself unchecked, so a GUI
+    // archive_task/restore_task landing between the checked commit and
+    // the rollback rename is clobbered by it — the same sub-millisecond
+    // window class the commit guard closes, accepted here because the
+    // rollback only fires on an already-failing delete.
     if let Err(error) = write_json_atomic_checked(&archive_path, &archive, &archive_stamp) {
         restore_status(&previous_status);
         return Err(error);
@@ -2955,18 +2960,31 @@ fn run(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             }
         }
     }
-    let kind = kind_for(
-        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
-        id,
-    );
-    if kind.as_deref() != Some("memory_organize") {
-        // Chat-kind run-now drives the GUI's ScheduledChatExecutor +
-        // foundation TaskManager, which are not exposed headlessly; report a
-        // stable failure instead of faking a run.
-        return Err(CliError::failed(format!(
-            "scheduled_chat_run_requires_product_host: task {id} is an engine conversation \
+    let kinds_registry = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
+    let raw_kind = registry_tasks_view(&kinds_registry)
+        .get(id)
+        .and_then(|entry| str_field(entry, "kind"))
+        .map(str::to_owned);
+    if raw_kind.as_deref() != Some("memory_organize") {
+        // Round-43 review: distinguish the two non-organize shapes. A chat
+        // task (or a kindless/missing entry, the legacy default) IS an
+        // engine conversation task — the app can run it, so the remedy is
+        // the product host. A present-but-unsupported kind value
+        // (hand-edited sidecar, or a task written by a different app
+        // version) is refused by the app's executor too, so pointing there
+        // would send the user to a run that also fails; mirror the
+        // executor's remedy instead.
+        return Err(CliError::failed(match raw_kind.as_deref() {
+            Some(unsupported) => format!(
+                "scheduled_run_unsupported_kind: task {id} has scheduled kind {unsupported:?}, \
+                 which neither the CLI nor the app can run; update the app or recreate the task \
+                 with a supported kind (chat or memory organize)"
+            ),
+            None => format!(
+                "scheduled_chat_run_requires_product_host: task {id} is an engine conversation \
 task; {RUN_HELP_HOST_REQUIREMENT} (run it from the Pinvou app)"
-        )));
+            ),
+        }));
     }
     if !memory_feature::memory_enabled() {
         return Err(CliError::failed(
