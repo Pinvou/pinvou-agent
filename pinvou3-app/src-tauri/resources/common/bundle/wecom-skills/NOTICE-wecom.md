@@ -333,8 +333,8 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 - **wecomcli-email/references/reply-mail.md 步骤四**:`{工作目录}/temp/output/mail_reply_<唯一后缀>.md`
   改为 `tmp/mail/mail_reply_<唯一后缀>.md`。`temp/output/` 是自创的非规范路径,同一「写正文再
   发送」操作在 send/reply 两种教程里写法不一致;统一到 `tmp/mail/` 约定。
-- 两处均为本地修改,下次 sync 需重放;此前各轮 NOTICE 未登记过邮件正文路径(2026-09-05 第二轮
-  登记的是 30-day fiction 删除等,与本项无重叠)。
+- 两处均为本地修改,下次 sync 需重放;此前各轮 NOTICE 未登记过邮件正文路径(2026-08-27
+  calendar/meeting 轮登记的是 30-day fiction 删除等,与本项无重叠)。
 
 ### 周期能力措辞与联系人搜索说明(2026-10-07,模型向文本审计)
 

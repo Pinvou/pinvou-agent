@@ -176,20 +176,30 @@ const larkAuthLoginViolation = (line, inFence) => {
     : "lark auth login --scope 须内联 --no-wait（lark-shared 两段式）";
 };
 
-for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
+// 扫描器走真实的逐行围栏状态机（与下方 pack 扫描同一实现），固定装置也必须
+// 经过它——若只直接调 larkAuthLoginViolation，围栏跟踪自身的回退（比如围栏
+// 正则被改坏）不会让任何固定装置变红，围栏覆盖会静默失效。
+const scanLarkAuthLogin = (text) => {
   let inFence = false;
-  for (const line of read(f).split("\n")) {
+  for (const line of text.split("\n")) {
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
       continue;
     }
     const violation = larkAuthLoginViolation(line, inFence);
-    if (violation) assert.fail(`${rel(f)}: ${violation}: ${line.trim()}`);
+    if (violation) return violation;
   }
+  return null;
+};
+
+for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
+  const violation = scanLarkAuthLogin(read(f));
+  if (violation) assert.fail(`${rel(f)}: ${violation}`);
 }
 
 // 规则 5 盲点自检：五个曾漏网的历史形态必须保持「必失败」，现行合法
-// 形态必须保持「必通过」（防下次收紧/放松时静默回退）。
+// 形态必须保持「必通过」（防下次收紧/放松时静默回退）。全部经由
+// scanLarkAuthLogin（含围栏状态机）判定。
 {
   const fencedOldForms = [
     // 围栏内可执行行（message-enrichment 旧形）
@@ -207,13 +217,13 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
   ];
   for (const line of fencedOldForms) {
     assert.ok(
-      larkAuthLoginViolation(line, true) !== null,
+      scanLarkAuthLogin(`\`\`\`bash\n${line}\n\`\`\`\n`) !== null,
       `围栏旧形必须判违例: ${line}`,
     );
   }
   for (const line of plainOldForms) {
     assert.ok(
-      larkAuthLoginViolation(line, false) !== null,
+      scanLarkAuthLogin(`${line}\n`) !== null,
       `非围栏旧形必须判违例: ${line}`,
     );
   }
@@ -224,11 +234,17 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
   ];
   for (const line of okForms) {
     assert.equal(
-      larkAuthLoginViolation(line, false),
+      scanLarkAuthLogin(`${line}\n`),
       null,
       `合法指针形态不得误伤: ${line}`,
     );
   }
+  // 围栏内的合法两段式形态必须放行（围栏收紧不得反向误伤可执行行）。
+  assert.equal(
+    scanLarkAuthLogin('```bash\nlark-cli auth login --scope "xxx" --no-wait --json\n```\n'),
+    null,
+    "围栏内 --no-wait 两段式不得误伤",
+  );
 }
 
 // 6) frontmatter 契约：连接器技能 description ≤280、「何时用」开头、bins 正确
@@ -340,5 +356,34 @@ assert.ok(
 // the exemption point and are registered in the domain's NOTICE file instead.
 const EXEMPT_FILES = [];
 assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由，不得静默扩权");
+
+// 10) dws 不得再引用不存在的 `calendar participant *` 命令组（2026-10-07
+// 模型向文本审计：dws calendar 的参会人二级子命令是 `attendee`，无
+// `participant` 组；危险表/references/脚本照抄会让模型执行不存在的命令，
+// 而 SKILL.md 错误处理又禁止自行换方案，任务直接卡死。已改 7 个文件 8 处，
+// 见 NOTICE-dingtalk.md 2026-10-07 节第 1 条）。todo 模块的
+// `task add-participant`/`remove-participant` 是另一真实命令组、todo
+// `--participants` flag、`--role-types ...participant` 与 minutes 的
+// `participants` API 字段名均不含 `calendar participant`，不受影响。
+for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
+  for (const line of read(f).split("\n")) {
+    assert.ok(
+      !/calendar\s+participant/.test(line),
+      `${rel(f)}: 残留不存在的 calendar participant 命令（应为 calendar attendee + --attendees）: ${line.trim()}`,
+    );
+  }
+}
+
+// 11) tmeet `--meeting-id` 不得用 9~12 位数字示例（2026-10-07 模型向文本
+// 审计：包内格式表把 9~12 位数字归类为会议号 meeting-code，meeting-id 为
+// 13 位以上；54 处占位已统一为 19 位，见 NOTICE-tmeet.md 第 20 条）。
+// `--sub-meeting-id` 是另一真实 flag（包内未规定位数），不受此规则约束。
+for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
+  const hit = read(f).match(/(?<![\w-])--meeting-id[=: ]+["']?\d{1,12}\b/);
+  assert.ok(
+    !hit,
+    `${rel(f)}: --meeting-id 示例用了会议号形态的短数字（meeting-id 为 13 位以上）: ${hit?.[0]}`,
+  );
+}
 
 console.log("✓ connector skills pinvou-contract lint passed");

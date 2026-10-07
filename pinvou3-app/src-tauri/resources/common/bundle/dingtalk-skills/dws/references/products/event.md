@@ -289,7 +289,7 @@ dws event stop --all --yes
 
 ## Troubleshooting
 
-- consume 报 bus 启动失败：报错已带子进程真实原因。多为登录问题，`dws --profile <x> auth status` 看登录态（非默认组织带对 `--profile`），过期就 `auth login` 重登。
+- consume 报 bus 启动失败：报错已带子进程真实原因。多为登录问题，`dws --profile <x> auth status` 看登录态（非默认组织带对 `--profile`）；过期时不要在会话内跑 `auth login`（阻塞式扫码设备流），把登录命令交给用户在其终端重登后再试。
 - 本地日志：`~/.dws/events/<edition>/personal_stream/<hash>/bus.log`（`edition` 一般 `open`，`hash` 见 `dws event status` 的 Workdir）；极早期失败可能无日志，以 consume 报错为准。
 - 有残留 / 连不上：`dws event status` 查 stale，先用 `dws event stop --all --dry-run` 预览，确认后改用 `--yes` 清理重试。
 - 挂住无输出：多是误加 `--foreground`（跑 bus、不打印事件），去掉。

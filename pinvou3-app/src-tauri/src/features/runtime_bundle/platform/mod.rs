@@ -163,11 +163,13 @@ pub(crate) use crate::platform::connector_skills::{
 /// multiagent_depth_guard now emits its deny reason as stdout
 /// JSON (the engine reads reasons only from stdout; stderr never reaches the
 /// model) with a truthful narrow-only rationale (foundation #5253 min-clamp)
-/// and covers the workflow snake_case alias; deny_sensitive_paths names both
+/// and covers the workflow snake_case alias plus the quoted camelCase key;
+/// deny_sensitive_paths names both
 /// blocked tools, matches connector aliases case-insensitively, and its
-/// header now documents the real fail-closed contract (the .sh is
-/// content-hashed and self-invalidates; the depth guard is not hashed, so it
-/// rides this bump). Built-in visual-design skill: real images allowed via
+/// header now documents the real fail-closed contract (deny_sensitive_paths.sh
+/// is content-hashed and self-invalidates; the depth-guard twins,
+/// deny_sensitive_paths.ps1, and shell_env.sh are not hashed and ride this
+/// bump). Built-in visual-design skill: real images allowed via
 /// local download only (no external URLs), matching the poster scene;
 /// present_artifact protocol stated once. Next free slot after 0.32.
 /// Skill trees are excluded from the content hash, so the semantic bump is
@@ -210,7 +212,7 @@ const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 /// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. Chinese
 /// is used to match the all-Chinese instruction file this line embeds into (the
 /// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
-const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、可在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
+const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、需切换到简体中文界面才能在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
 
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
 /// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
@@ -916,7 +918,7 @@ mod tests {
         assert!(!disabled.contains("已记下"));
         assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
         assert!(disabled.contains(
-            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、可在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
+            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅简体中文界面提供、需切换到简体中文界面才能在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
         ));
     }
 
@@ -1488,6 +1490,32 @@ mod tests {
             workflow_snake.status.code(),
             Some(2),
             "inline JS 的 snake_case max_depth 覆盖同样必须拦截: {workflow_snake:?}"
+        );
+
+        // TaskOptions' canonical camelCase key also arrives quoted inside
+        // JSON payloads; the guard must catch the quoted form too (it used
+        // to match only bare camelCase, so a quoted "maxDepth" override was
+        // silently allowed through).
+        let workflow_quoted_camel = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"tasks":[{"options":{"maxDepth": 2}}]}"#,
+        );
+        assert_eq!(
+            workflow_quoted_camel.status.code(),
+            Some(2),
+            "workflow JSON 载荷里引号包裹的 camelCase maxDepth 覆盖同样必须拦截: {workflow_quoted_camel:?}"
+        );
+        // The escaped-quote carve-out must cover the camel key as well: a
+        // quoted example inside task prose is not an override.
+        let workflow_camel_example = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"note":"use \"maxDepth\":2 for children"}"#,
+        );
+        assert!(
+            workflow_camel_example.status.success(),
+            "正文里的转义 camelCase 示例不得误伤: {workflow_camel_example:?}"
         );
 
         // Prose that merely mentions max_depth next to a quote or paren is not

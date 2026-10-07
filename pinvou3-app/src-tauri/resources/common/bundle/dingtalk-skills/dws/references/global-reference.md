@@ -43,7 +43,7 @@ dws --profile <corpId:userId> contact user get-self --format json
 30 天内使用一次即自动续期。
 
 ### 认证失败处理
-- 命令返回 `AUTH_TOKEN_EXPIRED` / `USER_TOKEN_ILLEGAL` / "Token验证失败" → 执行 `dws auth login` 重新登录
+- 命令返回 `AUTH_TOKEN_EXPIRED` / `USER_TOKEN_ILLEGAL` / "Token验证失败" → 不要在会话内直接跑 `dws auth login`（阻塞式扫码设备流，会一直等待授权直至超时，用户看不到扫码链接）；把登录命令交给用户在其终端自行执行，完成后再继续
 - macOS 返回 `ciphertext_key_mismatch`，且普通终端仍能登录 → 先用系统 Keychain 模式执行 `auth migrate-keychain --to file-dek --dry-run`，通过后加 `--yes`；禁止直接 `auth reset`
 
 ### Headless 环境 (CI/CD)

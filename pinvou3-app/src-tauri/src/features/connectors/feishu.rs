@@ -497,7 +497,9 @@ mod tests {
             parse_lark_version("lark-cli version 1.0.95 (build 2026-09-30T00:00:00Z abc1234)"),
             Some((1, 0, 95)),
         );
-        // 实际 release 产物经 git describe 打 `v` 前缀(`lark-cli version v1.0.95`)。
+        // `go install`/模块构建产物经 buildinfo 携带 `v` 前缀
+        // (`lark-cli version v1.0.95`);goreleaser 的 release 产物注入的是
+        // 去 `v` 的 tag,两种形态都必须解析。
         assert_eq!(
             parse_lark_version("lark-cli version v1.0.95"),
             Some((1, 0, 95)),

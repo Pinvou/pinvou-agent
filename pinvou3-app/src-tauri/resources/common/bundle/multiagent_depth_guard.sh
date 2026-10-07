@@ -30,11 +30,13 @@ case "$tool_name" in
     pattern='(^|[^\\])"(max_depth|maxDepth|max_spawn_depth)"[[:space:]]*:[[:space:]]*[1-9][0-9]*'
     ;;
   workflow)
-    # Workflow accepts structured plans ("max_depth") and inline JS tasks in
-    # both camelCase (maxDepth) and snake_case (max_depth — the TaskOptions
-    # serde alias).  The multi-agent prompt does not recommend Workflow, but
-    # the same ceiling still applies when the model chooses that existing tool.
-    pattern='(^|[^\\])("max_depth"[[:space:]]*:|[{,[:space:]]max_depth[[:space:]]*:|maxDepth[[:space:]]*:)[[:space:]]*[1-9][0-9]*'
+    # Workflow accepts structured plans and inline JS tasks.  TaskOptions
+    # (rename_all = camelCase) carries max_depth under the canonical key
+    # "maxDepth" with the snake_case "max_depth" serde alias — both arrive
+    # quoted in JSON payloads, and bare in inline JS.  The multi-agent
+    # prompt does not recommend Workflow, but the same ceiling still
+    # applies when the model chooses that existing tool.
+    pattern='(^|[^\\])("(max_depth|maxDepth)"[[:space:]]*:|[{,[:space:]]max_depth[[:space:]]*:|maxDepth[[:space:]]*:)[[:space:]]*[1-9][0-9]*'
     ;;
   *)
     exit 0

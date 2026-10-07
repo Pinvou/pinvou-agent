@@ -310,4 +310,23 @@ mod tests {
     fn upload_location_rejects_outside_home() {
         assert!(validate_upload_location(Path::new("/etc/passwd")).is_err());
     }
+
+    /// The reminder states the real contract (sudo is execpolicy-denied here
+    /// — safety_deny_rules always emits the sudo deny rules when the
+    /// platform hardcodes the switch off) and must not claim a Linux-only
+    /// toggle exists. Pin the anchors.
+    #[test]
+    fn super_permission_reminder_pins_sudo_denied_contract() {
+        let reminder = super_permission_turn_reminder();
+        for anchor in ["禁止用 sudo", "execpolicy 直接拒绝", "系统终端"] {
+            assert!(
+                reminder.contains(anchor),
+                "reminder lost `{anchor}`: {reminder}"
+            );
+        }
+        assert!(
+            !reminder.contains("设置"),
+            "reminder must not point at the in-app toggle"
+        );
+    }
 }

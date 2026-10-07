@@ -38,11 +38,12 @@ $hasPositiveDepth = switch ($toolName) {
         break
     }
     "workflow" {
-        # Inline JS tasks may pass the depth override in camelCase (maxDepth)
-        # or snake_case (max_depth — the TaskOptions serde alias).
+        # TaskOptions (rename_all = camelCase) carries max_depth under the
+        # canonical key "maxDepth" with the snake_case "max_depth" serde
+        # alias — both arrive quoted in JSON payloads, and bare in inline JS.
         [regex]::IsMatch(
             $toolArgs,
-            '(?<!\\)("max_depth"\s*:|(?<=[{,\s])max_depth\s*:|maxDepth\s*:)\s*[1-9][0-9]*'
+            '(?<!\\)(("max_depth"|"maxDepth")\s*:|(?<=[{,\s])max_depth\s*:|maxDepth\s*:)\s*[1-9][0-9]*'
         )
         break
     }

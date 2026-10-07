@@ -23,11 +23,22 @@ pub fn disable_super_permission() -> Result<(), String> {
     run_pkexec(&["rm", "-f", SUDOERS_PATH])
 }
 
+/// ON-state per-turn reminder. Doctrine anchors (status|restart scoping,
+/// denied persistence ops, credential list) must stay aligned with the
+/// static red line in instructions-shared.md and the execpolicy deny
+/// families in safety_deny_rules.rs — the test below pins them.
+const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`visudo`、`crontab -e` 等持久化操作仍会被安全策略拒绝,不要尝试)。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。";
+
+/// OFF-state per-turn reminder. The settings path must match the i18n labels
+/// (uiSettings.permissions + uiSettingsDetail.advancedPermission); the old
+/// 【设置→系统权限】 path pointed at a nonexistent location.
+const TURN_REMINDER_OFF: &str = "超级权限【已关闭】。**禁止用 sudo**(会被立即拒绝（execpolicy Deny）,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。";
+
 pub fn super_permission_turn_reminder() -> &'static str {
     if super_permission_is_enabled() {
-        "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`visudo`、`crontab -e` 等持久化操作仍会被安全策略拒绝,不要尝试)。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。"
+        TURN_REMINDER_ON
     } else {
-        "超级权限【已关闭】。**禁止用 sudo**(会被立即拒绝（execpolicy Deny）,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。"
+        TURN_REMINDER_OFF
     }
 }
 
@@ -76,5 +87,47 @@ mod tests {
         assert!(validate_username("foo'\"bar").is_err());
         assert!(validate_username("").is_err());
         assert!(validate_username(&"a".repeat(33)).is_err());
+    }
+
+    /// Reminder = doctrine = enforcement: the ON-state advisory (status|restart
+    /// scoping, denied persistence ops, credential red line) and the OFF-state
+    /// settings path each regressed once before (stale 【设置→系统权限】 path;
+    /// unscoped systemctl advice). Pin the load-bearing anchors so a revert
+    /// fails here instead of drifting silently again.
+    #[test]
+    fn turn_reminder_pins_doctrine_anchors() {
+        // ON state: advisory scoped to the allowed surface, denied ops named,
+        // credential list mirroring the static red line (incl. /etc/sudoers).
+        for anchor in [
+            "sudo systemctl status|restart",
+            "systemctl enable/mask",
+            "visudo",
+            "crontab -e",
+            "「红线」",
+            "/etc/sudoers",
+            ".env",
+            "/etc/shadow",
+        ] {
+            assert!(
+                TURN_REMINDER_ON.contains(anchor),
+                "ON reminder lost `{anchor}`: {TURN_REMINDER_ON}"
+            );
+        }
+        // OFF state: the corrected settings path (each segment matches the
+        // zh i18n labels) plus the deny guidance.
+        for anchor in [
+            "【设置 → 权限与环境 → 高级执行权限】",
+            "execpolicy Deny",
+            "禁止用 sudo",
+        ] {
+            assert!(
+                TURN_REMINDER_OFF.contains(anchor),
+                "OFF reminder lost `{anchor}`: {TURN_REMINDER_OFF}"
+            );
+        }
+        assert!(
+            !TURN_REMINDER_OFF.contains("系统权限】"),
+            "stale settings path resurfaced"
+        );
     }
 }
