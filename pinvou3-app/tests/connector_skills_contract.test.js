@@ -432,18 +432,60 @@ for (const f of dwsTexts) {
       `dws 合法形态不得误伤: ${text}`,
     );
   }
+  // 第一形态专属固定装置:无动词的裸 `calendar participant` 引用只有归一化
+  // 第一形态能抓(动词形态抓不到);单坏第一形态时此装置必须保持红。
+  assert.ok(
+    scanDwsParticipant("| `calendar` | `participant` | 参会人（无动词命令名） |\n") !== null,
+    "裸 calendar participant（无动词）必须由第一形态判违例",
+  );
+  // 文件范围自检:argv 数组形态只存在于 .py 脚本,.py 一旦被剔出扫描范围,
+  // 上面的 argv 固定装置仍绿而真实防线已死——这里直接钉住范围本身。
+  assert.ok(
+    dwsTexts.some((f) => rel(f).endsWith("scripts/calendar_schedule_meeting.py")),
+    "规则 10 扫描范围必须包含 dws scripts/*.py(argv 数组唯一载体)",
+  );
+  assert.ok(dwsTexts.length > 0, "规则 10 扫描范围不得为空");
 }
 
 // 11) tmeet `--meeting-id` 不得用 9~12 位数字示例（2026-10-07 模型向文本
 // 审计：包内格式表把 9~12 位数字归类为会议号 meeting-code，meeting-id 为
 // 13 位以上；54 处占位已统一为 19 位，见 NOTICE-tmeet.md 第 20 条）。
 // `--sub-meeting-id` 是另一真实 flag（包内未规定位数），不受此规则约束。
+const scanTmeetMeetingId = (text) => text.match(/(?<![\w-])--meeting-id[=: ]+["']?\d{1,12}\b/);
 for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
-  const hit = read(f).match(/(?<![\w-])--meeting-id[=: ]+["']?\d{1,12}\b/);
+  const hit = scanTmeetMeetingId(read(f));
   assert.ok(
     !hit,
     `${rel(f)}: --meeting-id 示例用了会议号形态的短数字（meeting-id 为 13 位以上）: ${hit?.[0]}`,
   );
+}
+// 规则 11 盲点自检（与规则 5/10 同款，经由与 pack 扫描同一实现判定）:
+// 历史短占位必须保持「必失败」，19 位占位与合法短 flag 必须保持「必通过」。
+{
+  const tmeetOldForms = [
+    'dws meeting get --meeting-id "100000000"',
+    "--meeting-id=123456789",
+    '--meeting-id "200000001"',
+  ];
+  for (const text of tmeetOldForms) {
+    assert.ok(
+      scanTmeetMeetingId(`${text}\n`) !== null,
+      `tmeet 短占位必须判违例: ${text}`,
+    );
+  }
+  const tmeetOkForms = [
+    "--meeting-id 6953553464429888300",
+    '--meeting-id "<meeting-id>"',
+    "--meeting-code 100000000",
+    "--sub-meeting-id \"200000001\"",
+  ];
+  for (const text of tmeetOkForms) {
+    assert.equal(
+      scanTmeetMeetingId(`${text}\n`),
+      null,
+      `tmeet 合法形态不得误伤: ${text}`,
+    );
+  }
 }
 
 console.log("✓ connector skills pinvou-contract lint passed");
