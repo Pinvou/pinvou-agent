@@ -7,7 +7,7 @@ import {
   rewindNoticeText,
   rewindUndoAvailable,
   summarizeCheckpointChanges,
-} from '../src/features/codex/checkpoints.js';
+} from '../src/features/conversation/checkpoints.js';
 
 // ── checkpointMapByTurn：turn 序号对齐 ──────────────────────────────
 {
@@ -223,8 +223,10 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(ticks, 1);
 }
 
-// rewindNoticeText：restoredCheckpoint 非空 → 可反悔提示；degraded → 代码未回退；
-// 兜底 → 仅对话。
+// rewindNoticeText：restoredCheckpoint 非空 → 可反悔提示；degraded → 文件未回退；
+// 兜底 → 仅对话。conversationOnlyRequested（工作模式取消勾选「同时回退工作区
+// 文件」）把 degraded 的成因区分为「用户显式选择」→ 中性文案，不冒充「快照
+// 不可用」的降级。
 {
   const copy = {
     rewindNoticeDegraded: 'degraded',
@@ -235,6 +237,21 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2), 'degraded');
   assert.equal(rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' } }, 2), 'restored:2');
   assert.equal(rewindNoticeText(copy, { degraded: false, restoredCheckpoint: null }, 0), 'conversationOnly');
+  // 显式仅对话（取消勾选）：degraded 结果用中性文案，与快照缺失的自动降级区分。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2, true),
+    'conversationOnly',
+  );
+  // 未显式选择（code 车道/无快照变体）保持既有降级文案。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2, false),
+    'degraded',
+  );
+  // 显式选择不改变 restored 结果（勾选确认后的双层回退仍提示可反悔）。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' } }, 2, false),
+    'restored:2',
+  );
   // hadCompaction：在基础提示后如实追加压缩摘要警示，不替换基础语义；
   // false/缺省时不追加。
   assert.equal(
@@ -244,6 +261,10 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(
     rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null, hadCompaction: true }, 1),
     'degraded compaction-note',
+  );
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null, hadCompaction: true }, 1, true),
+    'conversationOnly compaction-note',
   );
   assert.equal(
     rewindNoticeText(copy, { degraded: false, restoredCheckpoint: null, hadCompaction: true }, 0),
@@ -298,7 +319,7 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
     );
   }
   // 视图侧经 canInvoke 能力检查提前收口（不为每个 refreshKey 边沿发必被拒的请求）。
-  const checkpointsSource = readFileSync(new URL('../src/features/codex/checkpoints.js', import.meta.url), 'utf8');
+  const checkpointsSource = readFileSync(new URL('../src/features/conversation/checkpoints.js', import.meta.url), 'utf8');
   assert.match(checkpointsSource, /canInvoke\('list_checkpoints'\)/, '列表刷新必须先过 canInvoke 门');
   assert.match(checkpointsSource, /canInvoke\('checkpoint_diff'\)/, 'diff 预览必须先过 canInvoke 门');
 }
