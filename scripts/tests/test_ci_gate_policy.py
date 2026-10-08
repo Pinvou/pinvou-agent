@@ -1544,20 +1544,43 @@ class CiGatePolicyTests(unittest.TestCase):
                 "- name: Node.js (universal bundle smoke, push only)", maxsplit=1
             )[1].split("\n      - name:", maxsplit=1)[0]
         )
-        self.assertIn("github.event_name == 'push'", node_step)
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            node_step,
+            "node setup is only consumed by the bundle_chain-gated smoke; "
+            "gating it the same way stops paying npm ci on unrelated pushes",
+        )
         self.assertIn("node-version: '24'", node_step)
         self.assertIn(
             "cache-dependency-path: pinvou3-app/package-lock.json", node_step
         )
         npm_step = _without_yaml_comments(
             macos_job.split(
-                "- name: Install frontend dependencies"
-                " (universal bundle smoke, push only)",
+                "- name: Install frontend deps (universal bundle smoke, push only)",
                 maxsplit=1,
             )[1].split("\n      - name:", maxsplit=1)[0]
         )
-        self.assertIn("github.event_name == 'push'", npm_step)
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            npm_step,
+        )
         self.assertIn("npm ci", npm_step)
+        # The dual rustup targets feed the same universal build (lipo needs
+        # both arches); they are smoke-only provisioning too, so they carry
+        # the identical gate — otherwise unrelated pushes pay rustup while
+        # node/npm skip.
+        dual_target_step = macos_job.split(
+            "- name: Install both targets (universal bundle smoke, push only)",
+            maxsplit=1,
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
+            dual_target_step,
+        )
+        self.assertIn(
+            "rustup target add aarch64-apple-darwin x86_64-apple-darwin",
+            dual_target_step,
+        )
         # Provisioning must precede the smoke step in the job body.
         self.assertLess(
             macos_job.index("- name: Node.js (universal bundle smoke, push only)"),
@@ -1566,6 +1589,94 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Deployment-target parity with the release job.
         self.assertIn('MACOSX_DEPLOYMENT_TARGET: "11.0"', macos_job)
+
+    def test_macos_lld_linker_wiring_is_pinned(self):
+        # The mac leg's lld linker wiring is easy to lose silently: a dropped
+        # env line, a job-level leak into the release legs, or a replaced
+        # RUSTFLAGS write all fail no build. The probe cannot self-validate
+        # these static pieces, so pin them:
+        # - the linker env applied per step to exactly the three
+        #   dev-profile test legs (the linux leg pins its own
+        #   RUSTFLAGS/DEV_DEBUG exactly; mirror that here),
+        # - the job-level env staying free of the linker: the folded
+        #   push-only release-fast/bundle legs ship artifacts and are
+        #   outside the validated scope, so they must keep default Apple
+        #   ld linking,
+        # - the probe emitting a step output instead of GITHUB_ENV, so
+        #   nothing downstream inherits the probed linker by default,
+        # - the strip workaround writing a plain RUSTFLAGS (a composition
+        #   would re-propagate the probe's flags onto the release legs),
+        # - the probe staying before the cache step, so a toolchain without
+        #   a usable lld fails in seconds ahead of any cache restore or
+        #   build work (cargo fingerprints inside target/, not the cache
+        #   key, keep the lld-built artifacts consistent).
+        macos_job = self.pr_workflow.split(
+            "\n  macos-rust-check:", maxsplit=1
+        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+
+        # No linker env at job level (comments excluded: they document
+        # the scoping and legitimately name the variables).
+        job_env = _without_yaml_comments(
+            macos_job.split("\n    env:", maxsplit=1)[1].split(
+                "\n    steps:", maxsplit=1
+            )[0]
+        )
+        self.assertNotIn("CARGO_PROFILE_DEV_LTO", job_env)
+        self.assertNotIn("RUSTFLAGS", job_env)
+
+        # Per-step application to the three dev-profile test legs, identical
+        # across them so target/debug artifacts stay incrementally reusable.
+        test_leg_names = (
+            "- name: macOS Rust all-targets check",
+            "- name: macOS computer_use unit tests",
+            "- name: macOS full lib tests (native regression, push only)",
+        )
+        for step_name in test_leg_names:
+            body = macos_job.split(step_name, maxsplit=1)[1].split(
+                "\n      - name:", maxsplit=1
+            )[0]
+            self.assertIn('CARGO_PROFILE_DEV_LTO: "thin"', body, step_name)
+            self.assertIn(
+                "RUSTFLAGS: ${{ steps.mac_lld_probe.outputs.flags }}",
+                body,
+                step_name,
+            )
+
+        # The probe emits a step output, not GITHUB_ENV: nothing between the
+        # probe and the consuming test steps — nor the release legs below —
+        # may inherit the probed linker silently.
+        probe_step = macos_job.split(
+            "- name: Probe and export the macOS lld link flags", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn("id: mac_lld_probe", probe_step)
+        self.assertIn('echo "flags=$flags" >> "$GITHUB_OUTPUT"', probe_step)
+        self.assertIn('echo "probed RUSTFLAGS=$flags"', probe_step)
+        self.assertNotIn("$GITHUB_ENV", probe_step)
+        self.assertLess(
+            macos_job.index("- name: Probe and export the macOS lld link flags"),
+            macos_job.index("uses: Swatinem/rust-cache@v2"),
+        )
+
+        # The strip workaround must not re-propagate the probed flags onto
+        # the release legs below it: a plain write only.
+        strip_step = macos_job.split(
+            "- name: macOS 27+ strip workaround", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            'echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"', strip_step
+        )
+        self.assertNotIn("${RUSTFLAGS:+", strip_step)
+
+        # The push-only release legs carry no linker env of their own.
+        for step_name in (
+            "- name: Cargo build (release-fast",
+            "- name: Tauri bundle smoke",
+        ):
+            body = macos_job.split(step_name, maxsplit=1)[1].split(
+                "\n      - name:", maxsplit=1
+            )[0]
+            self.assertNotIn("RUSTFLAGS", body, step_name)
+            self.assertNotIn("CARGO_PROFILE_DEV_LTO", body, step_name)
 
     def test_main_rust_caches_save_on_failure_and_rust_test_keeps_targets(self):
         # cache-on-failure keeps one failed main run from stranding a
