@@ -3550,8 +3550,9 @@ fn providers_switch(
     {
         return Err(CliError::failed(format!(
             "provider_api_key_missing: provider '{provider_id}' for agent {agent} has no \
-             stored API key; save one first with `pinvou code providers add --agent {agent} \
-             --id {provider_id} --api-key-env/--api-key-stdin`"
+             stored API key; save one first with `pinvou code providers update {provider_id} \
+             --agent {agent} --api-key-env/--api-key-stdin` (round-47 review: the hint used \
+             to name `providers add --id`, a flag `add` does not take)"
         )));
     }
     manager
