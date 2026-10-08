@@ -3254,6 +3254,7 @@ export function CodexAcpView({
         <ConversationMarkdown
           text={item.legacyItem.text}
           streaming={item.status === 'in_progress'}
+          copy={t.uiConversation}
           onOpenExternal={(url) => openAcpExternalUrl(url).catch(showError)}
           onOpenResource={isWeb ? undefined : openWorkspaceResource}
         />

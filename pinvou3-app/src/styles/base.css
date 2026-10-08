@@ -238,6 +238,83 @@
       letter-spacing:.02em;
       user-select:none;
     }
+    /* 语言条右侧为复制按钮预留空间,长语言标签不滑入按钮下方。该预留同样作用于复用
+       .msg-md 的 FilePreviewModal/EditableMarkdownPreview 预览(不装按钮,仅接受右侧
+       留白,视觉影响可忽略);persona-body 无按钮,不动。 */
+    .msg-md pre.pinvou-code-block::before,
+    .codex-markdown pre.pinvou-code-block::before {
+      padding-right:2.8rem;
+    }
+    /* 代码块右上角的一键复制按钮:悬停代码块或按钮聚焦时显现,复制反馈期间保持可见。
+       按钮挂在 pre 内随横向滚动平移——与上方语言条 ::before 同一 containing block
+       的既有行为,保持一致。 */
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn {
+      position:absolute;
+      top:0;
+      right:.3rem;
+      height:1.85rem;
+      box-sizing:border-box;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:0 .3rem;
+      border:none;
+      border-radius:4px;
+      background:transparent;
+      color:var(--pinvou-code-label, #6E7781);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      cursor:pointer;
+      opacity:0;
+      transition:opacity .15s ease, background-color .15s ease;
+    }
+    .msg-md pre.pinvou-code-block:hover .pinvou-code-copy-btn,
+    .msg-md pre.pinvou-code-block:focus-within .pinvou-code-copy-btn,
+    .codex-markdown pre.pinvou-code-block:hover .pinvou-code-copy-btn,
+    .codex-markdown pre.pinvou-code-block:focus-within .pinvou-code-copy-btn,
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn.is-copied,
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn.is-failed,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn.is-copied,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn.is-failed {
+      opacity:1;
+    }
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn:hover,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn:hover {
+      background:var(--pinvou-code-divider, rgba(128,128,128,.16));
+    }
+    /* 键盘焦点环:负 offset 防止被 pre 的圆角滚动容器裁剪(与图标按钮焦点环惯例一致)。 */
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn:focus-visible,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn:focus-visible {
+      outline:2px solid rgba(10,132,255,.6);
+      outline-offset:-2px;
+    }
+    /* 状态类与基础规则同样限定在实际装按钮的容器:接入面由 ensureCodeCopyButtons
+       全量摘除伪造元素的类名(不限标签);复用 .msg-md 的文件预览等未接入面,伪造
+       元素至多获得外观(动作通道由 expando 校验把守,不可点)。 */
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn.is-copied,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn.is-copied {
+      color:var(--pinvou-hl-addition, #1A7F37);
+    }
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-btn.is-failed,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-btn.is-failed {
+      color:var(--pinvou-hl-deletion, #CF222E);
+    }
+    /* 复制反馈的屏幕阅读器通道:视觉隐藏,仅供 aria-live 播报(sr-only 惯例写法);
+       user-select:none 防反馈文本混入用户的代码选择(同语言条 ::before 的防护)。
+       与按钮规则同范围收敛:未接入 ensureCodeCopyButtons 的渲染面不适用。 */
+    .msg-md pre.pinvou-code-block .pinvou-code-copy-live,
+    .codex-markdown pre.pinvou-code-block .pinvou-code-copy-live {
+      position:absolute;
+      width:1px;
+      height:1px;
+      padding:0;
+      margin:-1px;
+      overflow:hidden;
+      clip-path:inset(50%);
+      white-space:nowrap;
+      border:0;
+      user-select:none;
+    }
     .pinvou-code-block .hljs-comment,.pinvou-code-block .hljs-quote { color:var(--pinvou-hl-comment, #6E7781); font-style:italic; }
     .pinvou-code-block .hljs-keyword,.pinvou-code-block .hljs-selector-tag,.pinvou-code-block .hljs-literal,.pinvou-code-block .hljs-section,.pinvou-code-block .hljs-link { color:var(--pinvou-hl-keyword, #CF222E); }
     .pinvou-code-block .hljs-title,.pinvou-code-block .hljs-title.class_,.pinvou-code-block .hljs-title.function_,.pinvou-code-block .hljs-name,.pinvou-code-block .hljs-type { color:var(--pinvou-hl-title, #8250DF); }

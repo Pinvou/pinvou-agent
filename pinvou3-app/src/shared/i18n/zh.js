@@ -793,6 +793,7 @@ dictZh.uiKnowledge = {
 // features/conversation 追加词条（uiConversation 已存在，合并而非覆盖）
 Object.assign(dictZh.uiConversation, {
   callingTool: name => `正在调用 ${name}`,
+  copyCode: '复制代码',
   inputPlaceholder: '请输入',
   otherAnswer: '其他',
   otherPlaceholder: '其他',
