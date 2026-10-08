@@ -7,7 +7,7 @@
 // 无 Turn 快照的边界是「仅回退对话」变体（conversationOnly），文案明示代码不回退。
 
 import { RotateCcw } from '../../components/icons.jsx';
-import { ModalDialogShell } from './ModalDialogShell.jsx';
+import { ModalShell } from '../../components/ModalShell.jsx';
 import { summarizeCheckpointChanges } from './checkpoints.js';
 
 const FILE_LIST_LIMIT = 8;
@@ -110,7 +110,7 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
 }
 
 // Shared shell for the two rewind dialogs (confirm / undo-confirm), built on
-// the shared ModalDialogShell (portal to <body>, focus capture/restore,
+// the shared ModalShell (portal to <body>, focus capture/restore,
 // Escape to close disabled while busy, backdrop button disabled along with
 // busy so an in-flight rewind cannot be dismissed by clicking away). The
 // identical title line, error line and cancel/confirm footer live here too;
@@ -120,12 +120,12 @@ function RewindDialogShell({
   testid, isDark, busy, title, error, okLabel, copy, onCancel, onConfirm, children,
 }) {
   return (
-    <ModalDialogShell
+    <ModalShell
       testid={testid}
       zIndexClass="z-50"
       backdropLabel={copy.rewindCancel}
       backdropClass="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
-      panelClass={`relative w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+      panelClass={`w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
         isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
       }`}
       busy={busy}
@@ -157,7 +157,7 @@ function RewindDialogShell({
       onCancel={onCancel}
     >
       {children}
-    </ModalDialogShell>
+    </ModalShell>
   );
 }
 
