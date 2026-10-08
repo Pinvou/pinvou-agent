@@ -47,6 +47,10 @@ const SCHEDULED_WALL_TIME: Duration = Duration::from_secs(30 * 60);
 const SCHEDULED_IDLE_PROGRESS: Duration = Duration::from_secs(31 * 60);
 const SCHEDULED_CANCEL_GRACE: Duration = Duration::from_secs(5);
 const SCHEDULED_PERSIST_DEBOUNCE: Duration = Duration::from_millis(250);
+// Aggregate human-wait bound, mirroring the engine default (24h). This surface
+// has no decision-delivery channel, so the cap is what eventually releases a
+// worker parked on a prompt nobody can answer instead of waiting forever.
+const SCHEDULED_HUMAN_WAIT_CAP: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn scheduled_execution_limits() -> TaskExecutionLimits {
     TaskExecutionLimits {
@@ -54,6 +58,7 @@ fn scheduled_execution_limits() -> TaskExecutionLimits {
         idle_progress: SCHEDULED_IDLE_PROGRESS,
         cancel_grace: SCHEDULED_CANCEL_GRACE,
         persist_debounce: SCHEDULED_PERSIST_DEBOUNCE,
+        human_wait_cap: SCHEDULED_HUMAN_WAIT_CAP,
     }
 }
 
@@ -300,6 +305,12 @@ impl ScheduledTaskState {
             allow_shell,
             trust_mode: true,
             execution_limits: scheduled_execution_limits(),
+            // No decision-delivery channel reaches this surface's task journal
+            // (same taxonomy as the engine's own automation host; only hosts
+            // that serve decisions, like the runtime API, opt in), so a prompt
+            // here keeps the wall-clock contract instead of arming a
+            // human-wait window.
+            human_waits_answerable: false,
         };
         let executor = Arc::new(ScheduledChatExecutor::from_services(
             sessions.clone(),
@@ -2408,6 +2419,7 @@ mod tests {
                 allow_shell: false,
                 trust_mode: true,
                 execution_limits: TaskExecutionLimits::default(),
+                human_waits_answerable: false,
             },
             Arc::new(SessionCreatingExecutor {
                 sessions: sessions.clone(),
