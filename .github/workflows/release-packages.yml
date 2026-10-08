@@ -104,16 +104,22 @@ jobs:
       # 指向 sh 版(wrapper 只作用于编译期 rustc 进程,产物运行时语义不变)。
       # 必须用 ${{ github.workspace }} 绝对路径:Cargo 按自身进程 cwd 解析相对路径,
       # 构建步骤 working-directory 为 pinvou3-app,相对路径会被双拼成不存在的路径。
-      # lld:BFD ld 处理大型 Rust binary 内存效率差,是 link OOM 独立主因(同 arm64)。
-      # 链接器只收 LTO 后的普通对象:thin LTO 的跨 crate 合并由最终 crate 的 rustc
-      # 在自身进程内完成(cargo 只给依赖 crate 传 -C linker-plugin-lto),选 lld 是
-      # 为对象链接的耗时/内存,不是 bitcode 支持。
-      # 机制备注(2026-10 校准):rustc ≥1.90 起 x86_64-linux-gnu 默认就用自带的
-      # rust-lld 自链(rustc 自己往 cc 注入 -B<sysroot>/.../gcc-ld),本 flag 在
-      # jammy gcc 11 下实际是冗余兜底(gcc 按名字找 ld.lld 时 -B 目录先于 PATH);
-      # 保留它是为旧工具链/本地环境兜底,勿据此注释断定链器是 apt 的 ld.lld。
-      # ThinLTO backend 在 rustc 进程内,无需 cap:release O3 + codegen-units=1
-      # 场景下 4 核稳定(近期发布 11/11 绿)。
+      # lld: BFD ld is memory-inefficient on large Rust binaries and is the
+      # standalone link-OOM cause (same as arm64). The linker receives only
+      # post-LTO plain objects: thin LTO's cross-crate merging completes
+      # in-process in the final crate's rustc (cargo compiles dependency crates
+      # with -C linker-plugin-lto), so lld is picked for object-linking time
+      # and memory, not bitcode support.
+      # Mechanism note (2026-10 calibration): since rustc >= 1.90,
+      # x86_64-linux-gnu self-links with its bundled rust-lld by default (rustc
+      # injects -B<sysroot>/.../gcc-ld into cc itself), so this flag is in
+      # practice a redundant fallback under jammy gcc 11 (when gcc resolves
+      # ld.lld by name, the -B directory precedes PATH). It is kept as a
+      # fallback for older toolchains and local environments; do not conclude
+      # from this comment that the linker is apt's ld.lld.
+      # The ThinLTO backends run inside rustc's process, so no cap is needed:
+      # release O3 + codegen-units=1 stays stable on 4 cores (recent releases
+      # 11/11 green).
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
     steps:
@@ -249,12 +255,16 @@ jobs:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
       # link 内存越线被 SIGTERM),ARM 不再用 env 覆盖 profile。
-      # lld 保留:BFD ld 对大型 Rust binary 的对象链接耗时/内存差(同 x64);链接器
-      # 只收 LTO 后的普通对象,跨 crate 合并在最终 crate 的 rustc 进程内完成。
-      # 机制备注(2026-10 校准):rustc 1.90 的 rust-lld 默认自链仅限
-      # x86_64-unknown-linux-gnu,aarch64 上 rustc 仍走 cc→BFD,本 flag 就是
-      # 实际生效的 lld 选择(apt 的 ld.lld),并非兜底;ThinLTO backend 在
-      # rustc 进程内,无需 cap(同 x64 的理由)。
+      # lld kept: BFD ld is slow and memory-hungry object-linking large Rust
+      # binaries (same as x64); the linker receives only post-LTO plain
+      # objects, and cross-crate merging completes inside the final crate's
+      # rustc process.
+      # Mechanism note (2026-10 calibration): rustc 1.90's default rust-lld
+      # self-linking covers x86_64-unknown-linux-gnu only; on aarch64 rustc
+      # still goes through cc to BFD, so this flag is the lld selection that
+      # actually takes effect (apt's ld.lld), not a fallback. The ThinLTO
+      # backends run inside rustc's process, so no cap is needed (same reason
+      # as x64).
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
       # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
@@ -522,10 +532,13 @@ jobs:
     # 实测仍持续增长：0.10.0-0.10.2 分别 138/219/226 分钟(run 34747563852/
     # 34877996483/35308587808)，0.10.3(run 35377723253)在 241 分钟处撞线被取消，
     # macOS dmg 因此缺席发布而其余三平台完成。放宽至 360 分钟。
-    # 链接机制备注(2026-10 校准):thin LTO 的跨 crate 合并由最终 crate 的 rustc
-    # 在自身进程内完成(Apple ld 只链普通对象,不经手 bitcode),且无 cap 可调——
-    # 本 job 的时长大头与内存峰值都在 rustc 侧;缓解手段是拆分 universal 构建
-    # (需 Tauri universal-bundler 改造,另行跟进)而非换链器。
+    # Link-mechanism note (2026-10 calibration): thin LTO's cross-crate merging
+    # completes in-process in the final crate's rustc (Apple ld links only
+    # plain objects and never touches bitcode), and there is no cap knob —
+    # this job's duration and memory peak are dominated by the rustc side; the
+    # mitigation is splitting the universal build (needs a Tauri
+    # universal-bundler change, tracked separately) rather than swapping the
+    # linker.
     timeout-minutes: 360
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
