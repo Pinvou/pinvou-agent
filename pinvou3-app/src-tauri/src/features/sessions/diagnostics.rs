@@ -436,27 +436,19 @@ fn append_entries_to_path(path: &Path, entries: &[Value]) -> Result<(), String> 
 }
 
 fn rotate_before_write(path: &Path, upcoming_bytes: u64) -> Result<(), String> {
-    let size = match std::fs::metadata(path) {
-        Ok(metadata) => metadata.len(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
-    };
-    if size.saturating_add(upcoming_bytes) <= MAX_LOG_BYTES {
-        return Ok(());
-    }
+    // Anticipatory budget: rotate when the incoming record would push the log
+    // past the cap, i.e. size + upcoming > MAX ⟺ size > MAX - upcoming.
+    let budget = MAX_LOG_BYTES.saturating_sub(upcoming_bytes);
     let previous = path.with_extension("jsonl.1");
-    match std::fs::remove_file(&previous) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("remove {}: {error}", previous.display())),
-    }
-    std::fs::rename(path, &previous).map_err(|error| {
-        format!(
-            "rotate {} to {}: {error}",
-            path.display(),
-            previous.display()
-        )
-    })
+    crate::platform::filesystem::rotate_log_if_oversized(path, budget, Some(&previous))
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "rotate {} to {}: {error}",
+                path.display(),
+                previous.display()
+            )
+        })
 }
 
 fn normalize_backend_details(event: &str, value: &Value) -> Option<Value> {

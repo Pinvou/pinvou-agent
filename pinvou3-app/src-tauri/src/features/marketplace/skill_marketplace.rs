@@ -1339,7 +1339,7 @@ impl SkillMarketplaceManager {
         if new_content == old_content {
             return Ok(());
         }
-        deepseek_tui::utils::write_atomic(md_path, new_content.as_bytes())
+        crate::platform::filesystem::atomic_write_private(md_path, new_content.as_bytes())
             .map_err(|e| format!("写入 {} 失败: {e}", md_path.display()))?;
         self.refresh_package_fingerprint(bundle_id)
     }

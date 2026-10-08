@@ -607,6 +607,21 @@ impl Pinvou3Bridge {
             rendered.push_str("\n\n");
             rendered.push_str(block);
         }
+        // Computer use is opt-in and off by default: announce the tool only
+        // while the master switch is on (and the platform has a backend),
+        // keeping the prompt byte-exact — and the prefix cache intact — for
+        // every session where the feature is disabled. The announcement
+        // pairs with the tool's always-load entry (tool_policy.rs): static
+        // text that names a tool must not describe an absent first-turn
+        // catalog entry. External ACP runtimes have no Pinvou tool registry;
+        // skip them like the per-turn inventory block above.
+        if !self.is_external_acp_session(session_id)
+            && self.prefs.computer_use.enabled
+            && crate::features::computer_use::backend_supported()
+        {
+            rendered.push_str("\n\n");
+            rendered.push_str(crate::features::computer_use::instruction_block());
+        }
         // When browser capabilities are statically unavailable, inject a model-readable
         // reason and recovery guidance. The Browser capabilities section already explains
         // the general missing-tool fallback; this block supplies the precise reason. Add it
@@ -8010,6 +8025,71 @@ mod tests {
                 .build_session_system_prompt("native-work")
                 .contains("## 市场 MCP 应用发现"),
             "native Engine sessions must continue to receive inventory rules"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The computer-use instruction section follows the master toggle:
+    /// rendered for native Engine sessions (Work AND Code — the tool is
+    /// registered for both), absent while the switch is off, and never
+    /// rendered for external ACP runtimes (no Pinvou tool registry there).
+    /// The section names the tool directly, which is why `computer_use`
+    /// ships non-deferred (the tool_policy always-load contract).
+    #[test]
+    fn computer_use_instruction_follows_master_toggle() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-cu-instruction-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        let mut bridge = fixture_bridge();
+        bridge
+            .set_external_acp_session_predicate(std::sync::Arc::new(|s| s.starts_with("sess-acp")));
+
+        // Toggle off (fixture prefs default): no section anywhere — the
+        // prompt stays byte-exact with the pre-announcement static text.
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-work-1")
+                .contains("## Computer use"),
+            "disabled computer use must not announce the tool"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-code-1")
+                .contains("## Computer use"),
+            "disabled computer use must not announce the tool in code sessions"
+        );
+
+        // Toggle on: native sessions get the section naming the tool;
+        // external ACP runtimes never do.
+        bridge.prefs.computer_use.enabled = true;
+        let prompt_work = bridge.build_session_system_prompt("sess-work-1");
+        assert!(
+            prompt_work.contains("## Computer use"),
+            "enabled computer use must announce the tool to Work sessions"
+        );
+        assert!(
+            prompt_work.contains("`computer_use`"),
+            "the section must name the tool (paired with the always-load entry)"
+        );
+        assert!(
+            bridge
+                .build_session_system_prompt("sess-code-1")
+                .contains("## Computer use"),
+            "the tool is registered for code sessions too, so they get the section"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-acp-1")
+                .contains("## Computer use"),
+            "external ACP runtimes have no Pinvou tool registry to announce into"
         );
 
         let _ = std::fs::remove_dir_all(&root);

@@ -789,6 +789,23 @@ mod tests {
         (store, guard)
     }
 
+    /// 同长覆写已被影子 index 暂存的执行根文件时，若写入落在一个时间戳 tick
+    /// 内且 ext4 把刚释放的 inode 立刻复用，stat 与 index 缓存项完全一致，
+    /// 后续 `add -A` 会信任旧 blob（新旧快照树相同 → 提交复用，新内容丢失）。
+    /// 与 features/code_checkpoints 的 TestDir::write #590 加固同款：先写
+    /// 兄弟临时文件（创建时旧 inode 仍在，编号必不相同）再 rename 覆盖，
+    /// 与时间戳粒度和 inode 复用行为无关。
+    fn rewrite_staged_file(path: &std::path::Path, content: &str) {
+        let mut staging = path.as_os_str().to_os_string();
+        staging.push(format!(
+            ".pinvou3-new-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let staging = std::path::PathBuf::from(staging);
+        std::fs::write(&staging, content).expect("write staging file");
+        std::fs::rename(&staging, path).expect("rename staging file over target");
+    }
+
     /// 跨会话忙碌门：同执行根的其它会话忙碌 → 返回其标题；不忙碌、
     /// 不同根、自身忙碌都不拦截。非 code 会话（plain/scheduled）同根且在途
     /// 也拦截——门看的是「谁在往这个目录写文件」，不是会话类型。
@@ -989,11 +1006,11 @@ mod tests {
         std::fs::write(exec.join("a.txt"), "0\n").expect("write");
         checkpoints::create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1")
             .expect("c1");
-        std::fs::write(exec.join("a.txt"), "1\n").expect("write");
+        rewrite_staged_file(&exec.join("a.txt"), "1\n");
         let old_t2 =
             checkpoints::create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
                 .expect("c2");
-        std::fs::write(exec.join("a.txt"), "2\n").expect("write");
+        rewrite_staged_file(&exec.join("a.txt"), "2\n");
         checkpoints::create_checkpoint(&ledger, &exec, Some(3), CheckpointKind::Turn, "t3")
             .expect("c3");
 
@@ -1184,7 +1201,7 @@ mod tests {
             .truncate_to_user_turn(&id, 1, Some(pre_restore.id.clone()))
             .expect("rewind to turn 1");
         // 模拟 rewind 的代码侧结果：执行根已是回退后状态 v1。
-        std::fs::write(exec.join("code.txt"), "v1\n").expect("write v1");
+        rewrite_staged_file(&exec.join("code.txt"), "v1\n");
 
         // 条件齐全 → Some，字段正确（被截 1 轮，checkpoint_id 为记录绑定的 PreRestore）。
         let info = rewind_undo_state_inner(&store, &id)
@@ -1316,7 +1333,7 @@ mod tests {
             .truncate_to_user_turn(&id, 1, Some(bound.id.clone()))
             .expect("rewind to turn 1");
         // 模拟 undo 步骤 1 已成功、步骤 2 失败：restore 内部新打的更晚 PreRestore。
-        std::fs::write(exec.join("code.txt"), "v1\n").expect("write v1");
+        rewrite_staged_file(&exec.join("code.txt"), "v1\n");
         let poisoned = checkpoints::create_checkpoint(
             &ledger,
             &exec,
