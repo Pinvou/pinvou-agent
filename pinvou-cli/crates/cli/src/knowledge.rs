@@ -1419,7 +1419,20 @@ fn collections_add_sources(
                 path.display()
             )));
         }
-        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        // Round-47 review: the gate fails CLOSED on a canonicalize failure,
+        // like every sibling lane (memory add, personas --file, agent run
+        // --prompt-file/--attach, feedback). The old `unwrap_or_else`
+        // fallback gated the raw spelling when the path vanished between
+        // the metadata pre-flight and this stat — a symlink swap in that
+        // window would sail through unresolved. The re-canonicalize for
+        // the stored name below keeps its own documented fallback: there
+        // the walk itself re-reports missing paths.
+        let resolved = path.canonicalize().map_err(|error| {
+            CliError::failed(format!(
+                "knowledge collections add-sources: cannot resolve source path {}: {error}",
+                path.display()
+            ))
+        })?;
         crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
             CliError::failed(format!(
                 "knowledge collections add-sources: refusing source path: {reason}"

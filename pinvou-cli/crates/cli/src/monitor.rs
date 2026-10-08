@@ -410,11 +410,16 @@ fn status_label(status: VllmStatus) -> &'static str {
 
 /// Probe failures may embed request URLs but never secrets; still, the
 /// redaction pass keeps any credential that leaked into an error chain out of
-/// CLI output (same guard the memory organize lane uses). Generic over the
-/// error type so this module never needs to name the host's error
+/// CLI output (same guard the memory organize lane uses). Round-47 review:
+/// the URL-userinfo scrub runs first — a stored free-form `base_url` carrying
+/// `user:pass@host` used to reach `monitor status`/`snapshot` output with the
+/// userinfo intact (the exact class fixed for `models test`). Generic over
+/// the error type so this module never needs to name the host's error
 /// type (which is feature-gated upstream).
 fn redact(error: &(impl std::fmt::Display + std::fmt::Debug)) -> String {
-    pinvou3_lib::platform::credential_store::redact_secret(&format!("{error:#}"))
+    let rendered = format!("{error:#}");
+    let rendered = pinvou3_lib::platform::redact_url_credentials_in_text(&rendered);
+    pinvou3_lib::platform::credential_store::redact_secret(&rendered)
 }
 
 #[cfg(test)]
@@ -520,6 +525,26 @@ mod tests {
                 "the human label must not drift from the serialized name"
             );
         }
+    }
+
+    /// Round-47 review: probe errors can embed the configured `base_url`
+    /// verbatim. A URL with credentials in its userinfo must come out
+    /// scrubbed — the same two-pass order the `models test` and memory
+    /// organize lanes use (userinfo strip first, then token shapes) — so the
+    /// pass cannot be dropped from `redact` without failing here.
+    #[test]
+    fn redact_scrubs_url_userinfo_before_token_shapes() {
+        let leaked =
+            "probe failed for http://budget:bosun@192.168.8.30:8000/v1 (connection refused)";
+        let out = redact(&leaked);
+        assert!(
+            !out.contains("budget:bosun"),
+            "userinfo must not survive redaction: {out}"
+        );
+        assert!(
+            out.contains("192.168.8.30:8000"),
+            "the host stays for diagnosis: {out}"
+        );
     }
 
     /// `serde_json::json!` stores an explicit `null` as `Value::Null`, so

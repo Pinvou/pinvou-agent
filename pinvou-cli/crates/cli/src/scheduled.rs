@@ -1866,6 +1866,16 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
         .iter()
         .map(|def| {
             let task_id = str_field(def, "id").unwrap_or("").to_owned();
+            // Round-47 review: the aggregate lanes (list/show/delete/run)
+            // read every historical run record because the summary facts are
+            // exists-queries over all history (`hasUnreadRuns`, a zombie
+            // `running` row, the divergent-`automation_id` delete scan) —
+            // truncating here would report false facts, so the cost is
+            // disclosed rather than capped (docs/pinvou-cli.md, scheduled
+            // row). Bounding it honestly needs a summaries/exists API
+            // upstream in the foundation's `list_runs`; until then the read
+            // grows with store age (~8,760 records/year for one hourly
+            // task).
             let runs = store_holder.list_runs(&task_id, None)?;
             let value = map_task(
                 def,
