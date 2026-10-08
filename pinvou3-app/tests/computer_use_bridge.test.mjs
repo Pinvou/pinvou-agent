@@ -99,6 +99,7 @@ function extractCalls(source, callee) {
       'invoke("computer_use_set_enabled", { enabled: target })',
       'invoke("computer_use_request_permissions")',
       'invoke("computer_use_request_permissions")',
+      'invoke("computer_use_permission_status")',
     ],
     'computer_use command surface must stay unchanged',
   );

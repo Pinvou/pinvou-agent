@@ -21,6 +21,7 @@ const DESKTOP_COMMANDS = [
   'computer_use_deny',
   'computer_use_set_enabled',
   'computer_use_request_permissions',
+  'computer_use_permission_status',
 ];
 
 const DESKTOP_EVENTS = [
