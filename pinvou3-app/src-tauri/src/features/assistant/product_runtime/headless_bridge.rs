@@ -1362,7 +1362,7 @@ where
         .is_err()
     {
         anyhow::bail!(
-            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a second runtime, and this helper must stay the process's only host lane"
+            "a windowless host lane (run_windowless_host or run_bare_host) already ran in this process: tauri::async_runtime::set panics on a second runtime, and both helpers share one latch and must stay the process's only host lanes (round-47 review: the message used to blame run_bare_host even when the windowless lane took the latch first)"
         );
     }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1522,7 +1522,7 @@ where
         .is_err()
     {
         anyhow::bail!(
-            "run_bare_host already ran in this process: tauri::async_runtime::set panics on a second runtime, and this helper must stay the process's only host lane"
+            "a windowless host lane (run_windowless_host or run_bare_host) already ran in this process: tauri::async_runtime::set panics on a second runtime, and both helpers share one latch and must stay the process's only host lanes (round-47 review: the message used to blame run_bare_host even when the windowless lane took the latch first)"
         );
     }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
