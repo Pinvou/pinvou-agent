@@ -3059,8 +3059,9 @@ fn persist_search_settings_disk_failure_leaves_the_deferred_delete_unrun() {
 
     // A read-only PINVOU3_HOME fails the save's disk write AFTER the closure
     // captured the deferred delete — the one abort direction where the
-    // `saved.is_ok()` gate (not the `?` before the assignment inside the
-    // closure) is the only thing keeping the keyring delete unrun.
+    // post-commit hook placement (the hook runs only after save_unlocked
+    // succeeded, no matter that the closure already captured the delete) is
+    // the only thing keeping the keyring delete unrun.
     std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o555))
         .expect("make PINVOU3_HOME read-only");
     let error = super::settings::persist_search_settings_inner(search, &store)
@@ -3123,5 +3124,239 @@ fn persist_web_settings_commits_before_the_deferred_keyring_delete() {
         store.ops(),
         vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
         "exactly one deferred keyring delete, attempted after the commit"
+    );
+}
+
+// ---- deferred delete vs a concurrent replacement of the same credential ----
+//
+// The post-commit delete must share the USER_PREFS_LOCK serialization with
+// credential replacement writes (which run their keyring set inside the
+// transaction, under the same lock). Otherwise two overlapping saves can run
+// as: A commits Delete and pauses before cleanup, B sets a fresh secret for
+// the same deterministic provider reference and commits Configured, A resumes
+// and destroys B's secret — both saves succeed while prefs describe a
+// configured provider whose secret is gone.
+
+use crate::platform::credential_store::{
+    CredentialError, CredentialReference, MemoryCredentialStore,
+};
+
+const BARRIER_REPLACEMENT_KEY: &str = "tvly-replacement-1234567890";
+const BARRIER_ORIGINAL_KEY: &str = "tvly-original-1234567890";
+
+/// Pause point between a committed save and its deferred keyring removal:
+/// `delete` first reports "starting" on a channel, then blocks until the test
+/// opens the gate, and only then forwards to the real in-memory store. Every
+/// other op forwards untouched, so the replacement save runs at full speed.
+struct GatedDeleteStore {
+    inner: MemoryCredentialStore,
+    delete_started: std::sync::mpsc::Sender<()>,
+    gate: DeleteGate,
+}
+
+#[derive(Clone, Default)]
+struct DeleteGate(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl DeleteGate {
+    fn open(&self) {
+        let (lock, signal) = &*self.0;
+        *lock.lock().expect("delete gate lock") = true;
+        signal.notify_all();
+    }
+
+    fn wait(&self) {
+        let (lock, signal) = &*self.0;
+        let mut open = lock.lock().expect("delete gate lock");
+        while !*open {
+            open = signal.wait(open).expect("delete gate signal");
+        }
+    }
+}
+
+impl CredentialStore for GatedDeleteStore {
+    fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+        self.inner.get(reference)
+    }
+
+    fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+        self.inner.set(reference, value)
+    }
+
+    fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+        // Deterministic barrier: by the time the test observes this signal the
+        // save has committed (the delete is post-commit by construction on
+        // both the fixed and the racy ordering), and the removal stays paused
+        // until the gate opens.
+        let _ = self.delete_started.send(());
+        self.gate.wait();
+        self.inner.delete(reference)
+    }
+}
+
+fn search_replacement_payload(key: &str) -> SearchPrefs {
+    SearchPrefs {
+        provider: SearchProvider::Tavily,
+        enabled_providers: vec![SearchProvider::Bing, SearchProvider::Tavily],
+        api_key: None,
+        credentials: [(
+            SearchProvider::Tavily,
+            SearchCredential {
+                api_key: key.to_string(),
+                credential_action: Some(CredentialEditAction::Replace),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+    }
+}
+
+fn barrier_store() -> (
+    std::sync::Arc<GatedDeleteStore>,
+    DeleteGate,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let inner = MemoryCredentialStore::default();
+    inner
+        .set(
+            &SearchProvider::Tavily.credential_reference(),
+            BARRIER_ORIGINAL_KEY,
+        )
+        .expect("seed the original keyring secret");
+    let (delete_started, delete_started_rx) = std::sync::mpsc::channel();
+    let gate = DeleteGate::default();
+    let store = std::sync::Arc::new(GatedDeleteStore {
+        inner,
+        delete_started,
+        gate: gate.clone(),
+    });
+    (store, gate, delete_started_rx)
+}
+
+/// Drives the reviewer's interleaving deterministically: A's deferred delete
+/// is observed paused after its save committed, B's replacement of the same
+/// provider reference then runs, and the gate is released in the order each
+/// ordering allows — replacement first on the racy ordering (which must fail
+/// the final assertions red), delete first under the fixed serialization.
+/// Channel signal + gate, no timing: whichever branch runs, the interleaving
+/// is forced, not raced.
+fn run_delete_replacement_barrier(
+    label: &str,
+    save_a_delete: impl FnOnce() -> Result<UserPrefs, String> + Send + 'static,
+    save_b_replace: impl FnOnce() -> Result<UserPrefs, String> + Send + 'static,
+    store: std::sync::Arc<GatedDeleteStore>,
+    gate: DeleteGate,
+    delete_started: std::sync::mpsc::Receiver<()>,
+) {
+    let reference = SearchProvider::Tavily.credential_reference();
+    let a = std::thread::spawn(save_a_delete);
+    // Deterministic pause: this returns only once A's save committed and its
+    // deferred delete is blocked before the keyring removal.
+    delete_started
+        .recv()
+        .expect("the deferred delete must start once A's save committed");
+
+    let b = std::thread::spawn(save_b_replace);
+    if crate::platform::prefs::UserPrefs::user_prefs_lock_free_for_test() {
+        // Racy ordering: the deferred delete runs OUTSIDE the prefs lock, so
+        // B's replacement commits first; resuming A's delete afterwards then
+        // destroys B's fresh secret and the final assertions fail red.
+        b.join()
+            .unwrap()
+            .expect("B's replacement save must succeed");
+        gate.open();
+    } else {
+        // Fixed ordering: the deferred delete runs INSIDE the prefs-lock
+        // critical section, so B's replacement is blocked on the lock until
+        // the delete finished; opening the gate now lands the delete strictly
+        // before B's keyring write.
+        gate.open();
+        b.join()
+            .unwrap()
+            .expect("B's replacement save must succeed");
+    }
+    a.join().unwrap().expect("A's delete save must succeed");
+
+    let secret = store.inner.get(&reference).unwrap();
+    let configured = UserPrefs::load()
+        .search
+        .credentials
+        .get(&SearchProvider::Tavily)
+        .map(|credential| credential.credential_state == CredentialState::Configured)
+        .unwrap_or(false);
+    assert_eq!(
+        secret.as_deref(),
+        Some(BARRIER_REPLACEMENT_KEY),
+        "{label}: B's committed secret must survive A's deferred delete"
+    );
+    assert!(
+        configured,
+        "{label}: the replacement must leave the provider configured in prefs"
+    );
+}
+
+#[test]
+fn search_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("search-delete-replace-race");
+    seed_search_deletion_prefs();
+    let (store, gate, delete_started) = barrier_store();
+    let a_store = store.clone();
+    let b_store = store.clone();
+
+    run_delete_replacement_barrier(
+        "save_search_settings",
+        move || {
+            super::settings::persist_search_settings_inner(
+                search_deletion_payload(Some(CredentialEditAction::Delete)),
+                a_store.as_ref(),
+            )
+        },
+        move || {
+            super::settings::persist_search_settings_inner(
+                search_replacement_payload(BARRIER_REPLACEMENT_KEY),
+                b_store.as_ref(),
+            )
+        },
+        store,
+        gate,
+        delete_started,
+    );
+}
+
+#[test]
+fn web_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("web-delete-replace-race");
+    seed_search_deletion_prefs();
+    let (store, gate, delete_started) = barrier_store();
+    let a_store = store.clone();
+    let b_store = store.clone();
+
+    let web_patch = |search: SearchPrefs| super::settings::WebSettingsPatch {
+        memory_enabled: None,
+        search: Some(search),
+    };
+    run_delete_replacement_barrier(
+        "save_web_settings",
+        move || {
+            super::settings::persist_web_settings_inner(
+                web_patch(search_deletion_payload(Some(CredentialEditAction::Delete))),
+                a_store.as_ref(),
+            )
+        },
+        move || {
+            super::settings::persist_web_settings_inner(
+                web_patch(search_replacement_payload(BARRIER_REPLACEMENT_KEY)),
+                b_store.as_ref(),
+            )
+        },
+        store,
+        gate,
+        delete_started,
     );
 }

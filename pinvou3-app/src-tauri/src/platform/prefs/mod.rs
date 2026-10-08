@@ -950,14 +950,60 @@ impl UserPrefs {
     where
         F: FnOnce(&mut Self) -> Result<(), String>,
     {
+        Self::update_transaction_with_post_commit(mutate, || ())
+    }
+
+    /// Same read-modify-write critical section as [`Self::update_transaction`],
+    /// plus a `post_commit` hook that runs right after `save_unlocked()`
+    /// succeeded and BEFORE the prefs lock is released.
+    ///
+    /// The hook exists for best-effort keyring cleanup (the deferred
+    /// credential deletes captured by `migrate_plaintext_api_keys_with_store`):
+    /// credential replacement writes run `store.set` inside transaction
+    /// closures, under this same `USER_PREFS_LOCK`, so the deferred delete
+    /// must execute before the lock is released too. Running it after release
+    /// would reopen the window where a concurrent replacement commits a fresh
+    /// secret for the same deterministic reference between this save's commit
+    /// and this cleanup — the stale delete would then destroy the
+    /// replacement's secret, and both saves would report success while the
+    /// persisted prefs describe a configured provider whose secret is gone.
+    /// Under the lock the two saves are totally ordered: the replacement
+    /// either lands entirely before this transaction (its keyring write
+    /// happens first, and this command's Delete edit is the later user
+    /// intent) or blocks until after the delete finished.
+    ///
+    /// Hook failures must stay non-fatal: the disk commit has already
+    /// succeeded, and a failed delete merely orphans the credential (the
+    /// reference is deterministic per provider, so a re-set overwrites it).
+    pub fn update_transaction_with_post_commit<F, C>(
+        mutate: F,
+        post_commit: C,
+    ) -> Result<Self, String>
+    where
+        F: FnOnce(&mut Self) -> Result<(), String>,
+        C: FnOnce(),
+    {
         let _guard = lock_user_prefs();
         let mut prefs = Self::load_unlocked(false);
         mutate(&mut prefs)?;
         prefs
             .save_unlocked()
             .map_err(|error| format!("save settings failed: {error:#}"))?;
+        post_commit();
         // 返回再次从磁盘解析的规范化结果，保证桥接层内存状态与实际持久化内容一致。
         Ok(Self::load_unlocked(false))
+    }
+
+    /// Test-only probe for the deferred-delete barrier test: reports whether
+    /// `USER_PREFS_LOCK` is currently free. Once the gated deferred delete has
+    /// started, "free" means it runs outside the transaction's critical
+    /// section (the racy ordering this probe exists to catch in red runs) and
+    /// "held" means it runs under the lock (serialized with replacements).
+    /// Callers hold `ENV_LOCK`, and every prefs-lock-using test takes that
+    /// lock first, so no unrelated test can hold `USER_PREFS_LOCK` here.
+    #[cfg(test)]
+    pub(crate) fn user_prefs_lock_free_for_test() -> bool {
+        matches!(USER_PREFS_LOCK.try_lock(), Ok(_))
     }
 
     pub fn normalize_saved_model_metadata(&mut self) {
@@ -1177,9 +1223,13 @@ impl UserPrefs {
                     // configured-but-secretless when a later step of the same
                     // transaction fails and the save aborts. The caller must
                     // delete the captured reference only after its save
-                    // committed, where a failure merely orphans the credential
-                    // (the benign direction — the reference is deterministic per
-                    // provider, so a re-set overwrites the orphan).
+                    // committed — via `update_transaction_with_post_commit`, so
+                    // the delete still runs inside the prefs-lock critical
+                    // section and cannot interleave after a concurrent
+                    // replacement of the same deterministic reference — where a
+                    // failure merely orphans the credential (the benign
+                    // direction — the reference is deterministic per provider,
+                    // so a re-set overwrites the orphan).
                     if let Some(reference) = credential.credential_ref.clone().or_else(|| {
                         provider
                             .supports_api_key()

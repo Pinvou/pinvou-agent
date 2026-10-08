@@ -194,8 +194,12 @@ pub struct CredentialMigrationResult {
     /// destroy the secret before the save committed — a later failure in the
     /// same transaction aborts with disk prefs untouched and the provider
     /// left configured-but-secretless. Callers must delete these references
-    /// only after their save committed, where a failed delete merely orphans
-    /// the credential (the benign direction).
+    /// only after their save committed, via
+    /// `UserPrefs::update_transaction_with_post_commit` so the delete stays
+    /// inside the prefs-lock critical section (a delete that ran after the
+    /// lock was released could destroy a secret a concurrent replacement of
+    /// the same deterministic reference had just committed), where a failed
+    /// delete merely orphans the credential (the benign direction).
     #[serde(default)]
     pub deferred_search_deletes: Vec<CredentialReference>,
 }
