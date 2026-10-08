@@ -4,6 +4,9 @@
 //! 只做传输边界：原生车道校验、两个根解析、忙碌门与错误文案。原生车道 = 工作模式
 //! 会话 + 品悟原生 code 会话（`SessionKind::Chat` + 非 ACP）：ACP 会话与定时
 //! 会话如实拒绝（设计 §11：ACP 不做；定时会话无每轮快照，与 fork 拒绝口径一致）。
+//! aux 侧聊会话（`aux-`）按同一车道配方放行：零工具纯问答，快照/回退都落其
+//! 私有目录（小且自排除），无 UI 消费——如实放行不设特判（配方与 list_sessions
+//! 车道过滤保持同源）。
 
 use super::prelude::*;
 use crate::features::code_checkpoints as checkpoints;
@@ -1658,8 +1661,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
-    /// F4/F4a：工作模式仅对话回退——`conversation_only` 恒降级（快照存在也不动
-    /// 代码），截断后用户在执行根的手动改动保持原样；目标轮快照缺失时同样可用。
+    /// F3/F4/F4a：工作模式双层回退与仅对话回退——`conversation_only` 恒降级
+    /// （快照存在也不动代码），截断后用户在执行根的手动改动保持原样；目标轮
+    /// 快照缺失时同样可用；对照腿验证勾选「同时回退工作区文件」时定位 Turn
+    /// 快照、恢复到该轮之前并自动留 PreRestore 回滚点（双层，F3）。
     #[test]
     fn work_mode_conversation_only_rewind_leaves_files_untouched() {
         if !git_available() {
@@ -1680,14 +1685,43 @@ mod tests {
         std::fs::create_dir_all(&ledger).expect("ledger dir");
         checkpoints::create_checkpoint(&ledger, &execution, Some(1), CheckpointKind::Turn, "t1")
             .expect("turn 1 snapshot");
+        std::fs::write(execution.join("code.txt"), "turn-1-state\n").expect("write t1 state");
         checkpoints::create_checkpoint(&ledger, &execution, Some(2), CheckpointKind::Turn, "t2")
             .expect("turn 2 snapshot");
-        // 工作模式常态：用户手动改动与 agent 改动交织。
-        std::fs::write(execution.join("notes.md"), "user manual edit\n").expect("write");
+        std::fs::write(execution.join("code.txt"), "turn-2-state\n").expect("write t2 state");
 
-        // 快照存在也恒降级（resolve_rewind_plan 的 conversation_only 契约）。
+        // F3 对照腿（勾选「同时回退工作区文件」）：定位 turn 2 快照、恢复文件到
+        // 第 2 轮之前，restore 内部强制 PreRestore 回滚点（镜像 rewind_to_turn
+        // 步骤 1/2 的编排：restore → truncate 绑定回滚点）。
         let entries = checkpoints::list_checkpoints(&ledger).expect("list");
-        let plan = resolve_rewind_plan(entries, 1, true).expect("degraded plan");
+        let plan = resolve_rewind_plan(entries, 1, false).expect("double-layer plan");
+        assert!(!plan.degraded);
+        let restore_target = plan.checkpoint.expect("turn 2 checkpoint");
+        let undo = checkpoints::restore_checkpoint(&ledger, &execution, &restore_target.id)
+            .expect("restore turn 2 checkpoint");
+        store
+            .truncate_to_user_turn(&id, 1, Some(undo.id.clone()))
+            .expect("truncate to turn 1 with bound rollback point");
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).expect("read"),
+            "turn-1-state\n",
+            "双层回退必须把文件恢复到第 2 轮之前"
+        );
+        assert!(
+            checkpoints::list_checkpoints(&ledger)
+                .expect("list")
+                .iter()
+                .any(|entry| entry.kind == CheckpointKind::PreRestore && entry.id == undo.id),
+            "双层回退必须自动留 PreRestore 回滚点（可反悔）"
+        );
+
+        // F4：conversation_only 恒降级（此后对话已在第 1 轮末，回退到第 0 轮）。
+        // 工作模式常态：用户手动改动与 agent 改动交织——在 F3 的 restore 之后
+        // 写入（restore 的 clean -fd 会移除目标快照之后的新文件，那正是双层
+        // 回退的代价；本腿验证的是「仅回退对话」时文件保持原样）。
+        std::fs::write(execution.join("notes.md"), "user manual edit\n").expect("write");
+        let entries = checkpoints::list_checkpoints(&ledger).expect("list");
+        let plan = resolve_rewind_plan(entries, 0, true).expect("degraded plan");
         assert!(plan.degraded);
         assert!(plan.checkpoint.is_none());
         // F4a：目标轮快照缺失（超预算/当时失败）同样可用。
@@ -1695,17 +1729,16 @@ mod tests {
         assert!(plan.degraded);
         // 镜像 rewind_to_turn 的 degraded 编排：跳过 restore，仅截断对话。
         store
-            .truncate_to_user_turn(&id, 1, None)
-            .expect("truncate to turn 1");
+            .truncate_to_user_turn(&id, 0, None)
+            .expect("truncate to turn 0");
         assert_eq!(
             std::fs::read_to_string(execution.join("notes.md")).expect("read"),
             "user manual edit\n",
             "仅对话回退不得触碰文件"
         );
-        assert_eq!(
-            store.load(&id).expect("load").messages.len(),
-            2,
-            "对话应截断到第 1 轮末（user+assistant）"
+        assert!(
+            store.load(&id).expect("load").messages.is_empty(),
+            "对话应全部截断（回退到第 0 轮）"
         );
         let _ = std::fs::remove_dir_all(&ledger);
     }
@@ -1789,8 +1822,11 @@ mod tests {
             resolve_native_session_roots(&id, &store, |_| false).expect("roots");
         assert_eq!(resolved_ledger, ledger);
         assert_eq!(resolved_execution, execution);
-        // B2 快照门谓词：定时会话 scheduled_profile 命中（chat.rs/accept_plan
-        // 的 !scheduled 门据此跳过快照），工作模式未命中。
+        // B2 快照门谓词：定时会话 scheduled_profile 命中（chat.rs/accept_plan 的
+        // !scheduled 门据此跳过快照），工作模式未命中。覆盖口径说明：chat/accept_plan
+        // 命令本体依赖 State/EnginePool 无法单测，这里钉的是门读取的谓词本身
+        // （与既有「手工镜像编排」测试同款取舍）；B2 的命令侧由上方
+        // ScheduledRun 车道拒绝锚定。
         assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
         assert!(store.scheduled_profile(&id).is_none());
     }

@@ -1226,6 +1226,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         openRewindDialog, confirmRewind, cancelRewind,
         rewindUndoState, rewindUndoEntry, rewindUndoError, rewindUndoing,
         openRewindUndoDialog, confirmRewindUndo, cancelRewindUndo,
+        resetForSessionSwitch: resetRewindForSessionSwitch,
       } = useRewindController({
         sessionId: activeSessionId,
         enabled: isRewindLane,
@@ -1235,10 +1236,19 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         invoke: invokeTauri,
         // 回退后按磁盘截断后的会话重注水：bridge 的会话切换内部路径 + 强制盘载
         // （同会话 id 也重新 load_session），notify() 驱动 bs 快照更新与时间线
-        // 重投影；归属检查防止在途回退把用户切走后的新会话拉回原会话。
-        reload: (sid) => (bridge.sessions && typeof bridge.sessions.switchToSessionInternal === 'function'
-          ? bridge.sessions.switchToSessionInternal(sid, true, 'chat-rewind', { forceDurableLoad: true })
-          : Promise.reject(new Error('session reload unavailable'))),
+        // 重投影；归属检查防止在途回退把用户切走后的新会话拉回原会话。布尔合同：
+        // 成功 true / 失败 false（不 reject），此处转换为异常交给共享编排的
+        // reload 失败路径（错误留弹窗、可重试仅补重载）。
+        reload: (sid) => {
+          if (!bridge.sessions || typeof bridge.sessions.switchToSessionInternal !== 'function') {
+            return Promise.reject(new Error(t.uiCodex.rewindReloadFailed));
+          }
+          return bridge.sessions
+            .switchToSessionInternal(sid, true, 'chat-rewind', { forceDurableLoad: true })
+            .then((ok) => {
+              if (ok !== true) throw new Error(t.uiCodex.rewindReloadFailed);
+            });
+        },
         ownsSession: (id) => activeSessionIdRef.current === id,
         // bs 订阅本身就是重投影驱动（switchToSessionInternal 结束时 notify），
         // 无 codex lane 那样的独立 tick 需要兜底。
@@ -1250,6 +1260,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           }
         },
       });
+      // 回退/撤销弹窗与 UI busy 镜像随会话切换复位：ChatView 不按会话 remount，
+      // 不复位的话切换前打开的确认弹窗会对新会话执行旧目标的回退（与 codex
+      // 车道 [activeId] 复位同款；in-flight 记账 ref 由 hook 持有，归旧 promise
+      // 的 finally 清理）。
+      useEffect(() => {
+        resetRewindForSessionSwitch();
+      }, [activeSessionId, resetRewindForSessionSwitch]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",

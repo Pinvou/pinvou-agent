@@ -13,6 +13,27 @@ const codexView = source('features/codex/CodexAcpView.jsx');
 const controller = source('features/conversation/useRewindController.js');
 const rewindChip = source('features/conversation/RewindChip.jsx');
 
+// ── 运行时桥暴露锚定：ChatView 依赖的两个 bridge 方法必须真的在 TauriBridge
+// curated 对象上（静态源断言曾漏过此层——方法只存在于 feature registry 而
+// 未重导出时，typeof 守卫静默走 fallback，回退重载/提示全失效）────────────
+{
+  const bridgeSource = source('platform/tauri/bridge.js');
+  const sessionsSurface = bridgeSource.match(/^\s{4}sessions: \{[\s\S]*?\n\s{4}\},/m);
+  assert.ok(sessionsSurface, 'curated sessions 对象必须存在');
+  assert.match(
+    sessionsSurface[0],
+    /switchToSessionInternal/,
+    'bridge.sessions 必须暴露 switchToSessionInternal（回退后的强制盘载重注水；公开 switchToSession 同 id 快路径不会重载）',
+  );
+  const chatSurface = bridgeSource.match(/^\s{4}chat: \{[\s\S]*?\n\s{4}\},/m);
+  assert.ok(chatSurface, 'curated chat 对象必须存在');
+  assert.match(
+    chatSurface[0],
+    /addSystemItem/,
+    'bridge.chat 必须暴露 addSystemItem（回退/撤销结果的内联提示落点）',
+  );
+}
+
 // ── ChatView 接线：共享模块 + 时间线入口 + 弹窗 ──────────────────────
 // 共享模块导入（搬家后唯一来源是 features/conversation）。
 assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'ChatView 必须使用共享编排 hook');
@@ -37,6 +58,21 @@ assert.match(
   chatView,
   /Boolean\(activeSessionId\) && !isScheduledTaskCreationChat && !scheduledRunContext/,
   '工作模式回退车道门必须排除定时相关会话',
+);
+
+// 会话切换复位：ChatView 不按会话 remount，必须挂 [activeSessionId] 复位
+// （否则切换前打开的确认弹窗会对新会话执行旧目标的回退——跨会话截断）。
+assert.match(
+  chatView,
+  /resetRewindForSessionSwitch\(\);/,
+  'ChatView 必须在会话切换时调用共享 hook 的 resetForSessionSwitch',
+);
+// reload 布尔合同：switchToSessionInternal 失败返回 false 而非 reject，视图
+// 侧必须转换成异常交给共享编排的 reload 失败路径。
+assert.match(
+  chatView,
+  /ok !== true/,
+  'ChatView 的 reload 必须把 switchToSessionInternal 的 false 返回当作失败抛出',
 );
 
 // ChatView 不得直接调回退命令：编排（含忙碌单 flight/重载/归属检查）在共享

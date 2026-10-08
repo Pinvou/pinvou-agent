@@ -73,6 +73,7 @@ const codexZh = {
   rewindConfirm:'确认回退', rewindCancel:'取消', rewindBusy:'正在回退…',
   rewindInFlightBusy:'另一会话的回退/撤销仍在进行中，请等待其完成后再操作。',
   rewindRetryReload:'重试加载', rewindReloadRetryNote:'操作已生效，但重新加载会话失败。重试仅重新加载会话内容，不会重复执行该操作。',
+  rewindReloadFailed:'重新加载会话失败。',
   rewindNoticeRestored:n=>n>0?`已回退到第 ${n} 轮末尾：文件与对话已恢复；回退前的工作区状态已自动保存为回滚点，可再次回退反悔。`:'已回退到第一轮之前：文件与对话已恢复；回退前的工作区状态已自动保存为回滚点，可再次回退反悔。',
   rewindNoticeDegraded:'已回退对话；该时间点的工作区快照不可用（可能已被淘汰），工作区文件未回退。',
   rewindNoticeConversationOnly:'已回退对话，工作区文件未改动。',
