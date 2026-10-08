@@ -74,6 +74,7 @@ const codexEn = {
   rewindConfirm:'Rewind', rewindCancel:'Cancel', rewindBusy:'Rewinding…',
   rewindInFlightBusy:'Another session still has a rewind or undo in progress; please wait for it to finish.',
   rewindRetryReload:'Retry reload', rewindReloadRetryNote:'The operation took effect, but reloading the session failed. Retrying only reloads the session; it does not repeat the operation.',
+  rewindReloadFailed:'Failed to reload the session.',
   rewindNoticeRestored:n=>n>0?`Rewound to the end of turn ${n}: files and conversation restored. The pre-rewind workspace state was saved as a rollback point, so you can undo this.`:'Rewound to before turn 1: files and conversation restored. The pre-rewind workspace state was saved as a rollback point, so you can undo this.',
   rewindNoticeDegraded:'Conversation rewound; the workspace snapshot for that point is unavailable (possibly evicted), so your files were not changed.',
   rewindNoticeConversationOnly:'Conversation rewound; workspace files were not changed.',
