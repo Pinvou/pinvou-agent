@@ -48,14 +48,16 @@ fn lark(args: &[&str]) -> Command {
 const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
 
 /// 解析 `lark-cli --version` 输出为三段语义版本。输出形如
-/// `lark-cli version 1.0.65`(程序名与版本之间夹着字面量 `version`),故按
-/// tmeet 同款口径锚定 `version` 标记、只解析其后的 token;不取「首个可解析
-/// token」,否则更新提示等前导数字噪声会被误当成版本号,门静默放行旧版。
+/// `lark-cli version 1.0.65`(程序名与版本之间夹着字面量 `version`),故锚定
+/// `version` 标记、只解析其后的 token;不取「首个可解析 token」,否则更新提示
+/// 等前导数字噪声会被误当成版本号,门静默放行旧版。标记取最后一个:若上游
+/// 某天在真实版本行前打印更新提示(`a new version 1.0.96 is available`),
+/// 首个标记会读到提示里的新版本号而放行旧 CLI,末位标记落在真实行(tmeet
+/// 仍是首个标记口径,对齐属后续事项)。
 fn parse_lark_version(s: &str) -> Option<(u64, u64, u64)> {
-    let marker = s.split_whitespace().position(|t| t == "version")?;
-    s.split_whitespace()
-        .nth(marker + 1)
-        .and_then(cc::parse_semver3)
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let marker = tokens.iter().rposition(|t| *t == "version")?;
+    tokens.get(marker + 1).and_then(|t| cc::parse_semver3(t))
 }
 
 /// Installed lark-cli version, if the `--version` probe runs and parses.
@@ -127,8 +129,9 @@ pub async fn feishu_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth status —— 未装用户每次白等子进程且拿到的是 Err,
         // 统一返回结构化未装态(其余 CLI 连接器同款短路)。installed 只看
-        // 「是否装了任意版本」:过旧版本同样报 installed:true,升级引导由
-        // ensure_cli 的最低版本门负责(wecom 同款分工)。
+        // 「是否装了能解析出版本号的任意版本」:probe 失败或输出解析不出版本号
+        // 一律 installed:false(交给 ensure 重装钉死版本);可解析但过旧的版本报
+        // installed:true,升级引导由 ensure_cli 的最低版本门负责(wecom 同款分工)。
         if lark_cli_version().is_none() {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "configured": false, "installed": false
@@ -512,6 +515,12 @@ mod tests {
         assert_eq!(
             parse_lark_version("2026.10.01 update check, version 1.0.95"),
             Some((1, 0, 95))
+        );
+        // 若上游在真实版本行前打印更新提示,首个 `version` 标记会读到提示里的
+        // 新版本号而静默放行旧 CLI——锚定取最后一个 `version` 标记,落到真实行。
+        assert_eq!(
+            parse_lark_version("a new version 1.0.96 is available\nlark-cli version 1.0.65"),
+            Some((1, 0, 65))
         );
         assert_eq!(parse_lark_version("hello"), None);
         // 纯噪声(无版本段)不解析出误值。

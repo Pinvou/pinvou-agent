@@ -16,6 +16,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -23,6 +24,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md"
 WORK = "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md"
+APP_PLATFORM_MOD = "pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs"
 
 
 def git_text(repository, ref, path):
@@ -43,6 +45,42 @@ def baseline_description(ref):
     return json.loads(line)
 
 
+def memory_off_notice():
+    """Mirror the production memory-disabled render (memory_section(false)).
+
+    Read MEMORY_OFF_NOTICE_MD out of the Rust source so the fixture cannot
+    drift from the shipped prompt; the placeholder used to be dropped to an
+    empty string, which stopped matching production when the off-notice was
+    introduced (PR #658).
+    """
+    source = (ROOT / APP_PLATFORM_MOD).read_text(encoding="utf-8")
+    match = re.search(r'const MEMORY_OFF_NOTICE_MD: &str = "((?:[^"\\]|\\.)*)";', source)
+    if match is None:
+        raise ValueError("MEMORY_OFF_NOTICE_MD not found in " + APP_PLATFORM_MOD)
+    literal = match.group(1)
+    out = []
+    i = 0
+    while i < len(literal):
+        ch = literal[i]
+        if ch == "\\" and i + 1 < len(literal):
+            nxt = literal[i + 1]
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "t":
+                out.append("\t")
+                i += 2
+                continue
+            if nxt in ('"', "\\"):
+                out.append(nxt)
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def instructions(shared, work, model, title_language):
     sections = work.split("\n\n")
     return (shared.replace("{{PINVOU3_MODE_ENV_SECTION}}", "\n\n".join(sections[:2]))
@@ -51,7 +89,7 @@ def instructions(shared, work, model, title_language):
             .replace("{{PINVOU3_TITLE_LANG}}", title_language)
             # Synthetic shell comparisons use the production memory-disabled
             # prompt; never read the operator's personal memory settings.
-            .replace("{{PINVOU3_MEMORY_SECTION}}\n", "")
+            .replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_off_notice())
             .replace("{{PINVOU3_SUDO_INSTRUCTION}}", ""))
 
 

@@ -26,7 +26,11 @@ pub fn disable_super_permission() -> Result<(), String> {
 /// ON-state per-turn reminder. Doctrine anchors (status|restart scoping,
 /// denied persistence ops, credential list) must stay aligned with the
 /// static red line in instructions-shared.md and the execpolicy deny
-/// families in safety_deny_rules.rs — the test below pins them.
+/// families in safety_deny_rules.rs — the test below pins them. Alignment is
+/// mechanical for the write/destroy/upload deny families; the credential READ
+/// faces (and `.env`) are prompt-level doctrine by design — safety_deny_rules.rs
+/// deliberately keeps read faces out of the mechanical ruleset, so the reminder
+/// restates doctrine there rather than mirroring a deny rule.
 const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`visudo`、`crontab -e` 等持久化操作仍会被安全策略拒绝,不要尝试)。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。";
 
 /// OFF-state per-turn reminder. The settings path must match the i18n labels
@@ -89,7 +93,9 @@ mod tests {
         assert!(validate_username(&"a".repeat(33)).is_err());
     }
 
-    /// Reminder = doctrine = enforcement: the ON-state advisory (status|restart
+    /// Reminder = doctrine, with enforcement covering the write/destroy/upload
+    /// faces (the credential READ faces are doctrine-only by design — see the
+    /// [`TURN_REMINDER_ON`] doc comment): the ON-state advisory (status|restart
     /// scoping, denied persistence ops, credential red line) and the OFF-state
     /// settings path each regressed once before (stale 【设置→系统权限】 path;
     /// unscoped systemctl advice). Pin the load-bearing anchors so a revert
@@ -97,16 +103,21 @@ mod tests {
     #[test]
     fn turn_reminder_pins_doctrine_anchors() {
         // ON state: advisory scoped to the allowed surface, denied ops named,
-        // credential list mirroring the static red line (incl. /etc/sudoers).
+        // credential list mirroring the static red line — all seven tokens,
+        // so dropping any one from the reminder fails here.
         for anchor in [
             "sudo systemctl status|restart",
             "systemctl enable/mask",
             "visudo",
             "crontab -e",
             "「红线」",
-            "/etc/sudoers",
+            "~/.ssh",
+            "credentials",
+            "id_rsa",
             ".env",
+            "token",
             "/etc/shadow",
+            "/etc/sudoers",
         ] {
             assert!(
                 TURN_REMINDER_ON.contains(anchor),
