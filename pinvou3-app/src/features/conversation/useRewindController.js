@@ -52,6 +52,11 @@ export function useRewindController({
     enabled,
     refreshKey: checkpointRefreshKey({ turnCount: turns?.length || 0, busy }),
   });
+  // 解构出稳定标识的函数成员再进编排回调的依赖数组：整个 checkpoints 对象随
+  // 每次列表/预览状态更新换新引用，直接作依赖会让回调（进而弹窗 props）每
+  // refreshKey 边沿重建；preview 恒稳定（useCallback []）、refresh 仅随
+  // enabled 翻转——语义与原视图内联编排一致。
+  const { preview: previewCheckpointDiff, refresh: refreshCheckpoints } = checkpoints;
   const rewindEntries = useMemo(
     () => (enabled ? rewindEntriesByTurnId(turns, checkpoints.checkpoints) : new Map()),
     [enabled, turns, checkpoints.checkpoints],
@@ -102,8 +107,8 @@ export function useRewindController({
   const openRewindDialog = useCallback((entry) => {
     setRewindError('');
     setRewindTarget(entry);
-    if (entry.checkpoint) checkpoints.preview(entry.checkpoint.id);
-  }, [setRewindTarget, checkpoints]);
+    if (entry.checkpoint) previewCheckpointDiff(entry.checkpoint.id);
+  }, [setRewindTarget, previewCheckpointDiff]);
 
   const cancelRewind = useCallback(() => {
     if (!rewindInFlightRef.current) setRewindTarget(null);
@@ -198,7 +203,7 @@ export function useRewindController({
             : (target.pendingNotice ?? null),
         });
         setRewindError(reloadError);
-        checkpoints.refresh();
+        refreshCheckpoints();
         return;
       }
       setRewindTarget(null);
@@ -210,7 +215,7 @@ export function useRewindController({
         currentBumpTick();
       }
       // 入口可用性随新时间线重算（refreshKey 的 turns/busy 变化通常已触发，此处兜底）。
-      checkpoints.refresh();
+      refreshCheckpoints();
     } catch (err) {
       setRewindError(String(err && err.message ? err.message : err));
     } finally {
@@ -221,7 +226,7 @@ export function useRewindController({
         setRewinding(false);
       }
     }
-  }, [setRewindTarget, checkpoints]);
+  }, [setRewindTarget, refreshCheckpoints]);
 
   // 撤销回退：undo_last_rewind（恢复文件到绑定回滚点（仅对话降级则跳过）+
   // 对话从备份还原 + engine 重建）；成功后复用 reloadSessionAfterRewind 重载编排
@@ -262,14 +267,14 @@ export function useRewindController({
         // 与回退侧对齐：刷新让 undoState 收敛（记录已消费 → null），用户取消
         // 弹窗后「撤销回退」入口不会以陈旧状态残留。弹窗由本地 entry 驱动，
         // 不受 undoState 收敛影响（复位 effect 豁免 reloadFailed 条目）。
-        checkpoints.refresh();
+        refreshCheckpoints();
         return;
       }
       setRewindUndoEntry(null);
       currentAppendNotice(sessionId, currentCopy.rewindUndoDone);
       currentBumpTick();
       // refresh 连带重查 rewind_undo_state：撤销后不可再反悔，入口随之消失。
-      checkpoints.refresh();
+      refreshCheckpoints();
     } catch (err) {
       setRewindUndoError(String(err && err.message ? err.message : err));
     } finally {
@@ -279,7 +284,7 @@ export function useRewindController({
         setRewindUndoing(false);
       }
     }
-  }, [setRewindUndoEntry, checkpoints]);
+  }, [setRewindUndoEntry, refreshCheckpoints]);
 
   return useMemo(
     () => ({
