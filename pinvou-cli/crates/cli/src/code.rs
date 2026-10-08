@@ -5520,13 +5520,19 @@ fn workspace_diff_one(
                 "code workspace diff: path escapes the workspace through a symlink",
             ));
         }
-        match file_kind(&path) {
+        // Round-46 review: file_kind and the open both used the ORIGINAL
+        // spelling, so a workspace-local process could swap `path` to a
+        // symlink after the containment check and route e.g. ~/.ssh/id_rsa
+        // into the diff output. The PR's own discipline elsewhere
+        // (artifacts/memory/voice) is "the CANONICAL path is what was
+        // policy-checked, so it is also what gets read" — apply it here.
+        match file_kind(&canonical) {
             // Mirror the GUI preview lane: read at most PREVIEW_LIMIT+1 bytes
             // and convert lossily instead of loading arbitrary multi-gigabyte
             // files or failing whole-file on non-UTF-8 content.
             "text" => {
                 let mut bytes = Vec::new();
-                std::fs::File::open(&path)
+                std::fs::File::open(&canonical)
                     .and_then(|mut file| {
                         use std::io::Read as _;
                         file.by_ref()

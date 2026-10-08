@@ -2029,8 +2029,14 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
                 } else {
                     String::new()
                 };
+                // Round-46 review: this arm is the MOST COMMON npm failure
+                // shape (both registry attempts end in clean non-zero exits
+                // — `run_npm_install` returns `Ok(false)`) and it was the
+                // one install lane without the stable code the docs
+                // advertise; only the hard-error arm inside
+                // `run_npm_install` carried it.
                 return Err(CliError::failed(format!(
-                    "{} CLI install failed{hint}",
+                    "connectors_npm_install_failed: {} CLI install failed{hint}",
                     spec.display_name
                 )));
             }
@@ -2208,10 +2214,23 @@ fn run_npm_attempt(
             let mut open_log = std::fs::OpenOptions::new();
             open_log.create(true).append(true).mode(0o600);
             match open_log.open(&log_path) {
-                Ok(file) => match file.try_clone() {
-                    Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
-                    Err(_) => (Stdio::null(), Stdio::null()),
-                },
+                Ok(file) => {
+                    // Round-46 review: mode(0o600) applies only on CREATE —
+                    // the desktop app usually creates this shared log first
+                    // with the umask default, and this CLI's npmrc-token
+                    // rationale applies to the append just the same. Best
+                    // effort: a chmod failure must not fail the install.
+                    #[cfg(unix)]
+                    let file = {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+                        file
+                    };
+                    match file.try_clone() {
+                        Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
+                        Err(_) => (Stdio::null(), Stdio::null()),
+                    }
+                }
                 Err(_) => (Stdio::null(), Stdio::null()),
             }
         }
@@ -2446,12 +2465,25 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
             }
         }
         if !verified {
-            return Err(CliError::failed(format!(
+            // Round-46 review: lead the aggregate with the stable code — the
+            // family's own contract tests pin code-FIRST on the sibling
+            // lanes, so `starts_with` matching established by this PR would
+            // miss a checksum failure buried after the candidate labels.
+            let checksum = causes
+                .iter()
+                .any(|cause| cause.contains("connectors_archive_checksum_mismatch"));
+            let summary = format!(
                 "{} archive download failed (all {} candidate download sources exhausted): {}",
                 artifact.name,
                 causes.len(),
                 causes.join("; ")
-            )));
+            );
+            if checksum {
+                return Err(CliError::failed(format!(
+                    "connectors_archive_checksum_mismatch: {summary}"
+                )));
+            }
+            return Err(CliError::failed(summary));
         }
     }
 

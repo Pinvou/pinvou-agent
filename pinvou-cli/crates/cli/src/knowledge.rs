@@ -1396,6 +1396,15 @@ fn collections_add_sources(
     // job is created: the path pre-flight is pure filesystem, and the
     // existence check names the id (upstream answers an unknown id with the
     // previous job's state, which would masquerade as a start).
+    //
+    // Round-46 review: a credential-path gate on each enqueued source. The
+    // store these sources land in is the one `kb_search` reads model-side,
+    // so `add-sources ~/.ssh` would ingest private-key material into the
+    // model's search corpus. The GUI's folder picker has no such gate
+    // (disclosed CLI-stricter-than-GUI, the same posture `files ingest`
+    // takes); canonicalize first so the component check cannot be escaped
+    // by a symlink or a `..` hop, and hand the canonical path downstream
+    // (the pre-existing canonicalization below becomes the same path).
     for path in &paths {
         let Ok(meta) = std::fs::metadata(path) else {
             return Err(CliError::failed(format!(
@@ -1410,6 +1419,12 @@ fn collections_add_sources(
                 path.display()
             )));
         }
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
+            CliError::failed(format!(
+                "knowledge collections add-sources: refusing source path: {reason}"
+            ))
+        })?;
     }
     let service = open_service()?;
     ensure_collection_exists(&service, id, "collections add-sources")?;
@@ -1801,6 +1816,17 @@ fn index_state_result(result: Result<IndexState, String>) -> Result<IndexState, 
                 "knowledge_index_job_not_found: no resumable index job for the requested id"
                     .to_owned(),
             )
+        } else if error.contains(pinvou3_lib::features::knowledge::FOREIGN_IMPORT_RUNNING_MARKER) {
+            // Round-46 review: the fresh-foreign-running refusal was the one
+            // zh-CN-only, codeless error class reachable through this lane
+            // (a surface starting an import inside the
+            // `require_job_id`→command race). Match the single-sourced
+            // marker and give scripts a stable code.
+            CliError::failed(format!(
+                "knowledge_index_busy: {error}; another surface started this import \
+                 moments ago — watch it with `pinvou knowledge index status` or drop it \
+                 with `pinvou knowledge index cancel <job-id>`"
+            ))
         } else {
             CliError::failed(format!("knowledge index: {error}"))
         }
@@ -2081,6 +2107,38 @@ fn display_phase(state: &IndexState) -> String {
         }
     } else {
         "idle".into()
+    }
+}
+
+#[cfg(test)]
+mod index_state_result_tests {
+    use super::index_state_result;
+    use crate::ExitCode;
+
+    /// Round-46 review: the fresh-foreign-running refusal (a surface
+    /// starting an import inside the `require_job_id`→command race) was the
+    /// one codeless error class this lane could surface; the mapper must
+    /// pin its stable code to the single-sourced app marker.
+    #[test]
+    fn the_foreign_running_refusal_maps_to_a_stable_code() {
+        let error = index_state_result(Err(
+            pinvou3_lib::features::knowledge::FOREIGN_IMPORT_RUNNING_MARKER.to_owned(),
+        ))
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let rendered = error.to_string();
+        assert!(rendered.starts_with("knowledge_index_busy"), "{rendered}");
+        // The marker stays visible so the locale it came from is not hidden.
+        assert!(
+            rendered.contains(pinvou3_lib::features::knowledge::FOREIGN_IMPORT_RUNNING_MARKER),
+            "{rendered}"
+        );
+        // Unrelated store errors keep the generic family prefix.
+        let generic = index_state_result(Err("no such table: jobs".to_owned())).unwrap_err();
+        assert!(
+            generic.to_string().starts_with("knowledge index:"),
+            "{generic}"
+        );
     }
 }
 
