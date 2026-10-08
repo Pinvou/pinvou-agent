@@ -1,3 +1,7 @@
+// architecture-guard: allow-target-cfg -- the shared `cli-install.log` must carry
+// 0600 on every append (it can echo npmrc tokens), and creation mode alone leaves
+// the umask default whenever the other surface created the file first; the chmod is
+// unix-scoped like every other 0600 claim, and the helper is unit-pinned below.
 //! 通用 CLI 连接器管道 —— 抽自 `feishu.rs`,供飞书 / 企微等"官方 CLI 连接器"共享。
 //!
 //! 设计(开发方案 C):公共的"起子进程 / 抑黑窗 / 抓授权 URL / 出二维码 / 收发事件 /
@@ -240,21 +244,36 @@ pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
 ///    preserves each stage's output of a multi-stage install (mirror retry
 ///    after the default registry fails); stage boundaries are distinguished
 ///    by the marker lines of [`append_cli_install_log`].
+/// Opens the shared `cli-install.log` for append and enforces 0600 on the
+/// opened handle (round-46 review: creation mode alone left the umask
+/// default whenever the desktop app created the log before the CLI's npm
+/// lane — or vice versa — and the log can echo npmrc tokens). The chmod is
+/// best-effort: a failure must not fail the install. Returns the handle and
+/// a clone for stdout/stderr redirection, or the open error.
+fn open_install_log_appender(
+    log_path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let clone = file.try_clone()?;
+    Ok((file, clone))
+}
+
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     rotate_cli_install_log_if_oversized(&log_path);
-    let (out, err) = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(f) => match f.try_clone() {
-            Ok(f2) => (Stdio::from(f), Stdio::from(f2)),
-            Err(_) => (Stdio::null(), Stdio::null()),
-        },
+    let (out, err) = match open_install_log_appender(&log_path) {
+        Ok((f, f2)) => (Stdio::from(f), Stdio::from(f2)),
         Err(_) => (Stdio::null(), Stdio::null()), // 落不了盘也别卡,回退丢弃
     };
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
@@ -780,6 +799,37 @@ pub fn bundle_store_on_disconnected(id: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::open_install_log_appender;
+
+    /// Round-46 review: the appender must enforce 0600 on a PRE-EXISTING
+    /// log file (creation mode alone left the umask default when the other
+    /// surface created the file first) — the scenario the file-top
+    /// allow-target-cfg exception documents.
+    #[cfg(unix)]
+    #[test]
+    fn install_log_appender_tightens_a_pre_existing_log_to_0600() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-log-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("cli-install.log");
+        std::fs::write(&log, b"gui wrote first").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let (_file, _clone) = open_install_log_appender(&log).unwrap();
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the append must tighten the shared log to 0600"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     use super::*;
     use std::io::{Error, Read};
 

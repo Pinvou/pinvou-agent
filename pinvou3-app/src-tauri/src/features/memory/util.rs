@@ -483,8 +483,15 @@ pub(super) fn looks_sensitive_or_task_like(value: &str) -> bool {
 /// the organize validator, the review sanitizer, and (round-45 review) the
 /// CLI's content-entry lanes, which refuse such text instead of storing it;
 /// matching content is always dropped.
+///
+/// Round-46 review: the match is ASCII-case-insensitive — models treat the
+/// block's tag boundary case-insensitively, so an uppercase
+/// `</PINVOU_USER_MEMORY>` variant passes an exact-lowercase check and
+/// still closes the block on render. The boundary strings in render.rs are
+/// fixed lowercase; the gate must not be narrower than the boundary it
+/// guards.
 pub fn contains_memory_block_marker(content: &str) -> bool {
-    content.contains("pinvou_user_memory")
+    content.to_ascii_lowercase().contains("pinvou_user_memory")
 }
 
 /// Per-kind memory-content quality gate shared by the review sanitizer
