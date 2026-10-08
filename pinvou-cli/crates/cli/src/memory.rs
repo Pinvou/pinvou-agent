@@ -2291,8 +2291,16 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     let snapshot_rewritten_without_runtime = refresh_snapshot_document_after_organize();
     let mut lines = vec![
         support::collapse_control_characters(&organize_summary(&report)),
-        format!("Started: {}", report.started_at),
-        format!("Finished: {}", report.finished_at),
+        // Round-46 review: store-derived timestamps collapse like every
+        // other human cell.
+        format!(
+            "Started: {}",
+            support::collapse_control_characters(&report.started_at)
+        ),
+        format!(
+            "Finished: {}",
+            support::collapse_control_characters(&report.finished_at)
+        ),
         format!(
             "Model: {}",
             support::collapse_control_characters(&report.model)
@@ -2422,9 +2430,15 @@ fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {
         history
             .iter()
             .map(|report| {
+                // Round-46 review: `started_at` is store-derived and was
+                // the one row cell taken raw — a forged/corrupt history
+                // file could forge rows or columns through it. Same
+                // collapse as the two cells beside it (`profile get`
+                // collapses its store-written `updated_at` for the same
+                // consistency).
                 format!(
                     "{}\t{}\t{}",
-                    report.started_at,
+                    support::collapse_control_characters(&report.started_at),
                     support::collapse_control_characters(&report.model),
                     support::collapse_control_characters(&organize_summary(report))
                 )

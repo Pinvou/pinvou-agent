@@ -409,6 +409,18 @@ fn is_row_unsafe_char(ch: char) -> bool {
             | '\u{E0020}'..='\u{E007F}' // TAG CHARACTERS: invisible payload
                                         // channel (the known Unicode smuggling
                                         // vector)
+            // Round-46 review: the remaining invisible General_Category=Cf
+            // members outside the ranges above — same identical-rendering /
+            // digit-shaping hazard the entries above name. (U+180E is Cf
+            // since Unicode 6.3.)
+            | '\u{0600}'..='\u{0605}' // ARABIC NUMBER SIGN..NUMBER MARK ABOVE
+            | '\u{06DD}' // ARABIC END OF AYAH
+            | '\u{070F}' // SYRIAC ABBREVIATION MARK
+            | '\u{08E2}' // ARABIC POUND MARK ABOVE
+            | '\u{180E}' // MONGOLIAN VOWEL SEPARATOR
+            | '\u{110BD}' | '\u{110CD}' // KAITHI NUMBER SIGN(S)
+            | '\u{FFF9}'..='\u{FFFB}' // INTERLINEAR ANNOTATION characters
+            | '\u{1BCA0}'..='\u{1BCA3}' // SHORTHAND FORMAT CONTROLS
         )
 }
 
@@ -1029,6 +1041,43 @@ mod tests {
         // Ordinary text, including non-ASCII and combining marks, is not a
         // display hazard and must be left alone.
         assert_eq!(collapse_control_characters("会话 café ✓"), "会话 café ✓");
+    }
+
+    /// Round-46 review: the remaining invisible General_Category=Cf members
+    /// (Arabic/Khmer number signs, the Mongolian vowel separator, Kaithi
+    /// number signs, interlinear annotation, shorthand format controls) are
+    /// in the same identical-rendering class the ranges above neutralize;
+    /// each must collapse in both the row and the block sanitizer.
+    #[test]
+    fn collapse_control_characters_neutralizes_the_remaining_cf_members() {
+        for unsafe_char in [
+            '\u{0600}',
+            '\u{0605}',
+            '\u{06DD}',
+            '\u{070F}',
+            '\u{08E2}',
+            '\u{180E}',
+            '\u{110BD}',
+            '\u{110CD}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{1BCA0}',
+            '\u{1BCA3}',
+        ] {
+            let title = format!("ok{unsafe_char}row");
+            assert_eq!(
+                collapse_control_characters(&title),
+                "ok row",
+                "U+{:04X} must not survive into a human row",
+                unsafe_char as u32
+            );
+            assert_eq!(
+                collapse_block_control_characters(&title),
+                "ok row",
+                "U+{:04X} must not survive into a rendered block",
+                unsafe_char as u32
+            );
+        }
     }
 
     /// The ENV lane must distinguish "not set" from "set but not valid

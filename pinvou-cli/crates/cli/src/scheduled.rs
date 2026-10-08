@@ -171,6 +171,7 @@ pub enum ScheduledCommand {
     List,
     Show {
         id: String,
+        limit: Option<usize>,
     },
     Create {
         name: String,
@@ -271,8 +272,11 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
         }
         "show" => {
             let id = require_id(rest.first(), "scheduled show")?;
-            expect_no_arguments(&rest[1..], "scheduled show")?;
-            Ok(ScheduledCommand::Show { id })
+            let (options, _) = parse_flags(&rest[1..], &["--limit"], &[])?;
+            Ok(ScheduledCommand::Show {
+                id,
+                limit: parse_limit(&options, "--limit")?,
+            })
         }
         "create" => parse_create(rest),
         "update" => parse_update(rest),
@@ -1809,7 +1813,7 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
     };
     match command {
         ScheduledCommand::List => list(output),
-        ScheduledCommand::Show { id } => show(&id, output),
+        ScheduledCommand::Show { id, limit } => show(&id, limit, output),
         ScheduledCommand::Create {
             name,
             prompt_file,
@@ -1901,7 +1905,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &value)))
 }
 
-fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+fn show(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let def = store_holder.read_def(id)?;
     let sessions = open_sessions()?;
@@ -1909,6 +1913,13 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
     let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
     let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
+    // The FULL run list feeds the summary facts: `map_task` derives
+    // hasUnreadRuns/is-running from it, and the family's display-cap rule
+    // (see `DEFAULT_RUNS_DISPLAY_LIMIT`) keeps semantic lanes untruncated —
+    // cutting here would report false facts. Only the RENDERED run list
+    // caps, with the same default/marker/`--limit` escape as `runs`
+    // (round-46 review: `show` was the one display lane still rendering
+    // every record without bound).
     let runs = store_holder.list_runs(id, None)?;
     let titles = session_titles(&sessions);
     let task = map_task(
@@ -1921,8 +1932,15 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         &ui_metadata,
         &titles,
     );
+    let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
+    let (rendered_runs, truncated) = if runs.len() > effective_limit {
+        (&runs[..effective_limit], true)
+    } else {
+        (&runs[..], false)
+    };
     let names = task_name_map(std::slice::from_ref(&def));
-    let (run_lines, run_values) = render_runs(&sessions, &runs, &read_state, &names, &titles);
+    let (mut run_lines, run_values) =
+        render_runs(&sessions, rendered_runs, &read_state, &names, &titles);
     // Same no-forgeable-output rule as `list`: every textual value collapses
     // before it reaches the terminal (JSON keeps the originals).
     let cell = |key: &str, default: &str| {
@@ -1940,9 +1958,16 @@ fn show(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         format!("last_run: {}", cell("lastRunAt", "-")),
         format!("runs: {}", run_values.len()),
     ];
+    if truncated {
+        run_lines.push(format!(
+            "… showing the newest {effective_limit} runs of {} total (pass a larger --limit)",
+            runs.len()
+        ));
+    }
     lines.extend(run_lines);
     let mut value = task.clone();
     value["runs"] = serde_json::Value::Array(run_values);
+    value["truncated"] = serde_json::json!(truncated);
     Ok(success(render(output, lines.join("\n"), &value)))
 }
 
@@ -3592,7 +3617,10 @@ mod tests {
         assert_eq!(parse(&["list"]).unwrap(), ScheduledCommand::List);
         assert_eq!(
             parse(&["show", "t-1"]).unwrap(),
-            ScheduledCommand::Show { id: "t-1".into() }
+            ScheduledCommand::Show {
+                id: "t-1".into(),
+                limit: None
+            }
         );
         assert_eq!(
             parse(&[

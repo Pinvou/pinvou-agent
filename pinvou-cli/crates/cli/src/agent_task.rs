@@ -30,17 +30,20 @@ const AGENT_TIMEOUT_SECS_MAX: u64 = 7 * 24 * 60 * 60;
 #[cfg(feature = "product-backend")]
 const PROMPT_FILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 
-/// The family's own usage text. It spells out the two input rules the parse
+/// The family's own usage text. It spells out the input rules the parse
 /// layer cannot enforce from argv alone, because they are the only places
 /// where `agent run` refuses something a plain `read_to_string` accepted:
 /// the prompt file must be a REGULAR file (a symlink to one is fine; a FIFO,
 /// a character device or a `<(...)` process substitution is
 /// refused, because their read blocks before any cap or deadline could act),
-/// and it must fit in [`PROMPT_FILE_MAX_BYTES`].
+/// it must fit in [`PROMPT_FILE_MAX_BYTES`], and — the round-46 review —
+/// it must not live under a credential/sensitive path, the same gate every
+/// other model-context ingest lane applies.
 const RUN_USAGE: &str = "usage: pinvou agent run --prompt-file <FILE> [--workspace <DIR>] \
      [--timeout-secs <SECONDS>] [--session <ID>] [--mode plan|agent] [--model <ID>] \
      [--attach <PATH>]...\n  --prompt-file must be a regular file (symlinks are followed; \
-     FIFOs and character devices are refused) of at most 4 MiB";
+     FIFOs and character devices are refused) of at most 4 MiB, and must not be a \
+     credential or otherwise sensitive path (like --attach)";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentCommand {
@@ -226,15 +229,34 @@ fn run_agent(
     // Consistent with the other read failures in lib.rs (read_to_string ->
     // failed): an unreadable file is a host-level failure (exit 1), not an
     // argument usage error — the documented exit-code contract also lists
-    // read failures under host-level. The two extra refusals this helper adds
-    // over a plain `read_to_string` (over PROMPT_FILE_MAX_BYTES, and anything
-    // that is not a regular file) are stated in RUN_USAGE, because they are a
-    // narrowing of what `--prompt-file` used to accept.
+    // read failures under host-level. The three refusals this lane adds
+    // over a plain `read_to_string` (credential/sensitive paths, over
+    // PROMPT_FILE_MAX_BYTES, and anything that is not a regular file) are
+    // stated in RUN_USAGE, because they are a narrowing of what
+    // `--prompt-file` used to accept.
     // Stable code form, per the helper's own convention (support.rs: new
     // call sites pick the caller's snake_case code — a human phrase renders
     // the same failure without a scriptable prefix; round-39 review).
+    //
+    // Round-46 review: the credential-path gate every other model-context
+    // ingest lane applies (`--attach` on this very command, `memory add
+    // --file`, `personas --file`, `feedback --body-file`, `voice
+    // --text-file`) — the prompt file is model context too, and a scripted
+    // `--prompt-file ~/.aws/credentials` would otherwise ship the secret
+    // verbatim to the model endpoint and into the session transcript.
+    // Canonicalize first, gate the canonical form, and read the CANONICAL
+    // path so a post-gate symlink swap cannot re-route the read (the
+    // discipline artifacts/memory/voice already follow).
+    let prompt_path = std::fs::canonicalize(prompt_file).map_err(|error| {
+        CliError::failed(format!(
+            "agent_prompt_file_unreadable: cannot resolve {}: {error}",
+            prompt_file.display()
+        ))
+    })?;
+    crate::artifacts::check_sensitive_path(&prompt_path)
+        .map_err(|reason| CliError::failed(format!("agent run: refusing prompt file: {reason}")))?;
     let prompt = crate::support::read_text_file_capped(
-        prompt_file,
+        &prompt_path,
         PROMPT_FILE_MAX_BYTES,
         "agent_prompt_file_unreadable",
     )?;
@@ -588,6 +610,12 @@ fn render_agent_report(
                     usage.output_tokens,
                     report.tool_events.len()
                 ));
+            } else if !report.tool_events.is_empty() {
+                // Round-46 review: the cancelled/timeout arms salvage tool
+                // events with `usage: None` — dropping the count here broke
+                // human/JSON parity on exactly the runs where partial
+                // observability was the point.
+                lines.push(format!("tools: {}", report.tool_events.len()));
             }
             lines.push(String::new());
             // The assistant answer quotes whatever the turn read (files,
@@ -835,6 +863,10 @@ mod tests {
         assert_eq!(enforced_cap, 4 * 1024 * 1024);
         assert!(RUN_USAGE.contains("4 MiB"), "{RUN_USAGE}");
         assert!(RUN_USAGE.contains("regular file"), "{RUN_USAGE}");
+        // Round-46 review: the credential-path gate is the third input rule
+        // the parse layer cannot see from argv; keep usage text and gate
+        // from drifting.
+        assert!(RUN_USAGE.contains("credential"), "{RUN_USAGE}");
         // Round-38 review: the enumeration no longer names /dev/stdin — the
         // enforced rule is "regular file" (a symlinked /dev/stdin to a pipe
         // is refused by the same is_file probe, a symlink to a regular file

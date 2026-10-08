@@ -1862,6 +1862,37 @@ fn agent_run_refuses_an_attachment_under_a_credential_path() {
     assert!(error.to_string().contains("refusing attachment"), "{error}");
 }
 
+/// Round-46 review: `--prompt-file` is model context exactly like `--attach`
+/// is, and it was the one model-context file lane without the
+/// credential-path gate — a scripted `--prompt-file ~/.aws/credentials`
+/// would ship the secret verbatim to the model endpoint and into the
+/// session transcript. The gate runs pre-boot (before the canonicalize it
+/// performs, nothing else touches the store), so the refusal is hermetic.
+#[cfg(feature = "product-backend")]
+#[test]
+fn agent_run_refuses_a_prompt_file_under_a_credential_path() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("agent-promptfile-secret");
+    let aws = home.root.join(".aws");
+    std::fs::create_dir_all(&aws).unwrap();
+    let credentials = aws.join("credentials");
+    std::fs::write(&credentials, "[default]\naws_access_key_id = AKIAFAKE").unwrap();
+
+    let error = run(&[
+        "pinvou",
+        "agent",
+        "run",
+        "--prompt-file",
+        credentials.to_str().unwrap(),
+    ])
+    .expect_err("a credential prompt file must be refused before any host boot");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("refusing prompt file"),
+        "{error}"
+    );
+}
+
 /// The receipt write used to `?` out before the cleanup below it, leaving the
 /// staged bundle under `feedback/pending/` forever — the exact state the
 /// module docs argue must never exist, since nothing retries it.
