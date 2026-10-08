@@ -298,16 +298,19 @@ pub(crate) async fn chat_with_reservation(
     );
     full = prepared_delegation.content;
     let mode = mode_state.mode;
-    // 原生代码会话每个 turn 开始前对执行根打 checkpoint（影子 git，数据落账本根，
-    // 机制见 features/code_checkpoints）。快照必须先于引擎写文件，因此在 send 前
-    // 同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口（设计 §5
-    // 降级语义）。
+    // 原生车道会话（工作模式 + 原生 code）每个 turn 开始前对执行根打 checkpoint
+    // （影子 git，数据落账本根，机制见 features/code_checkpoints）。车道口径：
+    // ACP 在 chat() 入口已拒；scheduled 会话维持无快照（与 fork 拒绝口径一致，
+    // chat 续跑同样排除）；其余原生会话（含未绑定会话——两根同为会话私有目录，
+    // ensure_repo 自排除 checkpoints）默认开启。快照必须先于引擎写文件，因此在
+    // send 前同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口
+    // （设计 §5 降级语义）。
     // created_snapshot_id 记录本轮成功登记的快照：发送失败时它是「未成活」
     // 快照——重试同号 turn 的 first-wins 对齐会锚到失败那次（内容还可能混入两次
     // 尝试之间的外部改动），发送失败路径按 id 精确作废（见下方 Err 分支；按 id
     // 也覆盖计数失败导致的 None 序号快照）。
     let mut created_snapshot_id: Option<String> = None;
-    if store.is_code_session(&sid) {
+    if !is_scheduled {
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store,
             &sid,

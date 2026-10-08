@@ -34,6 +34,16 @@ import {
 import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
 import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
+// 工作模式回退（影子 git 快照）：共享时间线层的入口组件与编排 hook（原生
+// code 车道复用同一套，见 features/conversation）。
+import { rewindUndoAvailable } from '../conversation/checkpoints.js';
+import { useRewindController } from '../conversation/useRewindController.js';
+import {
+  RewindChip,
+  RewindConfirmDialog,
+  RewindUndoChip,
+  RewindUndoConfirmDialog,
+} from '../conversation/RewindChip.jsx';
 import {
   conversationItemsForMode,
   projectDeepSeekConversation,
@@ -1200,6 +1210,46 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+
+      // 工作模式回退（影子 git 快照，门放宽后原生工作模式车道默认开启）：共享
+      // 编排 hook（features/conversation，原生 code 车道 CodexAcpView 复用同一套）。
+      // 车道门：定时相关会话（sched- 运行/定时创建向导）维持无快照无入口；ACP
+      // 会话不经 chat 侧栏（list_sessions 车道过滤），无需在此判断；web 端由
+      // useSessionCheckpoints 的 canInvoke 门自然关闭（桌面专属命令）。确认弹窗
+      // 用 scopeSelection 变体：工作模式的「是否同时回退工作区文件」选择项默认
+      // 勾选（双层回退），取消勾选走 conversation_only=true 仅截断对话。
+      const isRewindLane = Boolean(activeSessionId) && !isScheduledTaskCreationChat && !scheduledRunContext;
+      const {
+        checkpoints: rewindCheckpoints,
+        rewindEntries,
+        rewindTarget, rewindError, rewinding,
+        openRewindDialog, confirmRewind, cancelRewind,
+        rewindUndoState, rewindUndoEntry, rewindUndoError, rewindUndoing,
+        openRewindUndoDialog, confirmRewindUndo, cancelRewindUndo,
+      } = useRewindController({
+        sessionId: activeSessionId,
+        enabled: isRewindLane,
+        turns: conversationProjection.turns,
+        busy,
+        copy: t.uiCodex,
+        invoke: invokeTauri,
+        // 回退后按磁盘截断后的会话重注水：bridge 的会话切换内部路径 + 强制盘载
+        // （同会话 id 也重新 load_session），notify() 驱动 bs 快照更新与时间线
+        // 重投影；归属检查防止在途回退把用户切走后的新会话拉回原会话。
+        reload: (sid) => (bridge.sessions && typeof bridge.sessions.switchToSessionInternal === 'function'
+          ? bridge.sessions.switchToSessionInternal(sid, true, 'chat-rewind', { forceDurableLoad: true })
+          : Promise.reject(new Error('session reload unavailable'))),
+        ownsSession: (id) => activeSessionIdRef.current === id,
+        // bs 订阅本身就是重投影驱动（switchToSessionInternal 结束时 notify），
+        // 无 codex lane 那样的独立 tick 需要兜底。
+        bumpTick: () => {},
+        appendNotice: (sid, text) => {
+          // 落在当前活动会话的系统提示条（controller 已按 ownsSession 校验）。
+          if (bridge.chat && typeof bridge.chat.addSystemItem === 'function') {
+            bridge.chat.addSystemItem(text);
+          }
+        },
+      });
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -2905,6 +2955,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     busy={busy}
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
+                    renderBeforeTurn={turn => (isRewindLane && rewindEntries.has(turn.id) ? (
+                      // 工作模式 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
+                      // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
+                      <RewindChip
+                        entry={rewindEntries.get(turn.id)}
+                        disabled={busy || rewinding || rewindUndoing}
+                        copy={t.uiCodex}
+                        onOpen={openRewindDialog}
+                      />
+                    ) : null)}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
@@ -2927,6 +2987,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   copy={t.uiAuxChat}
                   onQuote={openAuxChatPanel}
                 />
+                {isRewindLane && rewindUndoAvailable(rewindUndoState) && (
+                  // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
+                  // 与 RewindChip 同门控（工作模式车道）；undoState 为 null 即消失。
+                  <RewindUndoChip
+                    state={rewindUndoState}
+                    disabled={busy || rewinding || rewindUndoing}
+                    copy={t.uiCodex}
+                    onOpen={openRewindUndoDialog}
+                  />
+                )}
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
@@ -2968,6 +3038,37 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ))}
               </div>
             </div>
+          )}
+          {rewindTarget && (
+            // 「回退到第 N 轮」确认弹窗（工作模式变体）：回退范围选择（默认同时
+            // 回退工作区文件，勾选时展示变更预览）+ 对话截断位置 + 错误如实上屏；
+            // 确认后 confirmRewind 走 rewind_to_turn 编排（共享 hook）。
+            <RewindConfirmDialog
+              entry={rewindTarget}
+              previewState={rewindTarget.checkpoint
+                ? rewindCheckpoints.previews[rewindTarget.checkpoint.id]
+                : null}
+              error={rewindError}
+              busy={rewinding}
+              theme={theme}
+              copy={t.uiCodex}
+              scopeSelection
+              onCancel={cancelRewind}
+              onConfirm={confirmRewind}
+            />
+          )}
+          {rewindUndoEntry && (
+            // 「撤销回退」轻量确认：说明将恢复文件（有绑定回滚点时）与被截掉的
+            // N 轮对话；reloadFailed 时降级为「重试加载」语义。
+            <RewindUndoConfirmDialog
+              state={rewindUndoEntry}
+              error={rewindUndoError}
+              busy={rewindUndoing}
+              theme={theme}
+              copy={t.uiCodex}
+              onCancel={cancelRewindUndo}
+              onConfirm={confirmRewindUndo}
+            />
           )}
           {voiceIntroOpen && (
             <VoiceShortcutIntroModal
