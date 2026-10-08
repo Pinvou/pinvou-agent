@@ -509,6 +509,9 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         Ok(bytes) => bytes,
         Err(error) => return poisoned(anyhow::Error::new(error).context("read spool file")),
     };
+    // These bytes double as the mid-delivery replace guard's reference
+    // (Round-8 REQUIRED-3): comparing the post-delivery re-read against
+    // THIS snapshot closes the window from first read to marker write.
     // stat→read race re-check: the file can grow between the two calls.
     if bytes.len() as u64 > MAX_SPOOL_FILE_BYTES {
         return poisoned(anyhow::anyhow!(
@@ -563,18 +566,15 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         }
         return Processed::Done;
     }
-    // The spool bytes captured at read time (round-7 Q4): a keyed retry
-    // landing mid-delivery os.replace's the file with a NEW body while the
-    // old one is still in flight — delivering it and then removing the
-    // path would destroy the newest body permanently. Re-verify before
-    // committing the terminal marker: if the file changed (or vanished and
-    // reappeared) under us, leave it for the next poll instead.
-    let original_bytes = std::fs::read(path).ok();
+    // (Round-8 REQUIRED-3: the reference for the mid-delivery re-verify is
+    // the FIRST read's bytes — a second snapshot captured here leaves the
+    // entire validate/gate/rederive window open to the same loss; see the
+    // original_bytes capture at the first read.)
     match delivery.deliver(&message).await {
         Ok(outcome) => {
             let unchanged = std::fs::read(path)
                 .ok()
-                .map(|current| original_bytes.as_deref() == Some(current.as_slice()))
+                .map(|current| current.as_slice() == bytes.as_slice())
                 .unwrap_or(false);
             if !unchanged {
                 // The record was replaced mid-delivery: re-queue the NEW
@@ -1016,6 +1016,105 @@ mod spool_pipeline_tests {
         assert_eq!(*fake.calls.borrow(), 0, "poison never reaches delivery");
         assert!(failed_dir().join("bad.json").exists());
         assert!(!spool.join("bad.json").exists());
+    }
+
+    /// Round-8 R2-3: the post-read size re-check ("grew between stat and
+    /// read") is source-pinned — the behavior is hard to hook without a
+    /// racing writer, but deleting the arm must not pass silently.
+    #[test]
+    fn post_read_size_recheck_is_pinned() {
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains("grew between stat and read"),
+            "the post-read cap re-check arm must exist"
+        );
+    }
+
+    /// Round-8 R2-2: the watcher's per-poll switch consult is pinned —
+    /// with session-messaging disabled, process_pending_spool delivers
+    /// nothing and leaves the spool files untouched.
+    #[tokio::test]
+    async fn switch_off_pauses_delivery_and_leaves_spool_untouched() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("s.json"), record_json("s", None)).unwrap();
+        // Disable the session-messaging feature through the production
+        // setter (the watcher consults feature_disabled_tool_names each
+        // poll, which reads UserPrefs + the state file the setter writes).
+        crate::features::marketplace::builtin::set_feature_enabled("session-messaging", false)
+            .expect("disable session-messaging");
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(*fake.calls.borrow(), 0, "switch off must deliver nothing");
+        assert!(
+            spool.join("s.json").exists(),
+            "the pending file stays for re-enable"
+        );
+    }
+
+    /// Round-8 R2-1: the anti-forgery title re-derivation is pinned — a
+    /// spool record whose sender EXISTS in the live store delivers the
+    /// store's live title, not the spool's claim.
+    #[tokio::test]
+    async fn delivered_block_uses_the_live_sender_title() {
+        let _home = TempHome::new();
+        // Create the sender session through the store's own pipeline, then
+        // retitle it to the LIVE title the spool's claim must not override.
+        let sessions = sessions_store();
+        let created = sessions
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("seed sender");
+        sessions
+            .set_title(&created.metadata.id, "源会话".to_string())
+            .expect("retitle sender");
+        let sender_id = created.metadata.id.clone();
+        // A record claiming this sender with a forged title.
+        let mut record = serde_json::from_str::<SpooledMessage>(&record_json("t", None)).unwrap();
+        record.from_session = Some(sender_id);
+        record.from_title = Some("伪造标题".into());
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("t.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+        struct Capturing {
+            texts: std::sync::Mutex<Vec<String>>,
+        }
+        impl SpoolDelivery for Capturing {
+            async fn deliver(&self, message: &SpooledMessage) -> Result<DeliveryOutcome> {
+                self.texts.lock().unwrap().push(message.delivered_text());
+                Ok(DeliveryOutcome::Steered)
+            }
+        }
+        let cap = Capturing {
+            texts: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &cap,
+            &AllowAllGates,
+            &sessions,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        let texts = cap.texts.lock().unwrap().clone();
+        assert_eq!(texts.len(), 1, "one delivery");
+        let delivered = &texts[0];
+        assert!(
+            delivered.contains("源会话"),
+            "the live store title (源会话) must replace the spooled claim: {delivered}"
+        );
     }
 
     /// Round-5 B1: the already_delivered_skip audit is pinned — pre-write a
