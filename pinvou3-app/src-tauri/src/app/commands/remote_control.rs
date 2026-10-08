@@ -1373,12 +1373,12 @@ async fn web_access_chat_for_session(
 ) -> Result<(), String> {
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
-    // ACP 会话拒绝（与桌面 chat() 入口同口径）：web 侧列表不暴露 ACP 会话，但
-    // id 形状合法即可直发——不经此门的话 ACP 会话会被 chat_with_reservation
-    // 以原生引擎续跑并（车道门放宽后）对私有目录打快照，与「ACP 车道维持
-    // 排除」的不变量冲突。
+    // ACP 会话拒绝（与桌面 chat()/accept_plan 入口同口径，共用文案常量）：web
+    // 侧列表不暴露 ACP 会话，但 id 形状合法即可直发——不经此门的话 ACP 会话
+    // 会被 chat_with_reservation 以原生引擎续跑并（车道门放宽后）对私有目录打
+    // 快照，与「ACP 车道维持排除」的不变量冲突。
     if acp_pool.is_acp(&session_id) {
-        return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
     }
     ensure_web_chat_session_supported(store.mode_state(&session_id).multi_agent)?;
     store

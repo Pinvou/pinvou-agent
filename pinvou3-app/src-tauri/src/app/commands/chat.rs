@@ -8,6 +8,10 @@ use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
 use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
 
+/// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体、web seam
+/// （web_access_chat_for_session）与 accept_plan 三处共用（车道不变量的门面）。
+pub(crate) const ACP_CHAT_LANE_REJECTED: &str = "ACP 代码会话必须通过独立代码页面发送";
+
 /// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
 /// 码后为用户可操作指引。改码字符串必须同步前端匹配处
 /// (platform/tauri/bridge/chat.js、platform/web/bridge.js)。
@@ -55,7 +59,7 @@ pub async fn chat(
     // 回退到全局 active_id。每条消息按各自 session 取 mode/phase/skill,送到对应 engine。
     let sid = require_active_sid(session_id, &store)?;
     if acp_pool.is_acp(&sid) {
-        return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
+        return Err(ACP_CHAT_LANE_REJECTED.to_string());
     }
     let reservation = pool
         .reserve_turn(&sid)

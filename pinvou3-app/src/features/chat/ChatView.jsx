@@ -3056,10 +3056,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               </div>
             </div>
           )}
-          {rewindTarget && (
+          {isRewindLane && rewindTarget && (
             // 「回退到第 N 轮」确认弹窗（工作模式变体）：回退范围选择（默认同时
             // 回退工作区文件，勾选时展示变更预览）+ 对话截断位置 + 错误如实上屏；
-            // 确认后 confirmRewind 走 rewind_to_turn 编排（共享 hook）。
+            // 确认后 confirmRewind 走 rewind_to_turn 编排（共享 hook）。车道门与
+            // chip 一致：定时上下文激活（如定时创建向导接管当前会话）时收回弹窗。
             <RewindConfirmDialog
               entry={rewindTarget}
               previewState={rewindTarget.checkpoint
@@ -3074,9 +3075,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onConfirm={confirmRewind}
             />
           )}
-          {rewindUndoEntry && (
+          {isRewindLane && rewindUndoEntry && (
             // 「撤销回退」轻量确认：说明将恢复文件（有绑定回滚点时）与被截掉的
-            // N 轮对话；reloadFailed 时降级为「重试加载」语义。
+            // N 轮对话；reloadFailed 时降级为「重试加载」语义。车道门同上。
             <RewindUndoConfirmDialog
               state={rewindUndoEntry}
               error={rewindUndoError}
