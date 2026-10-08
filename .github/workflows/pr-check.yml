@@ -215,6 +215,12 @@ jobs:
               - 'pinvou-cli/**/*.rs'
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
+              # Round-47 review: cli-test, cli-lint and macos-cli-check all
+              # run this script as a setup step (the PipeWire prefix every
+              # Linux/CLI compile needs), but it routed only to rust_code —
+              # a script-only PR reached the post-merge main push before any
+              # CLI leg could catch a break.
+              - 'scripts/ci-libpipewire-build.sh'
               # Build inputs cargo reads but the patterns above miss: a
               # `[build]`/`rustflags` edit in the workspace config and the
               # Windows exe manifest (consumed by crates/cli/build.rs via
@@ -1853,6 +1859,7 @@ jobs:
             'features::voice_shortcut::platform::tests::' \
             'app::commands::dependencies::platform::windows::tests::' \
             'features::codex_acp::platform::windows::tests::' \
+            'platform::os::windows::' \
             'windows_attachment_runtime_stays_security_gated'; do
             index=$((index+1))
             started=$SECONDS
