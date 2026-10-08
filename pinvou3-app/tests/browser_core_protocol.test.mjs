@@ -179,6 +179,33 @@ test('shared instructions keep the deferred-tool doctrine, credential red line, 
   assert.doesNotMatch(shared, /【设置 ?→ ?系统权限/);
 });
 
+test('artifact title rule stays single-sourced and the bound lane keeps auto-tracking', () => {
+  const bundle = '../src-tauri/resources/common/bundle/';
+  const work = readFileSync(new URL(`${bundle}instructions-work.md`, import.meta.url), 'utf8');
+  const bound = readFileSync(new URL(`${bundle}instructions-work-bound.md`, import.meta.url), 'utf8');
+  const server = readFileSync(
+    new URL(`${bundle}mcp-servers/present_artifact_server.py`, import.meta.url),
+    'utf8',
+  );
+
+  // 2026-10-07 audit: the reply-language clause (「与你的回复同语种」)
+  // contradicted the UI-locale placeholder whenever the user's message
+  // language differs from the UI language, and the hardcoded Chinese example
+  // biased titles in en/ja UIs. The {{PINVOU3_TITLE_LANG}} placeholder (the
+  // session instruction) is the single source; the clause must stay gone
+  // from both surfaces that taught it.
+  assert.match(work, /title 用\{\{PINVOU3_TITLE_LANG\}\}/);
+  assert.doesNotMatch(work, /同语种/);
+  assert.match(server, /语言遵循会话指令中的产物卡标题规则/);
+  assert.doesNotMatch(server, /同语种/);
+
+  // The bound lane must keep the truthful auto-tracking hedge: deliverable-
+  // format writes may be collected by the app's artifact tracking (the
+  // tracker exists and runs in all native sessions), and the old claim that
+  // the panel only shows explicitly presented cards must not return.
+  assert.match(bound, /成品格式的写入可能被应用自动收进产出物追踪/);
+});
+
 test('page runtime exposes DOM-only capabilities and no host bridge', () => {
   const source = readFileSync(
     new URL('../src-tauri/resources/common/bundle/mcp-servers/browser-core-runtime.js', import.meta.url),

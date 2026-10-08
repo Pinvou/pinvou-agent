@@ -207,7 +207,7 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
   if (violation) assert.fail(`${rel(f)}: ${violation}`);
 }
 
-// 规则 5 盲点自检：六个曾漏网的历史形态（2 围栏 + 4 正文，blockquoted
+// 规则 5 盲点自检：七个曾漏网的历史形态（3 围栏 + 4 正文，blockquoted
 // 围栏单测）必须保持「必失败」，现行合法
 // 形态必须保持「必通过」（防下次收紧/放松时静默回退）。全部经由
 // scanLarkAuthLogin（含围栏状态机）判定。
