@@ -191,10 +191,7 @@ pub(super) fn append_web_attachment_upload_chunk(
         let Some(expected) = crate::platform::encoding::normalize_sha256_hex(expected) else {
             return Err(WEB_ATTACHMENT_DIGEST_INVALID.to_string());
         };
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(&upload.data);
-        let actual = crate::platform::encoding::hex_lower(&hasher.finalize());
+        let actual = crate::platform::hashing::sha256_hex(&upload.data);
         if actual != expected {
             return Err(WEB_ATTACHMENT_INTEGRITY_MISMATCH.to_string());
         }

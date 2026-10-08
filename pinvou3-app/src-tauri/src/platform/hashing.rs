@@ -10,6 +10,13 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+/// 计算字节串 sha256，返回小写十六进制字符串。小缓冲场景（指纹/内容寻址键/
+/// 完整性校验）统一走这里；无界输入（文件、下载流）各自流式处理，不得
+/// 整体读入内存后再调本函数。
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    crate::platform::encoding::hex_lower(&Sha256::digest(bytes))
+}
+
 /// 计算文件 sha256，返回小写十六进制字符串。
 pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
@@ -38,6 +45,18 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&p);
         p
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vector() {
+        assert_eq!(
+            sha256_hex(b"hello world"),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]

@@ -538,7 +538,8 @@ fn write_card(card: &PersonaCard) -> Result<(), String> {
     // Readers poll the card directory since cross-process sync landed, so a
     // truncate-then-write here is a torn card that reads as "deleted
     // elsewhere" and unequips every session holding it. Publish atomically.
-    deepseek_tui::utils::write_atomic(&path, json.as_bytes()).map_err(|e| format!("写卡失败: {e}"))
+    crate::platform::filesystem::atomic_write_private(&path, json.as_bytes())
+        .map_err(|e| format!("写卡失败: {e}"))
 }
 
 /// 新建用户卡。生成 `user-<slug>-<nanos>` id,写盘,刷新缓存,返回摘要。

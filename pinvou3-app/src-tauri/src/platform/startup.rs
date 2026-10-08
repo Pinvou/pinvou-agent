@@ -79,8 +79,10 @@ fn rotate_if_oversized(path: &Path) -> RotationInfo {
             error: None,
         };
     }
-    match std::fs::remove_file(path) {
-        Ok(()) => RotationInfo {
+    // A concurrent disappearance between the two stats is "nothing to
+    // rotate": the log is gone either way.
+    match crate::platform::filesystem::rotate_log_if_oversized(path, MAX_LOG_BYTES, None) {
+        Ok(_) => RotationInfo {
             previous_bytes,
             rotated: true,
             error: None,

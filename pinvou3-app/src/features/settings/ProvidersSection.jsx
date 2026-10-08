@@ -7,6 +7,7 @@ import {
   Terminal, Trash2, Upload, X,
 } from '../../components/icons.jsx';
 import { invokeTauri, isTauriAvailable, tauriEvents } from '../../platform/tauri/client.js';
+import { ModalShell } from '../../components/ModalShell.jsx';
 import {
   markAcpModelsProbePending,
   reseedDraftControlsAfterProviderSwitch,
@@ -47,27 +48,35 @@ function KeyDot({ hasCredential, copy }) {
   );
 }
 
-// Confirm card dialog (backdrop click closes + card stopPropagation + right-aligned pill button footer). Two
+// Confirm card dialog (backdrop click closes + right-aligned pill button footer). Two
 // isomorphic sites: provider delete / CLI uninstall; the uninstall "also clean up config" checkbox comes in via
 // children. The confirm callback keeps the caller's semantics: remove/uninstall setXxx(null) before awaiting
 // (confirm closes the dialog, failure lands in the red error area); this component knows nothing of close timing.
+// Built on the shared ModalShell (portal + focus restore + Escape): Esc now closes too, matching
+// the backdrop/cancel paths; dismissal stays available while a confirm is disabled.
 function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirmTestId, confirmDisabled, onConfirm, onCancel, width }) {
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the cancel button inside the dialog
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={onCancel}>
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-      <div onClick={event => event.stopPropagation()} className={`${width} rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-        <h3 className="text-[16px] font-semibold">{title}</h3>
-        <p className="mt-2 text-[13px] leading-relaxed opacity-75">{desc}</p>
-        {children || null}
+    <ModalShell
+      zIndexClass="z-[110]"
+      backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+      backdropLabel={cancelLabel}
+      panelClass={`${width} rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}
+      onCancel={onCancel}
+      title={
+        <>
+          <h3 className="text-[16px] font-semibold">{title}</h3>
+          <p className="mt-2 text-[13px] leading-relaxed opacity-75">{desc}</p>
+        </>
+      }
+      footer={
         <div className="mt-6 flex justify-end gap-2">
           <button type="button" onClick={onCancel} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{cancelLabel}</button>
           <button type="button" data-testid={confirmTestId} onClick={onConfirm} disabled={confirmDisabled} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{confirmLabel}</button>
         </div>
-      </div>
-    </div>
+      }
+    >
+      {children || null}
+    </ModalShell>
   );
 }
 
@@ -76,18 +85,18 @@ function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirm
 // content and close handler differ). Children render verbatim inside the card so the
 // pinned testids (acp-provider-export-json etc.) and DOM order survive: the export
 // "select all" button resolves the textarea via closest('div').previousElementSibling,
-// which requires the footer to directly follow the textarea.
+// which requires the footer to directly follow the textarea. Built on the shared
+// ModalShell (portal + focus restore + Escape to close).
 function TransferModalShell({ onClose, children }) {
   return (
-    // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the close/cancel buttons inside the dialog
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200" onClick={onClose}>
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-      <div onClick={event => event.stopPropagation()} className={`w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}>
-        {children}
-      </div>
-    </div>
+    <ModalShell
+      zIndexClass="z-[110]"
+      backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+      panelClass="w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+      onCancel={onClose}
+    >
+      {children}
+    </ModalShell>
   );
 }
 

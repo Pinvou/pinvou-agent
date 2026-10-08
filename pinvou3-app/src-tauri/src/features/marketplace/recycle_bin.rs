@@ -18,20 +18,21 @@
 //! Preset/Builtin 可重释放，不进回收站，卸载仍物理删除。
 //!
 //! 存储纪律对齐 store.rs：
-//! - 清单 `marketplace/recycle-bin.json` 原子写（底座 `write_atomic`）+ 进程内
-//!   FILE_LOCK 串行化读-改-写：各公开方法进入时持锁，覆盖整个
-//!   load → 目录搬移/删除 → 条目修改 → save 区间（store.rs `upsert` 同范式），
-//!   锁内只调 `load_locked`/`save_locked`，不调会再取同一把锁的公开方法；
+//! - 清单 `marketplace/recycle-bin.json` 原子写（底座 `write_atomic`）+ 跨进程
+//!   文件锁串行化读-改-写（进程内 Mutex + OS 文件锁，见 `file_lock.rs`，#521）：
+//!   各公开方法进入时取锁，覆盖整个 load → 目录搬移/删除 → 条目修改 → save
+//!   区间（store.rs `upsert` 同范式），锁内只调 `load_locked`/`save_locked`，
+//!   不调会再取同一把锁的公开方法；
 //! - 不用 `#[serde(deny_unknown_fields)]`：未知字段经 `extra` flatten 原样
 //!   roundtrip（前向兼容）；
 //! - 损坏 JSON fail loud：返回 Err，绝不静默重建/回写；
 //! - purge fail-closed：只删清单中存在的条目，绝不按外部传入路径删任意目录。
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
 
+use super::file_lock;
 use super::store::{BundleRecord, BundleStore};
 use crate::platform::paths;
 
@@ -44,15 +45,6 @@ pub(crate) const KIND_MCP: &str = "mcp";
 pub(crate) const KIND_SKILL: &str = "skill";
 /// 回收站条目 kind：组合包（mcp/ + skills/）。
 pub(crate) const KIND_BUNDLE: &str = "bundle";
-
-/// recycle-bin.json 读-改-写的进程内串行化（与 BUNDLES_FILE_LOCK 同一范式）。
-static RECYCLE_BIN_FILE_LOCK: Mutex<()> = Mutex::new(());
-
-fn file_lock() -> MutexGuard<'static, ()> {
-    RECYCLE_BIN_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 // ---------------------------------------------------------------------------
 // schema
@@ -176,12 +168,13 @@ impl RecycleBin {
     /// 回收 preflight：只校验「能不能收」（id 合法、源目录在、目标无残留、回收站
     /// 根可建），不搬动任何目录、不写清单。供卸载路径在拆供给面（installed.json /
     /// mcp.json / secrets）之前 fail fast —— 回收注定失败时零副作用中止（M2）。
+    /// try 锁读取：锁被占用/不可用时按解锁快照检查（advisory；`recycle_package`
+    /// 持全锁重查同口径实现，见 `preflight_recycle_locked`）。
     pub fn preflight_recycle(&self, pkg_id: &str) -> Result<(), String> {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
-        let _guard = file_lock();
-        self.preflight_recycle_locked(pkg_id)
+        file_lock::try_file_lock_for_read(&self.file, || self.preflight_recycle_locked(pkg_id))
     }
 
     /// 已持锁的 preflight 实现（`recycle_package` 持锁复用，避免 Mutex 重入）。
@@ -205,7 +198,7 @@ impl RecycleBin {
     /// → 失败回滚（retirement.rs archive 同范式）→ 写清单。
     /// `record_snapshot` 为回收前的 bundles.json 原记录（恢复重建登记用）。
     ///
-    /// 全程持 `file_lock()`（store.rs `upsert` 同范式）：load → 目录搬移 → 条目
+    /// 全程持跨进程文件锁（store.rs `upsert` 同范式）：load → 目录搬移 → 条目
     /// 修改 → save 是一个临界区，并发回收/取回/彻底删除不会 lost update。锁内
     /// 只调 `load_locked`/`save_locked`，不得再调会取同一把锁的公开方法（死锁）。
     pub fn recycle_package(
@@ -218,58 +211,59 @@ impl RecycleBin {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
-        let _guard = file_lock();
-        let src = self.bundles_root.join(pkg_id);
-        let dst = self.root.join(pkg_id);
-        self.preflight_recycle_locked(pkg_id)?;
-        // rename 走 plugin_import 的 Windows 瞬时占用重试口径（杀软/索引器短暂
-        // 持有新建目录句柄会报 os error 5，实测命中）。
-        if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
-            // rename 失败通常什么都没动；兜底尝试回滚（部分平台跨设备 rename 语义差异）。
-            // 回滚失败必须留痕：目录可能处于半搬移状态，静默吞掉将无从排查。
-            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                log::error!(
-                    "[recycle-bin] 回收 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
-                    dst.display()
-                );
-            }
-            return Err(format!(
-                "搬移 {} → {} 失败: {e}",
-                src.display(),
-                dst.display()
-            ));
-        }
-        // 搬移成功后写清单；清单写失败则把目录搬回原位（不留无清单的孤儿目录）。
-        let mut file = load_locked(&self.file)?;
-        file.entries.retain(|e| e.id != pkg_id);
-        file.entries.push(RecycledEntry {
-            id: pkg_id.to_string(),
-            display_name: display_name.to_string(),
-            kind: kind.to_string(),
-            recycled_at: super::store::now_iso8601(),
-            record: record_snapshot,
-            extra: serde_json::Map::new(),
-        });
-        if let Err(e) = save_locked(&self.file, &file) {
-            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                // 清单无条目而目录滞留回收站根 = list/restore/purge 不可见的孤儿
-                // （数据未丢）。必须响亮留痕，并如实上报（不能谎称已回滚）。
-                log::error!(
-                    "[recycle-bin] 回收 {pkg_id} 清单写入失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
-                    dst.display()
-                );
+        file_lock::with_file_lock(&self.file, || {
+            let src = self.bundles_root.join(pkg_id);
+            let dst = self.root.join(pkg_id);
+            self.preflight_recycle_locked(pkg_id)?;
+            // rename 走 plugin_import 的 Windows 瞬时占用重试口径（杀软/索引器短暂
+            // 持有新建目录句柄会报 os error 5，实测命中）。
+            if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
+                // rename 失败通常什么都没动；兜底尝试回滚（部分平台跨设备 rename 语义差异）。
+                // 回滚失败必须留痕：目录可能处于半搬移状态，静默吞掉将无从排查。
+                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                    log::error!(
+                        "[recycle-bin] 回收 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
+                        dst.display()
+                    );
+                }
                 return Err(format!(
-                    "写入回收站清单失败: {e}；目录回滚也失败，包目录滞留在 {}（数据未丢，需人工搬回）: {re}",
+                    "搬移 {} → {} 失败: {e}",
+                    src.display(),
                     dst.display()
                 ));
             }
-            return Err(format!("写入回收站清单失败（已回滚目录）: {e}"));
-        }
-        log::info!(
-            "[recycle-bin] 已回收包 {pkg_id}（kind={kind}）→ {}",
-            dst.display()
-        );
-        Ok(())
+            // 搬移成功后写清单；清单写失败则把目录搬回原位（不留无清单的孤儿目录）。
+            let mut file = load_locked(&self.file)?;
+            file.entries.retain(|e| e.id != pkg_id);
+            file.entries.push(RecycledEntry {
+                id: pkg_id.to_string(),
+                display_name: display_name.to_string(),
+                kind: kind.to_string(),
+                recycled_at: super::store::now_iso8601(),
+                record: record_snapshot,
+                extra: serde_json::Map::new(),
+            });
+            if let Err(e) = save_locked(&self.file, &file) {
+                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                    // 清单无条目而目录滞留回收站根 = list/restore/purge 不可见的孤儿
+                    // （数据未丢）。必须响亮留痕，并如实上报（不能谎称已回滚）。
+                    log::error!(
+                        "[recycle-bin] 回收 {pkg_id} 清单写入失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
+                        dst.display()
+                    );
+                    return Err(format!(
+                        "写入回收站清单失败: {e}；目录回滚也失败，包目录滞留在 {}（数据未丢，需人工搬回）: {re}",
+                        dst.display()
+                    ));
+                }
+                return Err(format!("写入回收站清单失败（已回滚目录）: {e}"));
+            }
+            log::info!(
+                "[recycle-bin] 已回收包 {pkg_id}（kind={kind}）→ {}",
+                dst.display()
+            );
+            Ok(())
+        })
     }
 
     /// Round-29 m2 (review #455): 清单是否列有该 id——恢复管线的 preflight
@@ -278,131 +272,136 @@ impl RecycleBin {
     /// 化幽灵行 + 安装默认标记，随后才被 take_back 拒绝。take_back 在文件锁
     /// 内复查，仍是权威。
     pub fn contains(&self, pkg_id: &str) -> Result<bool, String> {
-        let _guard = file_lock();
-        let file = load_locked(&self.file)?;
-        Ok(file.entries.iter().any(|e| e.id == pkg_id))
+        file_lock::try_file_lock_for_read(&self.file, || {
+            let file = load_locked(&self.file)?;
+            Ok(file.entries.iter().any(|e| e.id == pkg_id))
+        })
     }
 
     /// 回收站列表：读清单 + 校验包目录存在（缺失标记 `package_missing`，
     /// 前端据此禁用"恢复"）。清单损坏 fail loud（返回 Err）。
-    /// 持锁读取 + 校验，拿到的清单与目录是同一时刻的一致快照。
+    /// try 锁读取 + 校验（锁被占用/不可用时退化为不落盘的解锁快照）：拿到的
+    /// 清单与目录是同一时刻的一致快照（写方原子替换清单，快照完整）。
     pub fn list(&self) -> Result<Vec<RecycledPluginInfo>, String> {
-        let _guard = file_lock();
-        let file = load_locked(&self.file)?;
-        Ok(file
-            .entries
-            .into_iter()
-            .map(|e| {
-                // 展示名优先取记录快照里的用户可见名（extra.display_name，如
-                // 「初始化git」），缺失时回退源文件名——单 md 导入的包源文件名
-                // 恒为 "SKILL.md"，直接展示认不出是哪个技能。
-                let record_display = e
-                    .record
-                    .extra
-                    .get("display_name")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                RecycledPluginInfo {
-                    package_missing: !self.root.join(&e.id).is_dir(),
-                    id: e.id,
-                    display_name: record_display.unwrap_or(e.display_name),
-                    kind: e.kind,
-                    recycled_at: e.recycled_at,
-                }
-            })
-            .collect())
+        file_lock::try_file_lock_for_read(&self.file, || {
+            let file = load_locked(&self.file)?;
+            Ok(file
+                .entries
+                .into_iter()
+                .map(|e| {
+                    // 展示名优先取记录快照里的用户可见名（extra.display_name，如
+                    // 「初始化git」），缺失时回退源文件名——单 md 导入的包源文件名
+                    // 恒为 "SKILL.md"，直接展示认不出是哪个技能。
+                    let record_display = e
+                        .record
+                        .extra
+                        .get("display_name")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    RecycledPluginInfo {
+                        package_missing: !self.root.join(&e.id).is_dir(),
+                        id: e.id,
+                        display_name: record_display.unwrap_or(e.display_name),
+                        kind: e.kind,
+                        recycled_at: e.recycled_at,
+                    }
+                })
+                .collect())
+        })
     }
 
     /// 取回：fail-closed（不在清单 → Err）→ preflight → 搬回 `bundles/<id>/`
     /// → 失败回滚 → 从清单移除 → 返回记录快照（供恢复管线重建登记）。
-    /// 全程持 `file_lock()`（load → 搬回 → 条目移除 → save 一个临界区）。
+    /// 全程持跨进程文件锁（load → 搬回 → 条目移除 → save 一个临界区）。
     pub fn take_back(&self, pkg_id: &str) -> Result<BundleRecord, String> {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
-        let _guard = file_lock();
-        let mut file = load_locked(&self.file)?;
-        let Some(index) = file.entries.iter().position(|e| e.id == pkg_id) else {
-            return Err(format!("包 '{pkg_id}' 不在回收站"));
-        };
-        let src = self.root.join(pkg_id);
-        let dst = self.bundles_root.join(pkg_id);
-        if !src.is_dir() {
-            return Err(format!(
-                "回收站包目录 {} 缺失，无法恢复（可选择彻底删除清理条目）",
-                src.display()
-            ));
-        }
-        if dst.exists() {
-            return Err(format!("恢复目标 {} 已存在，拒绝覆盖", dst.display()));
-        }
-        std::fs::create_dir_all(&self.bundles_root)
-            .map_err(|e| format!("创建包目录根 {} 失败: {e}", self.bundles_root.display()))?;
-        if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
-            // 搬回失败通常什么都没动；兜底回滚失败必须留痕（目录可能半搬移）。
-            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                log::error!(
-                    "[recycle-bin] 取回 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
-                    src.display()
-                );
-            }
-            return Err(format!(
-                "搬回 {} → {} 失败: {e}",
-                src.display(),
-                dst.display()
-            ));
-        }
-        let entry = file.entries.remove(index);
-        // A failed manifest persist must be compensated (round-19 MAJOR 3): the
-        // directory has already moved back to bundles_root while the bin entry is
-        // not yet consumed — without the rename-back this is an unretryable
-        // half-restore ("directory at the root, no record, entry stuck in the
-        // bin": a retry hits the src.is_dir() guard, and the suggested purge
-        // only clears the stuck entry, leaving a recordless live directory
-        // behind). The on-disk manifest never changed, so the dst→src rename
-        // restores consistency exactly.
-        if let Err(e) = save_locked(&self.file, &file) {
-            if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                log::error!(
-                    "[recycle-bin] restoring {pkg_id}: the compensation rollback after the failed manifest persist failed too ({} may be in a half-restored state): {re}",
-                    dst.display()
-                );
+        file_lock::with_file_lock(&self.file, || {
+            let mut file = load_locked(&self.file)?;
+            let Some(index) = file.entries.iter().position(|e| e.id == pkg_id) else {
+                return Err(format!("包 '{pkg_id}' 不在回收站"));
+            };
+            let src = self.root.join(pkg_id);
+            let dst = self.bundles_root.join(pkg_id);
+            if !src.is_dir() {
                 return Err(format!(
-                    "restoring {pkg_id}: the manifest persist failed and the compensation rollback failed too: {e}; rollback error: {re}"
+                    "回收站包目录 {} 缺失，无法恢复（可选择彻底删除清理条目）",
+                    src.display()
                 ));
             }
-            return Err(format!(
-                "restoring {pkg_id}: the manifest persist failed (fully rolled back to the recycle bin, retry is safe): {e}"
-            ));
-        }
-        log::info!("[recycle-bin] 已取回包 {pkg_id} → {}", dst.display());
-        Ok(entry.record)
+            if dst.exists() {
+                return Err(format!("恢复目标 {} 已存在，拒绝覆盖", dst.display()));
+            }
+            std::fs::create_dir_all(&self.bundles_root)
+                .map_err(|e| format!("创建包目录根 {} 失败: {e}", self.bundles_root.display()))?;
+            if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
+                // 搬回失败通常什么都没动；兜底回滚失败必须留痕（目录可能半搬移）。
+                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                    log::error!(
+                        "[recycle-bin] 取回 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
+                        src.display()
+                    );
+                }
+                return Err(format!(
+                    "搬回 {} → {} 失败: {e}",
+                    src.display(),
+                    dst.display()
+                ));
+            }
+            let entry = file.entries.remove(index);
+            // A failed manifest persist must be compensated (round-19 MAJOR 3): the
+            // directory has already moved back to bundles_root while the bin entry is
+            // not yet consumed — without the rename-back this is an unretryable
+            // half-restore ("directory at the root, no record, entry stuck in the
+            // bin": a retry hits the src.is_dir() guard, and the suggested purge
+            // only clears the stuck entry, leaving a recordless live directory
+            // behind). The on-disk manifest never changed, so the dst→src rename
+            // restores consistency exactly.
+            if let Err(e) = save_locked(&self.file, &file) {
+                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
+                    log::error!(
+                        "[recycle-bin] restoring {pkg_id}: the compensation rollback after the failed manifest persist failed too ({} may be in a half-restored state): {re}",
+                        dst.display()
+                    );
+                    return Err(format!(
+                        "restoring {pkg_id}: the manifest persist failed and the compensation rollback failed too: {e}; rollback error: {re}"
+                    ));
+                }
+                return Err(format!(
+                    "restoring {pkg_id}: the manifest persist failed (fully rolled back to the recycle bin, retry is safe): {e}"
+                ));
+            }
+            log::info!("[recycle-bin] 已取回包 {pkg_id} → {}", dst.display());
+            Ok(entry.record)
+        })
     }
 
     /// 彻底删除：fail-closed，仅删清单中存在的条目（绝不按外部传入路径删任意
     /// 目录），物理删 `recycle-bin/<id>/` + 清单条目。包目录已被外部删除时
     /// （package_missing）同样允许 purge 清条目。
-    /// 全程持 `file_lock()`（load → 删目录 → 条目移除 → save 一个临界区）。
+    /// 全程持跨进程文件锁（load → 删目录 → 条目移除 → save 一个临界区）。
     pub fn purge(&self, pkg_id: &str) -> Result<(), String> {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
-        let _guard = file_lock();
-        let mut file = load_locked(&self.file)?;
-        let before = file.entries.len();
-        file.entries.retain(|e| e.id != pkg_id);
-        if file.entries.len() == before {
-            return Err(format!("包 '{pkg_id}' 不在回收站，拒绝删除"));
-        }
-        let dir = self.root.join(pkg_id);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)
-                .map_err(|e| format!("删除回收站目录 {} 失败: {e}", dir.display()))?;
-        }
-        save_locked(&self.file, &file)?;
-        log::info!("[recycle-bin] 已彻底删除包 {pkg_id}");
-        Ok(())
+        file_lock::with_file_lock(&self.file, || {
+            let mut file = load_locked(&self.file)?;
+            let before = file.entries.len();
+            file.entries.retain(|e| e.id != pkg_id);
+            if file.entries.len() == before {
+                return Err(format!("包 '{pkg_id}' 不在回收站，拒绝删除"));
+            }
+            let dir = self.root.join(pkg_id);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)
+                    .map_err(|e| format!("删除回收站目录 {} 失败: {e}", dir.display()))?;
+            }
+            save_locked(&self.file, &file)?;
+            log::info!("[recycle-bin] 已彻底删除包 {pkg_id}");
+            Ok(())
+        })
     }
 
     /// 导出：fail-closed（不在清单 → Err，与 purge 同口径；package_missing → Err），
@@ -415,33 +414,34 @@ impl RecycleBin {
     /// 绝对路径——净化前缀必须按包的原安装位置 `bundles/<id>`（而非回收站目录）
     /// 匹配，否则漏净化产出在别的机器导不回的 zip；已是相对形式的 args 原样
     /// 透传，不会误改。
-    /// 全程持 `file_lock()`：并发的 take_back/purge 会把包目录搬走/删掉，锁内
+    /// 全程持跨进程文件锁：并发的 take_back/purge 会把包目录搬走/删掉，锁内
     /// 导出保证遍历期间目录不会被并发操作挪动（zip 较大时持锁偏久，正确性优先）。
     pub fn export_package(&self, pkg_id: &str, dest_zip: &Path) -> Result<(), String> {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
-        let _guard = file_lock();
-        let file = load_locked(&self.file)?;
-        if !file.entries.iter().any(|e| e.id == pkg_id) {
-            return Err(format!("包 '{pkg_id}' 不在回收站，拒绝导出"));
-        }
-        let src = self.root.join(pkg_id);
-        if !src.is_dir() {
-            return Err(format!(
-                "回收站包目录 {} 缺失，无法导出（package_missing）",
-                src.display()
-            ));
-        }
-        // 净化前缀按原安装位置（回收前 manifest 里的绝对路径指向 bundles/<id>/mcp/）。
-        let sanitize_root = self.bundles_root.join(pkg_id);
-        let written =
-            super::package_export::write_package_zip(&src, dest_zip, Some(&sanitize_root))?;
-        log::info!(
-            "[recycle-bin] 已导出包 {pkg_id}（{written} 个条目）→ {}",
-            dest_zip.display()
-        );
-        Ok(())
+        file_lock::with_file_lock(&self.file, || {
+            let file = load_locked(&self.file)?;
+            if !file.entries.iter().any(|e| e.id == pkg_id) {
+                return Err(format!("包 '{pkg_id}' 不在回收站，拒绝导出"));
+            }
+            let src = self.root.join(pkg_id);
+            if !src.is_dir() {
+                return Err(format!(
+                    "回收站包目录 {} 缺失，无法导出（package_missing）",
+                    src.display()
+                ));
+            }
+            // 净化前缀按原安装位置（回收前 manifest 里的绝对路径指向 bundles/<id>/mcp/）。
+            let sanitize_root = self.bundles_root.join(pkg_id);
+            let written =
+                super::package_export::write_package_zip(&src, dest_zip, Some(&sanitize_root))?;
+            log::info!(
+                "[recycle-bin] 已导出包 {pkg_id}（{written} 个条目）→ {}",
+                dest_zip.display()
+            );
+            Ok(())
+        })
     }
 }
 
@@ -813,7 +813,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 }
 
 // ---------------------------------------------------------------------------
-// 已持锁实现（公开方法的临界区内层；调用前必须已持有 RECYCLE_BIN_FILE_LOCK）
+// 已持锁实现（公开方法的临界区内层；调用前必须已持有 recycle-bin.json 的跨进程文件锁）
 // ---------------------------------------------------------------------------
 
 /// 内层读：文件不存在 → 空清单；JSON 损坏 → Err（fail loud，不静默重建）。
@@ -849,7 +849,7 @@ fn save_locked(path: &Path, file: &RecycleBinFile) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(file)
         .map_err(|e| format!("序列化 recycle-bin.json 失败: {e}"))?;
-    deepseek_tui::utils::write_atomic(path, json.as_bytes())
+    crate::platform::filesystem::atomic_write_private(path, json.as_bytes())
         .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
@@ -1396,7 +1396,11 @@ mod tests {
             "fixture: bin dir present"
         );
         {
-            let _guard = file_lock();
+            // Orphan injection serializes through the same per-path in-process
+            // mutex the real writers use (the OS lock is irrelevant for a
+            // single-threaded fixture; the mutex keeps the shape honest).
+            let mutex = file_lock::process_mutex_for(&file_lock::lock_path_for(&bin.file));
+            let _guard = mutex.lock().unwrap_or_else(|p| p.into_inner());
             let mut manifest = load_locked(&bin.file).unwrap();
             manifest.entries.retain(|e| e.id != "my-skill");
             save_locked(&bin.file, &manifest).unwrap();
@@ -2560,5 +2564,139 @@ mod tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// #515/#521 cross-process contention on the WRITE path: while a foreign
+    /// fd holds the recycle-bin OS lock, the purge's manifest rewrite must not
+    /// land; after the release it lands in full (entry and directory gone).
+    #[test]
+    fn cross_process_lock_blocks_purge_write_until_release() {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-cross-save", || {
+            // Seed one recycled entry through the public path, so the fixture
+            // is exactly the post-recycle state.
+            let pkg = paths::bundles_root().join("weather");
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(pkg.join("marker.txt"), b"x").unwrap();
+            let store = BundleStore::new();
+            store.upsert(upload_record("weather")).unwrap();
+            let record = store.get("weather").unwrap().unwrap();
+            store.remove("weather").unwrap();
+            let bin = RecycleBin::new();
+            bin.recycle_package("weather", KIND_SKILL, "weather.zip", record)
+                .unwrap();
+            let manifest_path = bin.file.clone();
+            let held_dir = bin.root.join("weather");
+            let lock_path = file_lock::lock_path_for(&manifest_path);
+            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let worker = std::thread::spawn(move || {
+                RecycleBin::new()
+                    .purge("weather")
+                    .expect("purge should succeed once the foreign lock is released");
+            });
+            // Handshake: wait until the worker holds the in-process recycle-bin
+            // mutex — with the foreign lock held, it is now parked on (or just
+            // failed) the OS-lock acquisition (#517 test shape).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match file_lock::process_mutex_for(&lock_path).try_lock() {
+                    Ok(guard) => drop(guard),
+                    Err(std::sync::TryLockError::WouldBlock) => break,
+                    Err(std::sync::TryLockError::Poisoned(p)) => {
+                        drop(p.into_inner());
+                        break;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker never reached the recycle-bin lock acquisition point"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // The rewrite must not land while the peer holds the lock.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+                assert!(
+                    manifest.contains("\"weather\""),
+                    "manifest rewritten while the lock was still held — serialization is broken: {manifest}"
+                );
+                assert!(
+                    held_dir.is_dir(),
+                    "package dir deleted while the lock was still held"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            drop(foreign_guard);
+            worker
+                .join()
+                .expect("worker should finish once the foreign lock is released");
+            assert!(
+                !bin.contains("weather").unwrap(),
+                "the entry must be gone after the lock is released"
+            );
+            assert!(
+                !held_dir.exists(),
+                "the package dir must be gone after purge"
+            );
+        });
+    }
+
+    /// #515/#521 cross-process contention on the READ path: while a peer holds
+    /// the OS lock, a listing must degrade promptly to the unlocked,
+    /// never-persisting view (bounded) instead of blocking — and a missing
+    /// manifest stays missing (a pure read must not create it).
+    #[test]
+    fn cross_process_lock_contention_degrades_read_without_persist() {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-cross-read", || {
+            let bin = RecycleBin::new();
+            let lock_path = file_lock::lock_path_for(&bin.file);
+            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let got = RecycleBin::new().list();
+                done_tx.send(got).expect("reader should send its result");
+            });
+            // A contended read must return promptly. recv_timeout doubles as
+            // the regression assertion: a blocking read hangs here and fails
+            // the test with a bounded, diagnosable timeout.
+            let got = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("contended read must degrade instead of blocking on the peer's lock");
+            assert!(
+                got.unwrap().is_empty(),
+                "a missing manifest lists as empty under contention"
+            );
+            assert!(
+                !bin.file.exists(),
+                "a contended read must not persist (create) the manifest"
+            );
+
+            drop(foreign_guard);
+            reader.join().expect("reader thread should finish");
+        });
     }
 }

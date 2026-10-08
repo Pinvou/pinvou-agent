@@ -68,7 +68,7 @@ impl SelectedPetStore {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("create selected pet directory failed: {error}"))?;
         }
-        deepseek_tui::utils::write_atomic(&self.path, payload)
+        crate::platform::filesystem::atomic_write_private(&self.path, payload)
             .map_err(|error| format!("write selected pet failed: {error:#}"))
     }
 

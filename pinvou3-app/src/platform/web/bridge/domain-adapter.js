@@ -143,7 +143,7 @@
     return Promise.reject(new Error("computer use is not supported on the web client"));
   }
   const computerUseStubs = {};
-  ["getStatus", "refreshStatus", "grant", "revoke", "stop", "confirm", "deny", "setEnabled", "requestPermissions"]
+  ["getStatus", "refreshStatus", "grant", "revoke", "stop", "confirm", "deny", "setEnabled", "requestPermissions", "permissionStatus"]
     .forEach(function (name) { computerUseStubs[name] = computerUseUnsupported; });
 
   window.TauriBridge = {
