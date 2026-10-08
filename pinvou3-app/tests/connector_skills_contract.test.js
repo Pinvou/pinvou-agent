@@ -138,15 +138,22 @@ for (const f of docs) {
 // 等字段名出现在行内代码段里就让整行豁免（改按剥锚后的纯文本判定）；
 // 只转述 CLI 提示而不点名流程载体（裸 prompt/hint/surfaces/提示 不再
 // 豁免——wiki 两处与 flag-create/feed-groups 旧句正是靠它漏网）。
+// 第 7 轮外部复审补两处围栏盲区：围栏分支从「仅扫 --scope 行」放宽到
+// 「所有阻塞形态都必须 --no-wait」（围栏是最可执行语境，fenced
+// `auth login --domain …` 与裸形态同样会让模型照跑阻塞到超时；
+// lark-shared 的 --device-code 第二步是文档化例外，不受影响）；围栏
+// 状态机同时识别 blockquoted 围栏（`> ``` `）——引用块里的围栏此前
+// 不翻转状态，内容按宽松的正文规则判定。
 // Since PR #302 the lark skills live in lark-skills/ (the old skills/ path no
 // longer exists, so this rule had been silently dead until then).
 const larkAuthLoginViolation = (line, inFence) => {
   if (!/auth login/.test(line)) return null;
-  // 代码围栏是最可执行语境：含 --scope 的围栏行必须内联 --no-wait，无
-  // 描述性豁免（--device-code 第二步不带 --scope，不受影响）。
+  // 代码围栏是最可执行语境：任何阻塞形态（含 --scope、--domain、裸 auth
+  // login）都必须内联 --no-wait，无描述性豁免；--device-code 第二步是
+  // lark-shared 两段式的文档化收尾，不带 --no-wait，显式豁免。
   if (inFence) {
-    return /--scope/.test(line) && !/--no-wait/.test(line)
-      ? "fenced `auth login --scope` 须内联 --no-wait（lark-shared 两段式）"
+    return !/--no-wait/.test(line) && !/--device-code/.test(line)
+      ? "fenced `auth login` 阻塞形态须内联 --no-wait（lark-shared 两段式；--device-code 第二步除外）"
       : null;
   }
   // frontmatter description 是能力枚举（≤280 字符受规则 6 约束），恒为描述性语境。
@@ -182,7 +189,7 @@ const larkAuthLoginViolation = (line, inFence) => {
 const scanLarkAuthLogin = (text) => {
   let inFence = false;
   for (const line of text.split("\n")) {
-    if (/^\s*```/.test(line)) {
+    if (/^\s*(?:>\s*)?```/.test(line)) {
       inFence = !inFence;
       continue;
     }
@@ -204,6 +211,9 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
   const fencedOldForms = [
     // 围栏内可执行行（message-enrichment 旧形）
     "lark-cli auth login --scope \"im:message.reactions:read\"",
+    // 围栏内无 --scope 的阻塞形态（--domain 同样让模型照跑阻塞到超时；
+    // 第 7 轮外部复审把围栏分支从「仅 --scope」放宽到所有阻塞形态）
+    "lark-cli auth login --domain docs",
   ];
   const plainOldForms = [
     // 裸「提示」转述（wiki delete-space/move 旧形）
@@ -227,6 +237,12 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
       `非围栏旧形必须判违例: ${line}`,
     );
   }
+  // blockquoted 围栏此前不翻转围栏状态，内容按宽松正文规则判定——围栏
+  // 状态机必须同样识别 `> ``` ` 形态（引用块里的可执行行最易漏）。
+  assert.ok(
+    scanLarkAuthLogin('> 原文如下：\n> ```bash\n> lark-cli auth login --scope "docs:wiki"\n> ```\n') !== null,
+    "blockquoted 围栏内的阻塞 --scope 行必须判违例",
+  );
   const okForms = [
     "可提示用户按 [`lark-shared`](../../lark-shared/SKILL.md) 的按需授权流程（`auth login --scope ...`）完成登录",
     "If missing, run the login per the lark-shared on-demand split-flow (`--no-wait --json`), never the blocking in-turn login",
@@ -244,6 +260,18 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
     scanLarkAuthLogin('```bash\nlark-cli auth login --scope "xxx" --no-wait --json\n```\n'),
     null,
     "围栏内 --no-wait 两段式不得误伤",
+  );
+  // lark-shared 的 --device-code 第二步（两段式收尾，天然不带 --no-wait）
+  // 必须保持豁免——放宽围栏分支不得误伤文档化流程。
+  assert.equal(
+    scanLarkAuthLogin('```bash\nlark-cli auth login --device-code <device_code>\n```\n'),
+    null,
+    "围栏内 --device-code 第二步不得误伤",
+  );
+  assert.equal(
+    scanLarkAuthLogin('> ```bash\n> lark-cli auth login --scope "xxx" --no-wait --json\n> ```\n'),
+    null,
+    "blockquoted 围栏内 --no-wait 两段式不得误伤",
   );
 }
 
@@ -289,7 +317,9 @@ const DWS_GATED_CMD = /\bdws oa approval (?:approve|reject|revoke)\b/;
 for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
   let inFence = false;
   for (const line of read(f).split("\n")) {
-    if (/^\s*```/.test(line)) {
+    // 与规则 5 的围栏状态机同口径：blockquoted 围栏（`> ``` `）同样翻转
+    // 状态——引用块里的可执行示例与普通围栏同等可照抄。
+    if (/^\s*(?:>\s*)?```/.test(line)) {
       inFence = !inFence;
       continue;
     }
@@ -463,7 +493,7 @@ for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
 // 历史短占位必须保持「必失败」，19 位占位与合法短 flag 必须保持「必通过」。
 {
   const tmeetOldForms = [
-    'dws meeting get --meeting-id "100000000"',
+    'tmeet meeting get --meeting-id "100000000"',
     "--meeting-id=123456789",
     '--meeting-id "200000001"',
   ];
