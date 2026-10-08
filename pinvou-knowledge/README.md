@@ -22,7 +22,7 @@ cargo run --manifest-path pinvou-knowledge/Cargo.toml --release -- \
 
 此命令仅用于服务端开发与调试。首次启动会在数据目录写入一次性 `host-owner.claim`，由 Pinvou 原生客户端安全领取后立即删除；产品流程不再使用浏览器后台、管理员密码或初始化密钥。
 
-默认从 Hugging Face 的固定 revision 下载与桌面端本地知识库相同的 BGE-M3 INT8 ONNX 五文件清单，并逐文件验证 SHA-256。服务端镜像变量与桌面端优先级约定见 [知识库模型来源](../docs/knowledge-model.md)（`PINVOU_KNOWLEDGE_HF_BASE_URL` 只替换服务根地址；桌面端额外优先 `PINVOU3_KB_HF_BASE_URL`）。
+默认优先通过 `https://hf-mirror.com` 镜像下载 Hugging Face 固定 revision 中与桌面端本地知识库相同的 BGE-M3 INT8 ONNX 五文件清单（失败时回退 `https://huggingface.co`），并逐文件验证 SHA-256。服务端可通过 `PINVOU_KNOWLEDGE_HF_BASE_URL` 指定其他 Hugging Face 兼容根地址；该变量只替换服务根地址，仓库、revision、文件路径和摘要仍由程序固定；显式设置后仅使用该地址，不再回退镜像链。桌面端额外优先读取 `PINVOU3_KB_HF_BASE_URL`，未设置时回退到统一变量。完整来源和镜像约定见 [知识库模型来源](../docs/knowledge-model.md)。
 
 模型目录必须包含：
 
