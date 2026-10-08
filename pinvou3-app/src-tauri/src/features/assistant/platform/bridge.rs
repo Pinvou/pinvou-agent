@@ -150,53 +150,11 @@ pub(crate) fn base_url_uses_loopback(base_url: &str) -> bool {
         })
 }
 
-/// Whether to treat this base_url as a "local inference service": loopback
-/// (localhost / 127.0.0.0/8 / ::1), RFC1918 private ranges (10/8, 172.16/12,
-/// 192.168/16), or Docker-specific hostnames (host.docker.internal, etc.).
-/// These endpoints usually run on the user's own machine/intranet; probing
-/// them is cheap so real thinking tiers can be offered (defaulting to the
-/// lowest thinking tier — see `request_reasoning_effort`); public
-/// OpenAI-compatible endpoints are excluded (keep the default high).
-/// Difference from `base_url_uses_loopback`: the latter is only for the
-/// "allow unauthenticated" decision (api_key required), while this decision
-/// covers probing and thinking control (LAN vLLM/Ollama also defaults to
-/// the lowest thinking tier).
-pub(crate) fn base_url_uses_local_or_private(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .is_some_and(|host| {
-            let host = host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .trim_end_matches('.');
-            if host.eq_ignore_ascii_case("localhost") {
-                return true;
-            }
-            // Docker Desktop host alias: the common way to reach the host from
-            // inside a container.
-            if host.eq_ignore_ascii_case("host.docker.internal")
-                || host.eq_ignore_ascii_case("host.lima.internal")
-                || host.eq_ignore_ascii_case("host.orbstack.internal")
-                || host.ends_with(".docker.internal")
-            {
-                return true;
-            }
-            let Ok(address) = host.parse::<std::net::IpAddr>() else {
-                return false;
-            };
-            if address.is_loopback() {
-                return true;
-            }
-            // RFC1918 private ranges (10/8, 172.16/12, 192.168/16): std's
-            // `Ipv4Addr::is_private` has exactly equivalent semantics, so
-            // reuse it directly.
-            match address {
-                std::net::IpAddr::V4(v4) => v4.is_private(),
-                std::net::IpAddr::V6(_) => false,
-            }
-        })
-}
+/// Local/private base_url classification: defined in
+/// `core::model_endpoint` (single source shared with the monitor's
+/// native-window display gate); re-exported here for the existing import
+/// paths (settings command, engine pool).
+pub(crate) use crate::core::model_endpoint::base_url_uses_local_or_private;
 
 fn official_deepseek_model_name(model: &str) -> String {
     // Case-canonicalization of the two canonical DeepSeek names: the wire
@@ -278,6 +236,16 @@ pub struct Pinvou3Bridge {
     /// thinking control uses: Ollama → think toggle, vLLM → effort levels;
     /// LM Studio / generic stay on the openai wire (no thinking control).
     pub probed_local_kind: Option<LocalServerKind>,
+    /// Whether the spawn's native-window adoption armed the engine-reuse
+    /// re-check (`EngineEntry::native_window_pending`): true exactly when
+    /// this route's own native fetch ran and served no fact. Written by
+    /// `EnginePool::adopt_probed_endpoint_facts`; a route whose fact can
+    /// never be adopted (borrowed roster name, not operator-owned) or a
+    /// declared route (its native fetch is skipped — the budget stays the
+    /// declaration) never
+    /// arms — a served fact the rebuild refuses to adopt must not respawn
+    /// the engine on every send.
+    pub native_window_recheck: bool,
     /// Execution-root (engine cwd / shell directory) resolver for native code
     /// sessions; None = no code-session project binding, every session uses
     /// its session-private directory. The ledger root (attachments/audits/
@@ -319,6 +287,7 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field("probed_context_tokens", &self.probed_context_tokens)
             .field("probed_output_tokens", &self.probed_output_tokens)
             .field("probed_local_kind", &self.probed_local_kind)
+            .field("native_window_recheck", &self.native_window_recheck)
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
@@ -464,6 +433,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
+            native_window_recheck: false,
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
@@ -636,6 +606,21 @@ impl Pinvou3Bridge {
         if let Some(block) = self.prefs.language.extra_language_directive() {
             rendered.push_str("\n\n");
             rendered.push_str(block);
+        }
+        // Computer use is opt-in and off by default: announce the tool only
+        // while the master switch is on (and the platform has a backend),
+        // keeping the prompt byte-exact — and the prefix cache intact — for
+        // every session where the feature is disabled. The announcement
+        // pairs with the tool's always-load entry (tool_policy.rs): static
+        // text that names a tool must not describe an absent first-turn
+        // catalog entry. External ACP runtimes have no Pinvou tool registry;
+        // skip them like the per-turn inventory block above.
+        if !self.is_external_acp_session(session_id)
+            && self.prefs.computer_use.enabled
+            && crate::features::computer_use::backend_supported()
+        {
+            rendered.push_str("\n\n");
+            rendered.push_str(crate::features::computer_use::instruction_block());
         }
         // When browser capabilities are statically unavailable, inject a model-readable
         // reason and recovery guidance. The Browser capabilities section already explains
@@ -1617,8 +1602,12 @@ impl Pinvou3Bridge {
         // with the monitor display (declaration wins, probe min-clamps,
         // inference fills in), so the two paths cannot drift apart by each
         // keeping their own match. The probed value only exists for locally
-        // introspectable vLLM (cloud is always None, see the probe gate in
-        // engine_pool), so a cloud declaration is never overridden by any probe.
+        // introspectable servers — vLLM's `/v1/models` `max_model_len`, an
+        // Ollama endpoint's native `/api/ps`→`/api/show` follow-up, LM
+        // Studio's native `/api/v0/models` served window
+        // (`loaded_context_length` on a loaded entry; see the kind gate and
+        // per-kind dispatch in engine_pool) — and cloud is always None, so a
+        // cloud declaration is never overridden by any probe.
         let (context_tokens, _) = crate::core::model_context::resolve_context_window(
             configured_context,
             self.probed_context_tokens,
@@ -1697,8 +1686,9 @@ impl Pinvou3Bridge {
 
     /// The context window the foundation's emergency line uses. The smaller
     /// of the SavedModel declaration and the probe (vLLM `/v1/models`'s
-    /// `max_model_len`); only when neither exists does it fall back to the
-    /// model-name hint/128K.
+    /// `max_model_len`, an Ollama endpoint's native `/api/ps`→`/api/show`
+    /// fact, LM Studio's `/api/v0/models` served window); only when neither
+    /// exists does it fall back to the model-name hint/128K.
     ///
     /// ⚠️ **Filling active_route_limits and deriving token_threshold must
     /// share this one window**, otherwise T (nice line) / E (emergency line)
@@ -3394,6 +3384,7 @@ impl Pinvou3Bridge {
             probed_context_tokens: None,
             probed_output_tokens: None,
             probed_local_kind: None,
+            native_window_recheck: false,
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
@@ -8034,6 +8025,71 @@ mod tests {
                 .build_session_system_prompt("native-work")
                 .contains("## 市场 MCP 应用发现"),
             "native Engine sessions must continue to receive inventory rules"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The computer-use instruction section follows the master toggle:
+    /// rendered for native Engine sessions (Work AND Code — the tool is
+    /// registered for both), absent while the switch is off, and never
+    /// rendered for external ACP runtimes (no Pinvou tool registry there).
+    /// The section names the tool directly, which is why `computer_use`
+    /// ships non-deferred (the tool_policy always-load contract).
+    #[test]
+    fn computer_use_instruction_follows_master_toggle() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "PINVOU3_SESSION_ARTIFACTS"]);
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-cu-instruction-{}-{}",
+            std::process::id(),
+            crate::bridge::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        let mut bridge = fixture_bridge();
+        bridge
+            .set_external_acp_session_predicate(std::sync::Arc::new(|s| s.starts_with("sess-acp")));
+
+        // Toggle off (fixture prefs default): no section anywhere — the
+        // prompt stays byte-exact with the pre-announcement static text.
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-work-1")
+                .contains("## Computer use"),
+            "disabled computer use must not announce the tool"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-code-1")
+                .contains("## Computer use"),
+            "disabled computer use must not announce the tool in code sessions"
+        );
+
+        // Toggle on: native sessions get the section naming the tool;
+        // external ACP runtimes never do.
+        bridge.prefs.computer_use.enabled = true;
+        let prompt_work = bridge.build_session_system_prompt("sess-work-1");
+        assert!(
+            prompt_work.contains("## Computer use"),
+            "enabled computer use must announce the tool to Work sessions"
+        );
+        assert!(
+            prompt_work.contains("`computer_use`"),
+            "the section must name the tool (paired with the always-load entry)"
+        );
+        assert!(
+            bridge
+                .build_session_system_prompt("sess-code-1")
+                .contains("## Computer use"),
+            "the tool is registered for code sessions too, so they get the section"
+        );
+        assert!(
+            !bridge
+                .build_session_system_prompt("sess-acp-1")
+                .contains("## Computer use"),
+            "external ACP runtimes have no Pinvou tool registry to announce into"
         );
 
         let _ = std::fs::remove_dir_all(&root);

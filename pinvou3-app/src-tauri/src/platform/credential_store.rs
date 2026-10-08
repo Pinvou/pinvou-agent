@@ -299,6 +299,24 @@ impl SystemCredentialStore {
             "[credential_store] secrets_for cache miss service={}",
             service
         );
+        // Test hermeticity valve (marketplace reconcile hang, 2026-10-03):
+        // placed AFTER the per-store cache consult above so the fake-backend
+        // tests (inject_fake_secrets) are unaffected, and BEFORE the OS
+        // keyring is probed. Harnesses that redirect PINVOU3_HOME cannot make
+        // the OS keyring hermetic — on macOS a real-keyring read from an
+        // ad-hoc-signed test binary can block indefinitely inside
+        // SecKeychainFindGenericPassword on the ACL consent dialog
+        // (rebuild_local_mcp_entry's placeholder resolution hung the whole
+        // suite locally; Linux CI never sees it because its keyring probe
+        // fails fast into the file fallback). Production builds never read
+        // the flag.
+        #[cfg(test)]
+        if std::env::var_os("PINVOU3_TEST_KEYRING_FILE_FALLBACK").is_some() {
+            log::info!(
+                "[credential_store] test file-fallback flag set; using file keyring without probing the OS keyring"
+            );
+            return Arc::new(Secrets::file_backed());
+        }
         let store = DefaultKeyringStore::new(service);
         log::info!("[credential_store] keyring probe start service={}", service);
         let secrets = match store.probe() {
@@ -1040,5 +1058,67 @@ mod tests {
             .get(&CredentialReference::for_model("m1"))
             .expect_err("store should fail");
         assert!(!err.user_message().contains("sk-secret-value"));
+    }
+}
+
+/// Test double that records every operation, so tests can assert whether a
+/// store call happened at all (e.g. a last-model rejection must not reach the
+/// keyring) and in which order relative to other effects.
+#[cfg(test)]
+pub struct RecordingCredentialStore {
+    ops: std::sync::Mutex<Vec<String>>,
+    fail_delete: std::sync::Mutex<bool>,
+}
+
+#[cfg(test)]
+impl RecordingCredentialStore {
+    pub fn new() -> Self {
+        Self {
+            ops: std::sync::Mutex::new(Vec::new()),
+            fail_delete: std::sync::Mutex::new(false),
+        }
+    }
+
+    pub fn ops(&self) -> Vec<String> {
+        self.ops.lock().expect("recording ops lock").clone()
+    }
+
+    pub fn fail_delete(&self) {
+        *self.fail_delete.lock().expect("recording fail lock") = true;
+    }
+
+    fn label(reference: &CredentialReference) -> String {
+        format!("{}:{}", reference.service, reference.account)
+    }
+}
+
+#[cfg(test)]
+impl CredentialStore for RecordingCredentialStore {
+    fn get(&self, _reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+        self.ops
+            .lock()
+            .expect("recording ops lock")
+            .push("get".to_string());
+        Ok(None)
+    }
+
+    fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+        self.ops.lock().expect("recording ops lock").push(format!(
+            "set:{}={}",
+            Self::label(reference),
+            value
+        ));
+        Ok(())
+    }
+
+    fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+        self.ops
+            .lock()
+            .expect("recording ops lock")
+            .push(format!("delete:{}", Self::label(reference)));
+        if *self.fail_delete.lock().expect("recording fail lock") {
+            return Err(CredentialError::new("injected delete failure"));
+        }
+        Ok(())
     }
 }

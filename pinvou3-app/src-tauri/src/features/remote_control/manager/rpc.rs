@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
 use super::relay_client::RelaySender;
@@ -289,8 +288,7 @@ pub(super) fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, Str
     let canonical = canonicalize_json(args);
     let encoded = serde_json::to_vec(&(command, canonical))
         .map_err(|error| format!("serialize Web RPC fingerprint: {error}"))?;
-    let digest = Sha256::digest(encoded);
-    Ok(crate::platform::encoding::hex_lower(&digest))
+    Ok(crate::platform::hashing::sha256_hex(&encoded))
 }
 
 pub(super) fn canonicalize_json(value: &Value) -> Value {

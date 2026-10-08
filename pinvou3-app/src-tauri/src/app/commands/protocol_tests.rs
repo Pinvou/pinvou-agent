@@ -119,7 +119,8 @@ command_protocol!(
         "computer_use_confirm",
         "computer_use_deny",
         "computer_use_set_enabled",
-        "computer_use_request_permissions"
+        "computer_use_request_permissions",
+        "computer_use_permission_status"
     ]
 );
 command_protocol!(

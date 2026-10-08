@@ -43,8 +43,8 @@ use crate::features::assistant::product_runtime::{
 };
 use crate::features::files::file_ingest::IngestResult;
 use crate::features::sessions::{
-    ExecutionRootResolver, MAX_HEADLESS_SESSIONS, SessionKind, SessionStore,
-    validate_user_workspace_path,
+    ExecutionRootResolver, MAX_HEADLESS_SESSIONS, RetentionEvictionRecord, SessionKind,
+    SessionStore, validate_user_workspace_path,
 };
 use crate::platform::prefs::UserPrefs;
 
@@ -346,8 +346,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// bucket separate from the GUI chat budget — so a fresh run's prepare-time
 /// save evicts only previous headless sessions (pinned sessions are exempt
 /// from retention). The store's real eviction events drive a stderr warning
-/// counting the evicted headless runs — even when the run errors after the
-/// save. One path CAN evict GUI chats: a caller-provided `session_id`
+/// counting the evicted non-pinned headless-budget sessions — boot-time
+/// sweep evictions included (they buffer in the store and flush on arm) —
+/// even when the run errors after the save. One path CAN evict GUI chats: a
+/// caller-provided `session_id`
 /// without the `agentic_` prefix bills against the chat budget (see
 /// [`AgenticTaskRequest::session_id`]); those evictions are deliberately not
 /// counted in the warning, so prefer fresh runs against the desktop's
@@ -671,26 +673,29 @@ fn never_started_disposition(
 
 /// The retention-eviction warning for a run's recorded sweep deletions:
 /// `Some` copy when the prepare-time save evicted unpinned headless sessions
-/// at the retention cap, `None` when nothing was evicted (stay silent). The
-/// decision deliberately does not consult the turn outcome — the save
+/// at the retention cap — whether through the save itself or the host's
+/// boot-time sweep — and `None` when nothing was evicted (stay silent). The
+/// decision deliberately does not consult the turn outcome — the deletions
 /// happened before any setup fault could surface, so the evictions are real
 /// however the run ends; taking no outcome parameter is what keeps that
 /// invariant structural instead of a code path that can regress behind an
 /// `is_ok()` gate. The store only forwards headless-budget deletions to the
 /// observer (chat-budget deletions by the same sweep are the chat budget's
-/// own enforcement), so the count below is exactly headless evictions.
-fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
-    (!evicted.is_empty()).then(|| {
+/// own enforcement), so the count below is exactly headless evictions. The
+/// copy stays neutral about who triggered the sweep: a boot-time eviction
+/// predates this run and must not be blamed on it.
+fn retention_eviction_warning(evicted: &RetentionEvictionRecord) -> Option<String> {
+    (evicted.total > 0).then(|| {
         format!(
-            "[pinvou agent run] warning: persisting this run's session evicted \
-             {} unpinned headless run session(s) at the \
+            "[pinvou agent run] warning: the session store's retention sweep \
+             evicted {} non-pinned session(s) at the \
              {MAX_HEADLESS_SESSIONS}-session headless retention cap (pinned \
              sessions are exempt; the desktop app's own chat sessions live on \
              a separate budget). Point PINVOU3_HOME at a \
              sandbox or prune the session store (PINVOU3_AGENT_TASK_KEEP_\
              SESSION=0 only removes this run's session afterwards; the \
-             save-time eviction still happens).",
-            evicted.len()
+             eviction at the cap still happens).",
+            evicted.total
         )
     })
 }
@@ -704,8 +709,8 @@ fn retention_eviction_warning(evicted: &[String]) -> Option<String> {
 /// eviction, and a run that fails before saving evicts nothing and stays
 /// silent. A count sampled around the run cannot see mid-run forwarder
 /// evictions; the store's own deletions can.
-fn arm_retention_eviction_observer(store: &SessionStore) -> Arc<Mutex<Vec<String>>> {
-    let evictions = Arc::new(Mutex::new(Vec::new()));
+fn arm_retention_eviction_observer(store: &SessionStore) -> Arc<Mutex<RetentionEvictionRecord>> {
+    let evictions = Arc::new(Mutex::new(RetentionEvictionRecord::default()));
     if let Some(stale) = store.set_retention_eviction_observer(Some(evictions.clone())) {
         // Single-flight normally guarantees the slot is empty here; a stale
         // observer means an earlier run skipped its disarm (an unwind between
@@ -728,7 +733,7 @@ fn arm_retention_eviction_observer(store: &SessionStore) -> Arc<Mutex<Vec<String
 /// needs an `EnginePool` → Tauri `AppHandle`). The caller owns printing.
 fn disarm_retention_eviction_observer(
     store: &SessionStore,
-    evictions: &Arc<Mutex<Vec<String>>>,
+    evictions: &Arc<Mutex<RetentionEvictionRecord>>,
 ) -> Option<String> {
     store.take_retention_eviction_observer();
     retention_eviction_warning(&evictions.lock())
@@ -1663,8 +1668,8 @@ mod tests {
         copy_bounded, stage_file_in_workspace_with_copier,
     };
     use crate::features::sessions::{
-        MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND, ScheduledRunMode, ScheduledRunProfile,
-        SessionStore,
+        MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND, RetentionEvictionRecord, ScheduledRunMode,
+        ScheduledRunProfile, SessionStore,
     };
     use crate::platform::test_support::locked_env;
     use deepseek_tui::models::{ContentBlock, Message};
@@ -2260,7 +2265,8 @@ mod tests {
         }
 
         // Arm the same receiver `run_agentic_task` installs around the turn.
-        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let evictions =
+            std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord::default()));
         store.set_retention_eviction_observer(Some(evictions.clone()));
 
         // The prepare-time save of a fresh run at the headless cap — the
@@ -2282,15 +2288,17 @@ mod tests {
         // ...and the record stands on its own: an attachment/submit failure
         // after this point returns `Err`, but the eviction already happened
         // and the warning must still see it (no turn outcome consulted).
-        assert_eq!(evictions.lock().as_slice(), &[oldest]);
+        assert_eq!(evictions.lock().ids.as_slice(), &[oldest]);
+        assert_eq!(evictions.lock().total, 1);
 
         // Disarm exactly like the runner does before reporting.
         let evicted = store.take_retention_eviction_observer().unwrap();
-        assert_eq!(evicted.lock().as_slice(), &[ids[0].clone()]);
+        assert_eq!(evicted.lock().ids.as_slice(), &[ids[0].clone()]);
 
         // Below the cap a fresh save evicts nothing and records nothing.
         store.delete(&ids[MAX_HEADLESS_SESSIONS - 1]).unwrap();
-        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let evictions =
+            std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord::default()));
         store.set_retention_eviction_observer(Some(evictions.clone()));
         store
             .create_empty_with_id(
@@ -2301,7 +2309,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            evictions.lock().is_empty(),
+            evictions.lock().total == 0,
             "a save below the cap must not be reported as an eviction"
         );
         store.take_retention_eviction_observer();
@@ -2333,9 +2341,10 @@ mod tests {
 
         // A previous run's receiver, still installed and holding content it
         // never reported.
-        let stale = std::sync::Arc::new(parking_lot::Mutex::new(vec![
-            "agentic_stale_ghost".to_string(),
-        ]));
+        let stale = std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord {
+            ids: vec!["agentic_stale_ghost".to_string()],
+            total: 1,
+        }));
         let previous = store.set_retention_eviction_observer(Some(stale.clone()));
         assert!(
             previous.is_none(),
@@ -2369,12 +2378,12 @@ mod tests {
             "oldest session must be evicted by the save at the cap"
         );
         assert_eq!(
-            fresh.lock().as_slice(),
+            fresh.lock().ids.as_slice(),
             &[oldest],
             "the fresh receiver records this run's eviction"
         );
         assert_eq!(
-            stale.lock().as_slice(),
+            stale.lock().ids.as_slice(),
             ["agentic_stale_ghost".to_string()].as_slice(),
             "the replaced receiver must not adopt this run's evictions"
         );
@@ -2487,7 +2496,8 @@ mod tests {
             chat_ids.push(id);
         }
 
-        let evictions = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let evictions =
+            std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord::default()));
         store.set_retention_eviction_observer(Some(evictions.clone()));
 
         // One over the CHAT cap: the sweep evicts the oldest chat session...
@@ -2506,37 +2516,213 @@ mod tests {
         );
         // ...but the observer records nothing: chat-budget evictions are not
         // headless retention pressure.
+        assert_eq!(
+            evictions.lock().total,
+            0,
+            "chat-budget evictions must not be recorded as headless evictions"
+        );
+        store.take_retention_eviction_observer();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Seed `count` chat session records with the persist-only primitive
+    /// (`save_session_atomic`, no per-save retention reconcile), so the home
+    /// genuinely sits OVER the cap before the store under test boots. Going
+    /// through `create_new`/`create_empty_with_id` would self-limit at the
+    /// cap on every save and the boot-time sweep would have nothing to
+    /// evict. Returns the seeded ids in creation order.
+    fn seed_sessions_over_cap(tmp: &std::path::Path, count: usize) -> Vec<String> {
+        use deepseek_tui::session_manager::create_saved_session_with_id_and_mode;
+        let seeder =
+            SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("seed boot");
+        let mut ids = Vec::new();
+        for i in 0..count {
+            let id = format!("agentic_seed_{i:04}");
+            let session = create_saved_session_with_id_and_mode(
+                id.clone(),
+                &[],
+                "test-model",
+                tmp,
+                0,
+                None,
+                None,
+            );
+            seeder.save_session_atomic(&session).expect("seed save");
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Boot-sweep evictions are no longer silent (the flush-on-arm half of
+    /// the contract): the host boots — and sweeps — before the runner arms,
+    /// so evictions a store over the cap makes at process start must sit in
+    /// the pre-observer buffer and reach the run's warning once it arms. A
+    /// disarm must keep buffering, so a later arm still sees what happened
+    /// in between.
+    #[test]
+    fn boot_sweep_evictions_flush_into_the_observer_on_arm() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-boot-flush-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let seed_ids = seed_sessions_over_cap(&tmp, MAX_HEADLESS_SESSIONS + 3);
+
+        // Boot on the over-cap home: the boot-time sweep evicts three
+        // sessions with no observer installed — they must buffer.
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        // Arming flushes the buffered boot sweep into the runner's record.
+        let evictions =
+            std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord::default()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+        assert_eq!(
+            evictions.lock().total,
+            3,
+            "boot-sweep evictions must flush on arm"
+        );
+        assert_eq!(evictions.lock().ids.len(), 3);
+        let flushed_boot = evictions.lock().ids.clone();
+        for id in &flushed_boot {
+            assert!(seed_ids.contains(id), "flushed id must be a seeded one");
+            assert!(
+                store.load(id).is_err(),
+                "flushed id must actually be deleted"
+            );
+        }
+
+        // Disarm: a further save at the cap evicts again with no observer,
+        // and the next arm must still see it (the buffer survives disarms).
+        store.take_retention_eviction_observer();
+        store
+            .create_empty_with_id(
+                "agentic_boot_flush_post_disarm".to_string(),
+                "test-model".to_string(),
+                None,
+                tmp.clone(),
+            )
+            .unwrap();
+        let rearmed =
+            std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord::default()));
+        store.set_retention_eviction_observer(Some(rearmed.clone()));
+        assert_eq!(
+            rearmed.lock().total,
+            1,
+            "an eviction between disarm and the next arm must survive in the buffer"
+        );
+        let flushed = rearmed.lock().ids.clone();
+        assert_eq!(flushed.len(), 1);
         assert!(
-            evictions.lock().is_empty(),
-            "chat-budget evictions must not be recorded as headless evictions, got {:?}",
-            *evictions.lock()
+            seed_ids.contains(&flushed[0]),
+            "flushed id must be a seeded one"
+        );
+        assert!(
+            store.load(&flushed[0]).is_err(),
+            "flushed id must actually be deleted"
+        );
+        store.take_retention_eviction_observer();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// `set_retention_eviction_observer(None)` is the disarm-without-
+    /// installing form: it must flush nothing into anything and keep the
+    /// pre-observer buffer intact, so the next real arm still sees what
+    /// happened while disarmed. No production caller passes `None` today
+    /// (the runner disarms via `take`), so this pins the documented contract
+    /// of the defensive branch — silently turning it into a drop would
+    /// otherwise pass the suite.
+    #[test]
+    fn disarming_with_none_keeps_buffering_for_the_next_arm() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-agentic-none-arm-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        // SAFETY: ENV_LOCK held; env writes are serialized across tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let seed_ids = seed_sessions_over_cap(&tmp, MAX_HEADLESS_SESSIONS + 1);
+
+        // Boot one over the cap: the sweep evicted the oldest session with
+        // no observer installed — it sits in the pending buffer.
+        let store = SessionStore::boot_with_scheduled_root(tmp.join("scheduled")).expect("boot");
+
+        let previous = store.set_retention_eviction_observer(None);
+        assert!(
+            previous.is_none(),
+            "nothing was installed before the None request"
+        );
+
+        let evictions =
+            std::sync::Arc::new(parking_lot::Mutex::new(RetentionEvictionRecord::default()));
+        store.set_retention_eviction_observer(Some(evictions.clone()));
+        assert_eq!(
+            evictions.lock().total,
+            1,
+            "a None arm must not drop the buffered boot eviction"
+        );
+        assert_eq!(
+            evictions.lock().ids.as_slice(),
+            &[seed_ids[0].clone()],
+            "the buffered boot eviction must reach the next real arm"
         );
         store.take_retention_eviction_observer();
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// The runner's warning decision is a pure function of the recorded
-    /// evictions: a non-empty record warns (the copy carries the cap, the
-    /// pin exemption and the KEEP_SESSION pointer) and an empty record stays
+    /// evictions: a non-empty record warns (the copy carries the pin
+    /// exemption and the KEEP_SESSION pointer) and an empty record stays
     /// silent. The helper takes no turn outcome, so "a run that errors after
     /// the prepare-time save still surfaces the eviction" cannot regress
     /// behind an outcome gate — there is no outcome to gate on.
     #[test]
     fn retention_eviction_warning_keys_on_the_record_regardless_of_outcome() {
-        let warning = retention_eviction_warning(&["evicted-id".to_string()])
-            .expect("a non-empty eviction record must warn");
-        assert!(
-            warning.contains("1 unpinned headless run session"),
-            "{warning}"
-        );
+        let record = RetentionEvictionRecord {
+            ids: vec!["evicted-id".to_string()],
+            total: 1,
+        };
+        let warning =
+            retention_eviction_warning(&record).expect("a non-empty eviction record must warn");
+        assert!(warning.contains("1 non-pinned session"), "{warning}");
         assert!(warning.contains("pinned sessions are exempt"), "{warning}");
         assert!(
             warning.contains("PINVOU3_AGENT_TASK_KEEP_SESSION=0"),
             "{warning}"
         );
+        // The count must come from `total`, never the windowed id vector:
+        // a trimmed record still reports the full data loss. Also pins the
+        // neutral attribution — the store's sweep is the actor, not this
+        // run's persist (a boot-time eviction predates the run and must not
+        // be blamed on it). The record itself only ever holds headless-budget
+        // ids (chat-budget deletions never reach the observer), so the copy's
+        // scope comes from the headless-cap qualifier, not a victim adjective.
+        let trimmed = RetentionEvictionRecord {
+            ids: vec!["windowed-id".to_string()],
+            total: 270,
+        };
+        let warning = retention_eviction_warning(&trimmed).expect("total > 0 must warn");
+        assert!(warning.contains("270"), "{warning}");
+        assert!(
+            !warning.contains("persisting this run's session evicted"),
+            "the copy must not blame the run's persist: {warning}"
+        );
+        assert!(
+            !warning.contains("headless run session"),
+            "the count's scope is carried by the cap qualifier, not a victim label: {warning}"
+        );
         // Nothing evicted — a below-cap save, or a run that failed before the
         // prepare-time save — must stay silent.
-        assert!(retention_eviction_warning(&[]).is_none());
+        assert!(retention_eviction_warning(&RetentionEvictionRecord::default()).is_none());
     }
 
     #[test]

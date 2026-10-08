@@ -1685,6 +1685,7 @@ jobs:
           for filter in \
             'platform::filesystem::tests::windows_' \
             'platform::paths::tests::managed_python_' \
+            'cross_process_lock' \
             'artifact_read_recovers_an_occupied_1177_layout_after_release' \
             'artifact_writes_never_expose_partial_utf8_to_concurrent_readers' \
             'artifact_public_read_' \

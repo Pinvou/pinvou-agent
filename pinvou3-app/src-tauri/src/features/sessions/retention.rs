@@ -45,6 +45,89 @@ use std::path::PathBuf;
 static SCHEDULED_RUNTIME_DELETE_FAULTS: LazyLock<parking_lot::Mutex<HashMap<String, ErrorKind>>> =
     LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
+/// Eviction record the store hands the headless retention observer: the
+/// newest window of evicted session ids plus the total eviction count. The
+/// ids are windowed because a long-lived process that never arms an observer
+/// must not grow the record without bound; the total is what the runner's
+/// warning reports, so trimming the window never under-reports real data
+/// loss.
+#[cfg(feature = "benchmark-hooks")]
+#[derive(Default)]
+pub(crate) struct RetentionEvictionRecord {
+    pub(crate) ids: Vec<String>,
+    pub(crate) total: usize,
+}
+
+#[cfg(feature = "benchmark-hooks")]
+impl RetentionEvictionRecord {
+    /// Record one sweep's deletions.
+    fn record(&mut self, evicted: &[String]) {
+        self.total += evicted.len();
+        self.extend_ids(evicted.iter().cloned());
+    }
+
+    /// Merge a buffered record into an installed one (flush-on-arm). The
+    /// totals add — merging must not lose evictions the buffer trimmed away.
+    /// The ids append after the target's: the only production target is the
+    /// freshly created arm record, so the surviving window stays in eviction
+    /// order; a merge into a record that already holds newer evictions would
+    /// keep the appended (older) ids at the window's tail instead — the
+    /// total, which is all the warning reads, is unaffected.
+    fn merge(&mut self, other: RetentionEvictionRecord) {
+        self.total += other.total;
+        self.extend_ids(other.ids.into_iter());
+    }
+
+    fn extend_ids(&mut self, add: impl Iterator<Item = String>) {
+        const RETENTION_EVICTION_IDS_WINDOW: usize = 256;
+        self.ids.extend(add);
+        let overflow = self.ids.len().saturating_sub(RETENTION_EVICTION_IDS_WINDOW);
+        self.ids.drain(0..overflow);
+    }
+}
+
+#[cfg(all(test, feature = "benchmark-hooks"))]
+mod eviction_record_tests {
+    use super::RetentionEvictionRecord;
+
+    /// The id window is a hard 256 newest-kept bound, but the total survives
+    /// every trim: the runner's warning reports `total`, so a trimmed record
+    /// must still carry the full data loss — through incremental `record`
+    /// calls, a single bulk sweep, and a `merge` of a buffer that had already
+    /// trimmed its own ids.
+    #[test]
+    fn ids_window_at_256_while_the_total_survives_every_trim() {
+        let mut incremental = RetentionEvictionRecord::default();
+        for index in 0..300 {
+            incremental.record(&[format!("id_{index:04}")]);
+        }
+        assert_eq!(incremental.total, 300);
+        assert_eq!(incremental.ids.len(), 256);
+        assert_eq!(
+            incremental.ids.first().unwrap(),
+            "id_0044",
+            "oldest trimmed"
+        );
+        assert_eq!(incremental.ids.last().unwrap(), "id_0299", "newest kept");
+
+        let mut bulk = RetentionEvictionRecord::default();
+        bulk.record(
+            &(0..300)
+                .map(|index| format!("bulk_{index:04}"))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(bulk.total, 300);
+        assert_eq!(bulk.ids.len(), 256);
+        assert_eq!(bulk.ids.first().unwrap(), "bulk_0044");
+
+        let mut merged = RetentionEvictionRecord::default();
+        merged.merge(incremental);
+        assert_eq!(merged.total, 300, "merge must carry the trimmed-away count");
+        assert_eq!(merged.ids.len(), 256);
+        assert_eq!(merged.ids.last().unwrap(), "id_0299");
+    }
+}
+
 /// Shared fabrication for tool-output artifact records appended by the
 /// transcript writers in [`super::store`] and this module: same
 /// `p3art_<session>_<index>` / `p3_<index>` id scheme, same `"write_file"`
@@ -78,7 +161,7 @@ impl SessionStore {
             .sessions_dir()
             .join(format!("{}.json", session.metadata.id));
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
-        deepseek_tui::utils::write_atomic(&path, &payload)
+        crate::platform::filesystem::atomic_write_private(&path, &payload)
             .with_context(|| format!("write session {}", path.display()))?;
         // Once the session JSON hits disk the list snapshot is stale (title /
         // updated_at / new session may all have changed)
@@ -93,14 +176,31 @@ impl SessionStore {
     #[cfg(feature = "benchmark-hooks")]
     pub(crate) fn set_retention_eviction_observer(
         &self,
-        observer: Option<Arc<Mutex<Vec<String>>>>,
-    ) -> Option<Arc<Mutex<Vec<String>>>> {
-        std::mem::replace(&mut self.retention_eviction_observer.lock(), observer)
+        observer: Option<Arc<Mutex<RetentionEvictionRecord>>>,
+    ) -> Option<Arc<Mutex<RetentionEvictionRecord>>> {
+        let previous = std::mem::replace(&mut *self.retention_eviction_observer.lock(), observer);
+        // Flush evictions recorded before the observer existed: the headless
+        // host boots its store (and runs the boot-time retention sweep)
+        // before `run_agentic_task` arms the observer, so without this the
+        // boot sweep's deletions would be silently dropped and the run's
+        // warning would under-report real data loss. A disarm request
+        // (None) installs nothing and keeps the buffer for the next arm.
+        // The slot is cloned out before the buffer is locked, so the merge
+        // runs outside the slot's critical section and no future code path
+        // holding a contents/pending guard can invert the lock order.
+        let installed = self.retention_eviction_observer.lock().clone();
+        if let Some(installed) = installed {
+            let pending = std::mem::take(&mut *self.pending_retention_evictions.lock());
+            installed.lock().merge(pending);
+        }
+        previous
     }
 
     /// Disarm and hand back the installed observer, if any.
     #[cfg(feature = "benchmark-hooks")]
-    pub(crate) fn take_retention_eviction_observer(&self) -> Option<Arc<Mutex<Vec<String>>>> {
+    pub(crate) fn take_retention_eviction_observer(
+        &self,
+    ) -> Option<Arc<Mutex<RetentionEvictionRecord>>> {
         self.retention_eviction_observer.lock().take()
     }
 
@@ -115,7 +215,14 @@ impl SessionStore {
     /// enforcement (it can only fire when the chat bucket was already over
     /// its cap — e.g. a caller-provided session id without the
     /// [`HEADLESS_SESSION_PREFIX`] counting against it). No observer
-    /// installed (every GUI process) is a no-op.
+    /// installed (every GUI process) buffers the headless ids for a later
+    /// arming instead (bounded; the GUI never arms, so it stays scratch).
+    ///
+    /// The slot read and the buffer write are not one atomic step: a sweep
+    /// interleaved with an arm can strand its batch in the buffer until the
+    /// next arm — delayed, never lost or doubled. The runner is single-flight
+    /// per store and the boot sweep precedes the first arm, so production
+    /// never interleaves them.
     #[cfg(feature = "benchmark-hooks")]
     fn record_retention_evictions(&self, evicted: &[String]) {
         let headless: Vec<String> = evicted
@@ -127,7 +234,16 @@ impl SessionStore {
             return;
         }
         if let Some(observer) = self.retention_eviction_observer.lock().clone() {
-            observer.lock().extend(headless);
+            observer.lock().record(&headless);
+        } else {
+            // No observer yet (the GUI never installs one; the headless run
+            // arms it only after the store booted): buffer the headless ids
+            // so the boot-time sweep's deletions surface once the runner
+            // arms (set_retention_eviction_observer flushes this buffer
+            // into the fresh observer). The record windows its ids but
+            // keeps the total, so even a buffer that outlives the process
+            // still reports the true count on flush.
+            self.pending_retention_evictions.lock().record(&headless);
         }
     }
 
@@ -792,13 +908,16 @@ impl SessionStore {
         };
         let payload =
             serde_json::to_vec_pretty(&registry).context("serialize scheduled profiles")?;
-        deepseek_tui::utils::write_atomic(self.scheduled_profiles_path.as_ref(), &payload)
-            .with_context(|| {
-                format!(
-                    "write scheduled profiles {}",
-                    self.scheduled_profiles_path.display()
-                )
-            })
+        crate::platform::filesystem::atomic_write_private(
+            self.scheduled_profiles_path.as_ref(),
+            &payload,
+        )
+        .with_context(|| {
+            format!(
+                "write scheduled profiles {}",
+                self.scheduled_profiles_path.display()
+            )
+        })
     }
 
     pub(crate) fn remove_scheduled_runtime_dir(&self, id: &str) -> Result<()> {

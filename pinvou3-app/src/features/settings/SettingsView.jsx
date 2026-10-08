@@ -675,11 +675,20 @@ function hasStoredCredential(record) {
         }).sort((a, b) => (a.loaded === false ? 1 : 0) - (b.loaded === false ? 1 : 0)); // 已加载/未知的排前，未加载的沉底
       }
       function buildLocalModelPayload(row) {
+        // Ollama/LM Studio 的 max_model_len 是运行时生效值（/api/ps 的生效
+        // 上下文、/api/v0/models 的 loaded_context_length），随加载状态与
+        // 服务端配置变化：不能持久化为用户声明——声明在
+        // resolve_context_window 里永久 min-clamp 后续探测，且本表单对
+        // local 预设隐藏该字段，用户无法纠正。引擎在每次 spawn 时按服务
+        // 类别原生探测实时采纳（Ollama /api/ps→show、LM Studio
+        // /api/v0/models），存 null 即可。vLLM 的 /v1/models max_model_len
+        // 是部署配置，保持既有持久化语义。
+        const runtimeProbedProvider = row.provider === 'ollama' || row.provider === 'lm_studio';
         return {
           id: makeModelId(),
           name: settingsCopy.localModelName(row.model),
           preset: 'local_vllm',
-          context_window_tokens: row.max_model_len || null,
+          context_window_tokens: runtimeProbedProvider ? null : (row.max_model_len || null),
           max_output_tokens: null,
           model: row.model,
           base_url: row.base_url,
@@ -1581,8 +1590,61 @@ function hasStoredCredential(record) {
       // resume path). Without this hint the stop state is invisible in
       // settings — the safety loop's exit must be discoverable.
       const stopped = !!computerUse.stopped;
+      // macOS permission onboarding: one snapshot fetch on mount (and a
+      // re-read after the user answers the OS dialogs). Null = unknown or no
+      // permission flow (web stub rejection, older backend, non-macOS): the
+      // row stays hidden instead of showing permanently-false toggles. A
+      // `false` grant is advisory — TCC applies a fresh grant to processes
+      // launched after it, so the hint always pairs a miss with the restart
+      // step instead of polling for a flip.
+      const [permStatus, setPermStatus] = useState(null);
+      const [permBusy, setPermBusy] = useState(false);
+      useEffect(() => {
+        if (unsupported) return;
+        if (!bridge.available || !bridge.computerUse) return;
+        let cancelled = false;
+        bridge.computerUse.permissionStatus()
+          .catch(() => null)
+          .then((status) => { if (!cancelled) setPermStatus(status || null); });
+        return () => { cancelled = true; };
+      }, [unsupported]);
+      const refreshPermStatus = () => {
+        if (!bridge.available || !bridge.computerUse) return Promise.resolve(null);
+        return bridge.computerUse.permissionStatus()
+          .catch(() => null)
+          .then((status) => { setPermStatus(status || null); return status; });
+      };
+      const permMissing = !!permStatus && permStatus.supported
+        && (permStatus.screen_recording === false || permStatus.accessibility === false);
+      const permValue = permStatus && permStatus.supported
+        ? `${t.uiComputerUse.permScreenRecording} ${permStatus.screen_recording ? t.uiComputerUse.permGranted : t.uiComputerUse.permNotGranted} · ${t.uiComputerUse.permAccessibility} ${permStatus.accessibility ? t.uiComputerUse.permGranted : t.uiComputerUse.permNotGranted}`
+        : null;
+      const openPermissionDialogs = () => {
+        if (!bridge.available || !bridge.computerUse || permBusy) return;
+        setPermBusy(true);
+        // A rejection here must not hide the row: keep the last snapshot and
+        // surface the failure through the section's actionError slot (same
+        // surface as the toggle), then re-read whatever the dialogs changed.
+        bridge.computerUse.requestPermissions()
+          .catch((error) => setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error))))
+          .finally(() => { setPermBusy(false); void refreshPermStatus(); });
+      };
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
+          {permValue && (
+            <IOSRow
+              label={t.uiComputerUse.permTitle}
+              desc={permMissing ? t.uiComputerUse.permRestartHint : undefined}
+            >
+              <div className="flex flex-col items-end gap-1.5 max-sm:items-stretch">
+                <span className={`text-[12px] leading-4 ${permMissing ? 'text-[#FF9500] dark:text-[#FF9F0A]' : 'text-[#8A8A8E] dark:text-[#98989D]'}`}>{permValue}</span>
+                {permMissing && (
+                  <button type="button" disabled={permBusy} onClick={openPermissionDialogs}
+                    className={`px-3 py-1.5 rounded-lg text-[12px] border border-black/10 hover:bg-black/5 disabled:opacity-50 dark:border dark:border-white/10 dark:hover:bg-white/10`}>{t.uiComputerUse.permRequest}</button>
+                )}
+              </div>
+            </IOSRow>
+          )}
           <IOSRow
             label={t.uiComputerUse.settingsToggle}
             desc={

@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
-use std::io::{Read, copy};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,7 +21,7 @@ use tauri::Manager;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::features::assistant::attachments::{
-    build_read_only_message_with_attachments, stage_file_in_workspace,
+    build_read_only_message_with_attachments, copy_bounded, stage_file_in_workspace,
 };
 use crate::features::assistant::engine_pool::{EnginePool, EngineToolFactory, ToolPolicy};
 use crate::features::assistant::platform::headless_attachments::ensure_staged_attachments_supported;
@@ -664,7 +663,11 @@ impl ProductHeadlessBackend {
 /// the two headless pipelines cannot drift apart.
 pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// Per-attachment size cap in bytes (20 MiB).
-pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+/// Same cap the staging copier (`copy_bounded` at the shared call sites)
+/// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
+/// request validator and the copier cannot drift apart.
+pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 =
+    crate::features::files::file_ingest::MAX_FILE_BYTES;
 /// Aggregate size cap across one attachment batch (100 MiB).
 pub(crate) const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -747,27 +750,46 @@ fn stage_attachments(
             .create_new(true)
             .open(workspace.path().join(name))
             .map_err(|_| backend_error("attachment_staging_failed"))?;
-        let copied = match &mut input {
+        // copy_bounded enforces the per-file cap on the copy itself, so the
+        // byte count carries no further decision here.
+        let _ = match &mut input {
             StagedAttachmentInput::Verified(source) => source
                 .try_read_verified_file(|file| {
-                    copy(
-                        &mut file.take(MAX_STAGED_ATTACHMENT_BYTES + 1),
-                        &mut destination,
-                    )
+                    copy_bounded(file, &mut destination, MAX_STAGED_ATTACHMENT_BYTES)
                 })
                 .map_err(|_| backend_error("attachment_staging_failed"))?
                 .ok_or_else(|| backend_error("attachment_staging_failed"))?,
-            StagedAttachmentInput::Legacy(source_file) => copy(
-                &mut source_file.take(MAX_STAGED_ATTACHMENT_BYTES + 1),
+            StagedAttachmentInput::Legacy(source_file) => copy_bounded(
+                &mut *source_file,
                 &mut destination,
+                MAX_STAGED_ATTACHMENT_BYTES,
             )
             .map_err(|_| backend_error("attachment_staging_failed"))?,
         };
-        if copied > MAX_STAGED_ATTACHMENT_BYTES {
-            return Err(backend_error("attachment_staging_failed"));
-        }
+    }
+    // The pre-copy stats go stale the same way the per-file cap does: a
+    // source swapped between its stat and its copy lands bytes the caller's
+    // reported sizes never covered. The copier bounds each file, so the
+    // overshoot is bounded (16 × 20 MiB in this private tempdir); the batch
+    // cap is therefore re-checked once on the landed bytes after the loop —
+    // the agentic lane's landed-bytes principle at batch granularity (that
+    // lane re-checks per file in-loop and fails at the crossing file).
+    let landed = staged_landed_bytes(workspace.path())
+        .map_err(|_| backend_error("attachment_staging_failed"))?;
+    if landed > MAX_STAGED_ATTACHMENTS_TOTAL_BYTES {
+        return Err(backend_error("attachment_staging_failed"));
     }
     Ok(workspace)
+}
+
+/// Landed byte total of a staging workspace: sum the actual file sizes on
+/// disk rather than trusting the caller-reported pre-stats.
+fn staged_landed_bytes(dir: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(dir)? {
+        total += entry?.metadata()?.len();
+    }
+    Ok(total)
 }
 
 fn backend_error(code: &'static str) -> AgentBackendError {
@@ -1436,6 +1458,23 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
+
+    #[test]
+    fn landed_bytes_sums_the_staged_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            super::staged_landed_bytes(dir.path()).unwrap(),
+            0,
+            "an empty workspace lands nothing"
+        );
+        std::fs::write(dir.path().join("a.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), vec![0u8; 50]).unwrap();
+        assert_eq!(
+            super::staged_landed_bytes(dir.path()).unwrap(),
+            150,
+            "the landed total must come from disk, not reported sizes"
+        );
+    }
 
     #[test]
     fn product_failures_are_reduced_to_fixed_safe_codes() {

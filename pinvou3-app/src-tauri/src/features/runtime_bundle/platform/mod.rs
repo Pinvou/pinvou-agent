@@ -1934,6 +1934,99 @@ mod tests {
         cleanup(&tmp);
     }
 
+    /// #521/#515 cross-process contention on the boot builtin-refresh write
+    /// path: while a foreign fd holds the `mcp.lock` OS lock, the builtin
+    /// refresh (which owns `with_mcp_json_lock` since #521) must not land its
+    /// write; after the release the pinvou3 entry lands and the marketplace
+    /// sentinel survives. The worker handshake observes the mcp in-process
+    /// mutex, so the absence assert cannot pass before the worker even
+    /// reached the lock (#517 test shape).
+    #[test]
+    fn cross_process_lock_blocks_mcp_builtin_refresh_write_until_release() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        let mcp_json = bundle.mcp_json.clone();
+        std::fs::create_dir_all(mcp_json.parent().unwrap()).unwrap();
+        // Seed one marketplace sentinel; the refresh must add pinvou3 without
+        // touching it, contended or not.
+        std::fs::write(
+            &mcp_json,
+            r#"{"servers":{"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
+        )
+        .unwrap();
+        let lock_path = crate::features::marketplace::file_lock::lock_path_for(&mcp_json);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .expect("test should be able to open the lock file");
+        let mut foreign = fd_lock::RwLock::new(file);
+        let foreign_guard = foreign
+            .write()
+            .expect("test should be able to take the foreign cross-process write lock");
+
+        let worker = std::thread::spawn(move || {
+            bundle
+                .ensure_builtin_mcp_servers()
+                .expect("refresh should succeed once the foreign lock is released");
+        });
+        // Handshake: wait until the worker holds the mcp.json in-process mutex
+        // — with the foreign lock held, it is now parked on (or just failed)
+        // the OS-lock acquisition (#517 test shape).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match crate::features::marketplace::file_lock::process_mutex_for(&lock_path).try_lock()
+            {
+                Ok(guard) => drop(guard),
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    drop(p.into_inner());
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker never reached the mcp.json lock acquisition point"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The refresh must not land while the peer holds the lock.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let content = std::fs::read_to_string(&mcp_json).unwrap();
+            assert!(
+                !content.contains("\"pinvou3\""),
+                "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+            );
+            assert!(
+                content.contains("\"weather\""),
+                "the marketplace sentinel must survive the contended window: {content}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        drop(foreign_guard);
+        worker
+            .join()
+            .expect("worker should finish once the foreign lock is released");
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
+        assert!(
+            mcp["servers"].get("pinvou3").is_some(),
+            "the builtin entry must land after the lock is released: {mcp}"
+        );
+        assert!(
+            mcp["servers"].get("weather").is_some(),
+            "the marketplace sentinel must survive: {mcp}"
+        );
+        cleanup(&tmp);
+    }
+
     /// The write footprint of ensure_builtin_mcp_servers is pinned to the three
     /// engine keys pinvou3/pinvou/browser. The observed footprint is cross-checked
     /// against the marketplace-side `ENGINE_OWNED_MCP_SERVER_KEYS` constant (the

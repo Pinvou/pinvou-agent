@@ -31,6 +31,11 @@ impl ModelIdentity {
     }
 }
 
+/// Manifest format of the current writer. Version 1 manifests predate the
+/// recorded harness-deadline mode, so their mode is unrecoverable and they are
+/// detectably legacy by schema alone.
+pub(crate) const MANIFEST_SCHEMA_VERSION: u16 = 2;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunManifest {
     schema_version: u16,
@@ -45,6 +50,18 @@ pub struct RunManifest {
     concurrency: u16,
     pass: u16,
     created_at_ms: u64,
+    /// Machine-readable harness-deadline mode (`None` = tasks run without a
+    /// harness wall-clock deadline; `Some(secs)` = bounded, the upper bound
+    /// when per-task deadlines vary). Scores from runs with different modes
+    /// are not comparable. `None` is written as an explicit `null` so a
+    /// manifest written by this version stays machine-distinguishable from
+    /// a legacy manifest, where the key is absent entirely (serde default)
+    /// and the real mode is unrecoverable. `MANIFEST_SCHEMA_VERSION` is the
+    /// era marker that makes the unrecoverable legacy mode enforceable: the
+    /// resume gates require the current schema, so a legacy run cannot be
+    /// resumed under deadline semantics it was not run with.
+    #[serde(default)]
+    harness_deadline_secs: Option<u64>,
 }
 
 impl RunManifest {
@@ -57,7 +74,7 @@ impl RunManifest {
         pass: u16,
     ) -> Result<Self> {
         let manifest = Self {
-            schema_version: 1,
+            schema_version: MANIFEST_SCHEMA_VERSION,
             run_id: run_id.into(),
             benchmark: descriptor.id().as_str().into(),
             adapter_version: descriptor.adapter_version().into(),
@@ -72,6 +89,7 @@ impl RunManifest {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
+            harness_deadline_secs: descriptor.harness_deadline_secs(),
         };
         manifest.validate()?;
         Ok(manifest)
@@ -85,7 +103,18 @@ impl RunManifest {
         validate_revision(&self.scorer_revision)?;
         validate_safe_text(&self.split)?;
         validate_safe_text(&self.tool_policy)?;
-        if self.schema_version != 1 || self.concurrency != 1 || self.pass == 0 {
+        // Schema 1 stays valid so legacy manifests remain readable and
+        // scoreable; only the resume gates require the current version.
+        if (self.schema_version != 1 && self.schema_version != MANIFEST_SCHEMA_VERSION)
+            || self.concurrency != 1
+            || self.pass == 0
+        {
+            return Err(crate::BenchmarkError::coded("invalid_manifest"));
+        }
+        // A zero-second deadline is not a mode; it is a typo for `None` that
+        // would time every task out instantly while looking like a bounded
+        // run in the manifest.
+        if self.harness_deadline_secs == Some(0) {
             return Err(crate::BenchmarkError::coded("invalid_manifest"));
         }
         Ok(())
@@ -107,6 +136,14 @@ impl RunManifest {
         self.concurrency
     }
 
+    pub fn schema_version(&self) -> u16 {
+        self.schema_version
+    }
+
+    pub fn harness_deadline_secs(&self) -> Option<u64> {
+        self.harness_deadline_secs
+    }
+
     pub(crate) fn matches_expected(&self, expected: &Self) -> bool {
         self.schema_version == expected.schema_version
             && self.run_id == expected.run_id
@@ -119,6 +156,7 @@ impl RunManifest {
             && self.tool_policy == expected.tool_policy
             && self.concurrency == expected.concurrency
             && self.pass == expected.pass
+            && self.harness_deadline_secs == expected.harness_deadline_secs
     }
 
     pub(crate) fn matches_descriptor(&self, descriptor: &BenchmarkDescriptor) -> bool {
@@ -149,7 +187,8 @@ impl RunManifest {
         model: &ModelIdentity,
         tool_policy: &str,
     ) -> bool {
-        self.schema_version == 1
+        self.schema_version == MANIFEST_SCHEMA_VERSION
+            && self.harness_deadline_secs == descriptor.harness_deadline_secs()
             && self.concurrency == 1
             && self.pass == 1
             && self.benchmark == descriptor.id().as_str()
