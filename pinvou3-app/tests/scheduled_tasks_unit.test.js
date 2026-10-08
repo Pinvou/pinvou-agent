@@ -177,7 +177,7 @@ assert.ok(
   'ordinary session navigation must hide the native browser before publishing the chat route and loading the remote session'
 );
 assert.ok(
-  /const navigateFromScheduledRun = useCallback\(async \(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,260}setCurrentView\(nextView\)[\s\S]{0,360}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
+  /const navigateFromScheduledRun = useCallback\(async \(nextView[\s\S]{0,520}runBrowserUiTransition[\s\S]{0,260}await bridge\.scheduled\.exitScheduledRunChat\(\)[\s\S]{0,160}!exited \|\| !isCurrent\(\)[\s\S]{0,260}setCurrentView\(nextView\)[\s\S]{0,560}hideMode: bs && bs\.scheduledRunContext[\s\S]{0,80}'workspace'/.test(indexHtml),
   'leaving a scheduled run must hide the native browser before restoring its return session and publishing the next route'
 );
 assert.ok(
