@@ -7,19 +7,27 @@
 #   B. codeql-overlay 每种语言每个作用域只保留最新 1 份(CodeQL 只消费最新 base)
 #   C. node-cache 每个平台每个作用域只保留最新 1 份(同平台旧 lockfile 哈希
 #      仅有 restore-keys 前缀回退价值,留最新即可)
-#   D. v0-rust-* 每个系列(shared-key)每个作用域只保留最新 1 代(2026-10 新增:
-#      rust-cache 的 key 含 lockfile 哈希,每次依赖面变化都会生成新一代,而旧代
-#      没有任何 restore 回退价值——PR/队列侧按前缀回退时永远命中最新一代)。
-#      单是 rust-lint-v2 的两个代就占 4.2GB≈42% 配额。原「main 作用域 v0-rust-*
-#      整系列保护」降级为「去重」:2026-10-01 实测配额常态 10.7/10GB,LRU 正在
-#      驱逐最有价值的 windows/macos 缓存;若不加此规则,仅靠 LRU 决定牺牲品。
-#      系列按首个平台标记(-Linux-/-Darwin-/-Windows_NT-)切分,不含平台段:
-#      同一 shared-key 若跨平台/跨架构复用会被跨组去重(ubuntu-22.04 与
-#      ubuntu-22.04-arm 都产生 -Linux- 标记,仅架构段不同;当前各 shared-key 均
-#      单平台单架构,复用前须先把平台与架构段都纳入分组)。
+#   D. v0-rust-* keeps only the newest generation per series (shared-key) per
+#      scope (new in 2026-10: rust-cache's key embeds the lockfile hash, so
+#      every dependency-surface change mints a new generation, and older
+#      generations have no restore-fallback value — prefix fallback on the
+#      PR/queue side always hits the newest generation).
+#      The two rust-lint-v2 generations alone held 4.2GB ≈ 42% of the quota.
+#      The old "main-scoped v0-rust-* whole-series protection" is demoted to
+#      a "dedup": quota measured a standing 10.7/10GB on 2026-10-01 and LRU
+#      was evicting the most valuable windows/macos caches; without this
+#      rule, LRU alone would pick the eviction victim.
+#      A series is split off at the first platform marker
+#      (-Linux-/-Darwin-/-Windows_NT-), so series names exclude the platform
+#      segment: reusing the same shared-key across platforms/architectures
+#      would dedupe across groups (ubuntu-22.04 and ubuntu-22.04-arm both
+#      produce the -Linux- marker and differ only in the arch segment; every
+#      current shared-key is single-platform single-arch — extend the
+#      grouping with platform and arch before any cross reuse).
 #
-# 注意:规则 B/C/D 必须按缓存作用域(ref)分组。作用域之间互不可见,跨 ref
-# 只留最新会把 main 的可用缓存换成 PR 作用域的(main 读不到),等于误删。
+# Note: rules B/C/D must group by cache scope (ref). Scopes are invisible to
+# each other; keeping only the newest across refs would swap a main-usable
+# cache for a PR-scoped one main cannot read — effectively a wrong delete.
 #
 # 用法:scripts/cache-janitor.sh [--dry-run]
 # 依赖:gh cli;python3;GH_TOKEN 需具备 actions:write(删除)与 pull-requests:read(查状态)。
@@ -141,8 +149,8 @@ for group, items in groups.items():
     for c in items[1:]: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
 ")
 
-# ---------- 规则 D:v0-rust-* 每系列留最新 1 代 ----------
-echo "== 规则 D:v0-rust-* 代际去重 =="
+# ---------- Rule D: keep only the newest generation per v0-rust-* series ----------
+echo "== Rule D: v0-rust-* generation dedup =="
 while IFS=$'\t' read -r id size key; do
   delete_cache "$id" "$key" "$size" "D_rust_gen"
 done < <(python3 -c "
@@ -151,15 +159,20 @@ closed = set(os.environ.get('CLOSED_REFS','').split())
 entries = [c for c in json.load(open('/tmp/cache-janitor-list.json')) if c['key'].startswith('v0-rust-') and c['ref'] not in closed]
 groups = {}
 for c in entries:
-    # 缺 createdAt 的条目无法排序;剔除而不是让下面的 sort 抛 TypeError——
-    # 那会静默杀死整个规则 D(进程替换的失败状态无人检查),去重停摆数周。
+    # Entries without createdAt cannot be ordered; exclude them instead of
+    # letting the sort below raise TypeError — that would silently kill all
+    # of rule D (nobody checks the process substitution's failure status),
+    # stalling the dedup for weeks.
     if not c.get('createdAt'):
         continue
-    # key 形如 v0-rust-<shared-key>-<platform>-<arch>-<hashes...>,其中 platform
-    # ∈ {Linux, Darwin, Windows_NT}。系列名 = shared-key 段:取 v0-rust- 之后、
-    # 首个平台标记之前的全部片段(如 rust-lint-v2 / windows-rust-test /
-    # release-linux-x64-jammy)。按 (系列, 作用域) 分组,组内留 createdAt 最新
-    # 的一代;旧代对 restore-keys 前缀回退毫无价值(永远命中最新),纯属占额。
+    # Keys look like v0-rust-<shared-key>-<platform>-<arch>-<hashes...> with
+    # platform ∈ {Linux, Darwin, Windows_NT}. The series name is the
+    # shared-key segment: everything after v0-rust- and before the first
+    # platform marker (e.g. rust-lint-v2 / windows-rust-test /
+    # release-linux-x64-jammy). Group by (series, scope) and keep the newest
+    # createdAt generation per group; older generations are worthless for
+    # restore-keys prefix fallback (it always hits the newest) — pure quota
+    # weight.
     rest = c['key'][len('v0-rust-'):]
     series = rest
     for marker in ('-Linux-', '-Darwin-', '-Windows_NT-'):

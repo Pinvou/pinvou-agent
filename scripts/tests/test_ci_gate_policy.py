@@ -1255,14 +1255,18 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(match.group(1), secret_scan)
 
     def test_mac_bundle_smoke_is_gated_on_bundle_chain_paths(self):
-        # mac-build.yml(2026-10 折叠进 pr-check 的 macos-rust-check 前)的
-        # bundle_chain filter 决定何时追加 universal bundle smoke。折叠后 filter
-        # 迁入 pr-check 的 changes job,smoke step 只在 push 且 bundle_chain 命中
-        # 时执行;本测试锁定:filter 条目齐全(漏一条 = 打包链路变更静默跳过
-        # smoke)、smoke step 消费该 output、且 PR/Queue 侧不跑(PR 侧由
-        # release-contract-test 覆盖轻量契约,VERSION bump 由 release-packages
-        # 构建全量 dmg)。VERSION 刻意不在 filter 中:真实版本同步提交必伴随
-        # tauri.conf.json/package.json 变更,经这两条进入 bundle_chain。
+        # mac-build.yml's bundle_chain filter (before its 2026-10 fold into
+        # pr-check's macos-rust-check) decided when to append the universal
+        # bundle smoke. After the fold the filter moved into pr-check's
+        # changes job, and the smoke step runs only on push with a
+        # bundle_chain hit; this test pins: the filter entries are complete
+        # (one missing = packaging-chain changes silently skip the smoke),
+        # the smoke step consumes that output, and the PR/Queue side does not
+        # run it (the PR side gets the lightweight contract from
+        # release-contract-test, and a VERSION bump gets full dmg builds from
+        # release-packages). VERSION is deliberately absent from the filter:
+        # a real version-sync commit always touches
+        # tauri.conf.json/package.json, entering bundle_chain through them.
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
                 "\n  fast-gate:", maxsplit=1
@@ -1272,7 +1276,7 @@ class CiGatePolicyTests(unittest.TestCase):
         bundle_chain_paths = _extract_quoted_paths(
             changes.split("            bundle_chain:", maxsplit=1)[1]
         )
-        self.assertTrue(bundle_chain_paths, "bundle_chain 解析为空")
+        self.assertTrue(bundle_chain_paths, "bundle_chain parsed to an empty path list")
         for entry in (
             "pinvou3-app/scripts/tauri/**",
             "pinvou3-app/src-tauri/tauri.conf.json",
@@ -1286,7 +1290,8 @@ class CiGatePolicyTests(unittest.TestCase):
             self.assertIn(
                 entry,
                 bundle_chain_paths,
-                f"bundle_chain 缺少打包链路条目,该路径变更会静默跳过 bundle smoke: {entry}",
+                f"bundle_chain is missing the packaging-chain entry; this path "
+                f"changing would silently skip the bundle smoke: {entry}",
             )
 
         macos_job = self.pr_workflow.split(
@@ -1300,7 +1305,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
             smoke_step,
-            "bundle smoke 必须只在 push 且打包链路变更时执行",
+            "the bundle smoke must run only on push and only for packaging-chain changes",
         )
         self.assertIn(
             "node scripts/tauri/build.js build --target universal-apple-darwin",
@@ -1309,7 +1314,8 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn(
             "continue-on-error",
             smoke_step,
-            "universal bundle smoke 必须能挡掉主线(macos 打包链路坏了必须红)",
+            "the universal bundle smoke must be able to fail main "
+            "(a broken macos packaging chain must be red)",
         )
 
     def test_macos_rust_check_routes_by_rust_filters_not_frontend_paths(self):
@@ -1344,12 +1350,13 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "github.event_name == 'push' ||",
             job_if,
-            "main push 必须无条件进入本 job(路径无关的累计覆盖契约)",
+            "a main push must enter this job unconditionally "
+            "(the path-independent cumulative coverage contract)",
         )
         self.assertIn(
             "needs.changes.outputs.rust_full == 'true'",
             job_if,
-            "PR 侧必须保留 rust 过滤路由(draft/ready 高危路径)",
+            "the PR side must keep the rust-filter routing (high-risk draft/ready paths)",
         )
 
         changes = _without_yaml_comments(
@@ -1375,7 +1382,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn(
             "pinvou3-app/src/**",
             bundle_chain_paths,
-            "纯前端 src/** 不得进入 bundle_chain(避免无谓的 native 构建)",
+            "pure-frontend src/** must not enter bundle_chain (avoids needless native builds)",
         )
         self.assertIn("pinvou3-app/package.json", bundle_chain_paths)
         self.assertIn("pinvou3-app/package-lock.json", bundle_chain_paths)
@@ -1418,7 +1425,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # provisioning miss the review caught).
         targets_step = _without_yaml_comments(
             macos_job.split(
-                "- name: 安装双 target (universal bundle smoke, push only)",
+                "- name: Install both targets (universal bundle smoke, push only)",
                 maxsplit=1,
             )[1].split("\n      - name:", maxsplit=1)[0]
         )
@@ -1441,7 +1448,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         verify_step = _without_yaml_comments(
             macos_job.split(
-                "- name: Verify 脚本", maxsplit=1
+                "- name: Verify script", maxsplit=1
             )[1].split("\n      - name:", maxsplit=1)[0]
         )
         self.assertIn("always() && github.event_name == 'push'", verify_step)
@@ -1474,7 +1481,9 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         npm_step = _without_yaml_comments(
             macos_job.split(
-                "- name: 安装前端依赖 (universal bundle smoke, push only)", maxsplit=1
+                "- name: Install frontend dependencies"
+                " (universal bundle smoke, push only)",
+                maxsplit=1,
             )[1].split("\n      - name:", maxsplit=1)[0]
         )
         self.assertIn("github.event_name == 'push'", npm_step)

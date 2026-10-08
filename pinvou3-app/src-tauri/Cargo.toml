@@ -482,9 +482,10 @@ panic = "unwind"
 incremental = false
 
 # 专为 Release 测试/CI 用的轻量 profile:不 LTO、不禁 incremental,编译快但仍走 release 优化。
-# pr-check 的 macos-rust-check push 腿(编译冒烟 + universal bundle 冒烟,
-# 2026-10 起自 mac-build.yml 折叠)用此 profile,
-# 两者产物可互相复用(同 profile 同 target dir),避免 CI 里两套 profile 重复编译全图。
+# The pr-check macos-rust-check push legs (compile smoke + universal bundle
+# smoke, folded from mac-build.yml in 2026-10) use this profile, and their
+# artifacts can reuse each other (same profile, same target dir), avoiding a
+# duplicate full-graph compile under two profiles in CI.
 # 真正发版的 thin-LTO 产物由 scripts/release-macos.sh(走真 --release)产出。
 [profile.release-fast]
 inherits = "release"

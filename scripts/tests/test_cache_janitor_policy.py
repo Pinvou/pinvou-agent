@@ -57,7 +57,7 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         # open (own group, never deleted). Grouping per scope is
         # load-bearing: cross-ref dedup would trade a main-usable cache for
         # a PR-scoped one main cannot read.
-        rule_d = self.script.split("# ---------- 规则 D:", maxsplit=1)[1]
+        rule_d = self.script.split("# ---------- Rule D:", maxsplit=1)[1]
         self.assertIn("c['key'].startswith('v0-rust-')", rule_d)
         # Entries without createdAt cannot be ordered: they must be excluded
         # from the groups. A null reaching the sort raises TypeError inside
@@ -75,7 +75,7 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         self.assertIn("export CLOSED_REFS", self.script)
         self.assertLess(
             self.script.index("export CLOSED_REFS"),
-            self.script.index("# ---------- 规则 D:"),
+            self.script.index("# ---------- Rule D:"),
             "CLOSED_REFS must be exported before rule D reads it",
         )
 

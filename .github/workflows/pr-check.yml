@@ -384,11 +384,13 @@ jobs:
               - 'pinvou3-app/package-lock.json'
               - '.github/workflows/release-packages.yml'
               - '.github/workflows/pr-check.yml'
-            # 打包链路检测:仅这些路径变化时,push 到 main 的 macos-rust-check 才
-            # 追加 universal bundle smoke(见该 job 的 bundle smoke step;PR/Queue
-            # 侧由 release-contract-test 跑轻量发布契约,VERSION bump 由
-            # release-packages 构建全量 dmg)。VERSION 刻意不在其中:真实版本同步
-            # 提交必伴随 tauri.conf.json/package.json 变更,经这两条进入 bundle_chain。
+            # Packaging-chain detection: only when these paths change does a
+            # main push of macos-rust-check append the universal bundle smoke
+            # (see that job's bundle smoke step; the PR/Queue side runs the
+            # lightweight release contract via release-contract-test, and a
+            # VERSION bump gets full dmg builds from release-packages). VERSION
+            # is deliberately absent: a real version-sync commit always touches
+            # tauri.conf.json/package.json, entering bundle_chain through them.
             bundle_chain:
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
@@ -694,11 +696,13 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      # rust-toolchain.toml 在 pinvou-knowledge 下,对从仓库根用 --manifest-path
-      # 调用的 cargo 不生效;把该文件解析出的工具链设为 default(同 rust-test 的
-      # 对齐 step),保证 CI 与本地同一 rustc(当前 floating stable)。单一真相源
-      # 是文件,版本不在 workflow 里重复硬编码,升级只改 rust-toolchain.toml。
-      - name: 对齐 rust-toolchain.toml 锁定的工具链
+      # rust-toolchain.toml lives under pinvou-knowledge, so it does not apply
+      # to cargo invoked from the repo root via --manifest-path; set the
+      # toolchain resolved from that file as the default (same alignment step
+      # as rust-test) so CI and local use the same rustc (currently floating
+      # stable). The file is the single source of truth: the version is not
+      # re-hardcoded in the workflow, upgrades only touch rust-toolchain.toml.
+      - name: Align the toolchain resolved by rust-toolchain.toml
         working-directory: pinvou-knowledge
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
@@ -1077,18 +1081,27 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou3-app/src-tauri
-          # 2026-08-29/30 事故:凡 restore 本 job 的 target/ 缓存并据其链接出的
-          # 测试二进制,执行数秒内把 runner VM 打到失联,当时以 cache-targets: false
-          # 应急。根因此后定位为 runner RAM 不足(14.2GB Max RSS 峰值逼近 16GB 上限),
-          # 由 zram(zstd,2x RAM,池上限 70% RAM)+ 8G /mnt swapfile 的内存扩容层
-          # (scripts/ci-memory-setup.sh,每个 ubuntu job 必跑,见 gate-policy 测试)
-          # 吸收;link 侧另有 ThinLTO/lld/threads=1 守护(见 job env 注释)。2026-10-02
-          # 复核确认后重新打开 target/ 缓存(省 ~15min 冷编译/次)。
-          # 稳定 key 前缀(跨 PR/push 一致);restore 按前缀回退,lock 变了也增量。
+          # 2026-08-29/30 incident: every test binary linked from a restored
+          # copy of this job's target/ cache knocked the runner VM offline
+          # within seconds of execution; the emergency response at the time
+          # was cache-targets: false. The root cause was later identified as
+          # insufficient runner RAM (the 14.2GB Max RSS peak approached the
+          # 16GB ceiling), absorbed by the memory-expansion layer of zram
+          # (zstd, 2x RAM, pool capped at 70% of RAM) + the 8G /mnt swapfile
+          # (scripts/ci-memory-setup.sh, run by every ubuntu job, see the
+          # gate-policy test); the link side additionally has the
+          # ThinLTO/lld/threads=1 guards (see the job env comments).
+          # Re-verified on 2026-10-02, the target/ cache is back on (saves
+          # ~15min of cold compile per run).
+          # Stable key prefix (identical across PRs/pushes); restore falls
+          # back by prefix, so incremental reuse survives lockfile changes.
           shared-key: rust-test-v2
-          # 只在 main 保存(暖 cache 唯一来源);PR 侧只读,不占 10GB 限额。
-          # cache-on-failure:main push 失败时仍保存编译产物——否则一次失败就回到
-          # 全冷(mac-build 曾因此进入「超时→不落盘→永久冷」死循环)。
+          # Save on main only (the sole source of warm cache); the PR side is
+          # read-only and stays out of the 10GB quota.
+          # cache-on-failure: still save the compiled artifacts when a main
+          # push fails — otherwise one failure drops the namespace fully cold
+          # (mac-build died exactly this way: timeout -> no save -> cold
+          # forever).
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -1410,10 +1423,13 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # 同 rust-test:把 src-tauri/rust-toolchain.toml 锁定的工具链设为 default,
-      # 保证从仓库根 --manifest-path 调用 cargo 时与本地同一 rustc(当前
-      # floating stable)。id + output:CodeWhale 回归 step 需要同一解析结果作
-      # RUSTUP_TOOLCHAIN(覆盖 CodeWhale 自己的 rust-toolchain.toml,见该 step 注释)。
+      # Same as rust-test: set the toolchain pinned by
+      # src-tauri/rust-toolchain.toml as the default, so cargo invoked from
+      # the repo root via --manifest-path uses the same rustc as locally
+      # (currently floating stable). id + output: the CodeWhale regression
+      # step needs the same resolved toolchain as its RUSTUP_TOOLCHAIN
+      # (overriding CodeWhale's own rust-toolchain.toml, see that step's
+      # comment).
       - name: 对齐 rust-toolchain.toml 锁定的工具链
         id: pinned_toolchain
         working-directory: pinvou3-app/src-tauri
@@ -1840,16 +1856,21 @@ jobs:
             exit 1
           }
 
-      # ── 以下为 push(main) 专属折叠腿(原 mac-build.yml 的核心覆盖)──────
-      # 全量 native arm64 lib 回归(不传 --target:host triple 在 arm64 runner 上
-      # 就是 aarch64-apple-darwin)。与上方 check 同 target/debug/ 目录,但 check
-      # 是 dev-tools 的 rmeta、本步是 benchmark-hooks 的 test codegen,编译图会
-      # 重编——跨步复用主要来自 restore 的 cache。与 rust-test 的 push 腿不同,
-      # 这里执行完整测试:macOS 原生行为没有其他执行腿,main 是它唯一的回归时机
-      # (MQ 不重复本 job,而 MQ 已在 Linux 覆盖组合树)。e2e 依赖(relay/Chrome)
-      # 不安装,真实 e2e 自动 skip(同 mac-build 的静默跳过语义,不设
-      # PINVOU_REQUIRE_REMOTE_E2E)。与 PR 腿的 computer_use 过滤跑一样带
-      # 0-match 守卫:整套 lib 测试静默跑空(如 cfg/attr 事故)必须红。
+      # ── Push(main)-only folded legs below (the core coverage of the former
+      # mac-build.yml) ──────
+      # Full native arm64 lib regression (without --target, the host triple on
+      # an arm64 runner is aarch64-apple-darwin). Shares target/debug/ with the
+      # check above, but check builds dev-tools rmeta while this step codegens
+      # benchmark-hooks test code, so the compile graph rebuilds — cross-step
+      # reuse comes mainly from the restored cache. Unlike rust-test's push
+      # leg, this executes the full suite: macOS native behavior has no other
+      # execution leg, so main is its only regression window (the MQ does not
+      # repeat this job, and the MQ already covers the combined tree on
+      # Linux). e2e dependencies (relay/Chrome) are not installed, so real e2e
+      # auto-skips (same silent-skip semantics as mac-build;
+      # PINVOU_REQUIRE_REMOTE_E2E is not set). Carries the same 0-match guard
+      # as the PR leg's computer_use filtered run: a full lib suite that
+      # silently runs zero tests (e.g. a cfg/attr accident) must fail.
       - name: macOS full lib tests (native regression, push only)
         if: ${{ github.event_name == 'push' }}
         run: |
@@ -1861,18 +1882,21 @@ jobs:
             exit 1
           }
 
-      # universal bundle smoke 需要 arm64 + x86_64 双 target;装到
-      # rust-toolchain.toml 解析出的工具链上(上方对齐 step 已把该工具链
-      # 设为 default)。仅 push 需要(PR 腿无 release-fast/bundle 步骤)。
-      - name: 安装双 target (universal bundle smoke, push only)
+      # The universal bundle smoke needs both the arm64 + x86_64 targets,
+      # installed onto the toolchain resolved by rust-toolchain.toml (the
+      # alignment step above already made it the default). Push-only (the PR
+      # legs have no release-fast/bundle steps).
+      - name: Install both targets (universal bundle smoke, push only)
         if: ${{ github.event_name == 'push' }}
         working-directory: pinvou3-app/src-tauri
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      # 前端依赖只为 push 专属的 universal bundle smoke 服务(build.js 内部
-      # require.resolve("@tauri-apps/cli/tauri.js") 且 beforeBuildCommand 跑
-      # vite build,均需 node_modules)。PR 腿(check + computer_use)已实证
-      # 不依赖 node_modules,不装以省时。同原 mac-build.yml 的两个 step。
+      # The frontend dependencies serve only the push-only universal bundle
+      # smoke (build.js resolves @tauri-apps/cli/tauri.js via require.resolve
+      # and beforeBuildCommand runs vite build; both need node_modules). The
+      # PR legs (check + computer_use) are proven not to need node_modules,
+      # so skip the install to save time. Same two steps as the former
+      # mac-build.yml.
       - name: Node.js (universal bundle smoke, push only)
         if: ${{ github.event_name == 'push' }}
         uses: actions/setup-node@v7
@@ -1881,62 +1905,80 @@ jobs:
           cache: 'npm'
           cache-dependency-path: pinvou3-app/package-lock.json
 
-      - name: 安装前端依赖 (universal bundle smoke, push only)
+      - name: Install frontend dependencies (universal bundle smoke, push only)
         if: ${{ github.event_name == 'push' }}
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release(及
-      # 继承它的 release-fast)默认 strip=symbols 会让 proc-macro dylib dlopen 被
-      # 拒 → E0463(macOS ≤26 无此校验)。runner 目前是 macos-15(不受影响),但
-      # GitHub 升级 runner 到 macOS 27+ 时若缺此注入,下方 release-fast/bundle
-      # 构建会硬失败。同 release-macos.sh 的 workaround;详见该脚本「问题 A」注释。
+      # macOS 27+ compatibility: dyld added an 8-byte alignment check for the
+      # LINKEDIT string pool, and the default strip=symbols of release (and of
+      # the release-fast inheriting it) makes the proc-macro dylib dlopen fail
+      # with E0463 (macOS <= 26 has no such check). The runner is currently
+      # macos-15 (unaffected), but if GitHub upgrades the runner to macOS 27+
+      # without this injection, the release-fast/bundle builds below fail
+      # hard. Same workaround as release-macos.sh; see that script's "Problem
+      # A" comment for details.
       - name: macOS 27+ strip workaround
         run: |
           if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
             echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
             echo "CARGO_PROFILE_RELEASE_FAST_STRIP=none" >> "$GITHUB_ENV"
             echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
-            echo "⚠️ macOS $(sw_vers -productVersion) → 注入 strip=none(绕过 dyld 对齐校验)"
+            echo "⚠️ macOS $(sw_vers -productVersion) -> injecting strip=none (bypasses dyld alignment)"
           else
-            echo "✓ macOS $(sw_vers -productVersion),保留默认 strip"
+            echo "✓ macOS $(sw_vers -productVersion), keeping the default strip"
           fi
 
-      # 编译冒烟用 release-fast(Cargo.toml 里专为 CI 定义的轻量 profile:lto=false、
-      # codegen-units=16、inherits="release"):release 现带 lto="thin"+codegen-units=1,
-      # 全图 thin-LTO 冷编译在 3 核 M1 上极易数小时;release-fast 验证 release 路径
-      # 代码可编译即可。bundle smoke 用同一 profile —— 同 profile 同 target dir,
-      # bundle 的 aarch64 编译腿直接复用本步产物,不再两套 profile 重复编译全图。
-      - name: Cargo build (release-fast 冒烟, push only)
+      # The compile smoke uses release-fast (the lightweight profile defined
+      # in Cargo.toml specifically for CI: lto=false, codegen-units=16,
+      # inherits="release"): release now carries lto="thin" + codegen-units=1,
+      # and a cold whole-graph thin-LTO compile can easily take hours on the
+      # 3-core M1; release-fast only has to prove the release-path code
+      # compiles. The bundle smoke uses the same profile — same profile, same
+      # target dir, so the bundle's aarch64 compile leg reuses this step's
+      # artifacts directly instead of recompiling the whole graph under two
+      # profiles.
+      - name: Cargo build (release-fast smoke, push only)
         if: ${{ github.event_name == 'push' }}
         working-directory: pinvou3-app/src-tauri
         run: cargo build --profile release-fast --target aarch64-apple-darwin --lib
 
-      # tauri bundle smoke:验证 dmg/app 实际打包链路(Info.plist/entitlements/
-      # 资源打包)。仅打包链路(bundle_chain)变更时跑(占折叠腿的大头耗时;
-      # 打包链路 PR 合入前由 pr-check 的 release-contract-test 跑轻量发布契约,
-      # VERSION bump 再由 release-packages 构建全量 dmg)。universal 打包失败
-      # 会让本 job 失败,避免主线在没有可发布 arm64 + x86_64 产物时仍显示成功。
-      # 若 changes job 本身失败,其输出为空,本步随之跳过(该 push 已因 changes
-      # 红而可见;下一次健康 push 会重新推导 bundle_chain)。
-      # universal-apple-darwin 是 Tauri 专属 target(内部跑 aarch64+x86_64 两次
-      # cargo + lipo),不是合法 rustc target triple;故 cargo check/test/build 仍
-      # 用 host(aarch64),仅此处 tauri 构建用 universal,产出可在 Intel +
-      # Apple Silicon 通用运行的 dmg/app。`-- --profile release-fast`:tauri v2
-      # CLI 的 build 无一等 --profile 选项,自定义 profile 经 `--` 后的 runner
-      # 尾随参数透传给 cargo(CLI 据此定位 target/<triple>/release-fast/ 产物);
-      # 与上方冒烟同 profile,aarch64 腿复用其产物,x86_64 腿为唯一新增编译。
-      - name: Tauri bundle smoke (验证 dmg/app 打包, 仅打包链路变更)
+      # tauri bundle smoke: exercises the real dmg/app packaging chain
+      # (Info.plist/entitlements/resource bundling). Runs only on
+      # packaging-chain (bundle_chain) changes (the dominant cost of the
+      # folded legs; before a packaging-chain PR merges, pr-check's
+      # release-contract-test runs the lightweight release contract, and a
+      # VERSION bump gets full dmg builds from release-packages). A universal
+      # packaging failure fails this job, so main cannot show green without
+      # publishable arm64 + x86_64 artifacts. If the changes job itself
+      # fails, its outputs are empty and this step skips along with them
+      # (that push is already visibly red via changes; the next healthy push
+      # re-derives bundle_chain).
+      # universal-apple-darwin is a Tauri-specific target (internally it runs
+      # cargo twice, aarch64 + x86_64, then lipos the results) and is not a
+      # valid rustc target triple; cargo check/test/build therefore stay on
+      # the host (aarch64), and only the tauri build here uses universal,
+      # producing dmg/app binaries that run on both Intel and Apple Silicon.
+      # `-- --profile release-fast`: the tauri v2 CLI's build has no
+      # first-class --profile option; a custom profile is forwarded to cargo
+      # as trailing runner args after `--` (the CLI uses that to locate the
+      # target/<triple>/release-fast/ artifacts). Same profile as the smoke
+      # above: the aarch64 leg reuses its artifacts, and the x86_64 leg is
+      # the only new compilation.
+      - name: Tauri bundle smoke (verify dmg/app packaging, bundle-chain changes only)
         if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app
         run: node scripts/tauri/build.js build --target universal-apple-darwin -- --profile release-fast
 
-      # Verify 脚本:轻量探测(brew/connector CLI) + 核心校验(plist/usage-key/
-      # bundle targets)。核心校验失败会 exit 1,挡本 job。仅 push 跑(PR 侧的
-      # plist/打包契约由 release-contract-test 在 Linux 覆盖,macos runner 秒级
-      # 费用留给真正发版的路径)。if: always():上游折叠腿失败时仍跑 verify,
-      # 确保核心校验不被 skip(verify 内部自带 --skip-test,不依赖上游产物)。
-      - name: Verify 脚本 (plist/usage-key/bundle targets 校验, push only)
+      # Verify script: lightweight probes (brew/connector CLIs) + core checks
+      # (plist/usage-key/bundle targets). A core-check failure exits 1 and
+      # blocks this job. Push-only (the PR-side plist/packaging contract is
+      # covered on Linux by release-contract-test, keeping the per-second
+      # macOS runner cost for the actual release path). if: always(): verify
+      # still runs when an upstream folded leg failed, so the core checks
+      # cannot be skipped (verify runs --skip-test internally and does not
+      # depend on upstream artifacts).
+      - name: Verify script (plist/usage-key/bundle targets checks, push only)
         if: ${{ always() && github.event_name == 'push' }}
         run: ./scripts/run-mac-verify.sh --skip-test
 

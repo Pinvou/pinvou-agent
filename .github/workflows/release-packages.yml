@@ -15,8 +15,10 @@ name: release-packages
 # 构建 job 只消费已校验的版本文件,保证打进包里的任何版本号都来自 VERSION。
 #
 # 与其他 workflow 的分工:
-# - pr-check:PR 快速门禁与发布契约验证(不产出安装包);macOS 原生回归也已
-#   折叠进其 macos-rust-check 的 push 腿(2026-10,原独立 mac-build 已删除)。
+# - pr-check: fast PR gating and release-contract verification (produces no
+#   installers); macOS native regression is also folded into its
+#   macos-rust-check push leg (2026-10; the former standalone mac-build was
+#   deleted).
 # - release-packages(本 workflow):VERSION bump 或人工触发时产出全平台安装包 artifact。
 # - 本 workflow 只上传 CI artifact,绝不创建/推送 GitHub Release,release 由人工填写。
 #
@@ -507,10 +509,12 @@ jobs:
           # for the PR-gate caches.
           save-if: false
 
-      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
-      # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
-      # runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
-      # 注入,tauri build 会硬失败。同 pr-check macos-rust-check 的 workaround。
+      # macOS 27+ compatibility: dyld added an 8-byte alignment check for the
+      # LINKEDIT string pool, and release's default strip=debuginfo makes the
+      # proc-macro dylib dlopen fail with E0463 (macOS <= 26 has no such
+      # check). The runner is currently macos-15 (unaffected), but if GitHub
+      # upgrades the runner to macOS 27+ without this injection, the tauri
+      # build fails hard. Same workaround as pr-check's macos-rust-check.
       - name: macOS 27+ strip workaround
         run: |
           if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then

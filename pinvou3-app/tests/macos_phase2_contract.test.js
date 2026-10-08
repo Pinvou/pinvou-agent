@@ -55,7 +55,7 @@ const macosJob = prCheck.split("\n  macos-rust-check:", 2)[1].split(
   "\n  windows-codex-runtime-test:", 2,
 )[0];
 const bundleStart = macosJob.indexOf("- name: Tauri bundle smoke");
-const verifyStart = macosJob.indexOf("- name: Verify 脚本", bundleStart);
+const verifyStart = macosJob.indexOf("- name: Verify script", bundleStart);
 assert.ok(bundleStart >= 0 && verifyStart > bundleStart, "macOS bundle steps must exist");
 const bundleStep = macosJob.slice(bundleStart, verifyStart);
 assert.match(bundleStep, /--target universal-apple-darwin/);
