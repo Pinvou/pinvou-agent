@@ -1794,6 +1794,11 @@ jobs:
           cargo check --manifest-path pinvou-cli/Cargo.toml
           -p adapter-gaia --features test-support --all-targets --locked
 
+      # Round-45 note: this step builds --features benchmark-hooks, which
+      # compiles the headless-bridge contract module the regression filters
+      # pin — the leg's wall clock rose accordingly (~21m → ~56m). That cost
+      # is the price of the filters matching a real test binary; a leg-time
+      # regression here means the feature or the module grew.
       - name: Windows Rust 单元测试链接检查
         if: ${{ matrix.phase == 'regression' }}
         shell: pwsh
@@ -2021,6 +2026,11 @@ jobs:
             }
           }
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked windows_batch_tests
+          # Round-46 review: the rebind nesting gate's case-fold half moved
+          # out of an inner cfg(windows) block (which executed on no leg)
+          # into this standalone test; the filter keeps the rename guard
+          # over it.
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked rebind_nesting_rejection_folds_case_where_the_os_folds
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked dataset_windows
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked fetch_windows_acl
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p benchmark-core --lib --locked private_prediction::tests::windows_
