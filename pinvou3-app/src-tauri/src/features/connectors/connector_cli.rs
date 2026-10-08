@@ -799,8 +799,6 @@ pub fn bundle_store_on_disconnected(id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::open_install_log_appender;
-
     /// Round-46 review: the appender must enforce 0600 on a PRE-EXISTING
     /// log file (creation mode alone left the umask default when the other
     /// surface created the file first) — the scenario the file-top
@@ -808,6 +806,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn install_log_appender_tightens_a_pre_existing_log_to_0600() {
+        use super::open_install_log_appender;
         let dir = std::env::temp_dir().join(format!(
             "pinvou-log-mode-{}-{}",
             std::process::id(),
