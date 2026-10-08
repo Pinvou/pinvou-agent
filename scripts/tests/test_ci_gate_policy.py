@@ -900,6 +900,9 @@ class CiGatePolicyTests(unittest.TestCase):
         macos_cli = self.pr_workflow.split(
             "\n  macos-cli-check:", maxsplit=1
         )[1].split("\n  required-gate:", maxsplit=1)[0]
+        # Round-46 review: the needs wire stays pinned here too, so a
+        # bypass of the wiring test cannot silently drop it.
+        self.assertIn("needs: changes", macos_cli)
         self.assertIn("runs-on: macos-15", macos_cli)
         self.assertIn(
             "needs.changes.outputs.cli_rust == 'true'",
@@ -967,6 +970,11 @@ class CiGatePolicyTests(unittest.TestCase):
         macos_cli = self.pr_workflow.split(
             "\n  macos-cli-check:", maxsplit=1
         )[1].split("\n  required-gate:", maxsplit=1)[0]
+        # Round-46 review: the `needs: changes` wire is what feeds the MQ
+        # branch's outputs — without it `needs.changes.outputs.*` evaluates
+        # empty, the PR/MQ legs silently skip, and required-gate accepts
+        # `skipped`. Same pin cli-lint and macos-rust-check carry.
+        self.assertIn("needs: changes", macos_cli)
         self.assertIn("github.event_name == 'push' ||", macos_cli)
         self.assertIn("github.event_name == 'merge_group'", macos_cli)
         merge_group_branch = macos_cli.split(
@@ -1685,7 +1693,15 @@ class CiGatePolicyTests(unittest.TestCase):
         phase_of = {}
         for step in steps:
             name = step.split("\n", 1)[0].strip()
-            match = re.search(r"\n        if: \$\{\{ matrix\.phase == '([a-z-]+)' \}\}", step)
+            # Round-46 review: end-anchored, so the exact silent-skip
+            # mutation this map advertises against — appending `&& false`
+            # AFTER the closing braces — no longer still extracts the phase
+            # name and passes. (`}} && false` suffix = the step skips while
+            # the map reports it routed.)
+            match = re.search(
+                r"\n        if: \$\{\{ matrix\.phase == '([a-z-]+)' \}\}[ \t]*(?:\n|$)",
+                step,
+            )
             phase_of[name] = match.group(1) if match else None
         expected = {
             "Windows Rust 全目标检查": "all-targets-check",
