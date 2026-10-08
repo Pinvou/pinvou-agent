@@ -540,7 +540,7 @@ impl KnowledgeService {
     pub fn resume_index(&self, job_id: String) -> Result<IndexState, String> {
         let mut active = self.active_import.lock();
         if active.is_some() {
-            return Err("已有知识集导入任务正在运行".into());
+            return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
         }
         refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
         self.imports.resume(&job_id).map_err(|e| e.to_string())?;
@@ -553,7 +553,7 @@ impl KnowledgeService {
     pub fn retry_index_item(&self, job_id: String, item_id: i64) -> Result<IndexState, String> {
         let mut active = self.active_import.lock();
         if active.is_some() {
-            return Err("已有知识集导入任务正在运行".into());
+            return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
         }
         refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
         self.imports.retry_item(&job_id, item_id).map_err(|error| {
@@ -957,7 +957,7 @@ fn refuse_fresh_foreign_running_import(
                 // the pre-guard behavior instead of wedging the button.
                 .unwrap_or(i64::MAX);
             if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
-                return Err("已有知识集导入任务正在运行".into());
+                return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
             }
             // Round-43 review: same phantom-latest hazard as start_index —
             // allowing a lane past a frozen row leaves the dead `running`
@@ -1015,6 +1015,15 @@ fn interrupt_frozen_foreign_row(
 /// stale and degrades to a normal start. 2× the CLI's default 300 s stall
 /// bound — see the start_index comment for the failure-direction trade.
 const IMPORT_HEARTBEAT_ALIVE_SECS: i64 = 600;
+
+/// Round-46 review: single-sourced so the CLI's error mapper can recognize
+/// the fresh-foreign-running refusal by marker instead of a verbatim string
+/// copy that drifts (the same single-sourcing discipline
+/// `CLI_DISCONNECTED_DEGRADED_REASON` uses). The CLI maps it to the stable
+/// `knowledge_index_busy` code — this refusal is otherwise the one
+/// zh-CN-only, codeless error class reachable through the CLI's
+/// resume/retry race path.
+pub const FOREIGN_IMPORT_RUNNING_MARKER: &str = "已有知识集导入任务正在运行";
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {
