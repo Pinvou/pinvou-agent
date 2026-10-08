@@ -436,6 +436,9 @@ fn preserve_current_host_state(data_dir: &Path, staged_database: &Path) -> Resul
          INSERT INTO devices SELECT * FROM current_host.devices;
          DELETE FROM shares;
          DELETE FROM join_requests;
+         -- invites 已退役（新库不再建表）。IF EXISTS 保证旧备份仍可恢复；
+         -- 反向降级不兼容：旧版二进制恢复本备份时，其无 IF EXISTS 的
+         -- DELETE FROM invites 会在缺表的新库上报错。
          DROP TABLE IF EXISTS invites;
          DELETE FROM meta WHERE key IN ('server_id','server_identity','server_name','host_owner_device_id');
          INSERT INTO meta(key,value)
@@ -455,6 +458,8 @@ fn clear_host_state(database: &Path) -> Result<(), String> {
             "BEGIN IMMEDIATE;
              DELETE FROM shares;
              DELETE FROM join_requests;
+             -- invites 已退役；IF EXISTS 保证旧格式库仍可清理（降级不兼容，
+             -- 同 preserve_current_host_state 处注释）。
              DROP TABLE IF EXISTS invites;
              DELETE FROM devices;
              DELETE FROM meta WHERE key IN ('server_id','server_identity','server_name','host_owner_device_id');

@@ -1516,10 +1516,11 @@ mod tests {
     /// `classify_tool_failure` (product_runtime/mod.rs) can emit must be
     /// accepted by `validated_tool_failure_code`, otherwise the safe-contract
     /// bridge silently turns a real failure cause into `None` and the eval
-    /// transcript loses the reason. Enumerated exhaustively — one assert per
-    /// code, in the classifier's branch order — so adding, removing, or
-    /// renaming a code on either side breaks this test and forces both lists
-    /// back in sync.
+    /// transcript loses the reason. One assert per code, in the classifier's
+    /// branch order: removing or renaming a code on either side breaks this
+    /// test and forces both lists back in sync. A newly added code gets no
+    /// assert automatically — pair it with a new assert here (and a validator
+    /// arm when the code is meant to cross the bridge).
     #[test]
     fn every_classify_tool_failure_code_passes_validated_tool_failure_code() {
         use super::super::classify_tool_failure;

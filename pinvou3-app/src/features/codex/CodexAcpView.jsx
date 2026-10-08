@@ -3135,7 +3135,7 @@ export function CodexAcpView({
     setNativeLaneTick(tick => tick + 1);
   }
 
-  // 原生车道手动压缩：语义镜像 bridge interaction.compactNow——调 compact_now 后，
+  // 原生车道手动压缩：直接调 compact_now 命令（与 work 侧共享同一条命令）——调完后，
   // 进行中/结果由 chat:compaction 系统项呈现（compactStart/compactDone/compactFail）；
   // invoke 本身失败按 work 侧同款补一条 compactFail 系统提示项。
   async function compactNativeSession() {
