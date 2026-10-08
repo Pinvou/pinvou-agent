@@ -1998,7 +1998,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('ima logout failed:', e);
-          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
+          // 与上方 ima connect 的 catch 同一口径：原始错误详情只在
+          // showRawErrors 开启时展示（en/ja 文案表声明 false），否则回落
+          // operationFailed 通用文案。
+          setAlert({
+            visible: true, loading: false,
+            title: detailCopy.actions.operationFailed,
+            subtitle: detailCopy.showRawErrors
+              ? String(e && e.message ? e.message : e).slice(0, 240)
+              : detailCopy.actions.operationFailed,
+            isInstall: false, isError: true,
+          });
         } finally {
           setBusyId((current) => releaseBusy(current, 'ima'));
         }
