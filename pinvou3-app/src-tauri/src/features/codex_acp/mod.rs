@@ -3169,13 +3169,22 @@ impl AcpPool {
         // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
         // 可以在本 GUI 启动后改写 current，读内存会把「当前 Provider」判错，
         // 该重启的会话不重启（或反之）。
-        if self
-            .providers
-            .store()
-            .current_after_reload(agent)
-            .as_deref()
-            == Some(record.id.as_str())
-        {
+        // The fresh read polls the cross-process section lock (up to
+        // SECTION_LOCK_TIMEOUT) and reloads the store from disk — blocking,
+        // so it stays on a blocking worker like the save above.
+        let providers_for_read = self.providers.clone();
+        let agent_for_read = agent.to_string();
+        let saved_id = record.id.clone();
+        let is_current = tokio::task::spawn_blocking(move || {
+            providers_for_read
+                .store()
+                .current_after_reload(&agent_for_read)
+                .as_deref()
+                == Some(saved_id.as_str())
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?;
+        if is_current {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
         }
@@ -3293,10 +3302,20 @@ impl AcpPool {
             Some(provider_id) => {
                 // 同 save/delete 的 fresh-read 纪律：CLI 进程在本 GUI 启动后
                 // add 的 Provider，读启动内存会被误判「不存在」。
-                self.providers
-                    .store()
-                    .record_after_reload(agent, &provider_id)
-                    .with_context(|| format!("Provider 不存在: {provider_id}"))?;
+                // The fresh read polls the cross-process section lock and
+                // reloads the store from disk — blocking worker, matching
+                // save/delete/switch.
+                let providers = self.providers.clone();
+                let agent_owned = agent.to_string();
+                let provider_owned = provider_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    providers
+                        .store()
+                        .record_after_reload(&agent_owned, &provider_owned)
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+                .with_context(|| format!("Provider 不存在: {provider_id}"))?;
                 self.agents
                     .set_acp_config_value(session_id, "provider", &provider_id)?;
             }
@@ -3310,37 +3329,49 @@ impl AcpPool {
 
     /// 当前会话生效的 Provider key（会话 option > 全局 current_provider）。
     /// 仅用于 Codex 的 spawn env 注入。
-    fn session_provider_api_key(&self, session_id: &str) -> Result<Option<String>> {
+    ///
+    /// The decision reads poll the cross-process section lock (up to
+    /// SECTION_LOCK_TIMEOUT) and reload the store from disk, and the key
+    /// itself comes from the keychain — all blocking, so they run on a
+    /// blocking worker. The only caller is the async spawn path, whose
+    /// runtime workers also drive the ACP engine session pumps.
+    async fn session_provider_api_key(&self, session_id: &str) -> Result<Option<String>> {
         let backend = self.backend(session_id);
         let Some(agent) = backend.agent_id() else {
             return Ok(None);
         };
+        // In-memory read: the session's own provider option.
         let session_provider = self
             .agents
             .get(session_id)
             .acp_config_values
             .get("provider")
             .cloned();
-        let provider_id = match session_provider {
-            Some(provider_id) => Some(provider_id),
-            // codex 的 key 在 spawn 时注入：判定必须走 reload 后的 fresh
-            // read——CLI 进程在本 GUI 启动后 switch 过 current 时，读启动
-            // 内存会把旧 Provider 的 key 注进指向新 endpoint 的 config，
-            // 产生无因的 401。与 save/delete 的 fresh-read 纪律同一形状。
-            None => self.providers.store().current_after_reload(agent),
-        };
-        let Some(provider_id) = provider_id else {
-            return Ok(None);
-        };
-        if self
-            .providers
-            .store()
-            .record_after_reload(agent, &provider_id)
-            .is_none()
-        {
-            return Ok(None);
-        }
-        self.providers.api_key(agent, &provider_id)
+        // codex 的 key 在 spawn 时注入：判定必须走 reload 后的 fresh
+        // read——CLI 进程在本 GUI 启动后 switch 过 current 时，读启动
+        // 内存会把旧 Provider 的 key 注进指向新 endpoint 的 config，
+        // 产生无因的 401。与 save/delete 的 fresh-read 纪律同一形状。
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        tokio::task::spawn_blocking(move || {
+            let provider_id = match session_provider {
+                Some(provider_id) => Some(provider_id),
+                None => providers.store().current_after_reload(&agent),
+            };
+            let Some(provider_id) = provider_id else {
+                return Ok(None);
+            };
+            if providers
+                .store()
+                .record_after_reload(&agent, &provider_id)
+                .is_none()
+            {
+                return Ok(None);
+            }
+            providers.api_key(&agent, &provider_id)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider key task join error: {error}"))?
     }
 
     /// 卸载 ACP Agent CLI。有运行中会话时拒绝；`cleanup=true` 时额外删除该 Agent
@@ -3464,15 +3495,24 @@ impl AcpPool {
                 .context("删除 Agent 配置任务异常退出")??;
             // 与上面同一 fresh-read 纪律：CLI 在本 GUI 启动后 add 的受管
             // Provider 也要进清理集合，否则其凭据与受管配置在卸载后残留。
-            for record in self
-                .providers
-                .store()
-                .state_after_reload(agent_id)
-                .providers
-            {
-                let _ = self.providers.delete(agent_id, &record.id);
-            }
-            let _ = self.providers.store().set_current(agent_id, None);
+            // The fresh read (section lock + disk reload) and every delete
+            // (keychain removal + vendor config rewrite) block — run the
+            // whole cleanup on a blocking worker, matching the uninstall
+            // lanes above.
+            let providers = self.providers.clone();
+            let cleanup_agent = agent_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                for record in providers
+                    .store()
+                    .state_after_reload(&cleanup_agent)
+                    .providers
+                {
+                    let _ = providers.delete(&cleanup_agent, &record.id);
+                }
+                let _ = providers.store().set_current(&cleanup_agent, None);
+            })
+            .await
+            .context("Provider 清理任务异常退出")?;
         }
         // 渠道翻转防护：卸载后仍探测到「已安装」说明存在另一渠道的安装（如
         // 脚本目录删除后探测回落到 npm/PATH 的另一份）。如实告知，避免
@@ -4502,7 +4542,8 @@ impl AcpPool {
                 let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
                 let mut command = self.adapter_command(&adapter)?;
                 self.configure_codex_path(&mut command)?;
-                self.configure_codex_provider_env(&mut command, pinvou_session_id)?;
+                self.configure_codex_provider_env(&mut command, pinvou_session_id)
+                    .await?;
                 (
                     command,
                     adapter,
@@ -4973,7 +5014,7 @@ impl AcpPool {
 
     /// Codex 的 Provider key 注入：config.toml 只支持 env_key 引用，实际 key 在
     /// spawn 时注入子进程 env。进程 env 已设置时优先（用户显式配置），不覆盖。
-    fn configure_codex_provider_env(
+    async fn configure_codex_provider_env(
         &self,
         command: &mut Command,
         pinvou_session_id: &str,
@@ -4981,7 +5022,7 @@ impl AcpPool {
         if std::env::var_os("OPENAI_API_KEY").is_some_and(|value| !value.is_empty()) {
             return Ok(());
         }
-        let Some(key) = self.session_provider_api_key(pinvou_session_id)? else {
+        let Some(key) = self.session_provider_api_key(pinvou_session_id).await? else {
             return Ok(());
         };
         command.env("OPENAI_API_KEY", key);
