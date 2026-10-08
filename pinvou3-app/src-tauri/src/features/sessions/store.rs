@@ -473,17 +473,13 @@ impl SessionStore {
     ) -> Result<deepseek_tui::session_export::SessionArchiveSummary> {
         validate_session_id(id)?;
         let session = self.load(id)?;
-        let artifacts_dir = if include_artifacts {
-            deepseek_tui::session_export::session_artifacts_dir(
-                self.manager.sessions_dir(),
-                &session.metadata.id,
-            )
-        } else {
-            None
-        };
+        // write_session_archive takes the session-store ROOT since the
+        // engine-side confinement rework: it derives, validates and confines
+        // the artifacts dir itself (invalid ids and links under the store are
+        // loud errors), and `include_artifacts` alone gates collection.
         Ok(deepseek_tui::session_export::write_session_archive(
             &session,
-            artifacts_dir.as_deref(),
+            Some(self.manager.sessions_dir()),
             output,
             deepseek_tui::session_export::SessionArchiveOptions {
                 include_artifacts,

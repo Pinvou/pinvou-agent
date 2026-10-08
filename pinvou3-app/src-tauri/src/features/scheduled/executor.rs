@@ -690,6 +690,7 @@ mod tests {
             allow_shell: false,
             trust_mode: false,
             execution_limits: TaskExecutionLimits::default(),
+            human_waits_answerable: false,
         };
         let manager = TaskManager::start_with_executor(config, executor).await?;
         Ok((root, manager))
