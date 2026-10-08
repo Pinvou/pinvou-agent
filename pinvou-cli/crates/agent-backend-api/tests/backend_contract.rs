@@ -138,6 +138,19 @@ fn agent_tool_policy_id_accepts_the_gaia_offline_policy() {
     let policy = AgentToolPolicyId::new("pinvou-gaia-offline/v1").unwrap();
 
     assert_eq!(policy.as_str(), "pinvou-gaia-offline/v1");
+    // Round-47 review: the round-trip above cannot catch a consumer-side
+    // rename. The id is resolved by the app's eval policy table
+    // (`resolve_eval_policy`, the crate that calls this API) — pin the
+    // literal there too, so a rename on either side of the boundary fails
+    // here instead of stranding callers that pass the documented id.
+    let resolver = include_str!(
+        "../../../../pinvou3-app/src-tauri/src/features/assistant/product_runtime/eval_tool_policy.rs"
+    );
+    assert!(
+        resolver.contains("\"pinvou-gaia-offline/v1\""),
+        "the app-side eval policy table must keep accepting the documented \
+         policy id `pinvou-gaia-offline/v1`"
+    );
 }
 
 #[test]
@@ -202,6 +215,20 @@ fn outcome_exposes_numeric_usage_without_private_text() {
     assert_eq!(usage.output_tokens(), 4);
     assert_eq!(usage.cache_hit_tokens(), 3);
     assert_eq!(usage.cache_miss_tokens(), 7);
+    // Round-47 review: the getter round-trips above pin constructor order;
+    // the SERIALIZED shape is the wire contract and the name's actual
+    // promise — exactly four numeric keys, so no private-text field can
+    // hide in the payload and a key rename fails here instead of drifting
+    // onto consumers.
+    assert_eq!(
+        serde_json::to_value(&usage).expect("SafeUsageMetrics serializes"),
+        serde_json::json!({
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "cache_hit_tokens": 3,
+            "cache_miss_tokens": 7,
+        })
+    );
 }
 
 #[test]

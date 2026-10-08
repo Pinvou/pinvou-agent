@@ -111,6 +111,15 @@ assert.ok(
     PROVIDERS_MOD.includes('fs::rename'),
   '公共写入助手必须 pid 后缀 .tmp + fs::rename 原子替换'
 );
+// round-47 review: the module has a SECOND pid-staged helper — the shared
+// `atomic_write` stages `tmp.{pid}` (the pin above anchors only the
+// `json.{pid}.tmp` spelling used by `persist_locked`). If that helper's
+// staging name regressed to a fixed suffix, the pin above would still pass.
+assert.ok(
+  PROVIDERS_MOD.includes("tmp.{}") &&
+    PROVIDERS_MOD.includes('std::process::id()'),
+  '共享 atomic_write 助手必须同样使用 pid 后缀 staging 名'
+);
 assert.ok(
   PROVIDERS_MOD.includes('pinvou3-bak'),
   '首次受管写入必须备份 .pinvou3-bak'
