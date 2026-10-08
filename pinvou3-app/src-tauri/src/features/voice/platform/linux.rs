@@ -22,15 +22,17 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    // 就绪判定与执行路径（asr_tool_path）同判定：env 覆盖命令失效时如实报未就绪，
-    // 不落 engine——否则面板报就绪而转写仍 spawn 失效路径（见 asr_ready_decision）。
-    // 闭包只在未设 env 时进入，此时 asr_tool_path() 即执行路径的兜底值。
-    super::asr_tool_exists_with_env(|| {
-        let fallback = asr_tool_path();
-        fallback.is_file()
-            || crate::platform::os::command_exists(&fallback.to_string_lossy())
-            || voice_asr::engine_path().is_file()
-    })
+    // Linux 执行序（app/commands/voice.rs → recognize_native）：引擎+模型齐
+    // 先走内置转写，env 覆盖命令根本不参与；否则才回退 CLI（asr_tool_path，
+    // env 优先）。就绪判定必须逐分支复刻该执行序，否则两个方向都会背离：
+    // env 失效但引擎完好时报未就绪（执行其实能成功），或引擎缺模型时报就绪
+    // （执行回退 CLI 才发现没有可用命令）。该双分支判定无法折叠进
+    // platform::asr_ready_decision 的单布尔（那条骨架只适配"执行必经 env
+    // CLI"的 Windows），故不走共用骨架。
+    (voice_asr::engine_path().is_file() && voice_asr::model_path().is_file()) || {
+        let tool = asr_tool_path();
+        tool.is_file() || crate::platform::os::command_exists(&tool.to_string_lossy())
+    }
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {

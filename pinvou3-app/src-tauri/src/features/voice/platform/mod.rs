@@ -36,10 +36,13 @@ pub(crate) fn asr_tool_path_from_env() -> Option<std::path::PathBuf> {
     None
 }
 
-/// 就绪探测与执行路径（`asr_tool_path`：env 优先）必须同判定：设置了覆盖命令时，
-/// 就绪 = 该命令本身可执行——执行会原样 spawn 它，打包运行时再完好也不能替它报
-/// 就绪；未设置时才由各平台判定打包运行时。否则会出现"面板报就绪、转写仍 spawn
-/// 失败"（env 失效却落到 bundled）或反向的假阴性。
+/// 就绪探测与执行路径必须同判定。本骨架只适配"执行必经 env CLI"的平台
+/// （Windows：`recognize_native` 恒为 None）：设置了覆盖命令时，就绪 = 该命令
+/// 本身可执行——执行会原样 spawn 它，打包运行时再完好也不能替它报就绪；未设置
+/// 时才由平台判定打包运行时。否则会出现"面板报就绪、转写仍 spawn 失败"（env
+/// 失效却落到 bundled）或反向的假阴性。Linux 的执行序是"引擎+模型齐先走内置
+/// 转写、否则才 CLI"，env 命令只在回退分支参与，单布尔表达不了，由
+/// `linux::asr_tool_exists` 自行复刻执行序。
 pub(crate) fn asr_ready_decision(
     env_command: Option<&str>,
     command_exists: impl Fn(&str) -> bool,
@@ -51,8 +54,8 @@ pub(crate) fn asr_ready_decision(
     }
 }
 
-/// 各平台 `asr_tool_exists` 的共用骨架：取 env 覆盖命令的判定，未设置时交给
-/// 平台的 `bundled_ready`。
+/// "执行必经 env CLI"平台（Windows）的 `asr_tool_exists` 共用骨架：取 env 覆盖
+/// 命令的判定，未设置时交给平台的 `bundled_ready`。
 pub(crate) fn asr_tool_exists_with_env(bundled_ready: impl FnOnce() -> bool) -> bool {
     let env_command = asr_tool_path_from_env().map(|path| path.to_string_lossy().into_owned());
     asr_ready_decision(
