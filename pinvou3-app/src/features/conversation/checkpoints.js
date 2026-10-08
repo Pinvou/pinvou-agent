@@ -141,8 +141,7 @@ export async function reloadSessionAfterRewind({ reload, bumpTick }) {
     await reload();
   } catch (err) {
     error = String(err && err.message ? err.message : err);
-  }
-  finally {
+  } finally {
     bumpTick();
   }
   return { error };
