@@ -150,9 +150,12 @@ const larkAuthLoginViolation = (line, inFence) => {
   if (!/auth login/.test(line)) return null;
   // 代码围栏是最可执行语境：任何阻塞形态（含 --scope、--domain、裸 auth
   // login）都必须内联 --no-wait，无描述性豁免；--device-code 第二步是
-  // lark-shared 两段式的文档化收尾，不带 --no-wait，显式豁免。
+  // lark-shared 两段式的文档化收尾，天然不带 --scope 也不带 --no-wait，
+  // 显式豁免——带 --scope 的混合形态是第一步的阻塞形态，不得借
+  // --device-code 子串混入豁免。
   if (inFence) {
-    return !/--no-wait/.test(line) && !/--device-code/.test(line)
+    const isDeviceCodeStep2 = /--device-code/.test(line) && !/--scope/.test(line);
+    return !/--no-wait/.test(line) && !isDeviceCodeStep2
       ? "fenced `auth login` 阻塞形态须内联 --no-wait（lark-shared 两段式；--device-code 第二步除外）"
       : null;
   }
@@ -204,7 +207,8 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
   if (violation) assert.fail(`${rel(f)}: ${violation}`);
 }
 
-// 规则 5 盲点自检：五个曾漏网的历史形态必须保持「必失败」，现行合法
+// 规则 5 盲点自检：六个曾漏网的历史形态（2 围栏 + 4 正文，blockquoted
+// 围栏单测）必须保持「必失败」，现行合法
 // 形态必须保持「必通过」（防下次收紧/放松时静默回退）。全部经由
 // scanLarkAuthLogin（含围栏状态机）判定。
 {
@@ -214,6 +218,9 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
     // 围栏内无 --scope 的阻塞形态（--domain 同样让模型照跑阻塞到超时；
     // 第 7 轮外部复审把围栏分支从「仅 --scope」放宽到所有阻塞形态）
     "lark-cli auth login --domain docs",
+    // 围栏内混合形态：--scope 第一步借 --device-code 子串伪装成第二步
+    // （lark-shared 第二步从不带 --scope），豁免必须按「无 --scope」收紧
+    "lark-cli auth login --scope \"im:message\" --device-code <device_code>",
   ];
   const plainOldForms = [
     // 裸「提示」转述（wiki delete-space/move 旧形）
@@ -261,8 +268,8 @@ for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).start
     null,
     "围栏内 --no-wait 两段式不得误伤",
   );
-  // lark-shared 的 --device-code 第二步（两段式收尾，天然不带 --no-wait）
-  // 必须保持豁免——放宽围栏分支不得误伤文档化流程。
+  // lark-shared 的 --device-code 第二步（两段式收尾，天然不带 --no-wait
+  // 也不带 --scope）必须保持豁免——收紧不得误伤文档化流程。
   assert.equal(
     scanLarkAuthLogin('```bash\nlark-cli auth login --device-code <device_code>\n```\n'),
     null,
