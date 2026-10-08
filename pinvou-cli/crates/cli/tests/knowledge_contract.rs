@@ -1246,6 +1246,49 @@ fn add_sources_preflights_the_source_paths() {
     assert_eq!(state["jobId"], serde_json::Value::Null);
 }
 
+/// Round-46 review: the sources land in the store `kb_search` reads
+/// model-side, so a credential path must be refused before anything is
+/// enqueued — the same gate every other model-context ingest lane applies
+/// (CLI-stricter-than-GUI, disclosed in the docs row). The refusal runs
+/// before any job is created.
+#[test]
+fn add_sources_refuses_a_credential_path_source() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("add-sources-credential");
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "credential-gate",
+    ]);
+    let id = created["id"].as_i64().expect("created collection id");
+
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "PRIVATE KEY").unwrap();
+
+    let error = execute_error(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &id.to_string(),
+        key.to_str().unwrap(),
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("refusing source path"),
+        "the credential-path gate must name the refusal: {error}"
+    );
+
+    // Nothing may have been enqueued or started by the refusal.
+    let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(state["jobId"], serde_json::Value::Null);
+}
+
 /// `index failed` for an unknown job must not leak the raw rusqlite driver
 /// message ("Query returned no rows") that upstream uses to signal a missing
 /// job id: the CLI names the cause, like `index cancel` does.

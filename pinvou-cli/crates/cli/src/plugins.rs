@@ -709,9 +709,13 @@ fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, Cl
     if installed_only {
         tools.retain(|tool| tool.installed);
     }
+    // Round-46 review: a serialization failure is a failure, not an empty
+    // deck — exit 0 with a placeholder `tools: []` would hand the caller a
+    // fabricated fact (personas.rs closed this exact class with the same
+    // rationale).
     let value = serde_json::to_value(&tools)
         .map(|tools| serde_json::json!({ "tools": tools }))
-        .unwrap_or_else(|_| serde_json::json!({ "tools": [] }));
+        .map_err(|error| CliError::failed(format!("plugins tools list: {error}")))?;
     // Human rows must not be forgeable: tool name/description come from
     // package manifests (including imported ones) and go through the shared
     // collapse like every sibling family (JSON keeps the originals).
@@ -1275,9 +1279,10 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
     if installed_only {
         skills.retain(|skill| skill.installed);
     }
+    // Round-46 review: same not-a-placeholder rule as `tools list`.
     let value = serde_json::to_value(&skills)
         .map(|skills| serde_json::json!({ "skills": skills }))
-        .unwrap_or_else(|_| serde_json::json!({ "skills": [] }));
+        .map_err(|error| CliError::failed(format!("plugins skills list: {error}")))?;
     // Same no-forgeable-rows rule as `tools_list`.
     let human = skills
         .iter()
@@ -1747,9 +1752,10 @@ fn recycle_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let entries = recycle_bin::RecycleBin::new()
         .list()
         .map_err(|error| CliError::failed(format!("plugins recycle list: {error:#}")))?;
+    // Round-46 review: same not-a-placeholder rule as `tools list`.
     let value = serde_json::to_value(&entries)
         .map(|entries| serde_json::json!({ "recycled": entries }))
-        .unwrap_or_else(|_| serde_json::json!({ "recycled": [] }));
+        .map_err(|error| CliError::failed(format!("plugins recycle list: {error}")))?;
     let human = entries
         .iter()
         .map(|entry| {
@@ -1781,8 +1787,10 @@ fn recycle_list(output: OutputMode) -> Result<CliOutcome, CliError> {
 fn recycle_restore(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let result = recycle_bin::restore_plugin(id)
         .map_err(|error| feature_error("recycle restore", id, error))?;
+    // Round-46 review: serializing a concrete FALSE fact on failure would
+    // tell a script credentials are already in place — propagate instead.
     let value = serde_json::to_value(&result)
-        .unwrap_or_else(|_| serde_json::json!({ "credentials_required": false }));
+        .map_err(|error| CliError::failed(format!("plugins recycle restore: {error}")))?;
     let mut human = format!("restored {id}");
     if result.credentials_required {
         human

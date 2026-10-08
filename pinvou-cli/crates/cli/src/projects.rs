@@ -1531,8 +1531,8 @@ mod tests {
     /// exact (`/a/bc` is not nested in `/a/b`) and trailing-separator
     /// neutral (`/a/b/` is the same directory as `/a/b`) on every platform;
     /// the case-folded half of the identity keys is Windows-only by
-    /// construction (the adapter folds where the OS folds), so only a
-    /// windows-compiled test binary can assert it.
+    /// construction (the adapter folds where the OS folds) and lives in the
+    /// platform-gated test below so a CI leg actually executes it.
     #[test]
     fn rebind_nesting_rejection_is_component_exact_and_slash_neutral() {
         assert!(rebind_target_is_same_or_nested(
@@ -1562,16 +1562,24 @@ mod tests {
             Path::new("/x/y"),
             Path::new("/a/b")
         ));
-        // Windows case-only spellings: folded (and therefore rejected) where
-        // the OS folds case, verbatim (and therefore allowed past THIS
-        // predicate — the folded equality short-circuit upstream still
-        // catches the exact-respawned shape) where it does not.
-        #[cfg(windows)]
-        {
-            assert!(rebind_target_is_same_or_nested(
-                Path::new("C:\\Data\\Proj\\new"),
-                Path::new("c:\\data\\proj")
-            ));
-        }
+    }
+
+    /// Round-46 review: the Windows case-fold half of the nesting gate used
+    /// to be an inner `#[cfg(windows)]` block inside the test above, which
+    /// compiles out on the Linux leg and executes on no CI leg (the Windows
+    /// regression step runs only its named filters). Standalone
+    /// platform-gated test plus a filter on the Windows regression step so
+    /// the assertion actually runs where the OS folds case.
+    #[cfg(windows)]
+    #[test]
+    fn rebind_nesting_rejection_folds_case_where_the_os_folds() {
+        // Folded (and therefore rejected) where the OS folds case,
+        // verbatim (and therefore allowed past THIS predicate — the folded
+        // equality short-circuit upstream still catches the
+        // exact-respawned shape) where it does not.
+        assert!(rebind_target_is_same_or_nested(
+            Path::new("C:\\Data\\Proj\\new"),
+            Path::new("c:\\data\\proj")
+        ));
     }
 }
