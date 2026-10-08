@@ -173,6 +173,35 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // proves the old copy won and the requested mutation must be abandoned.
   const queueMutationTerminals = {};
 
+  // Zap-owned reconcile claims (review round-10 M2): runQueuedZap registers
+  // its steer id before withdrawSteerOutcome so a chat:steer_dropped landing
+  // inside the withdraw-await window routes to the zap recovery (failure
+  // notice + restore) instead of settleSteerDropped's silent chip-absent
+  // branch — that branch assumed no zap was mid-flight and silently consumed
+  // the withdrawn registration, dismantling both safety nets for the exact
+  // window the zap opened. Claims are consumed by the recovery or cleared
+  // when the withdraw outcome proves resend (no reconcile window remains).
+  const zapReconcileClaims = {};
+  function beginZapReconcileClaim(sid, steerId) {
+    if (!sid || !steerId) return;
+    let byId = zapReconcileClaims[sid];
+    if (!byId) {
+      byId = Object.create(null);
+      zapReconcileClaims[sid] = byId;
+    }
+    byId[steerId] = true;
+  }
+  function takeZapReconcileClaim(sid, steerId) {
+    const byId = zapReconcileClaims[sid];
+    if (!byId || !byId[steerId]) return false;
+    delete byId[steerId];
+    return true;
+  }
+  function clearZapReconcileClaim(sid, steerId) {
+    const byId = zapReconcileClaims[sid];
+    if (byId) delete byId[steerId];
+  }
+
   function beginQueueMutationReconciliation(sid, steerId) {
     let byId = queueMutationTerminals[sid];
     if (!byId) {
@@ -1702,6 +1731,21 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
         // authoritative terminal and explicitly restore the original text.
         return;
       }
+      if (takeZapReconcileClaim(sid, steerId)) {
+        // A zap is mid-withdraw on this exact steer (review round-10 M2):
+        // the dropped terminal is the authoritative non-delivery proof for
+        // the chip the zap already removed — recover immediately (failure
+        // notice + session-scoped restore) instead of silently consuming
+        // the withdrawn registration here and leaving the zap's own
+        // reconcile to find nothing later.
+        const claimedText = takeWithdrawn(sid, steerId) || "";
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + bt("steerFailedLost"));
+        });
+        restoreSteerText(sid, claimedText);
+        notify();
+        return;
+      }
       const withdrawnText = takeWithdrawn(sid, steerId);
       if (withdrawnText !== undefined) {
         if (zapReconciling) {
@@ -2108,6 +2152,26 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
     }
   }
 
+  // Only an explicit foundation "retired" (or a deterministic rejection of
+  // the steer_chat invoke itself, which never accepted anything) proves
+  // resend safety; not_pending / transport timeout / an unreachable engine
+  // are all uncertain and defer to the reconcile path (zhuowp re-review
+  // P1-1: a reclaimed engine may have committed the steer first).
+  function withdrawOutcomeForbidsResend(outcome) {
+    return ["not_pending", "withdraw_timeout", "withdraw_unreachable"].includes(outcome);
+  }
+
+  // Shared tail of runQueuedZap's withdraw-gated branches: a resend-safe
+  // outcome kills the zap's reconcile claim (the old steer id is dead — no
+  // window remains); a forbids-resend outcome keeps the claim open for
+  // settleSteerDropped until the terminal lands or the watchdog consumes the
+  // registration.
+  function settleWithdrawOutcomeForZap(sid, steerId, outcome) {
+    const forbidsResend = withdrawOutcomeForbidsResend(outcome);
+    if (!forbidsResend) clearZapReconcileClaim(sid, steerId);
+    return forbidsResend;
+  }
+
   async function runQueuedZap(sid, queuedId) {
     const q = steeredQueueFor(sid);
     if (!q) return false;
@@ -2120,17 +2184,10 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
     q.splice(index, 1);
     let skipResend = false;
     let steerSettlement = null;
-    // Only an explicit foundation "retired" (or a deterministic rejection of
-    // the steer_chat invoke itself, which never accepted anything) proves
-    // resend safety; not_pending / transport timeout / an unreachable engine
-    // are all uncertain and defer to the reconcile path (zhuowp re-review
-    // P1-1: a reclaimed engine may have committed the steer first).
-    const withdrawOutcomeForbidsResend = function (outcome) {
-      return ["not_pending", "withdraw_timeout", "withdraw_unreachable"].includes(outcome);
-    };
     if (item.steered && item.steerId && sid) {
+      beginZapReconcileClaim(sid, item.steerId);
       const outcome = await withdrawSteerOutcome(sid, item.steerId, item.text);
-      skipResend = withdrawOutcomeForbidsResend(outcome);
+      skipResend = settleWithdrawOutcomeForZap(sid, item.steerId, outcome);
     } else if (item.steered && sid) {
       // steerId not backfilled (steer_chat invoke in flight): the engine may
       // already hold the steer, and a copy parked by this zap's own keepInbox
@@ -2157,8 +2214,9 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       const settled = await steerSettlement;
       if (settled && settled.ok && settled.steerId && sid) {
         item.steerId = settled.steerId;
+        beginZapReconcileClaim(sid, settled.steerId);
         const outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
-        skipResend = withdrawOutcomeForbidsResend(outcome);
+        skipResend = settleWithdrawOutcomeForZap(sid, settled.steerId, outcome);
       } else if (settled && !settled.ok && settled.timedOut) {
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + bt("steerFailed"));
@@ -2306,6 +2364,7 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       steer,
       settleSteerCommitted,
       settleSteerDropped,
+      clearOutcomeReconcileWatchdog,
       captureSteerPositions,
       purgeSteerState,
     };
