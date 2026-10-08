@@ -532,6 +532,23 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("| sha256sum --check -", step)
         self.assertNotIn("download-actionlint.bash", step)
 
+    def test_fast_gate_runner_line_is_pinned(self):
+        # Round-47 review: this one line is the ONLY place the gate-policy
+        # suite itself executes in CI. Deleting it (or narrowing the `-p`
+        # pattern) disarms every pin in this file while each test stays
+        # green wherever it still happens to run — so the runner is pinned
+        # by its exact command here, making the rest of the suite
+        # load-bearing instead of decorative.
+        fast_gate = self.pr_workflow.split("\n  fast-gate:", maxsplit=1)[1].split(
+            "\n  frontend-test:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "python3 -m unittest discover -s scripts/tests -p 'test_*.py'",
+            fast_gate,
+            "the gate-policy suite's only CI runner must not be deletable in "
+            "silence",
+        )
+
     def test_cli_crate_has_its_own_required_gate(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
@@ -582,6 +599,14 @@ class CiGatePolicyTests(unittest.TestCase):
             "cli_rust must route the exe manifest: build.rs embeds it into "
             "the Windows binary, and without this entry a manifest-only PR "
             "runs no CLI leg at all",
+        )
+        # Round-47 review: cli-test, cli-lint and macos-cli-check all execute
+        # this setup script; routed only via rust_code, a script-only PR
+        # reached the post-merge push before any CLI leg could catch a break.
+        assert_extracted_entry(
+            "scripts/ci-libpipewire-build.sh",
+            "the PipeWire prefix build is a setup step of every CLI leg; a "
+            "script-only PR must trigger them",
         )
         assert_extracted_entry("CodeWhale", "cli_rust must route the foundation gitlink")
         # Round-38: every literal cli_rust filter entry must name a path that
@@ -810,6 +835,32 @@ class CiGatePolicyTests(unittest.TestCase):
             "dataset_contract is required-features-gated and silently skipped by "
             "the workspace run; the gaia timeout pins live there",
         )
+        # Round-47 review: the EXECUTION steps' `if` conditions are pinned as
+        # name+`if` pairs. The run-command substrings above stay green if a
+        # step's `if` flips or dies (e.g. `!= 'push'` → `false`), which would
+        # make cli-test report success while running NO tests on PRs or in
+        # the Merge Queue — the exact silent-skip class the windows phase
+        # map's end-anchored pins close for the Windows leg.
+        self.assertIn(
+            "- name: cargo test (all targets, no-fail-fast)\n"
+            "        if: github.event_name != 'push'",
+            cli_test,
+        )
+        self.assertIn(
+            "- name: cargo compile check (push)\n"
+            "        if: github.event_name == 'push'",
+            cli_test,
+        )
+        self.assertIn(
+            "- name: cargo test (adapter-gaia test-support)\n"
+            "        if: github.event_name != 'push'",
+            cli_test,
+        )
+        self.assertIn(
+            "- name: cargo compile check (push, adapter-gaia test-support)\n"
+            "        if: github.event_name == 'push'",
+            cli_test,
+        )
         self.assertIn("cache-targets: false", cli_test)
 
         # The Windows leg also compile-checks the pinvou-cli workspace: the
@@ -866,6 +917,16 @@ class CiGatePolicyTests(unittest.TestCase):
             "the Windows ACL privacy round-trip test must stay gated to this "
             "leg — it is the crate's only cfg(windows) ACL pin and ran on no "
             "leg before this filter existed",
+        )
+        # Round-47 review: the round-46 rebind case-fold filter is the one
+        # run_filtered line the suite did NOT pin (all five siblings above
+        # were pinned) — deleting the whole line passed the policy suite,
+        # the exact silent-orphan failure mode this suite exists to catch.
+        self.assertIn(
+            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked rebind_nesting_rejection_folds_case_where_the_os_folds",
+            windows_rust_steps,
+            "the rebind case-fold half executes only on this leg; deleting "
+            "the filter must fail the suite like its siblings' pins",
         )
         # Round-44 review: benchmark-core's cfg(windows) security pins (the
         # DPAPI fail-closed blob tests and the Windows ACL parse pin) ran on
@@ -1762,6 +1823,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
         self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
         self.assertNotIn("actions/setup-node", windows_rust_test)
+
     def test_windows_regression_loop_pins_the_round43_and_round44_app_filters(self):
         # Round-44 review: six app-side cfg(windows) tests ran on no leg —
         # three in the dependencies platform module, two in codex_acp's
@@ -1782,6 +1844,12 @@ class CiGatePolicyTests(unittest.TestCase):
             "'features::voice_shortcut::platform::tests::' \\",
             "'app::commands::dependencies::platform::windows::tests::' \\",
             "'features::codex_acp::platform::windows::tests::' \\",
+            # Round-47 review: the 22 cfg(windows)-only tests under
+            # platform::os::windows (windows_path 18 + windows_system 4)
+            # executed on NO leg — the orphan class rounds 42-44 claimed
+            # eliminated. The module filter runs them here; deleting it
+            # re-orphans them, so it is pinned like its siblings.
+            "'platform::os::windows::' \\",
             "'windows_attachment_runtime_stays_security_gated'; do",
             # The loop's zero-match guard is load-bearing (a renamed test
             # must fail the step, not pass silently).
