@@ -628,7 +628,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'html') {
           return (
             <div className="flex flex-col gap-2 h-full">
-              {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
+              {visualWarningLabel(vis) && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
               <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
                 title={(sel && sel.path) || t.apTabPreview}
                 data-testid="artifact-html-preview-frame"
@@ -639,7 +639,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'images') {
           return (
             <div className="flex flex-col items-center gap-3">
-              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
+              {visualWarningLabel(vis) && <div className={`self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
               {(vis.images || []).map((src, i) => (
                 <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />
               ))}
