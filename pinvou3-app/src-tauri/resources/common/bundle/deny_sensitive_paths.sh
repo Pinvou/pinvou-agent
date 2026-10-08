@@ -51,8 +51,10 @@ if [[ "$TOOL" == "list_mcp_resources" || "$TOOL" == "list_mcp_resource_templates
     # aliases. The surrounding quotes are the boundary, so marketplace MCP names
     # such as `wecom-bot` and `企微群机器人` remain introspectable. The args are
     # lowercased first so capitalized echoes ("Feishu", "Wecom") match too;
-    # `tr` leaves the Chinese aliases untouched.
-    ARGS_LOWER="$(printf '%s' "$ARGS" | tr '[:upper:]' '[:lower:]')"
+    # `tr` leaves the Chinese aliases untouched. LC_ALL=C keeps the fold
+    # ASCII-only: in a tr_TR.UTF-8 session glibc maps I→ı and the capitalized
+    # alias deny would silently no-op.
+    ARGS_LOWER="$(printf '%s' "$ARGS" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
     SKILL_CONNECTOR_NAME_PATTERN='"(wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[[:space:]_-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
     if [[ "$ARGS_LOWER" =~ $SKILL_CONNECTOR_NAME_PATTERN ]]; then
         echo '{"decision":"deny","reason":"该名称不是 MCP server（无 MCP schema），无法用 list_mcp_resources 或 list_mcp_resource_templates 自省。若它是技能型连接器，请用 load_skill 加载其对应技能后按技能说明使用。连接状态以工具面板为准，自省失败不代表未连接。"}'
