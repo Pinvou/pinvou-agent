@@ -40,23 +40,28 @@ case "$(uname -s)" in
       # 在 rustc 参数位不可靠。
       # 编译失败即报错终止:Windows 栈溢出已实证,静默退回"不注入"会把 wrapper
       # 构建失败重新表现为难诊断的 rustc 栈溢出。
-      # 与 scripts/tauri/build.js 相同的原子替换:先写唯一临时文件再改名,
-      # 中断的编译绝不能留下半截 exe 被下次的 mtime 缓存永远复用。
+      # Same atomic replace as scripts/tauri/build.js: write a unique temp
+      # file first, then rename it into place. An interrupted compile must
+      # never leave a half-written exe that the next run's mtime cache
+      # would reuse forever.
       tmp_exe="$exe.$$.$RANDOM.tmp"
-      # MSVC rustc -O 链接带 /DEBUG:临时 exe 旁还会写一个同名 .pdb
-      # (临时名去掉 .tmp 换成 .pdb),必须与临时 exe 一起清理。
+      # MSVC rustc -O links with /DEBUG: it also writes a same-named .pdb
+      # next to the temp exe (temp name with .tmp replaced by .pdb), which
+      # must be cleaned up together with the temp exe.
       if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$tmp_exe")"; then
         rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
         echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
         exit 1
       fi
-      # 改名失败(并发构建正在执行旧 exe 时 Windows 会锁住目标)必须响亮报错:
-      # 本脚本无 set -e,静默退出 0 会让 run-dev.sh 导出一个不存在的 wrapper
-      # 路径,或在旧 exe 尚存时永远复用过期缓存,重新引入本分支要防的半截
-      # exe 问题。
+      # A failed rename must fail loudly (Windows locks the target while a
+      # concurrent build is executing the old exe): this script has no
+      # set -e, so a silent exit 0 would let run-dev.sh export a wrapper
+      # path that does not exist, or keep reusing the stale cache while the
+      # old exe survives, reintroducing the half-written exe problem this
+      # branch guards against.
       if ! mv -f "$tmp_exe" "$exe"; then
         rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
-        echo "rustc-stack-wrapper-select: 无法替换 .exe wrapper(目标被并发构建占用?);请关闭并发构建后重试" >&2
+        echo "rustc-stack-wrapper-select: cannot replace the .exe wrapper (target locked by a concurrent build?); stop the concurrent build and retry" >&2
         exit 1
       fi
       rm -f "${tmp_exe%.tmp}.pdb"
