@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc;
@@ -331,12 +331,6 @@ fn rotate_cli_install_log_if_oversized(log_path: &Path) {
 }
 
 fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
-    let Ok(metadata) = std::fs::metadata(log_path) else {
-        return;
-    };
-    if metadata.len() <= max_bytes {
-        return;
-    }
     let mut rotated = log_path.as_os_str().to_owned();
     rotated.push(".old");
     // When two installs trigger rotation concurrently, the later rename
@@ -347,7 +341,11 @@ fn rotate_cli_install_log_if_oversized_with(log_path: &Path, max_bytes: u64) {
     // overwritten with no prior delete; failures are ignored only for cases
     // such as the destination being held by another process, and the next
     // rotation retries (the test below pins this overwrite semantics).
-    let _ = std::fs::rename(log_path, PathBuf::from(rotated));
+    let _ = crate::platform::filesystem::rotate_log_if_oversized(
+        log_path,
+        max_bytes,
+        Some(Path::new(&rotated)),
+    );
 }
 
 /// Bounded reap of a killed connector child with the shared grace budget,

@@ -8,7 +8,6 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
 // `SEARCH_LIMIT`, `PREVIEW_LIMIT` and `DIFF_LIMIT` are `pub` because the
@@ -1175,20 +1174,10 @@ fn fingerprint(path: &Path, include_hash: bool) -> Result<Option<FileFingerprint
         }
     };
     let sha256 = if include_hash {
-        let mut file =
-            fs::File::open(path).with_context(|| format!("打开文件失败: {}", path.display()))?;
-        let mut digest = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file
-                .read(&mut buffer)
-                .with_context(|| format!("读取文件失败: {}", path.display()))?;
-            if read == 0 {
-                break;
-            }
-            digest.update(&buffer[..read]);
-        }
-        Some(crate::platform::encoding::hex_lower(&digest.finalize()))
+        Some(
+            crate::platform::hashing::sha256_file(path)
+                .with_context(|| format!("读取文件失败: {}", path.display()))?,
+        )
     } else {
         None
     };

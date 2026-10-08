@@ -72,10 +72,9 @@ fn transcripts_dir(workspace: &Path) -> PathBuf {
 }
 
 fn transcript_path(workspace: &Path, agent_id: &str) -> PathBuf {
-    let digest = Sha256::digest(agent_id.as_bytes());
     transcripts_dir(workspace).join(format!(
         "{}.jsonl",
-        crate::platform::encoding::hex_lower(&digest)
+        crate::platform::hashing::sha256_hex(agent_id.as_bytes())
     ))
 }
 

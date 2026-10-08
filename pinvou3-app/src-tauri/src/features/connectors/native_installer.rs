@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
@@ -596,7 +595,7 @@ fn file_sha256_matches(path: &Path, expected: &str) -> bool {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    crate::platform::encoding::hex_lower(&Sha256::digest(bytes))
+    crate::platform::hashing::sha256_hex(bytes)
 }
 
 #[cfg(test)]

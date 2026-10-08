@@ -115,28 +115,14 @@ fn write_json_atomically(path: &Path, value: &serde_json::Value) -> Result<(), S
         .ok_or_else(|| format!("binding file has no parent: {}", path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("create {}: {error}", parent.display()))?;
-    let nonce = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let temporary = path.with_extension(format!("json.retiring-{nonce}"));
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("serialize retired bindings: {error}"))?;
-    std::fs::write(&temporary, bytes)
-        .map_err(|error| format!("write {}: {error}", temporary.display()))?;
-    let backup = path.with_extension(format!("json.retiring-backup-{nonce}"));
-    let result = crate::platform::filesystem::replace_file_atomically(&temporary, path, &backup)
-        .map(|_| ())
-        .map_err(|error| format!("replace {}: {error}", path.display()));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-        let _ = std::fs::remove_file(&backup);
-    }
-    result
+    // platform::filesystem::atomic_write syncs the staged bytes before the
+    // rename and knows its own recovery layout; the previous hand-staged
+    // variant (fs::write to a .retiring- temp, then replace_file_atomically)
+    // skipped the pre-rename fsync entirely.
+    crate::platform::filesystem::atomic_write(path, &bytes)
+        .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
 fn retire_bindings(sessions: &Path) -> Result<usize, String> {

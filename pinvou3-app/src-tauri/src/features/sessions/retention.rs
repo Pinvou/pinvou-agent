@@ -161,7 +161,7 @@ impl SessionStore {
             .sessions_dir()
             .join(format!("{}.json", session.metadata.id));
         let payload = serde_json::to_vec_pretty(session).context("serialize saved session")?;
-        deepseek_tui::utils::write_atomic(&path, &payload)
+        crate::platform::filesystem::atomic_write_private(&path, &payload)
             .with_context(|| format!("write session {}", path.display()))?;
         // Once the session JSON hits disk the list snapshot is stale (title /
         // updated_at / new session may all have changed)
@@ -908,13 +908,16 @@ impl SessionStore {
         };
         let payload =
             serde_json::to_vec_pretty(&registry).context("serialize scheduled profiles")?;
-        deepseek_tui::utils::write_atomic(self.scheduled_profiles_path.as_ref(), &payload)
-            .with_context(|| {
-                format!(
-                    "write scheduled profiles {}",
-                    self.scheduled_profiles_path.display()
-                )
-            })
+        crate::platform::filesystem::atomic_write_private(
+            self.scheduled_profiles_path.as_ref(),
+            &payload,
+        )
+        .with_context(|| {
+            format!(
+                "write scheduled profiles {}",
+                self.scheduled_profiles_path.display()
+            )
+        })
     }
 
     pub(crate) fn remove_scheduled_runtime_dir(&self, id: &str) -> Result<()> {

@@ -17,8 +17,6 @@ use std::sync::{Mutex, OnceLock};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-#[cfg(any(feature = "benchmark-hooks", test))]
-use sha2::{Digest, Sha256};
 
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_TURNS: OnceLock<Mutex<HashMap<String, VecDeque<ActiveTurnTiming>>>> = OnceLock::new();
@@ -304,12 +302,10 @@ pub struct ToolCatalogSummary {
 #[cfg(any(feature = "benchmark-hooks", test))]
 impl ToolCatalogSummary {
     pub fn from_serialized_catalog(catalog_count: usize, catalog_json: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(catalog_json);
         Self {
             catalog_count: catalog_count as u64,
             catalog_bytes: catalog_json.len() as u64,
-            catalog_sha256: crate::platform::encoding::hex_lower(&hasher.finalize()),
+            catalog_sha256: crate::platform::hashing::sha256_hex(catalog_json),
         }
     }
 }
