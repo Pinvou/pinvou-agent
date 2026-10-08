@@ -1,22 +1,41 @@
-//! 代码会话 checkpoint 命令：turn 边界快照的查询、差异预览与回滚。
+//! 会话 checkpoint 命令：turn 边界快照的查询、差异预览与回滚。
 //!
 //! 快照本体在 `features/code_checkpoints`（影子 git 仓库，数据落账本根）；本文件
-//! 只做传输边界：原生代码会话校验、两个根解析、忙碌门与错误文案。仅品悟原生
-//! code 会话可用（`SessionStore::is_code_session` 命中），ACP 会话与其余会话
-//! 类型如实拒绝（设计 §11：ACP 不做）。
+//! 只做传输边界：原生车道校验、两个根解析、忙碌门与错误文案。原生车道 = 工作模式
+//! 会话 + 品悟原生 code 会话（`SessionKind::Chat` + 非 ACP）：ACP 会话与定时
+//! 会话如实拒绝（设计 §11：ACP 不做；定时会话无每轮快照，与 fork 拒绝口径一致）。
+//! aux 侧聊会话（`aux-`）按同一车道配方放行：零工具纯问答，快照/回退都落其
+//! 私有目录（小且自排除），无 UI 消费——如实放行不设特判（配方与 list_sessions
+//! 车道过滤保持同源）。
 
 use super::prelude::*;
 use crate::features::code_checkpoints as checkpoints;
+use crate::features::codex_acp::AcpPool;
 use checkpoints::{CheckpointDiff, CheckpointKind, CheckpointMeta};
 
-/// 解析原生代码会话的两个根：账本根（checkpoint 数据落点）+ 执行根（快照对象）。
-/// 非原生代码会话、会话不存在、根不可用都如实报错，不静默降级。
-fn resolve_code_session_roots(
+/// 原生车道判定：`SessionKind::Chat` 排除定时会话（ScheduledRun），`!is_acp`
+/// 排除外部 agent 车道（调用方传 `AcpPool::is_acp`；测试注入替身谓词——AcpPool
+/// 依赖 AppHandle，无法在单元测试构造）。工作模式与原生 code 会话同为原生车道
+/// （后者是本能力的既有用户，门放宽后行为不变）。判定配方与 `list_sessions`
+/// 的车道过滤同源。
+fn is_native_checkpoint_lane(
     session_id: &str,
     store: &SessionStore,
+    is_acp: impl Fn(&str) -> bool,
+) -> bool {
+    matches!(store.session_kind(session_id), Ok(SessionKind::Chat)) && !is_acp(session_id)
+}
+
+/// 解析原生车道会话的两个根：账本根（checkpoint 数据落点）+ 执行根（快照对象）。
+/// 非原生车道（ACP/定时）、会话不存在、根不可用都如实报错，不静默降级。
+/// `is_acp` 注入缝同 [`is_native_checkpoint_lane`]。
+fn resolve_native_session_roots(
+    session_id: &str,
+    store: &SessionStore,
+    is_acp: impl Fn(&str) -> bool,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    if !store.is_code_session(session_id) {
-        return Err("仅原生代码会话支持检查点".to_string());
+    if !is_native_checkpoint_lane(session_id, store, is_acp) {
+        return Err("仅原生会话支持检查点".to_string());
     }
     let roots = store
         .session_roots(session_id)
@@ -119,11 +138,12 @@ pub(super) async fn drop_unsent_turn_checkpoint(
 #[tauri::command]
 pub async fn list_checkpoints(
     session_id: String,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
 ) -> Result<Vec<CheckpointMeta>, String> {
     // 列表只读账本根索引，不触碰执行根（执行根被删的历史会话仍可查看/清理认知）。
-    if !store.is_code_session(&session_id) {
-        return Err("仅原生代码会话支持检查点".to_string());
+    if !is_native_checkpoint_lane(&session_id, &store, |id| acp_pool.is_acp(id)) {
+        return Err("仅原生会话支持检查点".to_string());
     }
     let ledger = store
         .session_roots(&session_id)
@@ -142,9 +162,11 @@ pub async fn checkpoint_diff(
     session_id: String,
     checkpoint_id: String,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
 ) -> Result<CheckpointDiff, String> {
-    let (ledger, execution) = resolve_code_session_roots(&session_id, &store)?;
+    let (ledger, execution) =
+        resolve_native_session_roots(&session_id, &store, |id| acp_pool.is_acp(id))?;
     // 软忙碌门：diff 会先 add -A 写影子 index，turn 进行中会与引擎写文件及
     // create_checkpoint 抢同一 index.lock（偶发失败或抓到写了一半的中间态），
     // 如实拒绝让前端稍后重试（确认弹窗只在空闲时可开，竞态窗口在点击之后）。
@@ -348,9 +370,11 @@ pub async fn rewind_to_turn(
     keep_turns: u32,
     conversation_only: bool,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
 ) -> Result<RewindToTurnResult, String> {
-    let (ledger, execution) = resolve_code_session_roots(&session_id, &store)?;
+    let (ledger, execution) =
+        resolve_native_session_roots(&session_id, &store, |id| acp_pool.is_acp(id))?;
     // 本会话忙碌门：同 restore_checkpoint，先快速检查给出友好文案，再原子占位；
     // 预约持有到编排结束（未提交，Drop 自动归还 slot）。
     if pool.is_turn_active(&session_id) {
@@ -563,12 +587,15 @@ fn resolve_rewind_undo_state(
     }))
 }
 
-/// 查询侧主体（同步，便于测试）：非原生代码会话如实返回 None（不报错）。
+/// 查询侧主体（同步，便于测试）：非原生车道（ACP/定时）如实返回 None（不报错）。
+/// `is_acp` 为 ACP 谓词注入缝（生产传 `AcpPool::is_acp`，测试传替身——见
+/// [`is_native_checkpoint_lane`]）。
 fn rewind_undo_state_inner(
     store: &SessionStore,
+    is_acp: impl Fn(&str) -> bool,
     session_id: &str,
 ) -> Result<Option<RewindUndoInfo>, String> {
-    if !store.is_code_session(session_id) {
+    if !is_native_checkpoint_lane(session_id, store, is_acp) {
         return Ok(None);
     }
     let ledger = store
@@ -581,12 +608,16 @@ fn rewind_undo_state_inner(
 #[tauri::command]
 pub async fn rewind_undo_state(
     session_id: String,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
 ) -> Result<Option<RewindUndoInfo>, String> {
     let store_inner = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || rewind_undo_state_inner(&store_inner, &session_id))
-        .await
-        .map_err(|error| format!("读取反悔状态任务失败: {error}"))?
+    let acp_inner = acp_pool.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        rewind_undo_state_inner(&store_inner, |id| acp_inner.is_acp(id), &session_id)
+    })
+    .await
+    .map_err(|error| format!("读取反悔状态任务失败: {error}"))?
 }
 
 /// `undo_last_rewind` 的返回。
@@ -603,9 +634,11 @@ pub struct UndoLastRewindResult {
 pub async fn undo_last_rewind(
     session_id: String,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
 ) -> Result<UndoLastRewindResult, String> {
-    let (ledger, execution) = resolve_code_session_roots(&session_id, &store)?;
+    let (ledger, execution) =
+        resolve_native_session_roots(&session_id, &store, |id| acp_pool.is_acp(id))?;
     // 忙碌门与 rewind_to_turn 同款：本会话原子占位 + 同执行根跨会话拒绝。
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请先停止当前任务再反悔".to_string());
@@ -804,6 +837,23 @@ mod tests {
         let staging = std::path::PathBuf::from(staging);
         std::fs::write(&staging, content).expect("write staging file");
         std::fs::rename(&staging, path).expect("rename staging file over target");
+    }
+
+    /// 定时会话 profile（车道判定的 ScheduledRun 腿测试用；workspace 由
+    /// `create_scheduled_run` 从 task_id 派生，这里只填必填字段）。
+    fn scheduled_profile_for_gate_test(
+        task_id: &str,
+    ) -> crate::features::sessions::ScheduledRunProfile {
+        crate::features::sessions::ScheduledRunProfile {
+            task_id: task_id.to_string(),
+            model: "/scheduled-model".into(),
+            model_id: None,
+            workspace: std::env::temp_dir(),
+            mode: crate::features::sessions::ScheduledRunMode::Plan,
+            allow_shell: false,
+            trust_mode: false,
+            auto_approve: false,
+        }
     }
 
     /// 跨会话忙碌门：同执行根的其它会话忙碌 → 返回其标题；不忙碌、
@@ -1073,8 +1123,10 @@ mod tests {
         }
     }
 
-    /// 造一个带两轮对话、且已回退到第 1 轮的 code 会话；返回 (store, guard, 会话 id)。
-    fn rewound_code_session(
+    /// 造一个带两轮对话、且已回退到第 1 轮的原生工作模式会话（不设 code
+    /// predicate——门放宽后车道判定与产品模式轴无关，工作模式即原生车道）；
+    /// 返回 (store, guard, 会话 id)。
+    fn rewound_native_session(
         label: &str,
     ) -> (SessionStore, std::sync::MutexGuard<'static, ()>, String) {
         let (store, guard) = isolated_store(label);
@@ -1082,8 +1134,6 @@ mod tests {
             .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         let id = session.metadata.id.clone();
-        let code_id = id.clone();
-        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
         store
             .update_messages(
                 &id,
@@ -1104,7 +1154,7 @@ mod tests {
     /// undo 条件①③满足但回退后发过新轮次（条件②破）→ None。
     #[test]
     fn undo_state_none_after_new_turn_since_rewind() {
-        let (store, _g, id) = rewound_code_session("undo-new-turn");
+        let (store, _g, id) = rewound_native_session("undo-new-turn");
         store
             .update_messages(
                 &id,
@@ -1118,7 +1168,7 @@ mod tests {
         // 条件①: sidecar 有记录；条件③ 与本断言无关（ledger 无 checkpoint 也会先被
         // 条件②挡住）——直接验证 inner 返回 None。
         assert_eq!(
-            rewind_undo_state_inner(&store, &id).expect("state"),
+            rewind_undo_state_inner(&store, |_| false, &id).expect("state"),
             None,
             "回退后发过新轮次必须不可反悔"
         );
@@ -1132,27 +1182,44 @@ mod tests {
             .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         let id = session.metadata.id.clone();
-        let code_id = id.clone();
-        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
         store
             .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
             .expect("seed");
-        assert_eq!(rewind_undo_state_inner(&store, &id).expect("state"), None);
+        assert_eq!(
+            rewind_undo_state_inner(&store, |_| false, &id).expect("state"),
+            None
+        );
     }
 
-    /// 非原生代码会话 → None（不报错）。
+    /// 非原生车道 → None（不报错）：ACP 会话（is_acp 命中）与定时会话
+    /// （SessionKind::ScheduledRun）都不在检查点能力范围；工作模式会话
+    /// （is_acp 未命中）同条件下不再被排除（门放宽的核心语义）。
     #[test]
-    fn undo_state_none_for_non_code_session() {
-        let (store, _g) = isolated_store("undo-non-code");
+    fn undo_state_none_for_non_native_lane_sessions() {
+        let (store, _g) = isolated_store("undo-non-native-lane");
         let session = store
             .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
-        // 谓词不含该会话（plain 会话）。
-        store.set_code_session_predicate(Arc::new(|_: &str| false));
+        let plain_id = session.metadata.id.clone();
+        // ACP 谓词命中 → 非原生车道。
         assert_eq!(
-            rewind_undo_state_inner(&store, &session.metadata.id).expect("state"),
-            None
+            rewind_undo_state_inner(&store, |id| id == plain_id, &plain_id).expect("state"),
+            None,
+            "ACP 会话必须软拒绝（Ok(None)）"
         );
+        // 定时会话（ScheduledRun）→ 非原生车道。
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile_for_gate_test("task-undo-gate"))
+            .expect("create scheduled run");
+        assert_eq!(
+            rewind_undo_state_inner(&store, |_| false, &scheduled.metadata.id).expect("state"),
+            None,
+            "定时会话必须软拒绝（Ok(None)）"
+        );
+        // 对照：同一 plain 会话在非 ACP 谓词下命中原生车道——不再是 None-by-lane
+        // （此处无回退记录，故为条件①破的 None，但车道判定已放行）。
+        let lane_hit = is_native_checkpoint_lane(&plain_id, &store, |_| false);
+        assert!(lane_hit, "工作模式会话必须命中原生车道");
     }
 
     /// undo 条件③破（记录绑定的 PreRestore 已被 LRU 淘汰）→ None；
@@ -1168,8 +1235,6 @@ mod tests {
             .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         let id = session.metadata.id.clone();
-        let code_id = id.clone();
-        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
         store
             .update_messages(
                 &id,
@@ -1204,7 +1269,7 @@ mod tests {
         rewrite_staged_file(&exec.join("code.txt"), "v1\n");
 
         // 条件齐全 → Some，字段正确（被截 1 轮，checkpoint_id 为记录绑定的 PreRestore）。
-        let info = rewind_undo_state_inner(&store, &id)
+        let info = rewind_undo_state_inner(&store, |_| false, &id)
             .expect("state")
             .expect("undoable");
         assert_eq!(info.checkpoint_id.as_deref(), Some(pre_restore.id.as_str()));
@@ -1236,7 +1301,10 @@ mod tests {
         );
         // 记录已消费 → 不再可反悔；对称语义：restore 又打了一条 PreRestore，
         // 「反悔的反悔」在代码侧仍可恢复（index 里 PreRestore 仍在）。
-        assert_eq!(rewind_undo_state_inner(&store, &id).expect("state"), None);
+        assert_eq!(
+            rewind_undo_state_inner(&store, |_| false, &id).expect("state"),
+            None
+        );
         assert!(
             checkpoints::list_checkpoints(&ledger)
                 .expect("list")
@@ -1254,7 +1322,7 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (store, _g, id) = rewound_code_session("undo-degraded");
+        let (store, _g, id) = rewound_native_session("undo-degraded");
         let roots = store.session_roots(&id).expect("roots");
         let ledger = roots.ledger.clone();
         let exec = roots.execution.clone();
@@ -1271,9 +1339,9 @@ mod tests {
         .expect("unrelated pre-restore");
         std::fs::write(exec.join("code.txt"), "user-work-new\n").expect("write new");
 
-        // 降级记录（rewound_code_session 以 None 绑定截断）：undo 状态可用但
+        // 降级记录（rewound_native_session 以 None 绑定截断）：undo 状态可用但
         // checkpoint_id 必须是 None——不能错配到上面那条无关回滚点。
-        let info = rewind_undo_state_inner(&store, &id)
+        let info = rewind_undo_state_inner(&store, |_| false, &id)
             .expect("state")
             .expect("degraded undo available");
         assert_eq!(info.checkpoint_id, None, "降级回退的 undo 不得恢复代码");
@@ -1303,8 +1371,6 @@ mod tests {
             .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         let id = session.metadata.id.clone();
-        let code_id = id.clone();
-        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
         store
             .update_messages(
                 &id,
@@ -1345,7 +1411,7 @@ mod tests {
         assert_ne!(bound.id, poisoned.id);
 
         // 重试 undo：候选仍是绑定的回滚点，不是更晚的那条。
-        let info = rewind_undo_state_inner(&store, &id)
+        let info = rewind_undo_state_inner(&store, |_| false, &id)
             .expect("state")
             .expect("retry undoable");
         assert_eq!(
@@ -1360,7 +1426,7 @@ mod tests {
     /// 不再匹配截断时的记录，如实不可反悔（弱代理时代会错误放行）。
     #[test]
     fn undo_state_none_after_tail_edit_since_rewind() {
-        let (store, _g, id) = rewound_code_session("undo-tail-edit");
+        let (store, _g, id) = rewound_native_session("undo-tail-edit");
         store
             .update_messages(
                 &id,
@@ -1368,7 +1434,7 @@ mod tests {
             )
             .expect("edit tail");
         assert_eq!(
-            rewind_undo_state_inner(&store, &id).expect("state"),
+            rewind_undo_state_inner(&store, |_| false, &id).expect("state"),
             None,
             "回退后尾部被编辑必须不可反悔"
         );
@@ -1392,8 +1458,6 @@ mod tests {
             .create_new("/model".into(), None, std::env::temp_dir())
             .expect("create");
         let id = session.metadata.id.clone();
-        let code_id = id.clone();
-        store.set_code_session_predicate(Arc::new(move |candidate: &str| candidate == code_id));
         store
             .update_messages(
                 &id,
@@ -1422,7 +1486,7 @@ mod tests {
     /// undo 退回 turn 数弱代理、代码侧不恢复（checkpoint_id = None）。
     #[test]
     fn legacy_backup_record_without_binding_still_loads() {
-        let (store, _g, id) = rewound_code_session("undo-legacy");
+        let (store, _g, id) = rewound_native_session("undo-legacy");
         // 用旧格式 JSON 覆盖 sidecar（模拟修复前的记录）。
         let session = store.load(&id).expect("load");
         let removed: Vec<Message> = vec![user_msg("第二轮"), assistant_msg("答二")];
@@ -1450,5 +1514,339 @@ mod tests {
             store.load(&id).expect("load").messages.len(),
             session.messages.len() + 2
         );
+    }
+
+    // ── 工作模式快照/回退（门放宽回归：F1/F2/F4/F6/F8、B1-B4）────────────────
+
+    /// 造一个工作模式会话（非 code、未绑项目、非定时）并返回其两根。
+    fn work_mode_session(
+        label: &str,
+    ) -> (
+        SessionStore,
+        std::sync::MutexGuard<'static, ()>,
+        String,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let (store, guard) = isolated_store(label);
+        let session = store
+            .create_new("/model".into(), None, std::env::temp_dir())
+            .expect("create");
+        let id = session.metadata.id.clone();
+        assert!(
+            is_native_checkpoint_lane(&id, &store, |_| false),
+            "工作模式会话必须命中原生车道"
+        );
+        let roots = store.session_roots(&id).expect("roots");
+        assert_eq!(roots.execution, roots.ledger, "未绑定会话两根同为私有目录");
+        // 私有 workspace 由引擎懒创建，测试先建目录（体积估算遇缺失目录按不在
+        // 预算内处理，快照会被跳过）。
+        std::fs::create_dir_all(&roots.execution).expect("create private workspace");
+        (store, guard, id, roots.ledger, roots.execution)
+    }
+
+    /// F1/B4：工作模式会话经共享快照缝 `create_turn_checkpoint`（chat/accept_plan
+    /// 同一编排）每轮产生 Turn 快照，turn 序号随会话消息计数递增；未绑定会话
+    /// 快照落私有目录（ensure_repo 自排除 checkpoints 目录，feature 层由
+    /// `ledger_inside_execution_root_is_excluded_from_snapshot_and_clean` 钉住）。
+    /// 时序镜像生产：快照先于该轮消息落盘（turn 号 = 已有轮数 + 1）。
+    #[tokio::test]
+    async fn work_mode_turn_checkpoints_via_shared_seam() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("work-snapshot");
+        let snapshot1 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        let snapshot2 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+        )
+        .await
+        .expect("turn 2 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第二轮"), assistant_msg("答二")])
+            .expect("seed turn 2");
+        let turns: Vec<(Option<u32>, String)> = checkpoints::list_checkpoints(&ledger)
+            .expect("list")
+            .into_iter()
+            .filter(|entry| entry.kind == CheckpointKind::Turn)
+            .map(|entry| (entry.turn, entry.id))
+            .collect();
+        assert!(
+            turns.contains(&(Some(1), snapshot1.clone())),
+            "turn 1 快照缺失: {turns:?}"
+        );
+        assert!(
+            turns.contains(&(Some(2), snapshot2.clone())),
+            "turn 2 快照缺失: {turns:?}"
+        );
+
+        // F8：发送失败路径按 id 精确作废「未成活」快照（drop_unsent 共用编排）。
+        let dropped_id = snapshot2.clone();
+        drop_unsent_turn_checkpoint(Some(ledger.clone()), Some(snapshot2), &id, "chat").await;
+        let remaining: Vec<String> = checkpoints::list_checkpoints(&ledger)
+            .expect("list")
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert!(remaining.contains(&snapshot1), "其它快照不得被误删");
+        assert!(
+            !remaining.contains(&dropped_id),
+            "未成活快照必须按 id 精确删除: {remaining:?}"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// F2：工作模式快照沿用 code_checkpoints 的内容策略——秘密文件与可再生
+    /// 目录不进快照（diff 预览的可见面同理），普通源文件照常纳入。
+    #[tokio::test]
+    async fn work_mode_snapshot_excludes_secrets_and_regenerable_dirs() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("work-exclusion");
+        std::fs::create_dir_all(execution.join("src")).expect("src dir");
+        std::fs::create_dir_all(execution.join("node_modules/pkg")).expect("dep dir");
+        std::fs::write(execution.join("src/a.rs"), "a\n").expect("write");
+        std::fs::write(execution.join(".env"), "SECRET=1\n").expect("write");
+        std::fs::write(execution.join("node_modules/pkg/index.js"), "dep\n").expect("write");
+        store
+            .update_messages(&id, vec![user_msg("第一轮")])
+            .expect("seed turn 1");
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+        )
+        .await
+        .expect("turn 1 snapshot");
+        // turn 之后的改动构成 diff 预览（「回滚将撤销的变更」的可见面）。
+        std::fs::write(execution.join("src/b.rs"), "b\n").expect("write");
+        std::fs::write(execution.join(".env"), "SECRET=2\n").expect("write");
+        std::fs::write(execution.join("node_modules/pkg/index.js"), "dep2\n").expect("write");
+        let diff = checkpoints::diff_checkpoint(&ledger, &execution, &snapshot, false)
+            .expect("diff");
+        let paths: Vec<&str> = diff.changes.iter().map(|c| c.path.as_str()).collect();
+        assert!(
+            paths.contains(&"src/b.rs"),
+            "普通源文件变更必须可见: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| *p == ".env" || p.ends_with("/.env")),
+            "秘密文件不得进快照: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.starts_with("node_modules/")),
+            "可再生目录不得进快照: {paths:?}"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// F3/F4/F4a：工作模式双层回退与仅对话回退——`conversation_only` 恒降级
+    /// （快照存在也不动代码），截断后用户在执行根的手动改动保持原样；目标轮
+    /// 快照缺失时同样可用；对照腿验证勾选「同时回退工作区文件」时定位 Turn
+    /// 快照、恢复到该轮之前并自动留 PreRestore 回滚点（双层，F3）。
+    #[test]
+    fn work_mode_conversation_only_rewind_leaves_files_untouched() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("work-conv-only");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed transcript");
+        std::fs::create_dir_all(&ledger).expect("ledger dir");
+        checkpoints::create_checkpoint(&ledger, &execution, Some(1), CheckpointKind::Turn, "t1")
+            .expect("turn 1 snapshot");
+        std::fs::write(execution.join("code.txt"), "turn-1-state\n").expect("write t1 state");
+        checkpoints::create_checkpoint(&ledger, &execution, Some(2), CheckpointKind::Turn, "t2")
+            .expect("turn 2 snapshot");
+        std::fs::write(execution.join("code.txt"), "turn-2-state\n").expect("write t2 state");
+
+        // F3 对照腿（勾选「同时回退工作区文件」）：定位 turn 2 快照、恢复文件到
+        // 第 2 轮之前，restore 内部强制 PreRestore 回滚点（镜像 rewind_to_turn
+        // 步骤 1/2 的编排：restore → truncate 绑定回滚点）。
+        let entries = checkpoints::list_checkpoints(&ledger).expect("list");
+        let plan = resolve_rewind_plan(entries, 1, false).expect("double-layer plan");
+        assert!(!plan.degraded);
+        let restore_target = plan.checkpoint.expect("turn 2 checkpoint");
+        let undo = checkpoints::restore_checkpoint(&ledger, &execution, &restore_target.id)
+            .expect("restore turn 2 checkpoint");
+        store
+            .truncate_to_user_turn(&id, 1, Some(undo.id.clone()))
+            .expect("truncate to turn 1 with bound rollback point");
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).expect("read"),
+            "turn-1-state\n",
+            "双层回退必须把文件恢复到第 2 轮之前"
+        );
+        assert!(
+            checkpoints::list_checkpoints(&ledger)
+                .expect("list")
+                .iter()
+                .any(|entry| entry.kind == CheckpointKind::PreRestore && entry.id == undo.id),
+            "双层回退必须自动留 PreRestore 回滚点（可反悔）"
+        );
+
+        // F4：conversation_only 恒降级（此后对话已在第 1 轮末，回退到第 0 轮）。
+        // 工作模式常态：用户手动改动与 agent 改动交织——在 F3 的 restore 之后
+        // 写入（restore 的 clean -fd 会移除目标快照之后的新文件，那正是双层
+        // 回退的代价；本腿验证的是「仅回退对话」时文件保持原样）。
+        std::fs::write(execution.join("notes.md"), "user manual edit\n").expect("write");
+        let entries = checkpoints::list_checkpoints(&ledger).expect("list");
+        let plan = resolve_rewind_plan(entries, 0, true).expect("degraded plan");
+        assert!(plan.degraded);
+        assert!(plan.checkpoint.is_none());
+        // F4a：目标轮快照缺失（超预算/当时失败）同样可用。
+        let plan = resolve_rewind_plan(Vec::new(), 1, true).expect("degraded plan");
+        assert!(plan.degraded);
+        // 镜像 rewind_to_turn 的 degraded 编排：跳过 restore，仅截断对话。
+        store
+            .truncate_to_user_turn(&id, 0, None)
+            .expect("truncate to turn 0");
+        assert_eq!(
+            std::fs::read_to_string(execution.join("notes.md")).expect("read"),
+            "user manual edit\n",
+            "仅对话回退不得触碰文件"
+        );
+        assert!(
+            store.load(&id).expect("load").messages.is_empty(),
+            "对话应全部截断（回退到第 0 轮）"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// F6：工作模式 Plan 会话的批准轮快照——accept_plan 与 chat 共用
+    /// `create_turn_checkpoint`，其门（scheduled_profile.is_none）对 Plan 工作模式
+    /// 会话放行，批准轮（is_user_turn_prompt 同口径计数的真实用户消息）照常登记。
+    /// 时序镜像生产：快照先于该轮消息落盘。
+    #[tokio::test]
+    async fn work_mode_plan_approval_turn_snapshots() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("work-plan");
+        store
+            .set_mode(&id, SerializableMode::Plan)
+            .expect("plan mode");
+        let plan_snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "给个方案".into(),
+            "chat",
+        )
+        .await
+        .expect("plan turn snapshot");
+        store
+            .update_messages(&id, vec![user_msg("给个方案"), assistant_msg("方案…")])
+            .expect("seed plan turn");
+        // accept_plan 的门谓词：工作模式会话（非定时）放行。
+        assert!(
+            store.scheduled_profile(&id).is_none(),
+            "accept_plan/chat 快照门对工作模式会话必须放行"
+        );
+        // 批准轮（「✅ 就这么干」是真实用户消息，同口径计数为第 2 轮）。
+        let approval_snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "✅ 就这么干".into(),
+            "accept_plan",
+        )
+        .await
+        .expect("approval turn snapshot");
+        store
+            .update_messages(&id, vec![user_msg("✅ 就这么干")])
+            .expect("seed approval turn");
+        let turns: Vec<(Option<u32>, String)> = checkpoints::list_checkpoints(&ledger)
+            .expect("list")
+            .into_iter()
+            .filter(|entry| entry.kind == CheckpointKind::Turn)
+            .map(|entry| (entry.turn, entry.id))
+            .collect();
+        assert!(turns.contains(&(Some(1), plan_snapshot)));
+        assert!(turns.contains(&(Some(2), approval_snapshot)));
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// B1/B2：命令族车道拒绝——ACP 谓词命中或定时会话（ScheduledRun）时
+    /// `resolve_native_session_roots` 以新文案拒绝；工作模式会话放行。
+    /// `rewind_undo_state` 的软门（Ok(None)）见
+    /// `undo_state_none_for_non_native_lane_sessions`。
+    #[test]
+    fn command_family_rejects_non_native_lane_sessions() {
+        let (store, _g, id, ledger, execution) = work_mode_session("lane-reject");
+        // B1：ACP 谓词命中（AcpPool::is_acp 的测试替身）。
+        let error = resolve_native_session_roots(&id, &store, |probe| probe == id)
+            .expect_err("ACP 会话必须拒绝");
+        assert_eq!(error, "仅原生会话支持检查点");
+        // B2：定时会话。
+        let scheduled = store
+            .create_scheduled_run(scheduled_profile_for_gate_test("task-lane"))
+            .expect("scheduled run");
+        let error = resolve_native_session_roots(&scheduled.metadata.id, &store, |_| false)
+            .expect_err("定时会话必须拒绝");
+        assert_eq!(error, "仅原生会话支持检查点");
+        // 对照：工作模式会话放行，两根解析成功（未绑定 → 私有目录）。
+        let (resolved_ledger, resolved_execution) =
+            resolve_native_session_roots(&id, &store, |_| false).expect("roots");
+        assert_eq!(resolved_ledger, ledger);
+        assert_eq!(resolved_execution, execution);
+        // B2 快照门谓词：定时会话 scheduled_profile 命中（chat.rs/accept_plan 的
+        // !scheduled 门据此跳过快照），工作模式未命中。覆盖口径说明：chat/accept_plan
+        // 命令本体依赖 State/EnginePool 无法单测，这里钉的是门读取的谓词本身
+        // （与既有「手工镜像编排」测试同款取舍）；B2 的命令侧由上方
+        // ScheduledRun 车道拒绝锚定。
+        assert!(store.scheduled_profile(&scheduled.metadata.id).is_some());
+        assert!(store.scheduled_profile(&id).is_none());
+    }
+
+    /// B3：非法 id（路径逃逸形状）被校验拦下、不 panic；合法形状但不存在的
+    /// 会话 → 无状态可反悔（Ok(None)），同样不 panic。
+    #[test]
+    fn command_family_handles_invalid_and_missing_ids() {
+        let (store, _g, _id, _ledger, _execution) = work_mode_session("invalid-id");
+        let error = resolve_native_session_roots("../outside", &store, |_| false)
+            .expect_err("非法 id 必须拒绝");
+        assert!(
+            error.contains("解析会话根失败"),
+            "非法 id 必须被校验拦下: {error}"
+        );
+        let missing = format!(
+            "missing-session-{}",
+            crate::platform::paths::tests::unique_suffix()
+        );
+        let state = rewind_undo_state_inner(&store, |_| false, &missing).expect("不得 panic");
+        assert_eq!(state, None, "不存在的会话没有可反悔状态");
     }
 }

@@ -1111,6 +1111,12 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const mergeHydratedArtifacts = sessionsFeature.mergeHydratedArtifacts;
   const mergeHydratedChatItems = sessionsFeature.mergeHydratedChatItems;
   const switchToSession = sessionsFeature.switchToSession;
+  // Rewind/undo rehydration seam (work-mode ChatView): the public
+  // switchToSession fast-paths when id === activeSessionId, so a truncated
+  // transcript would not reload; the internal variant with forceDurableLoad
+  // re-reads the session from disk. Returned to feature code with that
+  // single purpose documented — returns boolean success, does NOT reject.
+  const switchToSessionInternal = sessionsFeature.switchToSessionInternal;
   const openScheduledRunChat = sessionsFeature.openScheduledRunChat;
   const exitScheduledRunChat = sessionsFeature.exitScheduledRunChat;
   const deleteSession = sessionsFeature.deleteSession;
@@ -2486,6 +2492,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
+      // Append a system pill to the ACTIVE session's chat items (memory-only,
+      // not persisted) and notify. Exposed for view-level inline notices that
+      // have no lane-local sink (work-mode rewind/undo results).
+      addSystemItem,
     },
     auxChat: {
       ensure: auxChatFeature.ensure,
@@ -2562,6 +2572,13 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       // sessions share the code mode's safety posture; web/remote sessions have
       // no binding concept, stub returns null).
       getSessionWorkspaceBinding,
+      // Rewind/undo rehydration (work-mode ChatView): force a durable reload of
+      // the current session from disk after rewind_to_turn / undo_last_rewind
+      // truncated/restored it (switchToSession would fast-path on the same id).
+      // Boolean contract: resolves true on success, false on failure (never
+      // rejects); desktop only (no web bridge counterpart — rewind is
+      // desktop-only, callers guard on method existence).
+      switchToSessionInternal,
     },
     projects: {
       loadProjects,

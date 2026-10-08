@@ -1,12 +1,12 @@
 # 代码模式「改动随对话回退」设计方案
 
 > 状态：已落地（PR #397，经两轮评审加固）。
-> 范围：**仅品悟原生代码会话（Native code lane）**；ACP 会话（Codex/Claude 外部进程）明确不做。
+> 范围：**品悟原生车道（工作模式聊天页 + 原生代码会话页，2026-10-08 门放宽）**；ACP 会话（Codex/Claude 外部进程）与定时会话明确不做。
 > 关联：`docs/adr/0006-多智能体收缩为会话内主动委派模式.md`（需修订，见 §8）、`docs/code-native-agent-完全体架构设计.md`（qiuYliangM/feat-full-code-mode 分支，本方案移植其 checkpoint 机制）。
 
 ## 1. 目标与语义定义
 
-在原生代码会话中，用户可以把会话回退到任意历史 turn 边界节点，**代码状态与对话状态一起回退**：
+在原生车道会话（工作模式与原生代码会话）中，用户可以把会话回退到任意历史 turn 边界节点，**文件状态与对话状态一起回退**（工作模式可在确认弹窗显式选择仅回退对话、文件不动）：
 
 > 「回退到第 N 轮」= 恢复第 N+1 轮 checkpoint（第 N+1 轮写入之前的工作区状态）+ 对话截断到第 N 轮末尾。
 
@@ -139,21 +139,30 @@ feat 分支没有的部分，本方案新增：
 
 ## 7. UI 与文案
 
-- 回退入口只在代码会话页（聊天页不做，与 feat 分支一致）。
+- 回退入口覆盖原生车道两页（2026-10-08 门放宽）：代码会话页与工作模式聊天页
+  （ChatView）共用 `features/conversation` 的时间线入口（RewindChip）、确认/
+  撤销弹窗与编排 hook（`useRewindController`，快照/回退按车道判定而非产品模式
+  轴）；ACP 会话与定时相关会话维持无入口。
 - 入口按 turn 边界渲染；无 checkpoint 的 turn 渲染「仅对话回退」变体或不渲染。
 - 确认弹窗三要素：将撤销的变更摘要（added/modified/deleted 计数）、对话将截断到的位置、共享执行根警示（条件出现）。
-- i18n：全部文案走 `pinvou3-app/src/shared/i18n.js`，中英日三语（移植 feat 分支已有文案并补齐对话截断部分）。
+- 工作模式弹窗额外呈现「回退范围」选择项（默认勾选「同时回退工作区文件」=
+  双层回退并展示变更预览——用户手动改动与 agent 改动交织，回退代价必须在
+  决策点可见可选；取消勾选 = `conversation_only=true` 仅截断对话、文件不动，
+  撤销路径对称）。code 车道弹窗维持原样：其契约为「改动随对话回退」，双层是
+  默认，无此选择项。
+- i18n：全部文案走 `pinvou3-app/src/shared/i18n.js`，中英日三语；回退键组两
+  车道共用同一份文案，以「文件/工作区」中性表述（不再以「代码」限定回退对象）。
 
 ## 8. 需要同步的文档与决策
 
-- **修订 ADR-0006**：将「不恢复每轮快照、不强制 git 依赖」修订为「原生代码会话可选 checkpoint；git 不可用时诚实降级，不阻断对话」。
+- **修订 ADR-0006**：将「不恢复每轮快照、不强制 git 依赖」修订为「原生车道会话可选 checkpoint（2026-10-08 起含工作模式）；git 不可用时诚实降级，不阻断对话」。
 - `docs/fork-modifications.md`：无需变更（零 fork 改动），但在本设计文档留档「未复用底座 snapshot 的理由」（§2.1）。
 
 ## 9. 测试计划
 
 - Rust：移植 feat 分支 6 个 checkpoint 测试（往返/LRU/反悔/越界/嵌套两根/忽略表）；新增 turn 计数同口径测试（tool_result 不计入）、截断+sidecar 备份测试、跨会话忙碌门测试。
 - 前端：移植 `codex_checkpoints_logic.test.mjs`；新增回退编排逻辑测试（降级路径、确认文案条件）。
-- 集成：原生代码会话多轮写入 → 回退中间节点 → 验证工作区字节级一致 + 对话截断位置正确 + PreRestore 可反悔；回退后重发消息验证 engine 重注水正常。
+- 集成：原生车道会话（工作模式与代码会话）多轮写入 → 回退中间节点 → 验证工作区字节级一致 + 对话截断位置正确 + PreRestore 可反悔；回退后重发消息验证 engine 重注水正常。
 - 门禁：`architecture-guard.py`、npm 测试链、`cargo check` 零新增警告。
 
 ## 10. 实施步骤与工作量
@@ -171,6 +180,9 @@ feat 分支没有的部分，本方案新增：
 ## 11. 明确不做（v1）
 
 - ACP 会话回退（外部 agent 文件改动无记录）。
+- 定时会话的快照与回退（2026-10-08 门放宽时维持排除：sched- 轮次不走
+  chat/accept_plan 快照缝，命令族按 `SessionKind::ScheduledRun` 拒绝；与 fork
+  拒绝口径一致）。
 - turn 内/单文件粒度回退、逐 edit keep/undo。
 - 对话 redo（sidecar 仅留数据）。
 - 按会话归因回退、worktree 会话隔离（v2 独立评估）。
@@ -191,5 +203,6 @@ feat 分支没有的部分，本方案新增：
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
 - **秘密排除恒大小写不敏感，core.ignorecase 仅承载 git 原生语义**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），敏感模式自身写成大小写不敏感形式——info/exclude 用 `icase_gitignore_pattern` 展开的字符类（`[xX]`）、purge pathspec 恒带 `:(icase)`、预览过滤恒按 ASCII 折叠匹配——三层在任何文件系统上命中相同的大小写变体集合，不依赖影子仓库的 core.ignorecase。core.ignorecase 仍按 `fs_is_case_insensitive` 探测设置（每次 ensure 幂等校正），但只承载 git 原生大小写语义：不无条件强制 true，大小写敏感文件系统上强制不敏感会引发 git alias 冲突（`Makefile`/`makefile` 共存时 `add -A` 整体 fatal、别名新文件静默跳过、仅大小写改名记成空树，评审 M1）；探测后这些都不触发。alias 冲突发生时快照失败以 error 级日志显式上报（不再静默 warn）。残余取舍：大小写不敏感系统上仅大小写不同的改名对快照不可见、不随回退恢复。
+- **未绑定会话的附件暂存目录进入快照（2026-10-08 门放宽放大既有形状）**：两根相同（未绑定/临时会话）时，附件引用与图片暂存放 `attachments/` 于账本根=执行根内，逐轮 `add -A` 会把它们作为 blob 纳入快照并计入 500MB 预算（大附件可加速 LRU 淘汰 Turn 快照）。该形状在临时 code 会话上先于本功能存在并被接受（附件经 ingest 体积/数量上限约束）；为不改变 code 车道快照内容语义（R2），工作模式沿用同一策略、如实记录为已知成本，不新增 `attachments/` 全局排除（该排除会顺带改变绑定项目内同名目录的回退语义）。
 - **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（三语「嵌套仓库（不回退）」）。
 - **影子 git 的环境隔离（2026-09-02 评审后加固）**：影子仓库的全部 git 子进程剥离宿主 `GIT_*` 变量（`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_DIR` 等会把内部操作重定向到无关仓库）并钉死系统/全局 gitconfig（用户全局 `core.fsmonitor=true` 会对执行根拉起守护进程）；`fs_is_case_insensitive` 的探针文件（`.Pinvou-Icase-Probe-*`）入 exclude，并发同根会话的 `add -A` 不会把它卷进快照；体积估算遇不可读目录时如实记路径级日志（调用方的「超预算」文案不再掩盖权限类失败）。

@@ -8,6 +8,10 @@ use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
 use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
 
+/// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体、web seam
+/// （web_access_chat_for_session）与 accept_plan 三处共用（车道不变量的门面）。
+pub(crate) const ACP_CHAT_LANE_REJECTED: &str = "ACP 代码会话必须通过独立代码页面发送";
+
 /// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
 /// 码后为用户可操作指引。改码字符串必须同步前端匹配处
 /// (platform/tauri/bridge/chat.js、platform/web/bridge.js)。
@@ -55,7 +59,7 @@ pub async fn chat(
     // 回退到全局 active_id。每条消息按各自 session 取 mode/phase/skill,送到对应 engine。
     let sid = require_active_sid(session_id, &store)?;
     if acp_pool.is_acp(&sid) {
-        return Err("ACP 代码会话必须通过独立代码页面发送".to_string());
+        return Err(ACP_CHAT_LANE_REJECTED.to_string());
     }
     let reservation = pool
         .reserve_turn(&sid)
@@ -298,16 +302,20 @@ pub(crate) async fn chat_with_reservation(
     );
     full = prepared_delegation.content;
     let mode = mode_state.mode;
-    // 原生代码会话每个 turn 开始前对执行根打 checkpoint（影子 git，数据落账本根，
-    // 机制见 features/code_checkpoints）。快照必须先于引擎写文件，因此在 send 前
-    // 同步等待；失败不阻断 turn——如实记日志，该轮只是没有回退入口（设计 §5
-    // 降级语义）。
+    // 原生车道会话（工作模式 + 原生 code）每个 turn 开始前对执行根打 checkpoint
+    // （影子 git，数据落账本根，机制见 features/code_checkpoints）。车道口径：
+    // ACP 在两个入口已拒（chat() 本体与 web seam 的 web_access_chat_for_session，
+    // 口径一致）；scheduled 会话维持无快照（与 fork 拒绝口径一致，chat 续跑同样
+    // 排除）；其余原生会话（含未绑定会话——两根同为会话私有目录，ensure_repo
+    // 自排除 checkpoints；aux 侧聊会话同形状，快照其私有目录、无 UI 消费）默认
+    // 开启。快照必须先于引擎写文件，因此在 send 前同步等待；失败不阻断 turn——
+    // 如实记日志，该轮只是没有回退入口（设计 §5 降级语义）。
     // created_snapshot_id 记录本轮成功登记的快照：发送失败时它是「未成活」
     // 快照——重试同号 turn 的 first-wins 对齐会锚到失败那次（内容还可能混入两次
     // 尝试之间的外部改动），发送失败路径按 id 精确作废（见下方 Err 分支；按 id
     // 也覆盖计数失败导致的 None 序号快照）。
     let mut created_snapshot_id: Option<String> = None;
-    if store.is_code_session(&sid) {
+    if !is_scheduled {
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store,
             &sid,
