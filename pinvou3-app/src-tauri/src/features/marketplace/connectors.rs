@@ -8,12 +8,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 
 use crate::platform::paths;
 
 use super::MarketplaceManager;
 use super::bundle;
+use super::file_lock;
 use super::python_dependencies;
 use super::secrets::{
     SecretResolveError, is_sensitive_key_name, mcp_secret_env_var, mcp_secret_missing_error,
@@ -21,9 +21,19 @@ use super::secrets::{
 };
 use super::types::ToolManifest;
 
-/// mcp.json 读-改-写的进程内串行化（四轮评审 M-8）：add/remove 是裸读-改-写，
-/// 并发安装/卸载会交错丢更新；与 store.rs 的 BUNDLES_FILE_LOCK 同一范式。
-static MCP_JSON_LOCK: Mutex<()> = Mutex::new(());
+/// Runs `f` holding the mcp.json cross-process file lock (in-process mutex +
+/// OS lock on `mcp.lock`, `file_lock.rs`, #521): add/remove are bare
+/// read-modify-writes, and concurrent install/uninstall across the GUI and
+/// headless hosts (sharing one `~/.pinvou3`) used to interleave and silently
+/// drop each other's writes (四轮评审 M-8, cross-process half #515). A write
+/// that cannot establish serialization returns `Err` and must be retried by
+/// the caller's transaction — never run unsynchronized.
+pub(crate) fn with_mcp_json_lock<F, R>(f: F) -> Result<R, String>
+where
+    F: FnOnce() -> Result<R, String>,
+{
+    file_lock::with_file_lock(&paths::mcp_config_path(), f)
+}
 
 #[cfg(test)]
 static NEXT_PIP_INSTALL_RESULT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -52,12 +62,6 @@ fn pip_index_rounds() -> [(&'static str, &'static [&'static str]); 2] {
         ("default index", &[]),
         ("Tsinghua TUNA mirror", &["-i", PIP_CN_MIRROR_INDEX]),
     ]
-}
-
-pub(crate) fn mcp_json_lock() -> MutexGuard<'static, ()> {
-    MCP_JSON_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 把 JSON 值以 pretty 形式写盘(迁移与 connector 注册共用)。
@@ -111,23 +115,28 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
 
 /// Whether mcp.json exists on disk but cannot currently be parsed (or read).
 /// The startup maintenance keeps every writer off such a file — in
-/// particular the builtin upsert's repair loader, which would otherwise
-/// reset it to a builtin-only skeleton in the same boot that the reconcile
-/// just backed it up. Sessions degrade to an empty MCP pool instead
-/// (engine `load_config` failure → empty pool), so preserving the file never
-/// blocks a session; the recovery path is the backup plus the timeline note.
+/// particular the builtin repair loader reads through `unwrap_or_default`, so a
+/// permission failure would reset the file to an empty skeleton. Sessions
+/// degrade to an empty MCP pool instead (engine `load_config` failure → empty
+/// pool), so preserving the file never blocks a session; the recovery path is
+/// the backup plus the timeline note.
+/// try 锁读取（#521）：锁被占用/不可用时退化为不落盘的解锁快照——探测本身
+/// 永远只读，竞态下与既有解锁读同口径，bounded，绝不阻塞在 peer 临界区上。
 pub(crate) fn mcp_json_unparseable() -> bool {
-    let mcp_path = paths::mcp_config_path();
-    if !mcp_path.is_file() {
-        return false;
-    }
-    // An unreadable file is treated like an unparseable one: the builtin
-    // repair loader reads through `unwrap_or_default`, so a permission
-    // failure would reset the file to an empty skeleton.
-    std::fs::read_to_string(&mcp_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .is_none()
+    file_lock::try_file_lock_for_read(&paths::mcp_config_path(), || {
+        let mcp_path = paths::mcp_config_path();
+        if !mcp_path.is_file() {
+            return Ok(false);
+        }
+        // An unreadable file is treated like an unparseable one: the builtin
+        // repair loader reads through `unwrap_or_default`, so a permission
+        // failure would reset the file to an empty skeleton.
+        Ok(std::fs::read_to_string(&mcp_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .is_none())
+    })
+    .unwrap_or(false)
 }
 
 fn backup_corrupt_mcp_json(mcp_path: &Path, content: &str) {
@@ -261,36 +270,38 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         server_dir: &std::path::Path,
         python_environment: Option<&python_dependencies::InstalledPythonEnvironment>,
     ) -> Result<(), String> {
-        let _guard = mcp_json_lock();
-        // An unparseable mcp.json is backed up and refused, never reset: an
-        // install that silently reset the file would destroy the custom
-        // entries and preserved user fields the startup reconcile exists to
-        // heal. The transaction in `install_inner` rolls the install back, so
-        // the user fixes or removes the file and retries.
-        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
+        with_mcp_json_lock(|| {
+            // An unparseable mcp.json is backed up and refused, never reset: an
+            // install that silently reset the file would destroy the custom
+            // entries and preserved user fields the startup reconcile exists to
+            // heal. The transaction in `install_inner` rolls the install back, so
+            // the user fixes or removes the file and retries.
+            let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
 
-        let servers = mcp
-            .get_mut("servers")
-            .and_then(|s| s.as_object_mut())
-            .ok_or("mcp.json 格式错误")?;
+            let servers = mcp
+                .get_mut("servers")
+                .and_then(|s| s.as_object_mut())
+                .ok_or("mcp.json 格式错误")?;
 
-        if !manifest.servers.is_empty() {
-            for server in &manifest.servers {
-                let entry = self.build_remote_server_entry(manifest, server, user_config, false)?;
-                servers.insert(server.name.clone(), entry);
+            if !manifest.servers.is_empty() {
+                for server in &manifest.servers {
+                    let entry =
+                        self.build_remote_server_entry(manifest, server, user_config, false)?;
+                    servers.insert(server.name.clone(), entry);
+                }
+            } else {
+                let entry = self.build_local_server_entry(
+                    manifest,
+                    user_config,
+                    server_dir,
+                    python_environment,
+                    false,
+                )?;
+                servers.insert(manifest.id.clone(), entry);
             }
-        } else {
-            let entry = self.build_local_server_entry(
-                manifest,
-                user_config,
-                server_dir,
-                python_environment,
-                false,
-            )?;
-            servers.insert(manifest.id.clone(), entry);
-        }
 
-        write_json_pretty(&mcp_path, &mcp)
+            write_json_pretty(&mcp_path, &mcp)
+        })
     }
 
     /// Build the fresh-install mcp.json entry for one remote server (url/headers/oauth).
@@ -592,26 +603,29 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     ) -> Result<(), String> {
         let (command, args) =
             Self::managed_python_runtime_fields(manifest, server_dir, environment)?;
-        let _guard = mcp_json_lock();
-        let mcp_path = paths::mcp_config_path();
-        let content = std::fs::read_to_string(&mcp_path)
-            .map_err(|error| format!("read mcp.json: {error}"))?;
-        let mut mcp: serde_json::Value =
-            serde_json::from_str(&content).map_err(|error| format!("parse mcp.json: {error}"))?;
-        let entry = mcp
-            .get_mut("servers")
-            .and_then(serde_json::Value::as_object_mut)
-            .and_then(|servers| servers.get_mut(&manifest.id))
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| format!("mcp.json has no local server entry for '{}'", manifest.id))?;
-        let command = serde_json::Value::String(command);
-        let args = serde_json::to_value(args).map_err(|error| error.to_string())?;
-        if entry.get("command") == Some(&command) && entry.get("args") == Some(&args) {
-            return Ok(());
-        }
-        entry.insert("command".to_string(), command);
-        entry.insert("args".to_string(), args);
-        write_json_pretty(&mcp_path, &mcp)
+        with_mcp_json_lock(|| {
+            let mcp_path = paths::mcp_config_path();
+            let content = std::fs::read_to_string(&mcp_path)
+                .map_err(|error| format!("read mcp.json: {error}"))?;
+            let mut mcp: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|error| format!("parse mcp.json: {error}"))?;
+            let entry = mcp
+                .get_mut("servers")
+                .and_then(serde_json::Value::as_object_mut)
+                .and_then(|servers| servers.get_mut(&manifest.id))
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| {
+                    format!("mcp.json has no local server entry for '{}'", manifest.id)
+                })?;
+            let command = serde_json::Value::String(command);
+            let args = serde_json::to_value(args).map_err(|error| error.to_string())?;
+            if entry.get("command") == Some(&command) && entry.get("args") == Some(&args) {
+                return Ok(());
+            }
+            entry.insert("command".to_string(), command);
+            entry.insert("args".to_string(), args);
+            write_json_pretty(&mcp_path, &mcp)
+        })
     }
 
     /// Build the fresh-install mcp.json entry for one local tool (command/args/env).
@@ -756,46 +770,48 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 object.insert(key, value);
             }
         }
-        let _guard = mcp_json_lock();
-        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
-        let servers = mcp
-            .get_mut("servers")
-            .and_then(|s| s.as_object_mut())
-            .ok_or("mcp.json 格式错误")?;
-        servers.insert(manifest.id.clone(), entry);
-        write_json_pretty(&mcp_path, &mcp)
+        with_mcp_json_lock(|| {
+            let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
+            let servers = mcp
+                .get_mut("servers")
+                .and_then(|s| s.as_object_mut())
+                .ok_or("mcp.json 格式错误")?;
+            servers.insert(manifest.id.clone(), entry);
+            write_json_pretty(&mcp_path, &mcp)
+        })
     }
 
     pub(super) fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {
-        let _guard = mcp_json_lock();
-        let mcp_path = paths::mcp_config_path();
-        if !mcp_path.is_file() {
-            return Ok(());
-        }
-        // An unparseable mcp.json is backed up and refused, never reset. This
-        // writer is reachable at boot from the retired-tool cleanup and the
-        // Python-repair downgrade, and from the UI uninstall: a reset there
-        // would destroy the file before (cleanup) or despite (downgrade,
-        // uninstall) the reconcile's backup — the callers' transactions roll
-        // back instead, and the cleanup simply retries on a later boot.
-        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
+        with_mcp_json_lock(|| {
+            let mcp_path = paths::mcp_config_path();
+            if !mcp_path.is_file() {
+                return Ok(());
+            }
+            // An unparseable mcp.json is backed up and refused, never reset. This
+            // writer is reachable at boot from the retired-tool cleanup and the
+            // Python-repair downgrade, and from the UI uninstall: a reset there
+            // would destroy the file before (cleanup) or despite (downgrade,
+            // uninstall) the reconcile's backup — the callers' transactions roll
+            // back instead, and the cleanup simply retries on a later boot.
+            let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
 
-        if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
-            // 先尝试加载 manifest 看是否有 servers 字段（远程工具有多条目）
-            if let Some(manifest) = self.load_manifest(tool_id) {
-                if !manifest.servers.is_empty() {
-                    for server in &manifest.servers {
-                        servers.remove(&server.name);
+            if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
+                // 先尝试加载 manifest 看是否有 servers 字段（远程工具有多条目）
+                if let Some(manifest) = self.load_manifest(tool_id) {
+                    if !manifest.servers.is_empty() {
+                        for server in &manifest.servers {
+                            servers.remove(&server.name);
+                        }
+                    } else {
+                        servers.remove(tool_id);
                     }
                 } else {
                     servers.remove(tool_id);
                 }
-            } else {
-                servers.remove(tool_id);
             }
-        }
 
-        write_json_pretty(&mcp_path, &mcp)
+            write_json_pretty(&mcp_path, &mcp)
+        })
     }
 
     /// Startup reconciliation for the given remote servers of one tool (callers pass
@@ -819,68 +835,73 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         manifest: &ToolManifest,
         servers: &[&super::types::RemoteServer],
     ) -> Result<Option<String>, String> {
-        let _guard = mcp_json_lock();
-        let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
-        let servers_map = mcp
-            .get_mut("servers")
-            .and_then(|s| s.as_object_mut())
-            .ok_or("mcp.json 格式错误")?;
+        with_mcp_json_lock(|| {
+            let (mcp_path, mut mcp) = load_mcp_json_for_reconcile()?;
+            let servers_map = mcp
+                .get_mut("servers")
+                .and_then(|s| s.as_object_mut())
+                .ok_or("mcp.json 格式错误")?;
 
-        let mut changed: Vec<String> = Vec::new();
-        for server in servers {
-            if super::ENGINE_OWNED_MCP_SERVER_KEYS.contains(&server.name.as_str()) {
-                // Unreachable via reconcile_installed_mcp_entries (the caller
-                // filters these with a timeline note); kept as defense in depth
-                // so a direct caller can never fight the boot-time builtin upsert.
-                continue;
-            }
-            match servers_map
-                .get_mut(&server.name)
-                .and_then(|entry| entry.as_object_mut())
-            {
-                // Present as an object: realign in place when the manifest-derived
-                // shape drifted. A non-object value takes the restore branch below.
-                Some(object) => {
-                    if !remote_entry_matches_manifest(object, server) {
-                        align_remote_entry_fields(object, server);
-                        changed.push(format!("realigned remote entry '{}'", server.name));
+            let mut changed: Vec<String> = Vec::new();
+            for server in servers {
+                if super::ENGINE_OWNED_MCP_SERVER_KEYS.contains(&server.name.as_str()) {
+                    // Unreachable via reconcile_installed_mcp_entries (the caller
+                    // filters these with a timeline note); kept as defense in depth
+                    // so a direct caller can never fight the boot-time builtin upsert.
+                    continue;
+                }
+                match servers_map
+                    .get_mut(&server.name)
+                    .and_then(|entry| entry.as_object_mut())
+                {
+                    // Present as an object: realign in place when the manifest-derived
+                    // shape drifted. A non-object value takes the restore branch below.
+                    Some(object) => {
+                        if !remote_entry_matches_manifest(object, server) {
+                            align_remote_entry_fields(object, server);
+                            changed.push(format!("realigned remote entry '{}'", server.name));
+                        }
+                    }
+                    _ => {
+                        let entry = self.build_remote_server_entry(
+                            manifest,
+                            server,
+                            &HashMap::new(),
+                            true,
+                        )?;
+                        servers_map.insert(server.name.clone(), entry.clone());
+                        // Say what the restore could not do instead of reporting an
+                        // unqualified success that 401s on first use.
+                        let mut note = format!("restored missing remote entry '{}'", server.name);
+                        if manifest
+                            .config_fields
+                            .iter()
+                            .any(|field| field.target == "bearer" && !field.secret)
+                        {
+                            note.push_str(
+                                "; its non-secret bearer key is not stored and could not be \
+                                 re-derived — reinstall the tool to re-enter it",
+                            );
+                        }
+                        let missing_secrets = entry_secret_keys_without_wiring(manifest, &entry);
+                        if !missing_secrets.is_empty() {
+                            note.push_str(&format!(
+                                "; no stored credential for {} — restored without that auth \
+                                 wiring; reinstall the tool to re-enter it",
+                                missing_secrets.join(", ")
+                            ));
+                        }
+                        changed.push(note);
                     }
                 }
-                _ => {
-                    let entry =
-                        self.build_remote_server_entry(manifest, server, &HashMap::new(), true)?;
-                    servers_map.insert(server.name.clone(), entry.clone());
-                    // Say what the restore could not do instead of reporting an
-                    // unqualified success that 401s on first use.
-                    let mut note = format!("restored missing remote entry '{}'", server.name);
-                    if manifest
-                        .config_fields
-                        .iter()
-                        .any(|field| field.target == "bearer" && !field.secret)
-                    {
-                        note.push_str(
-                            "; its non-secret bearer key is not stored and could not be \
-                             re-derived — reinstall the tool to re-enter it",
-                        );
-                    }
-                    let missing_secrets = entry_secret_keys_without_wiring(manifest, &entry);
-                    if !missing_secrets.is_empty() {
-                        note.push_str(&format!(
-                            "; no stored credential for {} — restored without that auth \
-                             wiring; reinstall the tool to re-enter it",
-                            missing_secrets.join(", ")
-                        ));
-                    }
-                    changed.push(note);
-                }
             }
-        }
 
-        if changed.is_empty() {
-            return Ok(None);
-        }
-        write_json_pretty(&mcp_path, &mcp)?;
-        Ok(Some(changed.join("; ")))
+            if changed.is_empty() {
+                return Ok(None);
+            }
+            write_json_pretty(&mcp_path, &mcp)?;
+            Ok(Some(changed.join("; ")))
+        })
     }
 
     // Preserved user fields are folded into the rebuild itself
@@ -890,12 +911,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 }
 
 /// Read-only snapshot of the current mcp.json `servers` map for reconciliation
-/// decisions, taken without `mcp_json_lock`. It gates *whether* a repair is
+/// decisions, taken without `with_mcp_json_lock`. It gates *whether* a repair is
 /// attempted and sources the user fields preserved across a rebuilt local
 /// entry; the writes themselves re-read the file under the lock, and every
 /// concurrent marketplace writer is excluded by
 /// MARKETPLACE_TRANSACTION_LOCK (the boot-path writers run sequentially on the
-/// same thread), so the merge cannot clobber a concurrent change.
+/// same thread), so the merge cannot clobber a concurrent change to *other*
+/// entries — the rebuilt entry's preserved user fields still come from this
+/// snapshot, so a peer's concurrent edit of that same entry can be overwritten
+/// (same-entry last-writer-wins).
 pub(super) fn read_mcp_servers_snapshot() -> serde_json::Map<String, serde_json::Value> {
     let mcp_path = paths::mcp_config_path();
     let parsed: serde_json::Value = if mcp_path.is_file() {

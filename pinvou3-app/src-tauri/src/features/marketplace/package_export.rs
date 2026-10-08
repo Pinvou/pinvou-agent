@@ -37,7 +37,8 @@ use crate::platform::paths;
 /// `import_lock_for`——导入/恢复/回收站导出等同锁持有方互斥；但卸载与启动修复
 /// 只在市场事务锁下搬移 `bundles/<id>`、不持本锁，本锁不能阻止并发搬移：彼时
 /// 按路径的遍历/打开会失败，导出报错且原子写不动原目标，不会产出「成功」的
-/// 不完整 zip（回收站导出由其自身 `file_lock()` 串行化，同口径）。
+/// 不完整 zip（回收站导出由 recycle-bin.json 的跨进程文件锁串行化，同口径，
+/// 见 `recycle_bin.rs`/#521）。
 pub fn export_installed_plugin(pkg_id: &str, dest_zip: &Path) -> Result<(), String> {
     if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
         return Err(format!("非法包 id '{pkg_id}'"));

@@ -171,8 +171,9 @@ const runtimeBundle = [
 ].join('\n');
 assert.match(runtimeBundle, /python_dependency_runner\.py/, 'runner is not embedded into the runtime bundle');
 const repairIndex = runtimeBundle.indexOf('.repair_installed_python_tools()');
-const refreshIndex = runtimeBundle.indexOf('self.ensure_builtin_mcp_servers()?');
+const refreshIndex = runtimeBundle.indexOf('self.ensure_builtin_mcp_servers()');
 assert.ok(repairIndex >= 0, 'legacy managed Python installs are not repaired at startup');
+assert.ok(refreshIndex >= 0, 'builtin mcp servers are not refreshed at startup');
 assert.ok(repairIndex < refreshIndex, 'legacy repair must finish before engines consume mcp.json');
 
 const marketplace = [
