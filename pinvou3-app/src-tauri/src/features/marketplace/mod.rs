@@ -16,13 +16,16 @@
 //! - `connectors` — connector 注册/注销(含拆分后的 add_to_mcp_json remote/local 分支)
 
 mod connectors;
+// pub(crate) 仅为让 sibling feature(runtime_bundle)的 boot 写方跨进程回归测试
+// 取到 lock_path_for/process_mutex_for 测试钩子;模块内条目各自保持原可见性。
+pub(crate) mod file_lock;
 mod migration;
 mod python_dependencies;
 mod secrets;
 mod types;
 mod validation;
 
-pub(crate) use connectors::{mcp_json_lock, mcp_json_unparseable, write_json_pretty};
+pub(crate) use connectors::{mcp_json_unparseable, with_mcp_json_lock, write_json_pretty};
 
 // PR #302 WIP 拆分的子模块（main 的 Wave 2 没有接这块）—— 需要补 mod 声明。
 pub mod actions;
@@ -75,6 +78,16 @@ use crate::platform::paths;
 /// import_lock(X) under TRANSACTION while `restore_plugin(X)` holds
 /// import_lock(X) waiting on TRANSACTION. Known, unresolved; this doc must
 /// not be cited as proof of a settled global lock order.
+///
+/// Cross-process file locks (#521, `file_lock.rs`): the marketplace state
+/// files' combined locks (`bundles.lock` / `recycle-bin.lock` / `mcp.lock`,
+/// each in-process mutex + OS flock) nest strictly BELOW this lock — install,
+/// uninstall, and restore hold TRANSACTION (or import_lock) and enter them
+/// inside it — and the file-lock sections themselves never acquire this lock
+/// or each other, so they are leaves in the global order (the full acyclic
+/// order, including the scope lock's edge onto `bundles.lock` — an edge from
+/// #517, which lands separately from the branch carrying this doc — is
+/// documented in `file_lock.rs`'s module docs).
 static MARKETPLACE_TRANSACTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// mcp.json server keys owned by the engine boot path (`runtime_bundle`'s
@@ -345,7 +358,14 @@ fn restore_optional_file(path: &Path, content: &Option<Vec<u8>>) -> Result<(), S
 }
 
 fn restore_marketplace_snapshot(snapshot: &MarketplaceStateSnapshot) -> Result<(), String> {
-    restore_optional_file(&paths::mcp_config_path(), &snapshot.mcp)?;
+    // mcp.json 段走跨进程文件锁（#521）：journal 回滚/恢复是 mcp.json 的整文件
+    // 写，只有它与并发写入器互斥，file_lock.rs「三个状态文件的全部临界区都过
+    // 组合锁」的全称不变量才成立（TRANSACTION → mcp.lock，文档方向）。语义边界
+    // （#521 评审披露，非锁可解）：锁只保证这次整文件写与并发写串行，不改变
+    // 「按 begin 时的快照整文件还原」本身——跨进程下，快照之后对端已提交的写入
+    // 会被这次还原覆盖，这是 journal 机制固有的整文件回滚语义。installed.json
+    // 不在 #521 三文件之列，保持原样。
+    with_mcp_json_lock(|| restore_optional_file(&paths::mcp_config_path(), &snapshot.mcp))?;
     restore_optional_file(
         &paths::pinvou3_home()
             .join("marketplace")
@@ -677,51 +697,53 @@ pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
 /// 文件（mcp.json）。按 mcp.json 的 server 键（= 工具 id）逐条重写，覆盖内嵌预设
 /// 与自定义/手放 MCP（不再只遍历内嵌清单）。返回是否有改动（供启动标记观测）。
 pub fn migrate_mcp_json_paths() -> Result<bool, String> {
-    // 与其他 mcp.json 写方（add/remove_to_mcp_json）同一把进程内锁串行化（M-8）。
-    let _guard = connectors::mcp_json_lock();
-    let mcp_path = paths::mcp_config_path();
-    if !mcp_path.is_file() {
-        return Ok(false);
-    }
-    let content =
-        std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
-    let mut mcp: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
-    let mut changed = false;
-    let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) else {
-        return Ok(false);
-    };
-    let ids: Vec<String> = servers.keys().cloned().collect();
-    for id in ids {
-        let old_dir = paths::bundle_mcp_servers_dir().join(&id);
-        let new_dir = mcp_catalog::package_mcp_dir(&id);
-        // 新目录不存在（自定义 MCP 搬迁 kept/重释放被跳过）时不重写：否则
-        // mcp.json 指向不存在的新路径，工具静默死掉且读路径无旧布局回退（G4）。
-        // 搬迁/重释放成功后的下一轮启动再重写（本函数幂等）。
-        if !new_dir.is_dir() {
-            continue;
+    // 与其他 mcp.json 写方（add/remove_to_mcp_json）同一把跨进程文件锁串行化
+    // （M-8；锁见 file_lock.rs）。
+    connectors::with_mcp_json_lock(|| {
+        let mcp_path = paths::mcp_config_path();
+        if !mcp_path.is_file() {
+            return Ok(false);
         }
-        // 兼容两种分隔符的历史写法（Windows 原生 `\` 与 `/`）
-        let old_spellings = [
-            old_dir.to_string_lossy().replace('\\', "/"),
-            old_dir.to_string_lossy().replace('/', "\\"),
-        ];
-        let new_text = new_dir.to_string_lossy().to_string();
-        let Some(entry) = servers.get_mut(&id) else {
-            continue;
+        let content =
+            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+        let mut mcp: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
+        let mut changed = false;
+        let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) else {
+            return Ok(false);
         };
-        for key in ["command", "args"] {
-            if let Some(value) = entry.get_mut(key) {
-                if rewrite_path_strings(value, &old_spellings, &new_text) {
-                    changed = true;
+        let ids: Vec<String> = servers.keys().cloned().collect();
+        for id in ids {
+            let old_dir = paths::bundle_mcp_servers_dir().join(&id);
+            let new_dir = mcp_catalog::package_mcp_dir(&id);
+            // 新目录不存在（自定义 MCP 搬迁 kept/重释放被跳过）时不重写：否则
+            // mcp.json 指向不存在的新路径，工具静默死掉且读路径无旧布局回退（G4）。
+            // 搬迁/重释放成功后的下一轮启动再重写（本函数幂等）。
+            if !new_dir.is_dir() {
+                continue;
+            }
+            // 兼容两种分隔符的历史写法（Windows 原生 `\` 与 `/`）
+            let old_spellings = [
+                old_dir.to_string_lossy().replace('\\', "/"),
+                old_dir.to_string_lossy().replace('/', "\\"),
+            ];
+            let new_text = new_dir.to_string_lossy().to_string();
+            let Some(entry) = servers.get_mut(&id) else {
+                continue;
+            };
+            for key in ["command", "args"] {
+                if let Some(value) = entry.get_mut(key) {
+                    if rewrite_path_strings(value, &old_spellings, &new_text) {
+                        changed = true;
+                    }
                 }
             }
         }
-    }
-    if changed {
-        connectors::write_json_pretty(&mcp_path, &mcp)?;
-    }
-    Ok(changed)
+        if changed {
+            connectors::write_json_pretty(&mcp_path, &mcp)?;
+        }
+        Ok(changed)
+    })
 }
 
 /// 强制迁移自定义 MCP（不在内嵌 `mcp_catalog` 里的）到新布局：把
@@ -9830,6 +9852,206 @@ mod tests {
             );
             assert_eq!(manager_installed_bytes(), installed_before);
             assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    /// #515/#521 cross-process contention on the mcp.json WRITE path: while a
+    /// foreign fd holds the `mcp.lock` OS lock, the removal must not land
+    /// first; after the release the write lands with its full content.
+    #[test]
+    fn cross_process_lock_blocks_mcp_write_until_release() {
+        with_temp_home(|| {
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "weather": {"command": "python", "args": ["s.py"]},
+                "kept": {"command": "node", "args": ["k.js"]}
+            }));
+            let lock_path = file_lock::lock_path_for(&mcp_path);
+            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let worker = std::thread::spawn(move || {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .remove_from_mcp_json("weather")
+                    .expect("removal should succeed once the foreign lock is released");
+            });
+            // Handshake: wait until the worker holds the mcp.json in-process
+            // mutex — with the foreign lock held, it is now parked on (or just
+            // failed) the OS-lock acquisition (#517 test shape).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match file_lock::process_mutex_for(&lock_path).try_lock() {
+                    Ok(guard) => drop(guard),
+                    Err(std::sync::TryLockError::WouldBlock) => break,
+                    Err(std::sync::TryLockError::Poisoned(p)) => {
+                        drop(p.into_inner());
+                        break;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker never reached the mcp.json lock acquisition point"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // The rewrite must not land while the peer holds the lock.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                let content = std::fs::read_to_string(&mcp_path).unwrap();
+                assert!(
+                    content.contains("\"weather\""),
+                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            drop(foreign_guard);
+            worker
+                .join()
+                .expect("worker should finish once the foreign lock is released");
+            let mcp: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+            assert!(
+                mcp["servers"].get("weather").is_none(),
+                "the entry must be gone after the lock is released: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("kept").is_some(),
+                "the sibling entry must survive: {mcp}"
+            );
+        });
+    }
+
+    /// #521 cross-process contention on the mcp.json secret-MIGRATION write
+    /// path (`migrate_mcp_plaintext_secrets` → whole-file placeholder
+    /// rewrite): while a foreign fd holds the `mcp.lock` OS lock, the
+    /// migration rewrite must not land; after the release the placeholder
+    /// form lands and the sibling entry survives.
+    #[test]
+    fn cross_process_lock_blocks_mcp_secret_migration_write_until_release() {
+        with_temp_home(|| {
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "weather": {"command": "python", "args": ["s.py"], "env": {"AMAP_KEY": "legacy-plain-secret"}},
+                "kept": {"command": "node", "args": ["k.js"]}
+            }));
+            let lock_path = file_lock::lock_path_for(&mcp_path);
+            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let worker = std::thread::spawn(move || {
+                MarketplaceManager::with_store(MemoryCredentialStore::default())
+                    .migrate_mcp_plaintext_secrets()
+                    .expect("migration should succeed once the foreign lock is released");
+            });
+            // Handshake: wait until the worker holds the mcp.json in-process
+            // mutex — with the foreign lock held, it is now parked on (or just
+            // failed) the OS-lock acquisition (#517 test shape).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match file_lock::process_mutex_for(&lock_path).try_lock() {
+                    Ok(guard) => drop(guard),
+                    Err(std::sync::TryLockError::WouldBlock) => break,
+                    Err(std::sync::TryLockError::Poisoned(p)) => {
+                        drop(p.into_inner());
+                        break;
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "worker never reached the mcp.json lock acquisition point"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // The plaintext secret must still be on disk while the peer holds
+            // the lock — the migration rewrite may not land first.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                let content = std::fs::read_to_string(&mcp_path).unwrap();
+                assert!(
+                    content.contains("legacy-plain-secret"),
+                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            drop(foreign_guard);
+            worker
+                .join()
+                .expect("worker should finish once the foreign lock is released");
+            let mcp: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+            assert_eq!(
+                mcp["servers"]["weather"]["env"]["AMAP_KEY"],
+                serde_json::Value::String(super::secrets::mcp_secret_placeholder("AMAP_KEY")),
+                "the plaintext secret must be migrated to the placeholder form: {mcp}"
+            );
+            assert!(
+                mcp["servers"].get("kept").is_some(),
+                "the sibling entry must survive: {mcp}"
+            );
+        });
+    }
+
+    /// #515/#521 cross-process contention on the mcp.json READ path: while a
+    /// peer holds the OS lock, the unparseability probe must degrade promptly
+    /// to the unlocked, never-persisting view (bounded) instead of blocking —
+    /// and a missing mcp.json stays missing.
+    #[test]
+    fn cross_process_lock_contention_degrades_mcp_probe_read_without_persist() {
+        with_temp_home(|| {
+            let mcp_path = paths::mcp_config_path();
+            let lock_path = file_lock::lock_path_for(&mcp_path);
+            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&lock_path)
+                .expect("test should be able to open the lock file");
+            let mut foreign = fd_lock::RwLock::new(file);
+            let foreign_guard = foreign
+                .write()
+                .expect("test should be able to take the foreign cross-process write lock");
+
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let got = connectors::mcp_json_unparseable();
+                done_tx.send(got).expect("reader should send its result");
+            });
+            // A contended read must return promptly. recv_timeout doubles as
+            // the regression assertion: a blocking read hangs here and fails
+            // the test with a bounded, diagnosable timeout.
+            let got = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("contended probe must degrade instead of blocking on the peer's lock");
+            assert!(
+                !got,
+                "a missing mcp.json reads as parseable under contention"
+            );
+            assert!(
+                !mcp_path.exists(),
+                "a contended probe must not persist (create) mcp.json"
+            );
+
+            drop(foreign_guard);
+            reader.join().expect("reader thread should finish");
         });
     }
 }
