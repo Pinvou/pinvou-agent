@@ -81,3 +81,22 @@ pub(crate) fn request_permissions() -> Result<(), ComputerUseError> {
         "this operating system has no computer use permission prompt",
     ))
 }
+
+/// Snapshot of the OS permission grants computer use depends on:
+/// `(screen_recording, accessibility)`. `None` where the platform has no
+/// system permission flow (Windows/Linux) — the settings UI hides the
+/// onboarding row instead of showing permanently-false toggles. A `false`
+/// here is advisory, not authoritative for the action: the tool path
+/// re-checks per action, and macOS applies a fresh TCC grant only to
+/// processes launched after it (the settings UI must pair a miss with the
+/// restart guidance).
+#[cfg(target_os = "macos")]
+pub(crate) fn permission_status() -> Option<(bool, bool)> {
+    imp::permission_status()
+}
+
+/// This platform has no system permission flow, so there is no status to report.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn permission_status() -> Option<(bool, bool)> {
+    None
+}

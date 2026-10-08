@@ -1271,7 +1271,7 @@ pub(super) fn write_session_sidecar(
     }
     let payload = serde_json::to_vec(value)
         .map_err(|error| format!("failed to serialize session sidecar: {error}"))?;
-    deepseek_tui::utils::write_atomic(path, &payload)
+    crate::platform::filesystem::atomic_write_private(path, &payload)
         .map_err(|error| format!("failed to write session sidecar: {error:#}"))
 }
 

@@ -327,7 +327,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         }
         let payload = serde_json::to_vec_pretty(registry)
             .with_context(|| format!("serialize {}", T::LABEL))?;
-        deepseek_tui::utils::write_atomic(self.path.as_ref(), &payload)
+        crate::platform::filesystem::atomic_write_private(self.path.as_ref(), &payload)
             .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))
     }
 

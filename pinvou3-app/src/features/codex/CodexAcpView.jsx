@@ -86,7 +86,7 @@ import {
   RewindUndoChip,
   RewindUndoConfirmDialog,
 } from './RewindChip.jsx';
-import { ModalDialogShell } from './ModalDialogShell.jsx';
+import { ModalShell } from '../../components/ModalShell.jsx';
 import {
   ConversationMarkdown,
   ConversationStatusBadge,
@@ -280,19 +280,19 @@ function WorkspacePanelToggle({ testId, active, changeCount, onToggle, copy }) {
 // open (conditional rendering at the call site).
 function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, onCancel, children }) {
   return (
-    <ModalDialogShell
+    <ModalShell
       testid={testid}
       zIndexClass="z-[120]"
       backdropLabel={copy.branchSwitchCancel}
       backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-      panelClass="relative w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+      panelClass="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
       busy={busy}
       initialFocusRef={initialFocusRef}
       labelledBy={labelledBy}
       onCancel={onCancel}
     >
       {children}
-    </ModalDialogShell>
+    </ModalShell>
   );
 }
 
