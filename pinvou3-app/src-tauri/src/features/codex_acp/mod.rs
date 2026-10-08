@@ -84,6 +84,14 @@ pub(crate) const SECTION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// section longer than [`SECTION_LOCK_TIMEOUT`], the caller proceeds
 /// unlocked — the pre-lock behavior — but every degrade warns, so the
 /// lost-update window is never silent. `label` names the store in warnings.
+///
+/// Round-46 review: the known hold-length aggravator is keychain I/O
+/// inside a section — a parked keychain prompt extends the hold past the
+/// timeout by minutes, and only the WAITING side sees the warning.
+/// `ProviderManager::switch` therefore fetches its key before the section
+/// (providers/mod.rs); `save`'s active-provider re-apply and `delete`'s
+/// best-effort keychain delete keep their short reads/writes inside, with
+/// the residual named at those sites.
 pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Option<std::fs::File> {
     let file = match std::fs::OpenOptions::new()
         .create(true)
@@ -1375,7 +1383,10 @@ pub struct AcpPool {
     bundled_claude_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
     /// 第三方 Provider（中转）管理：store + 凭据 + 三写入器。
-    providers: ProviderManager,
+    /// Arc is for the command boundary's `spawn_blocking`: the manager's
+    /// sync methods poll the section lock and do keychain I/O, which must
+    /// leave the async runtime workers (round-46 review).
+    providers: Arc<ProviderManager>,
     /// 空闲回收巡检任务句柄。放在 Arc 里由所有 pool clone 共享：pool 本身是
     /// Clone（Tauri State 每次命令取的都是 clone），不能直接 impl Drop，否则
     /// 任一 clone 释放都会误停巡检。pool 是进程级 managed state，巡检随进程
@@ -1668,9 +1679,9 @@ impl AcpPool {
             bundled_adapter,
             bundled_claude_adapter,
             bundled_node,
-            providers: ProviderManager::new(
+            providers: Arc::new(ProviderManager::new(
                 crate::platform::credential_store::SystemCredentialStore::new(),
-            )?,
+            )?),
             idle_reaper: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
@@ -3084,13 +3095,33 @@ impl AcpPool {
     // 第三方 Provider（中转）管理
     // ------------------------------------------------------------------
 
-    pub fn list_acp_providers(&self, agent: &str) -> Result<AcpProvidersView> {
-        self.providers.list(agent)
+    pub async fn list_acp_providers(&self, agent: &str) -> Result<AcpProvidersView> {
+        // Round-46 review: the sync body polls the cross-process section
+        // lock (up to SECTION_LOCK_TIMEOUT) and reads the keychain — both
+        // blocking; keep them off the async runtime workers, which also
+        // drive the ACP engine session pumps.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        tokio::task::spawn_blocking(move || providers.list(&agent))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
     }
 
     /// 读取 Provider 的 API key（明文，仅编辑弹窗「显示密钥」按需调用）。
-    pub fn get_acp_provider_key(&self, agent: &str, provider_id: &str) -> Result<Option<String>> {
-        self.providers.api_key(agent, provider_id)
+    pub async fn get_acp_provider_key(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Result<Option<String>> {
+        // Round-46 review: keychain I/O — this used to be a synchronous
+        // command executed on the main thread (the original freeze class);
+        // the blocking read now runs on a blocking worker.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let provider_id = provider_id.to_string();
+        tokio::task::spawn_blocking(move || providers.api_key(&agent, &provider_id))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
     }
 
     /// 保存 Provider。若保存的是**生效中**的 Provider，配置已重写但运行中的
@@ -3111,18 +3142,28 @@ impl AcpPool {
         api_key_action: crate::platform::credential_store::CredentialEditAction,
     ) -> Result<ProviderRecord> {
         let backend = AgentBackend::parse(Some(agent))?;
-        let record = self.providers.save(
-            agent,
-            provider_id,
-            name,
-            base_url,
-            model,
-            model_slots,
-            context_window,
-            wire_api,
-            api_key,
-            api_key_action,
-        )?;
+        // Round-46 review: the sync save polls the section lock, does
+        // keychain work, and writes vendor configs — run it on a blocking
+        // worker (M3).
+        let providers = self.providers.clone();
+        let agent_owned = agent.to_string();
+        let provider_id = provider_id.map(str::to_string);
+        let record = tokio::task::spawn_blocking(move || {
+            providers.save(
+                &agent_owned,
+                provider_id.as_deref(),
+                name,
+                base_url,
+                model,
+                model_slots,
+                context_window,
+                wire_api,
+                api_key,
+                api_key_action,
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
         // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
         // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
         // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
@@ -3150,14 +3191,20 @@ impl AcpPool {
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
         // 与 save 同一 fresh-read 纪律：CLI 在本 GUI 背后的 switch 不得让
-        // 重启判定沿用启动时的内存值。
-        let was_current = self
-            .providers
-            .store()
-            .current_after_reload(agent)
-            .as_deref()
-            == Some(provider_id);
-        self.providers.delete(agent, provider_id)?;
+        // 重启判定沿用启动时的内存值。Round-46 review: both the fresh read
+        // (section lock) and the delete (keychain) are blocking — run the
+        // pair on a blocking worker in decision order.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let provider_id = provider_id.to_string();
+        let (delete_result, was_current) = tokio::task::spawn_blocking(move || {
+            let was_current = providers.store().current_after_reload(&agent).as_deref()
+                == Some(provider_id.as_str());
+            (providers.delete(&agent, &provider_id), was_current)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?;
+        delete_result?;
         if was_current {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
@@ -3173,7 +3220,14 @@ impl AcpPool {
         provider_id: &str,
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        self.providers.switch(agent, provider_id)?;
+        // Round-46 review: the switch body can park on a keychain prompt —
+        // blocking worker (M3).
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let provider_id = provider_id.to_string();
+        tokio::task::spawn_blocking(move || providers.switch(&agent, &provider_id))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
         self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
@@ -3182,18 +3236,32 @@ impl AcpPool {
     /// 恢复官方登录：只删除本功能写入的键/表，然后走同一套重启链路。
     pub async fn switch_acp_provider_official(&self, agent: &str) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        self.providers.switch_official(agent)?;
+        // Round-46 review: same blocking-worker discipline as `switch`.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        tokio::task::spawn_blocking(move || providers.switch_official(&agent))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
         self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
     }
 
-    pub fn export_acp_providers(&self, agent: &str) -> Result<String> {
-        self.providers.export(agent)
+    pub async fn export_acp_providers(&self, agent: &str) -> Result<String> {
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        tokio::task::spawn_blocking(move || providers.export(&agent))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
     }
 
-    pub fn import_acp_providers(&self, agent: &str, json: &str) -> Result<ImportResult> {
-        self.providers.import(agent, json)
+    pub async fn import_acp_providers(&self, agent: &str, json: &str) -> Result<ImportResult> {
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let json = json.to_string();
+        tokio::task::spawn_blocking(move || providers.import(&agent, &json))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
     }
 
     /// Per-session provider override (F11): writes the "provider" key into the

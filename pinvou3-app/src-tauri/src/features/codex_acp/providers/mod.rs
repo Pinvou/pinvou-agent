@@ -1125,10 +1125,36 @@ impl ProviderManager {
             }
             anyhow::bail!("Provider 不存在: {}", record.id);
         }
+        // Round-46 review: the removed-record guard above covers a peer
+        // deleting the whole record, but a peer `--delete-key` only clears
+        // the record's credential POINTER while the record survives —
+        // upserting our pre-lock pointer over it would resurrect
+        // `has_credential: true` whose keychain entry the peer already
+        // deleted (the round-44 fix closed this for the KeepExisting-carry
+        // arm only). A peer Replace re-points the reference at the SAME
+        // deterministic value, so only a genuine divergence lands here:
+        // take back the key THIS call wrote and fail honestly; the retry
+        // re-reads everything fresh.
+        if let (Some(wrote), Some(fresh)) = (&written_credential, fresh_record.as_ref()) {
+            if fresh.credential.as_ref() != Some(wrote) {
+                self.credentials.delete(wrote).ok();
+                anyhow::bail!(
+                    "Provider {} 被并发修改（凭据已被另一端更改），请重试",
+                    record.id
+                );
+            }
+        }
         if keep_existing_carry {
             record.credential = fresh_record.and_then(|fresh| fresh.credential);
         }
         if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
+            // Round-46 note: this keychain read parks inside the section
+            // when the keychain prompts. Moving it pre-lock would apply a
+            // stale key value if a peer Replace landed in the window (the
+            // reference is deterministic, so there is no pointer change to
+            // re-validate against), so the read stays here; `spawn_blocking`
+            // at the command boundary keeps it off the async runtime, and
+            // the section-lock degrade remains the bounded safety valve.
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
@@ -1194,6 +1220,13 @@ impl ProviderManager {
         }
         let removed = self.store.remove_locked(agent, provider_id)?;
         if removed.is_some() {
+            // Round-46 note: this keychain delete intentionally stays inside
+            // the section. The reference is deterministic, so deleting it
+            // after releasing the lock would race a peer re-creating the
+            // same provider id — the peer's freshly set key would be
+            // deleted by this stale call. The delete targets an
+            // already-ACL'd item (no unlock prompt class), and the
+            // section-lock degrade remains the bounded safety valve.
             let reference = CredentialReference::for_acp_provider(agent, provider_id);
             self.credentials.delete(&reference).ok();
         }
@@ -1220,6 +1253,19 @@ impl ProviderManager {
         // catch it — the target still existed), and the next spawn injected
         // this target's key into the peer's endpoint. The `*_locked` store
         // primitives reuse the held flock instead of re-acquiring.
+        //
+        // Round-46 review MAJOR: the keychain read below used to run inside
+        // the section flock, so a parked keychain prompt (locked keychain,
+        // ACL re-authorization) held the flock for minutes and drove every
+        // peer past SECTION_LOCK_TIMEOUT into the proceed-unlocked degrade
+        // — the lost-update window the flock exists to close. The reference
+        // is deterministic (`for_acp_provider`), so the read needs no store
+        // state: fetch the key BEFORE the section and reuse it under the
+        // lock. Residual: a peer Replace landing inside the sub-second
+        // peek→lock window leaves this switch applying the previous key
+        // value; the next switch/save converges it (a visible 401, never a
+        // silent lost update).
+        let peek_key = self.api_key(agent, provider_id)?;
         let _section = self.store.section_lock();
         // Fresh read under the section lock: a stale in-memory record could
         // apply a provider a peer process already removed (the CLI's boot
@@ -1229,9 +1275,8 @@ impl ProviderManager {
             .store
             .record_fresh_locked(agent, provider_id)
             .with_context(|| format!("Provider 不存在: {provider_id}"))?;
-        let key = self
-            .api_key(agent, provider_id)?
-            .with_context(|| "Provider 未配置 API key，无法切换；请先保存 API key")?;
+        let key =
+            peek_key.with_context(|| "Provider 未配置 API key，无法切换；请先保存 API key")?;
         let writer = self.writer_for(agent)?;
         // 官方 default_model 只在首次切换时记录；连切 A→B 时 config 的
         // default_model 已是受管值（读到 None），必须**保留 store 旧值**，
