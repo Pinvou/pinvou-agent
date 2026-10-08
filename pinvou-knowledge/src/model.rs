@@ -231,8 +231,10 @@ pub struct SearchHit {
     pub document_name: String,
     pub text: String,
     pub ord: i64,
-    /// RRF 融合排序在服务端内部使用，不下发给客户端。
-    #[serde(default, skip_serializing)]
+    /// 2026-10 前发布的客户端把 score 定义为 serde 必需，必须继续下发
+    /// （服务端排序本就计算该值）；`default` 只负责旧服务端 + 新客户端
+    /// 的缺键容错。
+    #[serde(default)]
     pub score: f64,
 }
 
@@ -400,5 +402,32 @@ mod wire_compat_tests {
         ] {
             assert!(json.get(key).is_some(), "legacy key missing on wire: {key}");
         }
+    }
+
+    #[test]
+    fn search_hit_keeps_score_on_the_wire() {
+        let hit = SearchHit {
+            collection_id: 1,
+            document_id: 2,
+            document_name: "d".into(),
+            text: "匹配文本".into(),
+            ord: 0,
+            score: 0.5,
+        };
+        let json = serde_json::to_value(&hit).unwrap();
+        assert!(
+            json.get("score").is_some(),
+            "legacy key missing on wire: score"
+        );
+        // 缺键对已带 #[serde(default)] 的新客户端无害。
+        let minimal: SearchHit = serde_json::from_value(serde_json::json!({
+            "collectionId": 1,
+            "documentId": 2,
+            "documentName": "d",
+            "text": "匹配文本",
+            "ord": 0,
+        }))
+        .unwrap();
+        assert_eq!(minimal.score, 0.0);
     }
 }
