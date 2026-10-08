@@ -221,7 +221,7 @@ fn outcome_exposes_numeric_usage_without_private_text() {
     // hide in the payload and a key rename fails here instead of drifting
     // onto consumers.
     assert_eq!(
-        serde_json::to_value(&usage).expect("SafeUsageMetrics serializes"),
+        serde_json::to_value(usage).expect("SafeUsageMetrics serializes"),
         serde_json::json!({
             "input_tokens": 10,
             "output_tokens": 4,

@@ -528,22 +528,24 @@ mod tests {
     }
 
     /// Round-47 review: probe errors can embed the configured `base_url`
-    /// verbatim. A URL with credentials in its userinfo must come out
-    /// scrubbed — the same two-pass order the `models test` and memory
-    /// organize lanes use (userinfo strip first, then token shapes) — so the
-    /// pass cannot be dropped from `redact` without failing here.
+    /// verbatim. The userinfo must come out scrubbed, and the host must
+    /// stay for diagnosis — the URL is chosen short enough that the
+    /// ≥24-char catch-all would NOT redact the stripped form, so a host
+    /// that survived proves the userinfo strip ran BEFORE the token-shape
+    /// pass (dropping the scrub turns the whole URL into `[REDACTED]`
+    /// and fails the host assertion; dropping redaction entirely fails
+    /// the userinfo assertion).
     #[test]
     fn redact_scrubs_url_userinfo_before_token_shapes() {
-        let leaked =
-            "probe failed for http://budget:bosun@192.168.8.30:8000/v1 (connection refused)";
+        let leaked = "probe failed for http://budget:bosun@h/v1 (connection refused)";
         let out = redact(&leaked);
         assert!(
             !out.contains("budget:bosun"),
             "userinfo must not survive redaction: {out}"
         );
         assert!(
-            out.contains("192.168.8.30:8000"),
-            "the host stays for diagnosis: {out}"
+            out.contains("http://h/v1"),
+            "the stripped URL stays for diagnosis: {out}"
         );
     }
 

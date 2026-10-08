@@ -227,8 +227,7 @@ fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
     assert_eq!(value["session_id"], id);
     assert_eq!(value["path"], report.display().to_string());
     assert_eq!(value["content"], "# Report\n\nfirst version\n");
-    let outcome =
-        run(&["pinvou", "artifacts", "read", &id, "report.md"]).expect("human read");
+    let outcome = run(&["pinvou", "artifacts", "read", &id, "report.md"]).expect("human read");
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert_eq!(outcome.stdout, "# Report\n\nfirst version\n");
 
@@ -248,8 +247,8 @@ fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
     assert_eq!(value["session_id"], id);
     assert_eq!(value["path"], report.display().to_string());
     assert_eq!(value["bytes"], "# Report\n\nsecond version\n".len());
-    let outcome = run(&["pinvou", "artifacts", "read", &id, "report.md"])
-        .expect("read after write");
+    let outcome =
+        run(&["pinvou", "artifacts", "read", &id, "report.md"]).expect("read after write");
     assert_eq!(outcome.stdout, "# Report\n\nsecond version\n");
 
     // The second writable area: an existing file under the session's
@@ -430,7 +429,9 @@ fn artifacts_write_file_gate_refuses_credential_source_paths() {
         ssh_key.to_str().unwrap(),
     ]);
     assert!(
-        error.to_string().starts_with("artifacts write: refusing --file:"),
+        error
+            .to_string()
+            .starts_with("artifacts write: refusing --file:"),
         "the source gate must precede the session resolution: {error}"
     );
 
@@ -547,7 +548,10 @@ fn artifacts_read_error_lanes_pin_containment_codes() {
         message.starts_with("artifact_session_mismatch:"),
         "{message}"
     );
-    assert!(message.contains(&id_b), "the owning session is named: {message}");
+    assert!(
+        message.contains(&id_b),
+        "the owning session is named: {message}"
+    );
 
     // Leading-underscore directory under the sessions root: inside storage,
     // but never an editable session.
