@@ -299,6 +299,24 @@ impl SystemCredentialStore {
             "[credential_store] secrets_for cache miss service={}",
             service
         );
+        // Test hermeticity valve (marketplace reconcile hang, 2026-10-03):
+        // placed AFTER the per-store cache consult above so the fake-backend
+        // tests (inject_fake_secrets) are unaffected, and BEFORE the OS
+        // keyring is probed. Harnesses that redirect PINVOU3_HOME cannot make
+        // the OS keyring hermetic — on macOS a real-keyring read from an
+        // ad-hoc-signed test binary can block indefinitely inside
+        // SecKeychainFindGenericPassword on the ACL consent dialog
+        // (rebuild_local_mcp_entry's placeholder resolution hung the whole
+        // suite locally; Linux CI never sees it because its keyring probe
+        // fails fast into the file fallback). Production builds never read
+        // the flag.
+        #[cfg(test)]
+        if std::env::var_os("PINVOU3_TEST_KEYRING_FILE_FALLBACK").is_some() {
+            log::info!(
+                "[credential_store] test file-fallback flag set; using file keyring without probing the OS keyring"
+            );
+            return Arc::new(Secrets::file_backed());
+        }
         let store = DefaultKeyringStore::new(service);
         log::info!("[credential_store] keyring probe start service={}", service);
         let secrets = match store.probe() {
