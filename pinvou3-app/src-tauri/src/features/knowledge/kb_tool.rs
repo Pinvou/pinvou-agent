@@ -133,19 +133,21 @@ fn build_unified_context_block(hits: &[UnifiedHit], warnings: &[String]) -> Stri
 }
 
 /// 本地与远程两臂共用的 chunk 窗口收尾：把窗口内 chunk 拼成
-/// `## chunk <ord>` 文本（块与块之间空一行），并按最后一块的下一序号算出
+/// `## chunk <ord>` 文本，块间分隔由 `block_gap` 决定（本地臂沿用
+/// 空一行，远程臂沿用无分隔），并按最后一块的下一序号算出
 /// 续读游标与截断标记。返回 `(content, next_start_chunk, truncated)`；
 /// 外壳 JSON 字段两臂各自保留（本地 `kb_source` / 远程 `kb_remote_source`
 /// 的身份与来源字段不同）。
 fn finalize_source_window<'a>(
     chunks: impl IntoIterator<Item = (i64, &'a str)>,
     total_chunks: i64,
+    block_gap: &str,
 ) -> (String, Option<i64>, bool) {
     let mut content = String::new();
     let mut last_ord: Option<i64> = None;
     for (ord, text) in chunks {
         if !content.is_empty() {
-            content.push('\n');
+            content.push_str(block_gap);
         }
         content.push_str(&format!("## chunk {ord}\n{}\n", text.trim()));
         last_ord = Some(ord);
@@ -165,6 +167,7 @@ fn render_source_window(
     let (content, next_start_chunk, truncated) = finalize_source_window(
         chunks.iter().map(|(ord, text)| (*ord, text.as_str())),
         document.n_chunks,
+        "\n",
     );
     json!({
         "type": "kb_source",
@@ -599,6 +602,7 @@ impl ToolSpec for KbOpenSourceTool {
                     .iter()
                     .map(|chunk| (chunk.ord, chunk.text.as_str())),
                 window.document.n_chunks,
+                "",
             );
             let rendered = json!({
                 "type": "kb_remote_source",
