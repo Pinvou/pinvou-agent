@@ -2284,7 +2284,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
         // Judge exactly the launch target the writer produces, via the same
         // derivation (`local_server_command`/`local_server_args`).
-        let command = Self::local_server_command(manifest);
+        let command = mcp_catalog::local_server_command(manifest);
         if command.is_empty() {
             // An empty command can never launch (the healthy check requires a
             // non-empty command), so rebuilding would rewrite the identical
@@ -2294,7 +2294,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         if Path::new(&command).is_absolute() && !Path::new(&command).exists() {
             return Err(format!("package command {} is missing", command));
         }
-        for arg in Self::local_server_args(manifest, &server_dir) {
+        for arg in mcp_catalog::local_server_args(manifest, &server_dir) {
             let path = Path::new(&arg);
             if path.is_absolute() && !path.exists() {
                 return Err(format!("package script {} is missing", path.display()));

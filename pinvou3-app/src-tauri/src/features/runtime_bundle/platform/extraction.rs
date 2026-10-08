@@ -1280,6 +1280,81 @@ impl Pinvou3Bundle {
         }
     }
 
+    /// The aux-scoped session-reader mcp.json entry for one parent task
+    /// (ADR-0024): reuses the marketplace launch resolution — the same
+    /// resolved python command and released
+    /// `~/.pinvou3/bundles/session-reader/mcp/server.py` path an install
+    /// writes — and appends `--only-session <parent_id>` so the server
+    /// enforces the scope process-side. `None` only when the embedded
+    /// manifest is unavailable (a build/catalog invariant break); the caller
+    /// fails closed to the zero-tool aux branch.
+    fn aux_session_reader_entry(parent_id: &str) -> Option<serde_json::Value> {
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
+                .ok()
+                .flatten()?;
+        let server_dir =
+            crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader");
+        let mut args =
+            crate::features::marketplace::mcp_catalog::local_server_args(&manifest, &server_dir);
+        args.push("--only-session".to_string());
+        args.push(parent_id.to_string());
+        Some(serde_json::json!({
+            "command": crate::features::marketplace::mcp_catalog::local_server_command(&manifest),
+            "args": args,
+        }))
+    }
+
+    /// Write one per-aux scoped MCP config (ADR-0024): `{"servers": …}`
+    /// containing ONLY the given app-built entries — never a copy of the
+    /// global mcp.json and never the browser wrapper (either would be a
+    /// scope escape: the aux engine would boot user servers). Generic over
+    /// the entry map (reserved interface R4): a future aux-scoped server
+    /// joins by data, not by a new writer. Idempotent (identical content →
+    /// rewrite skipped, same discipline as the work-mode config), private
+    /// (dir 0700, file 0600 via `atomic_write_private`). Returns `None` on
+    /// any failure so the aux spawn can fail closed to the zero-tool branch
+    /// instead of pointing the engine at a missing or stale file.
+    fn write_aux_mcp_config(
+        &self,
+        aux_session_id: &str,
+        servers: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<PathBuf> {
+        let path = paths::aux_session_mcp_json(aux_session_id);
+        let config = serde_json::json!({ "servers": servers });
+        let json = serde_json::to_string_pretty(&config).ok()?;
+        if std::fs::read_to_string(&path)
+            .map(|existing| existing == json)
+            .unwrap_or(false)
+        {
+            return Some(path);
+        }
+        let parent = path.parent()?.to_path_buf();
+        std::fs::create_dir_all(&parent).ok()?;
+        crate::platform::os::make_private_dir(&parent);
+        crate::platform::filesystem::atomic_write_private(&path, json.as_bytes()).ok()?;
+        Some(path)
+    }
+
+    /// The per-aux scoped session-reader MCP config path (ADR-0024): exactly
+    /// one server entry — the released session-reader pinned to the parent
+    /// task's session id via `--only-session`, written at spawn time from the
+    /// aux branch of `build_engine_config_for_session_roots` (the same
+    /// pattern as the work-mode per-session path). `None` means the scoped
+    /// config could not be produced; the caller must demote the engine to
+    /// the zero-tool aux branch (fail closed — the global mcp.json is never
+    /// a fallback here).
+    pub fn aux_mcp_config_path_for_session(
+        &self,
+        aux_session_id: &str,
+        parent_id: &str,
+    ) -> Option<PathBuf> {
+        let entry = Self::aux_session_reader_entry(parent_id)?;
+        let mut servers = serde_json::Map::new();
+        servers.insert("session-reader".to_string(), entry);
+        self.write_aux_mcp_config(aux_session_id, &servers)
+    }
+
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
     /// 常是裸 `"python"`/`"python3"` —— 在没把 python 加进 PATH 的机器(或只有 python3 的
     /// Linux)上永远拉不起来(高德天气等 marketplace 工具静默失效)。每次启动重解析:凡
@@ -1557,6 +1632,141 @@ mod tests {
             "USER CODE",
             "上传包目录不得被内嵌重释放覆盖"
         );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// ADR-0024 per-aux scoped config (B2/B3): exactly one server entry —
+    /// the scoped session-reader — built with the marketplace launch
+    /// resolution (resolved python command + released package script) and
+    /// pinned to the parent via `--only-session`; no user servers, no
+    /// browser entry, no timeout drift; token filename (no raw session id);
+    /// private file/dir modes; identical content skips the rewrite.
+    #[test]
+    fn aux_mcp_config_writes_exactly_one_scoped_session_reader_entry() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-config-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+
+        let aux_id = "aux-l5cz0m8xq2k1b";
+        let parent_id = "l5cz0m8xq2k1b";
+        let path = bundle
+            .aux_mcp_config_path_for_session(aux_id, parent_id)
+            .expect("the scoped config must be writable under an isolated home");
+
+        // B3: token filename — neither the aux id nor the parent id appears
+        // anywhere in the path.
+        assert_eq!(
+            path,
+            crate::platform::paths::aux_session_mcp_json(aux_id),
+            "the scoped config path is the token-named per-aux path"
+        );
+        let path_text = path.to_string_lossy();
+        assert!(!path_text.contains(aux_id));
+        assert!(!path_text.contains(parent_id));
+
+        // B2: content — exactly one server, launch fields only.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let servers = parsed["servers"].as_object().unwrap();
+        assert_eq!(
+            servers.len(),
+            1,
+            "no user servers and no browser entry may ride in: {servers:?}"
+        );
+        let entry = servers.get("session-reader").expect("the scoped entry");
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["args", "command"],
+            "launch fields only (no env, no timeout drift)"
+        );
+        let command = entry["command"].as_str().unwrap();
+        assert_eq!(
+            command,
+            crate::platform::paths::python_command(),
+            "the entry reuses the marketplace launch resolution (the bare python family resolves to the current runtime)"
+        );
+        let args: Vec<String> = entry["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        let script = args[0].replace('\\', "/");
+        assert!(
+            script.ends_with("session-reader/mcp/server.py"),
+            "the first arg is the released package script, got {script:?}"
+        );
+        assert_eq!(
+            &args[args.len() - 2..],
+            ["--only-session".to_string(), parent_id.to_string()],
+            "args end with the parent pin"
+        );
+
+        // B3: private modes (file 0600 via atomic_write_private, dir 0700 via
+        // make_private_dir) and idempotence — the skip branch performs no
+        // write, so a read-only directory cannot fail the second call.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "the config file is private");
+            let dir_mode = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700, "the mcp-sessions dir is private");
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o500),
+            )
+            .unwrap();
+            let again = bundle.aux_mcp_config_path_for_session(aux_id, parent_id);
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            assert_eq!(
+                again.as_deref(),
+                Some(path.as_path()),
+                "identical content must skip the rewrite (no write is attempted)"
+            );
+        }
+        // A second call with identical content still yields the same path on
+        // every platform (the unix leg above proves the skip branch).
+        assert_eq!(
+            bundle
+                .aux_mcp_config_path_for_session(aux_id, parent_id)
+                .as_deref(),
+            Some(path.as_path())
+        );
+
+        // Different parents produce different files (the pin is per-aux).
+        let other = bundle
+            .aux_mcp_config_path_for_session("aux-other01", "other01")
+            .expect("second aux config");
+        assert_ne!(other, path);
 
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };

@@ -2,7 +2,7 @@
   "id": "session-reader",
   "name": "会话读取",
   "description": "只读、分页读取本机其他 Pinvou 会话的历史记录（配合输入框 @ 引用会话使用）",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "icon": "message-square",
   "category": "效率工具",
   "mcp_tools": [

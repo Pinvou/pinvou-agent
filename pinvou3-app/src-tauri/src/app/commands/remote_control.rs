@@ -1873,7 +1873,8 @@ mod tests {
         ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent).expect(
             "fresh aux sessions default to single-agent mode, and the flag cannot be \
                      flipped on them at all: set_multi_agent_mode rejects aux- ids \
-                     (round-32 minor 20), so the zero-tools invariant rests on that refusal \
+                     (round-32 minor 20), so the aux tool-surface invariant \
+                     (scoped read-only at most, ADR-0024) rests on that refusal \
                      plus the spawn pin and the per-turn gate",
         );
         store.load(&aux.id).expect("aux session loads by id");
