@@ -91,6 +91,18 @@ impl Drop for TempHome {
     }
 }
 
+/// Removes `PINVOU_KB_IMPORT_HOLD_FILE` on drop so a failing assertion
+/// cannot leak the hold into later tests of this binary: ENV_LOCK only
+/// serialises the tests, it does not reset the environment, and a leaked
+/// hold would park every later in-process import for its 120 s bound.
+struct HoldEnvGuard;
+
+impl Drop for HoldEnvGuard {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
+    }
+}
+
 fn run_ok(arguments: &[&str]) -> String {
     let parsed = parse_args(arguments.to_vec()).expect("valid knowledge command");
     let outcome = execute(parsed).expect("successful knowledge command");
@@ -243,28 +255,13 @@ fn seed_running_job(home: &TempHome, label: &str, files: usize) -> (i64, String)
     (collection, job)
 }
 
-// Round-38 review: the strict `poll_index_phase` helper lost its last
-// caller when the stall-timeout coverage moved into
-// `a_frozen_import_is_interrupted_and_resumable` (which reads the settled
-// state once instead of polling); the relaxed twin below is still in use.
-/// [`poll_index_phase`], but returning the last observed state instead of
-/// panicking when the deadline passes: for the bounded drain, where the
-/// point is "the import thread is usually done", not "the job must land a
-/// specific phase".
-fn poll_index_phase_relaxed(phases: &[&str], timeout_secs: u64) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        let phase = state["phase"].as_str().unwrap_or_default().to_owned();
-        if phases.contains(&phase.as_str()) {
-            return state;
-        }
-        if Instant::now() >= deadline {
-            return state;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
+// The strict `poll_index_phase` helper lost its last caller when the
+// stall-timeout coverage moved into `a_frozen_import_is_interrupted_and_
+// resumable` (which reads the settled state once instead of polling), and
+// the relaxed bounded-drain twin followed it out once the live-owner
+// refusal test swapped its racing 400-file import for the deterministic
+// `PINVOU_KB_IMPORT_HOLD_FILE` park — its drain became a strict inline
+// poll over a released two-file import, so neither twin has a caller left.
 
 // ---- parse-level coverage ----
 
@@ -1504,11 +1501,53 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
 /// refusals must arrive without flipping the job or enqueueing the new
 /// sources. Complements the SIGKILL-driven strand tests with an
 /// owner that is genuinely LIVE while the refusals land.
+///
+/// Liveness is deterministic, not a timing bet: the seeded import thread
+/// parks on `PINVOU_KB_IMPORT_HOLD_FILE` after promoting the row to
+/// `running` and before its first claim, so the refusals provably land
+/// against a live owner (the former 400-file import raced the suite — a
+/// loaded machine could finish it before the assertions ran). The state
+/// poll below waits for `running` with zero completions, which is exactly
+/// the parked window, and the released two-file import is drained to a
+/// terminal phase strictly.
 #[test]
 fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("running-job-refusal");
-    let (_collection, job_id) = seed_running_job(&home, "guarded", 400);
+    // Park the import thread for a deterministic live-owner window. The
+    // guard removes the variable on drop so a failing assertion cannot
+    // leak the hold into later tests of this binary (ENV_LOCK only
+    // serialises the tests, it does not reset the environment; a leaked
+    // hold would park every later in-process import for its 120 s bound).
+    let hold = home.path().join("import-hold");
+    unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
+    let _hold_guard = HoldEnvGuard;
+    let (_collection, job_id) = seed_running_job(&home, "guarded", 2);
+
+    // State-based wait (no sleep budget): the park sits between
+    // `prepare_items` (which promotes the row to `running`) and the first
+    // claim, so `running` with a full queue and zero completions proves
+    // the thread is parked — the owner is live and stays live until the
+    // file below is written.
+    let parked_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        if state["running"] == serde_json::json!(true)
+            && state["total"] == serde_json::json!(2)
+            && state["done"] == serde_json::json!(0)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < parked_deadline,
+            "the seeded import never reached its parked live-owner state: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The thread read the variable once at spawn; from here the FILE gates
+    // the park, so the variable can go away before any assertion that
+    // could fail.
+    unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
 
     // The CLI sees the in-flight job as the (running) latest one and must
     // refuse both re-arming commands with the owner explanation.
@@ -1556,14 +1595,26 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
 
     // The refused commands must not have flipped the seeded job: it stays
     // on its active progression (interrupted would mean something ran the
-    // boot-recovery UPDATE against a live owner). Bounded drain (round-37
-    // review): wait for a terminal phase so the in-process import thread is
-    // done before TempHome unlinks the store, instead of returning while it
-    // is still ingesting — but a full-suite run loads the machine enough
-    // that a hard terminal-only wait flaked (the 400-file import raced the
-    // suite), so the drain gives up after 120 s and proceeds with whatever
-    // phase the job reached.
-    let state = poll_index_phase_relaxed(&["done", "done_with_errors"], 120);
+    // boot-recovery UPDATE against a live owner). Release the parked owner
+    // and drain STRICTLY to a terminal phase: with the hold lifted, the
+    // two-file import must actually finish — proceeding with a
+    // non-terminal phase would mean the test measured the refusals against
+    // an import it never let finish, and TempHome must not unlink the
+    // store under a live thread.
+    std::fs::write(&hold, b"release").unwrap();
+    let drain_deadline = Instant::now() + Duration::from_secs(60);
+    let state = loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        let phase = state["phase"].as_str().unwrap_or_default();
+        if phase == "done" || phase == "done_with_errors" {
+            break state;
+        }
+        assert!(
+            Instant::now() < drain_deadline,
+            "the released import never reached a terminal phase (last: {state})"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_ne!(
         state["phase"],
