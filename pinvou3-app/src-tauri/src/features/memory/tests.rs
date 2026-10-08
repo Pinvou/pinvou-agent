@@ -827,6 +827,13 @@ fn memory_review_diagnostic_classifies_request_parse_and_apply_failures() {
         memory_review_error_stage(&anyhow::anyhow!("parse memory review json")),
         "parse_failed"
     );
+    // The empty-response marker files as parse-stage, not apply_failed —
+    // same response-content-anomaly class as bad JSON (see
+    // memory_review_error_stage and the parser's empty-response rejection).
+    assert_eq!(
+        memory_review_error_stage(&anyhow::anyhow!("memory review returned an empty response")),
+        "parse_failed"
+    );
     assert_eq!(
         memory_review_error_stage(&anyhow::anyhow!("auto write work context")),
         "apply_failed"
