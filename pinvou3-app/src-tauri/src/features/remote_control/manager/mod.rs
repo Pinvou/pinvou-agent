@@ -3725,6 +3725,8 @@ mod tests {
             ("set_session_archived", "id"),
             ("set_session_pinned", "id"),
             ("save_session_artifacts", "id"),
+            ("get_session_pinvou_scene_events", "sessionId"),
+            ("save_session_pinvou_scene_events", "sessionId"),
             ("web_access_write_artifact_text", "sessionId"),
             ("web_access_render_artifact_visual", "sessionId"),
         ];
