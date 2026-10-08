@@ -294,6 +294,30 @@ assert.deepEqual(
   { description: 'english fallback', preview: null, previewTooLong: false },
   'a scroll confirm falls back to the summary (scroll is never screened/blocked)',
 );
+// Canonical names: the Rust backend emits left_mouse_down/left_mouse_up (T3
+// confirmation-required actions), mapped through CANONICAL_ACTION_FIELDS.
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'left_mouse_down', button: null })),
+  { description: '按下左键', preview: null, previewTooLong: false },
+  'a canonical mouse down renders the mapped button',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'left_mouse_up', button: null })),
+  { description: '松开左键', preview: null, previewTooLong: false },
+  'a canonical mouse up renders the mapped button',
+);
+// Bare kinds still render (switch-level coverage), request button wins over
+// the mapped default.
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'right' })),
+  { description: '按下右键', preview: null, previewTooLong: false },
+  'a mouse down renders the requested button',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_up', button: 'middle' })),
+  { description: '松开中键', preview: null, previewTooLong: false },
+  'a mouse up renders the requested button',
+);
 // Legacy payload generation: no structured fields — the English summary is
 // the only content and must pass through verbatim.
 assert.deepEqual(
