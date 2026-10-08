@@ -385,10 +385,20 @@ fn run_agent(
             // `agent_attachment_too_large` after the expensive setup, the
             // exact outcome the regular-file pre-boot check above exists
             // to prevent. The limit is the app's own constant (not a
-            // copy), so the two cannot drift.
+            // copy), so the two cannot drift. Round-47 review: a stat
+            // failure here is a vanish race (the canonicalize + regular-file
+            // pre-flight just passed on the same name) — it fails closed
+            // instead of masquerading as size 0 and passing the gate, which
+            // only moved the failure past the expensive windowless-host
+            // boot this pre-boot gate exists to avoid.
             let size = std::fs::metadata(&resolved)
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
+                .map_err(|error| {
+                    CliError::failed(format!(
+                        "agent run: cannot stat attachment {}: {error}",
+                        resolved.display()
+                    ))
+                })?
+                .len();
             if size > pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES {
                 return Err(CliError::failed(format!(
                     "agent_attachment_too_large: attachment {} is {size} bytes (limit {})",

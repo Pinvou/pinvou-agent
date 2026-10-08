@@ -1797,6 +1797,12 @@ fn update(
     if content.trim().is_empty() {
         return Err(CliError::usage("memory update requires non-empty content"));
     }
+    // Round-47 review: validate the sandbox before the pure content probes,
+    // mirroring `add` (which validates first) — the truncation/normalization
+    // stderr notes used to fire before the misconfigured-home refusal, so a
+    // bad PINVOU3_HOME produced content notes followed by an unrelated
+    // sandbox error.
+    support::sandbox_home()?;
     // Round-45 review: every updatable store renders into the runtime memory
     // block, so marker text is refused before any state change (same gate
     // and code as `add`).
@@ -1847,7 +1853,6 @@ fn update(
             truncation.stored_chars,
         );
     }
-    support::sandbox_home()?;
     let patch = MemoryTextPatch {
         topic: None,
         text: Some(content.to_owned()),

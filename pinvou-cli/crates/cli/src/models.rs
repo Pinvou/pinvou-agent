@@ -990,7 +990,22 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
 }
 
 pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
-    execute_with_store(command, output, &SystemCredentialStore::new())
+    let store = SystemCredentialStore::new();
+    let outcome = execute_with_store(command, output, &store);
+    // Round-47 review: the store's keyring-failure fallback reports through
+    // the `log` facade, which no CLI binary installs — so on a headless box
+    // an API key could land in the plaintext file fallback with no terminal
+    // notice at all. Surface it once per process, after the command (the
+    // note writes stderr; stdout JSON stays parseable).
+    let fallbacks = store.os_keyring_fallback_services();
+    if !fallbacks.is_empty() {
+        crate::note!(
+            "pinvou: warning: the OS keyring was unreachable for {}; credential \
+             storage used the plaintext file fallback on disk",
+            fallbacks.join(", ")
+        );
+    }
+    outcome
 }
 
 /// `execute` with an injectable credential backend — the CLI's spelling of
