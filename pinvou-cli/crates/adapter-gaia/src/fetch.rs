@@ -219,6 +219,36 @@ pub struct SnapshotDownloadRequest<'a> {
     remaining_budget: u64,
 }
 
+// The fields are private by design, so these getters are the only way code
+// outside this module — including a downstream `SnapshotDownloader`
+// implementation, which must fulfill the preflight/download contract from
+// exactly these inputs — can read the request.
+impl SnapshotDownloadRequest<'_> {
+    pub fn repo_id(&self) -> &str {
+        self.repo_id
+    }
+
+    pub fn revision(&self) -> &str {
+        self.revision
+    }
+
+    pub fn remote_path(&self) -> &str {
+        self.remote_path
+    }
+
+    pub fn token(&self) -> &SecretText {
+        self.token
+    }
+
+    pub fn expected(&self) -> &SnapshotFileMetadata {
+        self.expected
+    }
+
+    pub fn remaining_budget(&self) -> u64 {
+        self.remaining_budget
+    }
+}
+
 impl fmt::Debug for SnapshotDownloadRequest<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -240,6 +270,26 @@ pub struct SnapshotPreflightRequest<'a> {
     remote_paths: &'a [PathBuf],
     token: &'a SecretText,
     scratch_root: &'a Path,
+}
+
+// Same contract as [`SnapshotDownloadRequest`]: a downstream downloader can
+// only learn what to preflight through these public getters.
+impl SnapshotPreflightRequest<'_> {
+    pub fn repo_id(&self) -> &str {
+        self.repo_id
+    }
+
+    pub fn revision(&self) -> &str {
+        self.revision
+    }
+
+    pub fn remote_paths(&self) -> &[PathBuf] {
+        self.remote_paths
+    }
+
+    pub fn token(&self) -> &SecretText {
+        self.token
+    }
 }
 
 impl fmt::Debug for SnapshotPreflightRequest<'_> {
