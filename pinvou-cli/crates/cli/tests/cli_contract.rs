@@ -82,6 +82,16 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     )
     .unwrap();
     assert_eq!(GAIA_LEVEL, 1);
+    // Round-47 review: the constant alone is only half the pin — the level
+    // is an external contract documented in the gaia doc's dataset table. A
+    // `GAIA_LEVEL` bump without the matching dataset/scorer/doc change must
+    // fail here instead of shipping a scorer that scores a level the doc
+    // does not support.
+    assert!(
+        include_str!("../../../../docs/gaia-benchmark.md").contains("| 数据集 level | `1` |"),
+        "docs/gaia-benchmark.md must still pin dataset level 1; if the level \
+         moved, the dataset, scorer and doc must move together"
+    );
     let mutations = [
         ("run_id", serde_json::json!("different-run-id")),
         // Schema 1 (legacy) stays scoreable on purpose; only an unknown
