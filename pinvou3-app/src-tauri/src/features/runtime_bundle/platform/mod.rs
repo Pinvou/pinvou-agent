@@ -173,8 +173,9 @@ pub(crate) use crate::platform::connector_skills::{
 /// header now documents the real fail-closed contract (deny_sensitive_paths.sh
 /// is content-hashed and self-invalidates; the depth-guard twins,
 /// deny_sensitive_paths.ps1, and shell_env.sh are not hashed and ride this
-/// bump). Built-in visual-design skill: real images allowed via
-/// local download only (no external URLs), matching the poster scene;
+/// bump). Built-in visual-design skill: real images inlined as data URLs
+/// only (no external URLs, no relative-path image files — the artifact-card
+/// srcDoc preview has no asset resolver), matching the poster scene;
 /// present_artifact protocol stated once. mcp-servers browser protocol text
 /// aligned with the enforced URL gate and uid lifetime (browser-wrapper-protocol.mjs,
 /// browser-core-protocol.mjs; MCP server scripts are rewritten on every boot
