@@ -13,6 +13,7 @@ import { DESIGN_MESSAGE_TYPES, buildDesignRuntimeScript } from './design-runtime
 import { DesignInspectorPanel } from './DesignInspectorPanel.jsx';
 import { EditableMarkdownPreview } from './EditableMarkdownPreview.jsx';
 import { loadArtifactPreview } from './artifact-preview.js';
+import { localizedVisualWarning, visualWarningNeedsDependencyCheck } from './visual-warning.js';
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
       return (
@@ -462,12 +463,15 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
       }, []);
 
       const muted = 'text-[#757575] dark:text-[#8E8E8E]';
-      const needsDependencyCheck = (message) => /LibreOffice/i.test(String(message || ''));
-      const dependencyCheckButton = (message) => (
-        needsDependencyCheck(message) && onGotoSettings
+      // VisualResult 的原始 warning 文案是中文，不渲染原始串：已知
+      // warning_code 渲染三语文案；转换失败（LibreOffice 路径）额外给出
+      // 依赖安装入口。
+      const dependencyCheckButton = (vis) => (
+        visualWarningNeedsDependencyCheck(vis) && onGotoSettings
           ? <button type="button" onClick={onGotoSettings} className={`px-2 py-1 rounded-full font-medium bg-black/5 hover:bg-black/10 text-[#1F1F1F] dark:bg-white/10 dark:hover:bg-white/20 dark:text-[#E3E3E3]`}>{t.depGoInstall || t.depInstallBtn}</button>
           : null
       );
+      const visualWarningLabel = (vis) => localizedVisualWarning(vis, t.artifactPreview);
       const tabBtn = (key, label) => {
         const active = tab === key;
         const disabled = key === 'preview' && !sel;
@@ -624,7 +628,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'html') {
           return (
             <div className="flex flex-col gap-2 h-full">
-              {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
+              {vis.warning && <div className={`flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
               <iframe sandbox="allow-same-origin" className="w-full flex-1 min-h-[480px] border-0 block bg-white"
                 title={(sel && sel.path) || t.apTabPreview}
                 data-testid="artifact-html-preview-frame"
@@ -635,7 +639,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         if (vis && vis.mode === 'images') {
           return (
             <div className="flex flex-col items-center gap-3">
-              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {vis.warning}</span>{dependencyCheckButton(vis.warning)}</div>}
+              {vis.warning && <div className={`self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
               {(vis.images || []).map((src, i) => (
                 <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />
               ))}
@@ -649,8 +653,8 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               ? <ArtifactTileIcon name={sel.basename} tileCls="w-14 h-14 rounded-[16px]" glyphCls="w-7 h-7" />
               : <FileTypeIcon kind="other" className="h-11 w-11" />}
             <span className={`text-[14px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]`}>{sel && sel.basename}</span>
-            <p className="text-[13px] max-w-[360px]">{(vis && vis.warning) || t.apUnsupported}</p>
-            {vis && dependencyCheckButton(vis.warning)}
+            <p className="text-[13px] max-w-[360px]">{(vis && visualWarningLabel(vis)) || t.apUnsupported}</p>
+            {vis && dependencyCheckButton(vis)}
             {(!isWeb || canDownloadArtifacts) && (
               <button type="button" onClick={() => sel && bridge.artifacts.openArtifactExternal(sel.path, sel.sessionId)} className={cardBtnCls('primary')}>
                 {t.apBtnOpen}

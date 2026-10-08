@@ -4,13 +4,8 @@ import { can, isWeb } from '../../shared/platform.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
 import { loadArtifactPreview } from './artifact-preview.js';
+import { localizedVisualWarning } from './visual-warning.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
-
-// 后端 VisualResult.warning_code → artifactPreview 三语词条键。
-const VISUAL_WARNING_LABEL_KEYS = {
-  truncatedPages: 'visualWarningTruncatedPages',
-  convertFailed: 'visualWarningConvertFailed',
-};
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- single-file preview: each branch maps to one kind (md/json/image/visual/error state); splitting would thread 5+ intermediate loading states through
 const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
@@ -33,11 +28,9 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
 
   const name = (path || '').split('/').pop();
   const labels = t.artifactPreview;
-  // 后端 VisualResult.warning 的原始文案是中文(仅供日志),界面只按
-  // warning_code 渲染三语文案;未知码或缺码时回退 previewUnsupported。
-  const visualWarning = preview.visual?.warning_code
-    ? labels[VISUAL_WARNING_LABEL_KEYS[preview.visual.warning_code]]
-    : null;
+  // 后端 VisualResult.warning 的原始文案是中文，不作为任何一端的 UI 文案：
+  // 已知 warning_code 渲染三语文案，未知/缺码时回退 previewUnsupported。
+  const visualWarning = localizedVisualWarning(preview.visual, labels);
   const canOpen = !isWeb || can('artifactDownload');
   const open = () => bridge.artifacts.openArtifactExternal?.(path, sessionId);
   // 懒语言注册完成后重算 md 预览(其余 kind 与语法无关,重算只会
