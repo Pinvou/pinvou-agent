@@ -401,6 +401,23 @@ impl SystemCredentialStore {
         );
         arc
     }
+
+    /// Services whose OS-keyring probe failed in this store instance, so
+    /// their credentials are served by (and would be written to) the
+    /// plaintext file fallback. The GUI routes through
+    /// [`CredentialStore::os_keyring_unreachable`] per reference; the CLI
+    /// (round-47 review) calls this once per command instead — its binary
+    /// installs no `log` implementation, so the fallback's own
+    /// `log::warn!` never reached a terminal and a user could store an API
+    /// key into the file fallback with no notice at all.
+    pub fn os_keyring_fallback_services(&self) -> Vec<String> {
+        self.fallback_services
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keys()
+            .cloned()
+            .collect()
+    }
 }
 
 impl std::fmt::Debug for SystemCredentialStore {

@@ -334,6 +334,17 @@ pub fn append_cli_install_log(line: &str) {
         .append(true)
         .open(&log_path)
     {
+        // Round-47 review: this marker appender is the one `cli-install.log`
+        // writer left that created the file at umask default — the round-46
+        // 0600 tightening covered only the redirect appender above, so a log
+        // first created by a marker line stayed world-readable until a
+        // redirect append happened to tighten it. Same best-effort chmod:
+        // a failure must not fail the install.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
         let _ = writeln!(file, "{line}");
     }
 }
