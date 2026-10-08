@@ -1481,6 +1481,27 @@ mod tests {
         file.set_times(times).unwrap();
     }
 
+    // Rewrite a git-tracked fixture the way #590 hardened code_checkpoints'
+    // TestDir::write: a same-length in-place rewrite can land inside one
+    // timestamp tick with the inode number matching the entry cached in the
+    // index (ext4 hands the just-freed inode right back), so the following
+    // add/commit trusts the stale blob and the asserted commit silently
+    // no-ops with "nothing to commit". Writing a sibling staging file while
+    // the target still exists makes the staging inode differ from the cached
+    // one by construction, independent of timestamp granularity and inode
+    // reuse (safe as long as each path is rewritten at most once between
+    // index refreshes, which holds for every test here).
+    fn rewrite_git_tracked(path: &Path, content: &str) {
+        let mut staging = path.as_os_str().to_os_string();
+        staging.push(format!(
+            ".pinvou3-new-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let staging = PathBuf::from(staging);
+        fs::write(&staging, content).unwrap();
+        fs::rename(&staging, &path).unwrap();
+    }
+
     #[test]
     fn diff_fingerprint_covers_file_and_git_index() {
         let root = TestDir::new("diff-fingerprint");
@@ -1712,7 +1733,7 @@ mod tests {
 
         // Staging a change inside the linked worktree rewrites its index →
         // fingerprint changes (staged changes must not serve a stale cache).
-        fs::write(linked.join("main.py"), "print(2)\n").unwrap();
+        rewrite_git_tracked(&linked.join("main.py"), "print(2)\n");
         run_git(&linked, &["add", "main.py"]);
         assert_ne!(baseline, diff_fingerprint(&linked, "main.py"));
 
@@ -1926,7 +1947,7 @@ mod tests {
         };
         // 在 feature 上多一个提交：feature 的 committerdate 更新，应排在 main 前。
         git_output(root.path(), &["checkout", "feature"]).unwrap();
-        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        rewrite_git_tracked(&root.path().join("file.txt"), "v2");
         git_output(
             root.path(),
             &[
@@ -2031,7 +2052,7 @@ mod tests {
         // feature commits file.txt = v2; restoring the uncommitted main-side
         // edit on top of it conflicts by construction.
         git_output(root.path(), &["checkout", "feature"]).unwrap();
-        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        rewrite_git_tracked(&root.path().join("file.txt"), "v2");
         git_output(
             root.path(),
             &[
@@ -2069,7 +2090,7 @@ mod tests {
             return;
         };
         git_output(root.path(), &["checkout", "feature"]).unwrap();
-        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        rewrite_git_tracked(&root.path().join("file.txt"), "v2");
         git_output(
             root.path(),
             &[
@@ -2220,7 +2241,7 @@ mod tests {
         // feature 分支上 file.txt 改为 v2 并提交；main 上未提交修改同一文件，
         // carry 模式切换必然被 git 拒绝且工作区保持原样。
         git_output(root.path(), &["checkout", "feature"]).unwrap();
-        fs::write(root.path().join("file.txt"), "v2").unwrap();
+        rewrite_git_tracked(&root.path().join("file.txt"), "v2");
         git_output(
             root.path(),
             &[
