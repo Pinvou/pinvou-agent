@@ -7082,6 +7082,43 @@ fn forkguard_session_archive_export_via_store_keeps_full_context() {
     let _ = std::fs::remove_dir_all(&output_dir);
 }
 
+/// ADR-0024 read-surface register: `export_session` keeps its deliberate
+/// any-id read stance for auxiliary side chats too — an `aux-<parent>` record
+/// is a persisted session like any other, and the export path must not grow
+/// an id-class rejection. Pins the store leg the command layer delegates to.
+#[test]
+fn aux_session_archive_export_reads_any_id_class() {
+    let (store, _g) = isolated_store();
+    let parent = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create parent chat");
+    let aux = store
+        .get_or_create_aux_session(&parent.metadata.id)
+        .expect("create derived aux session");
+    store
+        .update_messages(
+            &aux.id,
+            vec![user_text("side question"), assistant_text("side answer")],
+        )
+        .expect("seed aux transcript");
+
+    let output_dir =
+        std::env::temp_dir().join(format!("pinvou3-aux-export-test-{}", std::process::id()));
+    std::fs::create_dir_all(&output_dir).expect("output dir");
+    let output = output_dir.join("aux.tar.xz");
+    let summary = store
+        .export_archive(&aux.id, &output, false)
+        .expect("aux id must export like any persisted session");
+    assert_eq!(summary.session_id, aux.id);
+    assert!(
+        summary.members.iter().any(|m| m.name == "session.json"),
+        "the aux transcript member must land in the archive"
+    );
+    assert!(output.is_file(), "archive must be written");
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
 /// Metadata write path for directory rebind (review #463): set_workspace
 /// changes only the workspace field and is verifiable by reload; the command
 /// layer uses durable_session_record_is_absent to tell orphans (missing /

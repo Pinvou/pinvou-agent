@@ -804,6 +804,40 @@ mod tests {
         assert!(timeline.is_empty());
     }
 
+    /// ADR-0024 read-surface register: the aux-id timeline read is exercised
+    /// (diagnostics read by id, never through the sidebar lists that exclude
+    /// aux ids) but not load-bearing for rendering (the frontend try/catches
+    /// it to empty and the aux panel does not project timelineEvents) — the
+    /// normative point is that `read_timeline` (and the `get_session_timeline`
+    /// command on top of it) must keep reading `aux-<parent>` ids: grow no
+    /// id-class rejection on this read surface.
+    #[test]
+    fn read_timeline_reads_aux_ids_for_panel_hydration() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-timing-aux-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // The derived aux id form (aux-<parent>) must roundtrip through the
+        // timing sidecar path resolution and the reader without rejection.
+        let sid = "aux-l5cz0m8xq2k1b";
+        start_turn(sid);
+        finish_turn(sid, "Completed", None);
+
+        let timeline = read_timeline(sid).unwrap();
+        assert_eq!(timeline.len(), 2, "aux timing events must stay readable");
+        assert_eq!(timeline[0].event, "user_start");
+        assert_eq!(timeline[1].event, "assistant_done");
+
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
     #[test]
     fn read_timeline_skips_corrupt_lines() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
