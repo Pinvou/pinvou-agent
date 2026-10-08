@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -622,6 +622,31 @@ impl KnowledgeService {
                 if prepare_result.is_err() {
                     imports.interrupt(&job_id);
                     infrastructure_error = true;
+                }
+                // Automation hold (`PINVOU_KB_IMPORT_HOLD_FILE`, read once
+                // per import thread): when set, the thread parks here —
+                // after `prepare_items` promoted the row to `running`,
+                // before the first item is claimed — until the path exists.
+                // This gives contract tests a deterministic live-owner
+                // window: the CLI's running-job refusals can be asserted
+                // against an owner that is provably alive instead of
+                // racing a large import's completion. The wait is bounded
+                // so a crashed harness cannot wedge the thread forever,
+                // and an interrupt/cancel breaks the park like any other
+                // stop. Unset (all production paths) this is a no-op.
+                if let Some(hold) =
+                    std::env::var_os("PINVOU_KB_IMPORT_HOLD_FILE").map(PathBuf::from)
+                {
+                    let deadline = Instant::now() + Duration::from_secs(120);
+                    while !hold.exists() {
+                        if cancel.load(Ordering::Relaxed)
+                            || imports.is_stopped(&job_id) == Ok(true)
+                            || Instant::now() >= deadline
+                        {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
                 }
                 loop {
                     // `is_stopped` covers an external interrupt AND a cancel
