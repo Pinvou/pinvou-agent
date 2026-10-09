@@ -1800,8 +1800,9 @@ jobs:
     # indefinitely. Warm, the folded push-only legs stay far below the cap.
     # Fully cold, the 2026-10-02 validation replay of the whole sequence
     # (lib test → release-fast → bundle smoke) ran out of this cap inside
-    # the first bundle smoke (~181m, on a branch also carrying the #644
-    # lld-experiment steps); a bust is not a death spiral — cache-on-failure
+    # the first bundle smoke (~181m, on a throwaway branch also carrying
+    # the #644 mold steps and the lld test-leg env); a bust is not a death
+    # spiral — cache-on-failure
     # below saves the partial target state and the next push converges
     # (mac-build's 50m cap had no such path: save-on-success-only).
     timeout-minutes: 180
@@ -1820,14 +1821,38 @@ jobs:
       # pair): drop DWARF so objects and the test binary shrink — panic
       # file:line still comes from Location rodata, not debuginfo.
       #
-      # Deliberately NOT mirrored: CARGO_PROFILE_DEV_LTO=thin. With thin LTO
-      # the final crate's rustc consumes the dependency bitcode and runs the
-      # ThinLTO backends in its own process, and there is no cap knob (rustc
-      # has no -C threads anymore) — the memory peak would become an uncapped
-      # in-process pass on a 7 GB runner. (The external linker is out of the
-      # picture on every platform: rustc hands it only post-LTO objects — see
-      # the Cargo.toml lto note.) The legs are green without it; revisit only
-      # together with a measurement (and the dmg split).
+      # Dev thin LTO + the probed ld64.lld (see the probe step below),
+      # landed by #646 after measured runs: every lld sample beat the
+      # Apple-ld reference on this leg (point estimate 10-17 min off the
+      # heaviest step). Previously thin LTO was deliberately not mirrored
+      # here: with thin LTO the final crate's rustc consumes the
+      # dependency bitcode (cargo compiles deps with -C linker-plugin-lto)
+      # and runs the ThinLTO backends in its own process, and there is no
+      # cap knob — an uncapped in-process pass on a 7 GB runner. The cap
+      # lives in the link flags: the outer linker never sees bitcode on
+      # any platform (rustc hands it only post-LTO objects, see the
+      # Cargo.toml lto note), so lld only swaps the object-link step to
+      # rust-lld's Mach-O port (ld64.lld), which links those objects
+      # faster than Apple ld; --threads=1 caps lld's own internal
+      # threading (lld uses all hardware threads by default) while
+      # --thinlto-jobs=1 stays flag parity with the linux leg but caps
+      # nothing here. Should a follow-up move the backends into lld via
+      # -C linker-plugin-lto on the final crate, the consumer would be this
+      # same bundled rust-lld (LLVM build identical to rustc's, resolved
+      # from the rustc sysroot, never from PATH), so producer and consumer
+      # cannot skew. ld64.lld ad-hoc signs arm64 outputs by default, so the
+      # linked test binary executes on the runner.
+      #
+      # Deliberately scoped, not job-level: the linker env (dev thin LTO
+      # + the probe's ld64.lld RUSTFLAGS) is applied per step to the three
+      # dev-profile test legs below (all-targets check, computer_use tests,
+      # full lib tests) — the compile + test-binary link + execution shape
+      # validated on #646. This job folds push-only release legs (the
+      # release-fast compile smoke and the bundle_chain-gated universal
+      # bundle smoke) that ship artifacts: they keep the platform-default
+      # Apple ld, the linker this repo has always used for the
+      # framework-heavy bundling path; moving them to lld would be a
+      # separate change with its own validation.
       CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Checkout
@@ -1849,6 +1874,65 @@ jobs:
       - name: Align rust-toolchain.toml toolchain
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      # [lld linker] Probe which stable rustc flag selects the bundled
+      # ld64.lld for this apple-darwin toolchain, then emit the winning
+      # flags as a step output. Tier order mirrors #642's Windows probe:
+      # -C linker-features=+lld is unstable on every stable target (1.90.0
+      # stabilized only the x86_64-linux -lld opt-out), so tier 1
+      # hard-errors in seconds on stable and the explicit linker+flavor
+      # pair is the expected winner; tier 1 stays so a future +lld
+      # stabilization is picked up automatically. The third tier drops the
+      # thinlto/threads link-args if the toolchain rejects them (uncapped
+      # lld threading is a degradation, not a failure).
+      # No -syslibroot is passed: rustc emits it itself for the ld64.lld
+      # flavor (the first probe revision injected it by hand into the caps
+      # array and broke argv - the SDK path leaked through as an input file,
+      # which both cap-bearing tiers misreported as "caps rejected" until the
+      # 2026-10-02 rerun with the fixed probe won tier 2 outright; a control
+      # compile with a bogus -- flag is hard-rejected by ld64.lld, so a tier
+      # that reaches the link stage genuinely accepted the caps).
+      # Each rejected tier prints its stderr so a fallback is always
+      # explainable from the step log alone. An unsupported flag fails the
+      # probe in seconds instead of surfacing hours into the cold build.
+      # The output is consumed only by the dev-profile test legs below via
+      # their step-level env — deliberately a step output, not GITHUB_ENV:
+      # a job-wide export would silently put the probed linker under
+      # every later step, including the push-only release legs, which keep
+      # default Apple ld (see the job env comment).
+      - name: Probe and export the macOS lld link flags
+        id: mac_lld_probe
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d)"
+          echo 'fn main() {}' > "$probe/probe.rs"
+          caps=(-C link-arg=--thinlto-jobs=1 -C link-arg=--threads=1)
+          if rustc -C linker-features=+lld "${caps[@]}" \
+              -o "$probe/probe" "$probe/probe.rs" 2>"$probe/a.err"; then
+            flags="-C linker-features=+lld ${caps[*]}"
+          else
+            echo "probe: tier 1 (-C linker-features=+lld) rejected:" >&2
+            sed 's/^/  /' "$probe/a.err" >&2
+            if rustc -C linker=rust-lld -C linker-flavor=ld64.lld "${caps[@]}" \
+                -o "$probe/probe" "$probe/probe.rs" 2>"$probe/b.err"; then
+              flags="-C linker=rust-lld -C linker-flavor=ld64.lld ${caps[*]}"
+            else
+              echo "probe: tier 2 (rust-lld ld64.lld + thinlto/threads caps) rejected:" >&2
+              sed 's/^/  /' "$probe/b.err" >&2
+              if rustc -C linker=rust-lld -C linker-flavor=ld64.lld \
+                  -o "$probe/probe" "$probe/probe.rs" 2>"$probe/c.err"; then
+                flags="-C linker=rust-lld -C linker-flavor=ld64.lld"
+                echo "::warning::toolchain rejected thinlto/threads caps; linking uncapped"
+              else
+                echo "probe: tier 3 (rust-lld ld64.lld, uncapped) rejected:" >&2
+                sed 's/^/  /' "$probe/c.err" >&2
+                echo "FAIL: this toolchain has no stable way to select ld64.lld" >&2
+                exit 1
+              fi
+            fi
+          fi
+          echo "probed RUSTFLAGS=$flags"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
 
       # bge-m3 is a gitignored large asset (559MB); a clean CI checkout does not have it.
       # Create empty placeholder files to pass tauri-build's resource validation
@@ -1878,6 +1962,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: macOS Rust all-targets check
+        # [lld linker] Scoped to the dev-profile test legs; see the job
+        # env comment for why the push-only release legs stay on default
+        # Apple ld linking.
+        env:
+          CARGO_PROFILE_DEV_LTO: "thin"
+          RUSTFLAGS: ${{ steps.mac_lld_probe.outputs.flags }}
         run: >-
           cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml
           --all-targets --features dev-tools --locked
@@ -1890,6 +1980,12 @@ jobs:
       # artifacts.
       - name: macOS computer_use unit tests
         if: ${{ github.event_name != 'push' }}
+        env:
+          # [lld linker] Same scoped pair as the all-targets check above;
+          # identical flags keep the target/debug artifacts incrementally
+          # reusable between the test legs.
+          CARGO_PROFILE_DEV_LTO: "thin"
+          RUSTFLAGS: ${{ steps.mac_lld_probe.outputs.flags }}
         run: |
           set -euo pipefail
           cd pinvou3-app/src-tauri
@@ -1916,6 +2012,12 @@ jobs:
       # silently runs zero tests (e.g. a cfg/attr accident) must fail.
       - name: macOS full lib tests (native regression, push only)
         if: ${{ github.event_name == 'push' }}
+        env:
+          # [lld linker] Same scoped pair as the all-targets check above;
+          # this dev-profile leg shares its build shape (and target/debug
+          # artifacts) with the validated PR legs.
+          CARGO_PROFILE_DEV_LTO: "thin"
+          RUSTFLAGS: ${{ steps.mac_lld_probe.outputs.flags }}
         run: |
           set -euo pipefail
           cd pinvou3-app/src-tauri
@@ -1925,31 +2027,33 @@ jobs:
             exit 1
           }
 
-      # The universal bundle smoke needs both the arm64 + x86_64 targets,
-      # installed onto the toolchain resolved by rust-toolchain.toml (the
-      # alignment step above already made it the default). Push-only (the PR
-      # legs have no release-fast/bundle steps).
+      # The universal bundle smoke needs both the arm64 and x86_64 targets,
+      # installed into the toolchain resolved from rust-toolchain.toml (the
+      # alignment step above has already set it as default). Needed only on
+      # push when the bundle chain changed (PR legs have no release-fast or
+      # bundle steps), same condition as the node/npm steps below and the
+      # bundle smoke itself.
       - name: Install both targets (universal bundle smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app/src-tauri
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      # The frontend dependencies serve only the push-only universal bundle
-      # smoke (build.js resolves @tauri-apps/cli/tauri.js via require.resolve
-      # and beforeBuildCommand runs vite build; both need node_modules). The
-      # PR legs (check + computer_use) are proven not to need node_modules,
-      # so skip the install to save time. Same two steps as the former
-      # mac-build.yml.
+      # Frontend deps serve only the push-only universal bundle smoke
+      # (build.js does require.resolve("@tauri-apps/cli/tauri.js") and
+      # beforeBuildCommand runs vite build — both need node_modules). The
+      # PR legs (check + computer_use) are verified not to need
+      # node_modules, so they skip the install to save time. Same two
+      # steps as the old mac-build.yml.
       - name: Node.js (universal bundle smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+        if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: pinvou3-app/package-lock.json
 
-      - name: Install frontend dependencies (universal bundle smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+      - name: Install frontend deps (universal bundle smoke, push only)
+        if: ${{ github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true' }}
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
@@ -1966,6 +2070,11 @@ jobs:
           if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
             echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
             echo "CARGO_PROFILE_RELEASE_FAST_STRIP=none" >> "$GITHUB_ENV"
+            # Plain write, not composed: the probed lld flags are scoped to
+            # the dev-profile test legs above via their step env; the
+            # release-fast/bundle legs below keep default Apple ld linking
+            # (lld is out of their validated scope), so this
+            # write must not propagate the probe's flags onto them.
             echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
             echo "⚠️ macOS $(sw_vers -productVersion) -> injecting strip=none (bypasses dyld alignment)"
           else
