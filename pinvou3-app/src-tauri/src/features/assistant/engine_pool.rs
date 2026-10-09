@@ -375,11 +375,13 @@ pub(crate) const AUX_SCOPED_READ_TOOL: &str = "mcp_session-reader_read_session";
 /// the `aux-` prefix, parent part kept verbatim (ADR-0024 clause 5; case
 /// variants of the prefix must behave identically — the same alias-defeating
 /// argument as `is_aux_session_id`). `None` for non-aux ids, an empty parent
-/// part, isolated-prefix parents, or a parent part that fails the session-id
-/// charset: the store rejects such parents at aux creation, but the surface
-/// decision must not trust construction — those ids fail closed to the
-/// ZeroTool fallback (a charset-invalid parent could never name a real
-/// record, and the scoped server's own startup validation would refuse it).
+/// part, isolated-prefix parents, a parent part that fails the session-id
+/// charset, or a parent longer than the server's id length cap: aux creation
+/// rejects sched-/aux-prefixed parents (and `eval_` sessions have no aux
+/// entry point), but the surface decision must not trust construction —
+/// those ids fail closed to the ZeroTool fallback (a charset-invalid or
+/// over-long parent could never name a real record, and the scoped server's
+/// own startup validation would refuse the pin).
 pub(crate) fn aux_parent_session_id(session_id: &str) -> Option<&str> {
     if !crate::features::sessions::is_aux_session_id(session_id) {
         return None;
@@ -398,6 +400,12 @@ pub(crate) fn aux_parent_session_id(session_id: &str) -> Option<&str> {
         {
             return None;
         }
+    }
+    // Length parity with the server's MAX_SESSION_ID_LEN (128): an over-long
+    // parent would boot a scoped server that refuses to start — demote
+    // host-side instead of shipping a dead tool declaration.
+    if parent.len() > 128 {
+        return None;
     }
     crate::features::sessions::validate_session_id(parent).ok()?;
     Some(parent)
@@ -422,6 +430,27 @@ pub(crate) fn aux_allowed_tools(session_id: &str) -> Vec<String> {
     match aux_tool_surface(session_id) {
         AuxToolSurface::ParentScopedRead { .. } => vec![AUX_SCOPED_READ_TOOL.to_string()],
         AuxToolSurface::ZeroTool => Vec::new(),
+    }
+}
+
+/// The per-turn view of the aux allowlist — demotion-aware, unlike the pure
+/// [`aux_allowed_tools`] projection. The scoped list applies only while the
+/// per-aux config file the spawn wrote is on disk: its presence is exactly
+/// the condition under which the spawn did NOT fail closed to ZeroTool
+/// (`atomic_write_private` leaves no valid file behind on failure, and the
+/// content is deterministic per aux id), so a demoted engine also receives
+/// turns with an empty allowlist instead of turns naming a tool its catalog
+/// does not carry. The probe can only NARROW: a missing file (write
+/// failure, later deletion) yields the empty list, and the engine's
+/// boot-time catalog remains the grant authority either way.
+pub(crate) fn aux_turn_allowed_tools(session_id: &str) -> Vec<String> {
+    match aux_tool_surface(session_id) {
+        AuxToolSurface::ParentScopedRead { .. }
+            if crate::platform::paths::aux_session_mcp_json(session_id).is_file() =>
+        {
+            vec![AUX_SCOPED_READ_TOOL.to_string()]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -4781,6 +4810,86 @@ mod scheduled_model_tests {
             let _ = aux_parent_session_id(id);
             assert_eq!(aux_tool_surface(id), AuxToolSurface::ZeroTool, "{id}");
         }
+        // Length parity with the server's MAX_SESSION_ID_LEN: a parent at the
+        // cap stays scoped, one past it demotes host-side (the server would
+        // refuse the pin at boot — a dead tool declaration otherwise).
+        assert_eq!(
+            aux_tool_surface(&format!("aux-{}", "a".repeat(128))),
+            AuxToolSurface::ParentScopedRead {
+                parent_id: "a".repeat(128)
+            }
+        );
+        assert_eq!(
+            aux_tool_surface(&format!("aux-{}", "a".repeat(129))),
+            AuxToolSurface::ZeroTool,
+            "an over-long parent demotes host-side (length parity with the server)"
+        );
+    }
+
+    /// The per-turn view is demotion-aware (review round-1 minor-1): the
+    /// scoped list applies only while the per-aux config file exists on
+    /// disk, so a spawn that failed closed to ZeroTool also receives empty
+    /// per-turn allowlists — the probe can only narrow, never widen.
+    #[test]
+    fn aux_turn_allowed_tools_is_demotion_aware() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-turn-surface-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let scoped_id = "aux-l5cz0m8xq2k1b";
+        let config = crate::platform::paths::aux_session_mcp_json(scoped_id);
+        // No config on disk: the per-turn view is empty even though the pure
+        // surface (and the spawn-time write failure demotion) knows the
+        // parent — the demoted engine must not be handed scoped turns.
+        assert!(
+            !config.exists(),
+            "fixture hygiene: the isolated home starts without the scoped config"
+        );
+        assert_eq!(
+            super::aux_turn_allowed_tools(scoped_id),
+            Vec::<String>::new(),
+            "no per-aux config on disk → empty per-turn allowlist"
+        );
+        assert_eq!(
+            super::aux_allowed_tools(scoped_id),
+            vec!["mcp_session-reader_read_session"],
+            "the pure projection stays scoped (the spawn decision seam)"
+        );
+        // With the config present (the spawn's write succeeded), the
+        // per-turn view opens the scoped list…
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, br#"{"servers":{}}"#).unwrap();
+        assert_eq!(
+            super::aux_turn_allowed_tools(scoped_id),
+            vec!["mcp_session-reader_read_session"],
+            "per-aux config on disk → scoped per-turn allowlist"
+        );
+        // …and closes again when it disappears (later deletion — narrow
+        // only; the engine's boot-time catalog stays the grant authority).
+        std::fs::remove_file(&config).unwrap();
+        assert_eq!(
+            super::aux_turn_allowed_tools(scoped_id),
+            Vec::<String>::new(),
+            "a vanished config narrows the per-turn view back to empty"
+        );
+        // ZeroTool ids never see the scoped list in either view.
+        for id in ["aux-sched-x", "sched-1", "sess-plain"] {
+            assert_eq!(
+                super::aux_turn_allowed_tools(id),
+                Vec::<String>::new(),
+                "{id}"
+            );
+        }
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(tmp);
     }
 
     /// PR #433 review round-6 (MAJOR) + round-10 (S2(b)): the "last mile" from
@@ -4990,14 +5099,10 @@ mod scheduled_model_tests {
         // C3: EditLastTurn carries no per-turn tool surface — the resend
         // inherits the engine config's allowed_tools. That inheritance is
         // pinned at its source (the spawn-config leg of
-        // aux_session_tools_are_scoped_read_only_on_spawn_and_send); here
-        // the reminder half of the resend path stays covered so an edit
-        // cannot regress the boundary text either.
-        assert_eq!(
-            super::aux_allowed_tools("aux-reminder-wire"),
-            vec!["mcp_session-reader_read_session"],
-            "the edit-resend engine's config surface is the scoped list"
-        );
+        // aux_session_tools_are_scoped_read_only_on_spawn_and_send, which
+        // builds a real engine config); re-calling the pure projection here
+        // would assert nothing beyond the truth-table test, so this test
+        // covers only the reminder half of the resend path.
 
         // Control: a plain session's resent message is forwarded verbatim.
         let message = forward_edit_resend_with_reminder(

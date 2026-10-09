@@ -71,6 +71,7 @@ Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message`
 - **Union-gated kill switch**: turning off aux context requires disabling both `session-mention` and `long-memory` (v1); the scoped instance then returns `feature_disabled`. Not independent — R3.
 - **Rust shape pins on instruction/reminder text are `contains()`-vulnerable** (house-known gap from #433's register); accepted with disclosure.
 - **The aux transcript now contains tool_use/tool_result blocks** — the aux panel's chat-item projection has never rendered a tool call (the zero-tool era had none). Verified under A5; a minimal neutral rendering is acceptable v1 (the generic MCP tool card if it fits, else a plain system-style item). No first-party breakage is acceptable.
+- **Per-aux config files are not reclaimed on aux deletion** (review round-1 registered follow-up): `~/.pinvou3/mcp-sessions/<token>.json`, one tiny secret-free file (resolved paths + parent id) per task, persists after the aux session is deleted/reset — same retention stance as the browser per-session configs. Follow-up: delete the token file on the aux delete/reset paths.
 - Zero CodeWhale changes (`fork-modifications.md` untouched); no new Tauri commands; no new events.
 
 ## 7. Acceptance matrix
@@ -100,7 +101,7 @@ Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message`
 
 | # | Scenario | Expected | Verification | Pri |
 |---|---|---|---|---|
-| C1 | Aux send with caller `restrict=false` | `Op::SendMessage.allowed_tools == scoped list` (chokepoint keys on the engine's own id) | ● Rust (leg ② of B1's test) | P0 |
+| C1 | Aux send with caller `restrict=false` | `Op::SendMessage.allowed_tools == scoped list` (chokepoint keys on the engine's own id); demotion-aware — empty when the per-aux config is absent (review round-1 fix) | ● Rust (legs ②/②-b of B1's test) + `aux_turn_allowed_tools_is_demotion_aware` | P0 |
 | C2 | Bogus token / unrelated-id token | Cannot hand an aux engine a full-tool turn (`restricts_tools_for` re-check intact); a non-aux restricted turn still gets the empty list | ● `engine_pool.rs` token tests (`send_dispatch_forwards_forced_restrict_to_engine_entry` incl. the mismatched-token leg) | P0 |
 | C3 | `EditLastTurn` resend | Inherits the engine config's scoped allowlist (no per-turn surface on that op) | ● `edit_resend_dispatch_merges_aux_scoped_tool_reminder_into_outgoing_message` (+ the spawn-config source pin in B1) | P1 |
 

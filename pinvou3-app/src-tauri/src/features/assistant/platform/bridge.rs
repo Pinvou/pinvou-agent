@@ -2509,6 +2509,14 @@ impl Pinvou3Bridge {
                         .aux_mcp_config_path_for_session(session_id, parent_id)
                     {
                         Some(path) => {
+                            // G4 note (ADR-0024 costs): the foundation ALSO
+                            // merges a workspace-level .codewhale/mcp.json
+                            // and plugin servers on top of this file — for
+                            // aux that path is neutralized by the
+                            // session-private execution root (never
+                            // user-trusted), NOT by mcp_config_path itself;
+                            // re-examine here if aux roots ever become
+                            // workspace-bound.
                             scoped_aux_mcp_path = Some(path);
                             (
                                 Self::aux_session_instructions(parent_id),
@@ -3446,12 +3454,13 @@ impl Pinvou3Bridge {
             // bogus caller restrict bool can neither hand aux the full
             // catalog nor push it below its scoped surface) get the scoped
             // single-tool list from the same `aux_tool_surface` seam as the
-            // spawn config; restricted non-aux turns get the empty list;
-            // everything else gets the Pinvou base allowlist.
+            // spawn config — demotion-aware (`aux_turn_allowed_tools`): the
+            // scoped list applies only while the per-aux config file exists,
+            // so a spawn that failed closed to ZeroTool gets empty turns too.
+            // Restricted non-aux turns get the empty list; everything else
+            // gets the Pinvou base allowlist.
             allowed_tools: if crate::features::sessions::is_aux_session_id(session_id) {
-                Some(crate::features::assistant::engine_pool::aux_allowed_tools(
-                    session_id,
-                ))
+                Some(crate::features::assistant::engine_pool::aux_turn_allowed_tools(session_id))
             } else if restrict_tools {
                 Some(Vec::new())
             } else {
@@ -6886,6 +6895,62 @@ mod tests {
             Op::SendMessage { content, .. } => assert_eq!(
                 content, "<system-reminder>\npersona anchor\n</system-reminder>\n\nhi",
                 "aux turns keep only the persona/reminder channel in the system-reminder assembly"
+            ),
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
+
+        // ②-b Demotion-aware chokepoint (review round-1): the per-turn view
+        // tracks the scoped config's presence on disk. The ZeroTool
+        // fallback id (no config written by its spawn leg above) gets an
+        // empty per-turn allowlist, and deleting the scoped config narrows
+        // the live id's turns back to empty too — the probe can only
+        // narrow, never widen.
+        let op = bridge
+            .build_send_message_op(
+                "aux-sched-xyz",
+                "hi".to_string(),
+                AppMode::Agent,
+                None,
+                restrict,
+            )
+            .expect("resolve test route");
+        match op {
+            Op::SendMessage { allowed_tools, .. } => assert_eq!(
+                allowed_tools,
+                Some(Vec::new()),
+                "the demoted (ZeroTool fallback) aux engine gets empty per-turn allowlists"
+            ),
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
+        std::fs::remove_file(&aux_cfg.mcp_config_path).unwrap();
+        let op = bridge
+            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .expect("resolve test route");
+        match op {
+            Op::SendMessage { allowed_tools, .. } => assert_eq!(
+                allowed_tools,
+                Some(Vec::new()),
+                "a vanished scoped config narrows the per-turn allowlist to empty"
+            ),
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
+        // Self-heal: a respawn rewrites the config (idempotent write path)
+        // and the per-turn view reopens the scoped list.
+        assert_eq!(
+            bridge
+                .bundle
+                .aux_mcp_config_path_for_session("aux-xyz", "xyz")
+                .as_deref(),
+            Some(aux_cfg.mcp_config_path.as_path())
+        );
+        let op = bridge
+            .build_send_message_op("aux-xyz", "hi".to_string(), AppMode::Agent, None, restrict)
+            .expect("resolve test route");
+        match op {
+            Op::SendMessage { allowed_tools, .. } => assert_eq!(
+                allowed_tools,
+                Some(vec!["mcp_session-reader_read_session".to_string()]),
+                "a respawned scoped engine reopens the scoped per-turn allowlist"
             ),
             other => panic!("expected SendMessage, got {other:?}"),
         }
