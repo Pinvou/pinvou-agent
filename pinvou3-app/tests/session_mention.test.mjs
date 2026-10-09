@@ -192,16 +192,57 @@ test('drag reuses the contract: the composer accepts sidebar session-row drags (
   assert.match(chatViewSource, /sessionId === activeSessionId/);
 });
 
-test('auto-title contract: both bridges strip the injection block via the same window-global parser before naming', () => {
+test('auto-title contract: both bridges name the session from the stripped body (behavioral)', async () => {
   // Regression: the first message with references used to auto-name the
-  // session "## Referenced chats".
-  // Tauri-side persistence/auto-titling converged into bridge.js's
-  // persistMessagesFor after upstream #464 (the feature artifact chat.js no
-  // longer holds that function); the web side is unchanged.
-  for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
+  // session "## Referenced chats". Presence-only source pins let an
+  // applied-but-discarded split result through (round-12 R3): this drives
+  // the real persistMessagesFor from BOTH bridges and asserts the actual
+  // rename_session invoke.
+  const BODY = '把配色用到 PPT 里';
+  const runTitleLane = async (rel) => {
     const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
-    assert.match(source, /__PINVOU_SESSION_MENTION__/, rel);
-    assert.match(source, /splitMention\(titleText\)/, rel);
+    const fn = extractNamedFunction(source, 'async function persistMessagesFor(sid)');
+    const invokes = [];
+    const run = async (firstUserText) => {
+      invokes.length = 0;
+      const state = {
+        activeSessionId: 'sess-1',
+        sessions: [{ id: 'sess-1', title: '新对话' }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: firstUserText }] }],
+        artifacts: [],
+      };
+      const sandbox = {
+        state,
+        sessionStates: {},
+        isScheduledRunSession: () => false,
+        filterSessionArtifacts: (arts) => arts,
+        rebaseArtifactPathsForRebind: (sid, paths) => paths,
+        invoke: async (name, args) => { invokes.push([name, args]); return {}; },
+        isDefaultChatTitle: () => true,
+        personaPlaceholderTitles: {},
+        userMessageDisplayText: (content) => content.map((part) => (part && part.text) || '').join(''),
+        window: { __PINVOU_SESSION_MENTION__: { splitSessionMentionBlock } },
+        console,
+      };
+      vm.runInNewContext(`${fn}\nthis.persistMessagesFor = persistMessagesFor;`, sandbox);
+      await sandbox.persistMessagesFor('sess-1');
+      return invokes.filter(([name]) => name === 'rename_session').map(([, args]) => args.title);
+    };
+    return run;
+  };
+  for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
+    const run = await runTitleLane(rel);
+    assert.deepEqual(
+      await run(buildSessionMentionBlock(REFS) + BODY),
+      [BODY],
+      `${rel}: the injection block never feeds auto-naming`,
+    );
+    assert.deepEqual(
+      await run(buildSessionMentionBlock(REFS)),
+      [],
+      `${rel}: a refs-only message never names the session`,
+    );
+    assert.deepEqual(await run(BODY), [BODY], `${rel}: plain bodies pass through`);
   }
   // The global publishes exactly this pair of contract functions (bridges
   // cannot import features back, so the block format still has one source of truth).
@@ -246,8 +287,10 @@ test('spoofed-block hardening: absurdly long JSON lines are skipped before JSON.
 // source-regex checks above cannot see those mutations).
 
 /** Extract a function declaration from ChatView.jsx by header, brace-matched (skips strings/comments). */
-function extractChatViewFunction(header) {
-  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+// Generic form of the extractor below (round-12 R3): pulls a top-level
+// named function out of ANY source (bridges included) with the same
+// string/comment-aware brace matching.
+function extractNamedFunction(source, header) {
   const start = source.indexOf(header);
   assert.notEqual(start, -1, `function header not found: ${header}`);
   const open = source.indexOf('{', start);
@@ -276,6 +319,11 @@ function extractChatViewFunction(header) {
     }
   }
   assert.fail(`unbalanced braces extracting: ${header}`);
+}
+
+function extractChatViewFunction(header) {
+  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  return extractNamedFunction(source, header);
 }
 
 test('handleSend assembles and prepends the injection block on dispatch (behavioral)', async () => {
@@ -390,6 +438,326 @@ test('handleSend treats "restored" as a non-dispatch and keeps the chips armed (
   await sandbox.handleSend();
   assert.deepEqual([...live.refs], REFS, 'the snapshot must be put back — nothing was sent');
   assert.equal(calls.inputText, '', 'the bridge already restored the text; the composer is not re-filled');
+});
+
+test('handleSend clears the serialized chips at dispatch, before the send settles (round-8 M5, behavioral)', async () => {
+  // The dispatch clear is the refs-only double-send race fix: canSend stays
+  // true through the send await via hasSessionRefs, so chips that only clear
+  // post-await can be re-dispatched by a second Enter. A string pin cannot
+  // tell handleSend's clear from the voice lane's identical line (round-12
+  // R3): hold the real function at its await and observe the state.
+  const fn = extractChatViewFunction('async function handleSend()');
+  const live = { refs: [...REFS] };
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const sandbox = {
+    mentionDraftKeyRef: { current: 'session:sess-1' },
+    isMultiAgentReadOnly: false,
+    canSend: true,
+    chatVoice: null,
+    inputText: '正文',
+    inputTextRef: { current: '正文' },
+    constrainChatInput: (value) => ({ text: value, truncated: false }),
+    setInputText: () => {},
+    sessionMentionEnabled: true,
+    buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft,
+    restoreSessionMentionDraft,
+    sessionRefs: REFS,
+    sendChatMessage: () => gate,
+    setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+    bridge: { chat: { prefillComposer: () => {} } },
+    personalWorkbenchTemplateIdRef: { current: null },
+    setPersonalWorkbenchTemplateId: () => {},
+    console,
+  };
+  vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.handleSend = handleSend;`, sandbox);
+  const inFlight = sandbox.handleSend();
+  assert.deepEqual(
+    [...live.refs], [],
+    'the chips must already be cleared while the send is still in flight',
+  );
+  release(true);
+  await inFlight;
+});
+
+// Recorder wrapper around the real per-scope draft store: the scope-guard
+// assertions observe what each lane stashes/restores through the choke point
+// while still exercising the production store semantics.
+function recordingDraftStore() {
+  const calls = { stashed: [], restored: [] };
+  return {
+    calls,
+    stashSessionMentionDraft: (key, refs) => {
+      calls.stashed.push([key, refs]);
+      stashSessionMentionDraft(key, refs);
+    },
+    restoreSessionMentionDraft: (key) => {
+      const refs = restoreSessionMentionDraft(key);
+      calls.restored.push([key, refs]);
+      return refs;
+    },
+  };
+}
+
+test('every send lane writes the switched-away scope stash through the choke point (round-12 R3)', async () => {
+  // Mid-send session switch: the scope cleanup stashes the outgoing scope's
+  // live chips and mentionDraftKeyRef moves on. The acceptance/failure tails
+  // must still settle the OUTGOING scope's stash — consume the serialized set
+  // on acceptance, merge it back on failure — instead of skipping the write
+  // (deleted arm) or overwriting what the cleanup stashed (pre-fix failure
+  // arm). No behavioral test ever moved the draft key mid-await before, which
+  // is exactly how the deletions stayed green.
+  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+
+  const makeHandleSend = ({ accepted, onAwait } = {}) => {
+    const store = recordingDraftStore();
+    const live = { refs: [...REFS] };
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:sess-1' },
+      isMultiAgentReadOnly: false,
+      canSend: true,
+      chatVoice: null,
+      inputText: '正文',
+      inputTextRef: { current: '正文' },
+      constrainChatInput: (value) => ({ text: value, truncated: false }),
+      setInputText: () => {},
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      sessionRefs: REFS,
+      sendChatMessage: async () => { if (onAwait) onAwait(sandbox); return accepted; },
+      setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+      bridge: { chat: { prefillComposer: () => {} } },
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      console,
+    };
+    vm.runInNewContext(
+      `${refsSurvivingAcceptanceFn}\n${extractChatViewFunction('async function handleSend()')}\nthis.handleSend = handleSend;`,
+      sandbox,
+    );
+    return { sandbox, store, live };
+  };
+
+  const makeSendWithSessionRefs = ({ accepted, onAwait } = {}) => {
+    const store = recordingDraftStore();
+    const live = { refs: [...REFS] };
+    const marker = 'const sendWithSessionRefs = useCallback((text) => {';
+    const start = chatViewSource.indexOf(marker);
+    assert.notEqual(start, -1, 'sendWithSessionRefs not found');
+    const tailMarker = '}, [sessionMentionEnabled, sessionRefs, sendChatMessage]);';
+    const tail = chatViewSource.indexOf(tailMarker, start);
+    assert.notEqual(tail, -1, 'sendWithSessionRefs deps tail not found');
+    const fn = chatViewSource.slice(start, tail + tailMarker.length);
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:sess-1' },
+      useCallback: (callback) => callback,
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      sessionRefs: REFS,
+      sendChatMessage: async () => { if (onAwait) onAwait(sandbox); return accepted; },
+      setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+      console,
+    };
+    vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.sendWithSessionRefs = sendWithSessionRefs;`, sandbox);
+    return { sandbox, store, live };
+  };
+
+  const makeDesignSubmit = ({ accepted, onAwait } = {}) => {
+    const store = recordingDraftStore();
+    const live = { refs: [...REFS] };
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:sess-1' },
+      useCallback: (callback) => callback,
+      selectedDesignElement: null,
+      chatViewCopy: { designElementFallback: '选中元素', designAdjustSelected: (label, raw) => `【调整${label}】${raw}` },
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      sessionRefs: REFS,
+      sendChatMessage: async () => { if (onAwait) onAwait(sandbox); return accepted; },
+      setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+      console,
+    };
+    vm.runInNewContext(
+      `${refsSurvivingAcceptanceFn}\n${extractChatViewFunction('const handleDesignAiSubmit = useCallback((text) => {')})\nthis.handleDesignAiSubmit = handleDesignAiSubmit;`,
+      sandbox,
+    );
+    return { sandbox, store, live };
+  };
+
+  const makeSendTask = ({ accepted, onAwait } = {}) => {
+    const store = recordingDraftStore();
+    const live = { refs: [...REFS] };
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionSendScopeRef: { current: null },
+      inputTextRef: { current: '帮我把这份纪要排成 PPT' },
+      activeSessionIdRef: { current: 'sess-1' },
+      draftEpoch: 3,
+      constrainChatInput: (value) => ({ text: value, truncated: false }),
+      setInputText: () => {},
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      sessionRefs: REFS,
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      bridge: { chat: { restoreTaskDraft: () => {} } },
+      sendChatMessage: async () => { if (onAwait) onAwait(sandbox); return accepted; },
+      setSessionRefs: (value) => { live.refs = typeof value === 'function' ? value(live.refs) : value; },
+      console,
+    };
+    vm.runInNewContext(
+      `${refsSurvivingAcceptanceFn}\nconst config = ({ ${extractChatViewFunction('sendTask: async (outgoing, context) =>')} });\nthis.sendTask = config.sendTask;`,
+      sandbox,
+    );
+    return { sandbox, store, live };
+  };
+
+  // Acceptance + mid-await switch: the cleanup stashed a RE-PICK of a
+  // serialized session (pickable again after the dispatch clear) for the
+  // outgoing scope. Acceptance must consume it from that stash — the block
+  // already went out, re-arming it would duplicate the reference.
+  {
+    const { sandbox, store } = makeHandleSend({
+      accepted: true,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [REFS[0]]);
+      },
+    });
+    await sandbox.handleSend();
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', []],
+      'handleSend acceptance consumes the serialized re-pick from the switched-away stash',
+    );
+  }
+  {
+    const { sandbox, store } = makeSendWithSessionRefs({
+      accepted: true,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [REFS[0]]);
+      },
+    });
+    await sandbox.sendWithSessionRefs('总结一下当前进度');
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', []],
+      'the secondary sender consumes the serialized re-pick from the switched-away stash',
+    );
+  }
+  {
+    const { sandbox, store } = makeDesignSubmit({
+      accepted: true,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [REFS[0]]);
+      },
+    });
+    sandbox.handleDesignAiSubmit('改成深色主题');
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', []],
+      'the design lane consumes the serialized re-pick from the switched-away stash',
+    );
+  }
+  {
+    const { sandbox, store } = makeSendTask({
+      accepted: true,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [REFS[0]]);
+      },
+    });
+    await sandbox.sendTask('帮我把这份纪要排成 PPT');
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', []],
+      'the voice lane consumes the serialized re-pick from the switched-away stash',
+    );
+  }
+
+  // Failure + mid-await switch: the cleanup stashed a NEW mid-await pick for
+  // the outgoing scope. The failure arm must merge the unsent snapshot into
+  // that stash — skipping the write loses the snapshot, overwriting it loses
+  // the pick.
+  const midAwaitPick = { sessionId: 'new789', title: '会议纪要' };
+  {
+    const { sandbox, store } = makeHandleSend({
+      accepted: false,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [midAwaitPick]);
+      },
+    });
+    await sandbox.handleSend();
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', [...REFS, midAwaitPick]],
+      'handleSend failure merges the snapshot into the switched-away stash instead of clobbering it',
+    );
+  }
+  {
+    const { sandbox, store } = makeSendWithSessionRefs({
+      accepted: false,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [midAwaitPick]);
+      },
+    });
+    await sandbox.sendWithSessionRefs('总结一下当前进度');
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', [...REFS, midAwaitPick]],
+      'the secondary sender merges the snapshot into the switched-away stash',
+    );
+  }
+  {
+    const { sandbox, store } = makeDesignSubmit({
+      accepted: false,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [midAwaitPick]);
+      },
+    });
+    sandbox.handleDesignAiSubmit('改成深色主题');
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', [...REFS, midAwaitPick]],
+      'the design lane merges the snapshot into the switched-away stash',
+    );
+  }
+  {
+    const { sandbox, store } = makeSendTask({
+      accepted: false,
+      onAwait: (sb) => {
+        sb.mentionDraftKeyRef.current = 'session:sess-2';
+        store.stashSessionMentionDraft('session:sess-1', [midAwaitPick]);
+      },
+    });
+    await sandbox.sendTask('帮我把这份纪要排成 PPT');
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', [...REFS, midAwaitPick]],
+      'the voice lane merges the snapshot into the switched-away stash',
+    );
+  }
 });
 
 test('handleSend sends the bare body when the feature gate is off (behavioral)', async () => {
@@ -671,8 +1039,8 @@ test('handleDesignAiSubmit assembles the block under the gate and consumes chips
   const fn = extractChatViewFunction('const handleDesignAiSubmit = useCallback((text) => {');
   const make = ({ enabled, selectedElement = null, accepted = true } = {}) => {
     const calls = { sent: [] };
-    // This lane does not clear at dispatch, so the live list starts as the
-    // full pick set; the updater-aware stub runs the real acceptance filter.
+    // The lane clears at dispatch and restores on non-acceptance like
+    // handleSend; the updater-aware stub runs the real acceptance filter.
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
