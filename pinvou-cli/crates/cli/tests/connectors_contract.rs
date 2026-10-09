@@ -1370,6 +1370,256 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
     let _ = std::fs::remove_dir_all(&bin);
 }
 
+/// Round-49 feishu version-gate parity (M3): the GUI gates lark-cli on
+/// `LARK_MIN_VERSION` (1.0.95, feishu.rs — the skill pack's command
+/// surface assumes the lock baseline, and installed 1.0.65 silently
+/// degraded to generic help). The CLI's spec carried `min_version: None`,
+/// so `ensure-cli feishu` reported "already installed" for a
+/// below-baseline install. Mirrors the wecom/tmeet fixture above: status
+/// keeps the installed facts, still runs the live probe (the GUI DTOs gate
+/// `installed` on the parse gate, not the minimum), and raises
+/// `upgrade_required: true` — the same verdict `ensure-cli`'s replacement
+/// gate reads, so this install is REPLACED on the next `ensure-cli`, not
+/// kept. The replacement lane itself is the download lane the file header
+/// keeps out of hermetic scope (the `#[ignore]` network test pins that
+/// doctrine); what is pinned here is the shared gate decision.
+#[test]
+#[cfg(unix)]
+fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("feishu-below-min");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // lark-cli 1.0.65 parses but sits below the 1.0.95 baseline; its status
+    // probe answers the ready JSON like a connected one.
+    write_fake_cli(
+        &bin,
+        "lark-cli",
+        "lark-cli 1.0.65",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"identities\":{\"user\":{\"status\":\"ready\"}}}'; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
+    let entry = &value["connectors"][0];
+    assert_eq!(
+        entry["installed"], true,
+        "a parseable below-minimum install is installed: {entry}"
+    );
+    assert_eq!(
+        entry["upgrade_required"], true,
+        "below the LARK_MIN_VERSION baseline the CLI must demand the replacement \
+         ensure-cli performs: {entry}"
+    );
+    assert_eq!(entry["version"], "lark-cli 1.0.65", "{entry}");
+    assert_eq!(
+        entry["connected"], true,
+        "an authorized below-minimum install is still connected (GUI DTO parity): {entry}"
+    );
+    assert!(
+        entry.get("note").is_none(),
+        "a healthy probe must not degrade to a note: {entry}"
+    );
+    // The human row carries both facts at once: connected AND upgrade.
+    let outcome = run(&["pinvou", "connectors", "status", "feishu"]).expect("human status");
+    assert!(
+        outcome.stdout.contains("upgrade_required=yes"),
+        "the human row must still demand the upgrade: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("installed=yes(lark-cli 1.0.65)"),
+        "the human row must name the below-minimum version: {}",
+        outcome.stdout
+    );
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+/// Round-49 feishu version-gate parity (M3), the unparseable half: the GUI's
+/// feishu status gates `installed` on the parse gate (feishu.rs: an
+/// unparseable `--version` is "unavailable" and is left to ensure to
+/// reinstall the pinned version), so the CLI must not report
+/// `installed: true` for a CLI whose version line parses to nothing — that
+/// claim let a wedged/broken lark-cli count as usable. With the fake
+/// printing a version line that parses to no number, status reports the
+/// honest `installed: false` with the present-but-unparseable note naming
+/// the re-check command.
+#[test]
+#[cfg(unix)]
+fn feishu_with_an_unparseable_version_reports_not_installed() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("feishu-unparseable");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // The `--version` prelude prints a line with no parseable number; every
+    // other subcommand falls through to the trailing exit 1.
+    write_fake_cli(&bin, "lark-cli", "lark-cli version banana", "");
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
+    let entry = &value["connectors"][0];
+    assert_eq!(
+        entry["installed"], false,
+        "an unparseable version must not count as installed (GUI parse-gate parity): {entry}"
+    );
+    assert_eq!(entry["ok"], false, "{entry}");
+    assert_eq!(entry["connected"], false, "{entry}");
+    // The honest "present but unanswerable" note (the Missing arm refuses to
+    // render a resolvable CLI as a silent not-installed) and the feishu
+    // DTO's `configured: false` companion.
+    let note = entry["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("a present-but-unparseable CLI must carry the note: {entry}"));
+    assert!(
+        note.contains("unparseable"),
+        "the note must name the unparseable version: {note}"
+    );
+    assert_eq!(
+        entry["configured"], false,
+        "the feishu DTO carries configured:false in the uninstalled shape: {entry}"
+    );
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
+/// Round-48's enable-scoped skill-tree guard, pinned directly (the disable
+/// hide direction was covered incidentally; this is the enable half). An
+/// ENABLE whose connection probe ERRORS (wedged shim, timeout, missing
+/// binary — here: empty PATH, so `auth status` cannot even spawn) must NOT
+/// delete the skill tree: enable's purpose is turning the connector ON, and
+/// the tree is the one artifact the CLI cannot restore (the show direction
+/// is app-only). The command still succeeds (the switch did persist) but
+/// reports `skills_removed: false` and the human note says the tree was
+/// left in place so a rerun with a healthy shim decides.
+#[test]
+#[cfg(unix)]
+fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("enable-probe-error");
+    let _path = VendorCliGuard::new();
+
+    // Plant the tree exactly as the app's bundle unpack leaves it: listed
+    // skill dirs plus the connector NOTICE file, and an unlisted sibling the
+    // hide direction must never touch even when it runs.
+    let skills = home.connector_skills_dir("wecom");
+    std::fs::create_dir_all(skills.join("wecomcli-doc").join("references")).unwrap();
+    std::fs::write(skills.join("wecomcli-doc").join("SKILL.md"), "# wecom doc").unwrap();
+    std::fs::write(skills.join("NOTICE-wecom.md"), "notice").unwrap();
+    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+
+    let value = run_json(&["pinvou", "connectors", "enable", "wecom"]);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["enabled"], true, "{value}");
+    assert_eq!(
+        value["connected"], false,
+        "an unspawnable probe is not a connection: {value}"
+    );
+    assert_eq!(
+        value["skills_removed"], false,
+        "enable with an UNKNOWN probe verdict must not delete the only artifact \
+         the CLI cannot restore: {value}"
+    );
+    assert_eq!(value["skills_refresh"], "app-only", "{value}");
+    // The human note names the state and the remedy (rerun decides).
+    let outcome = run(&["pinvou", "connectors", "enable", "wecom"]).expect("human enable");
+    assert!(
+        outcome
+            .stdout
+            .contains("left in place (connection probe failed"),
+        "the human output must say the tree was left in place and why: {}",
+        outcome.stdout
+    );
+
+    // The tree really is still in place, unlisted sibling included.
+    assert!(
+        skills.join("wecomcli-doc").join("SKILL.md").is_file(),
+        "the skill dir must survive an enable whose probe errored"
+    );
+    assert!(
+        skills.join("NOTICE-wecom.md").is_file(),
+        "the NOTICE file must survive too"
+    );
+    assert!(skills.join("unrelated").is_dir());
+}
+
+/// The other half of the round-48 guard: enable with a CLEAN not-connected
+/// verdict (the probe ran and honestly answered "not connected") is the
+/// ordinary switch-driven hide — the tree the GUI's gate would keep deleting
+/// anyway goes away, unlisted siblings stay.
+#[test]
+#[cfg(unix)]
+fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("enable-not-connected");
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    // `--version` answers (the enable path does not gate on it, the probe
+    // just needs a spawnable CLI); `auth status` exits 0 with an explicit
+    // not-authenticated JSON — a CLEAN not-connected verdict, not an error.
+    write_fake_cli(
+        &bin,
+        "dws",
+        "dws version 1.0.0",
+        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
+    );
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let skills = home.connector_skills_dir("dingtalk");
+    std::fs::create_dir_all(skills.join("dws")).unwrap();
+    std::fs::write(skills.join("dws").join("SKILL.md"), "# dws").unwrap();
+    std::fs::write(skills.join("NOTICE-dingtalk.md"), "notice").unwrap();
+    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+
+    let value = run_json(&["pinvou", "connectors", "enable", "dingtalk"]);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["enabled"], true, "{value}");
+    assert_eq!(
+        value["connected"], false,
+        "the probe answered not-connected cleanly: {value}"
+    );
+    assert_eq!(
+        value["skills_removed"], true,
+        "a clean not-connected verdict takes the ordinary hide direction: {value}"
+    );
+    assert_eq!(value["skills_refresh"], "removed", "{value}");
+    assert!(
+        !skills.join("dws").exists(),
+        "the skill dir must be removed on a clean not-connected enable"
+    );
+    assert!(
+        !skills.join("NOTICE-dingtalk.md").exists(),
+        "the NOTICE file must be removed with the tree"
+    );
+    assert!(
+        skills.join("unrelated").is_dir(),
+        "the hide direction must not wipe unlisted entries in the skills root"
+    );
+
+    let _ = std::fs::remove_dir_all(&bin);
+}
+
 /// A vendor CLI that writes past the 8 MiB drain cap must still complete.
 /// `take(cap).read_to_end` returns EOF to the drainer at the cap while the
 /// child keeps writing, so the pipe fills, the child blocks in write(2), the

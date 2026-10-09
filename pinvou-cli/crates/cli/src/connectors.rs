@@ -95,9 +95,15 @@ const USAGE: &str =
     "usage: pinvou connectors <status|ensure-cli|enable|disable|logout|apply-skills|connect|ima>";
 
 /// Semantic-version floor per connector, mirroring the `*_MIN_VERSION`
-/// gates in wecom.rs (1.2.1 skill baseline) and tmeet.rs (1.0.18 npm spec).
+/// gates in wecom.rs (1.2.1 skill baseline), tmeet.rs (1.0.18 npm spec) and
+/// feishu.rs (`LARK_MIN_VERSION`, the 1.0.95 lock baseline).
 const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
 const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
+/// Mirrors the GUI's `LARK_MIN_VERSION` (feishu.rs): the skill pack's
+/// command surface assumes the 1.0.95 lock baseline, so an installed but
+/// older lark-cli counts as `upgrade_required` and `ensure-cli` replaces it
+/// instead of reporting "already installed".
+const FEISHU_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
@@ -180,7 +186,10 @@ impl ConnectorKind {
             // dropped.
             auth_domains: &["feishu.cn", "larksuite.com"],
             disabled_filename: "feishu_disabled",
-            min_version: None,
+            // Round-49: mirrors the GUI's LARK_MIN_VERSION gate — below-min
+            // installs are upgrade_required, unparseable ones report not
+            // installed (see `version_gate`).
+            min_version: Some(FEISHU_MIN_VERSION),
             login_url_wait_secs: 40,
         };
         const WECOM: VendorSpec = VendorSpec {
@@ -273,7 +282,8 @@ struct VendorSpec {
     /// (`cli_installed` / the GUI's `*_cli_present` count them as not
     /// installed, so they must be replaced, not used), while `status`
     /// reports them as `installed: true` + `upgrade_required: true` and
-    /// still runs the status probe for them (wecom/tmeet version gates).
+    /// still runs the status probe for them (the min-version gates:
+    /// wecom/tmeet, and feishu's `LARK_MIN_VERSION` mirror since round-49).
     min_version: Option<(u64, u64, u64)>,
     /// Per-connector wait for the first login URL, mirroring the GUI
     /// (feishu/wecom `rx.recv_timeout(40s)`, dingtalk/tmeet 60s).
@@ -845,8 +855,10 @@ fn parse_semver3(text: &str) -> Option<(u64, u64, u64)> {
 ///   (`parse_wecom_version` contract: skip build-timestamp noise);
 /// - tmeet: skip to the `version` marker and strip a `v` prefix
 ///   (`parse_tmeet_version`);
-/// - feishu / dingtalk: whole-output three-segment parse, display only (the
-///   GUI gates them on `--version` success, not on a version number).
+/// - feishu / dingtalk: whole-output three-segment parse. dingtalk is
+///   version-ungated, so its parse stays display-only; feishu's result now
+///   feeds the [`FEISHU_MIN_VERSION`] install gate like wecom/tmeet's
+///   (round-49).
 fn cli_semver(spec: &VendorSpec, stdout: &str, stderr: &str) -> Option<(u64, u64, u64)> {
     // Try stdout first, then stderr (noisy stdout must not hide a stderr
     // version — the GUI parses both streams in order).
@@ -904,13 +916,14 @@ fn probe_cli_version(spec: &VendorSpec) -> Option<(Option<(u64, u64, u64)>, Stri
 }
 
 /// Installation gate per connector, mirroring `*_cli_present` plus the
-/// wecom/tmeet minimum-version replacement gate (status / ensure-cli / the
-/// connect-time presence checks; `logout` judges through `logout_probe`
-/// instead, whose not-installed claim must survive the stricter verdict):
-/// - feishu/dingtalk count any working `--version` (an unparseable version
-///   line must not turn an installed CLI into a reinstall loop);
-/// - wecom/tmeet also require the minimum version (older or unparseable
-///   installs must be replaced, not used).
+/// minimum-version replacement gate (status / ensure-cli / the connect-time
+/// presence checks; `logout` judges through `logout_probe` instead, whose
+/// not-installed claim must survive the stricter verdict):
+/// - dingtalk counts any working `--version` (an unparseable version line
+///   must not turn an installed CLI into a reinstall loop);
+/// - feishu/wecom/tmeet also require the minimum version (older or
+///   unparseable installs must be replaced, not used) — feishu joined the
+///   pair in round-49, mirroring the GUI's `LARK_MIN_VERSION` per feishu.rs.
 enum VersionGate {
     Missing,
     Upgrade { raw: String },
@@ -2330,36 +2343,32 @@ fn run_npm_attempt(
 /// and error strings — the fd_lock write guard borrows its `RwLock`, so the
 /// blocking acquire stays at the call sites (round-39 review: the two
 /// hand-copied blocks drifted on nothing today but had every opportunity to).
+///
+/// Round-49: the directory-create and open moved to the shared
+/// `support::open_family_lock_file` seam. Round-48 review had this lock
+/// CREATED at 0600 like every other file this family creates; the shared
+/// seam now also TIGHTENS the file to 0600 on every open (best-effort, the
+/// cli-install.log chmod-on-every-append doctrine), so a lock file left at
+/// the umask default by an older build heals instead of staying readable by
+/// every local account that could then hold LOCK_EX and wedge `ensure-cli`
+/// behind this command's documented blocking wait. The code.rs session/root
+/// lock sites converted in the same wave; the sibling lock files in
+/// memory/personas/scheduled/voice adopt the helper in a later wave.
 fn open_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
-    let install_lock_dir = pinvou3_home().join("locks");
-    std::fs::create_dir_all(&install_lock_dir).map_err(|error| {
-        CliError::failed(format!(
-            "cannot create the connector lock directory: {error}"
-        ))
-    })?;
-    // Round-48 review: create the lock at 0600 like every other file this
-    // family creates. The file is empty, but flock needs no write
-    // permission — on a shared/group home, any local account that can READ
-    // an 0644 lock file could hold LOCK_EX and wedge every future
-    // `ensure-cli` behind this command's documented blocking wait.
-    #[cfg(unix)]
-    let install_lock_file = {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .open(install_lock_dir.join("connector-install.lock"))
-            .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?
+    let lock_file = crate::support::open_family_lock_file("connector-install.lock");
+    let install_lock_file = match lock_file {
+        Ok(file) => file,
+        Err(crate::support::FamilyLockError::CreateDir { error, .. }) => {
+            return Err(CliError::failed(format!(
+                "cannot create the connector lock directory: {error}"
+            )));
+        }
+        Err(crate::support::FamilyLockError::Open { error, .. }) => {
+            return Err(CliError::failed(format!(
+                "cannot open the install lock: {error}"
+            )));
+        }
     };
-    #[cfg(not(unix))]
-    let install_lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(install_lock_dir.join("connector-install.lock"))
-        .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?;
     Ok(fd_lock::RwLock::new(install_lock_file))
 }
 
@@ -4521,7 +4530,12 @@ mod tests {
             std::fs::create_dir_all(&bin_dir).unwrap();
             std::fs::create_dir_all(&home_dir).unwrap();
             let fake = bin_dir.join(binary);
-            std::fs::write(&fake, "#!/bin/sh\necho 'fake 1.0.0'\n").unwrap();
+            // Round-49: the fake's version sits AT the feishu gate
+            // (`FEISHU_MIN_VERSION`, the GUI's LARK_MIN_VERSION baseline) —
+            // these tests pin the EXECUTION verdict, not the version gate,
+            // and a below-baseline fake would now be refused by
+            // `cli_installed` before the execution check could run.
+            std::fs::write(&fake, "#!/bin/sh\necho 'fake 1.0.95'\n").unwrap();
             let mode = if executable { 0o755 } else { 0o644 };
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(mode)).unwrap();
             // Round-37: HOME joins the sandbox — the vendor resolution
