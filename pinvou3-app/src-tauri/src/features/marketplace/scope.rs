@@ -2064,9 +2064,12 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
     // return early. Both call sites (apply_skills_command, the auth-gate
     // refresh/backfill) propagate the Err before any skill materializes.
     if package_id != connector_id {
+        // Round-26 review (minor): no "uninstall ... first" advice — the
+        // unconditional hard-rule folds make it impossible to follow (the
+        // twin in commands/marketplace.rs carries the same reword).
         return Err(format!(
-            "'{connector_id}' is claimed by installed pack '{package_id}'s companion-skill vocabulary; \
-             the consent gate would govern '{package_id}', not '{connector_id}' — uninstall '{package_id}' first"
+            "'{connector_id}' is claimed by pack '{package_id}'s companion-skill vocabulary; \
+             the consent gate would govern '{package_id}', not '{connector_id}'"
         ));
     }
     // LEDGER-GATED (the startup-refresh boundary, #455 round-31): the sync

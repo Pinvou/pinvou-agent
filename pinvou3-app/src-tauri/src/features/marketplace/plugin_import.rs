@@ -1271,7 +1271,7 @@ pub fn import_plugin_package_gated(
         && !crate::features::marketplace::skill_marketplace::is_preset_skill_name(&id)
     {
         return Err(format!(
-            "pack id '{id}' conflicts with a marketplace preset skill id; use another id or install it through the marketplace"
+            "包 id '{id}' 与市场预置技能 id 冲突，请改用其它 id 或从市场安装"
         ));
     }
     // Owner-claim divergence (round-12 review B1): `to_package_id` folds an
@@ -1290,7 +1290,7 @@ pub fn import_plugin_package_gated(
     let folded = crate::features::marketplace::scope::to_package_id(&id);
     if folded != id {
         return Err(format!(
-            "pack id '{id}' is already claimed by pack '{folded}'s companion skill vocabulary; use another id"
+            "包 id '{id}' 已被包 '{folded}' 的配套技能占用，请改用其它 id"
         ));
     }
     // Preset/companion/cross-package skill name collisions are rejected up
@@ -1307,7 +1307,7 @@ pub fn import_plugin_package_gated(
         }
         if crate::features::marketplace::skill_marketplace::is_preset_market_id(skill_name) {
             return Err(format!(
-                "skill '{skill_name}' conflicts with a marketplace preset skill id; use another name"
+                "技能 '{skill_name}' 与市场预置技能 id 冲突，请改用其它名称"
             ));
         }
         let owner = crate::features::marketplace::bundle::skill_owner_package(skill_name);
@@ -1452,7 +1452,7 @@ pub fn import_plugin_package_gated(
     let folded = crate::features::marketplace::scope::to_package_id(&id);
     if folded != id {
         return Err(format!(
-            "pack id '{id}' is already claimed by pack '{folded}'s companion skill vocabulary; use another id"
+            "包 id '{id}' 已被包 '{folded}' 的配套技能占用，请改用其它 id"
         ));
     }
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
@@ -1733,7 +1733,7 @@ pub fn import_plugin_package_gated(
         // either way: the pre-land deny-first gate already registered the id
         // (no record vouched known then, and nothing vouches later without
         // one), so the pack stays default-off in initialized DenyAll scopes.
-        log::error!("[plugin-import] bundles.json mirror write failed (import {id}): {e}");
+        log::error!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
         return Err(format!(
             "{id} landed on disk, but the registration write failed ({e}): the pack is usable; retry the import to complete the registration, or uninstall and reinstall"
         ));

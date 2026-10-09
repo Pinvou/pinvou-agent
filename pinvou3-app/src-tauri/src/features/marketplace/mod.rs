@@ -2114,7 +2114,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                                 Ok(()) => companions_moved_with_package = true,
                                 Err(recycle_error) => {
                                     log::warn!(
-                                        "[marketplace] startup-repair recycle of the Upload pack failed ({tool_id}); skipping the companion physical cleanup to keep the only copy: {recycle_error}"
+                                        "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
                                     );
                                     preserve_companions = true;
                                 }

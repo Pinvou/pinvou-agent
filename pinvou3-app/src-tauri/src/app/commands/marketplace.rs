@@ -203,11 +203,13 @@ fn install_marketplace_tool_sync(
     // a garbage direct-IPC id would otherwise seed phantom deny rows, default-
     // off markers and ledger entries for a package that cannot exist (pure
     // over-denial surviving until the next composer full-list write). Same
-    // lookup and same error as the install's own validation, so the UX for a
-    // bad id is unchanged apart from timing.
+    // lookup as the install's own validation, and the error below is
+    // byte-identical to `MarketplaceManager::install`'s lookup error (keep
+    // them in lockstep), so the UX for a bad id is unchanged apart from
+    // timing.
     match crate::features::marketplace::mcp_catalog::embedded_manifest(tool_id) {
         Ok(Some(_)) => {}
-        Ok(None) => return Err(format!("tool '{tool_id}' does not exist")),
+        Ok(None) => return Err(format!("工具 '{tool_id}' 不存在")),
         Err(error) => return Err(error),
     }
     install_marketplace_tool_gates(tool_id)?;
@@ -882,9 +884,14 @@ pub(super) fn install_marketplace_tool_gates(tool_id: &str) -> Result<(), String
 fn refuse_owner_claimed_install_id(id: &str) -> Result<(), String> {
     let folded = crate::features::marketplace::scope::to_package_id(id);
     if folded != id {
+        // Round-26 review (minor): the old advice ("uninstall '{folded}'
+        // first") is impossible to follow for the unconditional hard-rule
+        // folds (ima-skills maps to ima with no pack installed), so the
+        // refusal states the divergence without prescribing a fix. The
+        // test pins ("companion-skill", the claimant id) stay intact.
         return Err(format!(
-            "'{id}' is claimed by installed pack '{folded}'s companion-skill vocabulary; \
-             the consent gate would govern '{folded}', not '{id}' — uninstall '{folded}' first"
+            "'{id}' is claimed by pack '{folded}'s companion-skill vocabulary; \
+             the consent gate would govern '{folded}', not '{id}'"
         ));
     }
     Ok(())
@@ -912,16 +919,21 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     // the recorded consent), so a reinstall never re-runs the write.
     // Round-16 (review): existence probe first — same rationale as the tool
     // install's probe (a garbage id must not seed phantom deny rows); same
-    // lookup and error as the install's own validation.
+    // lookup as the install's own validation, and the error below is
+    // byte-identical to `SkillMarketplaceManager::install`'s (keep them in
+    // lockstep).
     if !crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .preset_skill_exists(skill_id)
     {
-        return Err(format!("unknown preset skill '{skill_id}'"));
+        return Err(format!("未知预置技能 '{skill_id}'"));
     }
     // Same divergence refusal as the tool gate above: a preset skill id is
     // foldable too, and a claimant pack declaring it as an (unshipped)
     // companion would otherwise swallow the registration into its own
-    // known-bundle skip.
+    // known-bundle skip. Deliberately NOT added to update_marketplace_skill:
+    // the update lane is how an installed ima-skills copy refreshes, and the
+    // unconditional hard-rule fold (ima-skills → ima) would refuse it
+    // forever (round-26 review minor).
     refuse_owner_claimed_install_id(skill_id)?;
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
         .map_err(|refused| refused_sync_error(&format!("skill '{skill_id}'"), refused))?;
@@ -2074,8 +2086,8 @@ mod tests {
                 install_marketplace_tool_sync("definitely-not-a-tool", &Default::default())
                     .unwrap_err();
             assert!(
-                tool_error.contains("does not exist"),
-                "the tool probe must fail with the catalog's own error: {tool_error}"
+                tool_error.contains("工具") && tool_error.contains("不存在"),
+                "the tool probe must fail with the install's own error: {tool_error}"
             );
             assert!(
                 !tool_error.contains("disabled_bundles.lock"),
@@ -2084,7 +2096,7 @@ mod tests {
 
             let skill_error = install_marketplace_skill_sync("definitely-not-a-skill").unwrap_err();
             assert!(
-                skill_error.contains("unknown preset skill"),
+                skill_error.contains("未知预置技能"),
                 "the skill probe must fail with the install's own error: {skill_error}"
             );
             assert!(
