@@ -187,7 +187,7 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
                     // the turn lock); a genuinely gone session fails the run
                     // loudly instead of being retried forever.
                     self.pool
-                        .deliver_messaging_turn(target_session, message)
+                        .deliver_messaging_turn(target_session, message, false)
                         .await
                         .map_err(|dispatch_error| {
                             anyhow::anyhow!(dispatch_error)
@@ -1274,8 +1274,8 @@ mod tests {
             .find("self.pool.steer(target_session, message.clone())")
             .expect("steer-first delivery");
         let dispatch = body
-            .find("self.pool\n                        .deliver_messaging_turn(target_session, message)")
-            .or_else(|| body.find("deliver_messaging_turn(target_session, message)"))
+            .find("self.pool\n                        .deliver_messaging_turn(target_session, message, false)")
+            .or_else(|| body.find("deliver_messaging_turn(target_session, message, false)"))
             .expect("dispatch fallback after steer failure");
         let timeout = body
             .find("SCHEDULED_MESSAGE_DELIVERY_TIMEOUT, async")

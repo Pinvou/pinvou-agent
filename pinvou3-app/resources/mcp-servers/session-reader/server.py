@@ -83,6 +83,36 @@ Write semantics (send_message_to_session, contract §5 L1 / §6):
   present it must exist and feeds the receiver-side sender card (the watcher
   re-derives the title from the live store at delivery time); when absent
   the card degrades to an unattributed notice.
+
+Create semantics (create_session, contract §5 L1 — the session-creation
+sibling of the send tool; the delegation pair "create a session, then
+message it" completes the inter-session toolkit):
+- Creates a new normal session through the app's own domain path (the exact
+  `create_session_record` pipeline the panel's "new conversation" uses:
+  app-default model unless model_id pins a saved one, app-default workspace
+  unless workspace_path binds an existing directory, explicit title, no
+  focus steal — the new session appears in the list and the user opens it
+  themselves); first_message, when given, is delivered as the new session's
+  opening plain user turn (no cross-session header block — it is the opening
+  instruction, not a relayed message);
+- Like send_message_to_session this server NEVER writes app state. It
+  validates the request and spools it:
+  ~/.pinvou3/session-requests/spool/<name>.json — the name is the sha256 of
+  "<from_session>|create|<idempotency_key>" when a key is given (a key
+  requires from_session, same namespace rule as the send tool) or a random
+  uuid otherwise;
+- An app-side Rust watcher (features/session_creation/mod.rs) drains
+  the spool, re-validates it (the spool directory is user-writable,
+  server-side checks are not trusted), creates the session, and writes a
+  result marker spool/.done/<spool-id>.json = {"ok":true,"session_id",
+  "title"}; on failure it quarantines the record and writes
+  {"ok":false,"error"};
+- Short synchronous wait (same shape as the app-automations family): after
+  spooling, this process polls the result marker for up to
+  RESULT_WAIT_SECONDS. Marker hit → the session id is returned so the model
+  can tell the user "created X"; timeout → an explicit delivery:"pending"
+  payload (NOT an error) — the watcher may be busy and the request is still
+  queued.
 """
 import argparse
 import base64
@@ -95,6 +125,7 @@ import re
 import stat
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -149,6 +180,29 @@ MAX_MESSAGE_TEXT_CHARS = 32 * 1024
 MAX_MESSAGE_SPOOL_BYTES = 60 * 1024
 # Idempotency key cap (models may generate long keys; this is generous).
 MAX_IDEMPOTENCY_KEY_CHARS = 128
+
+# --- create_session (contract §5 L1; caps mirrored by the Rust watcher in
+# features/session_creation/mod.rs, which re-checks because the spool
+# directory is user-writable) ---
+# MAX_TITLE_CHARS (200, defined above) is shared with the messaging channel.
+# The first message becomes the new session's opening user turn: same body
+# cap as the messaging channel.
+MAX_FIRST_MESSAGE_CHARS = 32 * 1024
+# Workspace paths are validated (absolute + existing directory, canonicalized
+# before spooling — review round-3 M2) and echoed back in tool results; a
+# generous cap stops a hostile blob.
+MAX_WORKSPACE_PATH_CHARS = 1024
+MAX_MODEL_ID_CHARS = 200
+MAX_SENDER_TITLE_CHARS = 200
+
+# Short synchronous wait for the app-side watcher's result marker (same
+# shape as the app-automations family): long enough to cover a normal
+# create (a local JSON write), short enough that a dead watcher cannot
+# stall the model's turn.
+RESULT_WAIT_SECONDS = 5.0
+RESULT_POLL_INTERVAL_SECONDS = 0.2
+
+
 # Sender/target title clip at spool time (review B1): the watcher rejects
 # titles over 200 chars, and a >200-char session title would make a session
 # permanently undeliverable as sender or target — clip instead, so an
@@ -301,7 +355,62 @@ TOOL_DEFS = [
             "required": ["to_session", "text"],
         },
     },
-]
+    {
+        "name": "create_session",
+        "description": (
+            "Create a new Pinvou chat session (write operation, delivered automatically "
+            "— there is no per-call confirmation dialog today; the creation is written "
+            "to the audit trail and the session list is the review surface). "
+            "Use this when the user asks to start a separate session for a job — e.g. "
+            "'open a new session to refactor the parser while we keep talking here'. The "
+            "new session appears in the session list; it never steals the user's current "
+            "focus, so tell the user to open it from the list. Defaults mirror the app's "
+            "own 'new conversation': the app's default model and default workspace unless "
+            "model_id / workspace_path say otherwise; the title is used verbatim when "
+            "given (otherwise the first message auto-names it). first_message, when "
+            "given, becomes the new session's opening user message and its model starts "
+            "working on it right away — write it as a complete, self-contained "
+            "instruction for that session's model. Combine with "
+            "send_message_to_session afterwards to check on or hand more work to the "
+            "new session. Returns sessionId/title once the app confirms creation, or "
+            "delivery:'pending' when confirmation has not landed within a few seconds."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "(optional) Session title shown in the session list (max 200 chars). Omit to let the first message auto-name the session.",
+                },
+                "first_message": {
+                    "type": "string",
+                    "description": "(optional) The new session's opening user message (max 32k chars) — a complete, self-contained instruction for that session's model; its turn starts immediately.",
+                },
+                "workspace_path": {
+                    "type": "string",
+                    "description": "(optional) An existing absolute directory the new session works in. Omit for the app's default workspace. The path is canonicalized and recorded with the audited request (no approval prompt exists today).",
+                },
+                "model_id": {
+                    "type": "string",
+                    "description": "(optional) Exact saved-model id from this app's model settings. Omit for the app's default model.",
+                },
+                "from_session": {
+                    "type": "string",
+                    "description": "Your own session's sessionId (required): the creation audit trail names the requesting session, and unattended sessions are rejected as requesters.",
+                },
+                "from_title": {
+                    "type": "string",
+                    "description": "(optional) Your own session's title, for the audit trail.",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "(optional) Opaque key (max 128 chars) making retries safe: while the request is still pending, resending with the same key replaces it; once the key has completed, the recorded result stands — a resend with a DIFFERENT payload is not applied and answers payload_mismatch (use a new key for the new payload). Result markers are pruned after 14 days — a same-key resend past that window re-creates. Requires from_session.",
+                },
+            },
+            "required": ["from_session"],
+        },
+    }]
+
 
 def resolve_messaging_dir(argv=None):
     """--messaging-dir > PINVOU3_HOME/messaging > ~/.pinvou3/messaging (send_message_to_session spool root; tests use the explicit override the same way resolve_sessions_dir does)."""
@@ -320,6 +429,19 @@ def resolve_messaging_dir(argv=None):
 # Pure-function area (kept separate from the stdio protocol layer;
 # scripts/tests/test_session_reader_server.py tests these directly)
 # ---------------------------------------------------------------------------
+
+
+def resolve_session_requests_dir(argv=None):
+    """--session-requests-dir > PINVOU3_HOME/session-requests > ~/.pinvou3/session-requests (create_session spool root; same override discipline as resolve_sessions_dir)."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--session-requests-dir", default=None)
+    args, _ = parser.parse_known_args(argv)
+    if args.session_requests_dir:
+        return args.session_requests_dir
+    home = os.environ.get("PINVOU3_HOME")
+    if home:
+        return os.path.join(home, "session-requests")
+    return os.path.join(os.path.expanduser("~"), ".pinvou3", "session-requests")
 
 
 def resolve_sessions_dir(argv=None):
@@ -1113,6 +1235,448 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
     }, None
 
 
+# --- create_session (contract §5 L1) ---------------------------------------
+
+
+def validate_sender_session_id(session_id):
+    """Charset + length validation for the audit-trail sender id, plus the
+    isolated-prefix rejection (contract §4.3/§5, case-insensitive): a sched-
+    session is unattended by design and must never be the requester — this
+    rejection is a claimed-string filter (the field is model-supplied and
+    unauthenticated — an unattended process can write the spool directly
+    with any sender), re-checked by the Rust watcher
+    (features/session_creation/mod.rs); the deterministic engine deny channel
+    covers unattended TURNS, not spool writes. Existence is deliberately NOT
+    probed here: the field is model-supplied, unauthenticated, and used only
+    to locate the audit root."""
+    if not session_id or len(session_id) > MAX_SESSION_ID_LEN or not SESSION_ID_RE.match(session_id):
+        return "invalid from_session: %r" % (
+            session_id[:64] + "..." if len(session_id) > 64 else session_id,)
+    if session_id.lower().startswith(ISOLATED_SESSION_PREFIXES):
+        return "session %s cannot request session creation" % session_id
+    return None
+
+
+def _validate_workspace_path(workspace_path):
+    """Shape + existence probe for a requested workspace binding: absolute,
+    within the length cap, and an existing directory. The app-side watcher
+    re-validates through the domain's own canonicalizing validator (the
+    spool directory is user-writable, so server-side checks are not
+    trusted); this probe exists to fail a typo at call time instead of
+    burning a spool round-trip on it. Returns (workspace_path, error)."""
+    workspace_path = str(workspace_path or "").strip()
+    if not workspace_path:
+        return None, None
+    if len(workspace_path) > MAX_WORKSPACE_PATH_CHARS:
+        return None, "invalid workspace_path: exceeds the %d character limit" % MAX_WORKSPACE_PATH_CHARS
+    if not os.path.isabs(workspace_path):
+        return None, "invalid workspace_path: must be an absolute directory path"
+    try:
+        if not os.path.isdir(workspace_path):
+            return None, "invalid workspace_path: not an existing directory"
+    except OSError:
+        # os.path.isdir swallows most faults; a raising one is still just
+        # "cannot confirm it exists" for the caller.
+        return None, "invalid workspace_path: not an existing directory"
+    # Review round-3 M2: canonicalize BEFORE spooling. Spooling the raw
+    # string let "<dir>/.." pass while the domain bound a different
+    # canonical directory. realpath collapses the dots and resolves
+    # symlinks, so what is spooled, recorded with the audited request,
+    # and bound is one path.
+    try:
+        workspace_path = os.path.realpath(workspace_path)
+    except OSError:
+        return None, "invalid workspace_path: not an existing directory"
+    if len(workspace_path) > MAX_WORKSPACE_PATH_CHARS:
+        return None, "invalid workspace_path: exceeds the %d character limit" % MAX_WORKSPACE_PATH_CHARS
+    return workspace_path, None
+
+
+def session_request_digest(title=None, first_message=None,
+                           workspace_path=None, model_id=None):
+    """Round-9 M1: canonical digest of a spooled request's payload-bearing
+    fields (the app-automations R5-M1 digest, ported). Mirrors
+    features/session_creation/mod.rs::session_request_digest exactly: the
+    same four fields, sorted keys, compact separators, raw UTF-8,
+    sha256-hex — both sides hash identically so the server can compare a
+    retried payload against what the watcher actually applied (provenance
+    fields name the caller, not the payload, and are excluded)."""
+    canonical = {
+        "first_message": first_message,
+        "model_id": model_id,
+        "title": title,
+        "workspace_path": workspace_path,
+    }
+    blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _spool_session_request_payload(spool_id, title, first_message,
+                                   workspace_path, model_id, from_session,
+                                   from_title, idempotency_key):
+    """Spool record shape — the app-side Rust watcher
+    (features/session_creation/mod.rs) re-validates this schema before
+    creating anything; additive fields only (contract §4.4)."""
+    return {
+        "schema_version": 1,
+        "id": spool_id,
+        "title": title,
+        "first_message": first_message,
+        "workspace_path": workspace_path,
+        "model_id": model_id,
+        "from_session": from_session,
+        "from_title": from_title,
+        "created_at": _utc_now_rfc3339(),
+        "idempotency_key": idempotency_key,
+    }
+
+
+def _read_result_marker(path):
+    """Reads one .done result marker; returns (marker, error). A corrupt or
+    unreadable marker is reported as an error so the caller keeps waiting
+    instead of surfacing garbage (a torn marker cannot happen — the watcher
+    writes atomically — but a hostile one must not crash the server)."""
+    try:
+        # Regular-file gate (round-2 M6) + size cap (round-4 R3): a planted
+        # FIFO would wedge open() forever, and an unbounded read of a
+        # multi-GB planted marker OOMs the stdio server (~0.2s polls, so
+        # 25 reads per call). Real markers are ~100 bytes.
+        file_stat = os.stat(path)
+        if not stat.S_ISREG(file_stat.st_mode):
+            return None, "creation result marker is unreadable"
+        if file_stat.st_size > 64 * 1024:
+            return None, "creation result marker is unreadable (oversize)"
+        with open(path, "r", encoding="utf-8") as handle:
+            marker = json.load(handle)
+    except (OSError, ValueError, RecursionError):
+        return None, "creation result marker is unreadable"
+    if not isinstance(marker, dict):
+        return None, "creation result marker is malformed"
+    return marker, None
+
+
+def create_session(requests_dir, title=None, first_message=None,
+                   workspace_path=None, model_id=None, from_session=None,
+                   from_title=None, idempotency_key=None, sessions_dir=None):
+    """Validates a session-creation request and spools it for the app-side
+    watcher (features/session_creation/mod.rs), then waits briefly for
+    the creation result marker. Returns (payload, error); nothing else is
+    written.
+
+    Idempotency (contract §6, same namespace rule as send_message_to_session
+    and the app-automations family): with an idempotency_key the spool file
+    name is the sha256 of "<from_session>|create|<idempotency_key>", so a
+    retried call replaces its own pending request and can never clobber
+    another session's. Delivery is at-least-once with the honest window:
+    the watcher writes the result marker AFTER the post-create steps
+    (binding, title, first-message delivery — up to a 30s bound), so a
+    crash in that span, or a persistent marker-write failure retried, can
+    duplicate the session; every created session is audited either way.
+    A result's firstMessageDelivered:"failed" refers ONLY to the opening
+    message's delivery — the session itself was created (ok:true).
+    """
+    title = str(title).strip() if title is not None else None
+    first_message = str(first_message).strip() if first_message is not None else None
+    workspace_path, error = _validate_workspace_path(workspace_path)
+    if error:
+        return None, error
+    model_id = str(model_id or "").strip() or None
+    from_session = str(from_session or "").strip() or None
+    from_title = str(from_title or "").strip() or None
+    idempotency_key = str(idempotency_key or "").strip() or None
+
+    if title is not None:
+        if not title:
+            return None, "invalid title: the session title is empty"
+        if len(title) > MAX_TITLE_CHARS:
+            return None, "invalid title: exceeds the %d character limit" % MAX_TITLE_CHARS
+    if first_message is not None:
+        if not first_message:
+            return None, "invalid first_message: the opening message is empty"
+        if len(first_message) > MAX_FIRST_MESSAGE_CHARS:
+            return None, "invalid first_message: exceeds the %d character limit" % MAX_FIRST_MESSAGE_CHARS
+    if model_id is not None:
+        if len(model_id) > MAX_MODEL_ID_CHARS:
+            return None, "invalid model_id: exceeds the %d character limit" % MAX_MODEL_ID_CHARS
+        # Whether the id names a saved model is live app state: leave it to
+        # the watcher, whose rejection lands in the result marker (and thus
+        # back here as an explicit error).
+    if from_title is not None and len(from_title) > MAX_SENDER_TITLE_CHARS:
+        return None, "invalid from_title: exceeds the %d character limit" % MAX_SENDER_TITLE_CHARS
+    if idempotency_key is not None and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_CHARS:
+        return None, "invalid idempotency_key: exceeds %d characters" % MAX_IDEMPOTENCY_KEY_CHARS
+    # Review round-3 M1: from_session is REQUIRED for creation (an
+    # unbounded-growth tool): omitting it used to skip the watcher's prefix
+    # rejection AND the audit trail in one move — an unattended session
+    # could create sessions recursively with no gate and no trace. The
+    # field is the audit provenance; unknown senders must pass a literal
+    # placeholder-free id (their own session id, which they know).
+    if from_session is None:
+        return None, (
+            "invalid from_session: required for session creation (the audit "
+            "trail names the requesting session; pass your own sessionId)"
+        )
+    error = validate_sender_session_id(from_session)
+    if error:
+        return None, error
+
+    spool_dir = os.path.join(requests_dir, "spool")
+    try:
+        os.makedirs(spool_dir, exist_ok=True)
+    except OSError:
+        # Deliberately no raw OSError text: it embeds absolute host paths.
+        return None, "session request queue is not writable"
+    if idempotency_key is not None:
+        # from_session is guaranteed non-None here by the validation above.
+        spool_id = hashlib.sha256(
+            ("%s|%s|%s" % (from_session, "create", idempotency_key)).encode("utf-8")
+        ).hexdigest()
+    else:
+        spool_id = uuid.uuid4().hex
+    target = os.path.join(spool_dir, "%s.json" % spool_id)
+    done_marker = os.path.join(spool_dir, ".done", "%s.json" % spool_id)
+    # A pre-existing spool file (still queued / retrying) or a pre-existing
+    # result marker (already completed) both mean this key was seen before:
+    # say so instead of reporting a fresh create.
+    # Round-3 F5: a marker that exists but reads ok:false is a QUARANTINED
+    # earlier attempt — the unlink below makes this call a genuine re-apply,
+    # so "duplicate — no second session was created" would be false exactly
+    # on the recovery path (the app-automations round-6 MAJOR 1 fix, ported).
+    entry_marker_was_failure = False
+    entry_marker_was_success = False
+    recorded = None
+    if os.path.exists(done_marker):
+        recorded, _err = _read_result_marker(done_marker)
+        if isinstance(recorded, dict) and recorded.get("ok") is False:
+            entry_marker_was_failure = True
+        elif isinstance(recorded, dict) and recorded.get("ok"):
+            entry_marker_was_success = True
+    duplicate = (os.path.exists(target) or os.path.exists(done_marker)) and not entry_marker_was_failure
+    # Round-9 M1 (the app-automations R5-M1 signal, ported): compare the
+    # retried payload's DIGEST against the recorded marker's
+    # request_digest — the applied request's canonical hash. A
+    # byte-identical replay answers mismatch:False; a divergent resend
+    # answers mismatch:True with an honest note, instead of the old shape
+    # that silently dropped the fields (after success) or silently created
+    # a second session (mid-create) while saying "no second session was
+    # created".
+    payload_mismatch = False
+    try:
+        requested_digest = session_request_digest(
+            title=title, first_message=first_message,
+            workspace_path=workspace_path, model_id=model_id,
+        )
+    except (TypeError, ValueError, UnicodeEncodeError):
+        # Unserializable text (a lone surrogate) fails the spool write's
+        # own guard below with the clean error — no digest is needed.
+        requested_digest = None
+    if entry_marker_was_success:
+        recorded_digest = recorded.get("request_digest")
+        # Markers from before the digest existed answer unknown -> no
+        # false flag (a missing digest cannot prove divergence).
+        if isinstance(recorded_digest, str) and recorded_digest != requested_digest:
+            payload_mismatch = True
+    payload = _spool_session_request_payload(
+        spool_id, title, first_message, workspace_path, model_id,
+        from_session, from_title, idempotency_key)
+    # Round-9 M1: a readable ok:true entry marker is TERMINAL — the
+    # recorded result is the answer, so the retried body is NOT re-spooled
+    # (the app-automations round-7 follow-up, ported): re-spooling a
+    # divergent payload would hand the watcher a body whose digest differs
+    # from the marker — exactly the surgery/forge shape its suppression
+    # gate re-applies — silently creating a second session while the
+    # mismatch note says the resend was not applied. Fresh keys and
+    # failure-marker recovery spool exactly as before.
+    if not entry_marker_was_success:
+        try:
+            # Atomic write (tmp + rename): the watcher must never observe a torn file.
+            # Serialize BEFORE mkstemp (round-4 R6, the send tool's order): the
+            # round-3 shape serialized after the fd was opened, so the lone-
+            # surrogate early-return leaked one fd and one stray tmp file per
+            # malformed call — a model-triggerable resource drain on the
+            # long-lived stdio server.
+            try:
+                blob = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            except (TypeError, ValueError):
+                return None, "invalid request: a text field is not serializable (lone surrogate?)"
+            fd, tmp = tempfile.mkstemp(dir=spool_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(blob)
+                os.replace(tmp, target)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            return None, "session request queue is not writable"
+
+        # A stale failure marker from a previous attempt would make the poll below
+        # return the OLD error while this fresh request is still in flight: unlink
+        # a not-ok marker right after re-spooling (success markers stay — they are
+        # the recorded result the duplicate path returns). The watcher drops its
+        # own stale copy too, so either side alone closes the window. The
+        # read-then-unlink is not atomic: in the narrow window where the watcher
+        # publishes a fresh marker between our read and unlink, that fresh marker
+        # is deleted and this call degrades to the pending-timeout result —
+        # self-healing on the next retry, inside the documented at-least-once
+        # window (accepted race).
+        try:
+            # Regular-file gate (round-2 M6): the same planted-FIFO class —
+            # never open an attacker-plantable marker path unguarded; a
+            # non-regular stale marker is simply not unlinked.
+            stale_stat = os.stat(done_marker)
+            # Round-5 M3: the size cap the poll-loop read got in round-4 — this
+            # third marker read must not slurp a multi-GB planted file either.
+            if stat.S_ISREG(stale_stat.st_mode) and stale_stat.st_size <= 64 * 1024:
+                with open(done_marker, "r", encoding="utf-8") as handle:
+                    stale = json.load(handle)
+                if isinstance(stale, dict) and stale.get("ok") is False:
+                    os.unlink(done_marker)
+        except (OSError, ValueError):
+            pass
+
+    # The marker is checked once before the deadline loop: a duplicate call
+    # against an already-processed key returns the recorded result
+    # immediately instead of timing out into pending.
+    deadline = time.monotonic() + RESULT_WAIT_SECONDS
+    while True:
+        marker, _marker_error = _read_result_marker(done_marker)
+        if marker is not None:
+            if marker.get("ok"):
+                # Review round-3 (MCP/Python minor): a pre-placed marker is
+                # inside the disclosed user-writable-spool trust boundary,
+                # but its session_id is still charset/type-checked before
+                # being echoed as the created session — a fabricable success
+                # must at least not hand the model an arbitrary string to
+                # act on.
+                session_id = marker.get("session_id")
+                if not isinstance(session_id, str) or validate_session_id(session_id):
+                    return None, (
+                        "session creation result marker is malformed "
+                        "(session_id failed validation); the request may still "
+                        "have been applied — check the session list"
+                    )
+                # Round-6 M3: the "no arbitrary string" guarantee holds for
+                # EVERY echoed field — a planted marker's title is
+                # type-checked and clipped (200, the tool's own cap), and
+                # the session_id must EXIST in the store before being
+                # echoed (charset-valid misdirection to a real session is
+                # otherwise possible).
+                marker_title = marker.get("title")
+                if marker_title is not None and (
+                    not isinstance(marker_title, str) or len(marker_title) > MAX_TITLE_CHARS
+                ):
+                    marker_title = None
+                # Round-10 minor: a divergent same-key resend can land
+                # WHILE this call is polling (the marker then describes the
+                # REPLACED body's create) — the entry-time comparison alone
+                # answered duplicate:false/payload_mismatch:false with the
+                # other payload's sessionId. Re-compare against the marker
+                # that actually answered.
+                if isinstance(session_id, str):
+                    marker_digest = marker.get("request_digest")
+                    if (
+                        isinstance(marker_digest, str)
+                        and isinstance(requested_digest, str)
+                        and marker_digest != requested_digest
+                    ):
+                        payload_mismatch = True
+                if sessions_dir and not os.path.isfile(
+                    os.path.join(sessions_dir, "%s.json" % session_id)
+                ):
+                    return None, (
+                        "session creation result marker names a session that "
+                        "does not exist; the request may still have been "
+                        "applied — check the session list"
+                    )
+                # Round-9 M1: the divergent-resend case gets its own honest
+                # note — the old shape said "no second session was created"
+                # while the just-sent fields had been silently dropped (or,
+                # mid-create, a second session silently existed).
+                if payload_mismatch:
+                    note = (
+                        "This idempotency key was already processed with a "
+                        "DIFFERENT payload; the recorded result above describes "
+                        "that earlier request. The fields you just sent were NOT "
+                        "applied and no second session was created for them — use "
+                        "a new idempotency_key to apply them."
+                    )
+                elif entry_marker_was_failure:
+                    note = (
+                        "The previous attempt with this idempotency key FAILED and "
+                        "was quarantined; this retry has been applied afresh (the "
+                        "result above is this attempt's)."
+                    )
+                elif not duplicate:
+                    note = (
+                        "The session has been created and is visible in the session "
+                        "list; it did not steal the user's focus, so they open it from "
+                        "the list when ready."
+                    )
+                else:
+                    note = (
+                        "A request with the same idempotency key was already "
+                        "processed; returning its recorded result — no second session "
+                        "was created."
+                    )
+                result = {
+                    "ok": True,
+                    "sessionId": session_id,
+                    "title": marker_title or title or "",
+                    "duplicate": duplicate,
+                    "payload_mismatch": payload_mismatch,
+                    "note": note,
+                }
+                if first_message is not None:
+                    result["firstMessageDelivered"] = (
+                        "delivered" if marker.get("first_message_delivered") else "failed"
+                    )
+                return result, None
+            marker_error = marker.get("error")
+            # Round-6 M3: clip + coerce the echoed error (a planted marker
+            # could otherwise feed ~64 KB into model context).
+            if not isinstance(marker_error, str):
+                marker_error = None
+            return None, (marker_error or "session creation failed")[:500]
+        if time.monotonic() >= deadline:
+            break
+        # marker is None only means "not there yet / unreadable" — keep polling.
+        time.sleep(RESULT_POLL_INTERVAL_SECONDS)
+    # Round-9 minor: the pending note now tells the model how to RECOVER
+    # (re-poll with the same key — tested but previously undiscoverable
+    # from the payload) and warns the no-key caller that a blind retry
+    # enqueues a second creation request.
+    pending_note = (
+        "The creation request is queued; the app has not confirmed the result "
+        "within a few seconds. Tell the user the session is being created and "
+        "they can check the session list."
+    )
+    if idempotency_key is not None:
+        pending_note += (
+            " Call create_session again with the SAME idempotency_key (and the "
+            "same payload) to re-poll and recover this request's outcome — it "
+            "does not enqueue a duplicate. A DIFFERENT payload under the same "
+            "key while this request is still pending REPLACES it (only the "
+            "newest body will deliver)."
+        )
+    else:
+        pending_note += (
+            " Note: this call carried no idempotency_key, so a blind retry "
+            "enqueues a SECOND creation request — check the session list first."
+        )
+    pending = {
+        "ok": True,
+        "sessionId": None,
+        "title": title or "",
+        "delivery": "pending",
+        "duplicate": duplicate,
+        "note": pending_note,
+    }
+    return pending, None
+
 # stdio protocol layer (aligned with present_artifact_server.py)
 # ---------------------------------------------------------------------------
 
@@ -1144,7 +1708,7 @@ def _text_content(payload, is_error=False):
     }
 
 
-def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features):
+def _handle_call(req_id, params, sessions_dir, messaging_dir, requests_dir, tool_features):
     name = (params or {}).get("name")
     args = (params or {}).get("arguments") or {}
     # Contract §3.3 fallback: a tool call from stale context gets a structured
@@ -1186,6 +1750,26 @@ def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features):
         else:
             _result(req_id, _text_content(payload))
         return
+    elif name == "create_session":
+        # Round-7 M3: sessions_dir reaches the production path — the marker
+        # echo's existence check is dead code without it (round-6 added the
+        # check but not this wiring).
+        payload, error = create_session(
+            requests_dir,
+            title=args.get("title"),
+            first_message=args.get("first_message"),
+            workspace_path=args.get("workspace_path"),
+            model_id=args.get("model_id"),
+            from_session=args.get("from_session"),
+            from_title=args.get("from_title"),
+            idempotency_key=args.get("idempotency_key"),
+            sessions_dir=sessions_dir,
+        )
+        if error is not None:
+            _result(req_id, _text_content({"ok": False, "error": error}, is_error=True))
+        else:
+            _result(req_id, _text_content(payload))
+        return
     else:
         # Unknown tool name: -32602 (invalid params) — the method itself is
         # tools/call; the tool name is a parameter of it.
@@ -1198,7 +1782,7 @@ def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features):
         _result(req_id, _text_content(payload))
 
 
-def _handle(msg, sessions_dir, messaging_dir, tool_features):
+def _handle(msg, sessions_dir, messaging_dir, requests_dir, tool_features):
     method = msg.get("method")
     req_id = msg.get("id")
 
@@ -1210,7 +1794,7 @@ def _handle(msg, sessions_dir, messaging_dir, tool_features):
         _result(req_id, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "pinvou3-session-reader", "version": "1.1.0"},
+            "serverInfo": {"name": "pinvou3-session-reader", "version": "1.2.0"},
         })
     elif method == "ping":
         # MCP convention: keepalive ping answers with an empty result.
@@ -1218,7 +1802,7 @@ def _handle(msg, sessions_dir, messaging_dir, tool_features):
     elif method == "tools/list":
         _result(req_id, {"tools": TOOL_DEFS})
     elif method == "tools/call":
-        _handle_call(req_id, msg.get("params"), sessions_dir, messaging_dir, tool_features)
+        _handle_call(req_id, msg.get("params"), sessions_dir, messaging_dir, requests_dir, tool_features)
     else:
         _error(req_id, -32601, "method not found: %s" % _short(method))
 
@@ -1226,6 +1810,7 @@ def _handle(msg, sessions_dir, messaging_dir, tool_features):
 def main():
     sessions_dir = resolve_sessions_dir()
     messaging_dir = resolve_messaging_dir()
+    requests_dir = resolve_session_requests_dir()
     tool_features = load_tool_features()
     # Read raw bytes and decode tolerantly: a single non-UTF-8 byte on stdin
     # becomes U+FFFD (the line then fails JSON parsing and is skipped) instead
@@ -1239,7 +1824,7 @@ def main():
         except Exception:
             continue  # skip the bad line, never crash
         try:
-            _handle(msg, sessions_dir, messaging_dir, tool_features)
+            _handle(msg, sessions_dir, messaging_dir, requests_dir, tool_features)
         except Exception as e:
             rid = msg.get("id") if isinstance(msg, dict) else None
             if rid is not None:

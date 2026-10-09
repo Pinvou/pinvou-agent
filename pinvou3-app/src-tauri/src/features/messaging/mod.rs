@@ -388,7 +388,10 @@ pub async fn deliver_spooled_message(
             // lock); a genuinely gone session fails loudly here.
             let dispatched = tokio::time::timeout(
                 DELIVERY_TIMEOUT,
-                pool.deliver_messaging_turn(&message.to_session, text),
+                // Round-9 M6 (session-creation): no shield here — this sender runs in an
+                // attended session under the user's eye (the family pass tracks
+                // the target-side question separately).
+                pool.deliver_messaging_turn(&message.to_session, text, false),
             )
             .await;
             match dispatched {

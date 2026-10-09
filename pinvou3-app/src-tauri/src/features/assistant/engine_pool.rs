@@ -1529,6 +1529,14 @@ pub struct EnginePool {
     /// run_scheduled_turn's spawn→submit window the lifecycle is not yet
     /// active; idle reclaim needs this as a second layer of protection).
     scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+    /// Round-11 M1 (#657): sessions whose engine currently carries the
+    /// watcher-delivery shield (unattended_disallowed_tools). An attended
+    /// send_user_message restores the ordinary catalog and clears the mark
+    /// — the shield must not outlive the unattended opening turn into the
+    /// user's interactive session (the scheduled family's pre/post-turn
+    /// evict closes the same invariant by respawning; this is the delivery
+    /// path's equivalent).
+    watcher_shielded_sessions: Arc<SyncMutex<HashSet<String>>>,
     /// Steer-id engine-incarnation allocator: a process-monotonic AtomicU64
     /// sequence bumped on every engine spawn. Arc-shared so pool clones see
     /// one sequence (same idiom as every shared field here — EnginePool is a
@@ -1652,6 +1660,7 @@ impl EnginePool {
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
+            watcher_shielded_sessions: Arc::new(SyncMutex::new(HashSet::new())),
             steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
             execution_root_rewind_flags: Arc::new(SyncMutex::new(HashMap::new())),
         })
@@ -3368,6 +3377,25 @@ impl EnginePool {
         mode: AppMode,
         restrict_tools_for_turn: bool,
     ) -> Result<()> {
+        // Round-11 M1 (#657): restore the ordinary catalog for a session
+        // whose engine still carries the watcher-delivery shield — the
+        // unattended opening turn has ended by definition (a user turn is
+        // reserving now), and the user must not silently lose
+        // create_session / goals / the scheduled-task write tools for the
+        // engine's remaining lifetime. The idle reaper skips active
+        // sessions, so without this restore the shield could persist for
+        // the whole app session.
+        if self.watcher_shielded_sessions.lock().remove(session_id) {
+            if let Ok(engine) = self.get_or_spawn(session_id).await {
+                let ordinary = self.bridge.shape_disallowed_tools(session_id, Vec::new());
+                let _ = engine
+                    .handle
+                    .send(Op::SetDisallowedTools {
+                        tools: (!ordinary.is_empty()).then_some(ordinary),
+                    })
+                    .await;
+            }
+        }
         let reservation = self.reserve_turn(session_id)?;
         let display_message = user_display_message(content.clone());
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
@@ -3542,7 +3570,23 @@ impl EnginePool {
         &self,
         session_id: &str,
         content: String,
+        unattended_shield: bool,
     ) -> Result<()> {
+        // Round-9 M6 (session-creation): the watcher-delivered opening
+        // turn is unattended — shield the engine BEFORE the turn op (the
+        // spawned engine is reused below, so the shield op is queued ahead
+        // of the turn op on the same channel). Interactive senders (the
+        // messaging tool, called from an attended session) keep the
+        // session's ordinary catalog.
+        if unattended_shield {
+            let engine = self.get_or_spawn(session_id).await?;
+            engine.apply_unattended_shield().await?;
+            // Round-11 M1: mark the session — the FIRST attended send
+            // restores the ordinary catalog (see send_user_message).
+            self.watcher_shielded_sessions
+                .lock()
+                .insert(session_id.to_string());
+        }
         let reservation = self.reserve_turn(session_id)?;
         // Round-7 Q2: expert matching sees the delivered BODY only. The
         // round-6 version passed the full block (header + contract lines +

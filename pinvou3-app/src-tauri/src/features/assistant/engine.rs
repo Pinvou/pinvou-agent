@@ -1627,6 +1627,7 @@ pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> 
         // the target-side layers never see an unattended sender. An
         // unattended run has no business starting turns elsewhere.
         crate::features::assistant::platform::bridge::MESSAGING_SEND_TOOL,
+        crate::features::assistant::platform::bridge::SESSION_CREATE_TOOL,
     ] {
         if !list.iter().any(|blocked| blocked == tool) {
             list.push(tool.to_string());
@@ -1976,6 +1977,24 @@ impl AppEngine {
                 restrict_tools,
             )
         }
+    }
+
+    /// Round-9 M6 (session-creation): a watcher-dispatched turn is
+    /// UNATTENDED — nobody is watching the session the tool created, so an
+    /// injected opening message must not be able to recursively create
+    /// sessions/goals/task-writes. Push the engine's shield list (the same
+    /// `unattended_disallowed_tools` composition the scheduled turn sends
+    /// below) BEFORE the delivered turn op reaches this engine. The list
+    /// persists on this engine until it is recycled — fail-closed: a user
+    /// who opens the session inside the idle window inherits the shield
+    /// (disclosed in the session-creation design doc; the scheduled family
+    /// never goes interactive so persistence is exactly right there).
+    pub(crate) async fn apply_unattended_shield(&self) -> Result<()> {
+        self.handle
+            .send(Op::SetDisallowedTools {
+                tools: Some(self.scheduled_disallowed_tools.clone()),
+            })
+            .await
     }
 
     /// Submit the initial prompt for one scheduled run using the immutable
@@ -4134,9 +4153,11 @@ mod unattended_shield_tests {
     use super::unattended_disallowed_tools;
 
     /// The recursion shield (review R4-M1): an unattended automation turn
-    /// must deny the scheduled-task write family deterministically — the
-    /// engine-level tool list, not an Ask rule (which mutating MCP tools
-    /// never consult under the current full-auto approval).
+    /// must deny the mutating tool families deterministically — the
+    /// scheduled-task write family and session creation (this split PR's
+    /// addition) — via the engine-level tool list, not an Ask rule (which
+    /// mutating MCP tools never consult under the current full-auto
+    /// approval).
     #[test]
     fn unattended_turn_denies_scheduled_task_write_family() {
         let list = unattended_disallowed_tools(&[]);
@@ -4146,6 +4167,7 @@ mod unattended_shield_tests {
             "mcp_app-automations_create_scheduled_task",
             "mcp_app-automations_update_scheduled_task",
             "mcp_app-automations_delete_scheduled_task",
+            "mcp_session-reader_create_session",
         ] {
             assert!(
                 list.iter().any(|blocked| blocked == tool),
