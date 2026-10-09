@@ -619,30 +619,24 @@ impl AcpProvidersStore {
     /// write under the lock costs readers (state()/get()) a sub-millisecond
     /// wait on the paths that change anything.
     fn persist_locked(agents: &HashMap<String, AgentProvidersState>, path: &Path) -> Result<()> {
+        // `atomic_write` stages inside the target's parent, so the directory
+        // must exist first (unchanged from the hand-rolled writer).
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        // The tmp name carries the pid: a fixed name let two surfaces
-        // rename each other's half-written file into place (the loser's
-        // rename then ENOENTs and the winner's content was the loser's).
-        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        // Round-48 review: the hand-rolled pid-suffixed tmp+rename carried
+        // no fsync, so power loss could land a truncated/empty
+        // `acp-providers.json` (the boot-time `.pinvou3-bak` would then
+        // answer stale data). `atomic_write` provides the unique
+        // per-writer staging name this comment already demanded, the
+        // fsync-before-rename the sibling stores migrated for, and the
+        // same litter rule — `create_dir_all` included.
         let value = AcpProvidersFile {
             version: STORE_VERSION,
             agents: agents.clone(),
         };
-        if let Err(error) = fs::write(&tmp, serde_json::to_vec_pretty(&value)?) {
-            let _ = fs::remove_file(&tmp);
-            return Err(error.into());
-        }
-        if let Err(error) = fs::rename(&tmp, path) {
-            // Same litter rule as the write arm: a rename failure (cross-
-            // device, permission) must not strand the pid tmp file — the
-            // next persist of this process reuses the name, but a failed
-            // command should not leave half-written provider state behind.
-            let _ = fs::remove_file(&tmp);
-            return Err(error.into());
-        }
-        Ok(())
+        crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(&value)?)
+            .map_err(Into::into)
     }
 
     /// Cross-process lock serializing the reload→mutate→persist section
@@ -824,6 +818,92 @@ pub struct ProviderManager {
     /// per-agent 配置切换锁：apply 与 store 持久化之间互斥，防两个 switch 交错
     /// 导致 CLI 配置与 store.current 分裂（评审中危项）。按 agent 惰性建锁。
     switch_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<()>>>>>,
+    /// Round-48 test seam: when armed (tests only), `save` parks here
+    /// between its pre-lock record read and its under-lock fresh read — the
+    /// exact window the credential-divergence guard re-validates, which is
+    /// sub-millisecond in production and needs a rendezvous to inject a
+    /// peer store write into. Production construction leaves the gate idle
+    /// and the call is a no-op.
+    #[cfg(test)]
+    divergence_gate: Arc<DivergenceGate>,
+}
+
+/// Test-only rendezvous for the divergence-guard window (see the field doc
+/// on [`ProviderManager`]). Lifecycle: the test arms the gate, hands it to
+/// the worker's manager, awaits `Arrived` (the worker is now parked between
+/// the two reads), lands the peer write, then `Release`s.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct DivergenceGate {
+    state: Arc<(std::sync::Mutex<DivergenceGateState>, std::sync::Condvar)>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DivergenceGateState {
+    Idle,
+    Armed,
+    Arrived,
+    Released,
+}
+
+#[cfg(test)]
+impl Default for DivergenceGate {
+    fn default() -> Self {
+        Self {
+            state: Arc::new((
+                std::sync::Mutex::new(DivergenceGateState::Idle),
+                std::sync::Condvar::new(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+impl DivergenceGate {
+    fn arm(&self) {
+        *self.state.0.lock().unwrap() = DivergenceGateState::Armed;
+    }
+
+    /// Called from `save` under test: parks until the test releases, and is
+    /// a no-op unless the gate was armed.
+    fn wait_while_armed(&self) {
+        let (state, condvar) = &*self.state;
+        let mut state = state.lock().unwrap();
+        if *state == DivergenceGateState::Idle {
+            return;
+        }
+        *state = DivergenceGateState::Arrived;
+        condvar.notify_all();
+        while *state == DivergenceGateState::Arrived {
+            state = condvar.wait(state).unwrap();
+        }
+    }
+
+    /// Test side: block until the worker reaches the parked window (or the
+    /// deadline passes).
+    fn wait_until_arrived(&self, timeout: std::time::Duration) -> bool {
+        let (state, condvar) = &*self.state;
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = state.lock().unwrap();
+        while *state == DivergenceGateState::Armed {
+            let (woken, wait) = condvar
+                .wait_timeout(state, deadline.saturating_duration_since(std::time::Instant::now()))
+                .unwrap();
+            state = woken;
+            if wait.timed_out() {
+                return false;
+            }
+        }
+        *state == DivergenceGateState::Arrived
+    }
+
+    /// Test side: let the parked worker proceed.
+    fn release(&self) {
+        let (state, condvar) = &*self.state;
+        *state.lock().unwrap() = DivergenceGateState::Released;
+        condvar.notify_all();
+    }
 }
 
 impl ProviderManager {
@@ -836,7 +916,34 @@ impl ProviderManager {
             codex_root: home.join(".codex"),
             kimi_root: super::introspect::kimi_data_root(),
             switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            divergence_gate: Arc::default(),
         })
+    }
+
+    /// Round-48 test-only constructor: pairs the manager with an ARMED
+    /// divergence-window gate so a test can land a peer store write between
+    /// `save`'s pre-lock read and its under-lock fresh read. Returns the
+    /// gate for the test to await and release.
+    #[cfg(test)]
+    pub(crate) fn new_with_armed_divergence_gate(
+        credentials: SystemCredentialStore,
+    ) -> (Result<Self>, Arc<DivergenceGate>) {
+        let gate = Arc::new(DivergenceGate::default());
+        gate.arm();
+        let home = crate::platform::os::user_home_dir();
+        (
+            Ok(Self {
+                store: AcpProvidersStore::load_or_empty(),
+                credentials,
+                claude_root: home.join(".claude"),
+                codex_root: home.join(".codex"),
+                kimi_root: super::introspect::kimi_data_root(),
+                switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                divergence_gate: gate.clone(),
+            }),
+            gate,
+        )
     }
 
     /// 取（必要时创建）per-agent 配置切换锁。
@@ -1110,6 +1217,12 @@ impl ProviderManager {
         // from the stale `existing` clone while the real credential was
         // already gone. Re-validate under the held lock: updating a record a
         // peer removed fails honestly instead.
+        // Round-48 test seam: parks a test worker here — between the
+        // pre-lock read above and the fresh re-read below — so the test can
+        // land a peer store write inside the exact window this guard
+        // re-validates. No-op unless the gate was armed by a test.
+        #[cfg(test)]
+        self.divergence_gate.wait_while_armed();
         let fresh_record = if provider_id.is_some() {
             self.store.record_fresh_locked(agent, record.id.as_str())
         } else {
@@ -1135,8 +1248,18 @@ impl ProviderManager {
         // deterministic value, so only a genuine divergence lands here:
         // take back the key THIS call wrote and fail honestly; the retry
         // re-reads everything fresh.
+        // Round-48 review MAJOR: the divergence oracle is "did the stored
+        // pointer MOVE under us" (`fresh` vs the pre-lock `existing` clone),
+        // NOT "does it differ from what this call wrote" — this call's own
+        // upsert has not landed yet, so a record born keyless
+        // (`existing.credential: None`) never equals `Some(wrote)` and
+        // adding its first key used to deterministically bail here (and
+        // delete the key this call had just written) with no peer involved.
+        // Equal pointers — including both None — mean no peer credential
+        // move happened, whatever this call wrote.
         if let (Some(wrote), Some(fresh)) = (&written_credential, fresh_record.as_ref()) {
-            if fresh.credential.as_ref() != Some(wrote) {
+            let existing_pointer = existing.as_ref().and_then(|record| record.credential.clone());
+            if fresh.credential != existing_pointer {
                 self.credentials.delete(wrote).ok();
                 anyhow::bail!(
                     "Provider {} 被并发修改（凭据已被另一端更改），请重试",
@@ -2345,5 +2468,229 @@ mod tests {
             ProviderWireApi::Openai
         );
         assert!(ProviderWireApi::parse(Some("bogus")).is_err());
+    }
+
+    /// Round-48 review MAJOR regression pin: adding a FIRST key to a
+    /// keyless provider must save. The round-46 divergence guard used to
+    /// compare the fresh record against what THIS call wrote — a comparison
+    /// the call can never satisfy before its own upsert lands — so a record
+    /// born keyless (`credential: None`) deterministically bailed and took
+    /// back the just-written key, on both the GUI form and the CLI's
+    /// `providers update --key`. Drives the real `ProviderManager::save`
+    /// over the file secret backend; no config writer is touched because
+    /// the provider is not `current`.
+    #[test]
+    fn save_adds_a_first_key_to_a_keyless_provider_and_rotates_it() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-keyless-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let store_path = home.join("acp-providers.json");
+
+        let manager =
+            ProviderManager::new(SystemCredentialStore::new()).expect("manager constructs");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::KeepExisting,
+            )
+            .expect("keyless create saves");
+        assert!(
+            created.credential.is_none(),
+            "the created record must be keyless"
+        );
+        assert!(store_path.exists(), "the create must persist the store");
+
+        // The regression: Replace with a key on the keyless record.
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        let updated = manager
+            .save(
+                "codex",
+                Some(&created.id),
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-first-key".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("adding the first key to a keyless provider must save");
+        assert!(updated.credential.is_some(), "the pointer must land");
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round48-first-key"),
+            "the just-written key must survive the save"
+        );
+
+        // Rotation on an existing key keeps working: fresh pointer equals
+        // the pre-lock pointer, so the divergence guard must not fire.
+        let rotated = manager
+            .save(
+                "codex",
+                Some(&created.id),
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-second-key".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("rotating the key on a keyed provider must save");
+        assert!(rotated.credential.is_some());
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round48-second-key"),
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The guard's intended target stays covered: a peer `--delete-key`
+    /// landing between this call's pre-lock read and its under-lock fresh
+    /// read (simulated by rewriting the store file while the section lock
+    /// is held) makes the save fail honestly AND take back the key this
+    /// call wrote, instead of upserting a `has_credential: true` whose
+    /// keychain entry the peer already deleted.
+    #[test]
+    fn save_takes_back_the_written_key_when_a_peer_clears_the_pointer() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-peer-clear-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let store_path = home.join("acp-providers.json");
+
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-peer-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done_in = done.clone();
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // The worker's manager carries an ARMED divergence gate, so its
+            // save parks between the pre-lock read (which saw the keyed
+            // record) and the under-lock fresh read — the exact window the
+            // guard re-validates.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            let worker_manager = worker_manager.expect("worker manager");
+            gate_tx.send(gate).unwrap();
+            let result = worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-peer-replacement".into()),
+                CredentialEditAction::Replace,
+            );
+            done_in.store(true, Ordering::SeqCst);
+            result
+        });
+
+        // The peer lands its `--delete-key` inside the parked window: the
+        // pointer is cleared on disk (the keychain entry the peer deleted
+        // is already gone).
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        file["agents"]["codex"]["providers"][0]["credential"] = serde_json::Value::Null;
+        fs::write(&store_path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Release only AFTER the rewrite is on disk: the worker's fresh
+        // re-read must observe it.
+        gate.release();
+
+        let result = worker.join().unwrap();
+        let error = result.expect_err("the diverged save must fail honestly");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("被并发修改"),
+            "the refusal must name the concurrent modification, got: {rendered}"
+        );
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read"),
+            None,
+            "the save must take back the key it wrote"
+        );
+        let _ = fs::remove_dir_all(&home);
     }
 }
