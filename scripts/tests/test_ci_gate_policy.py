@@ -785,9 +785,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # round-37 pinvoy3-app class. Groups are split sequentially in
         # declaration order, so a NEW group appended without updating this
         # list still gets covered as long as it sits between two known
-        # neighbors (a group appended after the LAST entry — today
-        # windows_codex — is the residual gap; round-45 review). The pairs
-        # below mirror the workflow's order.
+        # neighbors. Round-48 review: the LAST group is now bounded too
+        # (bundle_chain is swept to EOF above), so a group appended after
+        # bundle_chain still escapes this list — add its pair here when a
+        # group is added. The pairs mirror the workflow's order.
         group_bounds = [
             ("rust_code", "rust_dependencies"),
             ("rust_dependencies", "rust_full"),
@@ -799,6 +800,7 @@ class CiGatePolicyTests(unittest.TestCase):
             ("frontend", "relay"),
             ("relay", "acp_runtime"),
             ("acp_runtime", "windows_codex"),
+            ("windows_codex", "bundle_chain"),
         ]
         for group, next_group in group_bounds:
             block = changes.split(f"            {group}:", maxsplit=1)[1].split(
@@ -1185,23 +1187,40 @@ class CiGatePolicyTests(unittest.TestCase):
         # product-backend` keeps the pinned text while compiling the
         # feature-on config, silently un-guarding the refusal arms. Pin the
         # absence of the re-enable on the featureless step.
+        # Round-48 review: the steps are folded (`>-`) multi-line run blocks,
+        # and the per-LINE check below let the toggle hide on a DIFFERENT
+        # line of the same command (cargo accepts `--features` alongside
+        # `--no-default-features`), satisfying every assertion while
+        # compiling the feature-on config. Fold each run block into one
+        # string first; the message keeps the whole block for diagnosis.
         featureless_steps = [
-            line
-            for line in cli_lint.splitlines()
-            if "--no-default-features" in line
+            " ".join(block.split("\n"))
+            for block in re.findall(
+                r"run: >-\n((?:\s{12}.*\n?)+)", cli_lint
+            )
+            if "--no-default-features" in block
         ]
+        if not featureless_steps:
+            # Fallback for any single-line featureless invocation: keep the
+            # old per-line shape so the pin cannot silently lose coverage.
+            featureless_steps = [
+                line
+                for line in cli_lint.splitlines()
+                if "--no-default-features" in line
+            ]
         self.assertTrue(featureless_steps, "the featureless check step must exist")
-        for line in featureless_steps:
+        for block in featureless_steps:
             self.assertNotIn(
                 "--features",
-                line,
+                block,
                 # Round-43 review: this message interpolates the offending
-                # line — without the f-prefix a real failure printed a
-                # literal "{line}" instead of the step.
+                # text — without the f-prefix a real failure printed a
+                # literal "{block}" instead of the step.
                 "the featureless check must not re-enable features on the "
-                "same invocation: `--no-default-features --features "
+                "same invocation (on any line of the folded run block): "
+                "`--no-default-features --features "
                 "product-backend` satisfies the substring pin while "
-                f"compiling the feature-on config: {line}",
+                f"compiling the feature-on config: {block}",
             )
         # Independent cache keyed to the compiler mode (clippy-driver
         # artifacts are not reusable by the rustc test compilers — same

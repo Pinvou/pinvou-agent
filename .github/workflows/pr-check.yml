@@ -302,6 +302,12 @@ jobs:
               # check, added so the pin cannot outlive the path again.
               - 'pinvou3-app/resources/mcp-servers/**'
               - 'docs/plugin-package-spec.md'
+              # Round-48 review: cli_contract.rs include_str!s the gaia
+              # benchmark doc and asserts its dataset table — the same class
+              # as the spec-doc entry above (a doc-only edit that breaks the
+              # assertion must run a CLI leg, not skip all of them with
+              # required-gate passing on `skipped`).
+              - 'docs/gaia-benchmark.md'
             knowledge_rust:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
@@ -1410,9 +1416,10 @@ jobs:
   # to the pinvou-cli workspace. This job runs clippy on every CLI-triggering
   # PR, Merge Queue combined tree, and main push.
   # Scope decision — warn-visible only, deliberately NOT `-D warnings` yet:
-  # the workspace measured 83 clippy warnings on this tree (70 in
-  # crates/cli/src lib code, the rest in test targets), so a deny gate would
-  # ship red on this very PR. The app crate went through the same sequence
+  # the workspace carries a three-digit clippy warning count on this tree
+  # (round-48 review measured 114: ~70 in crates/cli/src lib code, the rest
+  # in test targets — the count drifts as waves land; the point is the
+  # order of magnitude), so a deny gate would ship red on this very PR. The app crate went through the same sequence
   # (see its rust-lint comment): pay the debt, then flip. Lint configuration
   # belongs in pinvou-cli/Cargo.toml [lints] — a per-repository convention
   # (never CLI -W/-D, to avoid divergence from local runs) for which crates
@@ -2647,13 +2654,16 @@ jobs:
       # siblings, and the pinvou-cli workspace target dir is cached like
       # macos-rust-check caches src-tauri. A check-only target dir carries
       # rmeta-size artifacts and no linked test binaries, so the link-time
-      # runner deaths that forced cache-targets: false on the Linux legs
-      # cannot recur here.
+      # Round-48 review: `cache-on-failure` matches macos-rust-check (its
+      # anti-death-loop rationale: save-on-success-only + eviction left a
+      # failed main push with a cold cache namespace). Without it a failed
+      # main push strands this cache cold, defeating the retention goal.
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou-cli
           shared-key: macos-cli-check
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: pinvou-cli macOS compile check
