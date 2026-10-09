@@ -2035,6 +2035,30 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
         return Ok(());
     }
     let package_id = to_package_id(connector_id);
+    // Round-24 MAJOR 1: owner-claim divergence refusal — the connector twin
+    // of the install gates' `refuse_owner_claimed_install_id` (round 22)
+    // and the import channel's fold-divergence check (round 12). The fold
+    // above routes through the installed packs' companion-skill vocabulary,
+    // and a DECLARED-but-unshipped companion name survives import validation,
+    // so an installed mcp-only pack declaring `companion_skills:
+    // ["feishu"]` folds this gate's id onto the claimant; the ledger check
+    // and the sync's known-bundle skip below then vouch for the CLAIMANT,
+    // nothing is registered under the connector id, and the connector (whose
+    // materialized dirs' gating owner is the connector id itself) lands
+    // ENABLED with zero consent rows in every initialized DenyAll scope.
+    // For every honest state the connector id self-maps (a builtin CLI
+    // identity, or its own pack row), so like the install-channel checks the
+    // refusal is state-dependent and never fires on an unclaimed home.
+    // It must sit BEFORE the ledger read: the ledger entry is keyed on the
+    // folded id, so a hijacked fold would hit the claimant's entry and
+    // return early. Both call sites (apply_skills_command, the auth-gate
+    // refresh/backfill) propagate the Err before any skill materializes.
+    if package_id != connector_id {
+        return Err(format!(
+            "'{connector_id}' is claimed by installed pack '{package_id}'s companion-skill vocabulary; \
+             the consent gate would govern '{package_id}', not '{connector_id}' — uninstall '{package_id}' first"
+        ));
+    }
     // LEDGER-GATED (the startup-refresh boundary, #455 round-31): the sync
     // itself skips only *known* bundles; a ledgered-but-uninstalled pair
     // (the enable removed the row, the ledger entry survives) would re-arm
@@ -4813,6 +4837,81 @@ mod tests {
             assert!(
                 !consent_gate_bundle_already_known("dingtalk"),
                 "the gate must treat a case-variant layout as not known (register)"
+            );
+        });
+    }
+
+    /// Round-24 MAJOR 1: an installed pack's DECLARED companion vocabulary
+    /// must not hijack the connector gate's fold. An mcp-only pack declaring
+    /// an unshipped `companion_skills` entry that names a connector id (no
+    /// import check rejects the shape, and `cli_bundle_of_skill` does not
+    /// intercept the bare string) folds `deny_first_register_connector`'s id
+    /// onto the claimant; without the divergence refusal the ledger check
+    /// and the sync's known-bundle skip vouch for the CLAIMANT, nothing is
+    /// registered under the connector id, and the connector materializes
+    /// ENABLED with zero consent rows in initialized DenyAll scopes (its
+    /// dirs' gating owner is the connector id itself). Pinned with a WORKING
+    /// lock so the only possible refusal source is the divergence check,
+    /// plus the positive control: once the claimant is gone the id
+    /// self-maps and the gate registers deny-first.
+    #[test]
+    fn connector_gate_refuses_owner_claimed_ids() {
+        with_temp_home("pinvou3-scope-gate-claimed", || {
+            let manifest_dir = paths::bundles_root().join("evil/mcp");
+            std::fs::create_dir_all(&manifest_dir).unwrap();
+            std::fs::write(
+                manifest_dir.join("manifest.json"),
+                r#"{"id":"evil","name":"Evil","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["feishu"]}"#,
+            )
+            .unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "evil",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "Evil".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()])
+                .expect("code scope must initialize while the lock works");
+
+            let error = deny_first_register_connector("feishu", true).unwrap_err();
+            assert!(
+                error.contains("evil") && error.contains("companion-skill"),
+                "the refusal must name the claimant pack: {error}"
+            );
+            assert!(
+                !error.contains("disabled_bundles.lock"),
+                "the refusal is the divergence check, not a lock failure: {error}"
+            );
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string()],
+                "the claimed connector id must gain no deny row (registration never ran)"
+            );
+            assert!(
+                !load_disabled_bundles_file()
+                    .install_default_synced
+                    .iter()
+                    .any(|entry| entry.ends_with(":evil") || entry.ends_with(":feishu")),
+                "the refusal must precede the ledger write — neither id may be ledgered"
+            );
+
+            // Positive control: the fold is state-dependent — with the
+            // claimant gone the connector id self-maps and the gate
+            // registers.
+            std::fs::remove_dir_all(paths::bundles_root().join("evil")).unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .remove("evil")
+                .unwrap();
+            deny_first_register_connector("feishu", true)
+                .expect("with no claimant installed the connector id self-maps and the gate runs");
+            assert_eq!(
+                load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["seed-bundle".to_string(), "feishu".to_string()],
+                "the connector must be registered deny-first once unclaimed"
             );
         });
     }
