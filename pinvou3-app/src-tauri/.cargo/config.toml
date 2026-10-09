@@ -15,7 +15,9 @@
 #   rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 #
 # macOS 不换链接器:Tauri 依赖 Apple ld 处理 framework,换 lld/zld 风险高于收益。
-# Windows 不换链接器:MSVC link.exe 是 WebView2/Com 的唯一稳定选项。
+# Windows: CI injects the probed lld-link per job (pr-check's windows-rust-test
+# since #642, release-packages' build-windows-x64 since 2026-10-02); this file
+# still hardcodes nothing; local overrides keep going through config.local.toml.
 #
 # 未来若团队统一约定要强制(如 CI 已确认装好 clang+lld),再把这些 rustflags 从
 # config.local.toml 提升回这里,并同步更新 CI 镜像。
