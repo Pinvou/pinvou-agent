@@ -629,7 +629,17 @@ fn record_time(value: &serde_json::Value, field: &str) -> chrono::DateTime<chron
         .and_then(|value| value.as_str())
         .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
         .map(|stamp| stamp.with_timezone(&chrono::Utc))
-        .unwrap_or(chrono::DateTime::from_timestamp(FLOOR_SECS, 0).expect("sorting floor"))
+        .unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp(FLOOR_SECS, 0).expect("sorting floor")
+        })
+}
+
+/// Round-48 review: the archive prune above sorts by `record_time`, which
+/// used to re-parse the RFC3339 stamp on EVERY comparison — O(n log n)
+/// parses instead of n. Pre-computing the sort key here keeps the lossy
+/// lane's per-record cost to one parse.
+fn record_sort_key(value: &serde_json::Value) -> chrono::DateTime<chrono::Utc> {
+    record_time(value, "scheduled_for")
 }
 
 // ---- store layout (mirrors AutomationManager::open(root) + app sidecars) ----
@@ -2116,7 +2126,27 @@ enabled in settings",
     } else {
         let mut def = def_to_value(&created);
         def["cwds"] = serde_json::json!([workspace.display().to_string()]);
-        store_holder.write_def(&def)?;
+        if let Err(error) = store_holder.write_def(&def) {
+            // Round-48 review: the two sibling arms below roll the create
+            // back on sidecar-write failure; this arm's failure left a
+            // committed, schedulable ACTIVE task on disk while the command
+            // exited 1 — the caller believes the create failed. Roll back
+            // exactly like the siblings (definition + workspace), with the
+            // same disclose-on-failed-rollback-step policy.
+            if let Ok(path) = store_holder.def_path(&id) {
+                if let Err(remove_error) = std::fs::remove_file(&path) {
+                    note!(
+                        "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+                    );
+                }
+            }
+            if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
+                note!(
+                    "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+                );
+            }
+            return Err(error);
+        }
         def
     };
     // Only touch the shared bindings sidecar when a binding was actually
@@ -3318,7 +3348,29 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
                 )
             });
             if let Some(runs) = archived.get("runs").and_then(|value| value.as_array()) {
-                for run in runs {
+                // Round-48 review: prune each archived task to its newest
+                // `probe_limit` runs BEFORE the typed gate below, mirroring
+                // the active lane's per-task push-down. The archive grows
+                // monotonically, so decoding + typing every archived run of
+                // every deleted task regardless of `--limit` cost seconds of
+                // CPU at full stores; the global truncate below discarded
+                // the work anyway. The `truncated` marker stays truthful:
+                // it already only claims "older runs were not read" — now
+                // they are also not decoded.
+                // Sort (time, original index) newest-first; the index tiebreak
+                // keeps the selection deterministic for equal timestamps.
+                let mut newest_first = runs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, run)| (record_sort_key(run), index))
+                    .collect::<Vec<_>>();
+                newest_first.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+                let selected: Vec<&serde_json::Value> = newest_first
+                    .iter()
+                    .take(probe_limit)
+                    .map(|(_, index)| &runs[*index])
+                    .collect();
+                for run in selected {
                     // Archived runs get the same typed gate as the active
                     // lane (`AutomationRunRecord` decode through the shim),
                     // but a failure skips the record instead of failing the

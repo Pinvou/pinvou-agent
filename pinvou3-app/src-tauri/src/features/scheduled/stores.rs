@@ -387,6 +387,43 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     ///
     /// Extracted so [`Self::open`] and [`Self::reload`] cannot drift: the
     /// reload path exists precisely because a foreign process may have
+    /// Round-48 review: the CLI lane caps registry reads at
+    /// `SCHEDULED_REGISTRY_MAX_BYTES` (128 MiB — the pinvoy-cli `scheduled.rs`
+    /// twin of this constant) because the history archive grows monotonically
+    /// and an unbounded `read_to_string` on a runaway/corrupt archive is an
+    /// OOM hazard; the GUI poll re-reads on every stamp change and must honor
+    /// the same bound. An over-cap or unreadable file answers like any other
+    /// failed read (fail-open to the caller's existing degrade, never a
+    /// half-registry), matching the CLI's `scheduled_store_unreadable`
+    /// refusal on its write paths.
+    const REGISTRY_READ_MAX_BYTES: u64 = 128 * 1024 * 1024;
+
+    /// `read_to_string` under the registry read cap: a file at or over the
+    /// cap reads only the first byte past the allowance and is refused with
+    /// `InvalidData` (same classification an over-cap CLI read uses), so a
+    /// multi-gigabyte file can never buffer fully.
+    fn read_registry_capped(path: &Path) -> std::io::Result<String> {
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > Self::REGISTRY_READ_MAX_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "registry file {} is {} bytes, over the {}-byte read cap",
+                    path.display(),
+                    metadata.len(),
+                    Self::REGISTRY_READ_MAX_BYTES
+                ),
+            ));
+        }
+        use std::io::Read as _;
+        let file = std::fs::File::open(path)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        let mut capped = file.take(Self::REGISTRY_READ_MAX_BYTES);
+        capped.read_to_end(&mut bytes)?;
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+
     /// rewritten the file, so it must honour the same version, migration and
     /// quarantine rules the initial read applies.
     fn read_from_disk(
@@ -395,7 +432,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         had_seen_file: bool,
     ) -> DiskRead<T> {
         use std::sync::atomic::Ordering as AtomicOrdering;
-        match std::fs::read_to_string(path) {
+        match Self::read_registry_capped(path) {
             Ok(raw) => match serde_json::from_str::<T>(&raw) {
                 Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => {
                     quarantined_flag.store(false, AtomicOrdering::Release);
