@@ -1416,10 +1416,13 @@ fn diverged_candidate(
 /// boundary inside the model-visible block — an injection channel. Every
 /// CLI lane that writes user-authored text into a store the block renders
 /// (preferences, work-context, both timed stores) refuses such content
-/// before any state change. The GUI's own add path does not gate markers
-/// (pre-existing); the CLI refuses the injection vector on the scriptable
-/// lane. `memory pending never --reason` is deliberately NOT gated: the
-/// never store does not render into the block (render.rs reads
+/// before any state change — `add`, `update`, and (round-49 review) `pending
+/// confirm`, because the pending queue is fed by the GUI's own ungated add
+/// path: a candidate row can carry marker text that only the confirm would
+/// materialize into a rendered store. The GUI's own add path does not gate
+/// markers (pre-existing); the CLI refuses the injection vector on the
+/// scriptable lane. `memory pending never --reason` is deliberately NOT
+/// gated: the never store does not render into the block (render.rs reads
 /// preferences/work_context/current_focus/recent_activity/recent_work only).
 fn refuse_memory_block_marker(lane: &str, content: &str) -> Result<(), CliError> {
     if feature::contains_memory_block_marker(content) {
@@ -1429,6 +1432,32 @@ fn refuse_memory_block_marker(lane: &str, content: &str) -> Result<(), CliError>
         )));
     }
     Ok(())
+}
+
+/// Mirrors the feature layer's `clean_id` (`features/memory/util.rs`, not
+/// exported): the pending store normalizes every stored id through it and
+/// `confirm_pending_memory` resolves its argv id through it, so the confirm
+/// lane's pre-materialization gate must resolve the id the same way to
+/// cover exactly the row the confirm would act on — a raw `item.id == argv`
+/// match would miss a punctuated/padded id and let a marker-carrying row
+/// through ungated. The same mirror-the-pipeline discipline as
+/// [`expected_stored_text`]: if the upstream normalization changes, this
+/// replica must follow.
+fn clean_pending_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .chars()
+        .take(80)
+        .collect()
 }
 
 /// Adds a memory item through the same pipeline the GUI uses: enqueue the
@@ -2050,6 +2079,22 @@ fn pending(
     support::sandbox_home()?;
     let (human, value) = match action {
         PendingAction::Confirm => {
+            // Round-49 review: the confirm is a lane that writes
+            // user-authored text into a store the runtime block renders, and
+            // the candidate's content never passed the marker gate — the
+            // pending queue is fed by the GUI's ungated add path, so a
+            // pending row can carry marker text this command would
+            // materialize. Read the candidate back and refuse BEFORE
+            // `confirm_pending_memory` touches any state, mirroring the
+            // confirm's own id resolution ([`clean_pending_id`]) so the gate
+            // covers exactly the row the confirm would act on.
+            let candidate = feature::load_pending_memory()
+                .map_err(|error| feature_error("pending", error))?
+                .into_iter()
+                .find(|item| item.id == clean_pending_id(id));
+            if let Some(candidate) = candidate.as_ref() {
+                refuse_memory_block_marker("pending confirm", &candidate.content)?;
+            }
             let event = feature::confirm_pending_memory(id)
                 .map_err(|error| feature_error("pending", error))?
                 .ok_or_else(|| not_found(MemoryStore::Pending, id))?;
@@ -2209,30 +2254,33 @@ fn map_organize_error_detail(detail: &str) -> CliError {
 /// Cross-process single-flight lock for `memory organize` — see [`organize`]
 /// for why the feature layer's in-memory guard is not enough for two CLI
 /// processes. Same `$PINVOU3_HOME/locks` directory and same fd-lock primitive
-/// as `voice asr-install`'s install lock. The caller must keep the returned
-/// lock alive alongside its write guard.
+/// as `voice asr-install`'s install lock. The open goes through
+/// `support::open_family_lock_file` (round-49 review, the connectors/code.rs
+/// conversion wave): one copy of the directory-create and open code, plus the
+/// family permission posture — the file is created 0600 AND re-tightened to
+/// 0600 on EVERY open (best-effort, the chmod-on-every-append doctrine), so a
+/// lock file left at the umask default by an older build heals instead of
+/// staying readable by every local account that could then hold LOCK_EX and
+/// wedge organize behind this command's documented busy refusal. The caller
+/// must keep the returned lock alive alongside its write guard.
 fn organize_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     // `sandbox_home` already ran in `execute`, so the lock cannot land in a
     // cwd-relative directory.
-    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CliError::failed(format!(
-            "memory organize: cannot create {}: {error}",
-            dir.display()
-        ))
-    })?;
-    let path = dir.join("memory-organize.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!(
+    let file = match support::open_family_lock_file("memory-organize.lock") {
+        Ok(file) => file,
+        Err(support::FamilyLockError::CreateDir { dir, error }) => {
+            return Err(CliError::failed(format!(
+                "memory organize: cannot create {}: {error}",
+                dir.display()
+            )));
+        }
+        Err(support::FamilyLockError::Open { path, error }) => {
+            return Err(CliError::failed(format!(
                 "memory organize: cannot open {}: {error}",
                 path.display()
-            ))
-        })?;
+            )));
+        }
+    };
     Ok(fd_lock::RwLock::new(file))
 }
 
