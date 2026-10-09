@@ -1473,10 +1473,25 @@ fn collections_add_sources(
     // canonical path created a second document. A canonicalize failure here
     // is a vanish race (the metadata pre-flight passed on the same name):
     // keep the verbatim name and let the import's own walk report it.
-    let paths: Vec<PathBuf> = paths
-        .into_iter()
-        .map(|path| path.canonicalize().unwrap_or(path))
-        .collect();
+    // Round-48 review: when this second resolution lands somewhere OTHER
+    // than the path the credential gate checked (a symlink swap in the
+    // gate→enqueue window), re-run the sensitive-path gate on the resolved
+    // target — the gate is cheap and the whole point is that the ingested
+    // path is the policy-checked one. A vanishing path keeps the documented
+    // fallback (verbatim name; the import's own walk reports it).
+    let mut resolved_paths: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths {
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if resolved != path {
+            crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
+                CliError::failed(format!(
+                    "knowledge collections add-sources: refusing source path: {reason}"
+                ))
+            })?;
+        }
+        resolved_paths.push(resolved);
+    }
+    let paths = resolved_paths;
     // Disclosed residual (same sub-second race class the id-taking
     // `cancel_index_job` documents): a job a desktop app starts on this
     // collection between the pre-check above and `start_index` carries a
@@ -1705,7 +1720,12 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     // cancel hands the "latest" crown to any older `done_with_errors` /
     // `interrupted` job: the human line said "cancel signalled for job B"
     // while the JSON body carried A's state under A's jobId.
-    let state = named_job_state(&service, job_id, "cancel")?;
+    // Round-48 review: the cancel landed transactionally above; a transient
+    // read failure in this REPORT read must not turn into an exit-1 store
+    // error that never says the signal landed (the cancel is idempotent,
+    // but the first answer would mislead). Fold the report back to the
+    // pre-transition state already in hand.
+    let state = named_job_state(&service, job_id, "cancel").unwrap_or_else(|_| pre.clone());
     let header = if was_active {
         format!("index cancel signalled for job {job_id}")
     } else {
@@ -1789,15 +1809,17 @@ fn require_job_id(
 fn index_resume(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
     require_job_id(&service, job_id, "resume")?;
-    // Disclosed residual (the same sub-second race class the add-sources
-    // lane documents): a desktop app can start its own import between this
-    // pre-check and `resume_index`, and the store's guarded re-arm then runs
-    // both importers on one collection — the single-import invariant this
-    // CLI keeps everywhere else. The store guard still prevents re-arming a
-    // job that is not `interrupted`, and the invocation blocks on and
+    // Round-48 review: this comment used to disclose "the store's guarded
+    // re-arm then runs both importers on one collection" — but
+    // `refuse_fresh_foreign_running_import` (app-side `knowledge/mod.rs`,
+    // pinned by its tests and by the contract lane below) now refuses a
+    // fresh foreign RUNNING import with `knowledge_index_busy`, so the
+    // double-importer outcome is no longer reachable; the remaining
+    // disclosed window is only the job-id vs latest race class the
+    // add-sources lane documents. The store guard still prevents re-arming
+    // a job that is not `interrupted`, and the invocation blocks on and
     // reports `job_id`'s own state; rerunning after interrupting is the
-    // remedy (round-39 review: the window existed identically on the
-    // add-sources lane but was disclosed only there).
+    // remedy.
     index_state_result(service.resume_index(job_id.to_owned()))?;
     let final_state = wait_for_terminal_job(&service, job_id, "knowledge index resume")?;
     index_finished(&final_state, output)
@@ -1889,7 +1911,32 @@ fn wait_for_terminal_job(
     operation: &str,
 ) -> Result<IndexState, CliError> {
     let stall_bound = import_no_progress_timeout();
-    let mut last = named_job_state(service, job_id, "status")?;
+    // Round-48 review: the FIRST poll sits inside the same read-error
+    // tolerance as the loop below. It used to propagate immediately, so a
+    // transient store-busy at the one poll this command makes before its
+    // own import thread starts (the comment at the tolerance below grants
+    // that a sustained cross-process SQLite write burst can outrun the 5s
+    // busy_timeout) killed the command — reaping the very thread that was
+    // about to run the import and stranding the job flagged `running`, the
+    // exact shape the round-41 tolerance exists to prevent.
+    let mut last = {
+        const READ_ERROR_TOLERANCE: u32 = 10;
+        const READ_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+        let mut attempt = 0;
+        loop {
+            match named_job_state(service, job_id, "status") {
+                Ok(state) => break state,
+                Err(error) if attempt < READ_ERROR_TOLERANCE => {
+                    attempt += 1;
+                    eprintln!(
+                        "knowledge {operation}: status read failed ({error}); retry {attempt}/{READ_ERROR_TOLERANCE}"
+                    );
+                    std::thread::sleep(READ_ERROR_BACKOFF);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    };
     // Consecutive failed status polls; reset on every good poll (round-41
     // review, see the poll tail below).
     let mut read_errors: u32 = 0;
