@@ -286,6 +286,7 @@ export const dictEn = {
         modelPresetDeepseek: 'DeepSeek',
         modelPresetKimi: 'Kimi',
         modelPresetOpenaiCompatible: 'OpenAI Compatible',
+        modelPresetOpenaiResponses: 'OpenAI Responses Compatible',
         modelPresetOpenai: 'OpenAI',
         modelPresetAnthropic: 'Anthropic Claude',
         modelPresetGemini: 'Google Gemini',
@@ -775,6 +776,7 @@ dictEn.uiKnowledge = {
 
 Object.assign(dictEn.uiConversation, {
   callingTool: name => `Calling ${name}`,
+  copyCode: 'Copy code',
   inputPlaceholder: 'Enter a value',
   otherAnswer: 'Other',
   otherPlaceholder: 'Other',
@@ -1069,6 +1071,7 @@ Object.assign(dictEn.uiSettingsDetail, {
     siliconflow:{title:'SiliconFlow China',configTitle:'SiliconFlow',desc:'Official SiliconFlow China API'},
     siliconflow_global:{title:'SiliconFlow Global',configTitle:'SiliconFlow Global',desc:'SiliconFlow international API (keys are region-locked)'},
     openai_compatible:{title:'OpenAI Compatible',desc:'Custom OpenAI-compatible endpoint'},
+    openai_responses:{title:'OpenAI Responses Compatible',desc:'Custom OpenAI Responses-compatible endpoint'},
   },
   imageCapability:'Image input', imageCapabilityEnabled:'Supports images', imageCapabilityDisabled:'No image support', imageCapabilityPinvou:'Handled automatically',
   visionModel:'Vision model', visionModelNone:'None', visionModelDesc:'Used to analyze images when the current model cannot see them',
@@ -1129,9 +1132,9 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '正式旗舰，夜间 22:00-08:00 四折（个人版）':'GA flagship, 40% credit cost 22:00-08:00 (personal plan)',
   '轻量兼容款，支持图像输入':'Lightweight compatibility option, image input',
   '最新推荐，统一模型 ID 自动升级':'Latest recommended, auto-updating under one Model ID', '低成本低时延，效果比肩 2-1-pro':'Low cost, low latency, near 2-1-pro quality',
-  '编程特化（预览），官方即将下线':'Coding-specialized (preview); retiring soon per official docs', '稳定通用，官方即将下线':'Stable general-purpose model; retiring soon per official docs', '最强旗舰；仅 Responses 协议支持函数调用':'Strongest flagship; function calling only via Responses API',
-  '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用':'New coding/agent flagship; Chat wire function calling only at effort=none',
-  '低价高效；Chat 协议仅 effort=none 支持函数调用':'Low-cost and efficient; Chat wire function calling only at effort=none',
+  '编程特化（预览），官方即将下线':'Coding-specialized (preview); retiring soon per official docs', '稳定通用，官方即将下线':'Stable general-purpose model; retiring soon per official docs', '最强旗舰':'Strongest flagship',
+  '编码与 Agent 新旗舰（默认）':'New coding/agent flagship (default)',
+  '低价高效':'Low-cost and efficient',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 family flagship, reasoning and coding',
   '最强旗舰，高难推理与长程 Agent':'Strongest flagship, hard reasoning and long-running agents',
   '官方默认推荐，复杂 Agent 编码':'Official default recommendation, complex agentic coding',
@@ -1151,7 +1154,7 @@ dictEn.uiSettingsDetail.modelAliasPlaceholder = 'Optional, e.g. Daily assistant'
 
 dictEn.uiSettingsDetail.customModelTitles = {
   glm:'Custom GLM model', qwen:'Custom Qwen model',
-  openai_compatible:'Custom compatible model', glm_coding_plan:'Custom GLM Coding Plan model',
+  openai_compatible:'Custom compatible model', openai_responses:'Custom Responses model', glm_coding_plan:'Custom GLM Coding Plan model',
   tencent_coding_plan:'Custom Tencent Cloud Coding Plan model', tencent_token_plan:'Custom Tencent Cloud Token Plan model', kimi_coding_plan:'Custom Kimi Coding Plan model',
   volcengine_coding_plan:'Custom Volcengine Ark Coding Plan model', qwen_coding_plan:'Custom Qwen Coding Plan model',
   openrouter:'Custom OpenRouter model', siliconflow:'Custom SiliconFlow model', siliconflow_global:'Custom SiliconFlow model',

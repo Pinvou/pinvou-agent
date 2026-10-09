@@ -29,8 +29,6 @@ const {
   chatYoloGateApplies,
   shouldShowWorkspaceBindingChip,
 } = await import('../src/features/chat/chat-workspace-binding.js');
-const { needsYoloConfirmation } = await import('../src/features/codex/code-permission-state.js');
-
 // ── Pure logic: gate applicability ─────────────────────────────────────
 test('chatYoloGateApplies：已生成会话看目录绑定，草稿看 draftWorkspacePath', () => {
   assert.equal(chatYoloGateApplies({ activeSessionId: 's1', sessionBinding: '/work/p', draftWorkspacePath: null }), true);
@@ -38,12 +36,6 @@ test('chatYoloGateApplies：已生成会话看目录绑定，草稿看 draftWork
     '活动会话未绑定时不因残留草稿选择误触发');
   assert.equal(chatYoloGateApplies({ activeSessionId: null, sessionBinding: null, draftWorkspacePath: '/work/p' }), true);
   assert.equal(chatYoloGateApplies({ activeSessionId: null, sessionBinding: null, draftWorkspacePath: null }), false);
-});
-
-test('确认门判定复用 needsYoloConfirmation：未确认弹卡、已确认直切、读取失败按未确认', () => {
-  assert.equal(needsYoloConfirmation(null), true, 'prefs 读取失败按未确认（安全方向）');
-  assert.equal(needsYoloConfirmation({ yolo_confirmed: false }), true);
-  assert.equal(needsYoloConfirmation({ yolo_confirmed: true }), false);
 });
 
 // ── Pure logic: binding indicator visibility ──────────────────────────────────

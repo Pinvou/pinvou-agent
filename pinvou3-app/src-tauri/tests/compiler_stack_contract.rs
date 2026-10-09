@@ -1,10 +1,12 @@
-//! 契约:编译器栈覆盖不得泄漏到运行时进程。
+//! Contract: the compiler stack override must not leak into runtime processes.
 //!
-//! 背景:macOS 构建 SIGBUS 的规避通过 `RUSTC_WRAPPER` 环境变量注入
-//! `scripts/rustc-stack-wrapper`(正式 Cargo 入口按平台注入,见 run-dev.sh
-//! 与 CI job env),把 `RUST_MIN_STACK=16MiB` 只注入到编译期 rustc 进程。
-//! cargo test / cargo run 启动的目标进程不经过 wrapper,不得继承该变量,
-//! 默认线程栈语义(约 2 MiB)不变。
+//! Background: the macOS build SIGBUS workaround injects
+//! `scripts/rustc-stack-wrapper` through the `RUSTC_WRAPPER` environment
+//! variable (set per platform by the official Cargo entry points: build.js,
+//! run-dev.sh and the CI job env), which applies `RUST_MIN_STACK=16MiB` only to
+//! compile-time rustc processes. Target processes started by cargo test /
+//! cargo run do not go through the wrapper, must not inherit the variable, and
+//! keep the default thread stack semantics (about 2 MiB).
 //!
 //! 若本测试失败,说明有人在运行时环境里设置了 `RUST_MIN_STACK`
 //! (或改回了 `.cargo/config.toml [env]` 注入方案),需要修回 wrapper

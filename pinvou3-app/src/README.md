@@ -30,9 +30,11 @@ npm test
 - `npm test`：运行无需浏览器和外部服务的确定性测试，并校验桌宠资源。
 - `npm run test:node`：只运行 Node 测试；`tests/*.test.js` 和
   `tests/*.test.mjs` 会由 Node 测试运行器自动发现，并以固定 4 并发执行，无需再修改测试清单。
-- `npm run test:browser-smoke`：运行完整浏览器 smoke 集合；本地需提供
+- `npm run test:browser-smoke`：运行完整浏览器 smoke 集合；每个失败的 smoke 会自动
+  重试一次（退出码 2 的依赖跳过不重试）。本地需提供
   `CHROME`，并先在 `pinvou3-app/` 和 `remote-control-relay/` 分别执行 `npm ci`。
-  CI 在 Ready PR 中按改动选择 smoke，在 Merge Queue 中运行完整集合。
+  CI 的 Ready PR 与 Merge Queue 步骤都按改动 diff 选择 smoke，经由同一 runner
+  （`scripts/run-frontend-smokes.mjs`）执行；共享、未知或空 diff 回退到完整集合。
 - `npm run test:user-journey`：运行跨前端、Relay 和 MCP 的用户旅程检查。
 
 新增确定性测试统一命名为 `*.test.js` 或 `*.test.mjs`。需要浏览器的测试统一命名为

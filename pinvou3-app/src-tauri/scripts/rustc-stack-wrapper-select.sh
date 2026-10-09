@@ -14,8 +14,10 @@
 #     命令行上限限制(大型 crate 的 rustc 命令行超限),故 Windows 用
 #     .exe 版(经 CreateProcess 直启,上限 32767 字符)。
 #
-# 本脚本是"平台选择"的单一真相源:run-dev.sh 与 CI smoke
-# (rustc-wrapper-smoke.yml)都执行它,保证正式入口与实际验证一致。
+# Shell entry points use this script for platform selection: run-dev.sh and
+# the CI smoke (rustc-wrapper-smoke.yml) both execute it. Running npm/Tauri
+# directly from PowerShell does not depend on bash; scripts/tauri/build.js
+# builds the Windows .exe wrapper natively from the same source instead.
 # 输出空时调用方不得设置 RUSTC_WRAPPER。
 #
 # 注意:Windows 分支用 cygpath -m 把 MSYS 风格路径(/c/...)转成 Windows
@@ -38,10 +40,31 @@ case "$(uname -s)" in
       # 在 rustc 参数位不可靠。
       # 编译失败即报错终止:Windows 栈溢出已实证,静默退回"不注入"会把 wrapper
       # 构建失败重新表现为难诊断的 rustc 栈溢出。
-      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$exe")"; then
+      # Same atomic replace as scripts/tauri/build.js: write a unique temp
+      # file first, then rename it into place. An interrupted compile must
+      # never leave a half-written exe that the next run's mtime cache
+      # would reuse forever.
+      tmp_exe="$exe.$$.$RANDOM.tmp"
+      # MSVC rustc -O links with /DEBUG: it also writes a same-named .pdb
+      # next to the temp exe (temp name with .tmp replaced by .pdb), which
+      # must be cleaned up together with the temp exe.
+      if ! rustc -O "$(cygpath -m "$src")" -o "$(cygpath -m "$tmp_exe")"; then
+        rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
         echo "rustc-stack-wrapper-select: 编译 .exe wrapper 失败,无法注入 16 MiB 栈;请检查 rustc 工具链与 wrapper 源码" >&2
         exit 1
       fi
+      # A failed rename must fail loudly (Windows locks the target while a
+      # concurrent build is executing the old exe): this script has no
+      # set -e, so a silent exit 0 would let run-dev.sh export a wrapper
+      # path that does not exist, or keep reusing the stale cache while the
+      # old exe survives, reintroducing the half-written exe problem this
+      # branch guards against.
+      if ! mv -f "$tmp_exe" "$exe"; then
+        rm -f "$tmp_exe" "${tmp_exe%.tmp}.pdb"
+        echo "rustc-stack-wrapper-select: cannot replace the .exe wrapper (target locked by a concurrent build?); stop the concurrent build and retry" >&2
+        exit 1
+      fi
+      rm -f "${tmp_exe%.tmp}.pdb"
     fi
     cygpath -m "$exe"
     ;;

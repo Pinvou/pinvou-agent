@@ -12,7 +12,6 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -97,9 +96,9 @@ fn bundled_engine_dir() -> Option<PathBuf> {
 }
 
 pub fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
-        .arg("-version")
-        .output()
+    let mut probe = crate::platform::process::HiddenCommand::new("ffmpeg");
+    probe.arg("-version");
+    crate::platform::process::output_with_timeout(probe, std::time::Duration::from_secs(10))
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -353,14 +352,23 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     }
 
     // 浏览器录音多为 48k/立体声，sense-voice 只吃 16k mono，先转码。
+    // Corrupted input can hang the demuxer: bound the transcode with a 60s
+    // timeout + kill-tree (the same fallback the files/ converters such as
+    // pdftotext get); on failure, fall back to the original wav.
     let norm = std::env::temp_dir().join(format!("pinvou3-asr-{}.wav", std::process::id()));
     let input = if ffmpeg_available() {
-        let ff = Command::new("ffmpeg")
-            .args(["-y", "-i"])
-            .arg(wav)
-            .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
-            .arg(&norm)
-            .output();
+        let ff = crate::platform::process::output_with_timeout_and_kill_tree(
+            {
+                let mut command = crate::platform::process::HiddenCommand::new("ffmpeg");
+                command
+                    .args(["-y", "-i"])
+                    .arg(wav)
+                    .args(["-ar", "16000", "-ac", "1", "-f", "wav"])
+                    .arg(&norm);
+                command
+            },
+            std::time::Duration::from_secs(60),
+        );
         match ff {
             Ok(o)
                 if o.status.success() && norm.metadata().map(|m| m.len() > 44).unwrap_or(false) =>
@@ -379,13 +387,23 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     // 钉死 CWD 到可写的 asr_dir,让这个副产物落在那里、不污染源码树。
     let work_dir = asr_dir();
     let _ = std::fs::create_dir_all(&work_dir);
-    let out = Command::new(&engine)
-        .current_dir(&work_dir)
-        .arg("-m")
-        .arg(&model)
-        .arg(&input)
-        .args(["-t", "4", "-l", "auto", "-itn"])
-        .output();
+    // Transcription is a long-running task (long recordings can take
+    // minutes), so allow a generous 300s: the timeout kill-tree keeps a
+    // wedged engine from blocking the calling thread forever, rather than
+    // cutting a legitimate transcription short.
+    let out = crate::platform::process::output_with_timeout_and_kill_tree(
+        {
+            let mut command = crate::platform::process::HiddenCommand::new(&engine);
+            command
+                .current_dir(&work_dir)
+                .arg("-m")
+                .arg(&model)
+                .arg(&input)
+                .args(["-t", "4", "-l", "auto", "-itn"]);
+            command
+        },
+        std::time::Duration::from_secs(300),
+    );
     let _ = std::fs::remove_file(&norm);
     let out = out.map_err(|e| format!("启动语音识别引擎失败: {e}"))?;
     if !out.status.success() {

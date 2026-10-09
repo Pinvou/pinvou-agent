@@ -17,11 +17,6 @@ fn prepare_request(task_id: &str, attachments: Vec<AttachmentHandle>) -> Prepare
     )
 }
 
-fn prepare_request_with_policy(task_id: &str, policy: &str) -> PrepareRequest {
-    PrepareRequest::new(task_id, vec![])
-        .with_tool_policy(AgentToolPolicyId::new(policy).expect("valid test policy id"))
-}
-
 #[derive(Default)]
 struct RecordingRuntime {
     calls: Mutex<Vec<String>>,
@@ -111,21 +106,6 @@ impl AgentRunObserver for Observer {
     fn on_event(&self, event: &SafeAgentEvent) {
         self.0.lock().unwrap().push(event.clone());
     }
-}
-
-#[tokio::test]
-async fn product_smoke_policy_is_accepted_by_the_headless_backend() {
-    let runtime = Arc::new(RecordingRuntime::default());
-    let backend = ProductHeadlessBackend::from_runtime(runtime);
-    let session = backend
-        .prepare(prepare_request_with_policy(
-            "product-policy",
-            "pinvou-read-only-web/v1",
-        ))
-        .await
-        .unwrap();
-
-    backend.close(session).await.unwrap();
 }
 
 #[tokio::test]

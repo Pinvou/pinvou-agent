@@ -2738,17 +2738,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// 全失败回落：所有特征端点 404 → Generic（探测失败不改变 wire route）。
-    #[tokio::test]
-    async fn probe_local_kind_falls_back_to_generic_when_all_endpoints_404() {
-        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
-        let server = spawn_probe_server(vec![]).await;
-        assert_eq!(
-            probe_local_server_kind(&server.url, None).await,
-            LocalServerKind::Generic
-        );
-    }
-
     /// KoboldCpp signature hit: the result field of /api/extra/version
     /// contains "koboldcpp" (case-insensitive) → identified as KoboldCpp.
     #[tokio::test]

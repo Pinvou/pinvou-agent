@@ -78,10 +78,10 @@ const browserWrapper = read(
   'browser-wrapper.mjs',
 );
 const main = read('src', 'app', 'main.jsx');
-const normalMacBuildEntrypoints = [
+const nativeBuildEntrypoints = [
   read('package.json'),
   read('scripts', 'tauri', 'build.js'),
-  readRepo('.github', 'workflows', 'mac-build.yml'),
+  readRepo('.github', 'workflows', 'pr-check.yml'),
   readRepo('.github', 'workflows', 'release-packages.yml'),
   readRepo('scripts', 'release-macos.sh'),
 ].join('\n');
@@ -636,7 +636,7 @@ test('macOS browser release is atomic and ships in normal builds', () => {
   assert.match(main, /\{browserDockAvailable && browserPaneOpen/);
   assert.doesNotMatch(main, /navigator\.userAgent|target_os|browser-macos-preview/);
   assert.doesNotMatch(
-    normalMacBuildEntrypoints,
+    nativeBuildEntrypoints,
     /browser-macos-preview/,
     'the removed preview feature must not reappear in normal build entrypoints',
   );

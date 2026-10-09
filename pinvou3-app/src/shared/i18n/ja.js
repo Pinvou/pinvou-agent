@@ -285,6 +285,7 @@ const jaBase = {
         modelPresetDeepseek: 'DeepSeek',
         modelPresetKimi: 'Kimi',
         modelPresetOpenaiCompatible: 'OpenAI 互換',
+        modelPresetOpenaiResponses: 'OpenAI Responses 互換',
         modelPresetOpenai: 'OpenAI',
         modelPresetAnthropic: 'Anthropic Claude',
         modelPresetGemini: 'Google Gemini',
@@ -776,6 +777,7 @@ dictJa.uiKnowledge = {
 
 Object.assign(dictJa.uiConversation, {
   callingTool: name => `${name} を呼び出し中`,
+  copyCode: 'コードをコピー',
   inputPlaceholder: '入力してください',
   otherAnswer: 'その他',
   otherPlaceholder: 'その他',
@@ -1070,6 +1072,7 @@ Object.assign(dictJa.uiSettingsDetail, {
     siliconflow:{title:'SiliconFlow China',configTitle:'SiliconFlow',desc:'SiliconFlow 中国公式 API'},
     siliconflow_global:{title:'SiliconFlow Global',configTitle:'SiliconFlow Global',desc:'SiliconFlow 国際 API（キーは地域別）'},
     openai_compatible:{title:'OpenAI Compatible',desc:'カスタム OpenAI 互換エンドポイント'},
+    openai_responses:{title:'OpenAI Responses Compatible',desc:'カスタム OpenAI Responses 互換エンドポイント'},
   },
   imageCapability:'画像入力', imageCapabilityEnabled:'画像対応', imageCapabilityDisabled:'画像非対応', imageCapabilityPinvou:'自動処理',
   visionModel:'ビジョンモデル', visionModelNone:'なし', visionModelDesc:'現在のモデルが画像を扱えない場合、このモデルで画像を解析します',
@@ -1130,9 +1133,9 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '正式旗舰，夜间 22:00-08:00 四折（个人版）':'正式フラッグシップ、22:00-08:00 は通常の 40%（個人版）',
   '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応',
   '最新推荐，统一模型 ID 自动升级':'最新の推奨モデル、統一モデル ID で自動更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
-  '编程特化（预览），官方即将下线':'コーディング特化（プレビュー）。公式によりまもなく提供終了予定', '稳定通用，官方即将下线':'安定した汎用モデル。公式によりまもなく提供終了予定', '最强旗舰；仅 Responses 协议支持函数调用':'最強フラッグシップ。関数呼び出しは Responses API のみ',
-  '编码与 Agent 新旗舰；Chat 协议仅 effort=none 支持函数调用':'コーディング/ Agent の新フラッグシップ。Chat プロトコルの関数呼び出しは effort=none のみ',
-  '低价高效；Chat 协议仅 effort=none 支持函数调用':'低価格かつ高速。Chat プロトコルの関数呼び出しは effort=none のみ',
+  '编程特化（预览），官方即将下线':'コーディング特化（プレビュー）。公式によりまもなく提供終了予定', '稳定通用，官方即将下线':'安定した汎用モデル。公式によりまもなく提供終了予定', '最强旗舰':'最強フラッグシップ',
+  '编码与 Agent 新旗舰（默认）':'コーディング/ Agent の新フラッグシップ（デフォルト）',
+  '低价高效':'低価格かつ高速',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 ファミリーのフラッグシップ、推論とコーディング',
   '最强旗舰，高难推理与长程 Agent':'最強フラッグシップ、高難度推論と長時間エージェント',
   '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '官方默认推荐，复杂 Agent 编码':'公式のデフォルト推奨、複雑なエージェントコーディング',
@@ -1151,7 +1154,7 @@ dictJa.uiSettingsDetail.modelAliasPlaceholder = '任意（例：日常アシス�
 
 dictJa.uiSettingsDetail.customModelTitles = {
   glm:'カスタム GLM モデル', qwen:'カスタム Qwen モデル',
-  openai_compatible:'カスタム互換モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
+  openai_compatible:'カスタム互換モデル', openai_responses:'カスタム Responses モデル', glm_coding_plan:'カスタム GLM Coding Plan モデル',
   tencent_coding_plan:'カスタム Tencent Cloud Coding Plan モデル', tencent_token_plan:'カスタム Tencent Cloud Token Plan モデル', kimi_coding_plan:'カスタム Kimi Coding Plan モデル',
   volcengine_coding_plan:'カスタム Volcengine Ark Coding Plan モデル', qwen_coding_plan:'カスタム Qwen Coding Plan モデル',
   openrouter:'カスタム OpenRouter モデル', siliconflow:'カスタム SiliconFlow モデル', siliconflow_global:'カスタム SiliconFlow モデル',

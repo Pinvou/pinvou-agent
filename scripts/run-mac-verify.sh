@@ -1,6 +1,8 @@
 #!/bin/bash
 # Mac dev 验证脚本：编译 + 单测 + brew 依赖 + connector CLI 探测 + macOS bundle/plist 校验。
-# 不做 GUI 端到端(需手动)。集成到 mac-build.yml CI 末尾。
+# No GUI end-to-end (manual only). Integrated into pr-check's macos-rust-check
+# push leg (since 2026-10; the former standalone mac-build.yml was deleted and
+# folded into that job).
 #
 # 用法:
 #   ./scripts/run-mac-verify.sh                 # 完整跑
@@ -42,8 +44,9 @@ if [ "$SKIP_TEST" -eq 0 ]; then
     VERIFY_FAIL=1
   fi
 else
-  # --skip-test:上游 mac-build.yml 已跑 cargo check/test,这里不重复(省 ~10min)。
-  # 后续 step 3-7 用绝对路径,不依赖此处 cwd。
+  # --skip-test: upstream CI (the macos-rust-check full lib tests leg) already
+  # ran cargo test; do not repeat it here (saves ~10min). Steps 3-7 below use
+  # absolute paths and do not depend on this cwd.
   echo "=== 1/2. cargo check/test (skipped via --skip-test;上游 CI 已跑) ==="
 fi
 
@@ -158,13 +161,31 @@ if [ -z "$BID" ] || [ -z "$TID" ] || [ "$BID" != "$TID" ]; then
 fi
 
 echo "=== 7. universal 二进制双切片校验 (arm64 + x86_64) ==="
-# 产物由 npx tauri build --target universal-apple-darwin 产出(tauri 内部双切片 + lipo 合成,
-# 非 cargo target)。校验策略:产物存在时验两个切片齐全(核心硬失败);产物不存在只 warn ——
-# verify --skip-test 常在未打包场景跑(本地 dev / 非 main 分支),硬失败会挡住所有未构建
-# universal 的正常流程。main push 时 mac-build.yml 的 bundle smoke 产 universal 产物,
-# 本校验在 verify 步骤即时激活;非 main/未打包场景 warn-only。
-APP_BIN="$APP_SRC_TAURI/target/universal-apple-darwin/release/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
-if [ -f "$APP_BIN" ]; then
+# Artifacts come from npx tauri build --target universal-apple-darwin (tauri
+# slices and lipo-merges internally; not a cargo target). Check policy: when
+# the artifact exists, verify both slices are present (core, hard failure);
+# when it does not, warn only — verify --skip-test often runs in unbundled
+# scenarios (local dev / non-main branches), and a hard failure would block
+# every workflow that has not built the universal binary. On main pushes the
+# macos-rust-check bundle smoke produces the universal artifact and this
+# check activates immediately in the verify step; non-main / unbundled runs
+# stay warn-only. The artifact path is probed per profile: the CI bundle
+# smoke uses release-fast (-- --profile is forwarded to cargo, so the bundle
+# lands under target/<triple>/release-fast/bundle/), while a full local run
+# uses the default release. The 2026-10 audit found this check only accepted
+# the release/ path — CI smoke artifacts always missed it, so the core hard
+# check below had never actually activated since the mac-build era; accepting
+# both paths makes the smoke artifacts hit immediately.
+UNIVERSAL_BUNDLE_ROOT="$APP_SRC_TAURI/target/universal-apple-darwin"
+APP_BIN=""
+for profile_dir in release-fast release; do
+    candidate="$UNIVERSAL_BUNDLE_ROOT/$profile_dir/bundle/macos/pinvou3.app/Contents/MacOS/pinvou3-tauri"
+    if [ -f "$candidate" ]; then
+        APP_BIN="$candidate"
+        break
+    fi
+done
+if [ -n "$APP_BIN" ]; then
     APP_BUNDLE="${APP_BIN%/Contents/MacOS/pinvou3-tauri}"
     BUNDLED_INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
     if /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$BUNDLED_INFO_PLIST" >/dev/null 2>&1; then
@@ -202,7 +223,7 @@ if [ -f "$APP_BIN" ]; then
         VERIFY_FAIL=1
     fi
 else
-    echo "  ⚠ universal 产物未构建: $APP_BIN"
+    echo "  ⚠ universal artifact not built: $UNIVERSAL_BUNDLE_ROOT/{release-fast,release}/bundle/macos/pinvou3.app"
     echo "    (需 npx tauri build --target universal-apple-darwin;main push 时 CI bundle smoke 产出后此校验自动激活)"
 fi
 

@@ -97,6 +97,49 @@ push 或在 `main` 上执行的 `workflow_dispatch` 才能进入 `windows-releas
 生成有效合并配置和安装包资源清单。不要直接运行 `npx tauri build/bundle`。
 基础 Tauri 配置的构建/打包钩子会拒绝未经过包装器的调用。
 
+### Rust toolchain check (Windows)
+
+Before any Windows `tauri dev`, `build` or `bundle`, `build.js` runs
+`scripts/ci/ensure-rust-toolchain.ps1 -CheckOnly` against the build account's
+rustup. When the toolchain channel configured in `src-tauri/rust-toolchain.toml`
+(currently the floating `stable`) provides `cargo`, `rustc`, `clippy-driver`,
+`cargo-clippy`, `rustfmt`, `cargo-fmt` and a populated rust-std target
+libdir, it is reused read-only. Otherwise the build switches to an isolated
+`RUSTUP_HOME` (`pinvou3-app/.cache/rustup/<channel>-<host-triple>`, overridable
+with `PINVOU3_RUSTUP_HOME`) and repairs the toolchain there, trying a
+configured `RUSTUP_DIST_SERVER` first, then the rsproxy and USTC mirrors,
+and the official Rust source last, with a bounded timeout per install attempt
+and an overall repair budget (`-RepairTimeoutSeconds`, 1500 s by default).
+The mirror-first ordering serves the population #619 targets (machines where
+the official source stalls); set `RUSTUP_DIST_SERVER` to the official URL to
+get official-first with mirror fallback. Note the integrity model differs
+from #619's runtime downloads: those carry pinned SHA-256 sums, while rustup
+verifies components only against the channel manifest served by the same
+mirror, so mirror trust rests on HTTPS to the mirror operator. The script
+refuses to modify the account's shared `~/.rustup`, a filesystem root, any
+non-empty directory that lacks its `.pinvou3-managed-rustup` marker, or a run
+without an isolated `RUSTUP_HOME`. If a repair, reset, or the budget runs out,
+the error names the isolated `RUSTUP_HOME`, which is always safe to delete and
+re-run. The probes only check presence and health, so under the floating
+`stable` channel a reused isolated toolchain stays at the stable it was
+installed with until a probe fails or the home is deleted; account-home
+`rustup update` and CI installs do not refresh it. `npm run
+test:windows-rustup-repair`
+exercises this path natively on Windows, including the incomplete `-CheckOnly`
+classifications and a removed rust-std. While Tauri runs, `build.js` logs the
+CLI PID, phase and a heartbeat every minute.
+
+For every Windows `dev`, `build` and `bundle`, `build.js` also compiles (or
+reuses, while it is not older than its source) `src-tauri/scripts/rustc-stack-wrapper.exe`
+and passes it to the Tauri CLI through `RUSTC_WRAPPER`, so `npm run dev` from
+PowerShell gets the same 16 MiB compiler stack as `run-dev.sh` and CI without
+leaking `RUST_MIN_STACK` into the app. A recompilation writes a temporary
+output and renames it into place (the shell selector compiles the same way),
+so an interrupted build cannot poison the cache. An explicit caller
+`RUSTC_WRAPPER` is kept (the log states whether it is this stack wrapper or a
+foreign one such as sccache that forgoes the stack fix); a missing wrapper
+source or a failed compile stops the build.
+
 resolver 只负责验证、展开运行时并生成 `target/windows-runtime/runtime-descriptor.json`；
 `scripts/tauri/windows-installer.js` 只在目标包含 NSIS 时消费 descriptor 中的 VC Runtime。
 Codex Bridge 同样从 descriptor 取得已锁定 Node，不反向解析 Tauri 资源映射。

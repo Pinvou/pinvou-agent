@@ -33,6 +33,13 @@ import {
 } from '../conversation/ConversationTimeline.jsx';
 import { AuxQuoteSelection } from '../aux-chat/AuxQuoteSelection.jsx';
 import { shouldVirtualizeConversationTurns } from '../conversation/conversation-virtualization.js';
+import {
+  codeBlockCopyLabels,
+  copyCodeBlockFromButton,
+  ensureCodeCopyButtons,
+  findCodeCopyButton,
+  observeCodeCopyButtons,
+} from '../conversation/code-block-copy.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   conversationItemsForMode,
@@ -3989,6 +3996,21 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
       // 懒加载语言注册完成会 bump 版本号:legacy assistant 气泡由 item.text 现算
       // markdown(见下),订阅版本号让注册后本组件重渲染,历史消息恢复高亮。
       const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+      // 代码块一键复制:assistant 气泡经 dangerouslySetInnerHTML 注入,按钮只能在
+      // 提交后补挂。目标 div 在流式首帧(item.streaming && !item.html)时不渲染,
+      // ref 可能为 null,因此不设 deps:每次渲染后重跑,目标挂载后的下一次渲染即
+      // 接上;ensureCodeCopyButtons 幂等(流式/重渲染会整体替换内部 DOM,新块自动
+      // 补装)。观察器与 ensure 同 effect:innerHTML 可能在 effect 不再触发时被整体
+      // 替换(冷启动懒注册重提交等),MutationObserver 自愈补装;重渲染时清理函数先
+      // 断开旧观察器再重挂,卸载时断开。
+      useEffect(() => {
+        if (item.type !== 'assistant') return;
+        const target = assistantSelectionTargetRef.current;
+        if (!target) return;
+        const labels = codeBlockCopyLabels(t.uiConversation);
+        ensureCodeCopyButtons(target, labels);
+        return observeCodeCopyButtons(target, labels);
+      });
 
       if (item.type === 'artifact_card') return <ArtifactCard item={item} t={t} isLatest={isLatestArtifact} />;
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
@@ -4038,6 +4060,12 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant }) => {
                 ref={assistantSelectionTargetRef}
                 className={`msg-md text-[15px] leading-relaxed ${item.streaming ? 'streaming-cursor' : ''} ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}
                 onClick={(e) => {
+                  const copyButton = findCodeCopyButton(e.target);
+                  if (copyButton) {
+                    e.preventDefault();
+                    copyCodeBlockFromButton(copyButton, { labels: codeBlockCopyLabels(t.uiConversation) });
+                    return;
+                  }
                   // 聊天里的链接(如飞书授权 URL)点击 → 走系统浏览器,别导航主窗口/不可点。
                   const a = e.target && e.target.closest && e.target.closest('a[href]');
                   if (!a) return;

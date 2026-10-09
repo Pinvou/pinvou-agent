@@ -13,6 +13,10 @@ release/
 # (.exe 及 MSVC 链接生成的 .pdb 均不入库,避免本地 run-dev.sh 首次运行污染工作树)
 pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.pdb
+# Atomic-replace temp files from selector / build.js (left by compile processes killed with kill -9)
+pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe.*.tmp
+# MSVC rustc -O links with /DEBUG: a same-named .pdb is left next to the temp exe (also left by kill -9)
+pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe.*.pdb
 
 # Node / frontend
 # node_modules 不带尾斜杠:带尾斜杠只匹配目录,而 git 对 symlink 按 lstat 判定,

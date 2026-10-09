@@ -29,6 +29,13 @@ import {
   workspaceMarkdownResource,
 } from './conversation-model.js';
 import { AssistantMessageActions, AssistantMessageFooter } from './AssistantMessageActions.jsx';
+import {
+  codeBlockCopyLabels,
+  copyCodeBlockFromButton,
+  ensureCodeCopyButtons,
+  findCodeCopyButton,
+  observeCodeCopyButtons,
+} from './code-block-copy.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 import {
@@ -105,7 +112,8 @@ function localizedSemanticLabel(value, copy) {
   }[value] || value;
 }
 
-export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource, streaming = false }) {
+export function ConversationMarkdown({ text, className = '', onOpenExternal, onOpenResource, streaming = false, copy }) {
+  const c = conversationCopy(copy);
   // lazy language registration bumps the version when it completes; the version must stay in the useMemo deps
   // (syntax-highlighter.js contract), otherwise already-rendered code stays plain text after registration completes.
   const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
@@ -116,6 +124,17 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
   const renderText = useThrottledValue(text, STREAMING_MARKDOWN_THROTTLE_MS, streaming);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
   const html = useMemo(() => renderMarkdown(renderText), [renderText, syntaxVersion]);
+  const containerRef = useRef(null);
+  const copyLabels = useMemo(() => codeBlockCopyLabels(c), [c]);
+  // 渲染 HTML 经 dangerouslySetInnerHTML 注入,代码块复制按钮只能在提交后挂到 DOM;
+  // 流式期间 html 每次 throttle 都整体替换,ensureCodeCopyButtons 幂等补装新块。
+  // 但 innerHTML 可能在 effect 不重新触发的情况下被整体替换(冷启动语法高亮注册、
+  // Suspense/懒注册重提交等),仅靠 [html] 依赖会漏装,因此挂 MutationObserver 自愈:
+  // 容器内任何结构变化都幂等补装,卸载时断开。
+  useEffect(() => {
+    ensureCodeCopyButtons(containerRef.current, copyLabels);
+    return observeCodeCopyButtons(containerRef.current, copyLabels);
+  }, [html, copyLabels]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;
@@ -129,12 +148,22 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
       if (resource && onOpenResource) onOpenResource(resource);
     }
   };
+  const onClick = (event) => {
+    const copyButton = findCodeCopyButton(event.target);
+    if (copyButton) {
+      event.preventDefault();
+      copyCodeBlockFromButton(copyButton, { labels: copyLabels });
+      return;
+    }
+    openLink(event);
+  };
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: link-interception layer; the keyboard path is covered by the rendered <a>'s own focus
     // biome-ignore lint/a11y/noStaticElementInteractions: static rich-text container; onClick only intercepts links to open them externally
     <div
+      ref={containerRef}
       className={`codex-markdown conversation-markdown text-[15px] leading-7 ${className}`}
-      onClick={openLink}
+      onClick={onClick}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -782,10 +811,10 @@ function DefaultItem({
     // while text can still grow, render through the throttle; when it ends, the full text is replayed verbatim.
     return commentary
       ? <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'}
+          streaming={item.status === 'in_progress'} copy={copy}
           className="text-[13px] leading-6 text-gray-500 dark:text-gray-400" />
       : <ConversationMarkdown text={item.text} onOpenExternal={onOpenExternal} onOpenResource={onOpenResource}
-          streaming={item.status === 'in_progress'} />;
+          streaming={item.status === 'in_progress'} copy={copy} />;
   }
   return null;
 }
