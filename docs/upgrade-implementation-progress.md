@@ -11,7 +11,8 @@ client, service, physical platform certification or rollout readiness.
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
 | T03–T04 | Not completed | Platform/data scope, measured preparation budgets and trustworthy time evidence remain pending; follow the task graph |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; actual Keycloak realm acceptance remains pending |
-| T06–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
+| T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
+| T07–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -77,6 +78,40 @@ the deployment acceptance checks in the service's `docs/management.md` before
 relying on that realm. T05 does not implement T06's general executor, business
 publication/consumption, artifact downloads, production HA/RPO or signing custody.
 No total or cumulative download deadline has been introduced.
+
+T06 is committed and pushed in the separate UpdateServer repository as
+`0e0c85458013e5f0307b9871ebf438b71bc3a5b2` on
+`feat/t06-atomic-executor` (2026-10-10). The executor atomically reserves original
+business identities, persists encrypted minimal recovery projections and commits
+domain/result/audit/outbox write sets through a trusted owner interface. Current
+authority and complete read sets are checked again before final writes. SQL time,
+owner epochs, 30-second leases, ten-second renewals and the original two-minute
+owner deadline fence late work. Background recovery does not require client retry.
+Standard 24-hour response retention does not truncate owner-managed long-lived
+event, consume or synchronization ledgers. The production registry awaits those
+later owners; no sample command or generic HTTP dispatcher is exposed.
+
+Both independent reviewers passed the third frozen T06 review after the primary
+role repaired every finding. Initial Read/checkpoint and final transactions no
+longer contend with their own heartbeat; a legal renewal after a slow initial read
+preserves the original owner deadline. Standard replay checks its strict window
+again after current-authority and replay work. Unknown commit acknowledgements
+return no speculative result and recover through the original persisted identity.
+
+Independent real PostgreSQL 17.11 tests and Chrome management regressions passed.
+Evidence includes two real 22-second transaction regressions, a real ten-second
+heartbeat, natural lease expiry and a 30-second periodic recovery scan, an abrupt
+subprocess exit after checkpoint, all executor commit-ACK boundaries, partial-write
+rollback, concurrency, current denial, read-set changes, ciphertext tampering and
+restricted runtime privileges. The parent subprocess helper is intentionally
+skipped; the actual crash E2E runs it explicitly. Final Go vet/builds, module
+verification, pinned contract checks, formatting and diff checks passed.
+
+Serial independent reruns resolved a browser test-budget failure observed under
+concurrent local test load; these allowances do not limit product downloads.
+T06 does not certify later business workflows, an actual Keycloak OTP realm,
+production signing custody, PostgreSQL HA or acknowledged-state RPO=0. No race
+detector execution is claimed. Downloads retain no total or cumulative deadline.
 
 T03 still requires approved OS certification coverage, all-user/service data
 scope and finite preparation budgets. The product owner approved local health
