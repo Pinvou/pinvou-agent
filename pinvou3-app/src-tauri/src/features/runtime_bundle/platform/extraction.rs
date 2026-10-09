@@ -132,7 +132,14 @@ impl Pinvou3Bundle {
     {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
-        let current = std::fs::read_to_string(&version_file).unwrap_or_default();
+        // Round-26 MAJOR 3: through the hardened private-data read like the
+        // marker reads below. The raw `read_to_string` sat on the boot path:
+        // a planted FIFO at the version file blocked `open()` forever and
+        // wedged boot. Any refusal (or absence) degrades to the empty string,
+        // so the bundle re-extracts — the same fail-safe direction the
+        // `unwrap_or_default` had.
+        let current = crate::platform::filesystem::read_private_data_file(&version_file)
+            .unwrap_or_default();
         let bundle_changed = current.trim() != BUNDLE_VERSION;
 
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
@@ -1612,18 +1619,28 @@ impl Pinvou3Bundle {
     /// 内容比对写:目标已存在且逐字节一致时跳过写盘,返回是否实际写入。
     /// 调用方据此决定是否还要 chmod / 后续动作——避免每次启动无条件重写
     /// 上百 KB 的 immutable bundle 资源。
+    ///
+    /// Round-26 MAJOR 3: both legs go through the hardened private-data
+    /// primitives. The raw `fs::read` hung on a planted FIFO at the target,
+    /// and the raw `fs::write` FOLLOWED a planted symlink, clobbering the
+    /// link's victim with bundle content — the exact class the hardened
+    /// primitives refuse. An abnormal target now fails the extraction
+    /// loudly (absent stays "write").
     pub(super) fn write_if_changed(
         &self,
         path: &std::path::Path,
         contents: &str,
     ) -> std::io::Result<bool> {
-        if std::fs::read(path).is_ok_and(|existing| existing == contents.as_bytes()) {
-            return Ok(false);
+        match crate::platform::filesystem::read_private_data_file_bytes(path) {
+            Ok(existing) if existing == contents.as_bytes() => return Ok(false),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, contents)?;
+        crate::platform::filesystem::write_private_data_file(path, contents.as_bytes())?;
         Ok(true)
     }
 }
@@ -2367,5 +2384,55 @@ mod tests {
             source.matches(&helper).count() >= 1,
             "退役清理必须调用 scope 模块的单临界区 RMW 助手清理所有 scope 残留"
         );
+    }
+
+    /// Round-26 MAJOR 3: both legs of the compare-write go through the
+    /// hardened private-data primitives — a planted symlink at the target
+    /// must be refused (the raw `fs::write` used to follow the link and
+    /// clobber its victim with bundle content), and a planted FIFO must be
+    /// refused without hanging the boot thread. The FIFO leg runs in a
+    /// bounded worker so a regression to the raw read fails the test instead
+    /// of hanging the suite.
+    #[test]
+    #[cfg(unix)]
+    fn write_if_changed_refuses_planted_symlink_and_fifo_targets() {
+        let bundle = super::Pinvou3Bundle::paths();
+        let temp = tempfile::tempdir().unwrap();
+
+        // Symlink leg.
+        let victim = temp.path().join("victim.txt");
+        std::fs::write(&victim, b"do not clobber").unwrap();
+        let link = temp.path().join("link.txt");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let result = bundle.write_if_changed(&link, "bundle content");
+        assert!(
+            result.is_err(),
+            "a planted symlink target must be refused: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"do not clobber".to_vec(),
+            "the symlink victim must stay untouched"
+        );
+
+        // FIFO leg.
+        let fifo = temp.path().join("target.fifo");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let bundle_for_worker = super::Pinvou3Bundle::paths();
+        let worker = std::thread::spawn(move || {
+            let result = bundle_for_worker.write_if_changed(&fifo, "bundle content");
+            let _ = tx.send(result.is_err());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!(
+                "write_if_changed must refuse a planted FIFO without hanging (5s bound)"
+            )),
+            "a planted FIFO target must be refused"
+        );
+        worker.join().unwrap();
     }
 }
