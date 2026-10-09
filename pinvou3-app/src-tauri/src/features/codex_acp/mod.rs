@@ -3316,11 +3316,26 @@ impl AcpPool {
                 .await
                 .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
                 .with_context(|| format!("Provider 不存在: {provider_id}"))?;
-                self.agents
-                    .set_acp_config_value(session_id, "provider", &provider_id)?;
+                // Round-49 review: the session-index mutator polls the
+                // cross-process section lock and rewrites the whole
+                // session-agents.json — blocking worker, same as the fresh
+                // read above.
+                let agents = self.agents.clone();
+                let session_owned = session_id.to_string();
+                tokio::task::spawn_blocking(move || {
+                    agents.set_acp_config_value(&session_owned, "provider", &provider_id)
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
             }
             None => {
-                self.agents.clear_acp_config_value(session_id, "provider")?;
+                let agents = self.agents.clone();
+                let session_owned = session_id.to_string();
+                tokio::task::spawn_blocking(move || {
+                    agents.clear_acp_config_value(&session_owned, "provider")
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
             }
         }
         self.restart_agent_sessions(backend).await;
@@ -4152,13 +4167,26 @@ impl AcpPool {
             PROBE_SEQ.fetch_add(1, Ordering::Relaxed),
         );
         // 临时工作区：spawn 时自动创建独立目录，不污染真实项目。
-        self.agents
-            .set_acp_workspace(&probe_id, backend, CodexWorkspaceKind::Temporary, None)?;
+        // Round-49 review: the index mutator polls the cross-process section
+        // lock and rewrites the whole session-agents.json, so it runs on a
+        // blocking worker like the fresh reads.
+        let agents = self.agents.clone();
+        let probe_owned = probe_id.clone();
+        tokio::task::spawn_blocking(move || {
+            agents.set_acp_workspace(&probe_owned, backend, CodexWorkspaceKind::Temporary, None)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
         let result = self.session_info(&probe_id).await;
         // 无论成败都必须收口，不得留下运行中的探针进程或 store 残留记录；
         // 清理失败只告警，主结果（上报或原始错误）优先透传。
         self.evict(&probe_id).await;
-        if let Err(error) = self.agents.remove(&probe_id) {
+        let agents = self.agents.clone();
+        let probe_owned = probe_id.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || agents.remove(&probe_owned))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+        {
             eprintln!("[pinvou3-app] 清理模型探针会话记录失败（{probe_id}）: {error:#}");
         }
         let probe_dir = crate::platform::paths::sessions_root().join(&probe_id);
@@ -4899,12 +4927,23 @@ impl AcpPool {
         let models = codex_models(&config_options);
         let config_values = config_values_from_options(&config_options, &mode_state);
         let prompt_capabilities = initialized.agent_capabilities.prompt_capabilities.clone();
-        self.agents.set_acp_session(
-            pinvou_session_id,
-            acp_session_id.clone(),
-            current_model_id.clone(),
-            config_values,
-        )?;
+        // Round-49 review: the index mutator polls the cross-process section
+        // lock and rewrites the whole session-agents.json — blocking worker,
+        // matching the provider reads on this spawn path.
+        let agents = self.agents.clone();
+        let pinvou_session_owned = pinvou_session_id.to_string();
+        let acp_session_owned = acp_session_id.clone();
+        let current_model_owned = current_model_id.clone();
+        tokio::task::spawn_blocking(move || {
+            agents.set_acp_session(
+                &pinvou_session_owned,
+                acp_session_owned,
+                current_model_owned,
+                config_values,
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
         persist_acp_state(
             pinvou_session_id,
             json!({

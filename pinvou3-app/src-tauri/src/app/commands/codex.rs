@@ -786,12 +786,20 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
             return Err(format!("{error:#}"));
         }
     }
-    if let Err(error) = acp_pool.agents().set_acp_workspace(
-        &session.metadata.id,
-        backend,
-        kind,
-        project_workspace.clone(),
-    ) {
+    // Round-49 review: the index mutator polls the cross-process section
+    // lock (up to SECTION_LOCK_TIMEOUT) and rewrites the whole
+    // session-agents.json, so it joins on a blocking worker — the async
+    // runtime workers here also drive the engine session pumps.
+    let agents = acp_pool.agents().clone();
+    let bind_session_id = session.metadata.id.clone();
+    let bind_workspace = project_workspace.clone();
+    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+        agents.set_acp_workspace(&bind_session_id, backend, kind, bind_workspace)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session store task join failed: {error}"))
+    .and_then(|result| result)
+    {
         rollback_created_code_session(&session.metadata.id, &store, &acp_pool);
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));
     }
@@ -852,11 +860,19 @@ async fn create_code_native_session(
             metadata_workspace,
         )
         .map_err(|error| format!("create_codex_acp_session: {error:#}"))?;
-    if let Err(error) = acp_pool.agents().bind_code_native_session(
-        &session.metadata.id,
-        kind,
-        project_workspace.clone(),
-    ) {
+    // Round-49 review: same blocking-worker discipline as the ACP session
+    // creation above — the index mutator polls the cross-process section
+    // lock and rewrites the whole session-agents.json.
+    let agents = acp_pool.agents().clone();
+    let bind_session_id = session.metadata.id.clone();
+    let bind_workspace = project_workspace.clone();
+    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+        agents.bind_code_native_session(&bind_session_id, kind, bind_workspace)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("session store task join failed: {error}"))
+    .and_then(|result| result)
+    {
         rollback_created_code_session(&session.metadata.id, store, acp_pool);
         return Err(format!("保存原生代码会话标记失败: {error:#}"));
     }

@@ -103,18 +103,25 @@ for (const file of [CLAUDE, CODEX, KIMI, PROVIDERS_MOD]) {
   );
 }
 
-// 原子写（公共助手在 providers/mod.rs）+ 一次性备份 + 拒绝覆盖不可解析文件。
-// staging 名带 pid（跨进程写手不再互相 rename 半成品），仍以 fs::rename 收口。
+// 一次性备份 + 拒绝覆盖不可解析文件。
+// round-49 review: `persist_locked` 的正式写入路径是共享
+// `platform::filesystem::atomic_write`（唯一 pid+nanos staging + fsync）；
+// 旧的 `json.{}.tmp` 拼写只存在于已被替换的空转测试里，本 pin 改锚真实
+// 生产调用；模块内本地第二 helper 的 pid staging 由下一个 pin 锚定。
 assert.ok(
-  PROVIDERS_MOD.includes('json.{}.tmp') &&
-    PROVIDERS_MOD.includes('std::process::id()') &&
-    PROVIDERS_MOD.includes('fs::rename'),
-  '公共写入助手必须 pid 后缀 .tmp + fs::rename 原子替换'
+  PROVIDERS_MOD.includes('crate::platform::filesystem::atomic_write'),
+  'persist_locked 必须走共享 atomic_write（唯一 pid+nanos staging + fsync）'
 );
-// round-47 review: the module has a SECOND pid-staged helper — the shared
-// `atomic_write` stages `tmp.{pid}` (the pin above anchors only the
-// `json.{pid}.tmp` spelling used by `persist_locked`). If that helper's
-// staging name regressed to a fixed suffix, the pin above would still pass.
+assert.ok(
+  PROVIDERS_MOD.includes('std::process::id()') &&
+    PROVIDERS_MOD.includes('fs::rename'),
+  '本地写入助手必须 pid 后缀 staging + fs::rename 原子替换'
+);
+// round-47 review: the module has a SECOND pid-staged helper — the local
+// `atomic_write` stages `tmp.{pid}` (the pin above anchors the shared
+// `platform::filesystem::atomic_write` call in `persist_locked`; this one
+// anchors the local helper's spelling). If that helper's staging name
+// regressed to a fixed suffix, the pin below would still pass.
 assert.ok(
   PROVIDERS_MOD.includes("tmp.{}") &&
     PROVIDERS_MOD.includes('std::process::id()'),
