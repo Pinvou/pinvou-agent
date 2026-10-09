@@ -586,6 +586,15 @@ impl KnowledgeService {
         let panic_active = active.clone();
         let panic_job_id = job_id.clone();
         let panic_l1 = self.l1.clone();
+        // Automation hold (`PINVOU_KB_IMPORT_HOLD_FILE`): sampled HERE, on
+        // the spawning thread, not inside the worker below. A test keeps
+        // the variable set only until it has observed the row `running` —
+        // state `prepare_items` publishes from inside the worker — so the
+        // capture must be ordered before the worker exists: read after
+        // `prepare_items`, a descheduled worker could miss a variable the
+        // test had already removed and skip the park. Unset (all
+        // production paths) this is a no-op.
+        let import_hold = std::env::var_os("PINVOU_KB_IMPORT_HOLD_FILE").map(PathBuf::from);
         thread::spawn(move || {
             // 导入线程处理任意用户文件（PDF/Office/图片 OCR 等），底层解析可能 panic。
             // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
@@ -623,20 +632,18 @@ impl KnowledgeService {
                     imports.interrupt(&job_id);
                     infrastructure_error = true;
                 }
-                // Automation hold (`PINVOU_KB_IMPORT_HOLD_FILE`, read once
-                // per import thread): when set, the thread parks here —
+                // Automation hold (captured before this worker existed,
+                // see `launch_import`): when set, the thread parks here —
                 // after `prepare_items` promoted the row to `running`,
-                // before the first item is claimed — until the path exists.
-                // This gives contract tests a deterministic live-owner
-                // window: the CLI's running-job refusals can be asserted
-                // against an owner that is provably alive instead of
-                // racing a large import's completion. The wait is bounded
-                // so a crashed harness cannot wedge the thread forever,
-                // and an interrupt/cancel breaks the park like any other
-                // stop. Unset (all production paths) this is a no-op.
-                if let Some(hold) =
-                    std::env::var_os("PINVOU_KB_IMPORT_HOLD_FILE").map(PathBuf::from)
-                {
+                // before the first item is claimed — until the path
+                // exists. This gives contract tests a deterministic
+                // live-owner window: the CLI's running-job refusals can be
+                // asserted against an owner that is provably alive instead
+                // of racing a large import's completion. The wait is
+                // bounded so a crashed harness cannot wedge the thread
+                // forever, and an interrupt/cancel breaks the park like
+                // any other stop.
+                if let Some(hold) = import_hold {
                     let deadline = Instant::now() + Duration::from_secs(120);
                     while !hold.exists() {
                         if cancel.load(Ordering::Relaxed)
