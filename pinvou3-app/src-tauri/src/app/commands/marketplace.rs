@@ -579,16 +579,31 @@ pub async fn start_marketplace_tool_oauth_login(
     let server_name = mgr
         .oauth_remote_server_name(&tool_id)
         .ok_or_else(|| format!("工具 '{tool_id}' 未声明远程 MCP OAuth 登录"))?;
-    let mcp_path = crate::platform::paths::mcp_config_path();
-    let content =
-        std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
-    let config: deepseek_tui::mcp::McpConfig =
-        serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
-    let server = config
-        .servers
-        .get(&server_name)
-        .cloned()
-        .ok_or_else(|| format!("mcp.json 未找到服务 '{server_name}'"))?;
+    // Round-24 MAJOR 5: this read was a bare `read_to_string` on the Tokio
+    // worker — a planted FIFO at ~/.pinvou3/mcp.json blocks `open()` forever
+    // and pins the executor thread (the dialog is UI-retryable, so the pool
+    // can be exhausted). Route it through the hardened private-data read
+    // (refuses non-regular files fail-loud) and off the executor like every
+    // other blocking call in this file.
+    let server = {
+        let server_name = server_name.clone();
+        tokio::task::spawn_blocking(
+            move || -> Result<deepseek_tui::mcp::McpServerConfig, String> {
+                let mcp_path = crate::platform::paths::mcp_config_path();
+                let content = crate::platform::filesystem::read_private_data_file(&mcp_path)
+                    .map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+                let config: deepseek_tui::mcp::McpConfig = serde_json::from_str(&content)
+                    .map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
+                config
+                    .servers
+                    .get(&server_name)
+                    .cloned()
+                    .ok_or_else(|| format!("mcp.json 未找到服务 '{server_name}'"))
+            },
+        )
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))??
+    };
 
     let coordinator = marketplace_oauth_login_coordinator();
     let registration = coordinator.register(&tool_id, &request_id).await;
