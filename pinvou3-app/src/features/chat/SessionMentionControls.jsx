@@ -177,7 +177,12 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
  * (trilingual keys under uiSessionMessage).
  */
 export function SessionMessageCard({ sender, knownSessionIds, onOpenSession, copy }) {
-  if (!sender || (!sender.sessionId && !sender.title)) return null;
+  // Round-8 M4: the {sessionId:null, title:null} shape is REAL production
+  // input (an unattributed delivery — the server documents omitting
+  // from_session); the old guard returned null for exactly that shape and
+  // the message rendered as a plain first-party bubble with no untrusted
+  // framing. It now falls through to the static fromUnknown card below.
+  if (!sender) return null;
   const label = sender.title || sender.sessionId;
   const known = sender.sessionId && (!knownSessionIds || knownSessionIds.has(sender.sessionId));
   const base =
