@@ -1493,11 +1493,26 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // peer dies; the command already runs in spawn_blocking. Startup
         // sweep callers that already hold the lease go through
         // `uninstall_leased`.
-        let mut landing_lease = plugin_import::open_landing_lease(tool_id)
-            .map_err(|error| format!("open the landing lease for {tool_id}: {error}"))?;
+        // Round-22 review (the round-21 M2 residual): the lease file name is
+        // `<journal>/<id>.landing.lock`, derived from this id, and the lease
+        // opens BEFORE any other validation — `Path::join` lets an absolute
+        // id replace the journal base and a separator id escape it, planting
+        // an empty 0600 lock file outside the journal. Restore validates its
+        // id (`is_safe_skill_name`) and the import pipeline validates in
+        // `detect_components`; this was the last unguarded lease taker. The
+        // rejected subset is deliberately narrow (empty, path separators,
+        // Windows drive colon, NUL) so legit legacy ids pass, and the lease
+        // keys on the same stripped id the import pipeline uses, so the
+        // exclusion still pairs with the import it serializes against.
+        let lease_id = tool_id.strip_prefix("skill:").unwrap_or(tool_id);
+        if lease_id.is_empty() || lease_id.contains(&['/', '\\', ':', '\0'][..]) {
+            return Err(format!("invalid tool id '{tool_id}'"));
+        }
+        let mut landing_lease = plugin_import::open_landing_lease(lease_id)
+            .map_err(|error| format!("open the landing lease for {lease_id}: {error}"))?;
         let _landing_lease_guard = landing_lease
             .write()
-            .map_err(|error| format!("lock the landing lease for {tool_id}: {error}"))?;
+            .map_err(|error| format!("lock the landing lease for {lease_id}: {error}"))?;
         self.uninstall_leased(tool_id)
     }
 
@@ -4783,6 +4798,47 @@ mod tests {
                     .iter()
                     .any(|record| record.id == "weather-mock" && record.installed),
                 "the uninstall removed the record after the lease released"
+            );
+        });
+    }
+
+    /// Review round 22 (the round-21 M2 residual): the landing-lease file
+    /// name is derived from the raw IPC id, so a hostile id must be rejected
+    /// BEFORE the lease opens — `Path::join` lets "/tmp/x" replace the
+    /// journal base and "../../x" escape the home. The refusal is the
+    /// id-shape check (narrow hostile subset), no lease file may land
+    /// anywhere, and the error must not leak an open/lock failure for the
+    /// escaped path.
+    #[test]
+    fn uninstall_refuses_hostile_ids_before_the_landing_lease() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            for hostile in ["/tmp/x", "../../x", "a/b", "C:evil", "skill:a/b", ""] {
+                let error = mgr
+                    .uninstall(hostile)
+                    .err()
+                    .unwrap_or_else(|| panic!("'{hostile}' must be refused"));
+                assert!(
+                    error.contains("invalid tool id"),
+                    "the refusal must be the id-shape check: {error}"
+                );
+            }
+            let journal = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("import_journal");
+            assert!(
+                !journal.exists()
+                    || std::fs::read_dir(&journal)
+                        .expect("journal dir readable")
+                        .next()
+                        .is_none(),
+                "a refused id must not plant lease files in the journal"
+            );
+            assert!(
+                !crate::platform::paths::pinvou3_home()
+                    .join("x.landing.lock")
+                    .exists(),
+                "a traversal id must not escape the journal"
             );
         });
     }
