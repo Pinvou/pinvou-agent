@@ -415,8 +415,10 @@ fn ima_logout_sync_with_store<S: CredentialStore>(store: &S) -> Result<Value, St
     let client_result = store.delete(&client_id_ref());
     let api_key_result = store.delete(&api_key_ref());
     // Ordering disclosure (round-12 review B2): the credentials are deleted
-    // BEFORE the uninstall attempt — the same order main uses (a failed
-    // uninstall leaves the credentials deleted there too); a failed uninstall
+    // BEFORE the uninstall attempt — the same order the MCP tool lane's
+    // uninstall uses (a failed uninstall leaves the credentials deleted
+    // there too; the skill command lane keeps credentials entirely); a
+    // failed uninstall
     // leaves an on-disk skill without credentials (fail-closed direction).
     // A successful uninstall of the actually-installed skill clears its
     // leftover entries from every scope; the online-session composed catalogs
