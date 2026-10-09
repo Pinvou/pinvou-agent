@@ -833,9 +833,15 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             // Not ours (or a residue dir from a previous reconcile) — leave it.
             continue;
         };
-        if !is_safe_component_id(id) {
-            // A journaled id must always be safe (the import validated it);
-            // an unsafe name means the file is not a journal mark. Leave it.
+        if !super::skill_marketplace::is_safe_skill_name(&id) {
+            // A journaled id must always be safe — the import validated the
+            // fallback id with `is_safe_skill_name` (round-26 MAJOR 2: the
+            // reader used to gate on the stricter `is_safe_component_id`, so
+            // a legitimate mixed-case bare-skill id — frontmatter
+            // `name: MySkill` arriving through the wrapped-`.md` channel —
+            // wrote a mark this reconcile silently skipped forever, leaving
+            // its crash windows unrecovered). An unsafe name means the file
+            // is not a journal mark. Leave it.
             continue;
         }
         let lock = import_lock_for(id);
@@ -871,6 +877,33 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             }
         };
         let pkg_dir = crate::platform::paths::bundles_root().join(id);
+        // Round-26 MAJOR 1: a crash between the re-import's two renames (the
+        // pack dir already moved to `<id>.old`, the staged copy not yet
+        // renamed in) leaves exactly the shape the next arm handles — no pack
+        // dir, a staged `.tmp`, the pre-import copy in `<id>.old`, and the
+        // record still `installed`. Sweeping the `.tmp` and clearing the mark
+        // there used to converge that crash to "record installed, content
+        // gone, the only copy stranded in the scan-invisible `.old`, nothing
+        // ever revisits it, no log". Restore the backup in place first (the
+        // pipeline's own rollback arm does exactly this rename), then let the
+        // record arms below converge the rest: record present → the staged
+        // `.tmp` sweep + mark clear; record gone → the quarantine arm. A
+        // failed restore keeps the mark and retries next startup, the same
+        // contract as the sweep arms.
+        let backup = pkg_dir.with_extension("old");
+        if !pkg_dir.exists() && backup.exists() {
+            match rename_dir_with_retry(&backup, &pkg_dir) {
+                Ok(()) => log::warn!(
+                    "[plugin-import] import journal: restored the pre-import backup for '{id}' after a crash between the re-import renames"
+                ),
+                Err(e) => {
+                    log::warn!(
+                        "[plugin-import] import journal: restoring the re-import backup for '{id}' failed, keeping the mark for the next startup: {e}"
+                    );
+                    continue;
+                }
+            }
+        }
         if !pkg_dir.exists() {
             // The import never landed, or the in-process rollback already
             // undid it. The staged `bundles/<id>.tmp` (written after the
@@ -878,10 +911,11 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             // then: left alone it surfaces as a ghost uninstalled MCP card
             // through the available_tools walk, which — unlike every other
             // lens — has no `.tmp` exclusion. Sweep it (round-19 review);
-            // the pipeline's own error paths remove exactly this dir. The
-            // `.old` backup is deliberately left alone: it is the
-            // pre-import content of a reimport whose record may still be
-            // installed.
+            // the pipeline's own error paths remove exactly this dir. With
+            // the backup restore above, a `<id>.old` found here has already
+            // been moved back into place; a strand left by a FAILED
+            // in-process rollback (whose mark the guard cleared) is the
+            // disclosed residual in §3.2 — this arm must not guess at it.
             let staged = pkg_dir.with_extension("tmp");
             if staged.exists() {
                 // Round-24 minor (arm A gets the round-21 P3 treatment): a
@@ -958,6 +992,26 @@ pub fn reconcile_import_journal() -> Result<(), String> {
                             "import_journal:crash_residue_quarantined",
                             id,
                         );
+                        // Round-26 MAJOR 1 tail: with the backup restored
+                        // above, a re-import's staged `.tmp` can still sit
+                        // here (the record disappeared between the crash and
+                        // this reconcile — e.g. a concurrent uninstall).
+                        // Nothing else would ever delete it and
+                        // `available_tools` has no `.tmp` exclusion, so sweep
+                        // it like the other arms; a failed sweep keeps the
+                        // mark for the retry.
+                        let staged = pkg_dir.with_extension("tmp");
+                        if staged.exists() {
+                            if let Err(e) = std::fs::remove_dir_all(&staged) {
+                                log::warn!(
+                                    "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
+                                );
+                                continue;
+                            }
+                            log::warn!(
+                                "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}' (a re-import crashed mid-renames)"
+                            );
+                        }
                         clear_landing(id);
                     }
                     Err(e) => {
@@ -1934,6 +1988,192 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// Round-26 MAJOR 1: a crash between the re-import's two renames (pack
+    /// dir already in `<id>.old`, staged copy not yet renamed in, mark still
+    /// on file, record still installed) must converge: the reconcile restores
+    /// the pre-import backup in place, and the record-present arm then sweeps
+    /// the staged `.tmp` and clears the mark. Previously this converged to
+    /// "record installed, content gone, the only copy stranded in the
+    /// scan-invisible `.old`" with no log and no retry.
+    #[test]
+    fn reconcile_restores_the_reimport_backup_after_a_crash_between_the_renames() {
+        crate::platform::test_support::with_temp_home("pinvou-import-reold", || {
+            let pkg_dir = crate::platform::paths::bundles_root().join("re-old");
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+            let backup = pkg_dir.with_extension("old");
+            std::fs::rename(&pkg_dir, &backup).unwrap();
+            let staged = pkg_dir.with_extension("tmp");
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join("plugin.json"), r#"{"new":true}"#).unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
+                    "re-old",
+                    crate::features::marketplace::store::BundleSource::Upload(
+                        "re-old.zip".to_string(),
+                    ),
+                ))
+                .unwrap();
+            mark_landing("re-old");
+
+            reconcile_import_journal().unwrap();
+
+            assert!(
+                pkg_dir.join("plugin.json").is_file(),
+                "the pre-import backup must be restored in place"
+            );
+            assert!(
+                !backup.exists(),
+                "the restored backup must not remain as a strand"
+            );
+            assert!(
+                !staged.exists(),
+                "the never-landed staged copy is swept by the record-present arm"
+            );
+            assert!(
+                !landing_mark_path("re-old").exists(),
+                "the converged entry is cleared"
+            );
+        });
+    }
+
+    /// Round-26 MAJOR 1 tail: same fixture with the record gone (e.g. a
+    /// concurrent uninstall between the crash and this reconcile) — the
+    /// restored backup must still not stay live-by-absence: the record-absent
+    /// arm quarantines it, and the staged `.tmp` is swept with it.
+    #[test]
+    fn reconcile_restored_backup_quarantines_when_the_record_is_gone() {
+        crate::platform::test_support::with_temp_home("pinvou-import-reold2", || {
+            let pkg_dir = crate::platform::paths::bundles_root().join("re-old2");
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+            let backup = pkg_dir.with_extension("old");
+            std::fs::rename(&pkg_dir, &backup).unwrap();
+            let staged = pkg_dir.with_extension("tmp");
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join("plugin.json"), r#"{"new":true}"#).unwrap();
+            mark_landing("re-old2");
+
+            reconcile_import_journal().unwrap();
+
+            assert!(
+                !pkg_dir.exists(),
+                "a restored dir without a record must be quarantined out of bundles_root"
+            );
+            let moved: Vec<String> = std::fs::read_dir(landing_journal_dir())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("re-old2.crash-"))
+                .collect();
+            assert_eq!(
+                moved.len(),
+                1,
+                "the restored copy moves to exactly one recoverable holding dir: {moved:?}"
+            );
+            assert!(
+                landing_journal_dir()
+                    .join(&moved[0])
+                    .join("plugin.json")
+                    .is_file(),
+                "the holding dir keeps the restored pre-import content"
+            );
+            assert!(
+                !staged.exists(),
+                "the staged copy is swept with the quarantine"
+            );
+            assert!(
+                !landing_mark_path("re-old2").exists(),
+                "the resolved entry is cleared"
+            );
+        });
+    }
+
+    /// Round-26 MAJOR 1: a failed backup restore keeps the mark so the next
+    /// boot retries, instead of consuming the strand silently.
+    #[test]
+    #[cfg(unix)]
+    fn restore_failure_keeps_the_mark_and_retries() {
+        use std::os::unix::fs::PermissionsExt as _;
+        crate::platform::test_support::with_temp_home("pinvou-import-reold3", || {
+            let bundles = crate::platform::paths::bundles_root();
+            std::fs::create_dir_all(&bundles).unwrap();
+            let pkg_dir = bundles.join("re-old3");
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+            let backup = pkg_dir.with_extension("old");
+            std::fs::rename(&pkg_dir, &backup).unwrap();
+            mark_landing("re-old3");
+
+            // Read-only bundles_root: the restore rename fails (EACCES).
+            std::fs::set_permissions(&bundles, std::fs::Permissions::from_mode(0o555)).unwrap();
+            // Root probe (mode bits are no-ops for root): if the dir is still
+            // writable the fixture proves nothing — skip loudly.
+            if std::fs::create_dir(bundles.join(".probe")).is_ok() {
+                std::fs::set_permissions(&bundles, std::fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!(
+                    "ROOT-SKIP[restore_failure_keeps_the_mark_and_retries]: running as root - the read-only-dir fixture stays writable; NOT exercised"
+                );
+                return;
+            }
+
+            reconcile_import_journal().unwrap();
+
+            std::fs::set_permissions(&bundles, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(
+                !pkg_dir.exists(),
+                "the failed restore must not have half-landed the backup"
+            );
+            assert!(
+                backup.exists(),
+                "a failed restore must not consume the backup"
+            );
+            assert!(
+                landing_mark_path("re-old3").exists(),
+                "a failed restore keeps the mark so the next boot retries"
+            );
+        });
+    }
+
+    /// Round-26 MAJOR 2: the journal writer validates the fallback id with
+    /// `is_safe_skill_name` (mixed case allowed — frontmatter
+    /// `name: MySkill` arrives through the wrapped-`.md` channel), so the
+    /// reconcile reader must accept the same set. The stricter
+    /// `is_safe_component_id` gate used to strand these marks forever, with
+    /// the live-by-absence and ghost-`.tmp` windows unrecovered.
+    #[test]
+    fn reconcile_processes_mixed_case_journal_marks() {
+        crate::platform::test_support::with_temp_home("pinvou-import-mixed", || {
+            let pkg_dir = crate::platform::paths::bundles_root().join("MySkill");
+            std::fs::create_dir_all(&pkg_dir).unwrap();
+            std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+            mark_landing("MySkill");
+
+            reconcile_import_journal().unwrap();
+
+            assert!(
+                !pkg_dir.exists(),
+                "a mixed-case landed dir without a record must be quarantined, not skipped"
+            );
+            let moved: Vec<String> = std::fs::read_dir(landing_journal_dir())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("MySkill.crash-"))
+                .collect();
+            assert_eq!(
+                moved.len(),
+                1,
+                "the mixed-case residue moves to a recoverable holding dir: {moved:?}"
+            );
+            assert!(
+                !landing_mark_path("MySkill").exists(),
+                "the mixed-case mark must not strand"
+            );
+        });
+    }
+
     /// round-21 review (P3): every lease test held the lease as a FIXTURE —
     /// deleting the pipeline's own acquisition (`open_landing_lease` +
     /// blocking `write()` before the mark) broke no test, so the round-20
