@@ -1110,7 +1110,12 @@ impl Pinvou3Bundle {
         // 原子落盘复用 marketplace 的共享写方(write_json_pretty → write_atomic,
         // tmp+rename):裸写被崩溃打断会制造出启动维护防御的损坏文件本身。
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
-        if std::fs::read_to_string(&self.mcp_json).is_ok_and(|existing| existing == json) {
+        // Hardened read (round-24 minor): this in-lock compare must not hang
+        // on a planted FIFO — a refusal reads as "differs" and the locked
+        // atomic writer below takes over.
+        if crate::platform::filesystem::read_private_data_file(&self.mcp_json)
+            .is_ok_and(|existing| existing == json)
+        {
             return Ok(());
         }
         crate::features::marketplace::write_json_pretty(&self.mcp_json, &mcp)
@@ -1288,7 +1293,12 @@ impl Pinvou3Bundle {
         }
         // Report the most recent dynamic startup failure (for example, native-host or CDP
         // readiness) only while it remains fresh for 24 hours.
-        let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
+        // Hardened read (round-24 minor): the last-error file is private-home
+        // state; a planted FIFO must refuse fail-loud (read as "no report")
+        // instead of hanging the caller.
+        let Ok(raw) =
+            crate::platform::filesystem::read_private_data_file(&paths::browser_last_error_json())
+        else {
             return None;
         };
         let now = std::time::SystemTime::now()
@@ -1328,14 +1338,17 @@ impl Pinvou3Bundle {
         // `[]`). Fabricating an empty object would silently remove all marketplace tools
         // from this session and leave only Browser MCP; continuing with a non-object would
         // panic at `as_object_mut().unwrap()`. The fallback loses only browser tools and
-        // preserves the global behavior.
-        let mcp: serde_json::Value = match std::fs::read_to_string(&base)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        {
-            Some(v) if v.is_object() => v,
-            _ => return base,
-        };
+        // preserves the global behavior. The read itself is the hardened private-data read
+        // (round-24 minor): every spawned session reaches this path, so a planted FIFO at
+        // the global mcp.json must refuse fail-loud instead of hanging the spawn.
+        let mcp: serde_json::Value =
+            match crate::platform::filesystem::read_private_data_file(&base)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            {
+                Some(v) if v.is_object() => v,
+                _ => return base,
+            };
         let has_reserved_browser = mcp
             .get("servers")
             .and_then(serde_json::Value::as_object)
@@ -1384,8 +1397,11 @@ impl Pinvou3Bundle {
             Ok(json) => {
                 // Skip an unchanged file. Every spawned session reaches this path, including
                 // Code-mode sessions that later fall back to the global configuration, so
-                // atomically replacing identical content would be needless disk I/O.
-                if std::fs::read_to_string(&work_path)
+                // atomically replacing identical content would be needless disk I/O. The
+                // compare is the hardened read (round-24 minor): a planted FIFO at the work
+                // copy must refuse fail-loud instead of hanging the spawn; the atomic
+                // private write below then replaces it.
+                if crate::platform::filesystem::read_private_data_file(&work_path)
                     .map(|existing| existing == json)
                     .unwrap_or(false)
                 {
