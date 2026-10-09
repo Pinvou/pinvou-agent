@@ -1,4 +1,5 @@
 //! Cross-session messaging delivery (docs/builtin-toolset-contract.md §5 L1 / §6).
+// architecture-guard: allow-target-cfg -- the removal-streak test needs unix permission bits (std::os::unix::fs::PermissionsExt) to make the spool dir read-only; the attribute form is the only compiling gate for that import.
 //!
 //! The session-reader MCP server validates a `send_message_to_session` call and
 //! spools it to `<pinvou3 home>/messaging/spool/<name>.json` (see server.py's
@@ -1379,6 +1380,7 @@ mod spool_pipeline_tests {
     /// the streak must grow (the round-8 clear-before-attempt wiped it
     /// to 1, leaving the quarantine arm dead code).
     #[tokio::test]
+    #[cfg(unix)]
     async fn removal_failure_streak_grows_across_polls() {
         let _home = TempHome::new();
         let store = sessions_store();
