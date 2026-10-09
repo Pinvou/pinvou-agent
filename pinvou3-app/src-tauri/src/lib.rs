@@ -1233,11 +1233,12 @@ pub fn run() {
             // second chance to persist the frozen verdict before setup
             // continues — for the arms that consult no memo: the lost-store
             // recovery arm (deliberately memo-outranking) and the parse-tail
-            // legacy-migration leg. The fresh-verdict arm's MEMO hit returns
-            // without a persist attempt (round-21 review): its convergence is
-            // the next locked writer's save, or a restart re-evaluation (the
-            // registered crash-during-freeze family) — a failed boot freeze
-            // stays unlanded until then, which is fail-closed. The unbounded
+            // legacy-migration leg. The fresh-verdict arm's MEMO hit also
+            // re-attempts the persist on this fully locked re-read
+            // (scope.rs's memo-hit persist leg, the round-20/21 heal), so a
+            // freeze whose first-boot persist failed converges in-process on
+            // the next boot instead of waiting for a locked writer or a
+            // restart. The unbounded
             // flock wait here is the documented
             // fail-stop boot tradeoff (scope lock module doc). A persist
             // failure on THIS read mirrors onto the timeline like the
