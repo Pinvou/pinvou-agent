@@ -587,6 +587,17 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     Ok(card.summary())
 }
 
+/// Delete a user card (only `user-` cards) for a caller outside the desktop
+/// app, such as the headless CLI. Which sessions equip a card is in-memory
+/// state of the running app, so this cannot clear it; the app reconciles on
+/// its own: its readers reload the pool once the file is gone, and the chat
+/// path unequips a card that no longer exists before its next turn. In-app
+/// deletes go through `delete_user_persona_with`, which clears sessions
+/// synchronously.
+pub fn delete_user_persona(id: &str) -> Result<(), String> {
+    delete_user_persona_with(id, || ())
+}
+
 /// Delete a card and run cross-feature cleanup before another operation can
 /// publish a snapshot of that card.
 pub(crate) fn delete_user_persona_with<T>(
