@@ -495,10 +495,21 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// points at) and `O_NONBLOCK` (a planted FIFO must not block the `open`),
 /// and an fstat gate refuses anything that is not a regular file (a FIFO or
 /// device node would otherwise feed the reader forever — `/dev/zero` is an
-/// unbounded read). Unlike the lock file this is read-intent: no create, no
-/// mode tightening. Windows has no `O_NOFOLLOW` equivalent; the same
-/// documented residual applies (profile-directory ACL reliance, consistent
-/// with the rest of the application data tree).
+/// unbounded read) plus anything larger than
+/// [`MAX_PRIVATE_DATA_READ_BYTES`] (a planted huge REGULAR file is the same
+/// unbounded-allocation shape on hot per-turn paths; round-26 review).
+/// Unlike the lock file this is read-intent: no create, no mode tightening.
+///
+/// Cohort note (round-26 review): a state file that is itself a symlink —
+/// a dotfile manager pointing it at a synced store — previously read
+/// through the link and now refuses (`ELOOP`): `disabled_bundles.json`
+/// recovers fail-closed (all packs off), `mcp.json` reads as unparseable
+/// and boot keeps its writers off. Deliberate: the planted-link threat
+/// model cannot distinguish a hostile link from a managed one; roaming the
+/// state via symlinks should point `PINVOU3_HOME` at the real location
+/// instead. Windows has no `O_NOFOLLOW` equivalent; the same documented
+/// residual applies (profile-directory ACL reliance, consistent with the
+/// rest of the application data tree).
 pub(crate) fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -510,15 +521,34 @@ pub(crate) fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
     let file = options.open(path)?;
     #[cfg(unix)]
     {
-        if !file.metadata()?.is_file() {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{} is not a regular file", path.display()),
             ));
         }
+        if metadata.len() > MAX_PRIVATE_DATA_READ_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} exceeds the private-state read cap ({MAX_PRIVATE_DATA_READ_BYTES} bytes); rename it aside if it is yours",
+                    path.display()
+                ),
+            ));
+        }
     }
     Ok(file)
 }
+
+/// Upper bound for one private-state data read. The regular-file gate
+/// exists because `/dev/zero` is an unbounded read; a planted huge REGULAR
+/// file is the same shape (a full allocation per read on hot per-turn
+/// paths). Generous against every legitimate consumer — the family reads
+/// JSON state files, markers, and SKILL.md-sized bundle assets, nothing
+/// near this bound (round-26 review).
+#[cfg(unix)]
+const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// [`read_shared`] for the private-home data files whose bytes are consent
 /// state: same Windows full-share-mode semantics, plus the Unix
@@ -580,11 +610,22 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
     let mut file = options.open(path)?;
     #[cfg(unix)]
     {
-        if !file.metadata()?.is_file() {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{} is not a regular file", path.display()),
             ));
+        }
+        // Round-26 review (minor): re-tighten a drifted mode like the lock
+        // file open does — a landing mark written by main's std::fs::write
+        // (0644) otherwise stayed world-readable forever. Stat-gated: the
+        // steady state pays one fstat and no chmod; a chmod failure refuses
+        // the write, the accepted fail-closed direction (the caller degrades
+        // loudly — e.g. the landing mark to live-by-absence with its warn).
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
     }
     use std::io::Write as _;
@@ -3555,13 +3596,29 @@ pub(crate) mod tests {
         let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
         assert_eq!(rc, 0, "fixture: mkfifo must succeed");
 
-        assert!(
-            super::read_private_data_file(&data_path).is_err(),
-            "a planted FIFO must be refused by the regular-file gate"
+        // Bounded worker (round-26 review): a regression to an unhardened
+        // read blocks `open()` forever — the repo convention fails the test
+        // on a bounded receive instead of hanging the whole lane. The timed-
+        // out worker holds no lock, so the red does not cascade.
+        let refusal = |read: fn(&std::path::Path) -> std::io::Result<()>, label: &str| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let path = data_path.clone();
+            let worker = std::thread::spawn(move || {
+                let _ = tx.send(read(&path).is_err());
+            });
+            let refused = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| {
+                panic!("{label} must refuse a planted FIFO without hanging (5s bound)")
+            });
+            worker.join().unwrap();
+            assert!(refused, "{label} must be refused by the regular-file gate");
+        };
+        refusal(
+            |p| super::read_private_data_file(p).map(|_| ()),
+            "a planted FIFO read",
         );
-        assert!(
-            super::read_private_data_file_bytes(&data_path).is_err(),
-            "the raw salvage read must refuse the FIFO too"
+        refusal(
+            |p| super::read_private_data_file_bytes(p).map(|_| ()),
+            "the raw salvage read",
         );
     }
 
@@ -3581,5 +3638,46 @@ pub(crate) mod tests {
             super::read_private_data_file_bytes(&data_path).unwrap(),
             br#"{"scopes":{}}"#
         );
+    }
+
+    /// Round-26 review: a planted huge REGULAR file must be refused by the
+    /// size cap instead of being read into memory in full (the same
+    /// unbounded-allocation shape the regular-file gate closes for
+    /// `/dev/zero`). The fixture uses a sparse file, so nothing is written.
+    #[test]
+    #[cfg(unix)]
+    fn private_data_read_refuses_an_oversized_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("huge.json");
+        let file = std::fs::File::create(&data_path).unwrap();
+        file.set_len(super::MAX_PRIVATE_DATA_READ_BYTES + 1).unwrap();
+        drop(file);
+        let error = super::read_private_data_file(&data_path)
+            .err()
+            .expect("an over-cap regular file must be refused");
+        assert!(
+            format!("{error}").contains("read cap"),
+            "the refusal must name the cap: {error}"
+        );
+        assert!(
+            super::read_private_data_file_bytes(&data_path).is_err(),
+            "the raw salvage read must honor the cap too"
+        );
+    }
+
+    /// Round-26 review: the hardened write re-tightens a drifted mode on an
+    /// existing file (a landing mark written by main's std::fs::write at
+    /// 0644 used to stay world-readable forever).
+    #[test]
+    #[cfg(unix)]
+    fn private_data_write_re_tightens_a_loose_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mark.pending");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::write_private_data_file(&path, b"pending\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "a drifted mode must be re-tightened");
     }
 }
