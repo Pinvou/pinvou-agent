@@ -5583,7 +5583,9 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
         ))
     })?;
     let canonical = std::fs::canonicalize(path).map_err(|error| {
-        CliError::failed(format!("code workspace diff: cannot resolve {relative}: {error}"))
+        CliError::failed(format!(
+            "code workspace diff: cannot resolve {relative}: {error}"
+        ))
     })?;
     if !canonical.starts_with(&canonical_root) {
         return Err(CliError::failed(

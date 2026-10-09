@@ -629,9 +629,7 @@ fn record_time(value: &serde_json::Value, field: &str) -> chrono::DateTime<chron
         .and_then(|value| value.as_str())
         .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
         .map(|stamp| stamp.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|| {
-            chrono::DateTime::from_timestamp(FLOOR_SECS, 0).expect("sorting floor")
-        })
+        .unwrap_or_else(|| chrono::DateTime::from_timestamp(FLOOR_SECS, 0).expect("sorting floor"))
 }
 
 /// Round-48 review: the archive prune above sorts by `record_time`, which
