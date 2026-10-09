@@ -1080,7 +1080,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // enabled, matching the backend's missing-state-file semantics). Switch
       // changes are broadcast via remote_control:tools_changed →
       // pinvou:tools-changed (chat-events.js); this subscription refetches to
-      // hot-update the UI.
+      // hot-update the UI. Web lane: a browser that loads while the desktop
+      // host is down/negotiating would otherwise keep the fail-open default
+      // for the whole session — re-read once the connection reports the
+      // desktop back online (round-13 minor 3; mirrors useBridge's listener).
       const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
       useEffect(() => {
         let alive = true;
@@ -1091,9 +1094,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             if (alive) setSessionMentionEnabled(isSessionMentionEnabled(features));
           } catch { /* fail-open: keep the current enabled state */ }
         };
+        const refreshOnWebConnection = (event) => {
+          const detail = event && event.detail;
+          if (!detail || detail.desktop_online !== false) refresh();
+        };
         refresh();
         window.addEventListener('pinvou:tools-changed', refresh);
-        return () => { alive = false; window.removeEventListener('pinvou:tools-changed', refresh); };
+        window.addEventListener('pinvou:web-connection', refreshOnWebConnection);
+        return () => {
+          alive = false;
+          window.removeEventListener('pinvou:tools-changed', refresh);
+          window.removeEventListener('pinvou:web-connection', refreshOnWebConnection);
+        };
       }, []);
       const handleRemoveMentionRef = useCallback((sessionId) => {
         setSessionRefs(current => current.filter(ref => ref.sessionId !== sessionId));
