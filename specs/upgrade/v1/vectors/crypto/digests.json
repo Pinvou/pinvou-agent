@@ -1,0 +1,103 @@
+{
+  "sourceFacts": {
+    "product": "pinvou",
+    "component": "app",
+    "targetKey": "linux-x86_64-deb-perMachine",
+    "canonicalAppVersion": "1.0.0",
+    "application": {
+      "size": 123,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity": "app",
+      "publisher": "test-publisher",
+      "format": "deb"
+    },
+    "helper": {
+      "size": 123,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity": "helper",
+      "publisher": "test-publisher",
+      "format": "helper"
+    },
+    "launcher": {
+      "size": 123,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "identity": "launcher",
+      "publisher": "test-publisher",
+      "format": "launcher"
+    },
+    "installation": {
+      "format": "deb",
+      "installScope": "perMachine",
+      "ownershipProtocol": "owner-v1"
+    },
+    "dataMigration": {
+      "dataFormat": "data-v1",
+      "migrationProtocol": "migration-v1"
+    }
+  },
+  "consumeRequest": {
+    "protocolVersion": 1,
+    "product": "pinvou",
+    "component": "app",
+    "installationScopeId": "scope-1",
+    "purpose": "install",
+    "authorizationJti": "jti-1",
+    "consumeKey": "consume-1",
+    "transactionId": "transaction-1",
+    "authorizationEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "recoveryHandleHash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+    "clientFactsDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "preparation": {
+      "ownerEpoch": 1,
+      "scopeRevision": 1
+    },
+    "freezeEpoch": 1,
+    "backup": null,
+    "staged": null,
+    "plans": {
+      "installation": {
+        "planId": "native-full-2",
+        "revision": 1,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "migration": null,
+      "backup": null,
+      "helperMigration": null,
+      "launcherMigration": null,
+      "takeover": {
+        "planId": "takeover-2",
+        "revision": 1,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "preinstallSlot": null
+  },
+  "opening": {
+    "targetKey": "linux-x86_64-deb-perMachine",
+    "deploymentId": "deployment-2",
+    "deploymentRevision": 1,
+    "rolloutId": "rollout-1",
+    "rolloutRevision": 1,
+    "releaseEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "leafSalt": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "expectedSourceProfileId": "36bd37bde50c8350ddbfc9368aaca00f6f83548fa4b955b63c7e51143b5faeb3",
+  "expectedConsumeRequestDigest": "79ecb7bcdb693e1ca3256cb0a76a744b9be95e86591230451819668734e39a4c",
+  "statusBinding": {
+    "recoveryHandleHash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+    "product": "pinvou",
+    "component": "app",
+    "installationScopeId": "scope-1",
+    "purpose": "install",
+    "authorizationJti": "jti-1",
+    "consumeKey": "consume-1",
+    "transactionId": "transaction-1",
+    "consumeRequestDigest": "79ecb7bcdb693e1ca3256cb0a76a744b9be95e86591230451819668734e39a4c"
+  },
+  "expectedStatusInputHex": "70696e766f752d636f6e73756d652d7374617475732d7631007b22617574686f72697a6174696f6e4a7469223a226a74692d31222c22636f6d706f6e656e74223a22617070222c22636f6e73756d654b6579223a22636f6e73756d652d31222c22636f6e73756d6552657175657374446967657374223a2237396563623762636462363933653163613332353663623061373661373434623962653935653836353931323330343531383139363638373334653339613463222c22696e7374616c6c6174696f6e53636f70654964223a2273636f70652d31222c2270726f64756374223a2270696e766f75222c22707572706f7365223a22696e7374616c6c222c227265636f7665727948616e646c6548617368223a2237326364366538343232633430376662366430393836393066313133306237646564376563326637663565316433306264396435323166303135333633373933222c227472616e73616374696f6e4964223a227472616e73616374696f6e2d31227d",
+  "expectedStatusBindingHash": "226596d0d6b154b70b65fc93ac624118375297d11d8c52061d259571e4975dad",
+  "expectedEscapedNulHash": "4757a15db06045d3ac9c715b9716008fa55db8b2ae6f2aa362e263ceaafc608e",
+  "expectedEmptyCommitment": "e27afc8b0bb030c890c367ae54fc974c119ff42104b4aefba115d36062247059",
+  "expectedOpeningCommitment": "0c45b45837d903d166caf811e739db2e772a827d6a5332fa259b21ce8e8cf1fc",
+  "independentVerification": "Known answers computed with Python hashlib and stdlib JSON using ASCII keys and integer numbers; RFC 8785 non-ASCII/numeric cases have separately specified tests."
+}

@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:metadata:release",
+  "type": "object",
+  "properties": {
+    "signed": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "role": {
+          "const": "release"
+        },
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "releaseId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          },
+          "required": [
+            "releaseId"
+          ],
+          "additionalProperties": false
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issuedAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "appVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "notes": {
+          "type": "object",
+          "properties": {
+            "zh-CN": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "en": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            },
+            "ja": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          },
+          "required": [
+            "zh-CN",
+            "en",
+            "ja"
+          ],
+          "additionalProperties": false
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "targetKey": {
+                "enum": [
+                  "windows-x86_64-nsis-perMachine",
+                  "linux-x86_64-deb-perMachine",
+                  "linux-arm64-deb-perMachine",
+                  "macos-universal-dmg-perMachine"
+                ]
+              },
+              "releaseTargetId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "releaseTargetRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "minimumSourceVersion": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+              },
+              "migrationMode": {
+                "enum": [
+                  "none",
+                  "backwardCompatible",
+                  "irreversible"
+                ]
+              },
+              "backupPolicy": {
+                "enum": [
+                  "notRequired",
+                  "required"
+                ]
+              },
+              "activationModes": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "directInstall",
+                    "stagedRestart"
+                  ]
+                },
+                "minItems": 1,
+                "maxItems": 4096,
+                "uniqueItems": true
+              },
+              "packageManifest": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+              },
+              "launcher": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+              }
+            },
+            "required": [
+              "targetKey",
+              "releaseTargetId",
+              "releaseTargetRevision",
+              "minimumSourceVersion",
+              "migrationMode",
+              "backupPolicy",
+              "activationModes",
+              "packageManifest",
+              "launcher"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 4096
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "role",
+        "product",
+        "component",
+        "scope",
+        "revision",
+        "issuedAt",
+        "expiresAt",
+        "appVersion",
+        "notes",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "signatures": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/signature"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "signed",
+    "signatures"
+  ],
+  "additionalProperties": false
+}

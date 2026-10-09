@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:metadata:package",
+  "type": "object",
+  "properties": {
+    "signed": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "role": {
+          "const": "package"
+        },
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "targetKey": {
+              "enum": [
+                "windows-x86_64-nsis-perMachine",
+                "linux-x86_64-deb-perMachine",
+                "linux-arm64-deb-perMachine",
+                "macos-universal-dmg-perMachine"
+              ]
+            }
+          },
+          "required": [
+            "targetKey"
+          ],
+          "additionalProperties": false
+        },
+        "manifestId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "appVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "activationModes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "directInstall",
+              "stagedRestart"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true
+        },
+        "fullPackage": {
+          "type": "object",
+          "properties": {
+            "packageId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "packageId",
+            "size",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "finalInstaller": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "helper": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "launcher": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "helpers": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/helperArtifact"
+          },
+          "minItems": 1,
+          "maxItems": 4096
+        },
+        "executionHelperId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "sbom": {
+          "type": "object",
+          "properties": {
+            "fileName": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/relativePath"
+            },
+            "schemaVersion": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "format": {
+              "const": "CycloneDX-JSON"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "fileName",
+            "schemaVersion",
+            "format",
+            "size",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "fileName": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/relativePath"
+            },
+            "schemaVersion": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "format": {
+              "const": "in-toto-JSONL"
+            },
+            "sourceRevision": {
+              "type": "object",
+              "properties": {
+                "algorithm": {
+                  "enum": [
+                    "git-sha1",
+                    "git-sha256"
+                  ]
+                },
+                "value": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "algorithm",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "pipelineIdentity": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "finalInstallerSha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "fileName",
+            "schemaVersion",
+            "format",
+            "sourceRevision",
+            "pipelineIdentity",
+            "size",
+            "sha256",
+            "finalInstallerSha256"
+          ],
+          "additionalProperties": false
+        },
+        "incrementalPackages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "packageId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "baseVersion": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+              },
+              "baseArtifactSha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "resultArtifactSize": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "resultArtifactSha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "algorithm": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "algorithmVersion": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "format": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              }
+            },
+            "required": [
+              "packageId",
+              "size",
+              "sha256",
+              "baseVersion",
+              "baseArtifactSha256",
+              "resultArtifactSize",
+              "resultArtifactSha256",
+              "algorithm",
+              "algorithmVersion",
+              "format"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 4096
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "role",
+        "product",
+        "component",
+        "scope",
+        "appVersion",
+        "activationModes",
+        "fullPackage",
+        "finalInstaller",
+        "helper",
+        "launcher",
+        "helpers",
+        "executionHelperId",
+        "sbom",
+        "provenance",
+        "incrementalPackages"
+      ],
+      "additionalProperties": false
+    },
+    "signatures": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/signature"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "signed",
+    "signatures"
+  ],
+  "additionalProperties": false
+}

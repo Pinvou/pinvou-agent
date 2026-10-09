@@ -1,0 +1,1483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:common",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "positive": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "channel": {
+      "enum": [
+        "stable",
+        "beta",
+        "internal"
+      ]
+    },
+    "targetKey": {
+      "enum": [
+        "windows-x86_64-nsis-perMachine",
+        "linux-x86_64-deb-perMachine",
+        "linux-arm64-deb-perMachine",
+        "macos-universal-dmg-perMachine"
+      ]
+    },
+    "byteIdentity": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "size",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "metadataReference": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "root",
+            "timestamp",
+            "snapshot",
+            "target",
+            "release",
+            "package"
+          ]
+        },
+        "scope": {
+          "type": "object",
+          "maxProperties": 4,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+          }
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "envelopeSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "role",
+        "scope",
+        "version",
+        "expiresAt",
+        "size",
+        "envelopeSha256"
+      ],
+      "additionalProperties": false
+    },
+    "nativeIdentity": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "identity": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "publisher": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "format": {
+          "enum": [
+            "nsis",
+            "deb",
+            "dmg",
+            "helper",
+            "launcher"
+          ]
+        }
+      },
+      "required": [
+        "size",
+        "sha256",
+        "identity",
+        "publisher",
+        "format"
+      ],
+      "additionalProperties": false
+    },
+    "supplyChain": {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "effectiveExpiresAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "approvalId",
+        "revision",
+        "effectiveExpiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "planReference": {
+      "type": "object",
+      "properties": {
+        "planId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "planId",
+        "revision",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "plans": {
+      "type": "object",
+      "properties": {
+        "installation": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/planReference"
+        },
+        "migration": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/planReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backup": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/planReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "helperMigration": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/planReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "launcherMigration": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/planReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "takeover": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/planReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "installation",
+        "migration",
+        "backup",
+        "helperMigration",
+        "launcherMigration",
+        "takeover"
+      ],
+      "additionalProperties": false
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "helperArtifact": {
+      "type": "object",
+      "properties": {
+        "helperId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "targetKey": {
+          "enum": [
+            "windows-x86_64-nsis-perMachine",
+            "linux-x86_64-deb-perMachine",
+            "linux-arm64-deb-perMachine",
+            "macos-universal-dmg-perMachine"
+          ]
+        },
+        "nativeIdentity": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "installationTarget": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/relativePath"
+        }
+      },
+      "required": [
+        "helperId",
+        "version",
+        "targetKey",
+        "nativeIdentity",
+        "installationTarget"
+      ],
+      "additionalProperties": false
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "os": {
+          "enum": [
+            "windows",
+            "linux",
+            "macos"
+          ]
+        },
+        "arch": {
+          "enum": [
+            "x86_64",
+            "arm64"
+          ]
+        },
+        "osVersion": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        }
+      },
+      "required": [
+        "os",
+        "arch",
+        "osVersion"
+      ],
+      "additionalProperties": false
+    },
+    "pathPolicy": {
+      "type": "object",
+      "properties": {
+        "policyId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "edgeSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "policyId",
+        "revision",
+        "sha256",
+        "edgeSha256"
+      ],
+      "additionalProperties": false
+    },
+    "opening": {
+      "type": "object",
+      "properties": {
+        "targetKey": {
+          "enum": [
+            "windows-x86_64-nsis-perMachine",
+            "linux-x86_64-deb-perMachine",
+            "linux-arm64-deb-perMachine",
+            "macos-universal-dmg-perMachine"
+          ]
+        },
+        "deploymentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "deploymentRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "rolloutId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "rolloutRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "releaseEnvelopeSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "leafSalt": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "targetKey",
+        "deploymentId",
+        "deploymentRevision",
+        "rolloutId",
+        "rolloutRevision",
+        "releaseEnvelopeSha256",
+        "leafSalt"
+      ],
+      "additionalProperties": false
+    },
+    "entityChain": {
+      "type": "object",
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "deploymentRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "deploymentState": {
+          "enum": [
+            "active",
+            "superseded"
+          ]
+        },
+        "releaseId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "releaseRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "releaseTargetId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "releaseState": {
+          "const": "closed"
+        },
+        "releaseManifest": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "releaseTargetRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "releaseTargetState": {
+          "const": "approved"
+        },
+        "packageManifest": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "artifactId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "artifactState": {
+          "const": "valid"
+        },
+        "packageId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "package": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+        },
+        "releaseVisibleAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "installNotBefore": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "installNotAfter": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supplyChain": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/supplyChain"
+        }
+      },
+      "required": [
+        "deploymentId",
+        "deploymentRevision",
+        "deploymentState",
+        "releaseId",
+        "releaseRevision",
+        "releaseTargetId",
+        "releaseState",
+        "releaseManifest",
+        "releaseTargetRevision",
+        "releaseTargetState",
+        "packageManifest",
+        "artifactId",
+        "artifactState",
+        "packageId",
+        "package",
+        "releaseVisibleAt",
+        "installNotBefore",
+        "installNotAfter",
+        "supplyChain"
+      ],
+      "additionalProperties": false
+    },
+    "metadataSet": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "timestamp": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "snapshot": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "target": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "releases": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+          },
+          "minItems": 1,
+          "maxItems": 4096
+        }
+      },
+      "required": [
+        "root",
+        "timestamp",
+        "snapshot",
+        "target",
+        "releases"
+      ],
+      "additionalProperties": false
+    },
+    "staged": {
+      "type": "object",
+      "properties": {
+        "preinstallTransactionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "stagedRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "slotIdentity": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "stagedAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stagedValidUntil": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "preinstallTransactionId",
+        "stagedRevision",
+        "slotIdentity",
+        "stagedAt",
+        "stagedValidUntil"
+      ],
+      "additionalProperties": false
+    },
+    "preparation": {
+      "type": "object",
+      "properties": {
+        "ownerEpoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "scopeRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "ownerEpoch",
+        "scopeRevision"
+      ],
+      "additionalProperties": false
+    },
+    "backup": {
+      "type": "object",
+      "properties": {
+        "recordId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "freezeEpoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "dataScopeDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "preparationEpoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "recordId",
+        "freezeEpoch",
+        "sha256",
+        "dataScopeDigest",
+        "preparationEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "originalStage": {
+      "type": "object",
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "rolloutId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stageId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "groupIdentity": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "firstQualifiedAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "deploymentId",
+        "rolloutId",
+        "stageId",
+        "groupIdentity",
+        "firstQualifiedAt"
+      ],
+      "additionalProperties": false
+    },
+    "updateBinding": {
+      "type": "object",
+      "properties": {
+        "workflowId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "originalStage": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/originalStage"
+        },
+        "endpointKind": {
+          "enum": [
+            "baseline",
+            "candidate"
+          ]
+        },
+        "hopKind": {
+          "enum": [
+            "ordinary",
+            "bridge"
+          ]
+        },
+        "baselineDeploymentId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "baselineRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "endpointChain": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/entityChain"
+        },
+        "hopChain": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/entityChain"
+        },
+        "rollout": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "rolloutId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "const": "running"
+                },
+                "policyRevision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "opening": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/opening"
+                },
+                "locator": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "locatorExpiresAt": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "rolloutId",
+                "revision",
+                "state",
+                "policyRevision",
+                "opening",
+                "locator",
+                "locatorExpiresAt"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bridge": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "eligibilityId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "eligibilityId",
+                "revision"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ordinaryPathApproval": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "approvalId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "approvalId",
+                "revision"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targetVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "packageId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "finalInstaller": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "helper": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "launcher": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "plans": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/plans"
+        },
+        "activationMode": {
+          "enum": [
+            "directInstall",
+            "stagedRestart"
+          ]
+        },
+        "upgradeType": {
+          "enum": [
+            "normal",
+            "silent",
+            "forced"
+          ]
+        },
+        "migrationMode": {
+          "enum": [
+            "none",
+            "backwardCompatible",
+            "irreversible"
+          ]
+        },
+        "backupPolicy": {
+          "enum": [
+            "notRequired",
+            "required"
+          ]
+        }
+      },
+      "required": [
+        "workflowId",
+        "originalStage",
+        "endpointKind",
+        "hopKind",
+        "baselineDeploymentId",
+        "baselineRevision",
+        "endpointChain",
+        "hopChain",
+        "rollout",
+        "bridge",
+        "ordinaryPathApproval",
+        "targetVersion",
+        "packageId",
+        "finalInstaller",
+        "helper",
+        "launcher",
+        "plans",
+        "activationMode",
+        "upgradeType",
+        "migrationMode",
+        "backupPolicy"
+      ],
+      "additionalProperties": false
+    },
+    "taskBinding": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "taskPurpose": {
+          "enum": [
+            "reconcile",
+            "recoveryReview"
+          ]
+        },
+        "originalTransactionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "originalAuthorizationJti": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "packageId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "finalInstaller": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "activationMode": {
+          "enum": [
+            "directInstall",
+            "stagedRestart"
+          ]
+        },
+        "originalPurpose": {
+          "enum": [
+            "preinstall",
+            "install",
+            "activate"
+          ]
+        },
+        "originalConsumeRequestDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "retirementProofSha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflowId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "originalStage": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/originalStage"
+        },
+        "endpointChain": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/entityChain"
+        },
+        "hopChain": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/entityChain"
+        },
+        "targetVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "sourceVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "upgradeType": {
+          "enum": [
+            "normal",
+            "silent",
+            "forced"
+          ]
+        },
+        "packageManifest": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "package": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+        },
+        "windowId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "windowStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "windowEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "taskId",
+        "revision",
+        "taskPurpose",
+        "originalTransactionId",
+        "originalAuthorizationJti",
+        "packageId",
+        "finalInstaller",
+        "activationMode",
+        "originalPurpose",
+        "originalConsumeRequestDigest",
+        "retirementProofSha256",
+        "workflowId",
+        "originalStage",
+        "endpointChain",
+        "hopChain",
+        "targetVersion",
+        "sourceVersion",
+        "upgradeType",
+        "packageManifest",
+        "package",
+        "windowId",
+        "windowStart",
+        "windowEnd"
+      ],
+      "additionalProperties": false
+    },
+    "signature": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        }
+      },
+      "required": [
+        "keyId",
+        "signature"
+      ],
+      "additionalProperties": false
+    },
+    "signingKey": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "algorithm": {
+          "const": "ed25519"
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      },
+      "required": [
+        "keyId",
+        "algorithm",
+        "publicKey"
+      ],
+      "additionalProperties": false
+    },
+    "rolePolicy": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "root",
+            "timestamp",
+            "snapshot",
+            "target",
+            "release",
+            "package",
+            "decision",
+            "download",
+            "authorization-preinstall",
+            "authorization-install",
+            "authorization-activate",
+            "helper-cleanup",
+            "telemetry-event",
+            "preinstall-transaction-event",
+            "install-transaction-event",
+            "activate-transaction-event",
+            "reconciliation-action",
+            "recovery-review-action",
+            "reconciliation-event",
+            "recovery-review-event"
+          ]
+        },
+        "component": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "enum": [
+                "stable",
+                "beta",
+                "internal"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targetKey": {
+          "anyOf": [
+            {
+              "enum": [
+                "windows-x86_64-nsis-perMachine",
+                "linux-x86_64-deb-perMachine",
+                "linux-arm64-deb-perMachine",
+                "macos-universal-dmg-perMachine"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "keyIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "role",
+        "component",
+        "channel",
+        "targetKey",
+        "threshold",
+        "keyIds"
+      ],
+      "additionalProperties": false
+    },
+    "stableFacts": {
+      "type": "object",
+      "properties": {
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "targetKey": {
+          "enum": [
+            "windows-x86_64-nsis-perMachine",
+            "linux-x86_64-deb-perMachine",
+            "linux-arm64-deb-perMachine",
+            "macos-universal-dmg-perMachine"
+          ]
+        },
+        "canonicalAppVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "application": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "helper": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "launcher": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "installation": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "enum": [
+                "nsis",
+                "deb",
+                "dmg"
+              ]
+            },
+            "installScope": {
+              "const": "perMachine"
+            },
+            "ownershipProtocol": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          },
+          "required": [
+            "format",
+            "installScope",
+            "ownershipProtocol"
+          ],
+          "additionalProperties": false
+        },
+        "dataMigration": {
+          "type": "object",
+          "properties": {
+            "dataFormat": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "migrationProtocol": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          },
+          "required": [
+            "dataFormat",
+            "migrationProtocol"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "product",
+        "component",
+        "targetKey",
+        "canonicalAppVersion",
+        "application",
+        "helper",
+        "launcher",
+        "installation",
+        "dataMigration"
+      ],
+      "additionalProperties": false
+    },
+    "statusBinding": {
+      "type": "object",
+      "properties": {
+        "recoveryHandleHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "installationScopeId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purpose": {
+          "enum": [
+            "preinstall",
+            "install",
+            "activate"
+          ]
+        },
+        "authorizationJti": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "consumeKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "transactionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "consumeRequestDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "recoveryHandleHash",
+        "product",
+        "component",
+        "installationScopeId",
+        "purpose",
+        "authorizationJti",
+        "consumeKey",
+        "transactionId",
+        "consumeRequestDigest"
+      ],
+      "additionalProperties": false
+    },
+    "consumeRequest": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "installationScopeId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "purpose": {
+          "enum": [
+            "preinstall",
+            "install",
+            "activate"
+          ]
+        },
+        "authorizationJti": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "consumeKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "transactionId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "authorizationEnvelopeSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "recoveryHandleHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "clientFactsDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "preparation": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/preparation"
+        },
+        "freezeEpoch": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backup": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/backup"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "staged": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/staged"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plans": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/plans"
+        },
+        "preinstallSlot": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "slotIdentity": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+                },
+                "slotRevision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "const": "inactive"
+                }
+              },
+              "required": [
+                "slotIdentity",
+                "slotRevision",
+                "state"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "product",
+        "component",
+        "installationScopeId",
+        "purpose",
+        "authorizationJti",
+        "consumeKey",
+        "transactionId",
+        "authorizationEnvelopeSha256",
+        "recoveryHandleHash",
+        "clientFactsDigest",
+        "preparation",
+        "freezeEpoch",
+        "backup",
+        "staged",
+        "plans",
+        "preinstallSlot"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

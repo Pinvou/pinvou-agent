@@ -1,0 +1,2 @@
+# Generated schema drift checks and fixed contract artifacts use LF on every OS.
+* text eol=lf

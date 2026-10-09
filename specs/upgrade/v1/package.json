@@ -1,0 +1,12 @@
+{
+  "name": "@pinvou/upgrade-v1-contract",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test reference/tests/*.test.mjs",
+    "validate": "node reference/cli.mjs"
+  },
+  "dependencies": { "ajv": "8.20.0" }
+}

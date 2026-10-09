@@ -1,0 +1,32 @@
+name: Upgrade V1 Contract
+
+on:
+  pull_request:
+    paths:
+      - 'specs/upgrade/v1/**'
+      - '.github/workflows/upgrade-contract.yml'
+  push:
+    paths:
+      - 'specs/upgrade/v1/**'
+      - '.github/workflows/upgrade-contract.yml'
+  workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: specs/upgrade/v1/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: specs/upgrade/v1
+      - run: npm test
+        working-directory: specs/upgrade/v1

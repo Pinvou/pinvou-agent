@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:metadata:target",
+  "type": "object",
+  "properties": {
+    "signed": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "role": {
+          "const": "target"
+        },
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "enum": [
+                "stable",
+                "beta",
+                "internal"
+              ]
+            },
+            "targetKey": {
+              "enum": [
+                "windows-x86_64-nsis-perMachine",
+                "linux-x86_64-deb-perMachine",
+                "linux-arm64-deb-perMachine",
+                "macos-universal-dmg-perMachine"
+              ]
+            }
+          },
+          "required": [
+            "channel",
+            "targetKey"
+          ],
+          "additionalProperties": false
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issuedAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "supportFloorVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "installScope": {
+          "const": "perMachine"
+        },
+        "hostArchitectures": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "x86_64",
+              "arm64"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true
+        },
+        "minimumOsVersion": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "maximumOsVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selectionGeneration": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "baselineRelease": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+        },
+        "rolloutSetCommitment": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "ordinaryPaths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "deploymentId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "deploymentRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "approvalId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "approvalRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "release": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+              }
+            },
+            "required": [
+              "deploymentId",
+              "deploymentRevision",
+              "approvalId",
+              "approvalRevision",
+              "release"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 4096
+        },
+        "bridgePaths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "deploymentId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "deploymentRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "deploymentState": {
+                "const": "superseded"
+              },
+              "eligibilityId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "eligibilityRevision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "release": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+              }
+            },
+            "required": [
+              "deploymentId",
+              "deploymentRevision",
+              "deploymentState",
+              "eligibilityId",
+              "eligibilityRevision",
+              "release"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 4096
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "role",
+        "product",
+        "component",
+        "scope",
+        "version",
+        "issuedAt",
+        "expiresAt",
+        "supportFloorVersion",
+        "installScope",
+        "hostArchitectures",
+        "minimumOsVersion",
+        "maximumOsVersion",
+        "selectionGeneration",
+        "baselineRelease",
+        "rolloutSetCommitment",
+        "ordinaryPaths",
+        "bridgePaths"
+      ],
+      "additionalProperties": false
+    },
+    "signatures": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/signature"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "signed",
+    "signatures"
+  ],
+  "additionalProperties": false
+}
