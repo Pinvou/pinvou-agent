@@ -93,18 +93,24 @@
     // whole UI every 30s even when nothing changed.
     function publish(sessionId, patch) {
       if (!sessionId || sessionId !== state.activeSessionId) return;
-      const current = state.computerUse;
-      if (current) {
-        const changed = Object.keys(patch).some((key) => {
-          const before = current[key];
-          const after = patch[key];
-          if (key === "grantRequest" || key === "confirmRequest") return !sameRequest(before, after);
-          return !Object.is(before, after);
-        });
-        if (!changed) return;
-      }
-      state.computerUse = Object.assign({}, current, patch);
+      if (!sliceChanged(state.computerUse, patch)) return;
+      state.computerUse = Object.assign({}, state.computerUse, patch);
       notify();
+    }
+
+    // Whether any patch field differs from the current slice (request fields
+    // by value, everything else by identity). Shared by publish() and the
+    // session-less refresh branch, so a leave-to-draft refresh that changes
+    // nothing — it also rides every SettingsView mount — stays a no-op
+    // instead of re-rendering the UI with an identical fresh slice object.
+    function sliceChanged(current, patch) {
+      if (!current) return true;
+      return Object.keys(patch).some((key) => {
+        const before = current[key];
+        const after = patch[key];
+        if (key === "grantRequest" || key === "confirmRequest") return !sameRequest(before, after);
+        return !Object.is(before, after);
+      });
     }
 
     // Request objects are re-created on every refreshStatus from the per-session
@@ -227,7 +233,7 @@
         // predates the session-less form — leave the slice untouched.
         if (raw) {
           pruneDeletedSessionPending();
-          state.computerUse = Object.assign({}, state.computerUse, {
+          const patch = {
             enabled: !!raw.enabled,
             // The draft screen has no session: leave no previous session's id
             // in the slice either (every reader gates on the request fields'
@@ -252,12 +258,18 @@
             // cannot be reused here — it publishes to the active session, and
             // there is none — so the fields are nulled directly; the
             // per-session pending map is untouched, so switching back to the
-            // session still resurfaces a live request via refreshStatus.
+            // session still resurfaces a live request via refreshStatus
+            // (pinned by the 35e bridge test).
             grantRequest: null,
             confirmRequest: null,
             platformSupported: !!(raw.platform_supported || raw.platformSupported),
-          });
-          notify();
+          };
+          // Same no-op discipline as publish(): this branch also rides every
+          // SettingsView mount, so an unchanged slice must not re-render.
+          if (sliceChanged(state.computerUse, patch)) {
+            state.computerUse = Object.assign({}, state.computerUse, patch);
+            notify();
+          }
         }
         return raw;
       }

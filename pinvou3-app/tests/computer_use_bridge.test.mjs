@@ -1164,6 +1164,54 @@ function emit(harness, event, payload) {
   );
 }
 
+// ── 35e. the session-less refresh must keep the switch-back pending map ──
+// 35c pins the slice nulling; this pins the other half of that branch's
+// contract: the per-session pending map itself must survive, so leaving a
+// session with an unanswered request for the draft and coming back
+// resurfaces the still-live request immediately (not just after the
+// reconciler's next tick). The request must arrive through the event path —
+// a slice-seeded request like 35c's never enters the map, so that shape
+// cannot see an over-clear.
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.sessions = [{ id: 's1' }];
+  emit(harness, 'computer_use:grant_required', { session_id: 's1' });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1',
+    confirm_id: 'c1',
+    action: 'left_click',
+    element: 'Buy now',
+  });
+  // Leave for the draft: the session-less refresh nulls the live slice.
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.grantRequest,
+    null,
+    'the leave-to-draft refresh must clear the live grant request',
+  );
+  assert.equal(
+    harness.state.computerUse.confirmRequest,
+    null,
+    'the leave-to-draft refresh must clear the live confirm request',
+  );
+  // Switch back: the parked entries must resurface from the map.
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  const back = harness.published().at(-1);
+  assert.ok(
+    back && back.grantRequest && back.grantRequest.sessionId === 's1',
+    `switch-back must resurface the parked grant request: ${JSON.stringify(back)}`,
+  );
+  assert.ok(
+    back && back.confirmRequest && back.confirmRequest.confirmId === 'c1',
+    `switch-back must resurface the parked confirm request: ${JSON.stringify(back)}`,
+  );
+}
+
 // ── 36. turning the feature off must clear the latched stop ──
 // The documented resume path is "turn it off and back on". Keeping `stopped`
 // set through the off step made the settings row tell a user who had just

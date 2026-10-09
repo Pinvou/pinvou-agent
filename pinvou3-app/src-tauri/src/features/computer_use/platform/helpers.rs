@@ -633,6 +633,33 @@ mod tests {
     }
 
     #[test]
+    fn greek_rho_gamma_words_are_the_accepted_false_positive_cost() {
+        // The ρ→p and γ→y arms are both UTS#39-required (paγ/buγ must not
+        // screen Clear), and together they fold common παραγ- / πραγ-
+        // stems onto `pay`. That cost is accepted and disclosed at the
+        // fold (same class as the Cyrillic `Раунд` note): this pin holds
+        // the class visible, so an arm change that silently removes it —
+        // or an arm added without checking it — surfaces here.
+        for label in [
+            "αναπαραγωγή", // playback — the standard media Play button
+            "παραγγελία",  // order
+            "παραγωγή",    // production / output
+        ] {
+            assert!(
+                screening_hit(label),
+                "{label} is the disclosed Greek false-positive class"
+            );
+        }
+        // The nearby Greek vocabulary that must stay Clear: an accented ά
+        // between the ρ and the γ decomposes to α + a combining mark that
+        // splits the reconstructed `pay` (πράγμα), and the stems without a
+        // rho-gamma adjacency never build a term.
+        assert!(!screening_hit("αποδοχή"));
+        assert!(!screening_hit("ακύρωση"));
+        assert!(!screening_hit("πράγμα"));
+    }
+
+    #[test]
     fn screening_hit_survives_display_truncation_padding() {
         // The attack shape: an attacker-controlled label pads past the
         // 80-char display window so a consequential term never reaches the

@@ -224,8 +224,11 @@ pub(crate) const FOLD_COMPOSITION_OVERLAP_CHARS: usize = 8;
 /// overrides and isolates, the invisible-operator block, the byte-order mark,
 /// the combining grapheme joiner, the Hangul fillers, the variation selectors
 /// (both planes), the interlinear annotation controls, the invisible musical
-/// beam controls, the Tag block, and the Unicode 15.1 ideographic description
-/// characters.
+/// beam controls, the Tag block, and the ideographic description characters
+/// (default-ignorable as of Unicode 15.1; Unicode 16 returned U+2FFC–U+2FFF
+/// to `So`, and the enumeration deliberately keeps them — over-coverage here
+/// is free, and dropping the range on a Unicode bump would re-expose the
+/// splicing shape against engines built on either data).
 ///
 /// This is an enumeration of `Default_Ignorable_Code_Point` rather than a
 /// property lookup: the ranges are stable, and pulling a full property table
@@ -325,7 +328,12 @@ fn is_invisible_for_matching(c: char) -> bool {
 /// ("round") onto `pay`, so a benign Russian label can raise a confirmation.
 /// The error direction is safe (an extra dialog, never a missed one), and
 /// the alternative — dropping `р` from the table the way the o-shaped σ/Σ
-/// are dropped — would reopen the `Pаy` evasion. Greek gets the mirror-image
+/// are dropped — would reopen the `Pаy` evasion. Greek has the same shape
+/// one letter over: `ρ`→`p` plus `γ`→`y` folds the unaccented παραγ- /
+/// πραγ- sequences onto `pay` (αναπαραγωγή "playback", παραγγελία
+/// "order", παραγωγή "production"), pinned as the accepted class by
+/// `greek_rho_gamma_words_are_the_accepted_false_positive_cost` — dropping
+/// either arm would reopen `paγ`/`buγ`. Greek gets the mirror-image
 /// call where the letters differ: σ/Σ (common letter, common term letter)
 /// stay, while ω (common letter, rare term letter `w`) folds.
 ///
@@ -364,8 +372,10 @@ fn fold_confusable(c: char) -> char {
         // normalize to 一 and ㅡ/ￚ normalize to ᅳ, so those five arrive
         // through the last two arms.
         '\u{2014}' | '\u{2015}' => 'ー', // em dash, horizontal bar
-        // Brahmi line, box-drawing bars, CJK stroke one, epigraphic
-        // sideways I, Batak pa.
+        // Box-drawing bars, CJK stroke one, and epigraphic sideways I are
+        // UTS#39-mapped; the Brahmi line (U+1104B) and Batak pa (U+1BC7)
+        // are render-similarity arms beyond the UTS#39 table, added under
+        // the same by-construction safety argument.
         '\u{1104B}' | '\u{2500}' | '\u{2501}' | '\u{31D0}' | '\u{A7F7}' | '\u{1BC7}' => 'ー',
         '一' => 'ー',       // CJK one
         '\u{1173}' => 'ー', // Hangul jungseong eu
@@ -444,9 +454,16 @@ fn fold_confusable(c: char) -> char {
         // natural Greek word folds onto it, so this stays on the mapped side
         // of the σ/Σ decision.
         'ω' => 'w',
-        // Greek gamma: renders as `y` (`pγy`). Natural Greek words do not
-        // fold onto a denylist term through it — only `pay`/`buy` carry a
-        // `y`, and no Greek word is "p" or "b" + gamma.
+        // Greek gamma: renders as `y` (`paγ`, `buγ`). UTS#39's skeleton is
+        // `y`, so the arm is required to keep those evasions closed. The
+        // cost is real Greek text, because rho supplies the `p` the comment
+        // below used to demand from Greek itself: unaccented παραγ- /
+        // πραγ- sequences fold onto `pay` (αναπαραγωγή "playback" — the
+        // standard media Play button, παραγγελία "order", παραγωγή
+        // "production"; an accented ά in between splits the reconstruction,
+        // so πράγμα stays Clear). That is a fail-safe extra dialog in the
+        // same accepted class as `Раунд`, pinned by
+        // `greek_rho_gamma_words_are_the_accepted_false_positive_cost`.
         'γ' => 'y',
         // Other single-script look-alikes with no compatibility mapping.
         'ɑ' => 'a',
@@ -609,18 +626,23 @@ fn fold_confusable(c: char) -> char {
         'ꓰ' => 'e',
         'ꓳ' => 'o',
         'ꓴ' => 'u',
-        // Georgian letters UTS#39 maps to a single term letter — the only
-        // three in the script (`witⴙdraw`, `buყ`, `order nჿw`). The Mtavruli
-        // capital Ⴙ (U+10B9) lowercases into ⴙ before the fold. No natural
-        // Georgian word folds onto a denylist term through them: every term
-        // needs letters whose Georgian alphabet supplies no armed skeleton.
+        // Georgian letters that fold onto a single term letter: ყ and ჿ are
+        // UTS#39-mapped (`buყ`, `order nჿw`); ⴙ (small chin) joins them as
+        // a render-similarity arm beyond the UTS#39 table (`witⴙdraw`) —
+        // the Asomtavruli capital Ⴙ (U+10B9) lowercases into ⴙ before the
+        // fold. No natural Georgian word folds onto a denylist term through
+        // them: every term needs letters whose Georgian alphabet supplies
+        // no armed skeleton.
         'ⴙ' => 'h',
         'ყ' => 'y',
         'ჿ' => 'o',
-        // Warang Citi letters UTS#39 maps to a single term letter
-        // (`pa𑣄`, `𑣁ubscribe`-class: s i y o o u y). The listed forms are
-        // caseless — they are what the pipeline delivers — and the same
-        // glyph-skeleton argument as Cherokee applies.
+        // Warang Citi letters that fold onto a single term letter
+        // (`pa𑣄`, `𑣁ubscribe`-class: s i y o o u y). All but 𑣄 are
+        // UTS#39-mapped; 𑣄's UTS#39 skeleton is `z`, which no term
+        // carries, so its `y` arm is render-similarity over-coverage
+        // under the same by-construction safety argument. The listed
+        // forms are caseless — they are what the pipeline delivers — and
+        // the same glyph-skeleton argument as Cherokee applies.
         '𑣁' => 's',
         '𑣃' => 'i',
         '𑣄' => 'y',
@@ -1409,11 +1431,17 @@ impl ComputerUseShared {
     /// unanswerable dialog that blocks input process-wide. Note the session
     /// is deliberately **not** required to hold a grant here: the mark is
     /// what raises the grant dialog for a not-yet-granted session.
+    ///
+    /// The enabled/stop checks run under the same critical section as the
+    /// insert: a stop or disable completing between an unlocked check and
+    /// the insert would leave a mark the sweep just cleared (same rule as
+    /// [`Self::new_pending_confirmation`]'s grant re-check).
     pub fn mark_grant_requested(&self, session_id: &str) {
+        let mut requests = self.grant_requests.lock();
         if !self.is_enabled() || self.is_stopped() {
             return;
         }
-        self.grant_requests.lock().insert(session_id.to_string());
+        requests.insert(session_id.to_string());
     }
 
     /// [`Self::mark_grant_requested`], serialized against in-flight
@@ -2196,8 +2224,9 @@ mod tests {
             "Top\u{02D7}up wallet", // modifier letter minus sign
             "Top\u{2CBB}up wallet", // Coptic dialect-p ni
             "Top\u{06D4}up wallet", // Arabic full stop
-            // Unicode 15.1 ideographic description characters are
-            // default-ignorable and render as nothing.
+            // The ideographic description characters (default-ignorable in
+            // Unicode 15.1; `So` again in Unicode 16) render as nothing or
+            // as an invisible frame, so the enumeration keeps them either way.
             "支\u{2FFF}付",
             // Third review round: these default-ignorable ranges were missing
             // from BOTH lists, so a single splice of each rendered-invisible
@@ -2325,7 +2354,7 @@ mod tests {
             "フォㅡマット",       // Hangul eu (NFKC delivers ᅳ)
             "フォ\u{FFDA}マット", // halfwidth Hangul eu (same)
             "フォ\u{2F00}マット", // Kangxi radical one (NFKC delivers 一)
-            "witⴙdraw",           // Georgian mkhedruli chin (Ⴙ lowercases into it)
+            "witⴙdraw",           // Georgian small chin (Ⴙ lowercases into it)
             "buყ",                // Georgian qar
             "order nჿw",          // Georgian labial sign
             "pa\u{118C4}",        // Warang Citi ya (skeleton y)
