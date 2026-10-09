@@ -1037,6 +1037,9 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
 /// a boot would fail the test differently).
 #[test]
 fn voice_postprocess_refuses_credential_path_files() {
+    // Round-48 review: `HomeGuard` mutates process-global env, so this test
+    // must hold ENV_LOCK like every other HomeGuard user in this file.
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("voice-postprocess-gate");
     let secret = _home.root.join(".ssh").join("id_rsa.txt");
     std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
@@ -1085,6 +1088,7 @@ fn voice_postprocess_refuses_credential_path_files() {
 fn voice_postprocess_calls_the_active_model() {
     // Round-37 review: sandbox the home — a windowless-host boot runs the
     // retention sweep against whatever PINVOU3_HOME names.
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("ignored-voice-postprocess");
     let parsed = parse_args([
         "pinvou",

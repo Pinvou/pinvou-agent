@@ -891,6 +891,11 @@ fn tools_install(
         "action": "installed",
         "companion_skills": companion_note,
         "validation": if validation_skipped { "skipped" } else { "not_required" },
+        // Round-48 review: the docs promise `hot_refresh: "not_broadcast"` on
+        // EACH of this family's payloads whose human output appends the note;
+        // this command (and tools uninstall / import / recycle restore below)
+        // appended it to the human text only.
+        "hot_refresh": "not_broadcast",
     });
     let mut human = format!("installed {id}");
     if !companion_note.is_empty() {
@@ -1008,6 +1013,8 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         "action": "uninstalled",
         "recycled": recycles_with_package,
         "oauth_tokens_kept": keeps_oauth_tokens,
+        // Round-48 review: docs parity — see tools install.
+        "hot_refresh": "not_broadcast",
     });
     Ok(success(render(
         output,
@@ -1590,6 +1597,9 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         "id": report.id,
         "kind": kind,
         "icon": report.icon,
+        // Round-48 review: docs parity — see tools install. The module's own
+        // caveat constant names import among the covered sites.
+        "hot_refresh": "not_broadcast",
     });
     Ok(success(render(
         output,
@@ -1789,8 +1799,18 @@ fn recycle_restore(id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
         .map_err(|error| feature_error("recycle restore", id, error))?;
     // Round-46 review: serializing a concrete FALSE fact on failure would
     // tell a script credentials are already in place — propagate instead.
-    let value = serde_json::to_value(&result)
+    let mut value = serde_json::to_value(&result)
         .map_err(|error| CliError::failed(format!("plugins recycle restore: {error}")))?;
+    // Round-48 review: docs parity — the docs row lists `recycle restore` in
+    // the set whose payloads carry `hot_refresh: "not_broadcast"`; merge it
+    // into the serialized DTO instead of replacing it (the DTO keeps every
+    // round-46 fact).
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "hot_refresh".to_owned(),
+            serde_json::json!("not_broadcast"),
+        );
+    }
     let mut human = format!("restored {id}");
     if result.credentials_required {
         human

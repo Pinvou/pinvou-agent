@@ -421,14 +421,24 @@ fn run_agent(
             attachments.len()
         )));
     }
+    // Round-48 review: a stat failure here must fail closed exactly like the
+    // per-file gate above — counting a vanished file as 0 bytes let an
+    // under-counted total pass the pre-boot gate and push the refusal
+    // engine-side (after the windowless-host boot), the wasted-boot outcome
+    // this gate exists to prevent.
     let total_bytes: u64 = attachments
         .iter()
         .map(|attachment| {
             std::fs::metadata(&attachment.path)
                 .map(|metadata| metadata.len())
-                .unwrap_or(0)
+                .map_err(|error| {
+                    CliError::failed(format!(
+                        "cannot stat attachment {}: {error}",
+                        attachment.path.display()
+                    ))
+                })
         })
-        .sum();
+        .sum::<Result<u64, CliError>>()?;
     if total_bytes > pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENTS_TOTAL_BYTES {
         return Err(CliError::failed(format!(
             "agent_attachment_too_large: attachments total {total_bytes} bytes (limit {})",

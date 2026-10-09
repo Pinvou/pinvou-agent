@@ -387,7 +387,18 @@ fn parse_pending(values: &[String]) -> Result<MemoryCommand, CliError> {
         .get(1)
         .cloned()
         .ok_or_else(|| CliError::usage("memory pending requires <id>"))?;
-    let options = parse_options(&values[2..], &["--reason"], &[])?;
+    // Round-48 review: `--reason` records the justification on the
+    // destructive `never` decision; confirm/ignore never read it, and the
+    // family's own doctrine (the stray-positional refusal below) treats "a
+    // decision recorded without the justification the caller typed" as the
+    // worst outcome — silently accepting and dropping the flag is the same
+    // loss, so reject it at parse like every other option-shaped mistake.
+    let allowed_flags: &[&str] = if matches!(action, PendingAction::Never) {
+        &["--reason"]
+    } else {
+        &[]
+    };
+    let options = parse_options(&values[2..], allowed_flags, &[])?;
     // `pending never ID my reason` (the `--reason` flag forgotten) used to
     // resolve the candidate with an EMPTY reason and drop the words — a
     // destructive decision recorded without the justification the caller
@@ -1213,12 +1224,24 @@ fn disclose_truncation(
 
 /// The one formatter for the normalization disclosure, shared by the stderr
 /// note ([`note_normalization`]) and the output-channel note
-/// ([`disclose_normalization`]) so the wording cannot drift.
-fn normalization_clause(submitted_chars: usize, stored_chars: usize) -> String {
-    format!(
-        "the content was normalized before storing (a 请记住-style prefix and \
-         outer punctuation are stripped); {stored_chars} of {submitted_chars} characters stored"
-    )
+/// ([`disclose_normalization`]) so the wording cannot drift. `committed`
+/// selects the tense: the update lane notes at MEASUREMENT time (the write
+/// has not run yet) and must not assert characters a subsequent not-found
+/// refusal never stored — the same prospective wording the truncation note
+/// adopted in the round-37 review; the add lane fires after the write and
+/// states the fact.
+fn normalization_clause(submitted_chars: usize, stored_chars: usize, committed: bool) -> String {
+    if committed {
+        format!(
+            "the content was normalized before storing (a 请记住-style prefix and \
+             outer punctuation are stripped); {stored_chars} of {submitted_chars} characters stored"
+        )
+    } else {
+        format!(
+            "the content will be normalized before storing (a 请记住-style prefix and \
+             outer punctuation are stripped); {stored_chars} of {submitted_chars} characters would be stored"
+        )
+    }
 }
 
 /// The stderr half of the normalization disclosure (`update` lane only): the
@@ -1226,10 +1249,15 @@ fn normalization_clause(submitted_chars: usize, stored_chars: usize) -> String {
 /// stripped) without any cap being involved. Worded against the same
 /// misreading the truncation note guards — a script or human comparing the
 /// submitted text to the stored item must not conclude content was lost.
-fn note_normalization(lane: &str, submitted_chars: usize, stored_chars: usize) {
+fn note_normalization(
+    lane: &str,
+    submitted_chars: usize,
+    stored_chars: usize,
+    committed: bool,
+) {
     crate::note!(
         "memory {lane}: {}",
-        normalization_clause(submitted_chars, stored_chars)
+        normalization_clause(submitted_chars, stored_chars, committed)
     );
 }
 
@@ -1256,7 +1284,7 @@ fn disclose_normalization(
     }
     human.push_str(&format!(
         "\nNote: {}",
-        normalization_clause(submitted_chars, stored_chars)
+        normalization_clause(submitted_chars, stored_chars, true)
     ));
 }
 
@@ -1658,7 +1686,12 @@ the memory profile instead)",
         // lane carries both halves (`note_normalization` at its mirror
         // site); the add lane was missing the stderr half, so a
         // stderr-capturing consumer saw an unexplained shrink.
-        note_normalization("add", collapsed.chars().count(), expected.chars().count());
+        note_normalization(
+            "add",
+            collapsed.chars().count(),
+            expected.chars().count(),
+            true,
+        );
     }
     if !replaced.is_empty() {
         if let Some(object) = value.as_object_mut() {
@@ -1847,10 +1880,15 @@ fn update(
             &truncation.cap_clause,
         );
     } else if let Some(truncation) = truncation.as_ref().filter(|t| t.is_normalized()) {
+        // Round-48 review: fired at measurement time — BEFORE the write — so
+        // the wording is prospective (the truncation note's round-37
+        // discipline): a subsequent not-found refusal must not leave stderr
+        // asserting characters that were never stored.
         note_normalization(
             "update",
             truncation.submitted_chars,
             truncation.stored_chars,
+            false,
         );
     }
     let patch = MemoryTextPatch {

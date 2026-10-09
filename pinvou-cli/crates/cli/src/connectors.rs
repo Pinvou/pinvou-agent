@@ -1635,7 +1635,18 @@ fn set_enabled(
             spec.id
         )));
     }
-    let connected = cli_connected(spec).unwrap_or(false);
+    // Round-48 review: a probe ERROR (wedged shim, timeout) no longer folds
+    // into "not connected" on the DESTRUCTIVE direction. `enable`'s purpose
+    // is turning the connector on; deleting the skill tree because the
+    // status probe hung would remove the one artifact the CLI cannot
+    // restore (the show direction is app-only) — the module's own wedged
+    //-probe doctrine ("a panicked probe knows NOTHING about this connector")
+    // applies with even more force here. The gate still folds probe errors
+    // to not-connected for the GUI-parity SHOW decision; only the hide arm
+    // demands a clean probe verdict.
+    let probe = cli_connected(spec);
+    let connected = probe.as_ref().copied().unwrap_or(false);
+    let probe_errored = probe.is_err();
     // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
     // the connection state + the legacy `<id>_disabled` marker
     // (`skill_gate.rs::ConnectorGate::skills_should_show`); the plain-scope
@@ -1654,6 +1665,10 @@ fn set_enabled(
     // app's embedded bundle.
     let skills_removed = if skills_should_show {
         false
+    } else if probe_errored {
+        // Probe unknown on the destructive direction: leave the tree in
+        // place and say so.
+        false
     } else {
         hide_connector_skills(kind)?;
         true
@@ -1671,6 +1686,11 @@ fn set_enabled(
         // one that already kept its skills) leaves the skill files exactly
         // as they are, and the "deferred" phrasing would imply pending work.
         "skills refresh: nothing to do (skill files match the current state)".to_owned()
+    } else if probe_errored {
+        // Round-48 review: name the probe-unknown case — the tree stays and
+        // a rerun (with a healthy shim) decides, instead of the misleading
+        // "deferred to the desktop app".
+        "skills refresh: left in place (connection probe failed — rerun once the connector CLI responds)".to_owned()
     } else {
         "skills refresh: deferred to the desktop app (embedded bundle unpack is app-only)"
             .to_owned()
@@ -2069,8 +2089,10 @@ fn ensure_cli_execution_verdict(
 ) -> Result<CliOutcome, CliError> {
     if !cli_installed(spec) {
         return Err(CliError::failed(format!(
-            "{} CLI is present on disk but will not execute; retry with `connectors ensure-cli` \
-             after repairing the file's permissions",
+            "{} CLI is present on disk but will not execute (or its `--version` output could \
+             not be parsed); retry with `connectors ensure-cli` after repairing the file's \
+             permissions — and if the repair does not help, the pinned vendor's version output \
+             format may have changed and needs a package update",
             spec.display_name
         )));
     }
@@ -2314,6 +2336,23 @@ fn open_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
             "cannot create the connector lock directory: {error}"
         ))
     })?;
+    // Round-48 review: create the lock at 0600 like every other file this
+    // family creates. The file is empty, but flock needs no write
+    // permission — on a shared/group home, any local account that can READ
+    // an 0644 lock file could hold LOCK_EX and wedge every future
+    // `ensure-cli` behind this command's documented blocking wait.
+    #[cfg(unix)]
+    let install_lock_file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(install_lock_dir.join("connector-install.lock"))
+            .map_err(|error| CliError::failed(format!("cannot open the install lock: {error}")))?
+    };
+    #[cfg(not(unix))]
     let install_lock_file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -2729,7 +2768,14 @@ fn find_file_by_name(dir: &Path, name: &str) -> Option<PathBuf> {
                 return Some(found);
             }
         } else if path.file_name().map(|n| n == name).unwrap_or(false) {
-            return Some(path);
+            // Round-48 review: a regular FILE only. The doc says "first
+            // regular file"; accepting any non-directory let a planted
+            // FIFO (defence-in-depth: the archive is hash-pinned, but this
+            // walk is the module's stated inner wall) hang `sha256_file`
+            // on open with no deadline.
+            if metadata.is_file() {
+                return Some(path);
+            }
         }
     }
     None
@@ -4796,6 +4842,16 @@ mod tests {
     /// prints a usage screen and exits 1.
     #[test]
     fn tar_children_carry_the_operand_separator_after_the_archive() {
+        // Round-48 review: soft-skip on a tar-less host like the sibling
+        // `run_with_timeout` tests do — the assertion needs a real tar.
+        if std::process::Command::new("tar")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping tar separator test: tar binary not available");
+            return;
+        }
         let workspace = std::env::temp_dir().join(format!(
             "pinvou-cli-connectors-tar-sep-{}-{}",
             std::process::id(),
