@@ -581,6 +581,14 @@ impl SkillMarketplaceManager {
         // matches the rest of the lane (import_lock → store file_lock); the
         // deny-first gates run BEFORE install in every caller and take no
         // import lock, so no new nesting is introduced.
+        // Round-26 review (disclosed residual): this mutex is process-local.
+        // A same-id UNIFIED IMPORT landing in ANOTHER process holds the
+        // cross-process landing lease; this lane does not take that lease
+        // (closing it needs a held-lease variant so the nested MCP companion
+        // cleanup cannot self-deadlock — see the pipeline comment in
+        // plugin_import), so a cross-process skill-install-vs-import of the
+        // same id can still interleave; the consent gate re-registers
+        // deny-first on the next touch, and §3.2 registers the window.
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
@@ -924,6 +932,11 @@ impl SkillMarketplaceManager {
         // `uninstall_and_strip_scope` that same guard also spans the scope
         // strip (round-12 review B2 — the strip never runs after the
         // lock-protected teardown returned).
+        // Round-26 review (disclosed residual): process-local mutex — a
+        // cross-process UNIFIED IMPORT of the same id (which holds the
+        // landing lease this lane does not take) can still recycle a
+        // just-landed standalone pack between landing and record upsert;
+        // registered in §3.2 alongside the install twin above.
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         self.uninstall_locked(skill_id, &dir_name)
