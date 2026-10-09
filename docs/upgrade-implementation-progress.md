@@ -113,6 +113,19 @@ T06 does not certify later business workflows, an actual Keycloak OTP realm,
 production signing custody, PostgreSQL HA or acknowledged-state RPO=0. No race
 detector execution is claimed. Downloads retain no total or cumulative deadline.
 
+T07 preflight (2026-10-10): the separate service's
+`docs/signing-implementation-plan.md` at
+`a181b2eb352b064be3ad45fae1ee457498a4562c` on `feat/t07-signing-root` defines
+the implementation and real-provider acceptance boundaries. Both independent
+reviewers passed this plan; they did not certify T07 implementation. The product
+owner is being asked to select OpenBao Transit evaluation/implementation, an
+existing KMS/HSM integration, or further comparison. No route is assumed approved.
+Independent Root custody, provider lifecycle recovery, concrete-client trust,
+complete historical Release/Package archives and T08's same-transaction deny
+composition remain required. Protected append-only PostgreSQL archives are a
+proposal; production protection and restoration evidence remain outstanding.
+T07 is not completed and no production key or anchor has been provisioned.
+
 T03 still requires approved OS certification coverage, all-user/service data
 scope and finite preparation budgets. The product owner approved local health
 criteria, strict trustworthy time option A and the Go backend stack on 2026-10-09,
