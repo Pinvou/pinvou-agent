@@ -80,7 +80,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::support::{render, sandbox_home, success};
+use crate::support::{FamilyLockError, open_family_lock_file, render, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::platform::paths::pinvou3_home;
 
@@ -134,6 +134,18 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
                 .first()
                 .map(PathBuf::from)
                 .ok_or_else(|| CliError::usage("voice transcribe requires an audio PATH"))?;
+            // A `-`-prefixed token is an argv-decidable mistake (a truncated
+            // flag pair like `voice transcribe --text`), not a filename to
+            // resolve against the cwd: refusing it here keeps the exit-2
+            // usage contract instead of an exit-1 host failure about an
+            // unreadable `--text` path (same posture as `files ingest`; a
+            // bare trailing `--output` is answered one layer up by the
+            // dispatch spine's incomplete-global-pair error).
+            if path.to_string_lossy().starts_with('-') {
+                return Err(CliError::usage(format!(
+                    "voice transcribe requires an audio PATH, got the option-like token {path:?}"
+                )));
+            }
             if rest.len() > 1 {
                 return Err(CliError::usage("voice transcribe accepts no options"));
             }
@@ -935,26 +947,22 @@ fn asr_install_human(steps: &[String], engine: bool, ffmpeg: bool, model: bool) 
 /// alive alongside its write guard.
 fn asr_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     // `sandbox_home` already ran in `execute`, so the lock cannot land in a
-    // cwd-relative directory.
-    let dir = pinvou3_home().join("locks");
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CliError::failed(format!(
+    // cwd-relative directory. Shared family helper (round-49, the
+    // memory/scheduled conversion wave): one copy of the directory-create
+    // and open this site hand-rolled, and the file is tightened to 0600 on
+    // every open so a lock left at the umask default by an older build heals
+    // instead of staying readable by every local account. The arms map onto
+    // the exact messages the hand-rolled pair produced.
+    let file = open_family_lock_file("voice-asr-install.lock").map_err(|error| match error {
+        FamilyLockError::CreateDir { dir, error } => CliError::failed(format!(
             "voice asr-install: cannot create {}: {error}",
             dir.display()
-        ))
+        )),
+        FamilyLockError::Open { path, error } => CliError::failed(format!(
+            "voice asr-install: cannot open {}: {error}",
+            path.display()
+        )),
     })?;
-    let path = dir.join("voice-asr-install.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!(
-                "voice asr-install: cannot open {}: {error}",
-                path.display()
-            ))
-        })?;
     Ok(fd_lock::RwLock::new(file))
 }
 

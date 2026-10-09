@@ -567,6 +567,29 @@ fn voice_rejects_invalid_usage_with_exit_two() {
     }
 }
 
+#[test]
+fn voice_transcribe_refuses_option_shaped_positional_at_parse() {
+    // A truncated flag pair like `voice transcribe --text` must die in the
+    // parse layer with the family's exit-2 usage class, naming the token —
+    // not parse as a PATH and die at execute with exit 1 ("cannot read
+    // --text"), the same argv-decidable posture as `files ingest`. Because
+    // parse_args rejects it, execute is never reached and nothing runs.
+    // (A bare trailing `--output` never reaches this family: the dispatch
+    // spine answers it with the global incomplete-pair usage error at
+    // lib.rs, so the family-level pin uses tokens the family really sees.)
+    for token in ["-o", "--text", "--output-file"] {
+        let arguments = ["pinvou", "voice", "transcribe", token];
+        let error = parse_args(&arguments).expect_err(token);
+        assert_usage(&error, token);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("option-like token {token:?}")),
+            "the usage error must name the offending token {token:?}: {error}"
+        );
+    }
+}
+
 /// The ASR env overrides (like `PINVOU3_ASR_CMD`) configure engines without
 /// PATH; a hermetic voice test must clear them for the duration and restore
 /// them after. Caller holds ENV_LOCK.
@@ -1386,6 +1409,10 @@ fn deps_rejects_invalid_usage_with_exit_two() {
         vec!["pinvou", "deps", "install"],
         vec!["pinvou", "deps", "install", "--yes"],
         vec!["pinvou", "deps", "install", "ffmpeg", "--nope"],
+        // The single-dash consent form is not a package name either: the
+        // parse layer refuses any option-shaped token with the usage class
+        // (round-48), so pin the `-y` arm next to the `--`-arm above.
+        vec!["pinvou", "deps", "install", "ffmpeg", "-y"],
     ];
     for arguments in invalid {
         let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());

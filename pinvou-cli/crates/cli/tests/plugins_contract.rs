@@ -610,6 +610,11 @@ fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
         .unwrap();
         let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
         ids.push(value["id"].as_str().expect("string id").to_owned());
+        assert_eq!(
+            value["hot_refresh"],
+            serde_json::json!("not_broadcast"),
+            "the JSON import payload must carry the hot-refresh fact the human note states"
+        );
     }
     assert_ne!(ids[0], ids[1], "distinct names must yield distinct ids");
     assert!(
@@ -636,6 +641,11 @@ fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
         std::fs::write(dir.join("SKILL.md"), format!("body for {name}")).unwrap();
         let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
         ids.push(value["id"].as_str().expect("string id").to_owned());
+        assert_eq!(
+            value["hot_refresh"],
+            serde_json::json!("not_broadcast"),
+            "the JSON import payload must carry the hot-refresh fact the human note states"
+        );
     }
     assert_ne!(
         ids[0], ids[1],
@@ -1151,8 +1161,18 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
     );
 
     // JSON carries the same fact as the note, and a reinstall exercises the
-    // disclosed consequence (the tool would come back still authorized).
-    run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
+    // disclosed consequence (the tool would come back still authorized). The
+    // reinstall parses the install payload so the docs-promised hot-refresh
+    // fact is pinned on the JSON side of the install lane too, not just the
+    // scope toggles.
+    let value = run_json(&["pinvou", "plugins", "tools", "install", "qcc"]);
+    assert_eq!(value["id"], serde_json::json!("qcc"));
+    assert_eq!(value["action"], serde_json::json!("installed"));
+    assert_eq!(
+        value["hot_refresh"],
+        serde_json::json!("not_broadcast"),
+        "the JSON install must carry the hot-refresh fact the human note states"
+    );
     let value = run_json(&["pinvou", "plugins", "tools", "uninstall", "qcc", "--yes"]);
     assert_eq!(value["id"], serde_json::json!("qcc"));
     assert_eq!(value["action"], serde_json::json!("uninstalled"));
@@ -1165,6 +1185,11 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
         value["oauth_tokens_kept"],
         serde_json::json!(true),
         "the JSON uninstall must carry the kept-OAuth-tokens fact"
+    );
+    assert_eq!(
+        value["hot_refresh"],
+        serde_json::json!("not_broadcast"),
+        "the JSON uninstall must carry the hot-refresh fact the human note states"
     );
 
     let installed_only = run_ok(&["pinvou", "plugins", "tools", "list", "--installed-only"]);
@@ -1403,7 +1428,16 @@ fn skills_preset_install_update_uninstall_round_trip() {
         "message: {message}"
     );
 
-    run_ok(&["pinvou", "plugins", "skills", "install", "visualizer"]);
+    // The install call parses its own payload so the docs-promised
+    // `hot_refresh` fact is pinned on the JSON side of the skills-install
+    // lane (the list payload below proves the install landed either way).
+    let value = run_json(&["pinvou", "plugins", "skills", "install", "visualizer"]);
+    assert_eq!(value["id"], serde_json::json!("visualizer"));
+    assert_eq!(
+        value["hot_refresh"],
+        serde_json::json!("not_broadcast"),
+        "the JSON skills install must carry the hot-refresh fact the human note states"
+    );
     let value = run_json(&["pinvou", "plugins", "skills", "list"]);
     let visualizer = value["skills"]
         .as_array()
@@ -1554,8 +1588,16 @@ fn recycle_round_trip_via_fixture() {
     assert!(dest.is_file());
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
 
-    // Restore puts the skill back on the market list.
-    run_ok(&["pinvou", "plugins", "recycle", "restore", FIXTURE_ZIP_SKILL]);
+    // Restore puts the skill back on the market list. The restore call
+    // parses its own payload so the docs-promised `hot_refresh` merge into
+    // the serialized DTO (round-48) stays pinned alongside the list check.
+    let value = run_json(&["pinvou", "plugins", "recycle", "restore", FIXTURE_ZIP_SKILL]);
+    assert_eq!(
+        value["hot_refresh"],
+        serde_json::json!("not_broadcast"),
+        "the JSON recycle restore must carry the hot-refresh fact the human note states"
+    );
+    assert_eq!(value["credentials_required"], serde_json::json!(false));
     let value = run_json(&["pinvou", "plugins", "skills", "list"]);
     let restored = value["skills"]
         .as_array()
