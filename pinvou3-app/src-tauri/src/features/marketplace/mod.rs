@@ -1970,6 +1970,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         for (skill_id, owner) in companion_owners.iter() {
             let skill_id = skill_id.as_str();
             let owner = owner.as_str();
+            // Round-26 review (minor): a residue manifest can declare the
+            // tool's OWN id in `companion_skills` (the manifest is read
+            // verbatim, never validated against the tool id). The physical
+            // uninstall below would then re-lock the per-id import mutex the
+            // retired-tool sweep already holds across `uninstall_leased` —
+            // a non-reentrant std Mutex on the boot thread, i.e. a boot
+            // hang. The tool's own teardown is this very call, so a
+            // self-companion entry is garbage: skip it loudly.
+            if skill_id == tool_id {
+                log::warn!(
+                    "[marketplace] residue manifest of {tool_id} declares itself as its own companion skill; skipping the self-companion cleanup entry"
+                );
+                continue;
+            }
             // On the Upload-recycle path the package directory (the
             // companions' own copies included) has already moved into the
             // recycle bin inside this transaction: there is nothing to

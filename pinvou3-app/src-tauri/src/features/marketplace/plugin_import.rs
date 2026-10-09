@@ -1389,7 +1389,17 @@ pub fn import_plugin_package_gated(
     // import had just registered. The lease is the liveness signal the
     // reconcile probes (and the uninstall / retired sweep hold): held from
     // here until the end of this call, it makes the whole mark→gate→land→
-    // register span mutually exclusive against every same-id peer. Declared
+    // register span mutually exclusive against every LEASE-HOLDING same-id
+    // peer — the MCP uninstall and restore take it blocking, the boot
+    // reconcile and retired sweep probe it with try-and-defer. NOT covered
+    // (round-26 review, disclosed in §3.2): the skill lane's install /
+    // uninstall serialize in-process on the per-id import mutex only, and
+    // the boot python-repair downgrade runs under the transaction lock only
+    // — a cross-process skill-uninstall-vs-import of the same id can still
+    // interleave; closing that needs the same lease in those lanes (with an
+    // uninstall_leased-style held-lease variant for the nested companion
+    // cleanup), registered as follow-up.
+    // Declared
     // before the landing guard on purpose: locals drop in reverse order, so
     // the guard clears the mark while this process still holds the lease.
     // Blocking `write()`: a peer's same-id import waits out here instead of
