@@ -14,8 +14,11 @@ const appRoot = path.join(repoRoot, "pinvou3-app");
 // DevTools endpoint within the 30 s launch window, and a single UI assertion
 // can sample a stalled render. One retry of the failing smoke absorbs that
 // class of flake, while a real regression still fails both attempts and stops
-// the gate. Exit code 2 is the smoke scripts' deterministic dependency-skip
-// contract (a line-start `SKIP:` marker); retrying cannot change that outcome.
+// the gate. Exit code 2 means a deliberate dependency skip (the smoke prints a
+// line-start `SKIP:` marker and exits 2; that pairing is machine-enforced for
+// the user-journey smokes by scripts/tests/test_user_journey_skip_contract.py
+// and followed by convention elsewhere), so retrying cannot change it and the
+// runner keys on the exit code alone.
 const DEFAULT_ATTEMPTS = 2;
 const RETRY_SETTLE_MS = 5000;
 

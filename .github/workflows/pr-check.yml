@@ -507,7 +507,8 @@ jobs:
     # smokes from their actual base/head diff. Shared, unknown, test-infrastructure,
     # and empty diffs fail closed to the complete smoke set. Each selected smoke is
     # retried once to absorb transient hosted-runner flakes; the 25-minute cap
-    # covers the worst case of one full suite plus one rerun of its biggest smoke.
+    # covers setup plus one full pass and a single rerun of the biggest smoke,
+    # while a run with several independent flakes hits the cap and fails.
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 25

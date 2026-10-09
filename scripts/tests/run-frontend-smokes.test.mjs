@@ -1,10 +1,28 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { parseSelection, runSelected } from "../run-frontend-smokes.mjs";
 
 const item = (kind, target) => ({ kind, target });
 const label = ({ kind, target }) => `${kind}:${target}`;
+
+const runnerCli = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "run-frontend-smokes.mjs",
+);
+
+const runRunnerCli = (args, input) =>
+  spawnSync(process.execPath, [runnerCli, ...args], {
+    input,
+    encoding: "utf8",
+    timeout: 15000,
+  });
 
 test("parseSelection reads the selector's kind<TAB>target lines", () => {
   assert.deepEqual(
@@ -111,4 +129,87 @@ test("runSelected retries real failures of any other exit code", async () => {
     /ui assertion failed/,
   );
   assert.equal(attempts, 2);
+});
+
+test("the CLI fails closed on an empty --selected stdin", () => {
+  const result = runRunnerCli(["--selected"], "");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /failing closed/);
+});
+
+test("the CLI rejects unknown usage with exit code 2", () => {
+  const result = runRunnerCli([], "");
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /usage:/);
+});
+
+test("runSelected waits out the settle window before retrying", async () => {
+  const settleMs = 60;
+  let attempts = 0;
+  const started = performance.now();
+  await runSelected([item("npm", "flaky")], {
+    settleMs,
+    warn: () => {},
+    run: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient");
+    },
+  });
+  assert.equal(attempts, 2);
+  assert.ok(
+    performance.now() - started >= settleMs,
+    "the retry must wait the settle window",
+  );
+});
+
+const writeSelfCountingSmoke = async (dir, name, log, exitCode) => {
+  const script = path.join(dir, name);
+  await writeFile(
+    script,
+    [
+      `import { appendFileSync } from "node:fs";`,
+      `appendFileSync(${JSON.stringify(log)}, "run\\n");`,
+      ...(exitCode === 2 ? [`console.log("SKIP: chrome unavailable");`] : []),
+      `process.exit(${exitCode});`,
+      "",
+    ].join("\n"),
+  );
+  return script;
+};
+
+test("a real exit-2 skip runs once and never triggers a retry", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "smoke-runner-skip-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const log = path.join(dir, "attempts.log");
+  const script = await writeSelfCountingSmoke(dir, "skip_smoke.mjs", log, 2);
+  const warnings = [];
+  await assert.rejects(
+    runSelected([item("node", script)], {
+      settleMs: 0,
+      warn: (message) => warnings.push(message),
+    }),
+    (error) =>
+      error.exitCode === 2 && /exited with status 2/.test(error.message),
+  );
+  assert.equal(await readFile(log, "utf8"), "run\n");
+  assert.deepEqual(warnings, []);
+});
+
+test("a real failing smoke is retried once and then fails the gate", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "smoke-runner-fail-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const log = path.join(dir, "attempts.log");
+  const script = await writeSelfCountingSmoke(dir, "fail_smoke.mjs", log, 1);
+  const warnings = [];
+  await assert.rejects(
+    runSelected([item("node", script)], {
+      settleMs: 0,
+      warn: (message) => warnings.push(message),
+    }),
+    (error) =>
+      error.exitCode === 1 && /exited with status 1/.test(error.message),
+  );
+  assert.equal(await readFile(log, "utf8"), "run\nrun\n");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /failed on attempt 1\/2 .*exited with status 1\)/);
 });
