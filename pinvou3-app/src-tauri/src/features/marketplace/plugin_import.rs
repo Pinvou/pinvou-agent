@@ -2018,12 +2018,14 @@ mod tests {
             std::fs::create_dir_all(&staged).unwrap();
             std::fs::write(staged.join("plugin.json"), r#"{"new":true}"#).unwrap();
             crate::features::marketplace::store::BundleStore::new()
-                .upsert(crate::features::marketplace::store::BundleRecord::installed_now(
-                    "re-old",
-                    crate::features::marketplace::store::BundleSource::Upload(
-                        "re-old.zip".to_string(),
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "re-old",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "re-old.zip".to_string(),
+                        ),
                     ),
-                ))
+                )
                 .unwrap();
             mark_landing("re-old");
 

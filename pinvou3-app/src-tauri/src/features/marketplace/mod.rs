@@ -3059,7 +3059,9 @@ mod tests {
                 match &self.prev_keyring_valve {
                     // SAFETY: platform::paths::tests::ENV_LOCK held for the
                     // whole harness call; env writes are serialized.
-                    Some(v) => unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v) },
+                    Some(v) => unsafe {
+                        std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v)
+                    },
                     // SAFETY: platform::paths::tests::ENV_LOCK held for the
                     // whole harness call; env writes are serialized.
                     None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
