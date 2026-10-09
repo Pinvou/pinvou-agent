@@ -139,6 +139,7 @@ jobs:
           node --test
           scripts/tests/sync-version.test.mjs
           scripts/tests/select-frontend-smokes.test.mjs
+          scripts/tests/run-frontend-smokes.test.mjs
           scripts/tests/pr-check-routing.test.mjs
 
       - name: 校验 VERSION 与各版本文件一致
@@ -504,10 +505,13 @@ jobs:
     # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖。
     # Draft runs lint/build/logic tests. Ready PRs and merge groups select browser
     # smokes from their actual base/head diff. Shared, unknown, test-infrastructure,
-    # and empty diffs fail closed to the complete smoke set.
+    # and empty diffs fail closed to the complete smoke set. Each selected smoke is
+    # retried once to absorb transient hosted-runner flakes; the 25-minute cap
+    # covers setup plus one full pass and a single rerun of the biggest smoke,
+    # while a run with several independent flakes hits the cap and fails.
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: pinvou3-app
@@ -583,6 +587,11 @@ jobs:
           test -n "$chrome"
           echo "CHROME=$chrome" >> "$GITHUB_ENV"
 
+      # The runner retries each selected smoke once so a transient runner
+      # flake (headless Chrome missing its 30 s DevTools-endpoint launch
+      # window) cannot evict a healthy PR from the merge queue; it fails
+      # closed on an empty selection, which also covers a masked upstream
+      # pipeline failure (select-frontend-smokes never emits an empty set).
       - name: Ready PR 定向浏览器 smoke
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
         env:
@@ -591,14 +600,7 @@ jobs:
         run: |
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
             | node ../scripts/select-frontend-smokes.mjs \
-            > "$RUNNER_TEMP/frontend-smokes.tsv"
-          while IFS="$(printf '\t')" read -r kind target; do
-            case "$kind" in
-              npm) npm run "$target" ;;
-              node) node "$target" ;;
-              *) echo "未知 smoke 类型: $kind" >&2; exit 1 ;;
-            esac
-          done < "$RUNNER_TEMP/frontend-smokes.tsv"
+            | node ../scripts/run-frontend-smokes.mjs --selected
 
       - name: Merge Queue diff-selected browser smoke
         if: ${{ github.event_name == 'merge_group' }}
@@ -608,14 +610,7 @@ jobs:
         run: |
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
             | node ../scripts/select-frontend-smokes.mjs \
-            > "$RUNNER_TEMP/frontend-smokes.tsv"
-          while IFS="$(printf '\t')" read -r kind target; do
-            case "$kind" in
-              npm) npm run "$target" ;;
-              node) node "$target" ;;
-              *) echo "Unknown smoke kind: $kind" >&2; exit 1 ;;
-            esac
-          done < "$RUNNER_TEMP/frontend-smokes.tsv"
+            | node ../scripts/run-frontend-smokes.mjs --selected
 
   relay-test:
     name: relay-test
