@@ -1814,17 +1814,23 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     // The DenyAll computed default and the install-sync exemption already
     // exclude builtin ids, so legitimate internal callers are unaffected.
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
+    // Round-26 review (minor): the input fold reads the bundles manifests,
+    // not the locked state, so it belongs ABOVE the exclusive section (same
+    // shape as enable_packages_in_scope / apply_restore_consent_gate_impl) —
+    // the OS-lock hold narrows to the pure JSON RMW instead of a full
+    // manifest walk plus per-row canonicalize. (The round-23 hoist had
+    // already collapsed the walk to once per list; this moves that walk out
+    // of the lock entirely.)
+    let tools = MarketplaceManager::new().available_tools();
+    let mut normalized: Vec<String> = ids
+        .iter()
+        .map(|id| to_package_id_with(&tools, id))
+        .collect();
+    // Read-side normalization dedups anyway; persist deduped so repeated
+    // toggles cannot accumulate duplicate entries on disk.
+    let mut seen = std::collections::HashSet::new();
+    normalized.retain(|id| seen.insert(id.clone()));
     with_scope_file_lock(|| {
-        // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
-        let tools = MarketplaceManager::new().available_tools();
-        let mut normalized: Vec<String> = ids
-            .iter()
-            .map(|id| to_package_id_with(&tools, id))
-            .collect();
-        // Read-side normalization dedups anyway; persist deduped so repeated
-        // toggles cannot accumulate duplicate entries on disk.
-        let mut seen = std::collections::HashSet::new();
-        normalized.retain(|id| seen.insert(id.clone()));
         let mut file = load_disabled_bundles_file_locked();
         let key = scope.as_str().to_string();
         let was_uninitialized = !file.initialized.contains(&key);
@@ -1953,17 +1959,21 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
     // function (not just the command layer) so every caller inherits it —
     // same layering as the disable path (review round-5 minor 3).
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
+    // Round-26 review (minor): the input fold reads the bundles manifests,
+    // not the locked state, so it belongs ABOVE the exclusive section (same
+    // shape as enable_packages_in_scope / apply_restore_consent_gate_impl) —
+    // the OS-lock hold narrows to the pure JSON RMW instead of a full
+    // manifest walk plus per-row canonicalize.
+    let tools = MarketplaceManager::new().available_tools();
+    let mut normalized: Vec<String> = ids
+        .iter()
+        .map(|id| to_package_id_with(&tools, id))
+        .collect();
+    // Read-side normalization dedups anyway; persist deduped so repeated
+    // toggles cannot accumulate duplicate entries on disk.
+    let mut seen = std::collections::HashSet::new();
+    normalized.retain(|id| seen.insert(id.clone()));
     with_scope_file_lock(|| {
-        // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
-        let tools = MarketplaceManager::new().available_tools();
-        let mut normalized: Vec<String> = ids
-            .iter()
-            .map(|id| to_package_id_with(&tools, id))
-            .collect();
-        // Read-side normalization dedups anyway; persist deduped so repeated
-        // toggles cannot accumulate duplicate entries on disk.
-        let mut seen = std::collections::HashSet::new();
-        normalized.retain(|id| seen.insert(id.clone()));
         let mut file = load_disabled_bundles_file_locked();
         file.hidden_scopes
             .insert(scope.as_str().to_string(), normalized);
