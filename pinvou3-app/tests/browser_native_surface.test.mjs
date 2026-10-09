@@ -858,7 +858,7 @@ test('popup reuses only a fully begun lease and other popups become User-control
     nativeHost.indexOf('.on_new_window'),
     nativeHost.indexOf('let webview = match window.add_child'),
   );
-  assert.match(popupHandler, /popup_agent_authorization/);
+  assert.match(popupHandler, /retain_agent_operation_for_popup\(&popup_session_id, &popup_tab_token\)/);
   assert.match(popupHandler, /create_popup_tab\(&session_id, url\.to_string\(\), authorization\)/);
   assert.doesNotMatch(popupHandler, /agent_input_in_progress/);
   assert.doesNotMatch(popupHandler, /agent_initiated/);

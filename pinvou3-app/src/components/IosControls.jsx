@@ -111,7 +111,7 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
 
   return (
     <div
-      className={`inline-flex shrink-0 items-center ${compact ? 'h-9 gap-1 rounded-[14px] p-1' : 'gap-3 max-sm:gap-1'} ${className}`}
+      className={`inline-flex shrink-0 items-center gap-3 max-sm:gap-1 ${className}`}
       style={{
         background: 'transparent',
         boxShadow: 'none',
@@ -127,7 +127,7 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
             data-testid={testId}
             aria-pressed={selected}
             onClick={() => onChange && onChange(key)}
-            className={`inline-flex items-center justify-center whitespace-nowrap transition-colors ${compact ? 'h-7 gap-1.5 rounded-[10px] px-3 text-[13px] font-semibold' : 'h-9 gap-2 px-3 text-[24px] font-normal tracking-tight max-sm:h-8 max-sm:gap-1.5 max-sm:px-2 max-sm:text-[17px]'} ` + (selected ? 'text-[rgba(0,0,0,.90)] dark:text-[rgba(255,255,255,.90)]' : 'text-[rgba(60,60,67,.42)] dark:text-[rgba(235,235,245,.50)]')}
+            className={`inline-flex items-center justify-center whitespace-nowrap transition-colors h-9 gap-2 px-3 text-[24px] font-normal tracking-tight max-sm:h-8 max-sm:gap-1.5 max-sm:px-2 max-sm:text-[17px] ` + (selected ? 'text-[rgba(0,0,0,.90)] dark:text-[rgba(255,255,255,.90)]' : 'text-[rgba(60,60,67,.42)] dark:text-[rgba(235,235,245,.50)]')}
             >
             {Icon ? <Icon size={15} /> : null}
             {label ? <span>{label}</span> : null}

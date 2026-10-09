@@ -92,6 +92,12 @@ pub fn process_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Returns the bundled Node.js runtime reused from codex-bridge (unix).
+/// Consumers fall back to PATH discovery when the runtime is absent.
+pub fn bundled_node() -> Option<PathBuf> {
+    crate::platform::paths::bundled_connector_node()
+}
+
 /// Restricts a sensitive directory to the current user on POSIX systems.
 pub fn make_private_dir(path: &Path) {
     use std::os::unix::fs::PermissionsExt;

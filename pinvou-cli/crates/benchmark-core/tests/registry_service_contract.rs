@@ -71,7 +71,6 @@ impl BenchmarkAdapter for FixtureAdapter {
         Ok(BenchmarkPlan::new(vec![BenchmarkTask::new(
             "raw-task",
             None,
-            None,
             ExecutionRequest::native_turn(
                 PrivateInputHandle::new("private-input"),
                 vec![],

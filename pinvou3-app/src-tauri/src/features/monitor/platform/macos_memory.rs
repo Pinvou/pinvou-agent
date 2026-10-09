@@ -1,41 +1,20 @@
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-use super::super::RamSnapshot;
+use super::super::{RamSnapshot, TtlSnapshotCache};
 
-/// RAM 快照缓存(3s TTL)。mirror `monitor.rs::gpu_snapshot` 的
-/// `OnceLock<Mutex<Cache>>` 模式:监控页 1s interval 常开时,ram_snapshot 每次会
-/// 串行 fork+exec 三次(vm_stat / sysctl hw.memsize / sysctl vm.swapusage),
-/// 缓存避免每秒 3 次 spawn 的 CPU/IO 开销,以及 `Command::output()` 阻塞 wait
-/// 累积延迟拖慢采样。常驻量仅几个 u64,Mutex 锁持有时间极短。
-#[derive(Default)]
-struct RamSnapshotCache {
-    sampled_at: Option<Instant>,
-    value: Option<RamSnapshot>,
-}
-
+/// RAM 快照缓存(3s TTL)。`OnceLock<Mutex<TtlSnapshotCache>>` 模式与
+/// `gpu_snapshot` 共用（见 [`super::super::TtlSnapshotCache`]）：监控页 1s
+/// interval 常开时,ram_snapshot 每次会串行 fork+exec 三次(vm_stat / sysctl
+/// hw.memsize / sysctl vm.swapusage),缓存避免每秒 3 次 spawn 的 CPU/IO 开销,
+/// 以及 `Command::output()` 阻塞 wait 累积延迟拖慢采样。常驻量仅几个 u64,
+/// Mutex 锁持有时间极短;采样失败时同样保留上次有效值。
 pub fn ram_snapshot() -> Option<RamSnapshot> {
-    static RAM_CACHE: OnceLock<Mutex<RamSnapshotCache>> = OnceLock::new();
-    let cache = RAM_CACHE.get_or_init(|| Mutex::new(RamSnapshotCache::default()));
+    static RAM_CACHE: OnceLock<Mutex<TtlSnapshotCache<RamSnapshot>>> = OnceLock::new();
+    let cache = RAM_CACHE.get_or_init(|| Mutex::new(TtlSnapshotCache::default()));
     let mut guard = cache.lock();
-    if guard
-        .sampled_at
-        .is_some_and(|sampled_at| sampled_at.elapsed() < Duration::from_secs(3))
-    {
-        return guard.value.clone();
-    }
-    let value = ram_snapshot_uncached();
-    guard.sampled_at = Some(Instant::now());
-    if let Some(snapshot) = value {
-        guard.value = Some(snapshot.clone());
-        Some(snapshot)
-    } else {
-        // 与 gpu_snapshot 一致:采样失败时保留上次有效值,避免监控页在
-        // "正常数据" 与 "不可用" 之间闪烁(vm_stat 偶发卡顿时不丢 UI)。
-        guard.value.clone()
-    }
+    guard.get_or_sample(ram_snapshot_uncached)
 }
 
 fn ram_snapshot_uncached() -> Option<RamSnapshot> {

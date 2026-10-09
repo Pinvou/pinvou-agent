@@ -521,8 +521,6 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       notify();
     }
   }
-async function compactNow() { return pinvouSharedtauriInteraction().compactNow(); }
-
 
     return {
       refreshSuperPerm,
@@ -552,7 +550,6 @@ async function compactNow() { return pinvouSharedtauriInteraction().compactNow()
       submitUserInput,
       cancelUserInput,
       editLastTurn,
-      compactNow,
     };
   };
 })();

@@ -219,7 +219,6 @@ const zhConfirmCopy = {
   confirmKeyChordMasked: (chord, count) => chord ? `按下组合键 ${chord} + ${count} 个隐藏字符` : `按下 ${count} 个隐藏字符`,
   confirmHoldKeyMasked: (chord, count, ms) => chord ? `按住 ${chord} + ${count} 个隐藏字符 ${ms} 毫秒` : `按住 ${count} 个隐藏字符 ${ms} 毫秒`,
   confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
-  confirmMouseMove: (point) => `移动鼠标到 ${point}`,
   confirmMouseDown: (button) => `按下${button}`,
   confirmMouseUp: (button) => `松开${button}`,
 };
@@ -295,20 +294,29 @@ assert.deepEqual(
   { description: 'english fallback', preview: null, previewTooLong: false },
   'a scroll confirm falls back to the summary (scroll is never screened/blocked)',
 );
+// Canonical names: the Rust backend emits left_mouse_down/left_mouse_up (T3
+// confirmation-required actions), mapped through CANONICAL_ACTION_FIELDS.
 assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_move', point: { x: 9, y: 10 } })),
-  { description: '移动鼠标到 (9, 10)', preview: null, previewTooLong: false },
-  'a mouse move renders the target point',
-);
-assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'left' })),
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'left_mouse_down', button: null })),
   { description: '按下左键', preview: null, previewTooLong: false },
-  'a mouse down renders the button',
+  'a canonical mouse down renders the mapped button',
 );
 assert.deepEqual(
-  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_up', button: 'right' })),
-  { description: '松开右键', preview: null, previewTooLong: false },
-  'a mouse up renders the button',
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'left_mouse_up', button: null })),
+  { description: '松开左键', preview: null, previewTooLong: false },
+  'a canonical mouse up renders the mapped button',
+);
+// Bare kinds still render (switch-level coverage), request button wins over
+// the mapped default.
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'right' })),
+  { description: '按下右键', preview: null, previewTooLong: false },
+  'a mouse down renders the requested button',
+);
+assert.deepEqual(
+  formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_up', button: 'middle' })),
+  { description: '松开中键', preview: null, previewTooLong: false },
+  'a mouse up renders the requested button',
 );
 // Legacy payload generation: no structured fields — the English summary is
 // the only content and must pass through verbatim.
@@ -574,7 +582,6 @@ const dialogCopy = {
   confirmKeyChord: (chord) => `Press ${chord}`,
   confirmHoldKey: (chord, ms) => `Hold ${chord} for ${ms} ms`,
   confirmDrag: (from, to) => `Drag from ${from} to ${to}`,
-  confirmMouseMove: (point) => `Move mouse to ${point}`,
   confirmMouseDown: (button) => `Press and hold the ${button} mouse button`,
   confirmMouseUp: (button) => `Release the ${button} mouse button`,
   actionFailed: (error) => `Action failed: ${error}`,

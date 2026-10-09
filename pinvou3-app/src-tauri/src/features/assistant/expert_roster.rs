@@ -231,8 +231,7 @@ fn bounded_with_ellipsis(value: &str, limit: usize) -> String {
 /// `<` 查询匹配不到 `\u003c` 文本），还往 overlay 塞 `\u003c` 噪声。
 /// 不可见字符剥除与限长如实标注仍然生效。
 fn bounded_profile_text(value: &str) -> String {
-    let sanitized = crate::features::personas::strip_invisible_chars(value);
-    bounded_with_ellipsis(&sanitized, PROFILE_DESCRIPTION_CHAR_LIMIT)
+    crate::features::personas::bounded_visible(value, PROFILE_DESCRIPTION_CHAR_LIMIT)
 }
 
 /// 专家角色 id：`exp-<slug>`。前缀自成命名空间（也与旧版默认角色隔开）；

@@ -2,14 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use benchmark_core::{CompletedRun, OfficialScoreReport, PrivatePredictionContentType, TaskStatus};
 
-use crate::{GAIA_LEVEL, GAIA_SPLIT, GaiaDataset};
+use crate::{GAIA_DURABLE_PREDICTION_TYPE, GAIA_LEVEL, GAIA_SPLIT, GaiaDataset};
 
 pub const GAIA_SCORER_RUNTIME_PROFILE: &str = "hf-spaces-python-3.10-unicode-13.0";
 
 const ASCII_PUNCTUATION: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
-// `gaia-final/v1` is the task output contract. Core persists the resolved
-// payload under its concrete content type, which is the run-bound scorer tag.
-const GAIA_DURABLE_PREDICTION_TYPE: &str = "utf8-text/v1";
 // Zero code points for every Unicode 13.0 `Nd` block used by the pinned
 // Hugging Face Spaces default Python 3.10 runtime profile. Each block contains
 // exactly ten contiguous decimal digits.

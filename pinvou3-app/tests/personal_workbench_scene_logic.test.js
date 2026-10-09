@@ -13,11 +13,17 @@ const sceneRegistryCode = fs.readFileSync(sceneRegistryPath, 'utf8')
   .replace(/\bexport\s+/g, '');
 const stripSceneRegistryImport = (code) => code
   .replace(/^import[\s\S]*?from '\.\/scene-registry\.js';\r?\n/m, '');
+const stripSceneRoutesImport = (code) => code
+  .replace(/^import[\s\S]*?from '\.\/work-scene-routes\.js';\r?\n/m, '');
 const code = stripSceneRegistryImport(fs.readFileSync(logicPath, 'utf8'))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
+const workSceneRoutesPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'work-scene-routes.js');
+const workSceneRoutesCode = stripSceneRegistryImport(fs.readFileSync(workSceneRoutesPath, 'utf8'))
+  .replace(/\bexport\s+\{[^}]+\};?/g, '')
+  .replace(/\bexport\s+/g, '');
 const visualPosterPath = path.join(__dirname, '..', 'src', 'features', 'chat', 'visual-poster-scene.js');
-const visualPosterCode = stripSceneRegistryImport(fs.readFileSync(visualPosterPath, 'utf8'))
+const visualPosterCode = stripSceneRegistryImport(stripSceneRoutesImport(fs.readFileSync(visualPosterPath, 'utf8')))
   .replace(/\bexport\s+\{[^}]+\};?/g, '')
   .replace(/\bexport\s+/g, '');
 
@@ -25,6 +31,7 @@ const ctx = {};
 vm.createContext(ctx);
 vm.runInContext(`${sceneRegistryCode}
 ${code}
+${workSceneRoutesCode}
 ${visualPosterCode}
 this.PERSONAL_WORKBENCH_SCENE_KEY = PERSONAL_WORKBENCH_SCENE_KEY;
 this.PERSONAL_WORKBENCH_TEMPLATES = PERSONAL_WORKBENCH_TEMPLATES;
@@ -121,20 +128,14 @@ assert.match(defaultPayload, /用户需求：\n运动$/);
 
 const meta = createPersonalWorkbenchMessageMeta('生成一个任务看板', 3);
 assert.strictEqual(meta.pinvouScene, 'work:personal-workbench');
-assert.strictEqual(meta.pinvouTemplateId, 'task-board');
-assert.strictEqual(meta.pinvouTemplateTitle, '任务看板');
 assert.ok(!Object.prototype.hasOwnProperty.call(meta, 'pinvouPayloadText'));
 
 const metaById = createPersonalWorkbenchMessageMeta('生成一个任务看板', 'task-board');
 assert.strictEqual(metaById.pinvouScene, 'work:personal-workbench');
-assert.strictEqual(metaById.pinvouTemplateId, 'task-board');
-assert.strictEqual(metaById.pinvouTemplateTitle, '任务看板');
 assert.ok(!Object.prototype.hasOwnProperty.call(metaById, 'pinvouPayloadText'));
 
 const sceneOnlyMeta = createPersonalWorkbenchMessageMeta('运动');
 assert.strictEqual(sceneOnlyMeta.pinvouScene, 'work:personal-workbench');
-assert.strictEqual(sceneOnlyMeta.pinvouTemplateId, undefined);
-assert.strictEqual(sceneOnlyMeta.pinvouTemplateTitle, undefined);
 assert.match(sceneOnlyMeta.pinvouPayloadText, /个人数字工作台/);
 assert.match(sceneOnlyMeta.pinvouPayloadText, /用户需求：\n运动$/);
 

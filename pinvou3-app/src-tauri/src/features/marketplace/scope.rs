@@ -581,9 +581,6 @@ pub(crate) fn to_package_id(raw: &str) -> String {
 
 /// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
 /// hoist): one `available_tools()` walk serves the whole id list instead of
-/// one per entry.
-/// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
-/// hoist): one `available_tools()` walk serves the whole id list instead of
 /// one per entry. `pub(crate)` since round-37 P3 (review #455): the builtin
 /// writer guard hoists the same snapshot for its normalization loop.
 pub(crate) fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {

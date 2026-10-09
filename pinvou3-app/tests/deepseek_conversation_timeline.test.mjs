@@ -207,7 +207,6 @@ try {
     ],
   });
   assert.equal(rawMarkdownProjection.turns[0].items[0].text, '## Result\n\n- item');
-  assert.equal(rawMarkdownProjection.turns[0].items[0].copyText, undefined);
   assert.deepEqual(
     rawMarkdownProjection.turns[0].items[0].copyOptions,
     { allowScheduledTaskDraft: false },

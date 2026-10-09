@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use adapter_gaia::{
@@ -158,4 +159,163 @@ fn fetch_source_and_errors_redact_paths_environment_names_and_tokens() {
         format!("{:?} {}", GaiaFetchError::Busy, GaiaFetchError::Busy),
         "gaia_fetch_in_progress gaia_fetch_in_progress"
     );
+}
+
+// A downstream SnapshotDownloader implementation can only see the public
+// `adapter_gaia` API. The request structs keep their fields private, so the
+// public getters are the only way for such an implementation to learn the
+// repository, revision, file paths, token, expected metadata, and budget of
+// the preflight/download contract it is asked to fulfill. This fixture
+// deliberately reads every one of those inputs, mirroring what a real
+// downloader (or the shipped HfSnapshotDownloader) must do.
+const PINNED_GAIA_REPO_ID: &str = "gaia-benchmark/GAIA";
+const PINNED_GAIA_PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
+const READING_DOWNLOADER_TOKEN_ENV: &str = "PINVOU_GAIA_READING_DOWNLOADER_TOKEN";
+const READING_DOWNLOADER_TOKEN_SENTINEL: &str = "gaia-reading-downloader-token";
+
+// The crate pins the parquet digest as a hex string; `GAIA_PARQUET_SHA256_BYTES`
+// is crate-private, so a downstream downloader parses the public hex itself.
+fn pinned_parquet_sha256() -> [u8; 32] {
+    let hex = adapter_gaia::GAIA_PARQUET_SHA256;
+    let mut digest = [0_u8; 32];
+    for (index, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * index..2 * index + 2], 16)
+            .expect("pinned digest hex must parse");
+    }
+    digest
+}
+
+#[derive(Default)]
+struct ObservedPreflight {
+    repo_id: String,
+    revision: String,
+    remote_paths: Vec<PathBuf>,
+    token: String,
+}
+
+#[derive(Default)]
+struct ObservedDownload {
+    repo_id: String,
+    revision: String,
+    remote_path: String,
+    token: String,
+    expected_remote_path: PathBuf,
+    expected_size: u64,
+    expected_sha256: Option<[u8; 32]>,
+    remaining_budget: u64,
+}
+
+#[derive(Default)]
+struct ReadingDownloader {
+    preflight_observation: Mutex<Option<ObservedPreflight>>,
+    download_observation: Mutex<Option<ObservedDownload>>,
+}
+
+impl SnapshotDownloader for ReadingDownloader {
+    fn preflight(
+        &self,
+        request: &SnapshotPreflightRequest<'_>,
+    ) -> Result<Vec<SnapshotFileMetadata>, SnapshotFetchFailure> {
+        *self.preflight_observation.lock().unwrap() = Some(ObservedPreflight {
+            repo_id: request.repo_id().to_owned(),
+            revision: request.revision().to_owned(),
+            remote_paths: request.remote_paths().to_vec(),
+            token: request.token().expose_to_backend().to_owned(),
+        });
+        // Echo each requested path back with the pinned official parquet
+        // size/digest so the manager proceeds to the download phase.
+        Ok(request
+            .remote_paths()
+            .iter()
+            .map(|path| {
+                SnapshotFileMetadata::new(
+                    path.clone(),
+                    adapter_gaia::GAIA_PARQUET_SIZE,
+                    pinned_parquet_sha256(),
+                )
+            })
+            .collect())
+    }
+
+    fn download(
+        &self,
+        request: &SnapshotDownloadRequest<'_>,
+        _destination: &Path,
+    ) -> Result<(), SnapshotFetchFailure> {
+        *self.download_observation.lock().unwrap() = Some(ObservedDownload {
+            repo_id: request.repo_id().to_owned(),
+            revision: request.revision().to_owned(),
+            remote_path: request.remote_path().to_owned(),
+            token: request.token().expose_to_backend().to_owned(),
+            expected_remote_path: request.expected().remote_path().to_path_buf(),
+            expected_size: request.expected().size(),
+            expected_sha256: request.expected().expected_sha256().copied(),
+            remaining_budget: request.remaining_budget(),
+        });
+        // The request contract, not the payload, is under test: record and
+        // fail so `acquire` surfaces DownloadFailed deterministically.
+        Err(SnapshotFetchFailure)
+    }
+}
+
+#[test]
+fn fetch_external_downloader_reads_every_request_field_through_public_api() {
+    let acquisition = TempDir::new("acquisition");
+    let worktree = TempDir::new("worktree");
+    let manager = GaiaSnapshotManager::new_with_optional_worktree(
+        acquisition.path(),
+        Some(worktree.path()),
+        ReadingDownloader::default(),
+    )
+    .unwrap();
+
+    unsafe {
+        std::env::set_var(
+            READING_DOWNLOADER_TOKEN_ENV,
+            READING_DOWNLOADER_TOKEN_SENTINEL,
+        );
+    }
+    let error = manager
+        .acquire(GaiaSource::TokenEnvironment(
+            READING_DOWNLOADER_TOKEN_ENV.into(),
+        ))
+        .unwrap_err();
+    unsafe { std::env::remove_var(READING_DOWNLOADER_TOKEN_ENV) };
+    assert_eq!(error, GaiaFetchError::DownloadFailed);
+
+    // Read the observations back through the public `downloader()` accessor.
+    let downloader = manager.downloader();
+    let preflight = downloader
+        .preflight_observation
+        .lock()
+        .unwrap()
+        .take()
+        .expect("preflight must observe the request");
+    assert_eq!(preflight.repo_id, PINNED_GAIA_REPO_ID);
+    assert_eq!(preflight.revision, adapter_gaia::GAIA_DATASET_REVISION);
+    assert_eq!(
+        preflight.remote_paths,
+        vec![PathBuf::from(PINNED_GAIA_PARQUET_PATH)]
+    );
+    assert_eq!(preflight.token, READING_DOWNLOADER_TOKEN_SENTINEL);
+
+    let download = downloader
+        .download_observation
+        .lock()
+        .unwrap()
+        .take()
+        .expect("download must observe the request");
+    assert_eq!(download.repo_id, PINNED_GAIA_REPO_ID);
+    assert_eq!(download.revision, adapter_gaia::GAIA_DATASET_REVISION);
+    assert_eq!(download.remote_path, PINNED_GAIA_PARQUET_PATH);
+    assert_eq!(download.token, READING_DOWNLOADER_TOKEN_SENTINEL);
+    assert_eq!(
+        download.expected_remote_path,
+        PathBuf::from(PINNED_GAIA_PARQUET_PATH)
+    );
+    assert_eq!(download.expected_size, adapter_gaia::GAIA_PARQUET_SIZE);
+    assert_eq!(download.expected_sha256, Some(pinned_parquet_sha256()));
+    // First download of the acquisition: the advertised budget is the full
+    // transfer cap (256 MiB) with nothing consumed yet.
+    assert_eq!(download.remaining_budget, 256 * 1024 * 1024);
 }

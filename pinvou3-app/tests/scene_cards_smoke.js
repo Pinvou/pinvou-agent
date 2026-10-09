@@ -313,16 +313,12 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
-      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
     };
   });
   rec('sending from work general injects no professional scene meta',
     workGeneralPayload &&
       workGeneralPayload.text === '普通工作问题' &&
-      !workGeneralPayload.scene &&
-      !workGeneralPayload.requiredSkill &&
-      !workGeneralPayload.requiredTool,
+      !workGeneralPayload.scene,
     JSON.stringify(workGeneralPayload));
 
   await page.evaluate(() => { window.__PINVOU_TEST_SENT_MESSAGES = []; });
@@ -349,8 +345,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      templateId: sent.meta && sent.meta.pinvouTemplateId,
-      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       textareaAfterSend: document.querySelector('textarea')?.value || '',
       userBubbleText: [...document.querySelectorAll('[data-testid="chat-message-user"], .chat-message-user')]
@@ -368,8 +362,6 @@ async function clickExactButton(page, text) {
       personalSceneOnlyPayload &&
       personalSceneOnlyPayload.text === '运动' &&
       personalSceneOnlyPayload.scene === 'work:personal-workbench' &&
-      !personalSceneOnlyPayload.templateId &&
-      !personalSceneOnlyPayload.templateTitle &&
       /个人数字工作台/.test(personalSceneOnlyPayload.payload || '') &&
       /用户需求：\n运动/.test(personalSceneOnlyPayload.payload || '') &&
       !/个人数字工作台/.test(personalSceneOnlyPayload.userBubbleText || '') &&
@@ -393,8 +385,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      templateId: sent.meta && sent.meta.pinvouTemplateId,
-      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       textareaAfterSend: document.querySelector('textarea')?.value || '',
     };
@@ -403,8 +393,6 @@ async function clickExactButton(page, text) {
     personalTemplateReplacedPayload &&
       personalTemplateReplacedPayload.text === longCustomWorkbenchPrompt &&
       personalTemplateReplacedPayload.scene === 'work:personal-workbench' &&
-      !personalTemplateReplacedPayload.templateId &&
-      !personalTemplateReplacedPayload.templateTitle &&
       /个人数字工作台/.test(personalTemplateReplacedPayload.payload || '') &&
       personalTemplateReplacedPayload.payload.includes(`用户需求：\n${longCustomWorkbenchPrompt}`) &&
       personalTemplateReplacedPayload.textareaAfterSend === '',
@@ -488,8 +476,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      templateId: sent.meta && sent.meta.pinvouTemplateId,
-      templateTitle: sent.meta && sent.meta.pinvouTemplateTitle,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       textareaAfterSend: document.querySelector('textarea')?.value || '',
     };
@@ -502,8 +488,6 @@ async function clickExactButton(page, text) {
       /请制作一个名为「个人账本」/.test(personalPayload.text || '') &&
       /用户补充需求：暗色模式/.test(personalPayload.text || '') &&
       personalPayload.scene === 'work:personal-workbench' &&
-      personalPayload.templateId === 'personal-ledger' &&
-      personalPayload.templateTitle === '个人账本' &&
       !personalPayload.payload &&
       personalPayload.textareaAfterSend === '',
     JSON.stringify({ personalTemplateSelected, personalPayload }));
@@ -545,8 +529,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
-      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       installs: window.__PINVOU_TEST_INSTALLS || [],
       status: document.querySelector('[data-testid="scene-capability-status"]')?.textContent || '',
@@ -556,8 +538,6 @@ async function clickExactButton(page, text) {
     documentPayload &&
       documentPayload.text === '写一份项目验收通知' &&
       documentPayload.scene === 'work:document-writing' &&
-      documentPayload.requiredSkill === 'government-writing' &&
-      documentPayload.requiredTool === 'gongwen' &&
       documentPayload.installs.some(item => item.type === 'tool' && item.id === 'gongwen') &&
       /公文写作场景路由/.test(documentPayload.payload || '') &&
       /government-writing/.test(documentPayload.payload || '') &&
@@ -587,8 +567,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
-      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       installs: window.__PINVOU_TEST_INSTALLS || [],
     };
@@ -605,8 +583,6 @@ async function clickExactButton(page, text) {
       dataPayload &&
       dataPayload.text === '把近 7 天销售额做成趋势图' &&
       dataPayload.scene === 'design:data-visualization' &&
-      dataPayload.requiredSkill === 'visualizer' &&
-      !dataPayload.requiredTool &&
       dataPayload.installs.some(item => item.type === 'skill' && item.id === 'visualizer') &&
       /数据可视化场景路由/.test(dataPayload.payload || '') &&
       /visualizer/.test(dataPayload.payload || '') &&
@@ -634,8 +610,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       scene: sent.meta && sent.meta.pinvouScene,
-      requiredSkill: sent.meta && sent.meta.pinvouRequiredSkill,
-      requiredTool: sent.meta && sent.meta.pinvouRequiredTool,
       payload: sent.meta && sent.meta.pinvouPayloadText,
       installs: window.__PINVOU_TEST_INSTALLS || [],
     };
@@ -647,8 +621,6 @@ async function clickExactButton(page, text) {
       pptPayload &&
       pptPayload.text === '做一个 Q2 季度汇报 PPT' &&
       pptPayload.scene === 'design:ppt' &&
-      pptPayload.requiredSkill === 'pptx' &&
-      pptPayload.requiredTool === 'pptx' &&
       pptPayload.installs.some(item => item.type === 'tool' && item.id === 'pptx') &&
       /PPT 设计场景路由/.test(pptPayload.payload || '') &&
       /pptx/.test(pptPayload.payload || '') &&
@@ -774,7 +746,6 @@ async function clickExactButton(page, text) {
     return sent && {
       text: sent.text,
       pinvouScene: sent.meta && sent.meta.pinvouScene,
-      scene: sent.meta && sent.meta.pinvouDesignScene,
       payload: sent.meta && sent.meta.pinvouPayloadText,
     };
   });
@@ -782,7 +753,6 @@ async function clickExactButton(page, text) {
       posterPayload &&
       posterPayload.text === '设计一张科技峰会海报' &&
       posterPayload.pinvouScene === 'design:poster' &&
-      posterPayload.scene === 'poster' &&
       /视觉海报场景约束/.test(posterPayload.payload || '') &&
       /真实图片/.test(posterPayload.payload || '') &&
       /真实质感主视觉/.test(posterPayload.payload || '') &&
@@ -1187,7 +1157,7 @@ async function clickExactButton(page, text) {
     const sent = (window.__PINVOU_TEST_SENT_MESSAGES || [])[0] || null;
     return sent && {
       text: sent.text,
-      scene: sent.meta && sent.meta.pinvouDesignScene,
+      scene: sent.meta && sent.meta.pinvouScene,
       payload: sent.meta && sent.meta.pinvouPayloadText,
     };
   });
@@ -1195,7 +1165,7 @@ async function clickExactButton(page, text) {
     designAiSent &&
       /当前选中的/i.test(designAiSent.text || '') &&
       /把标题颜色改成蓝色/.test(designAiSent.text || '') &&
-      designAiSent.scene === 'poster' &&
+      designAiSent.scene === 'design:poster' &&
       /视觉海报场景约束/.test(designAiSent.payload || ''),
     JSON.stringify(designAiSent));
   await page.click('[data-testid="design-selected-details-toggle"]');

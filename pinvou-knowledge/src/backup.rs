@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -11,7 +11,6 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 const BACKUP_FORMAT: u32 = 1;
@@ -437,7 +436,10 @@ fn preserve_current_host_state(data_dir: &Path, staged_database: &Path) -> Resul
          INSERT INTO devices SELECT * FROM current_host.devices;
          DELETE FROM shares;
          DELETE FROM join_requests;
-         DELETE FROM invites;
+         -- invites 已退役（新库不再建表）。IF EXISTS 保证旧备份仍可恢复；
+         -- 反向降级不兼容：旧版二进制恢复本备份时，其无 IF EXISTS 的
+         -- DELETE FROM invites 会在缺表的新库上报错。
+         DROP TABLE IF EXISTS invites;
          DELETE FROM meta WHERE key IN ('server_id','server_identity','server_name','host_owner_device_id');
          INSERT INTO meta(key,value)
            SELECT key,value FROM current_host.meta
@@ -456,7 +458,9 @@ fn clear_host_state(database: &Path) -> Result<(), String> {
             "BEGIN IMMEDIATE;
              DELETE FROM shares;
              DELETE FROM join_requests;
-             DELETE FROM invites;
+             -- invites 已退役；IF EXISTS 保证旧格式库仍可清理（降级不兼容，
+             -- 同 preserve_current_host_state 处注释）。
+             DROP TABLE IF EXISTS invites;
              DELETE FROM devices;
              DELETE FROM meta WHERE key IN ('server_id','server_identity','server_name','host_owner_device_id');
              COMMIT;",
@@ -633,17 +637,7 @@ fn create_database_snapshot(database: &Path, snapshot: &Path) -> Result<(), Stri
 
 fn hash_file(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let digest = hasher.finalize();
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    crate::hash_file_sha256(&mut file, 64 * 1024).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

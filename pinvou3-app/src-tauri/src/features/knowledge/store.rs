@@ -236,6 +236,23 @@ pub struct FileHit {
 /// as "no limit at all".
 pub(crate) const SEARCH_LIMIT_CAP: usize = 1000;
 
+/// FTS5 文本的最短字符数：≥ 该值走 trigram FTS，否则 LIKE 兜底。文件检索
+/// （[`Store::search`]）与 chunk 检索（`l1::search_fts`）共用一个阈值，
+/// 避免两条检索路径各自漂移。
+pub(crate) const FTS_MIN_CHARS: usize = 3;
+
+/// FTS5 MATCH 的短语字面量：双引号包成字符串字面量做子串匹配，内部引号
+/// 翻倍转义。文件与 chunk 两条 FTS 路径共用同一拼写。
+pub(crate) fn fts_phrase(q: &str) -> String {
+    format!("\"{}\"", q.replace('"', "\"\""))
+}
+
+/// LIKE 兜底的模式串：`%` 包裹，内容剥掉 `%`/`_` 通配符（见
+/// [`escape_like`]）。文件与 chunk 两条 LIKE 路径共用同一拼写。
+pub(crate) fn like_pattern(q: &str) -> String {
+    format!("%{}%", escape_like(q))
+}
+
 /// 秒搜查询条件。`text` 为名/路径子串；其余为结构化过滤。
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
@@ -513,20 +530,19 @@ impl Store {
 
         // Text present with >=3 chars goes to FTS; the branch holds the Some
         // value directly, avoiding a repeated unwrap.
-        if let Some(t) = text.filter(|t| t.chars().count() >= 3) {
+        if let Some(t) = text.filter(|t| t.chars().count() >= FTS_MIN_CHARS) {
             sql.push_str(
                 "SELECT f.id, f.path, f.name, f.ext, f.size, f.mtime \
                  FROM files_fts JOIN files f ON f.id = files_fts.rowid \
                  WHERE f.status='indexed' AND f.is_dir=0 AND files_fts MATCH ?",
             );
-            // trigram：双引号包成字符串字面量做子串匹配，内部引号翻倍转义。
-            let t = t.replace('"', "\"\"");
-            vals.push(Value::Text(format!("\"{t}\"")));
+            // trigram：短语字面量拼写见 [`fts_phrase`]。
+            vals.push(Value::Text(fts_phrase(t)));
         } else {
             sql.push_str("SELECT f.id, f.path, f.name, f.ext, f.size, f.mtime FROM files f WHERE f.status='indexed' AND f.is_dir=0");
             if let Some(t) = text {
                 sql.push_str(" AND (f.name LIKE ? OR f.path LIKE ?)");
-                let like = format!("%{}%", escape_like(t));
+                let like = like_pattern(t);
                 vals.push(Value::Text(like.clone()));
                 vals.push(Value::Text(like));
             }

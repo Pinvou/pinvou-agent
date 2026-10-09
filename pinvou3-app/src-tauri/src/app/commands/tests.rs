@@ -24,7 +24,7 @@ fn generic_file_staging_preserves_the_gui_image_wrapper_contract() {
         "attachments",
     )
     .unwrap();
-    let image = stage_image_in_workspace(
+    let image = stage_file_in_workspace(
         source.to_str().unwrap(),
         "wrapper.png",
         workspace.path(),
@@ -2156,7 +2156,7 @@ fn staged_targets_never_follow_preexisting_dangling_symlinks() {
         return;
     }
 
-    let staged_image = stage_image_in_workspace(
+    let staged_image = stage_file_in_workspace(
         source.to_string_lossy().as_ref(),
         "source.png",
         &workspace,
@@ -2288,7 +2288,7 @@ fn atomic_staging_keeps_legal_image_and_text_behavior() {
     let source = workspace.join("source.png");
     std::fs::write(&source, b"image bytes").expect("source");
 
-    let image = stage_image_in_workspace(
+    let image = stage_file_in_workspace(
         source.to_string_lossy().as_ref(),
         "safe.png",
         &workspace,

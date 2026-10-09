@@ -85,7 +85,6 @@ function enqueueSettingsWrite(write) { return pinvouSharedtauriSettings().enqueu
 async function submitFeedback(request) { return pinvouSharedtauriSettings().submitFeedback(request); }
 async function discoverLocalVllm(request) { return pinvouSharedtauriSettings().discoverLocalVllm(request); }
 
-async function getEffectiveModelConfig(...args) { return pinvouSharedtauriSettings().getEffectiveModelConfig(...args); }
   // 当前有效模型的图片输入能力(普通会话选图即时警告用);后端按会话模型绑定解析。
 async function getImageInputCapability(...args) { return pinvouSharedtauriSettings().getImageInputCapability(...args); }
 
@@ -175,7 +174,6 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       saveSearchSettingsAndRestart,
       submitFeedback,
       discoverLocalVllm,
-      getEffectiveModelConfig,
       getImageInputCapability,
       loadModels,
       saveModel,

@@ -475,9 +475,6 @@ function pinvouSharedtauriVoice() {
       current.push(Object.assign({ recorded_at: new Date().toISOString() }, diagnostic));
       localStorage.setItem(key, JSON.stringify(current.slice(-50)));
     } catch { /* diagnostics persistence is best-effort */ }
-    try {
-      window.dispatchEvent(new CustomEvent("pinvou:voice-pipeline-diagnostic", { detail: diagnostic }));
-    } catch { /* event dispatch is best-effort */ }
   }
 
 function setVoiceInputStatus(status, patch) { return pinvouSharedtauriVoice().setVoiceInputStatus(status, patch); }
@@ -673,16 +670,11 @@ function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtau
 
   // A 60s 16kHz 16bit WAV is ~1.9MB; shipping it across IPC as a JSON number array means
   // ~1.92M elements, multiple copies, ~25MB peak memory. Use a standard base64 string
-  // (with padding), the same chunked encoding as the web lane's encodeBase64Bytes.
+  // (with padding); encoding delegates to the shared chunked encoder loaded by index.html
+  // (PinvouChunkedFileUpload.bytesToBase64, the same 0x8000 apply-chunked hot path as the
+  // web lane's encodeBase64Bytes).
   function encodeVoiceBase64Bytes(bytes) {
-    let binary = "";
-    const chunkSize = 0x8000;
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-      const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
-      // chunk only holds 0-255 byte values; fromCharCode/fromCodePoint are equivalent. Keep the apply-chunked hot path.
-      binary += String.fromCharCode.apply(null, chunk); // eslint-disable-line unicorn/prefer-code-point
-    }
-    return window.btoa(binary);
+    return root.PinvouChunkedFileUpload.bytesToBase64(bytes);
   }
 
   // The model occasionally wraps the whole output in a ``` fence; strip only fully enclosing

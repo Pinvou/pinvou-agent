@@ -76,7 +76,10 @@ export const desktopOnlyBridgeApi = {
   // on the web (the webAccessAdmin capability bit is always false).
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
   // One-click install of missing dependencies elevates via pkexec apt and is unavailable on the web (the dependencyInstall
-  // capability bit is always false); the re-check (check_dependencies) is shared by both hosts.
+  // capability bit is always false). The check_dependencies command is likewise not web-allowlisted: checkDependencies
+  // stays in the expected list above (the JS facade exists on both hosts), but the Rust command is policy-denied on web,
+  // and the web hides the whole dependency section behind that capability bit — do not move checkDependencies into this
+  // desktop-only list.
   dependencies: ['installDependencies'],
 };
 

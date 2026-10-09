@@ -6,15 +6,13 @@
 import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
 import { dict } from '../../shared/i18n.js';
+import { personaOverlayFor } from '../../shared/persona-overlay.js';
     // 部门标签按当前 UI 语言取词(t.depts),中文词典(dict.zh.depts)兜底
 export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (dict.zh.depts && dict.zh.depts[k]) || k; }
     // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
 export function personaText(c, t) {
-      const L = t && t.langTag;
-      if (!c || !L || L === 'zh' || c.source === 'user') return c || {};
-      const overlays = window.PERSONA_I18N;
-      const tr = (overlays && overlays[c.id] && overlays[c.id][L]) || null;
-      if (!tr) return c;
+      const tr = personaOverlayFor(c, t && t.langTag);
+      if (!tr) return c || {};
       return { ...c, name: tr.name || c.name, description: tr.description || c.description };
     }
 export const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','gis','security','supply-chain','hr','legal','tool'];
@@ -61,8 +59,8 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
             <div style={{ width:2, height:52, background: isDark?'linear-gradient(#3a3a3c,#5a5a5e)':'linear-gradient(#d1d1d6,#aeaeb2)' }}></div>
             <div className="w-2.5 h-2.5 rounded-full -mt-1 mb-2 bg-[#e8e8ed] dark:bg-[#1c1c1e] border-2 border-[#c7c7cc] dark:border-[#48484a]"></div>
             {/* 卡片 */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: lanyard-card click is a mouse shortcut; the keyboard path is served by controls inside the card-pool popover */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: lanyard-card click hot zone; not a standalone interactive control */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: swap hot-zone click is a mouse shortcut; the keyboard path is served by controls inside the card-pool popover */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: swap hot zone; not a standalone interactive control */}
             <div onClick={onOpenPicker} title={t.cpLanyardSwap}
               className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5 bg-[#fff] dark:bg-[#1C1C1E] border border-[rgba(0,0,0,.06)] dark:border-[#2c2c2e]"
               style={{ boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>

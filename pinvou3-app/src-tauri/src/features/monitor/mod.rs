@@ -144,35 +144,54 @@ async fn sample_all_with_cpu(state: &MonitorState, cpu: Option<CpuSnapshot>) -> 
     }
 }
 
-/// Return GPU telemetry: NVIDIA probe (nvidia-smi) first, then the platform
-/// sampler (Windows performance counters / macOS ioreg IOAccelerator).
-fn gpu_snapshot() -> Option<GpuSnapshot> {
-    static GPU_CACHE: OnceLock<Mutex<GpuSnapshotCache>> = OnceLock::new();
-    let cache = GPU_CACHE.get_or_init(|| Mutex::new(GpuSnapshotCache::default()));
-    let mut guard = cache.lock();
-    if guard
-        .sampled_at
-        .is_some_and(|sampled_at| sampled_at.elapsed() < Duration::from_secs(3))
-    {
-        return guard.value.clone();
-    }
-    let value = nvidia_gpu_snapshot().or_else(platform::gpu_snapshot);
-    guard.sampled_at = Some(Instant::now());
-    if let Some(snapshot) = value {
-        guard.value = Some(snapshot.clone());
-        Some(snapshot)
-    } else {
-        // Windows performance counters occasionally time out or return no samples.
-        // Keep the last good local compute snapshot so the UI does not flicker
-        // between valid data and "unavailable" during normal polling.
-        guard.value.clone()
+/// 3 秒 TTL 的「保留上次好值」采样缓存，`OnceLock<Mutex<…>>` 模式下由
+/// `gpu_snapshot` 与 macOS `ram_snapshot` 共用。TTL 窗口内直接返回缓存值；
+/// 过期则调 `sample` 重采样并刷新时间戳。采样失败时保留上次成功值——避免
+/// 监控页在「有效数据」与「不可用」之间闪烁（Windows 性能计数器偶发超时/
+/// 无样本、vm_stat 偶发卡顿时 UI 不丢数据）。
+struct TtlSnapshotCache<T> {
+    sampled_at: Option<Instant>,
+    value: Option<T>,
+}
+
+impl<T> Default for TtlSnapshotCache<T> {
+    fn default() -> Self {
+        Self {
+            sampled_at: None,
+            value: None,
+        }
     }
 }
 
-#[derive(Default)]
-struct GpuSnapshotCache {
-    sampled_at: Option<Instant>,
-    value: Option<GpuSnapshot>,
+impl<T: Clone> TtlSnapshotCache<T> {
+    fn get_or_sample(&mut self, sample: impl FnOnce() -> Option<T>) -> Option<T> {
+        if self
+            .sampled_at
+            .is_some_and(|sampled_at| sampled_at.elapsed() < Duration::from_secs(3))
+        {
+            return self.value.clone();
+        }
+        let value = sample();
+        self.sampled_at = Some(Instant::now());
+        if let Some(snapshot) = value {
+            self.value = Some(snapshot.clone());
+            Some(snapshot)
+        } else {
+            self.value.clone()
+        }
+    }
+}
+
+/// Return GPU telemetry: NVIDIA probe (nvidia-smi) first, then the platform
+/// sampler (Windows performance counters / macOS ioreg IOAccelerator). The
+/// probe may pull up a subprocess (bounded by `GPU_PROBE_TIMEOUT`), so the
+/// result goes through the shared 3s TTL cache; a failed re-sample keeps the
+/// last good snapshot (see [`TtlSnapshotCache`]).
+fn gpu_snapshot() -> Option<GpuSnapshot> {
+    static GPU_CACHE: OnceLock<Mutex<TtlSnapshotCache<GpuSnapshot>>> = OnceLock::new();
+    let cache = GPU_CACHE.get_or_init(|| Mutex::new(TtlSnapshotCache::default()));
+    let mut guard = cache.lock();
+    guard.get_or_sample(|| nvidia_gpu_snapshot().or_else(platform::gpu_snapshot))
 }
 
 /// 子进程 GPU 探测的统一兜底预算（nvidia-smi / macOS ioreg / Windows 性能

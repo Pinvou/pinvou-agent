@@ -182,9 +182,7 @@ async fn snapshot_for_model_config(
     let mut request = client.get(models_url).timeout(Duration::from_secs(3));
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
         if is_anthropic_endpoint(upstream) {
-            request = request
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01");
+            request = crate::core::model_endpoint::apply_anthropic_auth_headers(request, key);
         } else {
             request = request.bearer_auth(key);
         }

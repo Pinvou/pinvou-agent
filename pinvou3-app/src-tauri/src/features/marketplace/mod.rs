@@ -649,9 +649,9 @@ pub fn unavailable_tool_names() -> Vec<String> {
 /// via `tool_search` and keeps using the locally retained credentials.
 pub(crate) const NATIVE_PACKAGE_TOOLS: &[(&str, &str)] = &[("ima_openapi", "ima-skills")];
 
-/// Unavailable native tool names for a scope: a native tool is denied whenever
-/// its owning package is not installed, or the owning package is disabled or
-/// hidden for that scope — the same availability rule the package's skills
+/// Unavailable native tool names: a native tool is denied whenever its owning
+/// package is not installed, or the owning package is disabled or hidden —
+/// the same availability rule the package's skills
 /// follow (`unavailable_bundles_for` = disabled ∪ hidden;
 /// `resolve_scope_disabled_ids` already counts installed skill owner packages
 /// in the DenyAll fallback, so an uninitialized DenyAll scope denies without
@@ -659,10 +659,7 @@ pub(crate) const NATIVE_PACKAGE_TOOLS: &[(&str, &str)] = &[("ima_openapi", "ima-
 /// owner is resolved through the GATING mapping (`skill_gating_owner`) — the
 /// disabled/hidden sets carry normalized owner pack ids (`to_package_id`), so
 /// the check must use the same mapping the writers normalized with.
-fn native_unavailable_tool_names_for(
-    _scope: ConnectorScope,
-    unavailable: &[String],
-) -> Vec<String> {
+fn native_unavailable_tool_names(unavailable: &[String]) -> Vec<String> {
     let installed = skill_marketplace::SkillMarketplaceManager::new().installed_skill_ids();
     NATIVE_PACKAGE_TOOLS
         .iter()
@@ -680,7 +677,7 @@ pub fn unavailable_tool_names_for(scope: ConnectorScope) -> Vec<String> {
     // whole DenyAll expansion.
     let unavailable = unavailable_bundles_for(scope);
     let mut names = MarketplaceManager::new().model_tool_names(&unavailable);
-    names.extend(native_unavailable_tool_names_for(scope, &unavailable));
+    names.extend(native_unavailable_tool_names(&unavailable));
     // Builtin feature switches (docs/builtin-toolset-contract.md §3.3): tools
     // removed by the union semantics are scope-agnostic, so they merge into
     // every scope's engine gate (deduped).

@@ -154,8 +154,11 @@ const ComposerKbSelector = ({
       }
       return;
     }
-    if (explicitMountState) setOpen(false);
-    if (onMount) { onMount(collection.id); return; }
+    if (explicitMountState) {
+      setOpen(false);
+      if (onMount) onMount(collection.id);
+      return;
+    }
     if (!bridge.available) return;
     bridge.knowledge.mountCollection(collection.id);
   }
@@ -193,7 +196,10 @@ const ComposerKbSelector = ({
   }
   function unmount() {
     setOpen(false);
-    if (onUnmount) { onUnmount(); return; }
+    if (explicitMountState) {
+      if (onUnmount) onUnmount();
+      return;
+    }
     if (bridge.available) bridge.knowledge.unmountCollection();
   }
 

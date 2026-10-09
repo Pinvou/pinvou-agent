@@ -469,8 +469,11 @@ pub(super) fn unique_existing_files(files: impl IntoIterator<Item = PathBuf>) ->
     files
 }
 
+/// 去重键用全平台统一的路径同一性折叠（Windows 下大小写/分隔符不敏感），
+/// 与 projects/sessions/codex_acp/remote_knowledge 各域一致；裸字符串键会
+/// 把同一文件的不同拼写当成不同文件重复导入。
 fn path_key(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    crate::platform::os::filesystem_path_identity_key(&path.to_string_lossy())
 }
 
 #[cfg(test)]

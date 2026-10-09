@@ -445,10 +445,11 @@ impl SessionStore {
         // metadata.id differs from its filename — previously loadable, now
         // a hard error.
         if super::validators::is_aux_session_id(id) && session.metadata.id != id {
-            return Err(anyhow::Error::new(SessionIdMismatch {
-                requested: id.to_string(),
-                actual: session.metadata.id,
-            }));
+            bail!(
+                "session id mismatch: requested '{}' but record holds '{}'",
+                id,
+                session.metadata.id
+            );
         }
         Ok(session)
     }
@@ -1391,31 +1392,6 @@ pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
             .is_some_and(|e| e.kind() == ErrorKind::NotFound)
     })
 }
-
-/// The case-variant alias rejection of [`SessionStore::load`], as a typed
-/// error so callers can tell it apart from a transient read fault: on
-/// case-insensitive filesystems `AUX-<suffix>.json` resolves to the real
-/// `aux-…` record while case-sensitive identity tests miss the mismatch, so
-/// the load path fails closed and every downstream prefix/identity decision
-/// stays trustworthy regardless of filesystem case semantics. The message is
-/// kept byte-compatible with the previous `bail!` text.
-#[derive(Debug)]
-pub(crate) struct SessionIdMismatch {
-    requested: String,
-    actual: String,
-}
-
-impl std::fmt::Display for SessionIdMismatch {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "session id mismatch: requested '{}' but record holds '{}'",
-            self.requested, self.actual
-        )
-    }
-}
-
-impl std::error::Error for SessionIdMismatch {}
 
 /// True when `error` carries an `io::Error` of kind `InvalidData` anywhere in
 /// its chain — the "record is permanently unreadable" case (truncated body, a

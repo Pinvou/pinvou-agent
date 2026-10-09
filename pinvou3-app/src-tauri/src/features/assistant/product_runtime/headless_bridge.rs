@@ -1512,6 +1512,94 @@ mod tests {
         );
     }
 
+    /// Anti-drift sync between the two failure-code ends: every code
+    /// `classify_tool_failure` (product_runtime/mod.rs) can emit must be
+    /// accepted by `validated_tool_failure_code`, otherwise the safe-contract
+    /// bridge silently turns a real failure cause into `None` and the eval
+    /// transcript loses the reason. One assert per code, in the classifier's
+    /// branch order: removing or renaming a code on either side breaks this
+    /// test and forces both lists back in sync. A newly added code gets no
+    /// assert automatically — pair it with a new assert here (and a validator
+    /// arm when the code is meant to cross the bridge).
+    #[test]
+    fn every_classify_tool_failure_code_passes_validated_tool_failure_code() {
+        use super::super::classify_tool_failure;
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure(
+                "per-turn tool-call budget exhausted"
+            )),
+            Some("tool_call_budget_exhausted")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("host read-only turn policy")),
+            Some("host_read_only_blocked")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("host turn policy")),
+            Some("host_tool_blocked")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("blocked by network policy")),
+            Some("network_policy_blocked")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("private/loopback/link-local")),
+            Some("restricted_address")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("requires approval")),
+            Some("approval_required")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("missing `action`")),
+            Some("missing_action")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("invalid input")),
+            Some("invalid_arguments")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("api key")),
+            Some("search_provider_config")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("requires javascript")),
+            Some("dynamic_page_unreadable")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("content extraction failed")),
+            Some("content_extraction_failed")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("cloudflare challenge")),
+            Some("remote_access_denied")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("http status 500")),
+            Some("http_status_failed")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("no such file")),
+            Some("resource_not_found")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("timeout")),
+            Some("network_timeout")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("connection refused")),
+            Some("network_failed")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("permission")),
+            Some("policy_denied")
+        );
+        assert_eq!(
+            validated_tool_failure_code(classify_tool_failure("unclassifiable failure")),
+            Some("tool_execution_failed")
+        );
+    }
+
     #[test]
     fn gaia_final_recovery_is_limited_to_contract_and_tool_failures() {
         let outcome = |status: &str, failure_code: Option<&str>, text: &str| ProductTurnOutcome {

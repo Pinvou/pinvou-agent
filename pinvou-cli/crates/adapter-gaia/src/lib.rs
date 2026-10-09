@@ -2,6 +2,7 @@
 mod contract_tests;
 mod dataset;
 mod fetch;
+mod fs_guard;
 mod private_inputs;
 mod scorer;
 mod submission;
@@ -37,9 +38,37 @@ pub const GAIA_LEVEL: u8 = 1;
 pub const GAIA_PARQUET_SIZE: u64 = 39_524;
 pub const GAIA_PARQUET_SHA256: &str =
     "5e574b0faeb4603b816e426cf7c7aefb1fe398d32f9c4861e1a4e3304f2b1281";
+/// Byte form of [`GAIA_PARQUET_SHA256`], parsed at compile time so the hex
+/// string stays the single source of truth for the pinned parquet digest.
+pub(crate) const GAIA_PARQUET_SHA256_BYTES: [u8; 32] = parse_sha256_hex(GAIA_PARQUET_SHA256);
+
+const fn parse_sha256_hex(digest: &str) -> [u8; 32] {
+    const fn nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => panic!("sha256 digest must be lowercase hex"),
+        }
+    }
+    let bytes = digest.as_bytes();
+    assert!(bytes.len() == 64, "sha256 digest must have 64 hex digits");
+    let mut parsed = [0_u8; 32];
+    let mut index = 0;
+    while index < 32 {
+        parsed[index] = (nibble(bytes[2 * index]) << 4) | nibble(bytes[2 * index + 1]);
+        index += 1;
+    }
+    parsed
+}
 
 const GAIA_TOOL_POLICY: &str = "pinvou-gaia-public-web/v1";
 const GAIA_OUTPUT_CONTRACT: &str = "gaia-final/v1";
+
+/// Durable private prediction type tag shared with the GAIA scorer and
+/// submission writer. Core persists the resolved candidate answer under this
+/// concrete content type, which is the run-bound scorer tag used to reopen
+/// predictions offline.
+pub(crate) const GAIA_DURABLE_PREDICTION_TYPE: &str = "utf8-text/v1";
 
 pub struct GaiaAdapter {
     descriptor: BenchmarkDescriptor,
@@ -103,7 +132,6 @@ impl GaiaAdapter {
                     .collect();
                 BenchmarkTask::new(
                     task_id,
-                    Some("gaia".into()),
                     Some(GAIA_LEVEL.to_string()),
                     // No harness wall-clock deadline: the official GAIA
                     // protocol is not known to define one, so the run is

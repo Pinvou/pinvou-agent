@@ -4,6 +4,7 @@ import { can, isWeb } from '../../shared/platform.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
 import { loadArtifactPreview } from './artifact-preview.js';
+import { localizedVisualWarning } from './visual-warning.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- single-file preview: each branch maps to one kind (md/json/image/visual/error state); splitting would thread 5+ intermediate loading states through
@@ -27,6 +28,9 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
 
   const name = (path || '').split('/').pop();
   const labels = t.artifactPreview;
+  // 后端 VisualResult.warning 的原始文案是中文，不作为任何一端的 UI 文案：
+  // 已知 warning_code 渲染三语文案，未知/缺码时回退 previewUnsupported。
+  const visualWarning = localizedVisualWarning(preview.visual, labels);
   const canOpen = !isWeb || can('artifactDownload');
   const open = () => bridge.artifacts.openArtifactExternal?.(path, sessionId);
   // 懒语言注册完成后重算 md 预览(其余 kind 与语法无关,重算只会
@@ -57,9 +61,9 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
             : preview.kind === 'html' ? <ScaledHtmlPreview html={preview.text || ''} title={name} onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)} />
             : ['json', 'text'].includes(preview.kind) ? <pre className="text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed text-[#444746] dark:text-[#C4C7C5]">{preview.text}</pre>
             : preview.kind === 'image' ? (preview.imageError ? <div className="text-[13px] text-[#F28B82]">{labels.imageReadFailed(preview.imageError)}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={preview.dataUrl} alt={name} />)
-            : preview.visual?.mode === 'html' ? <iframe sandbox="allow-same-origin" title={name} className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(preview.visual.html || '') + OFFICE_HTML_STYLE} />
-            : preview.visual?.mode === 'images' ? <div className="flex flex-col items-center gap-3">{(preview.visual.images || []).map((src, index) => <img key={src} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${index + 1}`} />)}</div>
-            : <div><p className="text-[13px] mb-2 text-[#444746] dark:text-[#C4C7C5]">{labels.previewUnsupported}</p>{canOpen && <button type="button" onClick={open} className="px-3 py-1.5 rounded-full text-[13px] bg-[#0B57D0] dark:bg-[#A8C7FA] text-white dark:text-[#062E6F]">{isWeb ? labels.downloadArtifact : labels.openExternalArtifact}</button>}</div>}
+            : preview.visual?.mode === 'html' ? <div className="flex flex-col gap-2">{visualWarning && <div className="flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]"><span>⚠️ {visualWarning}</span></div>}<iframe sandbox="allow-same-origin" title={name} className="w-full min-h-[68vh] border-0 block bg-[#15171a]" style={{ colorScheme: 'dark' }} srcDoc={(preview.visual.html || '') + OFFICE_HTML_STYLE} /></div>
+            : preview.visual?.mode === 'images' ? <div className="flex flex-col items-center gap-3">{visualWarning && <div className="self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]"><span>⚠️ {visualWarning}</span></div>}{(preview.visual.images || []).map((src, index) => <img key={src} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${index + 1}`} />)}</div>
+            : <div><p className="text-[13px] mb-2 text-[#444746] dark:text-[#C4C7C5]">{visualWarning || labels.previewUnsupported}</p>{canOpen && <button type="button" onClick={open} className="px-3 py-1.5 rounded-full text-[13px] bg-[#0B57D0] dark:bg-[#A8C7FA] text-white dark:text-[#062E6F]">{isWeb ? labels.downloadArtifact : labels.openExternalArtifact}</button>}</div>}
         </div>
       </div>
     </div>

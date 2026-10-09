@@ -8,13 +8,6 @@ pub fn engine_binary_name() -> &'static str {
     "pinvou-asr.exe"
 }
 
-pub fn bundled_engine_intact(
-    _path: &std::path::Path,
-    _bundled_dir: Option<&std::path::Path>,
-) -> bool {
-    true
-}
-
 const ASR_MODEL_URL: &str = "https://www.modelscope.cn/models/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/master/sensevoice-small-q8.gguf";
 const ASR_MODEL_MIRROR_URL: &str =
     "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf";
@@ -49,23 +42,12 @@ pub fn asr_model_exists() -> bool {
 }
 
 pub fn asr_tool_exists() -> bool {
-    if let Ok(path) = std::env::var("PINVOU3_ASR_CMD") {
-        if !path.trim().is_empty() {
-            return crate::platform::os::command_exists(&path);
-        }
-    }
-    if let Ok(path) = std::env::var("PINVOU3_DEEPSPEECH2_CMD") {
-        if !path.trim().is_empty() {
-            return crate::platform::os::command_exists(&path);
-        }
-    }
-    if let Ok(path) = std::env::var("PADDLESPEECH_BIN") {
-        if !path.trim().is_empty() {
-            return crate::platform::os::command_exists(&path);
-        }
-    }
-    crate::platform::os::windows::bundled_asr_tool_path().is_some()
-        && crate::platform::os::windows::bundled_asr_backend_path().is_some()
+    // 就绪判定与执行路径（asr_tool_path）同判定：env 覆盖命令失效时如实报未就绪，
+    // 不落 bundled——否则面板报就绪而转写仍 spawn 失效路径（见 asr_ready_decision）。
+    super::asr_tool_exists_with_env(|| {
+        crate::platform::os::windows::bundled_asr_tool_path().is_some()
+            && crate::platform::os::windows::bundled_asr_backend_path().is_some()
+    })
 }
 
 pub fn asr_bundled_runtime_status() -> Option<bool> {

@@ -14,6 +14,15 @@ use tauri::{AppHandle, Manager};
 
 use crate::features::sessions::{ScheduledRunProfile, SessionStore};
 
+/// Per-turn `<system-reminder>` envelope assembly, shared by every path that
+/// prepends a reminder to the user message: the reminder body goes on its own
+/// line inside the envelope, followed by a blank line, then the untouched
+/// user content. Keeping one formatter ensures every injection site stays
+/// byte-identical (tests assert on the exact envelope shape).
+pub(super) fn wrap_system_reminder(body: &str, content: &str) -> String {
+    format!("<system-reminder>\n{body}\n</system-reminder>\n\n{content}")
+}
+
 pub(super) fn maybe_notify_task_completed(
     app: &AppHandle,
     session_id: &str,

@@ -17,14 +17,13 @@ import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 
 /**
  * Deliverable/output row record from `list_deliverable_index` (backend wire
- * shape; `session_id` is the legacy snake-case spelling of `sessionId`).
+ * shape).
  * @typedef {object} KnowledgeOutput
  * @property {string} path - Artifact file path.
  * @property {string} name - File name shown in lists and previews.
  * @property {string} [ext] - Lower-cased file extension.
  * @property {string} [category] - Output category key (web | doc | img | ppt).
  * @property {string} [sessionId] - Owning session id.
- * @property {string} [session_id] - Legacy snake-case session id.
  * @property {number} [mtime] - Modification time embedded in preview cache keys.
  * @property {string} [source] - Producer source tag.
  */
@@ -176,7 +175,7 @@ const OutputActions = ({ o, compact, small, stopPropagation, wrapperClassName, t
           </button>
         )}
         {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
-          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={guarded(() => bridge.artifacts.downloadArtifact(o.path, o.sessionId || o.session_id))}
+          <button type="button" title={t.uiKnowledge.downloadOutput} onClick={guarded(() => bridge.artifacts.downloadArtifact(o.path, o.sessionId))}
             className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
             <Download size={15} />
           </button>
@@ -264,7 +263,7 @@ const hasIntersectionObserver = () => typeof window !== 'undefined' && 'Intersec
 /** @param {{ o: KnowledgeOutput, onOpen?: () => void, outPreviewCache: { current: Record<string, OutputPreview> }, runQueuedPreview: (job: () => Promise<OutputPreview>) => Promise<OutputPreview>, rememberOutPreview: (key: string, preview: OutputPreview) => void, outCatMeta: (category: string | undefined) => { icon?: import('react').ComponentType<{ size?: number }>, color: string } }} props - Output preview inputs and shared cache helpers. */
 const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, rememberOutPreview, outCatMeta }) => {
         const ext = String(o.ext || '').toLowerCase();
-        const outputSessionId = o.sessionId || o.session_id || null;
+        const outputSessionId = o.sessionId || null;
         const cacheKey = `${outputSessionId || ''}|${o.path}|${o.mtime || 0}`;
         const boxRef = useRef(null);
         // Environments without IntersectionObserver count as visible directly (lazy init, equivalent to the old synchronous fallback inside the effect).
@@ -1188,7 +1187,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                 {rows.map((o) => (
                                     <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>{/* isDark dynamic-value: 保留 (multi-stop boxShadow) */}
-                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })} outPreviewCache={outPreviewCache} runQueuedPreview={runQueuedPreview} rememberOutPreview={rememberOutPreview} outCatMeta={outCatMeta} />
+                                      <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || null })} outPreviewCache={outPreviewCache} runQueuedPreview={runQueuedPreview} rememberOutPreview={rememberOutPreview} outCatMeta={outCatMeta} />
                                       <div className="px-5 pb-4">
                                         <div className="flex items-start gap-3 pt-1">
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
@@ -1225,7 +1224,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                 return (
                                   // biome-ignore lint/a11y/useKeyWithClickEvents: list-row click is a shortcut; keyboard path handled by the in-row action buttons
                                   // biome-ignore lint/a11y/noStaticElementInteractions: list-row click hot zone; not a standalone interactive control
-                                  <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || o.session_id || null })}
+                                  <div key={o.path} onClick={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || null })}
                                     className={TABLE_ROW_CLASS}>
                                     <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[minmax(0,1fr)_132px_176px] items-center gap-4">
                                       <div className="flex min-w-0 items-center gap-4">

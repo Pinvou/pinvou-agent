@@ -787,8 +787,8 @@ impl L1Store {
                 ord: r.get(5)?,
             })
         };
-        if q.chars().count() >= 3 {
-            let m = format!("\"{}\"", q.replace('"', "\"\""));
+        if q.chars().count() >= super::store::FTS_MIN_CHARS {
+            let m = super::store::fts_phrase(q);
             let mut stmt = c.prepare(
                 "SELECT d.id,k.text,bm25(chunks_fts) AS score,d.name,d.path,k.ord \
                  FROM chunks_fts JOIN chunks k ON k.id=chunks_fts.rowid \
@@ -799,7 +799,7 @@ impl L1Store {
             let rows = stmt.query_map(params![collection_id, m, lim as i64], map)?;
             rows.collect()
         } else {
-            let like = format!("%{}%", q.replace(['%', '_'], ""));
+            let like = super::store::like_pattern(q);
             let mut stmt = c.prepare(
                 "SELECT d.id,k.text,0.0 AS score,d.name,d.path,k.ord \
                  FROM chunks k JOIN documents d ON d.id=k.document_id \
@@ -896,7 +896,7 @@ impl L1Store {
                 let score = if query_vector.is_some() {
                     hit.score
                 } else {
-                    1.0 / (60.0 + rank as f64 + 1.0)
+                    rrf_score(rank)
                 };
                 candidates.push((score, collection_order, rank, collection_id, hit));
             }
@@ -948,8 +948,10 @@ impl L1Store {
         // keeps the doubled value inside it, so both arms of the hybrid merge
         // are bounded by the same number — clamping only inside `search_fts`
         // would leave the vector arm unbounded and skew the RRF merge.
-        let lim = if k == 0 { 5 } else { k };
-        let lim = lim.min(super::store::SEARCH_LIMIT_CAP / 2);
+        // (`k == 0` needs no fallback here: the only caller,
+        // `retrieve_for_chat_multi`, applies the `k == 0 -> 5` default before
+        // delegating, so `k` always arrives non-zero.)
+        let lim = k.min(super::store::SEARCH_LIMIT_CAP / 2);
         let fts = self.search_fts(collection_id, q, lim * 2)?;
         let ranked = if let Some(query_vector) = query_vector {
             let vec = self.search_vec(collection_id, query_vector, lim * 2)?;
@@ -1020,19 +1022,28 @@ fn dedupe_path_key(path: &str) -> String {
     crate::platform::os::filesystem_path_identity_key(path)
 }
 
+/// RRF 的排名→得分公式：`1.0/(K + rank + 1)`（rank 从 0 计），K=60 是
+/// 论文默认常数。混合检索合并（[`rrf_merge`]）与多库归并
+/// （[`L1Store::retrieve_for_chat_multi`]）共用同一公式与同一 K，避免两
+/// 处漂移。
+const RRF_K: f64 = 60.0;
+
+fn rrf_score(rank: usize) -> f64 {
+    1.0 / (RRF_K + rank as f64 + 1.0)
+}
+
 /// 倒数排名融合(RRF)：两路结果按排名给分，按 (docPath#ord) 去重合并，取前 k。
 fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> {
-    const RRF_K: f64 = 60.0;
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut keep: HashMap<String, ChunkHit> = HashMap::new();
     for (rank, h) in fts.iter().enumerate() {
         let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
-        *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
+        *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
         keep.entry(key).or_insert_with(|| h.clone());
     }
     for (rank, h) in vec.iter().enumerate() {
         let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
-        *score.entry(key.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64 + 1.0);
+        *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
         keep.entry(key).or_insert_with(|| h.clone());
     }
     let mut merged: Vec<ChunkHit> = keep

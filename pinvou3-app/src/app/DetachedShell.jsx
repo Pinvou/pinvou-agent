@@ -22,7 +22,7 @@ const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</
 import { useBridgeState } from '../hooks/useBridge.js';
 import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
-import { emitTauri, isTauriAvailable, listenTauri } from '../platform/tauri/client.js';
+import { listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
 import { ensurePersonaI18nOverlay } from './personas-overlay.js';
@@ -184,15 +184,6 @@ const DETACHED_KIND_LABEL_KEYS = {
 
 export function DetachedShell({ kind, id }) {
   const { bs, activeTheme, t } = useDetachedBase();
-
-  useEffect(() => {
-    const key = `${kind}:${id || ''}`;
-    const onUnload = () => {
-      if (isTauriAvailable()) void emitTauri('detach:closed', key).catch(() => {});
-    };
-    window.addEventListener('beforeunload', onUnload);
-    return () => window.removeEventListener('beforeunload', onUnload);
-  }, [kind, id]);
 
   const View = DETACHED_VIEWS[kind] || DETACHED_VIEWS.monitor;
   const kindLabelFn = DETACHED_KIND_LABEL_KEYS[kind];

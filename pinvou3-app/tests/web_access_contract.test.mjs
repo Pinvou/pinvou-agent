@@ -187,6 +187,10 @@ for (const command of [
   // Clipboard reads are desktop-privacy surface: the paste fallback runs on
   // the desktop host only; web pastes go through the device-upload path.
   'paste_clipboard_image',
+  // Dependency detection shells out to system package managers and is
+  // deliberately not allowlisted on the web; the web hides the whole
+  // dependency section behind the dependencyInstall capability bit.
+  'check_dependencies',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
 }
@@ -209,6 +213,13 @@ for (const command of [
 // either one makes the button fail silently with command_not_allowed.
 for (const command of ['organize_memory', 'get_memory_organize_history']) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (memory organize)`);
+}
+
+// Scene-label sidecars sync per session switch on Web exactly like the
+// persona-events / pinvou-reviews siblings; dropping either entry logs a
+// sidecar failure per session switch and silently stops label sync.
+for (const command of ['get_session_pinvou_scene_events', 'save_session_pinvou_scene_events']) {
+  assert.equal(allowed.has(command), true, `${command} must be allowed on Web (scene-label sidecars)`);
 }
 
 // Authorized-connector toggle/skill state queries are part of the WebUI surface
@@ -872,7 +883,7 @@ assert.match(toolStoreView,
   'purge handler must fail closed in WebUI');
 assert.match(knowledgeView, /const canDownloadArtifacts = !isWeb \|\| can\('artifactDownload'\);/);
 assert.match(knowledgeView, /const canPickHostFiles = !isWeb \|\| can\('hostFilePicker'\);/);
-assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| o\.session_id \|\| null;/);
+assert.match(knowledgeView, /const outputSessionId = o\.sessionId \|\| null;/);
 assert.match(knowledgeView, /const cacheKey = `\$\{outputSessionId \|\| ''\}\|\$\{o\.path\}\|\$\{o\.mtime \|\| 0\}`;/);
 assert.ok((knowledgeView.match(/o\.path, outputSessionId/g) || []).length >= 5,
   'output previews must authorize every Web artifact read with the owning session');

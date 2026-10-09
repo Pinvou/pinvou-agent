@@ -67,7 +67,6 @@ impl SmokeCase {
     pub fn to_benchmark_task(&self) -> BenchmarkTask {
         BenchmarkTask::new(
             self.id,
-            Some("smoke".to_string()),
             None,
             // The smoke suite is an internal determinism check, so it keeps
             // its own per-case harness deadlines (unlike GAIA).

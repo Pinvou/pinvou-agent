@@ -91,7 +91,7 @@ export function readClipboardText() {
   return Promise.resolve('');
 }
 
-export { assistantMarkdownCopyText, normalizeAssistantMessageText };
+export { normalizeAssistantMessageText };
 
 // 旧 HTML 会话的复制走异步转换(turndown 懒加载后执行);text 直存的新会话
 // 在同一函数内走同步路径,不触发懒加载。
@@ -115,7 +115,6 @@ export async function assistantResponseText(turn) {
   const collected = await Promise.all(agentMessages
     .filter(item => item.phase !== 'commentary')
     .map(async item => {
-      if (item.copyText != null) return normalizeAssistantMessageText(item.copyText);
       const source = normalizeAssistantMessageText(item.text);
       if (source && item.copyOptions !== undefined) {
         return assistantMarkdownCopyText(source, item.copyOptions);
@@ -139,7 +138,7 @@ export function assistantResponseAvailable(turn) {
   if (agentMessages.length) {
     return agentMessages.some(item => (
       item.phase !== 'commentary'
-      && [item.copyText, item.text, item.legacyItem?.text, item.legacyItem?.html]
+      && [item.text, item.legacyItem?.text, item.legacyItem?.html]
         .some(value => String(value || '').trim())
     ));
   }

@@ -827,6 +827,13 @@ fn memory_review_diagnostic_classifies_request_parse_and_apply_failures() {
         memory_review_error_stage(&anyhow::anyhow!("parse memory review json")),
         "parse_failed"
     );
+    // The empty-response marker files as parse-stage, not apply_failed —
+    // same response-content-anomaly class as bad JSON (see
+    // memory_review_error_stage and the parser's empty-response rejection).
+    assert_eq!(
+        memory_review_error_stage(&anyhow::anyhow!("memory review returned an empty response")),
+        "parse_failed"
+    );
     assert_eq!(
         memory_review_error_stage(&anyhow::anyhow!("auto write work context")),
         "apply_failed"
@@ -1066,6 +1073,16 @@ fn llm_review_parser_accepts_json_object() {
     assert_eq!(suggestion.kind, "preference");
     assert_eq!(suggestion.topic, "answer_style");
     assert_eq!(suggestion.content, "回答默认先给结论");
+}
+
+// 空响应(拒绝/内容过滤/缺 choices)是模型或传输侧异常:review 侧与 organize
+// 侧同口径必须报错,而不是产出假的 no_change 成功。
+#[test]
+fn llm_review_parser_rejects_empty_response() {
+    let error = parse_llm_memory_review("").unwrap_err();
+    assert!(error.to_string().contains("empty response"));
+    let error = parse_llm_memory_review("   \n  ").unwrap_err();
+    assert!(error.to_string().contains("empty response"));
 }
 
 #[test]
