@@ -290,13 +290,16 @@ pub(crate) async fn chat_with_reservation(
     // 多智能体模式（ADR-0006）：所有产生模型 turn 的入口共用同一装配——快照
     // 与候选行同源捕获；蜂群契约本体在 spawn 级 instructions，用户内容逐字透传。
     // 候选匹配只看用户原文（raw_message），不看 full 里已拼接的 persona 正文 /
-    // KB 引导 / 附件引用，避免注入文本的领域词虚假抬升无关专家卡。
+    // KB 引导 / 附件引用，避免注入文本的领域词虚假抬升无关专家卡；原文里的
+    // 会话引用注入块同样是机器契约而非用户领域词（"read_session" 等固定英文
+    // 词会虚假命中专家 n-gram），与标题/检查点标签同规则剥离。
+    let match_source = super::sessions::strip_session_mention_block(&raw_message);
     let prepared_delegation = super::multiagent::prepare_delegation_turn(
         pool,
         &sid,
         mode_state.multi_agent,
         full,
-        super::multiagent::MatchSource(&raw_message),
+        super::multiagent::MatchSource(match_source),
     );
     full = prepared_delegation.content;
     let mode = mode_state.mode;
