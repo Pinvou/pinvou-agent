@@ -2990,6 +2990,19 @@ mod tests {
         // bridge boot tests have already run (order coupling).
         super::install_mcp_secret_resolver();
         let prev = std::env::var("PINVOU3_HOME").ok();
+        // Round-26 MAJOR 4 (review): restore main's hermeticity valve. The
+        // rewritten harness had dropped the capture of
+        // PINVOU3_TEST_KEYRING_FILE_FALLBACK + CODEWHALE_HOME, so every
+        // `MarketplaceManager::new()` in a test body probed the real OS
+        // keyring (on macOS a real-keyring read from an ad-hoc-signed test
+        // binary can block indefinitely on the ACL consent dialog — see the
+        // valve comment in platform::credential_store). The file fallback
+        // resolves through CODEWHALE_HOME rather than PINVOU3_HOME, so it
+        // must be pointed at the same temp dir — otherwise valved reads and
+        // writes land in the developer's real ~/.codewhale/secrets/
+        // secrets.json (and trigger its legacy migration).
+        let prev_keyring_valve = std::env::var("PINVOU3_TEST_KEYRING_FILE_FALLBACK").ok();
+        let prev_codewhale_home = std::env::var("CODEWHALE_HOME").ok();
         let prev_secrets = secrets::snapshot_secret_values();
         secrets::clear_secret_values_for_test();
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
@@ -2997,11 +3010,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
         // Panic-safe restore (round-11 P3): a failing assertion unwinds past
         // this guard, so a leaked PINVOU3_HOME / secret env can no longer
         // cascade unrelated failures into every later test in the binary.
         struct RestoreEnv {
             prev: Option<String>,
+            prev_keyring_valve: Option<String>,
+            prev_codewhale_home: Option<String>,
             prev_secrets: std::collections::HashMap<String, String>,
             dir: std::path::PathBuf,
         }
@@ -3015,12 +3034,30 @@ mod tests {
                     // whole harness call; env writes are serialized.
                     None => unsafe { std::env::remove_var("PINVOU3_HOME") },
                 }
+                match &self.prev_codewhale_home {
+                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
+                    // whole harness call; env writes are serialized.
+                    Some(v) => unsafe { std::env::set_var("CODEWHALE_HOME", v) },
+                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
+                    // whole harness call; env writes are serialized.
+                    None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
+                }
+                match &self.prev_keyring_valve {
+                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
+                    // whole harness call; env writes are serialized.
+                    Some(v) => unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v) },
+                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
+                    // whole harness call; env writes are serialized.
+                    None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
+                }
                 secrets::restore_secret_values(std::mem::take(&mut self.prev_secrets));
                 let _ = std::fs::remove_dir_all(&self.dir);
             }
         }
         let _restore = RestoreEnv {
             prev,
+            prev_keyring_valve,
+            prev_codewhale_home,
             prev_secrets,
             dir: dir.clone(),
         };
@@ -4011,6 +4048,10 @@ mod tests {
         // test order coupling.
         super::install_mcp_secret_resolver();
         let prev = std::env::var("PINVOU3_HOME").ok();
+        // Same hermeticity valve as with_temp_home (round-26 MAJOR 4: the
+        // rewritten harness had dropped it — see the comment there).
+        let prev_keyring_valve = std::env::var("PINVOU3_TEST_KEYRING_FILE_FALLBACK").ok();
+        let prev_codewhale_home = std::env::var("CODEWHALE_HOME").ok();
         let prev_secrets = secrets::snapshot_secret_values();
         secrets::clear_secret_values_for_test();
         let dir =
@@ -4019,12 +4060,28 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
         f().await;
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        match prev_codewhale_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("CODEWHALE_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
+        }
+        match prev_keyring_valve {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
         }
         secrets::restore_secret_values(prev_secrets);
         let _ = std::fs::remove_dir_all(&dir);
