@@ -682,7 +682,7 @@ dictJa.uiBuiltinPlugins = {
   versionNote:'アプリと共に更新',
   dataAccessLabel:'データアクセス範囲',
   levels:{ L0:'読み取り専用：状態を変更せず、内容は信頼できないものとして扱う', L1:'書き込み：ユーザーに見える副作用を伴う（メッセージ送信、タスク作成など）', L2:'破壊的：削除・上書きなど不可逆な操作。明示的な認可が必要' },
-  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）', 'sessions.write':'他のセッションへのメッセージ送信（書き込み）' },
+  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）', 'sessions.write':'この端末の他セッションへのメッセージ送信（書き込み）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md

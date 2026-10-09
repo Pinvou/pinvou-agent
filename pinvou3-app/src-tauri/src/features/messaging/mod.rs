@@ -232,15 +232,27 @@ pub(crate) trait DeliveryGates {
     fn target_allowed(&self, session_id: &str) -> Result<()>;
 }
 
+/// Round-9 M-B: the production gate's DECISION, free so a behavioral test
+/// drives it with live store inputs — the highest-stakes gate in this
+/// module had zero behavioral coverage (the discard mutation kept every
+/// test and both source pins green). The impl below is a pure delegation
+/// tail expression; discarding the result no longer type-checks as the
+/// impl body.
+pub(crate) fn acp_code_target_denied(is_acp: bool, is_code_session: bool) -> Result<()> {
+    if is_acp || is_code_session {
+        bail!(
+            "target session is an ACP/code session; deliver through the independent code page, not cross-session messaging"
+        )
+    }
+    Ok(())
+}
+
 impl DeliveryGates for crate::features::codex_acp::AcpPool {
     fn target_allowed(&self, session_id: &str) -> Result<()> {
-        if self.is_acp(session_id) || self.agents().is_code_session(session_id) {
-            bail!(
-                "target session {session_id} is an ACP/code session; \
-                 deliver through the independent code page, not cross-session messaging"
-            );
-        }
-        Ok(())
+        acp_code_target_denied(
+            self.is_acp(session_id),
+            self.agents().is_code_session(session_id),
+        )
     }
 }
 
@@ -521,9 +533,17 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
             MAX_SPOOL_FILE_BYTES
         ));
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => return poisoned(anyhow::Error::new(error).context("read spool file")),
+    // Round-9 minor 13: BOUNDED read (the mid-delivery re-read got the
+    // cap in round-8; the entry read could still slurp a same-user
+    // racer's grown file whole).
+    let bytes = match read_bounded(path) {
+        Some(bytes) => bytes,
+        None => {
+            return poisoned(anyhow::anyhow!(
+                "spool file unreadable or exceeds the {} byte cap",
+                MAX_SPOOL_FILE_BYTES
+            ));
+        }
     };
     // These bytes double as the mid-delivery replace guard's reference
     // (Round-8 REQUIRED-3): comparing the post-delivery re-read against
@@ -774,7 +794,10 @@ fn messaging_switched_on() -> bool {
 /// Watch loop body: process every pending spool file in the deterministic
 /// directory order (hex names sort stably but carry no time order),
 /// quarantining poison files immediately and transient failures after
-/// `MAX_DELIVERY_ATTEMPTS` spread-out attempts.
+/// `MAX_DELIVERY_ATTEMPTS` spread-out attempts; a delivered file whose
+/// post-delivery removal persistently fails is quarantined after the same
+/// count (the Windows file-lock class — round-9: the round-8 arm is live
+/// and audited).
 async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
     delivery: &D,
     gates: &G,
@@ -782,9 +805,6 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
     retries: &mut RetryState,
     skip_audited: &mut std::collections::HashSet<String>,
 ) {
-    if !messaging_switched_on() {
-        return;
-    }
     let root = spool_root();
     let Ok(entries) = std::fs::read_dir(&root) else {
         return; // no spool directory yet = nothing was ever sent
@@ -795,6 +815,13 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     files.sort();
+    // Round-2 SF2 + round-9 minor 16a: the switch gate sits AFTER the
+    // spool-dir existence check and the listing — with no pending files
+    // the poll must not pay a settings.json read+parse every second (the
+    // round-8 order consulted it before even the ENOENT check).
+    if !files.is_empty() && !messaging_switched_on() {
+        return;
+    }
     // Pending cap: the sorted tail beyond the ceiling is hostile growth —
     // quarantine it with an audit record instead of delivering unbounded
     // unattended turns (the cap is on *pending* files, not on deliveries:
@@ -884,12 +911,19 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         };
         match outcome {
             Processed::Done => {
-                retries.clear(&name);
+                // Round-9 M-A: clear the bookkeeping ONLY on a successful
+                // removal — the round-8 shape cleared before the attempt,
+                // wiping removal_failures back to 0 every poll, so the
+                // streak was deterministically 1 and the
+                // quarantine-after-MAX arm below was unreachable dead code
+                // (the unkeyed re-delivery-every-second loop it claimed to
+                // stop was live). The reorder is the reviewer's
+                // experiment-proven minimal fix.
                 match std::fs::remove_file(&path) {
                     Ok(()) => {
-                        retries.removal_failures.remove(&name);
+                        retries.clear(&name);
                     }
-                    // Round-8 M8: say so every poll (the loop was silent),
+                    // Round-8 M8 (live as of round-9): say so every poll,
                     // and after MAX attempts quarantine — an unkeyed
                     // delivery has no done-marker, so a Windows file lock
                     // would otherwise re-deliver every second forever.
@@ -901,6 +935,15 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         if fails >= MAX_DELIVERY_ATTEMPTS {
                             log::warn!(
                                 "[messaging] quarantining {name} after {fails} failed removals"
+                            );
+                            // Round-9 minor 17: the removal-quarantine is a
+                            // disposition of an ACCEPTED message — audit it
+                            // like the other terminal arms.
+                            let record = read_record_for_audit(&path);
+                            audit_quarantine(
+                                store,
+                                record.as_ref(),
+                                &format!("removal failed {fails} times: {error}"),
                             );
                             quarantine(&path);
                         }
@@ -1259,6 +1302,10 @@ mod spool_pipeline_tests {
             "pinvou3-messaging-bound-project-{}",
             crate::platform::paths::tests::unique_suffix()
         ));
+        // Round-9 minor 8: pre-clean (TempHome's pattern) — the round-8
+        // fixture removed only on success, so one red run left a stale
+        // dir that failed every subsequent suite run.
+        let _ = std::fs::remove_dir_all(&project);
         std::fs::create_dir_all(&project).unwrap();
         // The production binding surface is the injected execution-root
         // resolver (the same seam sessions/tests.rs uses): a hit binds the
@@ -1284,6 +1331,100 @@ mod spool_pipeline_tests {
             "the user's bound project directory stays clean"
         );
         let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// Round-9 M-B: the production ACP/code gate decision driven with
+    /// LIVE SessionAgentStore inputs — an ACP-backend record and a
+    /// code-mode record are denied, an ordinary chat target passes. The
+    /// impl is a delegation tail, so this exercises the production path.
+    #[test]
+    fn production_acp_code_gate_denies_live_store_inputs() {
+        use crate::features::codex_acp::{AgentBackend, CodexWorkspaceKind, SessionAgentStore};
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-messaging-prod-gate-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SessionAgentStore::for_test(dir.join("session-agents.json"));
+        store
+            .set_acp_workspace(
+                "acp-tgt",
+                AgentBackend::ClaudeAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .expect("bind acp record");
+        store
+            .bind_code_native_session("code-tgt", CodexWorkspaceKind::Temporary, None)
+            .expect("bind code record");
+        // The production consultations, computed from the LIVE store.
+        assert!(acp_code_target_denied(store.backend("acp-tgt").is_acp(), false).is_err());
+        assert!(acp_code_target_denied(false, store.is_code_session("code-tgt")).is_err());
+        assert!(
+            acp_code_target_denied(
+                store.backend("chat-tgt").is_acp(),
+                store.is_code_session("chat-tgt")
+            )
+            .is_ok(),
+            "an ordinary chat target passes the production decision"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-9 M-A: the removal-failure streak survives across polls —
+    /// a read-only spool directory makes remove_file fail every poll;
+    /// the streak must grow (the round-8 clear-before-attempt wiped it
+    /// to 1, leaving the quarantine arm dead code).
+    #[tokio::test]
+    async fn removal_failure_streak_grows_across_polls() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // UNKEYED: no done-marker, so the Done arm's removal is the only
+        // dedup the file has — exactly the Windows-lock shape.
+        std::fs::write(spool.join("locked.json"), record_json("locked", None)).unwrap();
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        // Read-only spool dir: reads still work, remove_file/rename do not.
+        let perms = std::fs::metadata(&spool).unwrap().permissions();
+        std::fs::set_permissions(&spool, {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = perms.clone();
+            p.set_mode(p.mode() & !0o222);
+            p
+        })
+        .unwrap();
+        for _ in 0..(MAX_DELIVERY_ATTEMPTS + 1) {
+            process_pending_spool(
+                &fake,
+                &AllowAllGates,
+                &store,
+                &mut retries,
+                &mut Default::default(),
+            )
+            .await;
+        }
+        // Restore write permission for cleanup.
+        std::fs::set_permissions(&spool, {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = perms.clone();
+            p.set_mode(p.mode() | 0o222);
+            p
+        })
+        .unwrap();
+        let streak = *retries.removal_failures.get("locked.json").unwrap_or(&0);
+        assert!(
+            streak >= MAX_DELIVERY_ATTEMPTS,
+            "the removal-failure streak survives polls (got {streak}; the \
+             round-8 clear-before-attempt reset it to 1 every poll)"
+        );
     }
 
     /// Round-8 M6: builder → stripper round-trip lives HERE (messaging may
