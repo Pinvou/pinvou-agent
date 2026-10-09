@@ -243,10 +243,6 @@ impl KnowledgeClient {
         })
     }
 
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
-    }
-
     pub async fn health(&self) -> Result<ServerInfo, String> {
         let response = self
             .authorized(self.http.get(self.url("/api/v1/info")))
