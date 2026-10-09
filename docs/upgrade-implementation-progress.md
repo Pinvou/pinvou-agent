@@ -15,7 +15,7 @@ Confirmed implementation decisions (2026-10-09):
 
 - Ed25519; initial Root 2-of-3, other roles initially one valid signature; scoped configurable roles and separate high-risk dual approval.
 - Metadata 1 MiB, credentials 64 KiB, depth 32, decoded string 64 KiB, per-container 4,096-member bounds.
-- Service/admin engineering is in a **separate repository**. Go + Gin + pgx + PostgreSQL 17 and React + TypeScript + Vite are approved; PostgreSQL durable jobs/transactional outbox, OIDC with community self-hosted Keycloak, and separate signing/file-storage ports follow that choice. Repository location and production provider/deployment details remain pending. No server project is created here.
+- Service/admin engineering is in the separately selected **UpdateServer repository**. Go + Gin + pgx + PostgreSQL 17 and React + TypeScript + Vite are approved; PostgreSQL durable jobs/transactional outbox, OIDC with community self-hosted Keycloak, and separate signing/file-storage ports follow that choice. Its private address stays in local Git configuration. Production provider/deployment details remain pending. No server project is created here.
 
 T01 adds Ajv 8.20.0 only to the isolated contract package; dependency audit reported
 no vulnerabilities at installation. Desktop behavior and runtime dependencies are
@@ -35,8 +35,8 @@ workflow, installer or physical platform certification is claimed.
 A parallel review run exposed a 15-second CLI subprocess test timeout; isolated
 and serial reruns passed. The test-only subprocess allowance was raised to 60
 seconds and rechecked. It does not set a network or download time limit. Remaining
-tasks retain their dependencies, including the separate backend repository
-location and production infrastructure decisions that will be supplied later.
+tasks retain their dependencies, including production infrastructure decisions
+that will be supplied later. The separate backend repository is now selected.
 
 T02 validation: 167 tests passed on Node 22 and Node 26, including local CLI E2E,
 legal transitions, binding failures, expiry equality and atomic race regressions.

@@ -17,8 +17,9 @@ option A is approved: ordinary offline operation and shutdown are not fault exce
 The backend stack is approved: Go, Gin, pgx and PostgreSQL 17; React, TypeScript
 and Vite for administration; PostgreSQL durable jobs/transactional outbox, OIDC
 with self-hosted Keycloak available for community deployment, and separate signing
-and file-storage ports. Engineering belongs in a separate repository whose
-location has not yet been provided. No server project is created in this repository.
+and file-storage ports. The product owner selected the separate `UpdateServer`
+repository. Its private hosting address stays in local Git configuration, not in
+committed artifacts. No server project is created in this client repository.
 Previously approved Ed25519 thresholds, input limits and absence of a cumulative
 download deadline remain unchanged.
 
@@ -266,9 +267,10 @@ References: [Windows interrupt time](https://learn.microsoft.com/en-us/windows/w
 ## Approved backend technology and repository boundary
 
 The product owner approved Go + Gin + pgx + PostgreSQL 17 for the control service,
-and React + TypeScript + Vite for the management application. The separate
-`pinvou-upgrade-platform` repository name remains a suggestion; its actual name
-and location are pending. Pin maintained Go/framework/driver versions and lock
+and React + TypeScript + Vite for the management application. The product owner
+provided the separate `UpdateServer` repository on 2026-10-09; it was cloned and
+confirmed empty before engineering. Its private address is retained only in local
+Git configuration. Pin maintained Go/framework/driver versions and lock
 dependencies when engineering starts; this decision installs no dependencies here.
 Go supports straightforward HTTP/worker development and deployment; React aligns
 with the desktop frontend. C's consistency and R/S security requirements remain
@@ -320,8 +322,8 @@ PostgreSQL evidence: [synchronous replication](https://www.postgresql.org/docs/1
 1. Approve or amend the exact OS coverage list; it is a test commitment, not existing certification.
 2. Approve or amend the data-protection policy and inventory, including conditional external/service scopes and exclusions.
 3. Approve or amend the synthetic workloads, storage classes and measurement process; actual budgets return for approval after measurement.
-4. Provide the separate backend repository location before backend engineering starts. Its Go/Gin/pgx/PostgreSQL 17 and React/TypeScript/Vite stack is already approved.
 
 Strict time option A, local health criteria and the backend stack are already
-approved and are not asked again. Hardware/time mechanism research remains technical work; unresolved
+approved, and the separate `UpdateServer` repository has been supplied; these are
+not asked again. Hardware/time mechanism research remains technical work; unresolved
 feasibility must be disclosed rather than treated as approval to relax the policy.
