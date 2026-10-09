@@ -1062,10 +1062,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // four-layer cascade): on by default; the registry read is exposed on
       // both lanes (the web bridge proxies list_builtin_features to the same
       // desktop host), so a host-side switch-off reaches browser clients too.
-      // Only a query failure fails open as enabled (same semantics as the
-      // backend: a missing state file means all enabled). Switch changes are
-      // broadcast via remote_control:tools_changed → pinvou:tools-changed
-      // (chat-events.js); this subscription refetches to hot-update the UI.
+      // A query failure keeps the LAST-KNOWN state (sticky after a successful
+      // OFF read — never a false "disabled"; the pre-query default is
+      // enabled, matching the backend's missing-state-file semantics). Switch
+      // changes are broadcast via remote_control:tools_changed →
+      // pinvou:tools-changed (chat-events.js); this subscription refetches to
+      // hot-update the UI.
       const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
       useEffect(() => {
         let alive = true;
