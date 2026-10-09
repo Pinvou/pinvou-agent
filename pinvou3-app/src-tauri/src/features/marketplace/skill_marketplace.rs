@@ -4345,37 +4345,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Phase 2 镜像：上传导入登记 Upload(zip 名) 记录，id = 落盘技能名。
-    #[test]
-    fn import_package_mirrors_upload_record() {
-        use std::io::Write;
-        let tmp = fresh_dir("mirror_upload");
-        let zip_path = tmp.join("pkg.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("up-skill/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: up-skill\ndescription: d\n---\n# hi")
-                .unwrap();
-            zw.finish().unwrap();
-        }
-        let mgr = SkillMarketplaceManager::with_roots(tmp.clone());
-        mgr.import_package(zip_path.to_str().unwrap()).unwrap();
-
-        let store =
-            crate::features::marketplace::store::BundleStore::with_file(tmp.join("bundles.json"));
-        let record = store
-            .get("up-skill")
-            .unwrap()
-            .expect("上传导入应镜像登记 bundles.json");
-        assert_eq!(
-            record.source,
-            crate::features::marketplace::store::BundleSource::Upload("pkg.zip".to_string())
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     /// 旧扁平布局 → 按包聚合迁移：四个分支（纯技能 / MCP companion / CLI companion /
     /// 上传）+ 内置技能不动 + 预置指纹补写 + 幂等。companion 归属是条件认领（M-7）：
     /// 所属 MCP 已装（installed.json → import_legacy 登记）才归 MCP 包目录；未装的

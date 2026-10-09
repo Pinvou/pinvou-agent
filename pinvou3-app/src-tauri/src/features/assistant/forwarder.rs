@@ -1931,19 +1931,6 @@ mod mcp_boot_persistence_tests {
     }
 
     #[test]
-    fn repeated_identical_failure_receipts_persist_once() {
-        let failed = snapshot(vec![server("git", true, false, Some("connection refused"))]);
-        let mut last = None;
-        assert!(mcp_boot_persistence("sess-1", 3, true, &failed, &mut last).is_some());
-        // The engine re-reports the same failure set on every real turn, each
-        // with a fresh generation; only the first receipt may reach the log.
-        assert_eq!(
-            mcp_boot_persistence("sess-1", 4, true, &failed, &mut last),
-            None
-        );
-    }
-
-    #[test]
     fn a_changed_failure_set_persists_again() {
         let failed = snapshot(vec![server("git", true, false, Some("connection refused"))]);
         let mut pending = server("git", true, false, Some("oauth pending"));

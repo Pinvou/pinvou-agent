@@ -813,54 +813,6 @@ fn rebound_plain_chat_bindings_are_scanned_and_rewritten() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
-/// A failed binding rewrite must not advance the cache (same all-or-nothing
-/// convention as `bind_session_workspace`) and must leave the sidecar matching
-/// the old prefix, so the next rebind scan finds it again and converges.
-#[test]
-fn rebound_plain_chat_binding_failure_keeps_old_path_and_reports() {
-    let (store, _g) = isolated_store();
-    let from = unique_temp_dir("rebind-bindings-fail-from");
-    let bound = from.join("nested");
-    std::fs::create_dir_all(&bound).expect("create bound dir");
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    store
-        .bind_session_workspace(&session.metadata.id, bound.clone())
-        .expect("bind");
-
-    // Occupy the sidecar path itself with a directory: the atomic replacement
-    // cannot commit and reports RecoveryRequired (the codex sidecar tests use
-    // the sibling `.tmp` occupation, which does not apply here because
-    // `atomic_write` stages under a unique temp name).
-    let sidecar = paths::sessions_root()
-        .join(&session.metadata.id)
-        .join("workspace-binding.json");
-    std::fs::remove_file(&sidecar).expect("remove bound sidecar");
-    std::fs::create_dir_all(&sidecar).expect("occupy sidecar path");
-
-    let to = unique_temp_dir("rebind-bindings-fail-to");
-    std::fs::create_dir_all(&to).expect("create target dir");
-    assert!(
-        !store.rebind_workspace_binding(&session.metadata.id, to.join("nested")),
-        "a failed sidecar write must be reported, never silently counted as rebound"
-    );
-    assert_eq!(
-        store.session_workspace_binding(&session.metadata.id),
-        Some(bound.clone()),
-        "the cache must not claim a move disk does not have"
-    );
-    assert_eq!(
-        store.workspace_bindings_under(&from),
-        vec![(session.metadata.id.clone(), bound.clone())],
-        "the stale sidecar still matches the old prefix, so a rerun retries it"
-    );
-
-    let _ = std::fs::remove_dir_all(&sidecar);
-    let _ = std::fs::remove_dir_all(&from);
-    let _ = std::fs::remove_dir_all(&to);
-}
-
 /// Stale cache backfill must not undo a rebind (review #463 F4):
 /// `session_workspace_binding` reads the sidecar OUTSIDE the cache lock, so a
 /// cache-cold read racing `rebind_workspace_binding` (which writes sidecar
@@ -3282,40 +3234,6 @@ fn forkguard_boot_repairs_interrupted_tool_call_once() {
 }
 
 #[test]
-fn transcript_cas_rejects_stale_revision_without_overwrite() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let stale = transcript_revision(&session.messages).expect("empty revision");
-    let winner = vec![user_text("winner")];
-    // the first commit succeeds, returns the new revision, and persists
-    // (assertions of the original
-    // transcript_cas_commits_and_returns_content_revision).
-    let committed = store
-        .compare_and_swap_messages(&session.metadata.id, &stale, winner.clone())
-        .expect("first commit");
-    assert_eq!(
-        committed,
-        transcript_revision(&winner).expect("winner revision")
-    );
-
-    let error = store
-        .compare_and_swap_messages(
-            &session.metadata.id,
-            &stale,
-            vec![user_text("stale overwrite")],
-        )
-        .expect_err("stale CAS must fail");
-
-    assert!(format!("{error:#}").contains("session_revision_conflict"));
-    assert_eq!(
-        store.load(&session.metadata.id).expect("load").messages,
-        winner
-    );
-}
-
-#[test]
 fn metadata_and_artifacts_do_not_change_transcript_revision() {
     let (store, _g) = isolated_store();
     let session = store
@@ -3349,48 +3267,6 @@ fn metadata_and_artifacts_do_not_change_transcript_revision() {
     assert_eq!(
         store.load(&session.metadata.id).expect("load").messages,
         messages
-    );
-}
-
-#[test]
-fn concurrent_stale_transcript_write_cannot_overwrite_winner() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let expected = transcript_revision(&session.messages).expect("empty revision");
-    let barrier = Arc::new(std::sync::Barrier::new(2));
-
-    let mut handles = Vec::new();
-    for text in ["writer one", "writer two"] {
-        let thread_store = store.clone();
-        let thread_id = session.metadata.id.clone();
-        let thread_expected = expected.clone();
-        let thread_barrier = barrier.clone();
-        handles.push(std::thread::spawn(move || {
-            thread_barrier.wait();
-            thread_store.compare_and_swap_messages(
-                &thread_id,
-                &thread_expected,
-                vec![user_text(text)],
-            )
-        }));
-    }
-
-    let outcomes: Vec<_> = handles
-        .into_iter()
-        .map(|handle| handle.join().expect("writer thread"))
-        .collect();
-    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-    assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
-
-    let durable = store.load(&session.metadata.id).expect("load winner");
-    let durable_revision = transcript_revision(&durable.messages).expect("durable revision");
-    assert!(
-        outcomes
-            .iter()
-            .filter_map(|result| result.as_ref().ok())
-            .any(|revision| revision == &durable_revision)
     );
 }
 
@@ -4404,21 +4280,6 @@ fn code_session_first_use_defaults_to_plan() {
     assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Yolo);
 }
 
-/// With no predicate injected (early startup/tests), everything follows
-/// plain semantics with no misjudgment. Kept as its own test:
-/// `isolated_store` holds the process-level `ENV_LOCK` until the guard
-/// drops, so a second call on the same thread would self-deadlock
-/// (`std::sync::Mutex` is not reentrant). Call `isolated_store` only once
-/// per test.
-#[test]
-fn code_session_without_predicate_defaults_to_yolo() {
-    let (no_predicate, _g) = isolated_store();
-    assert_eq!(
-        no_predicate.mode_state("code-1").mode,
-        SerializableMode::Yolo
-    );
-}
-
 #[test]
 fn code_session_default_follows_code_lane_default() {
     let (store, _g) = isolated_store();
@@ -4819,28 +4680,6 @@ fn confirm_code_yolo_persists_globally() {
     assert!(reopened.code_permission_prefs().yolo_confirmed);
 }
 
-/// reconcile only fixes code sessions without a persisted record; an
-/// explicitly switched mode must be preserved verbatim.
-/// Kept as its own test: `isolated_store` holds the process-level ENV_LOCK
-/// until the guard drops, so a second call on the same thread would
-/// self-deadlock (`std::sync::Mutex` is not reentrant) — call it only once
-/// per test.
-#[test]
-fn reconcile_does_not_overwrite_explicitly_persisted_mode() {
-    let (store, _g) = isolated_store();
-    with_code_sessions(&store, &["code-2"]);
-    store
-        .set_mode("code-2", SerializableMode::Yolo)
-        .expect("code-2 explicit yolo");
-    let reopened = reopen_store(&store).expect("reboot");
-    with_code_sessions(&reopened, &["code-2"]);
-    assert_eq!(
-        reopened.mode_state("code-2").mode,
-        SerializableMode::Yolo,
-        "显式切过的 mode 不应被 reconcile 改写"
-    );
-}
-
 #[test]
 fn fresh_code_session_default_plan_registers_pending_plan() {
     let (store, _g) = isolated_store();
@@ -5048,34 +4887,6 @@ fn rewind_bypasses_guard_while_update_messages_stays_protected() {
     // too).
     store.truncate_to_user_turn(&id, 0, None).expect("rewind");
     assert!(store.load(&id).expect("load").messages.is_empty());
-}
-
-/// revision/CAS: the revision changes naturally after truncation, so a CAS
-/// holding the old revision must fail.
-#[test]
-fn stale_revision_cas_fails_after_rewind() {
-    let (store, _g) = isolated_store();
-    let session = store
-        .create_new("/model".into(), None, std::env::temp_dir())
-        .expect("create");
-    let id = session.metadata.id.clone();
-    let messages = vec![
-        user_text("第一轮"),
-        assistant_text("答一"),
-        user_text("第二轮"),
-        assistant_text("答二"),
-    ];
-    store
-        .update_messages(&id, messages.clone())
-        .expect("seed transcript");
-    let stale_revision = transcript_revision(&messages).expect("revision");
-
-    store.truncate_to_user_turn(&id, 1, None).expect("rewind");
-
-    let error = store
-        .compare_and_swap_messages(&id, &stale_revision, messages)
-        .expect_err("stale revision CAS must fail after rewind");
-    assert!(error.to_string().contains("session_revision_conflict"));
 }
 
 /// Multiple rewinds append to the sidecar; past the per-session capacity

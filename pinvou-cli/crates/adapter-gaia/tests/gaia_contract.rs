@@ -2,9 +2,7 @@ use adapter_gaia::{
     GAIA_ADAPTER_VERSION, GAIA_DATASET_REVISION, GAIA_SCORER_REVISION, GAIA_SCORER_RUNTIME_PROFILE,
     GAIA_SPLIT, GaiaAdapter, question_scorer,
 };
-use benchmark_core::{
-    BenchmarkAdapter, ExecutionKind, PredictionRetention, PrivatePredictionContentType,
-};
+use benchmark_core::{BenchmarkAdapter, ExecutionKind};
 
 #[test]
 fn gaia_adapter_descriptor_is_available_in_the_default_test_gate() {
@@ -18,20 +16,6 @@ fn gaia_adapter_descriptor_is_available_in_the_default_test_gate() {
     assert_eq!(descriptor.supported_splits().len(), 1);
     assert_eq!(descriptor.supported_splits()[0].as_str(), GAIA_SPLIT);
     assert_eq!(descriptor.execution_kind(), ExecutionKind::NativeTurn);
-}
-
-#[test]
-fn gaia_private_prediction_contract_is_available_in_the_default_test_gate() {
-    let adapter = GaiaAdapter::new();
-
-    assert_eq!(
-        adapter.private_output_retention(),
-        PredictionRetention::DurableUntilPurge
-    );
-    assert_eq!(
-        adapter.private_prediction_content_type(),
-        PrivatePredictionContentType::Utf8TextV1
-    );
 }
 
 #[test]

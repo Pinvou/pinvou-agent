@@ -132,10 +132,6 @@ impl RunManifest {
         &self.tool_policy
     }
 
-    pub fn concurrency(&self) -> u16 {
-        self.concurrency
-    }
-
     pub fn schema_version(&self) -> u16 {
         self.schema_version
     }

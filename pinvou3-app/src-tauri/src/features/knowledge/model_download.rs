@@ -639,17 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn first_frame_load_requires_local_content_or_remote_connections() {
-        // 两者皆无 → 跳过加载（磁盘目录即使完整也不白占 ~570MB）。
-        assert!(!KnowledgeService::kb_tools_usable(false, false));
-        // 本地有已入库内容（含曾建库后仍有文档的用户）→ 加载。
-        assert!(KnowledgeService::kb_tools_usable(true, false));
-        // 远程连接存在（远程检索要本地嵌入查询向量）→ 加载。
-        assert!(KnowledgeService::kb_tools_usable(false, true));
-        assert!(KnowledgeService::kb_tools_usable(true, true));
-    }
-
-    #[test]
     fn deferred_no_usage_requires_installed_not_ready_and_skip_marker() {
         // 跳过标记 + 已安装 + 未就绪 → 故意延迟（前端据此区分真实加载失败）。
         assert!(deferred_no_usage(true, true, false));

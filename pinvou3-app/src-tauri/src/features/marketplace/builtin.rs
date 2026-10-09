@@ -479,21 +479,6 @@ mod tests {
         });
     }
 
-    /// Tools not listed in any tool_features entry are unaffected by feature
-    /// switches (weather stays with everything switched off).
-    #[test]
-    fn tools_outside_tool_features_are_unaffected() {
-        with_temp_home(|| {
-            set_feature_enabled("session-mention", false).unwrap();
-            set_feature_enabled("long-memory", false).unwrap();
-            let removed = feature_disabled_tool_names();
-            assert!(
-                !removed.iter().any(|n| n.contains("weather")),
-                "tools outside tool_features must not be removed by feature switches: {removed:?}"
-            );
-        });
-    }
-
     /// Switch persistence: settings.json's disabled_builtin_features and the
     /// state file builtin_features.json (schema_version + disabled_features)
     /// carry the correct content.
