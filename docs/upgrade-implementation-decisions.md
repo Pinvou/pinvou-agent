@@ -23,6 +23,17 @@ committed artifacts. No server project is created in this client repository.
 Previously approved Ed25519 thresholds, input limits and absence of a cumulative
 download deadline remain unchanged.
 
+T05 management decisions are also approved (2026-10-09): explicitly initialize
+the intended immutable OIDC identity through a separately authenticated
+provisioning command and a protected server permission table. There is no default
+administrator, first-login enrollment or request/JWT self-declared role. Grants
+are explicit per product/component/channel/target, with null as non-applicable.
+Use a dedicated provider ACR that proves password plus OTP; the service verifies
+the signed authentication level and authentication time, requiring MFA within
+the latest five minutes by default. Expiry requires step-up again. The actual
+realm flow must prove it cannot issue this ACR with password alone; signed test
+IdP fixtures do not certify a deployed Keycloak OTP configuration.
+
 ## Platform certification candidates
 
 Approve this as the initial test coverage list, not as a claim that these systems

@@ -9,7 +9,9 @@ client, service, physical platform certification or rollout readiness.
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
+| T03–T04 | Not completed | Platform/data scope, measured preparation budgets and trustworthy time evidence remain pending; follow the task graph |
+| T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; actual Keycloak realm acceptance remains pending |
+| T06–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -51,6 +53,30 @@ models. It does not implement a database, production signing or authentication,
 real helper/launcher, desktop upgrade workflow or physical OS certification.
 Download handoff and credible progress/waiting remain independent of session
 expiry; there is no total or cumulative download deadline.
+
+T05 is committed and pushed in the separate UpdateServer repository as
+`bf5f89c6b6a55c0c71cf2e17c0d385eff7d708c3` on
+`feat/t05-management-security`. Explicit owner provisioning initializes an
+immutable OIDC identity in a protected server ACL; request/JWT roles never grant
+authority. Dedicated signed password-plus-OTP ACR evidence is fresh for five
+minutes. Current scope, MFA, independent reviewers and exact command/revision
+bindings are rechecked at the owner boundary. The admin implements real draft,
+review, audit and response-loss recovery workflows in Chinese, English and Japanese.
+
+Both independent reviewers passed the second frozen T05 review after the primary
+role repaired all findings. Each independently ran the complete Go suite with
+real PostgreSQL 17.11 and Chrome E2E, without skipping those integration cases.
+Go vet, module verification, server/admin builds, TypeScript checks, pinned
+contract checks and diff checks passed. Client architecture checks passed.
+Regressions cover current-actor binding, OIDC authorized party, per-attempt
+request IDs, terminal revision refusals, preserved unknown requests, strict
+24-hour complete response replay and protected minimal committed-object recovery.
+
+The signed test IdP does not certify an actual Keycloak password/OTP realm. Run
+the deployment acceptance checks in the service's `docs/management.md` before
+relying on that realm. T05 does not implement T06's general executor, business
+publication/consumption, artifact downloads, production HA/RPO or signing custody.
+No total or cumulative download deadline has been introduced.
 
 T03 still requires approved OS certification coverage, all-user/service data
 scope and finite preparation budgets. The product owner approved local health
