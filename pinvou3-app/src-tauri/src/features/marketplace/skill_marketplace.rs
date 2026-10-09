@@ -21,7 +21,9 @@
 //! 为何不复用底座 `skills::install`:那条通路对 monorepo / 带 plugin.json / 超
 //! 5MiB 的仓库一律拒装,且选路逻辑私有硬编码。此处只做"已知来源的精确落盘",
 //! zip pass-1 的路径穿越/symlink/大小安全闸与统一插件包导入共用
-//! `plugin_import::checked_zip_entry_path`(对齐底座 install.rs 的判断)。
+//! `plugin_import::checked_zip_entry_path`(大小闸已改复用底座
+//! `skills::install::add_entry_size`;穿越/symlink 判定保留 zip crate sanitizer
+//! 与 unix 位面,见 plugin_import 的等价性登记)。
 
 use std::path::{Path, PathBuf};
 
@@ -43,8 +45,10 @@ static MARKETPLACE_DIR: Dir<'static> =
 #[cfg(test)]
 const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 
-/// 安装来源标记文件名。卸载时校验它存在,避免误删内置/手放的 skill。
-const INSTALLED_FROM_MARKER: &str = ".installed-from";
+// 安装来源标记文件名：复用底座 `skills::install` 的公共常量（嵌入者契约：
+// 引用而非复述字面量，底座改名/换格式会在编译期暴露）。旧布局迁移/清扫
+// 逻辑用它识别历史市场技能，卸载时校验它存在,避免误删内置/手放的 skill。
+use deepseek_tui::skills::install::INSTALLED_FROM_MARKER;
 
 /// 底座每次启动会清掉的已下线 skill 名;安装时拒绝撞名,免得装了被清。
 pub(crate) const RETIRED_SKILL_NAMES: &[&str] = &[
@@ -971,8 +975,9 @@ impl SkillMarketplaceManager {
     /// Test-only scaffolding: imports a user-uploaded zip skill package
     /// (unpack, locate SKILL.md, safety-check, install under
     /// `bundle/skills/<name>`; the zip-entry guard is the shared
-    /// `plugin_import::checked_zip_entry_path`, aligned with the foundation
-    /// install.rs; returns the installed skill name from the frontmatter).
+    /// `plugin_import::checked_zip_entry_path`, whose size cap delegates to
+    /// the foundation's `skills::install::add_entry_size`; returns the
+    /// installed skill name from the frontmatter).
     /// The production zip channel is `plugin_import::import_plugin_package`
     /// behind the plugin-package commands; the legacy command surface this
     /// served was removed as dead code.
@@ -1001,7 +1006,8 @@ impl SkillMarketplaceManager {
 
         // pass1:逐 entry 安全校验 + 累计头部声明大小（真实解压字节由 pass2 兜底
         // 计量，声明可被伪造）+ 找最优 SKILL.md(定 skill_root)。安全闸与统一插件
-        // 包导入共用 `plugin_import::checked_zip_entry_path`（对齐底座 install.rs）。
+        // 包导入共用 `plugin_import::checked_zip_entry_path`（大小闸复用底座
+        // `skills::install::add_entry_size`）。
         let mut best: Option<(usize, String)> = None; // (rank, skill_root)
         let mut total: u64 = 0;
         for i in 0..archive.len() {
@@ -2630,6 +2636,18 @@ mod tests {
     use super::*;
     use crate::features::marketplace::mcp_catalog;
     use crate::platform::test_support::with_temp_home;
+
+    /// 标记常量已改引底座 `skills::install` 的公共常量；本钉把磁盘历史格式
+    /// （旧布局 `.installed-from` 明文 spec）与底座常量绑在一起——底座改名或
+    /// 换格式时这里与迁移/清扫逻辑一起编译期/测试期暴露。
+    #[test]
+    fn forkguard_installed_from_marker_delegates_to_engine_constant() {
+        assert_eq!(INSTALLED_FROM_MARKER, ".installed-from");
+        assert_eq!(
+            deepseek_tui::skills::install::INSTALLED_FROM_MARKER,
+            INSTALLED_FROM_MARKER
+        );
+    }
 
     /// `extract_embedded_subdir` 的 Python 编译缓存排除与 runtime_bundle 的
     /// `extract_dir` 同规则:仓库内跑技能脚本产生的 `__pycache__/`/`*.pyc`

@@ -334,12 +334,18 @@ pub(crate) fn read_zip_entry_bounded(
     Ok(buf)
 }
 
-/// zip pass-1 单条目安全闸（统一插件包导入与技能 zip 导入共用；穿越/symlink/
-/// 大小防护对齐底座 install.rs 的判断）：
-/// - `enclosed_name` 为 None = 路径穿越（`..` / 绝对路径），拒绝；
-/// - unix_mode 文件类型位 = symlink，拒绝；
-/// - 头部声明大小累计超 `max_bytes` 拒绝（真实解压字节由各自 pass2 的有界读取
-///   兜底计量——头部声明可被伪造）。
+/// zip pass-1 单条目安全闸（统一插件包导入与技能 zip 导入共用；与底座
+/// `skills::install` 的安装安全面同源）：
+/// - `enclosed_name` 归一化穿越/绝对路径判定走 zip crate 自带 sanitizer：其
+///   归一化输出还会喂给 `skill_md_rank` 等下游布局逻辑，归一化本身是承重行为
+///   （`./x`、`a/../b` 今日按净化后路径放行），不能换成底座 `is_safe_path`
+///   的纯拒绝谓词——verdict 差异由 `forkguard_zip_gate_keeps_zip_sanitizer…`
+///   等价性钉登记；
+/// - unix_mode 文件类型位 = symlink，拒绝（底座 `entry_type_is_link` 的 zip
+///   面：tar 面底座自用，zip 面按底座契约在条目 unix 位上判定）；
+/// - 头部声明大小累计复用底座 `skills::install::add_entry_size`（饱和累加 +
+///   严格大于才拒绝，与旧内联实现逐点等价，见等价性测试；真实解压字节由各自
+///   pass2 的有界读取兜底计量——头部声明可被伪造）。
 /// 返回净化后的条目路径（分隔符归一为 `/`），并把本条目声明大小累进
 /// `declared_total`。
 pub(crate) fn checked_zip_entry_path(
@@ -356,13 +362,9 @@ pub(crate) fn checked_zip_entry_path(
             return Err("zip 含 symlink,拒绝".to_string());
         }
     }
-    *declared_total = declared_total.saturating_add(entry.size());
-    if *declared_total > max_bytes {
-        return Err(format!(
-            "{label}解压超过 {} MiB 上限",
-            max_bytes / 1024 / 1024
-        ));
-    }
+    *declared_total =
+        deepseek_tui::skills::install::add_entry_size(*declared_total, entry.size(), max_bytes)
+            .map_err(|_| format!("{label}解压超过 {} MiB 上限", max_bytes / 1024 / 1024))?;
     Ok(enclosed.to_string_lossy().replace('\\', "/"))
 }
 
@@ -1368,6 +1370,67 @@ pub fn import_plugin_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 底座安装安全原语复用的等价性钉：旧内联「饱和累加 + 严格大于才拒绝」
+    /// 的大小闸 vs `deepseek_tui::skills::install::add_entry_size`，含 `== max`
+    /// 放行边界与 u64 饱和边界。委托实现的错误路径不再把新累计值写回
+    /// `declared_total`（旧实现先写回再返回 Err）——错误会直接中止导入，累计
+    /// 值随之作废，无可观察差异。
+    #[test]
+    fn forkguard_declared_size_cap_delegates_to_engine_add_entry_size() {
+        let max_bytes: u64 = 1000;
+        let cases = [
+            (0, 0),
+            (0, 100),
+            (100, 50),
+            (950, 50),
+            (950, 51),
+            (999, 1),
+            (1000, 1),
+            (1000, 0),
+            (u64::MAX, 0),
+            (u64::MAX, 1),
+            (u64::MAX - 1, 1),
+            (u64::MAX - 1, 2),
+        ];
+        for (total, added) in cases {
+            let old = {
+                let t = total.saturating_add(added);
+                if t > max_bytes { Err("over") } else { Ok(t) }
+            };
+            let new = deepseek_tui::skills::install::add_entry_size(total, added, max_bytes)
+                .map_err(|_| "over");
+            assert_eq!(new, old, "add_entry_size({total}, {added}, {max_bytes})");
+        }
+    }
+
+    /// 穿越面等价性钉：`checked_zip_entry_path` 的穿越判定保留 zip crate 的
+    /// `enclosed_name` sanitizer 而非底座 `is_safe_path` 拒绝谓词——sanitizer
+    /// 的归一化输出喂给 `skill_md_rank` 等下游布局逻辑（`./SKILL.md` 今日归一
+    /// 成 `SKILL.md` 后才参与 rank），且其对根前缀/中段 `..` 的「净化放行」
+    /// 语义是既有放行面。本钉把底座谓词在这些输入上的 verdict 差异登记为刻意
+    /// 选择，防止后续无意识互换（zip crate 的 `enclosed_name` 是 pub(crate)，
+    /// sanitizer 侧 verdict 由既有端到端 zip 导入测试覆盖）。
+    #[test]
+    fn forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate() {
+        use deepseek_tui::skills::install::is_safe_path;
+        // 逃逸面：底座谓词拒绝（zip sanitizer 同样拒绝，端到端由导入测试覆盖）。
+        assert!(!is_safe_path(Path::new("../x")));
+        assert!(!is_safe_path(Path::new("a/../../x")));
+        // 正常面：两边都放行。
+        assert!(is_safe_path(Path::new("skills/x/SKILL.md")));
+        assert!(is_safe_path(Path::new("plugin.json")));
+        // 刻意登记的 verdict 差异：sanitizer 归一化放行、底座拒绝谓词会拒绝
+        // 的输入（`a/../b`、根前缀；Windows 驱动器前缀）。
+        assert!(!is_safe_path(Path::new("a/../b")));
+        assert!(!is_safe_path(Path::new("/abs/x")));
+        if cfg!(windows) {
+            assert!(!is_safe_path(Path::new("C:/x")));
+        }
+        // 两边都放行但输出不同：sanitizer 把 `./b` 塌缩成 `b`，底座谓词放行
+        // 原串——归一化输出承重，是保留 sanitizer 的另一原因。
+        assert!(is_safe_path(Path::new("./b")));
+    }
 
     /// Round-32 minor 6 (review #455): a leftover landing mark with a landed
     /// dir but no registry record is crash residue — the reconcile moves it
