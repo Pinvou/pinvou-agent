@@ -186,6 +186,34 @@ fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordi
     COORDINATOR.get_or_init(MarketplaceOAuthLoginCoordinator::default)
 }
 
+/// The deny-first core of `install_marketplace_tool`, as one ordered unit:
+/// consent-gate registration BEFORE the install (deny-first, #517 review
+/// round 4), so a refused gate leaves nothing landed and a post-gate
+/// failure leaves only a harmless (fail-closed) deny entry for a
+/// not-installed id. Sync and free of tauri types so the deny-first wiring
+/// itself is directly testable —
+/// `install_tool_sync_refused_before_anything_lands` drives this function
+/// end-to-end, not the extracted gate helper in isolation (that one is
+/// pinned by `install_tool_gates_refuse_before_anything_lands`).
+fn install_marketplace_tool_sync(
+    tool_id: &str,
+    user_config: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    // Round-16 (review): probe catalog existence BEFORE the deny-first gate —
+    // a garbage direct-IPC id would otherwise seed phantom deny rows, default-
+    // off markers and ledger entries for a package that cannot exist (pure
+    // over-denial surviving until the next composer full-list write). Same
+    // lookup and same error as the install's own validation, so the UX for a
+    // bad id is unchanged apart from timing.
+    match crate::features::marketplace::mcp_catalog::embedded_manifest(tool_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return Err(format!("tool '{tool_id}' does not exist")),
+        Err(error) => return Err(error),
+    }
+    install_marketplace_tool_gates(tool_id)?;
+    crate::features::marketplace::MarketplaceManager::new().install(tool_id, user_config)
+}
+
 #[tauri::command]
 pub async fn install_marketplace_tool(
     tool_id: String,
@@ -194,9 +222,10 @@ pub async fn install_marketplace_tool(
 ) -> Result<(), String> {
     let user_config = config.unwrap_or_default();
     let install_tool_id = tool_id.clone();
+    // The sync write can block on the cross-process flock (#515): keep the
+    // deny-first core off the executor.
     tokio::task::spawn_blocking(move || {
-        let mgr = crate::features::marketplace::MarketplaceManager::new();
-        mgr.install(&install_tool_id, &user_config)
+        install_marketplace_tool_sync(&install_tool_id, &user_config)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
@@ -280,7 +309,38 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             let rollback_tool_id = tool_id.clone();
             let rollback_result = tokio::task::spawn_blocking(move || {
                 let mgr = crate::features::marketplace::MarketplaceManager::new();
-                mgr.uninstall(&rollback_tool_id)
+                let result = mgr.uninstall(&rollback_tool_id);
+                // The consent rows were written by THIS install attempt's own
+                // deny-first gate milliseconds ago, so a SUCCEEDING rollback
+                // uninstall strips them even when it is vacuous at the record
+                // level (the manager's vacuous gate is a user-uninstall
+                // policy; the rollback owns these rows). On a FAILED
+                // uninstall the package stays installed — the rows must stay
+                // too (fail-closed: installed + denied beats installed +
+                // enabled), and the primary error surfaces for a retry.
+                // Round-16 disclosure (review): this strip runs after the
+                // uninstall returns, outside the transaction and import locks
+                // — the same round-12 B2 window shape the skill lane carries
+                // (see capability-governance §3.2): a concurrent same-id
+                // deny-first registration landing in the window can be wiped
+                // by this strip. Owned-rows-only by construction. Direction:
+                // fail-closed while the wiped registration's pack has NOT
+                // landed (the next gate run re-registers an unknown id), but
+                // fail-open once that pack's record and content exist — the
+                // known-bundle skip then suppresses every later gate run, so
+                // the wiped rows are not restored until a teardown
+                // (round-17 review; the strip is kept for the vacuous-rollback
+                // case, where it removes this install attempt's own rows).
+                if result.is_ok() {
+                    if let Err(e) = crate::features::marketplace::scope::
+                        remove_bundle_from_disabled_scopes_exact(&rollback_tool_id)
+                    {
+                        log::warn!(
+                            "[marketplace] rollback consent-row strip for {rollback_tool_id} failed (stale-deny residue): {e}"
+                        );
+                    }
+                }
+                result
             })
             .await;
             // Best-effort compensation: LOG a rollback failure instead of
@@ -299,7 +359,7 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
                         "[marketplace] rollback uninstall failed after validation error: {e}"
                     )
                 }
-                Ok(Ok(())) => {}
+                Ok(Ok(_)) => {}
             }
             return Err(err);
         }
@@ -312,12 +372,40 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
         // The tool's own consent sync already ran right after the install
         // commit (round-21 MAJOR 2, before the network validation); only the
         // companion loop remains here.
+        let normalized_tool_id = crate::features::marketplace::scope::to_package_id(&tool_id);
         for sid in mgr.companion_skills(&tool_id) {
+            // Round-16 (review): on the known-pack-shield edge the companion
+            // normalizes to a DIFFERENT pack — its consent write is then a
+            // real registration for that pack and must run deny-first,
+            // BEFORE the install lands content, so a refused registration
+            // aborts with nothing touched (the post-landing sync below stays
+            // as the fail-visible belt; the known-clause makes it skip once
+            // the pre-land registration landed). The common case normalizes
+            // to the tool's own id, which the tool-level sync above already
+            // registered.
+            let divergent =
+                crate::features::marketplace::scope::to_package_id(&sid) != normalized_tool_id;
+            if divergent {
+                crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
+                    .map_err(|refused| {
+                        // Not the shared "before anything was installed" copy:
+                        // this gate runs inside the post-install phase, so the
+                        // parent tool's record and content have already
+                        // committed — word it like the post-landing arms
+                        // instead (round-19 review).
+                        format!(
+                            "tool '{tool_id}' installed, but companion skill '{sid}' was not: DenyAll sync refused: {refused}"
+                        )
+                    })?;
+            }
             if let Err(e) =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                     .install(&sid)
             {
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
+                continue;
+            }
+            if !divergent {
                 continue;
             }
             // A newly installed companion skill joins the DenyAll scope disabled
@@ -335,10 +423,6 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             // refresh covers only the four CLI connector gates). That edge
             // therefore fails the command, exactly like the tool-level
             // sync's fail-visible persist above.
-            let normalized = crate::features::marketplace::scope::to_package_id(&sid);
-            if normalized == crate::features::marketplace::scope::to_package_id(&tool_id) {
-                continue;
-            }
             if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
             {
                 return Err(format!(
@@ -562,7 +646,14 @@ pub async fn uninstall_marketplace_tool(
     tool_id: String,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<(), String> {
-    uninstall_marketplace_tool_sync(&tool_id)?;
+    // The sync body includes scope-file RMW that can block on the
+    // cross-process flock (#515): keep it off the executor.
+    tokio::task::spawn_blocking(move || uninstall_marketplace_tool_sync(&tool_id))
+        .await
+        // The join-failure copy matches the neighboring commands (round-20
+        // review: the English one-off surfaced verbatim among the "task
+        // execution failed" siblings).
+        .map_err(|e| format!("task execution failed: {e}"))??;
     // mcp.json 可能移除了 server：递增修订号让在线引擎下一轮 get_or_spawn
     // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
     // 连接器工具不再出现在模型目录。
@@ -660,9 +751,21 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
         if recycles_with_package {
             continue; // companion 随整包回收，见上注释
         }
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .uninstall(sid)
-            .map_err(|e| format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}"))?;
+        let torn_down =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .uninstall(sid)
+                .map_err(|e| {
+                    format!(
+                        "failed to uninstall the companion skill '{sid}' (the tool uninstall was aborted; please retry): {e}"
+                    )
+                })?;
+        if !torn_down {
+            // Vacuous companion uninstall (declared but never installed):
+            // there is nothing legitimate to clear — stripping here would
+            // remove a deny-first entry a concurrent install just registered
+            // for that skill id. Leave every entry alone.
+            continue;
+        }
         // Scope entries are cleared only after the skill is actually gone —
         // otherwise a still-installed skill would be silently re-enabled.
         // Exact form (round-26 MAJOR 1): the rows were owned by the
@@ -672,21 +775,32 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
         let owner = companion_owners.get(sid).map(String::as_str).unwrap_or(sid);
         crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(owner)?;
     }
-    mgr.uninstall(tool_id)?;
-    if recycles_with_package {
-        // 整包已回收（companion 目录随包搬离）→ 此时技能确实没了，再清 scope。
-        for sid in &companions {
-            let owner = companion_owners.get(sid).map(String::as_str).unwrap_or(sid);
-            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(owner)?;
-        }
+    // The scope strips happen INSIDE the transaction (the in-lock leg in
+    // cleanup_uninstalled_tool_state, gated on this call's real removal
+    // outcome): there is deliberately no post-return strip here. A strip
+    // after `mgr.uninstall` returned would run outside the transaction lock
+    // and could undo the deny-first entry a concurrent same-id install
+    // registered after our in-lock strip — re-enabling the package as it
+    // lands (round-11 P2-1). The in-lock leg already covers both rows this
+    // function used to re-strip post-return (the tool-id rows when the
+    // record removal succeeded, and the recycled companions' rows via
+    // strip_recycled_companions), so the strips below were pure window:
+    // unreachable for the vacuous leg (it returns above) and able only to
+    // erase a concurrent install's fresh registration on the non-vacuous
+    // leg. A vacuous uninstall (the manager's `Ok(false)`) leaves every
+    // entry alone: stranded leftover entries fail closed and do NOT converge
+    // via install/uninstall — the deny-list composer's next full-list save
+    // rewrites the file.
+    let removed_install_record = mgr.uninstall(tool_id)?;
+    if !removed_install_record {
+        // Vacuous uninstall: no install record existed, so nothing was torn
+        // down and the in-lock scope cleanup has nothing legitimate to
+        // remove — but a post-return strip WOULD erase the deny-first
+        // consent entry a concurrent same-id install may have just
+        // registered (its install record lands after the gate), re-enabling
+        // the package as it lands. Leave every entry alone.
+        return Ok(());
     }
-    // The uninstalled connector is removed from both scopes' disabled sets (no
-    // stale ids). Fail-visible (round-17 minor 1): a stale entry + marker would
-    // be inherited by a same-id reinstall's install sync. Exact form
-    // (round-26 MAJOR 1): the dir is already deleted/recycled, so the
-    // normalized form could re-own `tool_id` onto a foreign claim — `tool_id`
-    // is itself the pack id.
-    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(tool_id)?;
     Ok(())
 }
 // ---------------------------------------------------------------------------
@@ -725,20 +839,49 @@ pub async fn install_marketplace_skill(
     Ok(())
 }
 
+/// DenyAll consent-gate registration for `install_marketplace_tool`, run
+/// BEFORE the package lands (deny-first, #517 review round 4): a refusal
+/// aborts the install before the package is exposed or an existing
+/// installation is overwritten — nothing on disk has been touched yet.
+pub(super) fn install_marketplace_tool_gates(tool_id: &str) -> Result<(), String> {
+    // The sync itself skips known bundles (their consent is recorded), so a
+    // reinstall never re-runs the write and never needs the lock.
+    crate::features::marketplace::sync_deny_all_scopes_after_install(tool_id)
+        .map_err(|refused| refused_sync_error(&format!("tool '{tool_id}'"), refused))
+}
+
+/// Transaction boundary for every install/import path (review finding on
+/// #517): the DenyAll consent-gate registration runs BEFORE any content lands
+/// or replaces an existing installation (deny-first), so a refused
+/// registration (lock unavailable / write failure / corrupt file) aborts the
+/// operation with nothing touched — the package is never exposed outside the
+/// deny lists of initialized DenyAll scopes, and a pre-existing installation
+/// is never destroyed by a rollback (an uninstall-based rollback could not
+/// restore an overwritten preset/upload copy anyway, review round 4).
+fn refused_sync_error(what: &str, refused: String) -> String {
+    format!("{what}: DenyAll sync refused before anything was installed: {refused}")
+}
+
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
-    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-        .install(skill_id)?;
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
-    // Fail-visible persist (review #455 R13-B3): swallowing the error would let the skill go live with zero consent.
+    // Deny-first (#517 review round 4): the registration only needs the
+    // package id and must precede the install — a refusal aborts before
+    // anything lands, so a re-install can never destroy the pre-existing
+    // copy in a rollback. The gate skips known bundles (their entries ARE
+    // the recorded consent), so a reinstall never re-runs the write.
+    // Round-16 (review): existence probe first — same rationale as the tool
+    // install's probe (a garbage id must not seed phantom deny rows); same
+    // lookup and error as the install's own validation.
+    if !crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .preset_skill_exists(skill_id)
+    {
+        return Err(format!("unknown preset skill '{skill_id}'"));
+    }
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
-        .map_err(|e| {
-            format!(
-                "skill '{skill_id}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-                crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-            )
-        })?;
-    Ok(())
+        .map_err(|refused| refused_sync_error(&format!("skill '{skill_id}'"), refused))?;
+    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+        .install(skill_id)
 }
 
 /// 更新已安装的预置技能:复用 `install` 的原子覆盖管线落最新嵌入资源。
@@ -759,6 +902,14 @@ pub async fn update_marketplace_skill(
         if !installed {
             return Err(format!("技能 '{skill_id}' 非已安装预置技能,无法更新"));
         }
+        // DenyAll gate before the install replaces content (same seam as
+        // every other install channel): for a genuinely installed preset the
+        // known-bundle skip returns `Ok` without writing — its entries ARE
+        // the recorded consent — so today this is a no-op. It stays here so
+        // the no-exposure property is enforced by the gate itself, not by
+        // the list precondition above silently holding (round-11 P3).
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&skill_id)
+            .map_err(|refused| refused_sync_error(&format!("skill '{skill_id}'"), refused))?;
         mgr.install(&skill_id)
     })
     .await
@@ -810,9 +961,12 @@ fn stable_stem_hash(stem: &str) -> String {
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
 /// 统一导入。frontmatter 有 `name` 用之；没有则用文件名 stem 兜底并注入最小
 /// frontmatter。返回 PluginImportReport（调用方负责热刷 skills 组合目录）。
+/// `pre_land` is forwarded as the pre-land hook of the unified import
+/// pipeline (the DenyAll deny-first gate).
 fn import_skill_md_content(
     md: String,
     filename: &str,
+    pre_land: &dyn Fn(&str, &[String]) -> Result<(), String>,
 ) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
     use std::io::Write;
     let stem = filename
@@ -851,12 +1005,108 @@ fn import_skill_md_content(
     }
     // 展示名 = 原始文件名（写 bundles.json 的 upload 来源标记）。
     let display = sanitize_display_name(filename);
-    let result = crate::features::marketplace::plugin_import::import_plugin_package(
+    let result = crate::features::marketplace::plugin_import::import_plugin_package_gated(
         &tmp.to_string_lossy(),
         &display,
+        pre_land,
     );
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     result
+}
+
+/// DenyAll consent gate for a freshly imported plugin package (zip and
+/// wrapped-.md uploads share this; see `refused_sync_error` for the
+/// transaction boundary). The closure form is the pre-land hook of the
+/// unified import pipeline: the deny entry is registered before any content
+/// lands, so a refusal aborts the import with nothing touched (#517 review
+/// round 4 — an uninstall-based rollback could not restore an overwritten
+/// pre-existing package anyway).
+/// `skills` are the package's identified skill components: one no installed
+/// manifest claims will materialize as its own standalone package (the owner
+/// claim falls through to the component id), so the package-level entry
+/// never covers it — standalone components are registered deny-first too,
+/// or an undeclared component would land enabled in initialized DenyAll
+/// scopes (round-11 P2-3). Components this package itself declares are
+/// covered by the package entry once its record lands (read-time
+/// normalization folds the claim onto the package id); a component claimed
+/// by a foreign installed package normalizes to that owner, whose entry
+/// covers it. Uninitialized DenyAll scopes are not a gap: their default
+/// deny set also unions the `bundles/*/skills/` disk walk through the
+/// physical gating owner (`skill_gating_owner_with`), so a landed
+/// standalone component resolves to its own pack id and sits under the
+/// default-full-deny (round-17 review — the earlier "preset/upload-record
+/// ids only" residual no longer existed).
+fn deny_all_pre_land(id: &str, skills: &[String]) -> Result<(), String> {
+    crate::features::marketplace::sync_deny_all_scopes_after_install(id)
+        .map_err(|refused| refused_sync_error(&format!("package '{id}'"), refused))?;
+    // A component no installed manifest claims materializes as its own
+    // standalone package (owner claim falls through to the component id), so
+    // the package-level entry never covers it — standalone components are
+    // registered deny-first too, or an undeclared component would land
+    // enabled in initialized DenyAll scopes (round-11 P2-3). One exception
+    // keeps reimports honest: a component already materialized under an
+    // INSTALLED copy of this same package ships with it, so its consent is
+    // the package's recorded state (the known-skip above covered the package
+    // id) — re-registering it would re-deny recorded consent on every
+    // conflict-rejected reimport and mask the content-conflict refusal
+    // behind a lock refusal. Without the installed-record requirement, an
+    // uninstalled custom package's kept dir beside a stale `installed=false`
+    // record would suppress a genuinely fresh registration.
+    let record_installed = crate::features::marketplace::store::BundleStore::new()
+        .get(id)
+        .ok()
+        .flatten()
+        .map(|record| record.installed)
+        .unwrap_or(false);
+    // Round-16 (review): one manifest snapshot serves every owner-claim
+    // check below — the per-skill wrapper re-walked all manifests per
+    // component. Round-19: the hoist now also covers the package-id
+    // resolution itself (the loop still called the walking `to_package_id`).
+    let tools = crate::features::marketplace::MarketplaceManager::new().available_tools();
+    for skill in skills {
+        let owner = crate::features::marketplace::bundle::skill_owner_package_with(&tools, skill);
+        if owner != *skill {
+            continue;
+        }
+        let package_id = crate::features::marketplace::scope::to_package_id_with(&tools, skill);
+        if package_id == id {
+            continue;
+        }
+        if record_installed
+            && crate::platform::paths::bundles_root()
+                .join(id)
+                .join("skills")
+                .join(skill)
+                .join("SKILL.md")
+                .is_file()
+        {
+            continue;
+        }
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&package_id)
+            .map_err(|refused| refused_sync_error(&format!("skill '{package_id}'"), refused))?;
+    }
+    Ok(())
+}
+
+/// Import + DenyAll gate for one zip plugin package (the dialog and drag-drop
+/// channels share this; callers only refresh pools on success).
+pub(super) fn import_plugin_package_sync(
+    zip_path: &str,
+    display_name: &str,
+) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
+    crate::features::marketplace::plugin_import::import_plugin_package_gated(
+        zip_path,
+        display_name,
+        &deny_all_pre_land,
+    )
+}
+
+/// Import + DenyAll gate for one wrapped-.md skill upload.
+pub(super) fn import_skill_md_content_gated(
+    md: String,
+    filename: &str,
+) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
+    import_skill_md_content(md, filename, &deny_all_pre_land)
 }
 
 /// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：mcp/skill/组合包），
@@ -892,27 +1142,35 @@ pub async fn import_plugin_package_cmd(
         .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
         .unwrap_or(false);
 
+    // Import + DenyAll consent gate in one blocking step (the gate write can
+    // block on the cross-process flock, #515); a refused gate aborts the
+    // import before anything lands (see `deny_all_pre_land`).
     let report = tokio::task::spawn_blocking(move || {
         if is_md {
             let md = std::fs::read_to_string(&path)
                 .map_err(|e| format!("读技能文件失败（{}）: {e}", path.display()))?;
-            import_skill_md_content(md, &display)
+            import_skill_md_content_gated(md, &display)
         } else {
-            crate::features::marketplace::plugin_import::import_plugin_package(
-                &path.to_string_lossy(),
-                &display,
-            )
+            import_plugin_package_sync(&path.to_string_lossy(), &display)
         }
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
     // Same contract as install_marketplace_tool. Fail-visible persist (review #455 R13-B3).
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
+    // Off the executor: the sync waits on the cross-process scope flock,
+    // which a frozen peer holds indefinitely.
+    let imported_id = report.id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&imported_id)
+    })
+    .await
+    .map_err(|e| format!("task execution failed: {e}"))?
+    .map_err(|e| {
         format!(
             "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
-            report.id
+            report.id,
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
         )
     })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
@@ -930,9 +1188,12 @@ pub async fn import_plugin_package_cmd(
     Ok(Some(report.id))
 }
 
-/// 拖放导入插件包（统一上传，与 `import_plugin_package_cmd` 同语义）：前端把 zip 读成
-/// base64 传这里，临时落盘后走 `import_plugin_package`。返回新包 id=已导入（前端
-/// 据此打开展示信息编辑弹窗）。
+/// Drag-and-drop plugin import (unified upload, same semantics as
+/// `import_plugin_package_cmd`): the frontend reads the zip into base64 and
+/// passes it here; it is staged to a temp file and goes through
+/// `import_plugin_package_sync` (the unified pre-land gate pipeline).
+/// Returns the new pack id = imported (the frontend opens the
+/// display-info edit dialog for it).
 ///
 /// 注：旧名 `import_spanner_package_bytes` 已重命名——见上面注释。
 #[tauri::command]
@@ -964,23 +1225,30 @@ pub async fn import_plugin_package_bytes_cmd(
     ));
     std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
     let tmp_for_import = tmp.clone();
+    // Import + DenyAll consent gate in one blocking step (see
+    // `import_plugin_package_sync`).
     let report = tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::plugin_import::import_plugin_package(
-            &tmp_for_import.to_string_lossy(),
-            &safe_name,
-        )
+        import_plugin_package_sync(&tmp_for_import.to_string_lossy(), &safe_name)
     })
     .await
     .map_err(|e| format!("任务执行失败: {e}"))?;
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    // Fail-visible persist (review #455 R13-B3).
-    crate::features::marketplace::sync_deny_all_scopes_after_install(&report.id).map_err(|e| {
+    // Fail-visible persist (review #455 R13-B3). Off the executor: the sync
+    // waits on the cross-process scope flock, which a frozen peer holds
+    // indefinitely.
+    let imported_id = report.id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&imported_id)
+    })
+    .await
+    .map_err(|e| format!("task execution failed: {e}"))?
+    .map_err(|e| {
         format!(
             "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
-            report.id
+            report.id,
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
         )
     })?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
@@ -1019,21 +1287,28 @@ pub async fn import_skill_md_bytes(
     }
     let md = String::from_utf8(bytes).map_err(|e| format!("技能文件须为 UTF-8 文本: {e}"))?;
     let filename_for_import = filename.clone();
-    let report =
-        tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
-            .await
-            .map_err(|e| format!("任务执行失败: {e}"))??;
+    let report = tokio::task::spawn_blocking(move || {
+        import_skill_md_content_gated(md, &filename_for_import)
+    })
+    .await
+    .map_err(|e| format!("task execution failed: {e}"))??;
     // Upload safe default: same as plugin import, joins the DenyAll scopes.
-    // Fail-visible persist (review #455 R13-B3).
-    crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&report.id).map_err(
-        |e| {
-            format!(
-                "skill '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-                crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
-                report.id
-            )
-        },
-    )?;
+    // Fail-visible persist (review #455 R13-B3). Off the executor: the sync
+    // waits on the cross-process scope flock, which a frozen peer holds
+    // indefinitely.
+    let imported_id = report.id.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&imported_id)
+    })
+    .await
+    .map_err(|e| format!("task execution failed: {e}"))?
+    .map_err(|e| {
+        format!(
+            "skill '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            report.id,
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        )
+    })?;
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
@@ -1066,8 +1341,16 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     // gating fallback could be hijacked by a foreign pack's claim/nesting and
     // erase THAT pack's consent rows.
     let owner = crate::features::marketplace::scope::resolve_pack_owner_id(skill_id);
-    crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+    let torn_down = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
+    if !torn_down {
+        // Vacuous skill uninstall (no record, nothing on disk): there is
+        // nothing legitimate to clear — stripping here would remove the
+        // deny-first consent entry a concurrent same-id install just
+        // registered (its install record lands after the gate) and re-enable
+        // the skill as it lands.
+        return Ok(());
+    }
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）；
     // exact 形式按卸载前快照的属主清行（round-26 MAJOR 1）。
     crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(&owner)?;
@@ -1388,6 +1671,938 @@ pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Temp-home harness for the DenyAll transaction-boundary regressions:
+    /// serializes on ENV_LOCK like the other PINVOU3_HOME mutators.
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        // Delegated to the shared RAII helper (round 9): a failing assertion
+        // unwinds past a straight-line env restore, which would leave
+        // PINVOU3_HOME pointed at a deleted temp dir and cascade unrelated
+        // failures for every later test in the process.
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", f);
+    }
+
+    /// The Upload-recycle uninstall strips the owner's and the companions'
+    /// deny entries INSIDE the transaction (cleanup_uninstalled_tool_state
+    /// under MARKETPLACE_TRANSACTION_LOCK, round-11 P2-1): no scope write
+    /// happens after `mgr.uninstall` returns, so a deny-first entry a
+    /// concurrent same-id install registers past that point survives. The
+    /// entries here are seeded directly (a save while the package is
+    /// installed would read-time-normalize the companion id onto the owner);
+    /// the seed id must survive both strips.
+    #[test]
+    fn uninstall_upload_recycle_strips_owner_and_companion_entries_in_lock() {
+        with_temp_home(|| {
+            // Combo on disk + Upload record + Upload install record, mirroring
+            // the recycle fixture of
+            // uninstall_upload_bundle_via_command_recycles_companion_skills.
+            let manifest_dir =
+                crate::features::marketplace::mcp_catalog::package_mcp_dir("up-lock");
+            std::fs::create_dir_all(&manifest_dir).unwrap();
+            std::fs::write(
+                manifest_dir.join("manifest.json"),
+                r#"{"id":"up-lock","name":"UpLock","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-lock-skill"]}"#,
+            )
+            .unwrap();
+            let skill_dir =
+                crate::platform::paths::bundles_root().join("up-lock/skills/up-lock-skill");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: up-lock-skill\n---\n",
+            )
+            .unwrap();
+            let mgr = crate::features::marketplace::MarketplaceManager::new();
+            mgr.install_upload(
+                "up-lock",
+                crate::features::marketplace::store::BundleSource::Upload(
+                    "up-lock.zip".to_string(),
+                ),
+            )
+            .unwrap();
+
+            // Seed consent state directly: owner id, standalone-era companion
+            // id, and an unrelated entry that must survive.
+            let disabled = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(
+                &disabled,
+                r#"{"scopes":{"code":["seed-bundle","up-lock","up-lock-skill"]},"initialized":["code"]}"#,
+            )
+            .unwrap();
+
+            uninstall_marketplace_tool_sync("up-lock").expect("uninstall must succeed");
+
+            let file: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
+            assert_eq!(
+                file["scopes"]["code"],
+                serde_json::json!(["seed-bundle"]),
+                "owner and companion entries must be stripped by the in-lock leg; \
+                 unrelated entries must survive"
+            );
+            assert_eq!(
+                file["initialized"].as_array().unwrap().len(),
+                1,
+                "the strip must not touch the scope's initialization marker"
+            );
+        });
+    }
+
+    /// Initialize the code scope while the cross-process lock still works
+    /// (initialized is what makes the DenyAll sync a required write), then
+    /// make the lock file unopenable (a directory at its path) so every
+    /// consent-gate sync is refused.
+    fn init_code_scope_then_break_lock() {
+        crate::features::marketplace::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+            &["seed-bundle".to_string()],
+        )
+        .expect("code scope must initialize while the lock works");
+        let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir_all(&lock).unwrap();
+    }
+
+    /// Transaction boundary (#517 review, deny-first): a preset skill install
+    /// whose DenyAll consent-gate registration is refused must abort BEFORE
+    /// the skill lands — it must not stay installed outside the deny lists of
+    /// the initialized DenyAll scope, and nothing may be written at all. The
+    /// refusal must name the lock failure (false-pass half of the #528
+    /// pattern) and the persisted deny state must not gain the skill.
+    #[test]
+    fn install_skill_refused_before_landing_when_deny_sync_fails() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let error = install_marketplace_skill_sync("pptx").unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {error}"
+            );
+            assert!(
+                error.contains("before anything was installed"),
+                "refusal must state the deny-first boundary: {error}"
+            );
+
+            let skills =
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+            assert!(
+                skills.find_skill_dir("pptx").is_none(),
+                "the skill must never land on a refused gate"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("pptx")
+                    .unwrap()
+                    .is_none(),
+                "no install record may be written on a refused gate"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the initialized deny state must be untouched"
+            );
+        });
+    }
+
+    /// Review round 4 regression, final semantics: re-installing an
+    /// ALREADY-installed preset skill (the update path) must not touch the
+    /// recorded consent state at all. The gate skips known bundles, so the
+    /// reinstall goes through even with the scope lock unavailable and the
+    /// skill stays ENABLED in the initialized DenyAll scope — the old
+    /// unconditional re-registration silently disabled a working install,
+    /// both on success and (with no recovery path) on any post-gate failure.
+    #[test]
+    fn reinstall_preset_skill_preserves_consent_state() {
+        with_temp_home(|| {
+            let skills =
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+            skills
+                .install("pptx")
+                .expect("first install must succeed while the lock works");
+            let skill_md = skills
+                .find_skill_dir("pptx")
+                .expect("precondition: pptx installed")
+                .join("SKILL.md");
+            assert!(skill_md.is_file(), "precondition: SKILL.md on disk");
+
+            init_code_scope_then_break_lock();
+
+            install_marketplace_skill_sync("pptx")
+                .expect("a known bundle's reinstall must not need the consent-gate write");
+            assert!(
+                skill_md.is_file(),
+                "the reinstalled skill must still be on disk"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("pptx")
+                    .unwrap()
+                    .is_some(),
+                "the install record must survive the reinstall"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the reinstall must not re-deny the enabled skill"
+            );
+        });
+    }
+
+    /// Same transaction boundary for the MCP tool path: the gate registration
+    /// runs before the install, so a refusal must leave no package dir and no
+    /// store record. Helper-granularity pin — the end-to-end command wiring
+    /// (gate before `MarketplaceManager::install`) is pinned by
+    /// `install_tool_sync_refused_before_anything_lands`.
+    #[test]
+    fn install_tool_gates_refuse_before_anything_lands() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let error = install_marketplace_tool_gates("weather").unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "refusal must name the lock failure: {error}"
+            );
+            assert!(
+                error.contains("before anything was installed"),
+                "refusal must state the deny-first boundary: {error}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("weather")
+                    .exists(),
+                "the gate alone must not create the package dir"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("weather")
+                    .unwrap()
+                    .is_none(),
+                "the gate alone must not write an install record"
+            );
+        });
+    }
+
+    /// The deny-first ORDERING of the tool install path, end-to-end: the
+    /// command's sync core must run the consent gate BEFORE
+    /// `MarketplaceManager::install`, so a refused registration lands nothing
+    /// at all. Driving the gate helper in isolation
+    /// (`install_tool_gates_refuse_before_anything_lands`) would stay green
+    /// if the command were reverted to install-first-then-gate. The id is a
+    /// REAL catalog package ("weather"): the round-16 existence probe passes,
+    /// the fixed world refuses at the gate (the error names the lock), and
+    /// the dir/record asserts below are what catch a reverted ordering — an
+    /// install-first shape would land the weather package before the gate
+    /// refused. (Round-15's unknown-id probe of this shape, "gate-wiring-
+    /// probe", became an ordering-blind shortcut when the round-16 existence
+    /// probe moved ahead of the gate: a garbage id now fails with the
+    /// catalog error before any lock is consulted.)
+    #[test]
+    fn install_tool_sync_refused_before_anything_lands() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let error = install_marketplace_tool_sync("weather", &Default::default()).unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "the refusal must come from the consent gate and name the lock \
+                 failure, not from a post-gate step: {error}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("weather")
+                    .exists(),
+                "a refused install must not create the package dir"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("weather")
+                    .unwrap()
+                    .is_none(),
+                "a refused install must not write an install record"
+            );
+        });
+    }
+
+    /// Round-16 (review): a garbage direct-IPC id must fail on the existence
+    /// probe BEFORE the deny-first gate — otherwise the gate seeds phantom
+    /// deny rows, default-off markers and ledger entries for a package that
+    /// cannot exist (pure over-denial surviving until the next composer
+    /// full-list write, and a dead ledger entry suppressing any future
+    /// startup backfill). Both install lanes are pinned: the error is the
+    /// catalog's own, and the persisted consent state is untouched.
+    #[test]
+    fn install_unknown_ids_write_no_consent_state() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let tool_error =
+                install_marketplace_tool_sync("definitely-not-a-tool", &Default::default())
+                    .unwrap_err();
+            assert!(
+                tool_error.contains("does not exist"),
+                "the tool probe must fail with the catalog's own error: {tool_error}"
+            );
+            assert!(
+                !tool_error.contains("disabled_bundles.lock"),
+                "the gate must not have run for a nonexistent id: {tool_error}"
+            );
+
+            let skill_error = install_marketplace_skill_sync("definitely-not-a-skill").unwrap_err();
+            assert!(
+                skill_error.contains("unknown preset skill"),
+                "the skill probe must fail with the install's own error: {skill_error}"
+            );
+            assert!(
+                !skill_error.contains("disabled_bundles.lock"),
+                "the gate must not have run for a nonexistent skill: {skill_error}"
+            );
+
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the initialized deny state must gain no phantom rows"
+            );
+            assert!(
+                crate::features::marketplace::scope::load_disabled_bundles_file()
+                    .install_default_synced
+                    .is_empty(),
+                "the sync ledger must gain no dead entries"
+            );
+        });
+    }
+
+    /// The unified plugin-package import channel's deny-first ordering,
+    /// end-to-end through the production entry (`import_plugin_package_sync`):
+    /// a FRESH import whose consent-gate registration is refused (broken
+    /// lock) must land nothing — no package dir, no store record. The
+    /// sibling re-import test pins the installed-package half (conflict
+    /// refusal); without this test, moving the pre-land hook after the
+    /// staging step would stay green.
+    #[test]
+    fn import_fresh_refused_before_landing() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let plugin_json = r#"{"manifest_version":1,"id":"gate-fresh-plugin","name":"p","components":{"skills":[{"id":"gate-fresh-skill","dir":"skills/gate-fresh-skill"}]}}"#;
+            let mut zip_buf = std::io::Cursor::new(Vec::new());
+            {
+                use std::io::Write;
+                let mut zw = zip::ZipWriter::new(&mut zip_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("plugin.json", opts).unwrap();
+                zw.write_all(plugin_json.as_bytes()).unwrap();
+                zw.start_file("skills/gate-fresh-skill/SKILL.md", opts)
+                    .unwrap();
+                zw.write_all(b"---\nname: gate-fresh-skill\ndescription: fresh\n---\nbody")
+                    .unwrap();
+                zw.finish().unwrap();
+            }
+            let tmp = std::env::temp_dir().join(format!(
+                "gate-fresh-plugin-{}-{}.zip",
+                std::process::id(),
+                crate::platform::paths::tests::unique_suffix()
+            ));
+            std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+
+            let error = import_plugin_package_sync(&tmp.to_string_lossy(), "gate-fresh-plugin.zip")
+                .unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "the refusal must come from the pre-land consent gate and name the \
+                 lock failure: {error}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("gate-fresh-plugin")
+                    .exists(),
+                "a refused fresh import must not create the package dir"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("gate-fresh-plugin")
+                    .unwrap()
+                    .is_none(),
+                "a refused fresh import must not write an install record"
+            );
+            let _ = std::fs::remove_file(&tmp);
+        });
+    }
+
+    /// Upload channels must not be able to reserve a preset skill's MARKET
+    /// id (round-11 P2-2): install records and deny entries are keyed under
+    /// market ids, so a colliding upload's record would make the consent
+    /// gate treat the real preset as already known (its install skips
+    /// registration — fail-open) and read-time normalization would fold the
+    /// preset's alias vocabulary onto the upload. Both directions are
+    /// reserved: the package id against preset market ids AND preset skill
+    /// names, and every component name against both vocabularies.
+    #[test]
+    fn import_rejects_preset_market_id_collisions() {
+        with_temp_home(|| {
+            let build_zip = |id: &str, skill_id: &str| {
+                let plugin_json = format!(
+                    r#"{{"manifest_version":1,"id":"{id}","name":"p","components":{{"skills":[{{"id":"{skill_id}","dir":"skills/{skill_id}"}}]}}}}"#
+                );
+                let mut zip_buf = std::io::Cursor::new(Vec::new());
+                {
+                    use std::io::Write;
+                    let mut zw = zip::ZipWriter::new(&mut zip_buf);
+                    let opts = zip::write::SimpleFileOptions::default();
+                    zw.start_file("plugin.json", opts).unwrap();
+                    zw.write_all(plugin_json.as_bytes()).unwrap();
+                    zw.start_file(format!("skills/{skill_id}/SKILL.md"), opts)
+                        .unwrap();
+                    zw.write_all(
+                        format!("---\nname: {skill_id}\ndescription: c\n---\nbody").as_bytes(),
+                    )
+                    .unwrap();
+                    zw.finish().unwrap();
+                }
+                let tmp = std::env::temp_dir().join(format!(
+                    "preset-id-collide-{}-{}.zip",
+                    std::process::id(),
+                    crate::platform::paths::tests::unique_suffix()
+                ));
+                std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+                tmp
+            };
+
+            // The package id itself is the aliased preset's market id
+            // (`tencent-docs-skill` ↔ skill name `tencent-docs`): the case
+            // the name-only reservation missed.
+            let tmp = build_zip("tencent-docs-skill", "own-skill");
+            let error =
+                import_plugin_package_sync(&tmp.to_string_lossy(), "collide.zip").unwrap_err();
+            assert!(
+                error.contains("marketplace preset skill"),
+                "a package id colliding with a preset market id must be refused: {error}"
+            );
+            let _ = std::fs::remove_file(&tmp);
+
+            // The reverse direction: a component name keyed under a preset
+            // market id (a standalone skill would normalize to itself and
+            // hijack the same vocabulary).
+            let tmp = build_zip("own-collide-pkg", "tencent-docs-skill");
+            let error =
+                import_plugin_package_sync(&tmp.to_string_lossy(), "collide2.zip").unwrap_err();
+            assert!(
+                error.contains("marketplace preset skill"),
+                "a component name colliding with a preset market id must be refused: {error}"
+            );
+            let _ = std::fs::remove_file(&tmp);
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("tencent-docs-skill")
+                    .unwrap()
+                    .is_none()
+                    && crate::features::marketplace::store::BundleStore::new()
+                        .get("own-collide-pkg")
+                        .unwrap()
+                        .is_none(),
+                "refused collisions must not write install records"
+            );
+        });
+    }
+
+    /// Round-12 review B1: a package id that `to_package_id` folds onto an
+    /// INSTALLED claimant's consent vocabulary must be refused. With gongwen
+    /// installed, the id `government-writing` (its declared companion skill
+    /// name) folds onto `gongwen` inside the consent gate, so the gate's
+    /// known-skip fires on the CLAIMANT and a package imported under the id
+    /// would land with no deny entry of its own — ungoverned in initialized
+    /// DenyAll scopes. The refusal must name the owning package. The second
+    /// half pins that the rejection is state-dependent, not a blanket ban:
+    /// with the claimant uninstalled the same id self-maps, the import
+    /// succeeds, and the fresh id is registered deny-first — the export →
+    /// re-import round-trip contract.
+    #[test]
+    fn import_rejects_owner_claimed_package_ids() {
+        with_temp_home(|| {
+            // Seed the gongwen claimant directly as an installed store record
+            // instead of running the real preset install: the fold
+            // (`skill_owner_package` → `bundle_installed`) consults the
+            // embedded catalog manifest plus the store record only, and the
+            // real install would run gongwen's legacy pip fallback
+            // (python-docx) on non-Windows hosts — network-dependent in CI.
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(crate::features::marketplace::store::BundleRecord {
+                    id: "gongwen".to_string(),
+                    source: crate::features::marketplace::store::BundleSource::Preset,
+                    installed: true,
+                    content_fingerprint: Some("fp".to_string()),
+                    installed_at: "2026-08-20T00:00:00+00:00".to_string(),
+                    degraded: None,
+                    assets: Vec::new(),
+                    extra: serde_json::Map::new(),
+                })
+                .expect("seed gongwen install record");
+            crate::features::marketplace::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .expect("code scope must initialize");
+
+            let manifest = r#"{"id":"government-writing","name":"Government Writing Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["draft_doc"],"command":"python","args":["server.py"]}"#;
+            let mut zip_buf = std::io::Cursor::new(Vec::new());
+            {
+                use std::io::Write;
+                let mut zw = zip::ZipWriter::new(&mut zip_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(manifest.as_bytes()).unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"print('attacker')").unwrap();
+                zw.finish().unwrap();
+            }
+            let tmp = std::env::temp_dir().join(format!(
+                "owner-claim-id-{}-{}.zip",
+                std::process::id(),
+                crate::platform::paths::tests::unique_suffix()
+            ));
+            std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+
+            let error =
+                import_plugin_package_sync(&tmp.to_string_lossy(), "government-writing.zip")
+                    .unwrap_err();
+            assert!(
+                error.contains("gongwen"),
+                "the refusal must name the owning package: {error}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("government-writing")
+                    .exists(),
+                "a refused owner-claimed import must not create the package dir"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("government-writing")
+                    .unwrap()
+                    .is_none(),
+                "a refused owner-claimed import must not write an install record"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the refused import must leave the deny list unchanged"
+            );
+
+            // Round-trip half: with the claimant's record gone, the same id
+            // self-maps, so the SAME zip must import — and its own id must be
+            // deny-first registered by the gate.
+            crate::features::marketplace::store::BundleStore::new()
+                .remove("gongwen")
+                .expect("remove the seeded gongwen record");
+            import_plugin_package_sync(&tmp.to_string_lossy(), "government-writing.zip")
+                .expect("without the installed claimant the id self-maps and must import");
+            assert!(
+                crate::platform::paths::bundles_root()
+                    .join("government-writing")
+                    .exists(),
+                "the round-trip import must land its package dir"
+            );
+            let deny_list = crate::features::marketplace::load_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+            );
+            assert!(
+                deny_list.iter().any(|id| id == "government-writing"),
+                "the fresh id must be deny-first registered once the claimant is gone: {deny_list:?}"
+            );
+            let _ = std::fs::remove_file(&tmp);
+        });
+    }
+
+    /// Round-12 review B3 (import side): a case-variant spelling of a builtin
+    /// CLI connector id must be refused. `cli_bundle_skill_dirs` matches the
+    /// exact id only, so on a case-insensitive filesystem an id like
+    /// `Dingtalk` would land at the same physical path as the connector's
+    /// real companion skill dirs — the guard must also fold case against the
+    /// builtin connector id list.
+    #[test]
+    fn import_rejects_case_variant_connector_ids() {
+        with_temp_home(|| {
+            crate::features::marketplace::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .expect("code scope must initialize");
+
+            let manifest = r#"{"id":"Dingtalk","name":"Dingtalk Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["send_message"],"command":"python","args":["server.py"]}"#;
+            let mut zip_buf = std::io::Cursor::new(Vec::new());
+            {
+                use std::io::Write;
+                let mut zw = zip::ZipWriter::new(&mut zip_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(manifest.as_bytes()).unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"print('attacker')").unwrap();
+                zw.finish().unwrap();
+            }
+            let tmp = std::env::temp_dir().join(format!(
+                "case-variant-cli-{}-{}.zip",
+                std::process::id(),
+                crate::platform::paths::tests::unique_suffix()
+            ));
+            std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+
+            let error =
+                import_plugin_package_sync(&tmp.to_string_lossy(), "Dingtalk.zip").unwrap_err();
+            assert!(
+                error.contains("CLI"),
+                "a case-variant builtin CLI connector id must hit the CLI-collision refusal: {error}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("Dingtalk")
+                    .exists(),
+                "a refused case-variant import must not create the package dir"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("Dingtalk")
+                    .unwrap()
+                    .is_none(),
+                "a refused case-variant import must not write an install record"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the refused import must leave the deny list unchanged"
+            );
+            let _ = std::fs::remove_file(&tmp);
+        });
+    }
+
+    /// A combo package whose MCP manifest omits `companion_skills` leaves
+    /// its skill components standalone (the owner claim falls through to the
+    /// component id), so the package-level deny entry never covers them —
+    /// the gate must register each standalone component deny-first too, or
+    /// an undeclared component lands enabled in initialized DenyAll scopes
+    /// (round-11 P2-3). The declared twin shows the package entry covering a
+    /// claimed component via read-time normalization.
+    #[test]
+    fn import_registers_standalone_components_deny_first() {
+        with_temp_home(|| {
+            // Initialize the code scope so the DenyAll gate has somewhere to
+            // write; the seed id keeps the assertion discriminating.
+            crate::features::marketplace::scope::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .unwrap();
+
+            let build_zip = |id: &str, skill_id: &str, with_manifest: bool| {
+                let plugin_json = format!(
+                    r#"{{"manifest_version":1,"id":"{id}","name":"p","components":{{"skills":[{{"id":"{skill_id}","dir":"skills/{skill_id}"}}]}}}}"#
+                );
+                let mut zip_buf = std::io::Cursor::new(Vec::new());
+                {
+                    use std::io::Write;
+                    let mut zw = zip::ZipWriter::new(&mut zip_buf);
+                    let opts = zip::write::SimpleFileOptions::default();
+                    zw.start_file("plugin.json", opts).unwrap();
+                    zw.write_all(plugin_json.as_bytes()).unwrap();
+                    zw.start_file(format!("skills/{skill_id}/SKILL.md"), opts)
+                        .unwrap();
+                    zw.write_all(
+                        format!("---\nname: {skill_id}\ndescription: c\n---\nbody").as_bytes(),
+                    )
+                    .unwrap();
+                    if with_manifest {
+                        // The MCP manifest declares the component as a
+                        // companion: after the record lands, read-time
+                        // normalization folds the component onto the
+                        // package id.
+                        let manifest = format!(
+                            r#"{{"id":"{id}","name":"{id}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["{skill_id}"]}}"#
+                        );
+                        zw.start_file("mcp/manifest.json", opts).unwrap();
+                        zw.write_all(manifest.as_bytes()).unwrap();
+                    }
+                    zw.finish().unwrap();
+                }
+                let tmp = std::env::temp_dir().join(format!(
+                    "standalone-component-{}-{}.zip",
+                    std::process::id(),
+                    crate::platform::paths::tests::unique_suffix()
+                ));
+                std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+                tmp
+            };
+            let deny_list = || {
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code,
+                )
+            };
+
+            // Undeclared component: the component id must carry its own
+            // deny-first entry beside the package's, or the skill
+            // materializes enabled.
+            let tmp = build_zip("orphan-combo", "orphan-guide", false);
+            import_plugin_package_sync(&tmp.to_string_lossy(), "orphan-combo.zip").unwrap();
+            let _ = std::fs::remove_file(&tmp);
+            let list = deny_list();
+            assert!(
+                list.iter().any(|id| id == "orphan-combo"),
+                "the package id must be deny-first registered: {list:?}"
+            );
+            // Merged-world note: the deny-first entry for the undeclared
+            // component IS written pre-land (the sync ledger proves it), but
+            // the persisted row is then folded onto the package id — the
+            // component dir lands physically nested under the package, and
+            // the R17-MAJOR1 physical-aware owner maps "orphan-guide" to
+            // "orphan-combo" at the next normalization write. Coverage is the
+            // invariant that matters: the normalized view is governed through
+            // the package entry, and the ledger pins that the gate ran for
+            // the component id itself.
+            let raw = crate::features::marketplace::scope::load_disabled_bundles_file();
+            assert!(
+                raw.install_default_synced
+                    .iter()
+                    .any(|k| k.ends_with(":orphan-guide")),
+                "the undeclared component must have been deny-first registered (ledger): {raw:?}"
+            );
+
+            // Declared component: the package entry covers it (the
+            // component's claim folds onto the package id once the record
+            // lands), so no separate standalone entry survives normalization.
+            let tmp = build_zip("claimed-combo", "claimed-guide", true);
+            import_plugin_package_sync(&tmp.to_string_lossy(), "claimed-combo.zip").unwrap();
+            let _ = std::fs::remove_file(&tmp);
+            let list = deny_list();
+            assert!(
+                list.iter().any(|id| id == "claimed-combo"),
+                "the declared combo must be deny-first registered: {list:?}"
+            );
+            assert!(
+                !list.iter().any(|id| id == "claimed-guide"),
+                "a declared component normalizes onto the package id and must \
+                 not leave a separate standalone entry: {list:?}"
+            );
+        });
+    }
+
+    /// The wrapped-.md upload channel's deny-first wiring (round 9). The zip
+    /// sibling above pins the unified pipeline through
+    /// `import_plugin_package_sync`; without this test, reverting the `.md`
+    /// command's gated wrapper to the ungated pipeline — or moving its
+    /// pre-land hook after the landing — kept the entire suite green.
+    /// Content assertions go through the bundles-root listing, which is
+    /// robust to the bare-skill id derivation (frontmatter name vs hashed
+    /// fallback): any landing changes it, any refusal leaves it untouched.
+    #[test]
+    fn import_skill_md_refused_before_landing() {
+        with_temp_home(|| {
+            init_code_scope_then_break_lock();
+
+            let bundles_root = crate::platform::paths::bundles_root();
+            std::fs::create_dir_all(&bundles_root).unwrap();
+            let listing = || {
+                let mut names: Vec<String> = std::fs::read_dir(&bundles_root)
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                names
+            };
+            let before = listing();
+
+            let error = import_skill_md_content_gated(
+                "---\nname: gate-md-skill\ndescription: md upload\n---\nbody".to_string(),
+                "gate-md-skill.md",
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("disabled_bundles.lock"),
+                "the refusal must come from the pre-land consent gate and name the \
+                 lock failure: {error}"
+            );
+            assert_eq!(
+                listing(),
+                before,
+                "a refused .md upload must land no package dir"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .is_empty(),
+                "a refused .md upload must not write an install record"
+            );
+        });
+    }
+
+    /// Review round 4 regression, final semantics: an already-installed tool
+    /// keeps its consent state across a reinstall — the gate skips known
+    /// bundles, so even with the scope lock unavailable the gate returns
+    /// `Ok` without writing and the previously-working installation stays
+    /// ENABLED. The old unconditional re-registration would have re-denied
+    /// it, and any post-gate install failure (pip, disk, remote validation)
+    /// then left it disabled with no recovery path. The precondition install
+    /// injects a `MemoryCredentialStore`: the default constructor would
+    /// write AMAP_KEY to the REAL system keychain, which both fails on
+    /// machines holding a weather credential (keyring refuses the
+    /// conflicting write) and risks clobbering the user's real key.
+    #[test]
+    fn existing_tool_reinstall_preserves_consent_state() {
+        with_temp_home(|| {
+            let mgr = crate::features::marketplace::MarketplaceManager::with_store(
+                crate::platform::credential_store::MemoryCredentialStore::default(),
+            );
+            let mut config = std::collections::HashMap::new();
+            config.insert("AMAP_KEY".to_string(), "test-key".to_string());
+            mgr.install("weather", &config)
+                .expect("weather must install while the lock still works");
+            let pkg_dir = crate::platform::paths::bundles_root().join("weather");
+            assert!(pkg_dir.exists(), "precondition: weather landed on disk");
+
+            init_code_scope_then_break_lock();
+
+            install_marketplace_tool_gates("weather")
+                .expect("a known bundle's gate must skip the consent-gate write");
+            assert!(
+                pkg_dir.exists(),
+                "the pre-existing installation must be untouched by the gate"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("weather")
+                    .unwrap()
+                    .is_some(),
+                "the pre-existing install record must survive"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the reinstall must not re-deny the enabled tool"
+            );
+        });
+    }
+
+    /// Review round 4 regression, final semantics, three halves. (1) With the
+    /// lock WORKING, a same-content re-import must skip the consent-gate
+    /// write entirely: a regression to the old unconditional registration
+    /// re-denies the landed package HERE and fails the deny-list assert —
+    /// the observation a broken-lock fixture can never make (with the lock
+    /// gone, fix-present, fully-reverted, and known-skip-removed are
+    /// observationally identical; round-20 P3 restored this half — it had
+    /// been lost in the #455 convergence rewrite). (2) With the lock BROKEN
+    /// the refused gate must leave the pre-existing copy and deny state
+    /// untouched (the pre-deny-first rollback destroyed the user's copy
+    /// outright). Companion handling is best-effort by contract, so half (2)
+    /// cannot discriminate — it pins the no-destruction property. Final
+    /// semantics for the unified plugin-package import channel: the consent
+    /// gate runs before the same-content check but SKIPS installed bundles,
+    /// so a rejected re-import hits the content-conflict refusal instead of
+    /// silently flipping the package's consent state — the v1 content and
+    /// its enabled state stay intact.
+    #[test]
+    fn reimport_conflict_preserves_consent_state() {
+        with_temp_home(|| {
+            let plugin_json = r#"{"manifest_version":1,"id":"gate-rb-plugin","name":"p","components":{"skills":[{"id":"gate-rb-skill2","dir":"skills/gate-rb-skill2"}]}}"#;
+            let zip_for = |skill_body: &str| {
+                let mut zip_buf = std::io::Cursor::new(Vec::new());
+                {
+                    use std::io::Write;
+                    let mut zw = zip::ZipWriter::new(&mut zip_buf);
+                    let opts = zip::write::SimpleFileOptions::default();
+                    zw.start_file("plugin.json", opts).unwrap();
+                    zw.write_all(plugin_json.as_bytes()).unwrap();
+                    zw.start_file("skills/gate-rb-skill2/SKILL.md", opts)
+                        .unwrap();
+                    zw.write_all(skill_body.as_bytes()).unwrap();
+                    zw.finish().unwrap();
+                }
+                let tmp = std::env::temp_dir().join(format!(
+                    "gate-rb-plugin-{}-{}.zip",
+                    std::process::id(),
+                    crate::platform::paths::tests::unique_suffix()
+                ));
+                std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+                tmp
+            };
+            let v1 = zip_for("---\nname: gate-rb-skill2\ndescription: v1\n---\nbody v1");
+            let v2 = zip_for("---\nname: gate-rb-skill2\ndescription: v2\n---\nbody v2");
+
+            let report = import_plugin_package_sync(&v1.to_string_lossy(), "gate-rb-plugin.zip")
+                .expect("first import must succeed while the lock works");
+            assert_eq!(report.id, "gate-rb-plugin");
+
+            // Half (1): working lock. Initialize the Code scope, then drive a
+            // same-content re-import through the gate — the known-clause must
+            // skip the consent write entirely.
+            crate::features::marketplace::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .expect("code scope must initialize while the lock works");
+            let report_again =
+                import_plugin_package_sync(&v1.to_string_lossy(), "gate-rb-plugin.zip")
+                    .expect("a same-content reimport must succeed while the lock works");
+            assert_eq!(report_again.id, "gate-rb-plugin");
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "a known-bundle reimport must not write consent state (working lock)"
+            );
+
+            init_code_scope_then_break_lock();
+
+            let error = import_plugin_package_sync(&v2.to_string_lossy(), "gate-rb-plugin.zip")
+                .unwrap_err();
+            assert!(
+                error.contains("gate-rb-plugin") && !error.contains("disabled_bundles"),
+                "a rejected re-import must fail on the content conflict, not the gate \
+                 (the gate skips installed bundles): {error}"
+            );
+
+            let pkg_dir = crate::platform::paths::bundles_root().join("gate-rb-plugin");
+            assert!(
+                pkg_dir.join("skills/gate-rb-skill2/SKILL.md").is_file(),
+                "the pre-existing package must stay installed"
+            );
+            let content =
+                std::fs::read_to_string(pkg_dir.join("skills/gate-rb-skill2/SKILL.md")).unwrap();
+            assert!(
+                content.contains("v1"),
+                "the pre-existing v1 content must be intact: {content}"
+            );
+            assert!(
+                crate::features::marketplace::store::BundleStore::new()
+                    .get("gate-rb-plugin")
+                    .unwrap()
+                    .is_some(),
+                "the pre-existing install record must survive"
+            );
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the rejected re-import must not flip the package's consent state"
+            );
+            let _ = std::fs::remove_file(&v1);
+            let _ = std::fs::remove_file(&v2);
+        });
+    }
 
     /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。
     /// 凭据存在性经 `bundle_readiness_with_store` 注入 MemoryCredentialStore 现算，

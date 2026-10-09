@@ -452,6 +452,131 @@ fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
     assert!(mcp["servers"].get(server_name).is_some());
 }
 
+#[test]
+fn vacuous_uninstall_keeps_fresh_consent_entries() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, save_disabled_bundles_for,
+    };
+
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("vacuous-uninstall-consent");
+    // Deny-first install window: the consent entry is registered before the
+    // install record lands, so a mid-install id has an entry but no record.
+    save_disabled_bundles_for(ConnectorScope::Code, &["gate-race-probe".to_string()]).unwrap();
+    save_disabled_bundles_for(ConnectorScope::Plain, &["gate-race-probe".to_string()]).unwrap();
+
+    uninstall_marketplace_tool_sync("gate-race-probe").unwrap();
+
+    for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
+        assert!(
+            load_disabled_bundles_for(scope).contains(&"gate-race-probe".to_string()),
+            "a vacuous uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
+        );
+    }
+}
+
+/// Round-10 review: the skill channel gets the same vacuous-uninstall guard
+/// as the tool channel. A skill with no install record and nothing on disk
+/// uninstalls nothing, so `uninstall_marketplace_skill_sync` must leave every
+/// deny entry alone — stripping there would remove the deny-first consent
+/// entry a concurrent same-id install just registered (its install record
+/// lands after the gate) and re-enable the skill as it lands.
+#[test]
+fn vacuous_skill_uninstall_keeps_fresh_consent_entries() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, save_disabled_bundles_for,
+    };
+
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("vacuous-skill-uninstall-consent");
+    // Deny-first install window: the consent entry is registered before the
+    // install record lands, so a mid-install id has an entry but no record.
+    save_disabled_bundles_for(ConnectorScope::Code, &["gate-race-skill-probe".to_string()])
+        .unwrap();
+    save_disabled_bundles_for(
+        ConnectorScope::Plain,
+        &["gate-race-skill-probe".to_string()],
+    )
+    .unwrap();
+
+    uninstall_marketplace_skill_sync("gate-race-skill-probe").unwrap();
+
+    for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
+        assert!(
+            load_disabled_bundles_for(scope).contains(&"gate-race-skill-probe".to_string()),
+            "a vacuous skill uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
+        );
+    }
+}
+
+#[test]
+fn standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir() {
+    use crate::features::assistant::skill_materialization as sm;
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        save_disabled_bundles_for, sync_deny_all_scopes_after_install,
+    };
+
+    // The round-8 vocabulary fix's end-to-end pin: the vendored preset's
+    // marketplace id (tencent-docs-skill) differs from its on-disk directory
+    // (tencent-docs). Deny-first gate first (nothing installed yet, so the
+    // registration is fresh), then the standalone install lands the directory.
+    crate::platform::test_support::with_temp_home("tencent-docs-alias-admission", || {
+        // An initialized (empty) Code deny set, so admission reads the explicit
+        // entry list instead of the uninitialized scope's full-deny default
+        // (which would mask a broken owner claim).
+        save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
+        sync_deny_all_scopes_after_install("tencent-docs-skill").unwrap();
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .install("tencent-docs-skill")
+            .unwrap();
+
+        assert!(
+            sm::disabled_skill_names_for(ConnectorScope::Code).contains("tencent-docs"),
+            "the deny entry stored under the marketplace id must exclude the preset's materialized directory"
+        );
+    });
+}
+
+#[test]
+fn standalone_preset_install_never_folds_package_ids_on_save_or_remove() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, remove_bundle_from_disabled_scopes, save_disabled_bundles_for,
+    };
+
+    // Negative half of the round-8 vocabulary fix (round-10 review): the
+    // preset-id alias lives ONLY on the admission side. Save/remove
+    // normalization must not fold the MCP package id "tencent-docs" onto the
+    // preset id "tencent-docs-skill" once the preset is materialized — a
+    // forward fold would rewrite one package's consent entry into the other's
+    // vocabulary and let a tool uninstall clear the wrong entry.
+    crate::platform::test_support::with_temp_home("tencent-docs-alias-no-forward-fold", || {
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .install("tencent-docs-skill")
+            .unwrap();
+
+        save_disabled_bundles_for(ConnectorScope::Code, &["tencent-docs".to_string()]).unwrap();
+        assert_eq!(
+            load_disabled_bundles_for(ConnectorScope::Code),
+            vec!["tencent-docs".to_string()],
+            "the MCP package id must be stored verbatim, never folded to the preset id"
+        );
+
+        remove_bundle_from_disabled_scopes("tencent-docs").unwrap();
+        assert!(
+            load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+            "removing the MCP package id must clear exactly that entry"
+        );
+    });
+}
+
 struct TestPinvouHome {
     root: std::path::PathBuf,
     previous: Option<String>,

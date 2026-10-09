@@ -197,6 +197,19 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
                 crate::features::marketplace::bundle::skill_gating_owner_with(&tools, &name);
             if disabled_packages.contains(&owner) {
                 names.insert(name);
+                continue;
+            }
+            // Preset id alias (round-8 review): a standalone preset directory
+            // carries the frontmatter skill_name, but its deny entry is stored
+            // under the marketplace id (tencent-docs <-> tencent-docs-skill).
+            // The id and the directory name can even collide with the owning
+            // MCP package's id, so the alias is consulted here — where the
+            // owner claim already had its chance and missed — never inside
+            // skill_owner_package (see the helper's doc).
+            if crate::features::marketplace::skill_marketplace::preset_id_for_skill_name(&name)
+                .is_some_and(|id| disabled_packages.contains(id))
+            {
+                names.insert(name);
             }
         }
     }

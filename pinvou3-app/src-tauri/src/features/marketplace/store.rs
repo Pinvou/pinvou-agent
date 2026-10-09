@@ -15,7 +15,7 @@
 //! - 损坏 JSON fail loud：bundles.json 是唯一真相源，静默重建会掩盖数据损坏，
 //!   损坏时返回 Err 且绝不回写。
 //!
-// architecture-guard: allow-target-cfg -- the unix regression test in this file (the round-23 MAJOR 3 legacy-import gate latch) needs an unreadable (0o000) installed.json fixture; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as scope.rs / package_export.rs, review #455); a real read() probe guards against running as root, Windows is covered by link checks.
+// architecture-guard: allow-target-cfg -- the unix regression tests in this file (the round-23 MAJOR 3 legacy-import gate latch and the round-21 planted-FIFO load pin) need an unreadable (0o000) installed.json / FIFO fixtures; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as scope.rs / package_export.rs, review #455); a real read() probe guards against running as root, Windows is covered by link checks.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,7 @@ use super::MarketplaceManager;
 use super::bundle;
 use super::file_lock;
 use crate::platform::connector_lock;
+use crate::platform::filesystem::read_private_data_file;
 use crate::platform::paths;
 
 /// bundles.json 当前 schema 版本。后续 schema 演进时递增并在读路径做迁移。
@@ -679,9 +680,19 @@ pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> Stri
     }
 }
 
-/// 内层读：与取锁包装分离，已持锁的 import/upsert 直接调用，避免 Mutex 重入。
+/// Inner read: separated from the lock-taking wrapper so already-locked
+/// import/upsert callers invoke it directly, avoiding mutex re-entry. The
+/// read goes through the hardened primitive (round-21 review): this function
+/// runs inside the bundles.json file lock and — via the scope's DenyAll
+/// expansion — inside the disabled_bundles.lock critical section, so a FIFO
+/// or symlink planted at the path must be refused rather than left hanging
+/// the lock holder — the same hardening discipline as disabled_bundles.json's
+/// identical reads. NotFound semantics unchanged (the kind passes through).
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
-    match std::fs::read_to_string(path) {
+    // Hardened read (round-20 P2): bundles.json is private-home consent state
+    // read inside the scope critical section (DenyAll expansion) and under
+    // the transaction lock — the open must not hang on a planted FIFO.
+    match read_private_data_file(path) {
         Ok(content) => {
             let file: BundlesFile = serde_json::from_str(&content).map_err(|e| {
                 format!(
@@ -828,8 +839,11 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
         // gate must not latch over an incomplete mirror (round-23 MAJOR-3 /
         // round-24 m2 class, per-entry form).
         let marker_path = dir.join(".installed-from");
-        let marker = if marker_path.exists() {
-            match std::fs::read_to_string(&marker_path) {
+        let marker = if marker_path.is_file() {
+            // Hardened read (round-20 P2): a non-regular entry (planted FIFO)
+            // now reads as "no marker" (skip) instead of hanging the boot
+            // import; an unreadable regular file still aborts fail-closed.
+            match read_private_data_file(&marker_path) {
                 Ok(marker) => marker,
                 Err(e) => return Err(format!("读取 {} 失败: {e}", marker_path.display())),
             }
@@ -1978,5 +1992,35 @@ mod tests {
             drop(foreign_guard);
             reader.join().expect("reader thread should finish");
         });
+    }
+
+    /// round-21 review: `load_locked` runs inside the bundles.json file lock
+    /// and — via the scope DenyAll expansion — inside the scope lock's
+    /// critical section, so it must route through the hardened read: a
+    /// planted FIFO at the path must refuse, not block the lock holder.
+    /// Behavioral pin that the routing survived refactors (the platform
+    /// primitive's own FIFO tests cover the mechanism).
+    #[cfg(unix)]
+    #[test]
+    fn load_locked_refuses_a_planted_fifo() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("bundles.json");
+        let c_path = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(load_locked(&file))
+                .expect("worker should send its result");
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("load_locked must refuse a planted FIFO, not hang");
+        assert!(
+            result.is_err(),
+            "a planted FIFO must be refused by the regular-file gate"
+        );
     }
 }
