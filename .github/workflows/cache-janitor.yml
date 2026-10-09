@@ -1,16 +1,27 @@
 name: cache-janitor
 
-# Actions 缓存定期清理(10GB 配额保护),规则实现见 scripts/cache-janitor.sh:
-# - 已关闭/合并 PR 作用域的全部缓存(PR 缓存互不可见,关闭后即死重);
-# - codeql-overlay 每语言每作用域只留最新 1 份;node-cache 每平台每作用域只留最新 1 份
-#   (按作用域分组:跨 ref 只留最新会把 main 的可用缓存误换成 PR 作用域的)。
-# 保护:main 作用域的 v0-rust-* 系列(rust-test/rust-lint/windows-rust-test/
-# mac-build/release-*)不在删除范围。
-# 手动触发默认 dry-run(只打印不删除),确认后可关 dry-run 实删。
+# Periodic cleanup of Actions caches (10GB quota protection); the rules are
+# implemented in scripts/cache-janitor.sh:
+# - All caches in closed/merged PR scopes (PR caches are invisible to each
+#   other; once a PR closes they are dead weight);
+# - codeql-overlay keeps only the newest entry per language per scope;
+#   node-cache keeps only the newest entry per platform per scope
+#   (grouped by scope: keeping only the newest across refs would swap a
+#   main-usable cache for a PR-scoped one main cannot read);
+# - v0-rust-* keeps only the newest generation per series per scope (new in
+#   2026-10: the two rust-lint-v2 generations alone held 4.2GB ≈ 42% of the
+#   quota; the old "whole-series protection" became a "dedup" — under the
+#   chronically over-quota state (measured 10.7/10GB) LRU kept evicting the
+#   most valuable windows/macos caches).
+# Daily since 2026-10: on a weekly cadence, PR npm caches + the codeql
+# overlay grew 1.5-2.5GB per week — exactly enough to blow the quota between
+# cleanups (measured 2026-10-01: the windows cache was evicted that day).
+# Manual dispatch defaults to dry-run (print only, no deletion); disable
+# dry-run to delete for real after reviewing the output.
 
 on:
   schedule:
-    - cron: '23 3 * * 0'   # 每周日 03:23(避开整点/半点高峰)
+    - cron: '23 3 * * *'   # daily 03:23 (off the hour/half-hour peaks; was weekly)
   workflow_dispatch:
     inputs:
       dry-run:
@@ -22,6 +33,13 @@ permissions:
   actions: write       # gh cache delete
   contents: read
   pull-requests: read  # 查 PR 开关状态
+
+concurrency:
+  # If a manual dispatch overlaps the scheduled run, double execution only
+  # re-warns on already-deleted ids (guarded, harmless), but serial queueing
+  # is the simpler shape: the cleanup itself takes minutes, queueing is free.
+  group: cache-janitor
+  cancel-in-progress: false
 
 jobs:
   clean:

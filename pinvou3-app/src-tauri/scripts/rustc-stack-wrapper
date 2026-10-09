@@ -12,7 +12,7 @@
 #   - macOS/Linux 开发:pinvou3-app/run-dev.sh 调用 selector 注入本文件
 #   - Windows 开发:run-dev.sh 调用 selector 编译并注入 .exe 版(本文件是
 #     无扩展名 Unix shell,Windows 原生 Cargo 无法执行 → os error 193)
-#   - CI:pr-check(rust-lint)、mac-build、release-packages
+#   - CI: pr-check (rust-lint, macos-rust-check), release-packages
 #     (Linux x64/arm64、macOS universal)按平台注入 sh 版;
 #     Windows 发布 / windows-rust-test job 先编译 .exe 版再注入
 #     (见 rustc-stack-wrapper.rs)

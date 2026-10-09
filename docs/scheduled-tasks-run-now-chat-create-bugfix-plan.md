@@ -1586,9 +1586,12 @@ cargo test -p pinvou3-tauri engine_pool --no-run
 说明：
 
 - 当前本机 Rust 测试二进制曾出现 `STATUS_ENTRYPOINT_NOT_FOUND`，因此至少要求 `--no-run` 编译通过。
-- （时点注：CI 现已实际运行 Rust 单测——`rust-test` / `windows-rust-test`
-  串行回归与 `mac-build.yml` 串行 lib 单测；本机动态库环境修复后再要求
-  本机全量单测通过。）
+- (Point-in-time note: CI now actually runs the Rust unit tests — the serial
+  regressions of `rust-test` / `windows-rust-test` plus the serial lib tests
+  of `pr-check.yml`'s `macos-rust-check` (since 2026-10, when the former
+  standalone `mac-build.yml` was folded into that job); full local unit-test
+  runs are only required again once the local dynamic-library environment is
+  fixed.)
 
 ## 实施顺序
 

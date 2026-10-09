@@ -15,8 +15,10 @@ name: release-packages
 # 构建 job 只消费已校验的版本文件,保证打进包里的任何版本号都来自 VERSION。
 #
 # 与其他 workflow 的分工:
-# - pr-check:PR 快速门禁与发布契约验证(不产出安装包)。
-# - mac-build:相关改动进入 main 后跑 macOS 原生回归。
+# - pr-check: fast PR gating and release-contract verification (produces no
+#   installers); macOS native regression is also folded into its
+#   macos-rust-check push leg (2026-10; the former standalone mac-build was
+#   deleted).
 # - release-packages(本 workflow):VERSION bump 或人工触发时产出全平台安装包 artifact。
 # - 本 workflow 只上传 CI artifact,绝不创建/推送 GitHub Release,release 由人工填写。
 #
@@ -140,8 +142,12 @@ jobs:
           # jammy 后缀:runner 从 24.04 降到 22.04 时必须换 key,防止 24.04
           # glibc 环境编译的 target 产物被复用进 22.04 构建混入新符号引用。
           shared-key: release-linux-x64-jammy
-          # 手动分支验证只读，main 正式发布保存。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # save-if: false (2026-10 quota policy): four release caches × 1-2GB
+          # landing at once on a VERSION push burst-evicted the PR-gate caches
+          # (windows/macos/rust-test/lint) via the 10GB LRU — the same
+          # dynamics that left mac-build permanently cold. Releases are rare
+          # and pass cold; the restore side stays in case an entry exists.
+          save-if: false
 
       # pinvou3 编译链接的系统库(gtk/webkit/soup/rsvg/openssl/X11×3/appindicator),
       # ubuntu runner 默认没装;cmake:reqwest 的 rustls 用 aws-lc-rs,其 build script
@@ -272,8 +278,8 @@ jobs:
             pinvou-knowledge
           # jammy 后缀:同 x64,换 runner 基座后必须换 key 防止旧 glibc 产物混链。
           shared-key: release-linux-arm64-jammy
-          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 1.2GB+ 缓存。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # save-if: false — same quota policy as release-linux-x64-jammy.
+          save-if: false
 
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
@@ -396,8 +402,8 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-windows-x64
-          # 该 job 只在 main 或受控手动构建中运行。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # save-if: false — same quota policy as release-linux-x64-jammy.
+          save-if: false
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -498,13 +504,17 @@ jobs:
             pinvou3-app/src-tauri
             pinvou-knowledge
           shared-key: release-macos-universal
-          # 只在 main 保存(对齐 pr-check 的配额保护策略);PR 侧只读,不写 2GB+ 缓存。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # save-if: false — same quota policy as release-linux-x64-jammy: a
+          # 2GB+ macos save on each VERSION push was prime LRU-eviction fuel
+          # for the PR-gate caches.
+          save-if: false
 
-      # macOS 27+ 兼容:dyld 新增 LINKEDIT 字符串池 8 字节对齐校验,而 release 默认
-      # strip=debuginfo 会让 proc-macro dylib dlopen 被拒 → E0463(macOS ≤26 无此校验)。
-      # runner 目前是 macos-15(不受影响),但 GitHub 升级 runner 到 macOS 27+ 时若缺此
-      # 注入,tauri build 会硬失败。同 mac-build.yml 的 workaround。
+      # macOS 27+ compatibility: dyld added an 8-byte alignment check for the
+      # LINKEDIT string pool, and release's default strip=debuginfo makes the
+      # proc-macro dylib dlopen fail with E0463 (macOS <= 26 has no such
+      # check). The runner is currently macos-15 (unaffected), but if GitHub
+      # upgrades the runner to macOS 27+ without this injection, the tauri
+      # build fails hard. Same workaround as pr-check's macos-rust-check.
       - name: macOS 27+ strip workaround
         run: |
           if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
