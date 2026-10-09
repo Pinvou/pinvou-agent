@@ -1108,7 +1108,7 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
             if not duplicate else
             "A pending message with this same idempotency identity already "
             "existed; it has been REPLACED by this one (same spool file) — "
-            "only the latest body will deliver."
+            "the newest body is the one applied — a mid-delivery swap re-queues it, so both bodies can land inside the ≤30s window (the contract §6 disclosure)."
         ),
     }, None
 
