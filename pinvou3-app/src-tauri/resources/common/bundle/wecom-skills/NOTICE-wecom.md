@@ -309,10 +309,13 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 
 14 个技能全部 = 上游 `e88bf90a`(v1.2.1 发布提交,npm 1.2.1 同源),技能目录与
 上游同名同构;本地分叉为上文「本轮品悟适配清单」六类,审计登记「路由口径
-统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三技能)、
-「文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」、
-「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」及本次
-「上游同步(2026-09-15,wecom-cli 1.2.1)」的三文件合并口径。
+统一与文档缺陷修复(2026-08-27)」(sheet/smartsheet/smartpage 三技能)、「
+文档缺陷修复(2026-08-27,calendar/meeting/email/message/media 五技能)」、
+「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」、「上游同步
+(2026-09-15,wecom-cli 1.2.1)」的三文件合并口径,以及下文「邮件正文中间
+文件路径统一(2026-10-07,模型向文本审计)」「周期能力措辞与联系人搜索
+说明(2026-10-07,模型向文本审计)」「授权初始化改为终端交接(2026-10-08,
+模型向文本审计)」三轮登记的全部本地修改。
 
 > 对账命令(仓库根执行):
 > ```
@@ -323,3 +326,46 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 > ```
 > diff 只应报 SKILL.md(及被改的 references/*.md)differ;「Only in」之外的
 > 差异即为新的未登记分叉。
+
+### 邮件正文中间文件路径统一(2026-10-07,模型向文本审计)
+
+- **wecomcli-email/references/send-mail.md 步骤三**:`{产出目录}/mail_body_<唯一后缀>.md`
+  改为 `tmp/mail/mail_body_<唯一后缀>.md`。邮件正文是发送后即无用的中间文件,原路径把它写进
+  产出物面板根目录,违反工作环境「只有最终成品写根、中间/临时文件一律 `tmp/`」的面板语义,
+  每次发信都会污染产出物列表。
+- **wecomcli-email/references/reply-mail.md 步骤四**:`{工作目录}/temp/output/mail_reply_<唯一后缀>.md`
+  改为 `tmp/mail/mail_reply_<唯一后缀>.md`。`temp/output/` 是自创的非规范路径,同一「写正文再
+  发送」操作在 send/reply 两种教程里写法不一致;统一到 `tmp/mail/` 约定。
+- 两处均为本地修改,下次 sync 需重放;此前各轮 NOTICE 未登记过邮件正文路径(2026-08-27
+  五技能文档缺陷修复轮登记的是 30-day fiction 删除等,与本项无重叠)。
+
+### 周期能力措辞与联系人搜索说明(2026-10-07,模型向文本审计)
+
+- **wecomcli-calendar/SKILL.md + references/calendar-create.md、
+  wecomcli-meeting/SKILL.md + references/meeting-create.md**:周期日程/会议的
+  「不支持…(API 仅支持创建单次日程 / API 层根本无此能力)」改为「产品暂未开放
+  的能力(产品范围限制)」。原绝对断言无包内事实源(各 references 仅证实读侧
+  返回 `repeat_rule` 字段,创建/更新参数表均无周期写入口),一旦上游变化即成
+  误导;改为产品范围口径后,拒绝与「引导用户在企业微信客户端手动操作」的行为
+  语义不变。
+- **wecomcli-contact/SKILL.md**:`search_mode="list"` 行由「返回全量命中列表」
+  改为「列表模式…列表可能因服务端限制未完整返回,以返回的 `hint` 字段为准,
+  `hint` 给出限制说明时必须向用户如实说明结果可能不全,不得把返回条数当作
+  准确总数」。参数行「拿到完整人员名单」同步改为「命中列表(清点 / 穷举意图)」。
+  「全量」同样是未经二进制核验的断言;返回表中 `hint`(结果限制提示)字段表明
+  截断可能发生,清点类问题必须以 `hint` 为准。
+- **wecomcli-contact/SKILL.md frontmatter**:`description` 尾部的「获取 userid、
+  列出全部同名人员」改为「获取指定人员的 userid」。「列出全部同名人员」是未经
+  二进制核验的能力断言,与 list 模式「可能未完整返回」的口径冲突。
+- 以上均为本地修改,下次 sync 需重放。
+
+### 授权初始化改为终端交接(2026-10-08,模型向文本审计)
+
+- **wecomcli-shared/SKILL.md 步骤三**:原步骤让模型在会话内直接执行
+  `wecom-cli auth init --noninteractive`——该命令展示授权链接和二维码后阻塞
+  等待用户扫码,会话内的调用在阻塞期间无法让用户看到二维码,和 lark/dws 已
+  清除的阻断式登录同类。改为:不在会话内执行该命令,把命令交给用户在自己的
+  终端执行,或引导用户使用应用的连接入口完成授权;会话内仅用
+  `auth show --status` 复核授权状态。
+- 此为本地修改,下次 sync 需重放;wecomcli-shared 其余步骤(状态检查、
+  ID 外露约束等)未改动。

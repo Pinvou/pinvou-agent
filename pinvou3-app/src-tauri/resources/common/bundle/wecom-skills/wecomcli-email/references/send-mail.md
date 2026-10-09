@@ -61,9 +61,10 @@
 用 `write` 把正文写入本地 Markdown 文件：
 
 ```
-{产出目录}/mail_body_<唯一后缀>.md
+tmp/mail/mail_body_<唯一后缀>.md
 ```
 
+- 正文是**中间文件**（发送后即无用），按工作环境规则必须写进 `tmp/` 子目录，不要放到产出物面板的根目录；本技能统一用 `tmp/mail/`，reply-mail 同
 - `<唯一后缀>` 可用时间戳或简短主题拼成，避免多次发送相互覆盖
 - 文件内容是 Markdown 片段，直接写自然的 Markdown 语法（标题、段落、列表、表格、引用、加粗、链接、代码块、分隔线等）
 - 调用 `mail send` 时设 `content_type: "markdown"`，`file_path` 指向这个 `.md` 文件

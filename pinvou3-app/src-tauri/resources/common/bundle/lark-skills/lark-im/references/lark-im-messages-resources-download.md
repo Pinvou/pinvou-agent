@@ -80,7 +80,7 @@ lark-cli im +messages-resources-download --message-id om_xxx --file-key img_v3_x
 | Symptom | Root Cause | Solution |
 |---------|---------|---------|
 | Resource does not match the message | `file_key` and `message_id` came from different messages | Read the message again and use its matching identifiers |
-| Permission denied | `im:message:readonly` is not authorized | For user identity, run `lark-cli auth login --scope "im:message:readonly"`; for bot identity, grant the scope to the app in the developer console |
+| Permission denied | `im:message:readonly` is not authorized | For user identity, run the on-demand auth flow `lark-cli auth login --scope "im:message:readonly" --no-wait --json` (per lark-shared split-flow; never the blocking login); for bot identity, grant the scope to the app in the developer console |
 | Attachment unavailable | The message or resource is deleted, hidden, restricted, or inaccessible to the caller | Do not retry unchanged; report the exact CLI error |
 | Retryable network error | The transfer did not complete | Retry the same command |
 

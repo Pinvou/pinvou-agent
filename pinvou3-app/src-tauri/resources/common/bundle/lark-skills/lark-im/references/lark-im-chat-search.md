@@ -132,7 +132,7 @@ lark-cli im +messages-send --chat-id "<chat_id>" --text "Today's progress update
 | Empty results | No visible chats matched the keyword or filters | Relax the keyword or filters and try again |
 | `invalid --page-size 101: must be between 1 and 100` | page-size is out of range | Use an integer between 1 and 100 |
 | Permission denied (99991672) | The bot app does not have `im:chat:read` TAT permission enabled | Enable the permission for the app in the Open Platform console |
-| Permission denied (99991679) with `--as user` | UAT is not authorized for `im:chat:read` | Run `lark-cli auth login --scope "im:chat:read"` |
+| Permission denied (99991679) with `--as user` | UAT is not authorized for `im:chat:read` | Run the on-demand auth flow: `lark-cli auth login --scope "im:chat:read" --no-wait --json` (per lark-shared split-flow; never the blocking login) |
 | `Bot ability is not activated` (232025) | The app does not have bot capability enabled | Enable bot capability in the Open Platform console |
 
 ## AI Usage Guidance

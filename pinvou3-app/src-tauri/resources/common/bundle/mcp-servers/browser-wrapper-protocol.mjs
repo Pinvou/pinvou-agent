@@ -482,7 +482,10 @@ export function effectiveNavigateType(args = {}) {
 export function assertAllowedHostedNavigation(args = {}) {
   const effectiveType = effectiveNavigateType(args);
   if (effectiveType === 'url' && !isAllowedBrowserUrl(args?.url)) {
-    throw new Error('The in-app browser only supports http, https, and about:blank URLs');
+    throw new Error(
+      'The in-app browser only supports http, https, and about:blank URLs;'
+      + ' the app UI origins are excluded (tauri.localhost and the localhost:1420 dev origin)',
+    );
   }
   return effectiveType;
 }
