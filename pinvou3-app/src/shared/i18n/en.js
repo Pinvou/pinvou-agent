@@ -775,6 +775,7 @@ dictEn.uiKnowledge = {
 
 Object.assign(dictEn.uiConversation, {
   callingTool: name => `Calling ${name}`,
+  copyCode: 'Copy code',
   inputPlaceholder: 'Enter a value',
   otherAnswer: 'Other',
   otherPlaceholder: 'Other',

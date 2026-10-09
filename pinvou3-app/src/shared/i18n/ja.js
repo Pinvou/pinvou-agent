@@ -776,6 +776,7 @@ dictJa.uiKnowledge = {
 
 Object.assign(dictJa.uiConversation, {
   callingTool: name => `${name} を呼び出し中`,
+  copyCode: 'コードをコピー',
   inputPlaceholder: '入力してください',
   otherAnswer: 'その他',
   otherPlaceholder: 'その他',
