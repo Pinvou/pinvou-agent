@@ -188,9 +188,15 @@ pub fn redact_url_credentials_in_text(text: &str) -> String {
     // `http://user:pass@…`, pushing that userinfo through unredacted (the
     // exact input this function exists to scrub: multi-candidate download
     // error chains embed several URLs).
+    // Round-48 review: match the scheme ASCII-CASE-INSENSITIVELY — a
+    // hand-embedded `HTTPS://user:pass@…` in free text slipped the
+    // case-sensitive scan (the single-URL form never had the hole:
+    // `Url::parse` lowercases the scheme). ASCII-only folding on an
+    // ASCII needle cannot split a multi-byte char, so byte offsets stay
+    // char-boundary safe.
     while let Some(position) = ["https://", "http://"]
         .iter()
-        .filter_map(|scheme| rest.find(scheme))
+        .filter_map(|scheme| find_ascii_case_insensitive(rest, scheme))
         .min()
     {
         let (before, after) = rest.split_at(position);
@@ -201,6 +207,29 @@ pub fn redact_url_credentials_in_text(text: &str) -> String {
     }
     result.push_str(rest);
     result
+}
+
+/// Byte-offset finder for an ASCII needle in arbitrary text, ASCII-folded:
+/// returns the first position where `needle` occurs regardless of ASCII
+/// case. UTF-8 continuation bytes always have the high bit set and can
+/// never equal an ASCII byte, so a match index is always a char boundary.
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hay = haystack.as_bytes();
+    let first = needle.as_bytes()[0].to_ascii_lowercase();
+    hay.windows(needle.len()).enumerate().find_map(|(index, window)| {
+        (window[0].to_ascii_lowercase() == first)
+            .then(|| {
+                window
+                    .iter()
+                    .zip(needle.bytes())
+                    .all(|(byte, expected)| byte.to_ascii_lowercase() == expected)
+            })
+            .filter(|&matched| matched)
+            .map(|_| index)
+    })
 }
 
 pub(crate) async fn download_to_part_with_verify(

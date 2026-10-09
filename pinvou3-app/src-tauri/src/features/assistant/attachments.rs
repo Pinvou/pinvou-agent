@@ -343,7 +343,12 @@ where
     }
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
         // The same litter rule as the arms above: a rejected target must
-        // not leave the staged file (here fully written) behind.
+        // not leave the staged file (here fully written) behind. Unlike
+        // the writer-error arm, unlinking here is safe: the re-check passed
+        // through THIS handle's reservation, so the path still names a file
+        // this call owns (round-48 review: reconcile with the rationale
+        // above — that arm's orphan belongs to nobody anymore; this one is
+        // still ours).
         drop(destination);
         let _ = std::fs::remove_file(&path);
         return None;

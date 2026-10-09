@@ -242,8 +242,15 @@ fn load_rewound_turns_map_with(
                             }
                         }
                         None => {
+                            // Round-48 review: `try_lock_rewound_turns_file`
+                            // answers None both for "a writer holds the lock"
+                            // and for "the lock file itself cannot be opened
+                            // here" (read-only sessions dir) — say so instead
+                            // of asserting a writer exists. Either way the
+                            // degrade is the same: leave the file alone,
+                            // answer empty for this read.
                             eprintln!(
-                                "[sessions] 回退备份损坏，但跨进程锁被写方持有——不动文件，按空继续（写方负责隔离或重建）: {parse_error:#}"
+                                "[sessions] 回退备份损坏，但跨进程锁不可用（写方持有或本进程无法打开锁文件）——不动文件，按空继续（写方负责隔离或重建）: {parse_error:#}"
                             );
                             Ok(HashMap::new())
                         }

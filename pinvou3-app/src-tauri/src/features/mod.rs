@@ -17,13 +17,14 @@ pub(crate) mod computer_use;
 pub(crate) mod connectors;
 // Crate-boundary re-exports for the headless CLI's `connectors ensure-cli`
 // lane (same shape as the `count_user_turns_in_json` re-export below: the
-// module stays crate-private, three items cross): the install-log appender, so
+// module stays crate-private, four items cross): the install-log appender, so
 // the CLI's npm attempts append to — never truncate — the shared log and
 // mark the mirror retry, plus the log's size-bound rotator (the CLI
 // redirects npm stdio into the same log directly and must enforce the same
-// 8 MiB bound `run_with_timeout` enforces); and the acceleration-prefix env
-// name, so the CLI's download chain consumes the app's constant instead of
-// a drifting copy.
+// 8 MiB bound `run_with_timeout` enforces); the managed license writer, so
+// the CLI's native-lane install records the same license side file the GUI
+// writer records; and the acceleration-prefix env name, so the CLI's
+// download chain consumes the app's constant instead of a drifting copy.
 pub use connectors::{
     GITHUB_ASSET_MIRROR_PREFIX_ENV, append_cli_install_log, rotate_cli_install_log_if_oversized,
     write_managed_license,
