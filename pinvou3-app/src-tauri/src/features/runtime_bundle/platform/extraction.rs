@@ -1284,10 +1284,14 @@ impl Pinvou3Bundle {
     /// (ADR-0024): reuses the marketplace launch resolution — the same
     /// resolved python command and released
     /// `~/.pinvou3/bundles/session-reader/mcp/server.py` path an install
-    /// writes — and appends `--only-session <parent_id>` so the server
-    /// enforces the scope process-side. `None` only when the embedded
-    /// manifest is unavailable (a build/catalog invariant break); the caller
-    /// fails closed to the zero-tool aux branch.
+    /// writes — and appends the scope pin `--only-session=<parent_id>` so
+    /// the server enforces the scope process-side. The `=` form is
+    /// deliberate: the session-id charset admits leading `-`, and a
+    /// two-token `--only-session -x` would make argparse read the pin as an
+    /// option and kill the server at boot (a dead tool declaration); the
+    /// `=` form assigns any charset-valid value verbatim (review round-3).
+    /// `None` only when the embedded manifest is unavailable (a build/catalog
+    /// invariant break); the caller fails closed to the zero-tool aux branch.
     fn aux_session_reader_entry(parent_id: &str) -> Option<serde_json::Value> {
         let manifest =
             crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
@@ -1297,8 +1301,7 @@ impl Pinvou3Bundle {
             crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader");
         let mut args =
             crate::features::marketplace::mcp_catalog::local_server_args(&manifest, &server_dir);
-        args.push("--only-session".to_string());
-        args.push(parent_id.to_string());
+        args.push(format!("--only-session={parent_id}"));
         Some(serde_json::json!({
             "command": crate::features::marketplace::mcp_catalog::local_server_command(&manifest),
             "args": args,
@@ -1717,9 +1720,9 @@ mod tests {
             "the first arg is the released package script, got {script:?}"
         );
         assert_eq!(
-            &args[args.len() - 2..],
-            ["--only-session".to_string(), parent_id.to_string()],
-            "args end with the parent pin"
+            args.last().map(String::as_str),
+            Some(format!("--only-session={parent_id}").as_str()),
+            "args end with the parent pin in the = form (dash-immune)"
         );
 
         // B3: private modes (file 0600 via atomic_write_private, dir 0700 via

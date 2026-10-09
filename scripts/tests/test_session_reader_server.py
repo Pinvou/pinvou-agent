@@ -1246,6 +1246,20 @@ class OnlySessionArgTests(unittest.TestCase):
             server.resolve_only_session(["--sessions-dir", "/x", "--only-session", "abc"]),
             "abc")
 
+    def test_equals_form_assigns_dash_leading_pins_verbatim(self):
+        # The aux config writer pins with the `=` form precisely so a
+        # charset-valid dash-leading parent id (the session-id charset
+        # admits `-`) is assigned verbatim instead of being parsed as an
+        # option — the two-token form would SystemExit at boot (review
+        # round-3's dead-tool-declaration half-state).
+        self.assertEqual(
+            server.resolve_only_session(["--only-session=--foo"]), "--foo")
+        self.assertIsNone(server.validate_only_session("--foo"))
+        # The two-token form with a dash-leading value dies at argparse
+        # (SystemExit) — the writer must keep using the `=` form.
+        with self.assertRaises(SystemExit):
+            server.resolve_only_session(["--only-session", "--foo"])
+
     def test_valid_parent_ids_pass(self):
         for value in ["abc123", "l5cz0m8xq2k1b", "A" * 128, "with_under-score"]:
             self.assertIsNone(

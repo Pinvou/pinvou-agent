@@ -6814,9 +6814,9 @@ mod tests {
             .map(|value| value.as_str().unwrap())
             .collect();
         assert_eq!(
-            &scoped_args[scoped_args.len() - 2..],
-            &["--only-session", "xyz"],
-            "the scoped config pins the parent session id"
+            scoped_args[scoped_args.len() - 1],
+            "--only-session=xyz",
+            "the scoped config pins the parent session id in the = form (dash-immune)"
         );
 
         // ①-c ZeroTool fallback (D2): an isolated-prefix parent demotes to
