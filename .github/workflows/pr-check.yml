@@ -388,6 +388,14 @@ jobs:
               - 'pinvou3-app/package-lock.json'
               - '.github/workflows/release-packages.yml'
               - '.github/workflows/pr-check.yml'
+            windows_rustup_repair:
+              - '.github/workflows/pr-check.yml'
+              - 'pinvou3-app/scripts/ci/**'
+              - 'pinvou3-app/scripts/tauri/build.js'
+              - 'pinvou3-app/tests/windows_rustup_repair_smoke.ps1'
+              - 'pinvou3-app/tests/windows_rust_toolchain_contract.test.js'
+              - 'pinvou3-app/src-tauri/rust-toolchain.toml'
+              - 'pinvou3-app/package.json'
             bundle_chain:
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
@@ -398,14 +406,6 @@ jobs:
               - 'pinvou3-app/package-lock.json'
               - 'pinvou3-app/vite.config.mjs'
               - '.github/workflows/pr-check.yml'
-            windows_rustup_repair:
-              - '.github/workflows/pr-check.yml'
-              - 'pinvou3-app/scripts/ci/**'
-              - 'pinvou3-app/scripts/tauri/build.js'
-              - 'pinvou3-app/tests/windows_rustup_repair_smoke.ps1'
-              - 'pinvou3-app/tests/windows_rust_toolchain_contract.test.js'
-              - 'pinvou3-app/src-tauri/rust-toolchain.toml'
-              - 'pinvou3-app/package.json'
 
   fast-gate:
     name: fast-gate
