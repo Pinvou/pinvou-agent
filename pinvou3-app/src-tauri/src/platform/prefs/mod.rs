@@ -485,7 +485,10 @@ impl SavedModel {
         }
         if self.provider_kind.is_none() {
             self.provider_kind = Some(
-                if self.preset == ModelPreset::OpenaiCompatible {
+                if matches!(
+                    self.preset,
+                    ModelPreset::OpenaiCompatible | ModelPreset::OpenaiResponses
+                ) {
                     MODEL_PROVIDER_KIND_CUSTOM
                 } else {
                     MODEL_PROVIDER_KIND_OFFICIAL_API
@@ -1556,6 +1559,22 @@ mod tests {
         custom.preset = ModelPreset::OpenaiCompatible;
         custom.provider_kind = Some("custom".into());
         assert!(custom.is_operator_owned_endpoint());
+
+        // A null provider_kind normalizes to custom for the OpenaiResponses
+        // preset too (same custom-endpoint class as OpenaiCompatible), so
+        // hand-written or migrated rows keep the operator-owned declaration
+        // instead of being re-classified as official API (which would drop
+        // the window-tier output declaration for aggregator ids).
+        let mut responses = local.clone();
+        responses.preset = ModelPreset::OpenaiResponses;
+        responses.provider_kind = None;
+        responses.normalize_provider_metadata();
+        assert_eq!(
+            responses.provider_kind.as_deref(),
+            Some("custom"),
+            "openai_responses records normalize to the custom provider kind"
+        );
+        assert!(responses.is_operator_owned_endpoint());
 
         // coding_plan is not operator-owned even on the OpenaiCompatible
         // preset.
