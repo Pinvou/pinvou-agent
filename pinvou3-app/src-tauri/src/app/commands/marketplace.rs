@@ -650,10 +650,10 @@ pub async fn uninstall_marketplace_tool(
     // cross-process flock (#515): keep it off the executor.
     tokio::task::spawn_blocking(move || uninstall_marketplace_tool_sync(&tool_id))
         .await
-        // The join-failure copy matches the neighboring commands (round-20
-        // review: the English one-off surfaced verbatim among the "task
-        // execution failed" siblings).
-        .map_err(|e| format!("task execution failed: {e}"))??;
+        // The join-failure copy matches the neighboring commands' 任务执行失败
+        // siblings (round-20 review; round-22 restored it after an
+        // out-of-claim English flip had split the file's copy).
+        .map_err(|e| format!("任务执行失败: {e}"))??;
     // mcp.json 可能移除了 server：递增修订号让在线引擎下一轮 get_or_spawn
     // 安全重建（同 install 路径，mark_mcp_config_updated 契约），残留的已卸
     // 连接器工具不再出现在模型目录。
@@ -1197,7 +1197,7 @@ pub async fn import_plugin_package_cmd(
         crate::features::marketplace::sync_deny_all_scopes_after_install(&imported_id)
     })
     .await
-    .map_err(|e| format!("task execution failed: {e}"))?
+    .map_err(|e| format!("任务执行失败: {e}"))?
     .map_err(|e| {
         format!(
             "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
@@ -1275,7 +1275,7 @@ pub async fn import_plugin_package_bytes_cmd(
         crate::features::marketplace::sync_deny_all_scopes_after_install(&imported_id)
     })
     .await
-    .map_err(|e| format!("task execution failed: {e}"))?
+    .map_err(|e| format!("任务执行失败: {e}"))?
     .map_err(|e| {
         format!(
             "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
@@ -1323,7 +1323,7 @@ pub async fn import_skill_md_bytes(
         import_skill_md_content_gated(md, &filename_for_import)
     })
     .await
-    .map_err(|e| format!("task execution failed: {e}"))??;
+    .map_err(|e| format!("任务执行失败: {e}"))??;
     // Upload safe default: same as plugin import, joins the DenyAll scopes.
     // Fail-visible persist (review #455 R13-B3). Off the executor: the sync
     // waits on the cross-process scope flock, which a frozen peer holds
@@ -1333,7 +1333,7 @@ pub async fn import_skill_md_bytes(
         crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&imported_id)
     })
     .await
-    .map_err(|e| format!("task execution failed: {e}"))?
+    .map_err(|e| format!("任务执行失败: {e}"))?
     .map_err(|e| {
         format!(
             "skill '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",

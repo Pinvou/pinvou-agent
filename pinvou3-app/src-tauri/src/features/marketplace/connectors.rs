@@ -100,7 +100,7 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
     if !mcp_path.is_file() {
         return Ok((mcp_path, default_mcp_json()));
     }
-    let content = read_private_data_file(&mcp_path).map_err(|e| format!("read mcp.json: {e}"))?;
+    let content = read_private_data_file(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
     match serde_json::from_str(&content) {
         Ok(mcp) => Ok((mcp_path, mcp)),
         Err(error) => {
@@ -613,7 +613,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             // consent-adjacent state — the open must not hang on a
             // planted FIFO.
             let content = read_private_data_file(&mcp_path)
-                .map_err(|error| format!("read mcp.json: {error}"))?;
+                .map_err(|error| format!("读取 mcp.json: {error}"))?;
             let mut mcp: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|error| format!("parse mcp.json: {error}"))?;
             let entry = mcp
