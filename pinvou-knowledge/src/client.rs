@@ -83,6 +83,7 @@ pub struct RemoteKnowledgeProbe {
     pub ca_fingerprint: String,
     /// A compact, human-comparable rendering of the same CA fingerprint.
     pub identity_code: String,
+    pub ready: bool,
 }
 
 impl KnowledgeClient {
@@ -238,7 +239,12 @@ impl KnowledgeClient {
             tls_ca: info.tls_ca,
             identity_code: identity_code_from_fingerprint(&ca_fingerprint),
             ca_fingerprint,
+            ready: verified.ready,
         })
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
     }
 
     pub async fn health(&self) -> Result<ServerInfo, String> {

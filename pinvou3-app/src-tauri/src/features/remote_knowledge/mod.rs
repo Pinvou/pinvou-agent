@@ -1534,6 +1534,7 @@ mod tests {
             tls_ca: "untrusted".to_string(),
             ca_fingerprint: "not-confirmed".to_string(),
             identity_code: "PINVOU-0000-0000-0000-0000".to_string(),
+            ready: false,
         };
 
         assert!(
