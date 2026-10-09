@@ -10,6 +10,10 @@
 # pinvou3-app/src-tauri/src/features/assistant/safety_deny_rules.rs.
 # This script keeps only the connector introspection-correction segment
 # equivalent to deny_sensitive_paths.sh segment 5.
+# Registration matches only the two MCP introspection tools. This advisory
+# correction uses continue_on_error: true, so interpreter failures warn while
+# an explicit exit 2 still denies the mistaken introspection. Security decisions
+# remain in the execpolicy rule engine.
 $toolName = if ($env:DEEPSEEK_TOOL_NAME) { $env:DEEPSEEK_TOOL_NAME } else { "unknown" }
 $argsText = if ($env:DEEPSEEK_TOOL_ARGS) { $env:DEEPSEEK_TOOL_ARGS } else { "" }
 
@@ -32,7 +36,7 @@ if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_temp
     # (?i:...): this script runs under Windows PowerShell 5.1 (.NET
     # Framework), which rejects them ("Unrecognized grouping construct") and
     # — under $ErrorActionPreference = "Stop" — dies before printing, so the
-    # strict registration fails CLOSED on every list_mcp_resources* call.
+    # correction never reaches the model on list_mcp_resources* calls.
     # (The .sh twin lowercases the args instead.)
     $skillConnectorNamePattern = '"(wecom|weixin|wework|feishu|lark|dingtalk|dingding|dws|tmeet|tencent[\s_\-]?meeting|企微|企业微信|微信|飞书|钉钉|腾讯会议)"'
     if ($argsText -match $skillConnectorNamePattern) {
@@ -40,7 +44,7 @@ if ($toolName -eq "list_mcp_resources" -or $toolName -eq "list_mcp_resource_temp
         # 经标准输出流写 UTF-8 无 BOM：上游按 UTF-8 解码 stdout 且 serde_json 拒绝
         # BOM 前缀；PS 5.1 控制台默认 ANSI(GBK)，WriteLine 会把中文转成乱码。
         # 不设 [Console]::OutputEncoding：无控制台句柄的宿主里 setter 会抛，
-        # $ErrorActionPreference=Stop 下脚本退出 1 → 所有工具调用被 fail-closed。
+        # $ErrorActionPreference=Stop exits 1, dropping the correction feedback.
         $stdout = New-Object System.IO.StreamWriter([Console]::OpenStandardOutput(), (New-Object System.Text.UTF8Encoding($false)))
         $stdout.WriteLine($denyJson)
         $stdout.Flush()

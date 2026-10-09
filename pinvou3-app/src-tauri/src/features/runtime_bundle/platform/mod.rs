@@ -1075,6 +1075,7 @@ mod tests {
 
     fn run_connector_introspection_guard(
         bundle: &Pinvou3Bundle,
+        tool: &str,
         args: &str,
     ) -> std::process::Output {
         #[cfg(windows)]
@@ -1095,7 +1096,7 @@ mod tests {
             command
         };
         command
-            .env("DEEPSEEK_TOOL_NAME", "list_mcp_resources")
+            .env("DEEPSEEK_TOOL_NAME", tool)
             .env("DEEPSEEK_TOOL_ARGS", args)
             .output()
             .expect("run connector introspection guard")
@@ -1384,35 +1385,42 @@ mod tests {
         let bundle = Pinvou3Bundle::paths();
         bundle.ensure_extracted().unwrap();
 
-        for args in [r#"{"server":"wecom"}"#, r#"{"server":"企微"}"#] {
-            let output = run_connector_introspection_guard(&bundle, args);
-            assert_eq!(
-                output.status.code(),
-                Some(2),
-                "exact skill-connector names must be redirected: {output:?}"
-            );
-            // The stdout JSON reason is the model's only corrective copy (the
-            // engine folds deny reasons from stdout alone). Pinning the reason
-            // text also pins the script's UTF-8 stdout encoding: a writer that
-            // regresses to the console codepage would fail this byte match on
-            // Windows (PS 5.1 consoles emit GBK without an explicit UTF-8
-            // StreamWriter) while still exiting 2.
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains("list_mcp_resources 或 list_mcp_resource_templates"),
-                "deny reason must reach stdout as intact UTF-8 JSON: {stdout:?}"
-            );
-        }
-        for args in [
-            r#"{"server":"wecom-bot"}"#,
-            r#"{"server":"mcp_wecom-bot_send_text"}"#,
-            r#"{"server":"企微群机器人"}"#,
-        ] {
-            let output = run_connector_introspection_guard(&bundle, args);
-            assert!(
-                output.status.success(),
-                "marketplace MCP names containing connector aliases must remain introspectable: {output:?}"
-            );
+        for tool in ["list_mcp_resources", "list_mcp_resource_templates"] {
+            for args in [r#"{"server":"wecom"}"#, r#"{"server":"企微"}"#] {
+                let output = run_connector_introspection_guard(&bundle, tool, args);
+                assert_eq!(
+                    output.status.code(),
+                    Some(2),
+                    "exact skill-connector names must be redirected: {output:?}"
+                );
+                // The stdout JSON reason is the model's only corrective copy (the
+                // engine folds deny reasons from stdout alone). Pinning the reason
+                // text also pins the script's UTF-8 stdout encoding: a writer that
+                // regresses to the console codepage would fail this reason match on
+                // Windows (PS 5.1 consoles emit GBK without an explicit UTF-8
+                // StreamWriter) while still exiting 2.
+                let verdict: serde_json::Value =
+                    serde_json::from_slice(&output.stdout).expect("single-line UTF-8 deny JSON");
+                assert_eq!(verdict["decision"], "deny");
+                let reason = verdict["reason"]
+                    .as_str()
+                    .expect("model-facing deny reason");
+                assert!(
+                    reason.contains("list_mcp_resources 或 list_mcp_resource_templates"),
+                    "deny reason must reach stdout as intact UTF-8 JSON: {verdict:?}"
+                );
+            }
+            for args in [
+                r#"{"server":"wecom-bot"}"#,
+                r#"{"server":"mcp_wecom-bot_send_text"}"#,
+                r#"{"server":"企微群机器人"}"#,
+            ] {
+                let output = run_connector_introspection_guard(&bundle, tool, args);
+                assert!(
+                    output.status.success(),
+                    "marketplace MCP names containing connector aliases must remain introspectable: {output:?}"
+                );
+            }
         }
 
         cleanup(&tmp);
