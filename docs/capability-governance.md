@@ -288,10 +288,13 @@ users share one home, the second user gets write refusals/read degradation
 from the lock file's 0600 private mode (also the fail-closed direction;
 round-17 review: the effective mode is the lock file's own 0600, not the home
 root's 0700). The global order among the file locks is likewise unsettled:
-the pre-existing ABBA crossing between the transaction lock and the per-id
-import lock (including one same-instance reverse theoretical window) is
-recorded in the comment at `MARKETPLACE_TRANSACTION_LOCK`; this section must
-not be cited as proof of a settled global lock order.
+the ABBA crossing between the transaction lock and the per-id import lock
+is recorded in the comment at `MARKETPLACE_TRANSACTION_LOCK` — pre-existing
+on main, with one same-direction leg added by this PR (the retired-tool
+sweep holds the import lock across its residue uninstall) and disclosed in
+the same comment, which also registers the one same-instance reverse
+theoretical window; this section must not be cited as proof of a settled
+global lock order.
 
 Install/import paths follow a **transaction boundary** in the same direction
 (#517 review): DenyAll disabled-set registration happens BEFORE any content
@@ -525,20 +528,33 @@ spawn_blocking and their span is local work only — staging, rename,
 registry, keyring deletes — so a peer import holds a same-id op for
 seconds at most, and a system-keychain prompt inside the uninstall
 span stalls peer same-id ops for the prompt's duration, the same
-accepted class as the scope lock's frozen-peer wait). The four startup-convergence arms:
+accepted class as the scope lock's frozen-peer wait). The five startup-convergence arms:
 lease held (in-flight) → skip the whole thing, retry next startup; marker +
-no pack directory → sweep the staged `<id>.tmp` and clear the marker; marker
-+ a registered record → sweep the crashed re-import's staged `<id>.tmp`
-(round-21: if the sweep fails, keep the marker and retry next startup), then
-clear only the marker; marker + a landed directory with no record → move the
-directory into the `import_journal/<id>.crash-<timestamp>` holding area
-(manual recovery), then clear the marker. Disclosed residual: a crash
-between the `install_upload` transaction commit and the bundles.json mirror
-landing falls into the fourth arm — the directory is quarantined while
-`installed.json`/`mcp.json` are already committed, leaving a dead engine
-entry pointing at the moved directory (the fail-closed direction; no active
-scan will mistakenly adopt it, and a manual uninstall cleans it up; the
-marker itself is not lost). The lease/marker files hold no user data and can
+no pack directory → restore the pre-import `<pack id>.old` backup first when
+one is present (round-26: a crash between a re-import's two renames leaves
+exactly this shape — pack dir in `.old`, staged copy not yet renamed in,
+record still installed — and the old sweep-then-clear converged it to
+"record installed, content gone, the only copy stranded in the
+scan-invisible `.old`" with no retry; the restore reuses the pipeline's own
+rollback rename, and a failed restore keeps the marker and retries), then
+sweep the staged `<id>.tmp` and clear the marker; marker + a registered
+record → sweep the crashed re-import's staged `<id>.tmp` (round-21: if the
+sweep fails, keep the marker and retry next startup), then clear only the
+marker; marker + a landed directory with no record → move the directory
+into the `import_journal/<id>.crash-<timestamp>` holding area (manual
+recovery), sweep the staged copy too, then clear the marker; a failed store
+read → keep the marker and retry next startup (no destructive recovery on
+an unreadable registry). Disclosed residuals: a failed IN-PROCESS
+landing/supply rollback (whose marker the exit guard clears) can still
+strand a `.old` invisibly — recorded at the arm, no marker survives to
+retry it; and a crash between the `install_upload` transaction commit and
+the bundles.json mirror landing falls into the record-absent arm — the
+directory is quarantined while `installed.json`/`mcp.json` are already
+committed, leaving a dead engine entry pointing at the moved directory (the
+fail-closed direction; no active scan will mistakenly adopt it, and a
+manual uninstall cleans it up; the marker itself survived the crash — which
+is what routed the case to this arm — and is cleared once the arm
+converges). The lease/marker files hold no user data and can
 be deleted while the app is closed; hand-deleting an active import's lease
 file amounts to giving up that id's cross-process mutual exclusion.
 
