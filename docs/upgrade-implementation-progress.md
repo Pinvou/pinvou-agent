@@ -118,13 +118,47 @@ T07 preflight (2026-10-10): the separate service's
 `a181b2eb352b064be3ad45fae1ee457498a4562c` on `feat/t07-signing-root` defines
 the implementation and real-provider acceptance boundaries. Both independent
 reviewers passed this plan; they did not certify T07 implementation. The product
-owner is being asked to select OpenBao Transit evaluation/implementation, an
-existing KMS/HSM integration, or further comparison. No route is assumed approved.
+owner approved OpenBao Transit evaluation and implementation on 2026-10-10.
 Independent Root custody, provider lifecycle recovery, concrete-client trust,
 complete historical Release/Package archives and T08's same-transaction deny
 composition remain required. Protected append-only PostgreSQL archives are a
 proposal; production protection and restoration evidence remain outstanding.
 T07 is not completed and no production key or anchor has been provisioned.
+
+T07's protected OpenBao Transit adapter is committed and pushed as
+`e0dc83cb9be4fc6ee3614dc00ebec6f26ebc3e54` on `feat/t07-signing-root`.
+Both independent reviewers passed this adapter batch after the primary role
+repaired the real-provider test issues. Each ran OpenBao 2.7.1 against isolated
+synthetic keys and restricted identities. Evidence covers nonexportability,
+forbidden management operations, pinned versions, signing revocation, unsafe
+existing keys and a lost successful create ACK reconciled to the original key.
+The official release asset SHA-256 matched; release-signature certification and
+production seal/custody/backup acceptance are not claimed.
+
+The separate Root byte/trust batch is committed and pushed as
+`aa3cf27bb86793e50f378a48ebaa95652c1546dd` on `feat/t07-signing-root` and has
+passed both independent deep reviews.
+It preserves all 20 frozen signing vectors, closed Schemas, canonical bytes,
+exact context/scope, unique signers and old/new Root thresholds. All frozen
+regular expressions were compared with actual Node ECMAScript, including path
+traversal and terminal line separators. The existing transitive `regexp2`
+dependency is now directly required for negative lookahead; matching is bounded
+and fails closed without changing the protocol Schema. This budget applies to
+control validation, never downloads.
+
+The service regression run exercised real PostgreSQL, Chrome and OpenBao.
+All Go packages passed except a first-run management browser interception timing
+failure (`Route is already handled`); that E2E passed on an isolated serial rerun
+without a code change. Build, full Go vet, module verification, pinned contract
+checks and diff checks passed. The client architecture guard passed. No race
+detector or production custody acceptance is claimed.
+
+These batches do not complete T07. Protected Root publication, full issuer
+retention and immutable historical archive storage remain to be implemented and
+verified. The product owner still needs to select a controlled Root signing
+ceremony or independently authorized online gateways; production signing is not
+connected while that mutually exclusive custody decision is pending. Local
+provider experiments do not establish three independent production custodians.
 
 T03 still requires approved OS certification coverage, all-user/service data
 scope and finite preparation budgets. The product owner approved local health
