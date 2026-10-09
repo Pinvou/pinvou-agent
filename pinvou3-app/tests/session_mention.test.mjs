@@ -748,13 +748,13 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
   const tail = source.indexOf(tailMarker, start);
   assert.notEqual(tail, -1, 'sendWithSessionRefs deps tail not found');
   const fn = source.slice(start, tail + tailMarker.length);
-  const make = ({ accepted = true } = {}) => {
+  const make = ({ accepted = true, enabled = true } = {}) => {
     const calls = { sent: [] };
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
       useCallback: (callback) => callback,
-      sessionMentionEnabled: true,
+      sessionMentionEnabled: enabled,
       buildSessionMentionBlock,
       dedupeSessionRefs,
       stashSessionMentionDraft,
@@ -779,6 +779,18 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
     const verdict = await sandbox.sendWithSessionRefs('总结一下当前进度');
     assert.equal(verdict, 'restored');
     assert.deepEqual([...live.refs], REFS, 'a non-dispatch verdict keeps the chips armed');
+  }
+  // Round-10 M3: the layer-2 gate must hold on the secondary surfaces too —
+  // with the feature off, stale-but-removable chips stay armed (the caller
+  // owns them) and NO block may ride the outgoing payload.
+  {
+    const { sandbox, calls, live } = make({ enabled: false });
+    const verdict = await sandbox.sendWithSessionRefs('总结一下当前进度');
+    assert.equal(verdict, true);
+    assert.equal(calls.sent[0], '总结一下当前进度', 'no injection block when the feature is off');
+    // Stale chips are consumed by the accepted send exactly like handleSend
+    // (feature-off chips must not re-arm onto the next plain send).
+    assert.deepEqual([...live.refs], [], 'stale chips clear on acceptance');
   }
   // Wiring pins: the welcome-card handler and both ChatBubble onSend sites
   // (plan-card options, memory candidates) route through the shared sender —

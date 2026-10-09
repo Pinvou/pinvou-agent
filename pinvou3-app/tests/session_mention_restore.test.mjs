@@ -278,3 +278,10 @@ test('stripMentionBlockForComposerRestore: strips the block, keeps the body, emp
   assert.equal(shared.stripMentionBlockForComposerRestore(REFS_ONLY_BLOCK), '');
   assert.equal(shared.stripMentionBlockForComposerRestore('纯文本'), '纯文本');
 });
+
+// The zap withdraw-window recovery test (round-10 M2) moved to
+// tests/zap_withdraw_window.test.mjs in PR #675: the underlying
+// zapReconcileClaims mechanism is mention-independent and was separated
+// from this branch per review rounds 10-12. The mention-specific shape it
+// covered here (a refs-only message restoring nothing → the lost variant)
+// stays covered there through the attachment-only chip case.
