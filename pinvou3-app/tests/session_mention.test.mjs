@@ -180,6 +180,20 @@ test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-, case-insensi
   assert.deepEqual(deduped.map(r => r.sessionId), ['normal']);
 });
 
+test('oversized session ids degrade like deleted sessions on every path (round-13 minor 6)', () => {
+  // Engine ids are short slugs; a ~60 KB id is crafted/dirty data and must
+  // not flow into labels, aria-labels, React keys, or the rebuilt block —
+  // the choke point and the builder both enforce the reader's own 128 cap.
+  const oversizedId = { sessionId: 'x'.repeat(129), title: 't' };
+  assert.deepEqual(
+    dedupeSessionRefs([oversizedId, { sessionId: 'ok', title: 't' }]).map(r => r.sessionId),
+    ['ok'],
+    'the choke point drops the oversized id',
+  );
+  assert.equal(buildSessionMentionBlock([oversizedId]), '', 'the builder refuses an oversized id outright');
+  assert.equal(buildSessionMentionBlock([{ sessionId: 'x'.repeat(128), title: 't' }]).length > 0, true, 'the reader-legal 128-char id still builds');
+});
+
 test('drag reuses the contract: the composer accepts sidebar session-row drags (#462 payload) via the same add path', () => {
   const chatViewSource = readFileSync(
     new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
