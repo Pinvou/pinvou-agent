@@ -105,15 +105,18 @@ pub(crate) trait AgenticTeardownExecutor {
     /// that still wears the factory title is the legacy one-shot contract's
     /// to delete. The gate re-checks the adoption marker under the turn
     /// lock, because a live turn can hold that lock long enough for a GUI
-    /// rename to land after the sample.
+    /// rename to land after the sample. The wait itself is bounded
+    /// (`DELETE_GATE_WAIT`, the `evict_bounded` bounding — round-49): a gate
+    /// still held past the budget skips the delete and keeps the session.
     async fn teardown_schedule_delete(
         &self,
         session_id: &str,
     ) -> std::result::Result<(), anyhow::Error>;
     /// Stub-cleanup twin of [`AgenticTeardownExecutor::teardown_schedule_delete`]:
     /// the durable delete only fires when the record is still message-free
-    /// under the turn gate. Unlike the unconditional arm, no late sweep may
-    /// be armed before the guarded delete runs — on the keep outcome the
+    /// under the turn gate (bounded the same way — a gate held past the
+    /// budget keeps the session). Unlike the unconditional arm, no late sweep
+    /// may be armed before the guarded delete runs — on the keep outcome the
     /// sweep would destroy the kept session's on-disk directory.
     async fn teardown_delete_stub_if_still_empty(
         &self,

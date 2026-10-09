@@ -531,6 +531,47 @@ fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table(
     );
 }
 
+/// Round-49 review: the delete cascade's third half — the `projects.json`
+/// assignment prune (`ProjectStore::forget_session`, the best-effort mirror
+/// of the desktop's `session_deleted_hook`) — had no contract test, so a
+/// regression dropping it left the dead id in `projects list` forever in a
+/// CLI-only workflow. Seeds the assignment through the app-side
+/// `ProjectStore` (the same store the GUI commands drive), deletes the
+/// session through the real CLI, and asserts the assignment is gone from
+/// `projects list`.
+#[test]
+fn sessions_delete_prunes_the_projects_assignment() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("delete-projects-prune");
+    let id = create_session_fixture();
+
+    // Seed a projects.json assignment through the app-side store the GUI
+    // commands drive (the same standalone constructor the CLI's projects
+    // family uses), then prove the seed took before the delete runs.
+    let projects = pinvou3_lib::features::projects::ProjectStore::boot();
+    let project = projects
+        .create_project("PruneTarget".to_owned(), Vec::new())
+        .expect("create project");
+    projects
+        .move_session_to_project(&id, Some(&project.id), None)
+        .expect("assign the session");
+    drop(projects);
+    let listed = run_json(&["pinvou", "projects", "list"]);
+    assert_eq!(
+        listed["assignments"][id.as_str()],
+        project.id,
+        "the seeded assignment must be visible before the delete"
+    );
+
+    let value = run_json(&["pinvou", "sessions", "delete", &id, "--yes"]);
+    assert_eq!(value["action"], "deleted");
+    let listed = run_json(&["pinvou", "projects", "list"]);
+    assert!(
+        listed["assignments"].get(id.as_str()).is_none(),
+        "the dead id must be pruned from the assignments map: {listed}"
+    );
+}
+
 #[test]
 fn sessions_show_limits_and_exports_transcript() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
