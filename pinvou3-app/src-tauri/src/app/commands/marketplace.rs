@@ -846,8 +846,35 @@ pub async fn install_marketplace_skill(
 pub(super) fn install_marketplace_tool_gates(tool_id: &str) -> Result<(), String> {
     // The sync itself skips known bundles (their consent is recorded), so a
     // reinstall never re-runs the write and never needs the lock.
+    refuse_owner_claimed_install_id(tool_id)?;
     crate::features::marketplace::sync_deny_all_scopes_after_install(tool_id)
         .map_err(|refused| refused_sync_error(&format!("tool '{tool_id}'"), refused))
+}
+
+/// Owner-claim divergence refusal for the two by-name install gates (review
+/// round 22, P1): the consent sync folds its id through the installed packs'
+/// companion-skill vocabulary (`to_package_id`), and a DECLARED-but-unshipped
+/// companion name survives import validation (`detect_components` checks only
+/// shipped components) — so an installed mcp-only pack declaring
+/// `companion_skills: ["weather"]` folds a later catalog install of "weather"
+/// onto the claimant, hits the known-bundle skip, and lands the tool ENABLED
+/// with zero consent rows in initialized DenyAll scopes (enforcement expands
+/// only the ids stored in the disabled lists). The import channel refuses
+/// this shape at its own boundary (the round-12 fold-divergence check); these
+/// gates are the remaining by-name channels. The check is state-dependent on
+/// purpose, like the import one: with no claimant installed the id self-maps
+/// and installs normally, and a reinstall of the claimant's OWN pack id also
+/// self-maps (its pack dir exists), so the known-skip reinstall contract is
+/// untouched.
+fn refuse_owner_claimed_install_id(id: &str) -> Result<(), String> {
+    let folded = crate::features::marketplace::scope::to_package_id(id);
+    if folded != id {
+        return Err(format!(
+            "'{id}' is claimed by installed pack '{folded}'s companion-skill vocabulary; \
+             the consent gate would govern '{folded}', not '{id}' — uninstall '{folded}' first"
+        ));
+    }
+    Ok(())
 }
 
 /// Transaction boundary for every install/import path (review finding on
@@ -878,6 +905,11 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     {
         return Err(format!("unknown preset skill '{skill_id}'"));
     }
+    // Same divergence refusal as the tool gate above: a preset skill id is
+    // foldable too, and a claimant pack declaring it as an (unshipped)
+    // companion would otherwise swallow the registration into its own
+    // known-bundle skip.
+    refuse_owner_claimed_install_id(skill_id)?;
     crate::features::marketplace::scope::sync_deny_all_scopes_after_install(skill_id)
         .map_err(|refused| refused_sync_error(&format!("skill '{skill_id}'"), refused))?;
     crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
@@ -1925,6 +1957,90 @@ mod tests {
                     .unwrap()
                     .is_none(),
                 "a refused install must not write an install record"
+            );
+        });
+    }
+
+    /// Review round 22 (P1): an installed pack's DECLARED companion
+    /// vocabulary must not hijack a later by-name install. An mcp-only pack
+    /// whose manifest declares an unshipped `companion_skills` entry (import
+    /// validation checks only shipped components) folds the claimed id onto
+    /// the claimant inside the consent sync; without the divergence refusal
+    /// the gate hits the claimant's known-bundle skip, registers nothing, and
+    /// the tool/preset lands ENABLED with zero consent rows in initialized
+    /// DenyAll scopes (enforcement expands only the stored ids). Both lanes
+    /// are pinned with a WORKING lock so the only possible refusal source is
+    /// the divergence check, plus the positive control: once the claimant is
+    /// gone the id self-maps and the gate registers deny-first.
+    #[test]
+    fn install_gates_refuse_companion_claimed_ids() {
+        with_temp_home(|| {
+            let manifest_dir = crate::platform::paths::bundles_root().join("evil/mcp");
+            std::fs::create_dir_all(&manifest_dir).unwrap();
+            std::fs::write(
+                manifest_dir.join("manifest.json"),
+                r#"{"id":"evil","name":"Evil","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["weather","pptx"]}"#,
+            )
+            .unwrap();
+            let store = crate::features::marketplace::store::BundleStore::new();
+            store
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "evil",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "Evil".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+            crate::features::marketplace::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Code,
+                &["seed-bundle".to_string()],
+            )
+            .expect("code scope must initialize while the lock works");
+
+            let tool_error = install_marketplace_tool_gates("weather").unwrap_err();
+            assert!(
+                tool_error.contains("evil") && tool_error.contains("companion-skill"),
+                "the refusal must name the claimant pack: {tool_error}"
+            );
+            assert!(
+                !tool_error.contains("disabled_bundles.lock"),
+                "the refusal is the divergence check, not a lock failure: {tool_error}"
+            );
+
+            let skill_error = install_marketplace_skill_sync("pptx").unwrap_err();
+            assert!(
+                skill_error.contains("evil"),
+                "the preset lane must refuse the claimed name too: {skill_error}"
+            );
+            assert!(
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                    .find_skill_dir("pptx")
+                    .is_none(),
+                "a refused preset install must not land the skill"
+            );
+
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string()],
+                "the claimed ids must gain no deny rows (registration never ran)"
+            );
+
+            // Positive control: the fold is state-dependent — with the
+            // claimant gone the id self-maps and the gate registers.
+            std::fs::remove_dir_all(crate::platform::paths::bundles_root().join("evil")).unwrap();
+            store.remove("evil").unwrap();
+            install_marketplace_tool_gates("weather")
+                .expect("with no claimant installed the id self-maps and the gate runs");
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code
+                ),
+                vec!["seed-bundle".to_string(), "weather".to_string()],
+                "the fresh id must be registered deny-first once unclaimed"
             );
         });
     }
