@@ -1560,9 +1560,7 @@ fn edit<S: CredentialStore>(
             // being Some implies `replacement` is Some and holds exactly
             // what was stored.)
             let peer_moved = match store.get(&reference).map_err(|e| e.user_message()) {
-                Ok(current) => {
-                    replacement.as_deref() != current.as_deref()
-                }
+                Ok(current) => replacement.as_deref() != current.as_deref(),
                 Err(_) => true,
             };
             match previous {
@@ -1780,23 +1778,24 @@ fn show<S: CredentialStore>(
     // The only path where a secret value is ever printed; --reveal-key mirrors
     // the GUI "reveal key" action (environment-overridden credentials are not
     // echoed, matching reveal_model_api_key).
-    let revealed =
-        if reveal_key {
-            if model.credential_state == CredentialState::EnvOverride {
-                None
-            } else {
-                // Round-48: the honest resolver refuses to answer `None`
-                // when the OS keyring is merely unreachable — a false
-                // "not stored" here is three false statements in one block
-                // (`credential_state: missing`, `api_key: null`,
-                // `api_key_source: none`).
-                Some(resolve_saved_model_key_honest(store, &model).map_err(|error| {
-                    CliError::failed(format!("credential_unavailable: {error}"))
-                })?)
-            }
-        } else {
+    let revealed = if reveal_key {
+        if model.credential_state == CredentialState::EnvOverride {
             None
-        };
+        } else {
+            // Round-48: the honest resolver refuses to answer `None`
+            // when the OS keyring is merely unreachable — a false
+            // "not stored" here is three false statements in one block
+            // (`credential_state: missing`, `api_key: null`,
+            // `api_key_source: none`).
+            Some(
+                resolve_saved_model_key_honest(store, &model).map_err(|error| {
+                    CliError::failed(format!("credential_unavailable: {error}"))
+                })?,
+            )
+        }
+    } else {
+        None
+    };
     // Where the key the model actually signs with comes from. `(not stored)`
     // used to be printed for an `EnvOverride` model too, which is simply
     // false: that model HAS a key, supplied by the environment — the CLI just
@@ -3217,11 +3216,8 @@ fn search_set<S: CredentialStore>(
                 // untouched (the same conservative direction as the unknown
                 // arm below).
                 let wrote = stored.as_ref().map(|key| secret_for_storage(key));
-                let peer_moved = match (wrote, store.get(reference).map_err(|e| e.user_message()))
-                {
-                    (Some(written_value), Ok(current)) => {
-                        current.as_deref() != Some(written_value)
-                    }
+                let peer_moved = match (wrote, store.get(reference).map_err(|e| e.user_message())) {
+                    (Some(written_value), Ok(current)) => current.as_deref() != Some(written_value),
                     _ => true,
                 };
                 match previous_secret {

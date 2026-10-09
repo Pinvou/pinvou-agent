@@ -219,17 +219,19 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     }
     let hay = haystack.as_bytes();
     let first = needle.as_bytes()[0].to_ascii_lowercase();
-    hay.windows(needle.len()).enumerate().find_map(|(index, window)| {
-        (window[0].to_ascii_lowercase() == first)
-            .then(|| {
-                window
-                    .iter()
-                    .zip(needle.bytes())
-                    .all(|(byte, expected)| byte.to_ascii_lowercase() == expected)
-            })
-            .filter(|&matched| matched)
-            .map(|_| index)
-    })
+    hay.windows(needle.len())
+        .enumerate()
+        .find_map(|(index, window)| {
+            (window[0].to_ascii_lowercase() == first)
+                .then(|| {
+                    window
+                        .iter()
+                        .zip(needle.bytes())
+                        .all(|(byte, expected)| byte.to_ascii_lowercase() == expected)
+                })
+                .filter(|&matched| matched)
+                .map(|_| index)
+        })
 }
 
 pub(crate) async fn download_to_part_with_verify(

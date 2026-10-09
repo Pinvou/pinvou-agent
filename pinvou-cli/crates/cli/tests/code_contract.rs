@@ -1794,7 +1794,9 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
 
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let Some(project) = init_git_repo("diff-git-symlink") else {
-        eprintln!("skipping workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace: git unavailable");
+        eprintln!(
+            "skipping workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace: git unavailable"
+        );
         return;
     };
     let id = create_code_session_fixture(Some(&project));
@@ -1811,7 +1813,15 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     assert!(ok, "fixture add failed");
     let ok = std::process::Command::new("git")
         .current_dir(&project)
-        .args(["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ])
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
@@ -1844,7 +1854,10 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     let secret = std::env::temp_dir().join(format!(
         "pinvou-cli-git-symlink-secret-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     std::fs::write(&secret, "TOP SECRET\n").unwrap();
     symlink(&secret, project.join("leak.md")).unwrap();

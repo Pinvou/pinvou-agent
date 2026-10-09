@@ -888,7 +888,10 @@ impl DivergenceGate {
         let mut state = state.lock().unwrap();
         while *state == DivergenceGateState::Armed {
             let (woken, wait) = condvar
-                .wait_timeout(state, deadline.saturating_duration_since(std::time::Instant::now()))
+                .wait_timeout(
+                    state,
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                )
                 .unwrap();
             state = woken;
             if wait.timed_out() {
@@ -1258,7 +1261,9 @@ impl ProviderManager {
         // Equal pointers — including both None — mean no peer credential
         // move happened, whatever this call wrote.
         if let (Some(wrote), Some(fresh)) = (&written_credential, fresh_record.as_ref()) {
-            let existing_pointer = existing.as_ref().and_then(|record| record.credential.clone());
+            let existing_pointer = existing
+                .as_ref()
+                .and_then(|record| record.credential.clone());
             if fresh.credential != existing_pointer {
                 self.credentials.delete(wrote).ok();
                 anyhow::bail!(

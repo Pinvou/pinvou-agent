@@ -1806,10 +1806,7 @@ fn recycle_restore(id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
     // into the serialized DTO instead of replacing it (the DTO keeps every
     // round-46 fact).
     if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "hot_refresh".to_owned(),
-            serde_json::json!("not_broadcast"),
-        );
+        object.insert("hot_refresh".to_owned(), serde_json::json!("not_broadcast"));
     }
     let mut human = format!("restored {id}");
     if result.credentials_required {

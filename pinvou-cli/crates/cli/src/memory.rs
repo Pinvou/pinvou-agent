@@ -1249,12 +1249,7 @@ fn normalization_clause(submitted_chars: usize, stored_chars: usize, committed: 
 /// stripped) without any cap being involved. Worded against the same
 /// misreading the truncation note guards — a script or human comparing the
 /// submitted text to the stored item must not conclude content was lost.
-fn note_normalization(
-    lane: &str,
-    submitted_chars: usize,
-    stored_chars: usize,
-    committed: bool,
-) {
+fn note_normalization(lane: &str, submitted_chars: usize, stored_chars: usize, committed: bool) {
     crate::note!(
         "memory {lane}: {}",
         normalization_clause(submitted_chars, stored_chars, committed)
