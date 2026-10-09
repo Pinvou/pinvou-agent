@@ -450,9 +450,12 @@ fn parse_options(
                 if value.starts_with("--") {
                     // `--api-key-env --set-active` would otherwise consume
                     // the flag name as its value and fail later with a
-                    // confusing host error.
+                    // confusing host error. The pasted token is NOT echoed
+                    // (round-48 review): a user who pasted a literal secret
+                    // into a value flag must not have it echoed to stderr
+                    // by the module's own never-echo doctrine.
                     return Err(CliError::usage(format!(
-                        "--{name} requires a value (got the flag {value})"
+                        "--{name} requires a value (got another flag, not a value)"
                     )));
                 }
                 // An empty value is a missing value, not a value that happens
@@ -1546,15 +1549,36 @@ fn edit<S: CredentialStore>(
     });
     if let Err(error) = transaction {
         if let Some((reference, previous)) = written {
+            // Round-48 review: the rollback runs AFTER the settings flock is
+            // released, so the restore is narrowed to the value THIS call
+            // wrote — a peer rotation landing in that window must not be
+            // rolled back to a stale secret. If the reference no longer
+            // holds what this call wrote (or the check cannot be done), a
+            // peer moved under us and the keyring is left untouched (the
+            // same conservative direction as the unknown arm below).
+            // (The Replace arm only writes non-empty values, so `written`
+            // being Some implies `replacement` is Some and holds exactly
+            // what was stored.)
+            let peer_moved = match store.get(&reference).map_err(|e| e.user_message()) {
+                Ok(current) => {
+                    replacement.as_deref() != current.as_deref()
+                }
+                Err(_) => true,
+            };
             match previous {
-                // The rotation destroyed the old secret: put it back.
-                Ok(Some(old)) => {
+                // The rotation destroyed the old secret: put it back — but
+                // only if a peer did not move the reference meanwhile.
+                Ok(Some(old)) if !peer_moved => {
                     let _ = store.set(&reference, old.as_str());
                 }
-                // Nothing was there before: remove what was just stored.
-                Ok(None) => {
+                Ok(Some(_)) => {}
+                // Nothing was there before: remove what was just stored —
+                // unless a peer re-pointed/rewrote the reference meanwhile
+                // (deleting would destroy the peer's secret).
+                Ok(None) if !peer_moved => {
                     let _ = store.delete(&reference);
                 }
+                Ok(None) => {}
                 // Pre-transaction state unknown (keychain read failed): leave
                 // it alone rather than delete a secret prefs may still
                 // reference.
@@ -1719,6 +1743,31 @@ fn resolve_saved_model_key<S: CredentialStore>(
     store.get(reference).map_err(|error| error.user_message())
 }
 
+/// Round-48 review: under the file-fallback valves, a `get` miss cannot
+/// distinguish "never stored" from "stored in the OS keyring this process
+/// cannot reach" — the `CredentialStore` trait doc prescribes that
+/// secret-classification callers consult [`CredentialStore::os_keyring_unreachable`]
+/// for exactly this. Returns `Err("credential_unavailable: …")` when the
+/// miss is actually an unreachable-keyring situation, so a caller can avoid
+/// reporting a false `credential_state: missing` / `api_key: null` a script
+/// might act on (e.g. conclude the key is gone and overwrite it).
+fn resolve_saved_model_key_honest<S: CredentialStore>(
+    store: &S,
+    model: &SavedModel,
+) -> Result<Option<String>, String> {
+    let resolved = resolve_saved_model_key(store, model)?;
+    if resolved.is_none()
+        && let Some(reference) = &model.credential_ref
+        && store.os_keyring_unreachable(reference)
+    {
+        return Err(format!(
+            "the OS keyring holding {} is unreachable from this process; the stored key cannot be revealed or verified here",
+            reference.account
+        ));
+    }
+    Ok(resolved)
+}
+
 fn show<S: CredentialStore>(
     store: &S,
     id: &str,
@@ -1736,7 +1785,12 @@ fn show<S: CredentialStore>(
             if model.credential_state == CredentialState::EnvOverride {
                 None
             } else {
-                Some(resolve_saved_model_key(store, &model).map_err(|error| {
+                // Round-48: the honest resolver refuses to answer `None`
+                // when the OS keyring is merely unreachable — a false
+                // "not stored" here is three false statements in one block
+                // (`credential_state: missing`, `api_key: null`,
+                // `api_key_source: none`).
+                Some(resolve_saved_model_key_honest(store, &model).map_err(|error| {
                     CliError::failed(format!("credential_unavailable: {error}"))
                 })?)
             }
@@ -2814,7 +2868,15 @@ fn settings_get<S: CredentialStore>(
             .map_err(|error| CliError::failed(format!("settings serialization failed: {error}")))?;
         return Ok(success(text));
     };
-    let prefs = safe_prefs(store);
+    // Round-48 review: the keyed arm renders only the scalar — it never
+    // prints `credential_state`/`has_secret` — so the all-models keychain
+    // refresh `safe_prefs` performs (one `get` per stored credential, plus
+    // one per search credential) buys nothing here and can pop one keychain
+    // consent dialog per configured model on an ad-hoc macOS build, to print
+    // one boolean. The module's own `plain_prefs` doctrine (round-39/40)
+    // names exactly this call shape. The keyless dump arm above keeps
+    // `safe_prefs`: it does render `credential_state`.
+    let prefs = plain_prefs();
     let (human_value, json_value) = match key {
         SettingsKey::Theme => {
             let value = theme_str(prefs.theme);
@@ -3145,16 +3207,35 @@ fn search_set<S: CredentialStore>(
             // outlives the prefs record (same standard as models add). An
             // overwrite restores the previous secret; a fresh store deletes.
             if let Some(reference) = stored_reference.as_ref() {
+                // Round-48 review: the rollback runs after the settings flock
+                // is released, so both restore arms are narrowed to the value
+                // THIS call wrote (`stored`, storage-normalized exactly like
+                // the write above) — a peer rotation landing in that window
+                // must not be rolled back to a stale secret. If the
+                // reference no longer holds it (or the check cannot be
+                // done), a peer moved under us and the keyring is left
+                // untouched (the same conservative direction as the unknown
+                // arm below).
+                let wrote = stored.as_ref().map(|key| secret_for_storage(key));
+                let peer_moved = match (wrote, store.get(reference).map_err(|e| e.user_message()))
+                {
+                    (Some(written_value), Ok(current)) => {
+                        current.as_deref() != Some(written_value)
+                    }
+                    _ => true,
+                };
                 match previous_secret {
                     // A previous secret existed: the overwrite destroyed it,
                     // so the rollback must put it back.
-                    Some(Ok(Some(old))) => {
+                    Some(Ok(Some(old))) if !peer_moved => {
                         let _ = store.set(reference, old.as_str());
                     }
+                    Some(Ok(Some(_))) => {}
                     // No previous secret existed: remove the just-stored one.
-                    Some(Ok(None)) => {
+                    Some(Ok(None)) if !peer_moved => {
                         let _ = store.delete(reference);
                     }
+                    Some(Ok(None)) => {}
                     // The pre-transaction state is unknown (keychain read
                     // failed): leave the keyring untouched. Deleting could
                     // destroy a secret prefs still references; a stale

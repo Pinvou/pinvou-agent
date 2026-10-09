@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use pinvou_cli::{ExitCode, execute, parse_args};
 use pinvou3_lib::features::sessions::SerializableMode;
+use pinvou3_lib::platform::credential_store::CredentialState;
 use pinvou3_lib::platform::prefs::{ColorScheme, ModelPreset, SearchProvider, Theme, UserPrefs};
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
@@ -2118,13 +2119,20 @@ fn models_reject_plaintext_secret_flags_instead_of_ingesting_them() {
             "the usage error must not echo the rejected secret: {message}"
         );
     }
-    // The rejection is parse-time, so nothing was configured either
-    // (count-based: a fresh home's defaults may carry a seeded model).
-    let before = load_prefs().advanced.saved_models.len();
-    assert_eq!(
-        load_prefs().advanced.saved_models.len(),
-        before,
-        "no model may be added by the rejected lanes"
+    // The rejection is parse-time, so the execute layer is never reached and
+    // nothing could have been configured. A before/after count comparison
+    // cannot observe that (both reads would trivially match — round-48
+    // review: the previous count pair was vacuous), so instead assert the
+    // strongest hermetic fact available: no model in the sandbox home gained
+    // a stored credential (parse errors never write).
+    let prefs = load_prefs();
+    assert!(
+        prefs
+            .advanced
+            .saved_models
+            .iter()
+            .all(|model| model.credential_state != CredentialState::Configured),
+        "no model may carry a stored credential after the rejected lanes"
     );
 }
 
