@@ -1006,10 +1006,14 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
     // Round-42 review: the +1 truncation probe must not overflow —
     // usize::MAX is a usage error (debug builds used to panic with exit 101,
     // release builds silently read zero runs with `truncated: false`).
+    // Round-49 review: the refusal now fires at parse — `runs`/`runs-all`
+    // cap the accepted limit at 100000 (each unit costs one run-record read,
+    // runs-all across every task), and the message keeps the overflow
+    // probes' "too large" shape.
     let message =
         assert_validation_fail(&["scheduled", "runs-all", "--limit", "18446744073709551615"]);
     assert!(
-        message.contains("too large"),
+        message.contains("too large") && message.contains("the maximum is 100000"),
         "the refusal names the bound: {message}"
     );
     let message = assert_validation_fail(&[
@@ -1020,6 +1024,198 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
         "18446744073709551615",
     ]);
     assert!(message.contains("too large"), "{message}");
+
+    // One past the clamp is a parse refusal; the clamp itself is accepted
+    // and the command runs end to end (the store here holds 3 runs, so the
+    // marker is exact false).
+    let message = assert_validation_fail(&["scheduled", "runs-all", "--limit", "100001"]);
+    assert!(message.contains("the maximum is 100000"), "{message}");
+    let accepted = run_json(&["scheduled", "runs-all", "--limit", "100000"]);
+    assert_eq!(accepted["truncated"].as_bool(), Some(false));
+    let _ = home;
+}
+
+/// Round-49 review: `show` caps only the RENDERED run list (the summary
+/// facts stay computed over the full list) and was the one display lane
+/// whose cap had no contract test. Exactly DEFAULT_RUNS_DISPLAY_LIMIT (200)
+/// runs render with an exact `truncated` marker and a human note naming both
+/// numbers; `--limit` overrides in both directions.
+#[test]
+fn show_caps_the_rendered_runs_and_limit_overrides_the_default() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("show-render-cap");
+    let created = create_task(&home, "Show cap task");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let runs = home.runs_dir(&task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    let total = 205;
+    for index in 0..total {
+        let stamp = format!("2026-09-23T{:02}:{:02}:00Z", index / 60, index % 60);
+        std::fs::write(
+            runs.join(format!("20260923T{:06}.json", index)),
+            serde_json::json!({
+                "id": format!("run-{index}"),
+                "automation_id": task_id,
+                "scheduled_for": stamp,
+                "status": "completed",
+                "created_at": stamp
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    // Default cap: 200 of 205 rendered, marker exact, and the human channel
+    // carries both the rendered-count line and the truncation note.
+    let shown = run_json(&["scheduled", "show", &task_id]);
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(200));
+    assert_eq!(shown["truncated"].as_bool(), Some(true));
+    let human = run_human(&["scheduled", "show", &task_id]);
+    assert!(human.contains("runs: 200"), "{human}");
+    assert!(
+        human.contains("… showing the newest 200 runs of 205 total (pass a larger --limit)"),
+        "{human}"
+    );
+
+    // --limit overrides downward…
+    let shown = run_json(&["scheduled", "show", &task_id, "--limit", "3"]);
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(3));
+    assert_eq!(shown["truncated"].as_bool(), Some(true));
+
+    // …and upward: at exactly the total the marker flips false.
+    let shown = run_json(&["scheduled", "show", &task_id, "--limit", "205"]);
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(205));
+    assert_eq!(shown["truncated"].as_bool(), Some(false));
+    let _ = home;
+}
+
+/// Round-49 review: the runs-all archive prune (per-task push-down of the
+/// probe limit through the precomputed `(scheduled_for, index)` sort key)
+/// had no test exercising WHICH runs survive. Seed five archived runs whose
+/// array order deliberately disagrees with their stamp order and two of
+/// which share a timestamp: with `--limit 2` the newest-2 by (time,
+/// index-desc) must survive — the equal-stamp tie goes to the later array
+/// index — and `truncated` stays exact (three read past the cap, two shown).
+#[test]
+fn runs_all_archived_prune_selects_the_newest_by_time_then_index() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("runs-all-prune");
+    // A live task with no runs keeps the lane's active half exercised.
+    create_task(&home, "Prune feed task");
+
+    let archived_task_id = "archived-prune-task";
+    let archived_run = |id: &str, stamp: &str| {
+        serde_json::json!({
+            "schema_version": 1,
+            "id": id,
+            "automation_id": archived_task_id,
+            "scheduled_for": stamp,
+            "status": "completed",
+            "created_at": stamp
+        })
+    };
+    // Array order disagrees with stamp order ON PURPOSE: an array-order
+    // selection would keep a different pair than the (time, index) sort the
+    // prune is pinned to, and the equal-stamp pair decides the tiebreak
+    // direction.
+    let runs = vec![
+        archived_run("tie-older-index", "2026-09-03T08:00:00Z"), // index 0: loses the tie
+        archived_run("tie-newer-index", "2026-09-03T08:00:00Z"), // index 1: wins the tie
+        archived_run("oldest", "2026-09-01T08:00:00Z"),          // index 2: pruned either way
+        archived_run("newest", "2026-09-05T08:00:00Z"),          // index 3: rank 1
+        archived_run("middle", "2026-09-02T08:00:00Z"),          // index 4: pruned either way
+    ];
+    std::fs::create_dir_all(home.path().join("automations")).unwrap();
+    std::fs::write(
+        home.path().join("automations/history-archive.json"),
+        serde_json::json!({
+            "schema_version": 2,
+            "tasks": {
+                archived_task_id: {
+                    "task": { "id": archived_task_id, "name": "Pruned task" },
+                    "runs": runs,
+                    "deleted_at": "2026-09-06T08:00:00.000Z"
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let all = run_json(&["scheduled", "runs-all", "--limit", "2"]);
+    let shown = all["runs"].as_array().unwrap();
+    assert_eq!(shown.len(), 2);
+    let ids: Vec<&str> = shown
+        .iter()
+        .map(|run| run["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["newest", "tie-newer-index"],
+        "the newest-2 by (time, index-desc) survive; the equal-stamp tie goes to the later \
+         array index"
+    );
+    assert_eq!(all["truncated"].as_bool(), Some(true));
+
+    // Without a cap every archived run survives and the marker is false.
+    let all = run_json(&["scheduled", "runs-all"]);
+    assert_eq!(all["runs"].as_array().unwrap().len(), 5);
+    assert_eq!(all["truncated"].as_bool(), Some(false));
+    let _ = home;
+}
+
+/// Round-49 review: the workspace arm of create's rollback had no test. A
+/// read-only `scheduled/` root makes `create_dir_all(workspace)` fail AFTER
+/// `create_automation` committed an ACTIVE record with an eagerly resolved
+/// `next_run_at`; the command must roll the definition back and exit 1
+/// instead of leaving a schedulable task behind. Unix-only: the seam is a
+/// chmod on the workspace parent. The permission restore runs in a drop
+/// guard so a failing assertion cannot strand a read-only temp home.
+#[cfg(unix)]
+#[test]
+fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    struct RestorePerms(PathBuf);
+    impl Drop for RestorePerms {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let home = TempHome::new("create-workspace-rollback");
+    let scheduled_root = home.path().join("scheduled");
+    std::fs::create_dir_all(&scheduled_root).unwrap();
+    std::fs::set_permissions(&scheduled_root, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let _restore = RestorePerms(scheduled_root);
+
+    let prompt = write_prompt_file(&home, "rollback.md", "Summarize the reports.");
+    let message = expect_failed(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Rollback",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+    ]);
+    assert!(
+        message.contains("scheduled_workspace_unavailable"),
+        "{message}"
+    );
+
+    // The committed definition was rolled back: nothing lists and nothing
+    // remains on disk to schedule.
+    let listed = run_human(&["scheduled", "list"]);
+    assert!(listed.contains("No scheduled tasks."), "{listed}");
+    let defs = std::fs::read_dir(home.path().join("automations/automations")).unwrap();
+    assert_eq!(
+        defs.count(),
+        0,
+        "the rolled-back task definition must not remain on disk"
+    );
     let _ = home;
 }
 
