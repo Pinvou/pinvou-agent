@@ -2223,7 +2223,7 @@ mod tests {
             let error =
                 import_plugin_package_sync(&tmp.to_string_lossy(), "collide.zip").unwrap_err();
             assert!(
-                error.contains("marketplace preset skill"),
+                error.contains("与市场预置技能 id 冲突"),
                 "a package id colliding with a preset market id must be refused: {error}"
             );
             let _ = std::fs::remove_file(&tmp);
@@ -2235,7 +2235,7 @@ mod tests {
             let error =
                 import_plugin_package_sync(&tmp.to_string_lossy(), "collide2.zip").unwrap_err();
             assert!(
-                error.contains("marketplace preset skill"),
+                error.contains("与市场预置技能 id 冲突"),
                 "a component name colliding with a preset market id must be refused: {error}"
             );
             let _ = std::fs::remove_file(&tmp);
