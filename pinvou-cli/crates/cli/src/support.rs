@@ -177,6 +177,85 @@ fn validate_sandbox_home(
     Ok(resolved)
 }
 
+/// Failure shape behind [`open_family_lock_file`], split into its two arms
+/// so each family maps them onto its own stable error code and message at
+/// the call site (the code.rs locks carry the round-37 `{action}_lock`
+/// prefix with the path named; the connectors lock keeps its own wording) —
+/// the helper deliberately does no error-code mapping of its own.
+#[derive(Debug)]
+pub(crate) enum FamilyLockError {
+    /// The shared `locks/` directory could not be created (replaced by a
+    /// file, EACCES on the parent, ...).
+    CreateDir { dir: PathBuf, error: std::io::Error },
+    /// The named lock file could not be opened or created.
+    Open {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+}
+
+/// Opens (creating if needed) one of the `~/.pinvou3/locks/` family lock
+/// files — one copy of the directory-create and open the lock sites used to
+/// hand-copy, plus the permission posture the connectors lock had alone
+/// (round-49 review): a lock file at the umask default (0644) is readable by
+/// every local account, and `flock(LOCK_EX)` needs only READ permission, so
+/// on a shared/group home any low-privilege account could hold LOCK_EX and
+/// wedge the whole lane behind the family's documented blocking wait. The
+/// file is therefore created at 0600 AND re-tightened to 0600 on EVERY open
+/// (best-effort `set_permissions`, the same chmod-on-every-append doctrine
+/// as `~/.pinvou3/cli-install.log` and the scan-QR dir), so a pre-existing
+/// 0644 file from an older build heals the next time the lane opens it.
+///
+/// Deliberately free of the `fd_lock::RwLock` wrap: each caller keeps its
+/// own blocking/try acquire and error code. Callers that need the
+/// absolute-path contract (the lock must not land in a cwd-relative root)
+/// keep their own `sandbox_home()?` ahead of this, exactly as before.
+///
+/// The sibling lock files in memory/personas/scheduled/voice adopt this
+/// helper in a later wave; the three sites below are the first conversion.
+pub(crate) fn open_family_lock_file(name: &str) -> Result<std::fs::File, FamilyLockError> {
+    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
+    std::fs::create_dir_all(&dir).map_err(|error| FamilyLockError::CreateDir {
+        dir: dir.clone(),
+        error,
+    })?;
+    let path = dir.join(name);
+    // `.mode(0o600)` makes a FRESH create private from the first instant
+    // (no world-readable window between create and tighten; umask can only
+    // strip bits the owner-only mode does not have). It does nothing for a
+    // pre-existing file, which is what the best-effort tighten below is for.
+    #[cfg(unix)]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+    };
+    #[cfg(not(unix))]
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path);
+    let file = opened.map_err(|error| FamilyLockError::Open {
+        path: path.clone(),
+        error,
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // Best-effort: the open above already created the file private, and
+        // the lock stays usable either way (flock needs no write
+        // permission), so a failing tighten is not worth failing the command
+        // over — same posture as the cli-install.log append.
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
+}
+
 /// Reads a UTF-8 text file with a byte cap so `--*-file` arguments cannot
 /// load an unbounded source (a multi-GB log, a character device like
 /// /dev/zero) into memory before the family's own truncation runs, and
@@ -883,9 +962,9 @@ mod tests {
         assert_eq!(collapse_control_characters("a\nb"), "a b");
     }
     use super::{
-        ENV_LOCK, collapse_block_control_characters, collapse_control_characters, decode_arguments,
-        emit_report, json_failure_payload, read_bytes_capped, read_text_file_capped,
-        resolve_secret, validate_sandbox_home,
+        ENV_LOCK, FamilyLockError, collapse_block_control_characters, collapse_control_characters,
+        decode_arguments, emit_report, json_failure_payload, open_family_lock_file,
+        read_bytes_capped, read_text_file_capped, resolve_secret, validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};
@@ -1262,6 +1341,148 @@ mod tests {
             .expect("a usize::MAX cap must read the file, not overflow");
         assert_eq!(bytes, b"small payload");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-49: the family lock helper creates a FRESH lock file at 0600.
+    /// The mode read back is the full 0600 regardless of the process umask:
+    /// umask can only strip bits, and the owner-only mode has no group/other
+    /// bits to strip. Held under `ENV_LOCK` like every other env-mutating
+    /// test in this binary — the helper resolves the root through
+    /// `pinvou3_home()`, which reads `PINVOU3_HOME`.
+    #[cfg(unix)]
+    #[test]
+    fn family_lock_helper_creates_a_fresh_lock_at_0600() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-support-lock-fresh-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct RestoreHome(Option<std::ffi::OsString>, PathBuf);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _home = RestoreHome(std::env::var_os("PINVOU3_HOME"), root.clone());
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        let file = open_family_lock_file("contract-fresh.lock")
+            .expect("a fresh lock file must open in a writable home");
+        let path = root.join("locks").join("contract-fresh.lock");
+        assert_eq!(
+            file.metadata().unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a freshly created lock file must be owner-only from the start"
+        );
+        assert!(path.is_file(), "the lock lands under the shared locks dir");
+    }
+
+    /// Round-49: a PRE-EXISTING lock file left at the umask default (0644,
+    /// e.g. by an older build) is tightened to 0600 by the next open — the
+    /// heal-on-every-open half of the contract, mirroring the
+    /// cli-install.log chmod-on-every-append doctrine.
+    #[cfg(unix)]
+    #[test]
+    fn family_lock_helper_tightens_a_preexisting_0644_lock_on_open() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-support-lock-heal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("locks")).unwrap();
+        struct RestoreHome(Option<std::ffi::OsString>, PathBuf);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _home = RestoreHome(std::env::var_os("PINVOU3_HOME"), root.clone());
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        let path = root.join("locks").join("contract-heal.lock");
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let file = open_family_lock_file("contract-heal.lock")
+            .expect("an existing 0644 lock must still open");
+        assert_eq!(
+            file.metadata().unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a pre-existing 0644 lock file must be tightened to 0600 on open"
+        );
+    }
+
+    /// The error seam keeps its two arms distinct so each family can render
+    /// its own stable message: a file standing in for the `locks/` directory
+    /// fails the dir-create arm (with the directory path attached), not the
+    /// open arm.
+    #[test]
+    fn family_lock_helper_reports_the_dir_create_arm_with_its_path() {
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-support-lock-dirarm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct RestoreHome(Option<std::ffi::OsString>, PathBuf);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+                }
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let _home = RestoreHome(std::env::var_os("PINVOU3_HOME"), root.clone());
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+
+        // A FILE at the locks path: create_dir_all fails with something
+        // other than success, and the error must name the DIRECTORY.
+        std::fs::write(root.join("locks"), b"not a directory").unwrap();
+        let error = open_family_lock_file("contract-dir-arm.lock")
+            .expect_err("a file at the locks path must fail the create arm");
+        match error {
+            FamilyLockError::CreateDir { dir, .. } => {
+                assert_eq!(
+                    dir,
+                    root.join("locks"),
+                    "the dir arm must carry the directory path"
+                );
+            }
+            FamilyLockError::Open { .. } => {
+                panic!("a file standing in for locks/ must be the CreateDir arm, not Open")
+            }
+        }
     }
 }
 

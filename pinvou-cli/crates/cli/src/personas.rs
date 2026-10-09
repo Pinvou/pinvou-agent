@@ -1168,25 +1168,27 @@ fn require_equippable_body(card: &PersonaCard) -> Result<(), CliError> {
 /// appears nowhere in the app crate), so a CLI-only lock has no cross-surface
 /// semantics; a reader needs no lock (rename-atomic writes).
 fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
-    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CliError::failed(format!(
-            "cannot create the persona lock directory {}: {error}",
-            dir.display()
-        ))
-    })?;
-    let path = dir.join("persona-equip.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!(
-                "cannot open the persona equip lock {}: {error}",
-                path.display()
-            ))
-        })?;
+    // Shared family helper (round-49, the memory/scheduled conversion wave):
+    // one copy of the directory-create and open this site hand-rolled, and
+    // the file is tightened to 0600 on every open so a lock left at the
+    // umask default by an older build heals instead of staying readable by
+    // every local account. The arms map onto the exact messages the
+    // hand-rolled pair produced.
+    let file =
+        crate::support::open_family_lock_file("persona-equip.lock").map_err(
+            |error| match error {
+                crate::support::FamilyLockError::CreateDir { dir, error } => {
+                    CliError::failed(format!(
+                        "cannot create the persona lock directory {}: {error}",
+                        dir.display()
+                    ))
+                }
+                crate::support::FamilyLockError::Open { path, error } => CliError::failed(format!(
+                    "cannot open the persona equip lock {}: {error}",
+                    path.display()
+                )),
+            },
+        )?;
     Ok(fd_lock::RwLock::new(file))
 }
 

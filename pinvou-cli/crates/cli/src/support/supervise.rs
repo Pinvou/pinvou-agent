@@ -429,34 +429,58 @@ mod imp {
         INSTALL.call_once(real_install);
     }
 
-    fn real_install() {
-        // Declared outside the `unsafe` block: the watcher spawn below and
-        // the `PIPE_WRITE.store` are ordinary code, and binding inside the
-        // block would end `read_end`'s scope at its closing brace.
-        let read_end;
-        // SAFETY: raw-fd and signal-syscall wrappers below. Every failure
-        // path leaves the process exactly as it was before this module: no
-        // handler installed means default SIGINT termination (the old
-        // behavior), not a broken one.
+    /// Creates the self-pipe the handler writes and the watcher reads. Split
+    /// from `real_install` so the unit tests can pin the descriptor flags
+    /// and the overflow behavior without installing the real handler — whose
+    /// watcher would consume a test byte as its cleanup trigger and end the
+    /// test process in the phase-3 re-raise.
+    ///
+    /// CLOEXEC on both ends: vendor children `exec` through
+    /// `std::process`, and inherited ends would let a child hold this
+    /// CLI's watcher open (and would hand the write end to every
+    /// child, where a stray close is harmless but a stray write is
+    /// not — a child writing the byte could raise this CLI's flag).
+    ///
+    /// Round-49: O_NONBLOCK on the WRITE end only. The watcher reads only
+    /// the first byte, so with a blocking write end, ≥64 KiB of signal
+    /// deliveries inside one grace window would fill the pipe and park the
+    /// signaled thread INSIDE the handler on write(2) — exactly what
+    /// async-signal-safety forbids. Non-blocking turns the overflow into
+    /// EAGAIN, which [`write_signal_byte`] reports as "already requested"
+    /// (a full pipe means an earlier byte is still queued for the watcher).
+    /// The READ end stays blocking: the watcher parks in read(2) between
+    /// interrupts by design.
+    pub(super) fn create_self_pipe() -> Option<(libc::c_int, libc::c_int)> {
+        // SAFETY: pipe(2) into a two-element array, then fcntl probes/sets
+        // the flags of the descriptors just created. No allocation, no
+        // locks, no memory touched beyond the fd array.
         unsafe {
             let mut fds = [0 as libc::c_int; 2];
             if libc::pipe(fds.as_mut_ptr()) != 0 {
-                return;
+                return None;
             }
-            // CLOEXEC on both ends: vendor children `exec` through
-            // `std::process`, and inherited ends would let a child hold this
-            // CLI's watcher open (and would hand the write end to every
-            // child, where a stray close is harmless but a stray write is
-            // not — a child writing the byte could raise this CLI's flag).
             for fd in fds {
                 let flags = libc::fcntl(fd, libc::F_GETFD);
                 if flags >= 0 {
                     libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
                 }
             }
-            read_end = fds[0];
-            PIPE_WRITE.store(fds[1], Ordering::SeqCst);
+            let flags = libc::fcntl(fds[1], libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            Some((fds[0], fds[1]))
         }
+    }
+
+    fn real_install() {
+        let Some((read_end, write_end)) = create_self_pipe() else {
+            // Every failure path leaves the process exactly as it was before
+            // this module: no handler installed means default SIGINT
+            // termination (the old behavior), not a broken one.
+            return;
+        };
+        PIPE_WRITE.store(write_end, Ordering::SeqCst);
         // The watcher is spawned BEFORE the handlers go live. In the other
         // order a failed spawn would leave the handlers installed with no
         // reader: every later interrupt would write one byte into an unread
@@ -564,12 +588,15 @@ mod imp {
             return;
         }
         let byte = sig as u8;
-        // Publish the interrupt only when the byte actually landed: main's
-        // exit-path gate parks on a watcher that wakes on exactly that byte,
-        // so storing CLEANUP_STARTED on a failed write would park forever on
-        // a watcher that never wakes. A failed write keeps today's degrade —
-        // main exits normally instead — which is what the old comment
-        // promised and the code now matches.
+        // Publish the interrupt when it is RECORDED — the byte landed, or
+        // the write hit EAGAIN (round-49: the pipe is full, meaning an
+        // earlier byte is still queued and the watcher will wake for it, so
+        // this request is already in flight). Main's exit-path gate parks on
+        // a watcher that wakes on exactly that byte, so storing
+        // CLEANUP_STARTED on anything else would park forever on a watcher
+        // that never wakes; a real failure keeps today's degrade — main
+        // exits normally instead — which is what the old comment promised
+        // and the code now matches.
         if write_signal_byte(fd, byte) {
             // An async-signal-safe `AtomicBool` store, so main's exit-path
             // gate observes it even if the watcher thread has not been
@@ -585,6 +612,14 @@ mod imp {
     /// misread the interrupted call's cause. Saved before, restored after:
     /// the standard self-pipe discipline. `pub(super)` for the tests, like
     /// the other pinned internals.
+    ///
+    /// Returns whether the interrupt is RECORDED, not whether this byte
+    /// landed: the write end is O_NONBLOCK (round-49, see
+    /// [`create_self_pipe`]), so a pipe already full of earlier deliveries
+    /// fails with EAGAIN — and a full pipe means an earlier byte is still
+    /// queued for the watcher, i.e. this interrupt is already requested and
+    /// the cleanup it drives is already coming. Any other failure (fd gone,
+    /// EPIPE) reports false and keeps the degrade path.
     pub(super) fn write_signal_byte(fd: libc::c_int, byte: u8) -> bool {
         // SAFETY: write(2) is reentrant; the buffer outlives the call. The
         // errno location is dereferenced only on this thread, around the
@@ -592,9 +627,10 @@ mod imp {
         unsafe {
             let errno = errno_location();
             let saved = *errno;
-            let written = libc::write(fd, &byte as *const u8 as *const libc::c_void, 1) == 1;
+            let written = libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+            let failed_with = *errno;
             *errno = saved;
-            written
+            written == 1 || (written < 0 && failed_with == libc::EAGAIN)
         }
     }
 
@@ -1333,5 +1369,72 @@ mod tests {
             libc::EAGAIN,
             "a failed handler write must not leak its errno"
         );
+    }
+
+    /// Round-49: the self-pipe WRITE end is O_NONBLOCK (pinned through
+    /// `create_self_pipe`, the exact constructor `real_install` runs), and a
+    /// burst of handler-path writes LARGER than the pipe capacity (64 KiB on
+    /// Linux, smaller-but-growing on macOS — 128 KiB clears both) completes
+    /// promptly instead of blocking once the pipe fills. With a regression
+    /// to a blocking write end, ≥64 KiB of deliveries inside one grace
+    /// window would park the signaled thread INSIDE the handler. The real
+    /// install is deliberately NOT driven here: its watcher would consume
+    /// the first test byte as its cleanup trigger and end the test process
+    /// in the phase-3 re-raise; a fresh pipe exercises the same fd surface
+    /// without one.
+    #[test]
+    #[cfg(unix)]
+    fn self_pipe_write_end_is_nonblocking_and_overflow_burst_does_not_block() {
+        let Some((read_fd, write_fd)) = imp::create_self_pipe() else {
+            panic!("pipe(2) must work in the test process");
+        };
+        // SAFETY: fcntl on descriptors this test just created.
+        let flags = unsafe { libc::fcntl(write_fd, libc::F_GETFL) };
+        assert!(flags >= 0, "F_GETFL must work on the write end: {flags}");
+        assert_ne!(
+            flags & libc::O_NONBLOCK,
+            0,
+            "the write end must carry O_NONBLOCK; F_GETFL={flags:#x}"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(read_fd, libc::F_GETFL) } & libc::O_NONBLOCK,
+            0,
+            "the READ end stays blocking — the watcher parks in read(2) by design"
+        );
+
+        // The burst runs on a worker behind a watchdog join: with a
+        // regression to a blocking write end the worker parks in write(2)
+        // forever, the timeout below fires the assertion instead of hanging
+        // the whole test binary, and the leaked worker dies with the process.
+        const BURST: usize = 128 * 1024;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut recorded = 0usize;
+            for _ in 0..BURST {
+                // The handler's exact write path: every write must come back
+                // recorded — landed, or EAGAIN on the full pipe (already
+                // requested).
+                if imp::write_signal_byte(write_fd, libc::SIGINT as u8) {
+                    recorded += 1;
+                }
+            }
+            // SAFETY: closing this test's own pipe ends.
+            unsafe {
+                libc::close(write_fd);
+                libc::close(read_fd);
+            }
+            let _ = done_tx.send(recorded);
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(recorded) => assert_eq!(
+                recorded, BURST,
+                "every burst write must be recorded (landed, or EAGAIN on a full pipe)"
+            ),
+            Err(_) => panic!(
+                "the 128 KiB handler-write burst blocked — the write end lost \
+                 O_NONBLOCK (the parked worker leaks until the test binary exits)"
+            ),
+        }
+        worker.join().expect("the burst worker must finish");
     }
 }
