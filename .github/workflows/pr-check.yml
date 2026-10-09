@@ -233,11 +233,13 @@ jobs:
               - 'pinvou-cli/**/*.rs'
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
-              # Round-47 review: cli-test, cli-lint and macos-cli-check all
+              # Round-47 review: the Linux CLI legs (cli-test and cli-lint)
               # run this script as a setup step (the PipeWire prefix every
-              # Linux/CLI compile needs), but it routed only to rust_code —
+              # Linux compile needs), but it routed only to rust_code —
               # a script-only PR reached the post-merge main push before any
-              # CLI leg could catch a break.
+              # CLI leg could catch a break. (macos-cli-check compiles the
+              # same CLI without the Linux PipeWire prefix, so it has no
+              # such step.)
               - 'scripts/ci-libpipewire-build.sh'
               # Build inputs cargo reads but the patterns above miss: a
               # `[build]`/`rustflags` edit in the workspace config and the
@@ -2654,6 +2656,8 @@ jobs:
       # siblings, and the pinvou-cli workspace target dir is cached like
       # macos-rust-check caches src-tauri. A check-only target dir carries
       # rmeta-size artifacts and no linked test binaries, so the link-time
+      # runner deaths behind the cli-test/rust-test cache-targets directive
+      # cannot recur here.
       # Round-48 review: `cache-on-failure` matches macos-rust-check (its
       # anti-death-loop rationale: save-on-success-only + eviction left a
       # failed main push with a cold cache namespace). Without it a failed

@@ -600,13 +600,14 @@ class CiGatePolicyTests(unittest.TestCase):
             "the Windows binary, and without this entry a manifest-only PR "
             "runs no CLI leg at all",
         )
-        # Round-47 review: cli-test, cli-lint and macos-cli-check all execute
-        # this setup script; routed only via rust_code, a script-only PR
-        # reached the post-merge push before any CLI leg could catch a break.
+        # Round-47 review: cli-test and cli-lint (the Linux CLI legs)
+        # execute this setup script; routed only via rust_code, a
+        # script-only PR reached the post-merge push before any CLI leg
+        # could catch a break.
         assert_extracted_entry(
             "scripts/ci-libpipewire-build.sh",
-            "the PipeWire prefix build is a setup step of every CLI leg; a "
-            "script-only PR must trigger them",
+            "the PipeWire prefix build is a setup step of the Linux CLI "
+            "legs; a script-only PR must trigger them",
         )
         assert_extracted_entry("CodeWhale", "cli_rust must route the foundation gitlink")
         # Round-38: every literal cli_rust filter entry must name a path that
@@ -709,6 +710,16 @@ class CiGatePolicyTests(unittest.TestCase):
             "marketplace.rs include_str!s the plugin package spec; without "
             "this entry a spec-doc PR runs no CLI leg at all",
         )
+        # Round-49 review: cli_contract.rs include_str!s the gaia benchmark
+        # doc and asserts its level table, so a doc-only edit must run a CLI
+        # leg. The routing entry alone cannot protect itself — this pin is
+        # what makes deleting the entry fail the suite instead of silently
+        # re-opening the skipped-legs hole the round-48 entry closed.
+        assert_extracted_entry(
+            "docs/gaia-benchmark.md",
+            "cli_contract.rs include_str!s the gaia benchmark doc; without "
+            "this entry a doc-only edit runs no CLI leg at all",
+        )
         # The CLI path-depends on the app crate, so the leaf features that
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust
@@ -774,8 +785,17 @@ class CiGatePolicyTests(unittest.TestCase):
         assert_group_paths_reachable(knowledge_rust_paths, "knowledge_rust")
         windows_codex_paths = self.pr_workflow.split(
             "            windows_codex:", maxsplit=1
-        )[1].split("            pet:", maxsplit=1)[0]
+        )[1].split("            bundle_chain:", maxsplit=1)[0]
         assert_group_paths_reachable(windows_codex_paths, "windows_codex")
+        # Round-49 review: the standalone windows_codex slice used to split
+        # at `pet:` — a job declared BEFORE it — so the slice ran to EOF and
+        # bundle_chain's coverage was an accident of that unbounded sweep.
+        # windows_codex is now bounded at its real neighbor, and the terminal
+        # group gets its own explicit sweep to EOF.
+        bundle_chain_paths = self.pr_workflow.split(
+            "            bundle_chain:", maxsplit=1
+        )[1]
+        assert_group_paths_reachable(bundle_chain_paths, "bundle_chain")
 
         # Round-42 review: the sweep now covers EVERY filter group in the
         # changes block, not just the three that originally motivated it —
@@ -785,10 +805,12 @@ class CiGatePolicyTests(unittest.TestCase):
         # round-37 pinvoy3-app class. Groups are split sequentially in
         # declaration order, so a NEW group appended without updating this
         # list still gets covered as long as it sits between two known
-        # neighbors. Round-48 review: the LAST group is now bounded too
-        # (bundle_chain is swept to EOF above), so a group appended after
-        # bundle_chain still escapes this list — add its pair here when a
-        # group is added. The pairs mirror the workflow's order.
+        # neighbors. Round-49 review: the terminal group's own entries are
+        # swept explicitly to EOF (see bundle_chain above) instead of riding
+        # the old unbounded windows_codex slice; a group appended after
+        # bundle_chain is likewise inside that terminal sweep, but add its
+        # pair here anyway so the reachability message names the right
+        # group. The pairs mirror the workflow's order.
         group_bounds = [
             ("rust_code", "rust_dependencies"),
             ("rust_dependencies", "rust_full"),
@@ -1193,22 +1215,26 @@ class CiGatePolicyTests(unittest.TestCase):
         # `--no-default-features`), satisfying every assertion while
         # compiling the feature-on config. Fold each run block into one
         # string first; the message keeps the whole block for diagnosis.
+        # Round-49 review: the original fold pattern hard-coded a 12-space
+        # continuation indent and matched ZERO blocks in this workflow,
+        # silently degrading every run to the per-line fallback. The pattern
+        # now captures the first continuation line's indent and requires the
+        # block's remaining lines to share it, and the fold shape itself is
+        # mandatory: a differently-shaped step must fail loudly here instead
+        # of reviving the per-line blind spot.
         featureless_steps = [
             " ".join(block.split("\n"))
-            for block in re.findall(
-                r"run: >-\n((?:\s{12}.*\n?)+)", cli_lint
+            for block, _indent in re.findall(
+                r"run: >-\n(( +)[^\n]*\n?(?:\2[^\n]*\n?)*)", cli_lint
             )
             if "--no-default-features" in block
         ]
-        if not featureless_steps:
-            # Fallback for any single-line featureless invocation: keep the
-            # old per-line shape so the pin cannot silently lose coverage.
-            featureless_steps = [
-                line
-                for line in cli_lint.splitlines()
-                if "--no-default-features" in line
-            ]
-        self.assertTrue(featureless_steps, "the featureless check step must exist")
+        self.assertTrue(
+            featureless_steps,
+            "the featureless check step must exist as a folded (>-) run "
+            "block; update this pin if the step's YAML shape changes, the "
+            "fold is what keeps a sibling-line `--features` toggle visible",
+        )
         for block in featureless_steps:
             self.assertNotIn(
                 "--features",
@@ -1222,6 +1248,17 @@ class CiGatePolicyTests(unittest.TestCase):
                 "product-backend` satisfies the substring pin while "
                 f"compiling the feature-on config: {block}",
             )
+        # Secondary net over any unfolded single-line invocation of the same
+        # check (defense in depth; the folded assertion above is the
+        # load-bearing one).
+        for line in cli_lint.splitlines():
+            if "--no-default-features" in line:
+                self.assertNotIn(
+                    "--features",
+                    line,
+                    "the featureless check must not re-enable features on "
+                    f"the same line: {line}",
+                )
         # Independent cache keyed to the compiler mode (clippy-driver
         # artifacts are not reusable by the rustc test compilers — same
         # parallel-job split as rust-lint vs rust-test).
@@ -2667,6 +2704,10 @@ class CiGatePolicyTests(unittest.TestCase):
             ("rust-test", "\n  cli-test:"),
             ("windows-rust-test", "\n  macos-rust-check:"),
             ("macos-rust-check", "\n  windows-codex-runtime-test:"),
+            # Round-49 review: macos-cli-check joined the flag in round-48
+            # (same main-only namespace death-loop exposure) but not this
+            # pin — the flag could be dropped with the suite green.
+            ("macos-cli-check", "\n  required-gate:"),
         ):
             job = self.pr_workflow.split(
                 f"\n  {job_name}:", maxsplit=1
