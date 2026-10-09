@@ -260,8 +260,9 @@ mod tests {
             // 英文契约词（read_session / referenced sessions / instructions）不是
             // 用户领域词，直入 n-gram 会虚假抬升无关专家卡——与标题/检查点标签
             // 同一规则。两行分别钉住「剥离后才作匹配源」的绑定与实参传递。
-            chat.contains("let match_source = super::sessions::strip_session_mention_block(&raw_message);")
-                && chat.contains("super::multiagent::MatchSource(match_source)"),
+            chat.contains(
+                "let match_source = super::sessions::strip_session_mention_block(&raw_message);"
+            ) && chat.contains("super::multiagent::MatchSource(match_source)"),
             "chat 发送链必须以剥离注入块后的用户原文 raw_message 作为候选匹配源"
         );
         let interaction = include_str!("interaction.rs");

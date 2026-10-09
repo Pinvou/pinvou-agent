@@ -514,7 +514,10 @@ mod session_mention_title_tests {
             r#"[{{"sessionId":"a","title":"{}"}}]"#,
             "😀".repeat(33_000)
         ));
-        assert_eq!(strip_session_mention_block(&astral_oversized), astral_oversized);
+        assert_eq!(
+            strip_session_mention_block(&astral_oversized),
+            astral_oversized
+        );
     }
 
     #[test]
