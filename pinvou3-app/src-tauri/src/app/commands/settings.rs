@@ -9,16 +9,50 @@ pub async fn get_settings() -> Result<UserPrefs, String> {
     Ok(refresh_safe_prefs(UserPrefs::load()))
 }
 
-fn prepare_prefs_for_save(mut prefs: UserPrefs) -> Result<UserPrefs, String> {
-    let store = SystemCredentialStore::new();
+fn prepare_prefs_for_save(
+    mut prefs: UserPrefs,
+    store: &dyn CredentialStore,
+) -> Result<(UserPrefs, Vec<CredentialReference>), String> {
     prefs.normalize_saved_model_metadata();
-    let migration = prefs.migrate_plaintext_api_keys_with_store(&store);
+    let migration = prefs.migrate_plaintext_api_keys_with_store(store);
     if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
+    // The migration DEFERS destructive keyring deletes (see the search
+    // Delete arm in `migrate_plaintext_api_keys_with_store`): surface them so
+    // the caller runs them only after its prefs save committed.
+    let deferred_deletes = migration.deferred_search_deletes;
     prefs.sanitize_plaintext_api_keys();
-    prefs.refresh_credential_states_with_store(&store);
-    Ok(prefs)
+    prefs.refresh_credential_states_with_store(store);
+    Ok((prefs, deferred_deletes))
+}
+
+/// Runs the search-provider keyring deletes the prefs migration deferred —
+/// only ever call this AFTER the prefs save committed and while the prefs
+/// lock is still held (via `update_transaction_with_post_commit`). Before the
+/// commit a delete would leave a configured-but-secretless provider when the
+/// save then aborted; outside the lock, a concurrent replacement of the same
+/// deterministic provider reference could commit a fresh secret between this
+/// save's commit and this cleanup, and the stale delete would destroy it
+/// while both saves reported success. Under the lock the two saves are
+/// totally ordered, so the delete can only remove the credential this
+/// command's own Delete edit removed from prefs. A failed delete is
+/// downgraded to a warning: the disk commit already succeeded and the orphan
+/// is overwritten on re-set.
+fn delete_deferred_search_credentials(
+    context: &str,
+    store: &dyn CredentialStore,
+    references: Vec<CredentialReference>,
+) {
+    for reference in references {
+        if let Err(error) = store.delete(&reference) {
+            log::warn!(
+                "{context}: prefs saved, but the removed search credential could not be \
+                 deleted from the keyring (the orphan is overwritten on re-set): {}",
+                error.user_message()
+            );
+        }
+    }
 }
 
 fn refresh_safe_prefs(mut prefs: UserPrefs) -> UserPrefs {
@@ -357,28 +391,35 @@ pub(super) fn save_model_inner(
 ) -> Result<(), String> {
     let model_id = model.id.clone();
     // Same ordering contract as `delete_model`: the destructive keyring
-    // delete returned by `apply_model_credential` runs only after the prefs
-    // save has committed; a failed delete then only leaves an orphaned
-    // credential (the benign direction).
-    let mut deferred_delete: Option<CredentialReference> = None;
-    UserPrefs::update_transaction(|prefs| {
-        let old = prefs.model_by_id(&model.id).cloned();
-        let (model, deferred) = apply_model_credential(model, old.as_ref(), store)
-            .map_err(|e| sanitize_command_error("save_model", e))?;
-        deferred_delete = deferred;
-        prefs.upsert_model(model);
-        Ok(())
-    })
+    // delete returned by `apply_model_credential` runs in the post-commit
+    // hook, still inside the prefs-lock critical section — after the prefs
+    // save has committed (a failed delete then only leaves an orphaned
+    // credential, the benign direction) and serialized against a concurrent
+    // replacement of the same model credential, whose keyring write also
+    // runs under the prefs lock.
+    let deferred_delete = std::cell::RefCell::new(None);
+    UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            let old = prefs.model_by_id(&model.id).cloned();
+            let (model, deferred) = apply_model_credential(model, old.as_ref(), store)
+                .map_err(|e| sanitize_command_error("save_model", e))?;
+            *deferred_delete.borrow_mut() = deferred;
+            prefs.upsert_model(model);
+            Ok(())
+        },
+        || {
+            if let Some(reference) = deferred_delete.borrow_mut().take() {
+                if let Err(error) = store.delete(&reference) {
+                    log::warn!(
+                        "save_model: model {model_id} saved without its keyring secret (the \
+                         delete failed): {}",
+                        error.user_message()
+                    );
+                }
+            }
+        },
+    )
     .map_err(|e| sanitize_command_error("save_model", e))?;
-    if let Some(reference) = deferred_delete {
-        if let Err(error) = store.delete(&reference) {
-            log::warn!(
-                "save_model: model {model_id} saved without its keyring secret (the delete \
-                 failed): {}",
-                error.user_message()
-            );
-        }
-    }
     Ok(())
 }
 
@@ -389,32 +430,39 @@ pub async fn delete_model(id: String) -> Result<(), String> {
 }
 
 pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Result<(), String> {
-    // The keyring delete runs after the prefs save has succeeded: deleting
-    // first would leave a configured-but-secretless model when the save then
-    // fails; after a successful save, a failed delete only leaves an orphaned
-    // credential (the benign direction).
-    let mut reference_to_delete: Option<CredentialReference> = None;
-    UserPrefs::update_transaction(|prefs| {
-        if prefs.advanced.saved_models.len() <= 1 {
-            return Err("至少保留一个模型".to_string());
-        }
-        if let Some(reference) = prefs.model_by_id(id).and_then(|m| m.credential_ref.clone()) {
-            reference_to_delete = Some(reference);
-        }
-        prefs.remove_model(id);
-        Ok(())
-    })
+    // The keyring delete runs in the post-commit hook, still inside the
+    // prefs-lock critical section: deleting first would leave a
+    // configured-but-secretless model when the save then fails, and deleting
+    // after the lock was released would let a concurrent replacement of the
+    // same model credential commit a fresh secret that the stale delete then
+    // destroys. After a successful save, a failed delete only leaves an
+    // orphaned credential (the benign direction).
+    let reference_to_delete = std::cell::RefCell::new(None);
+    UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            if prefs.advanced.saved_models.len() <= 1 {
+                return Err("至少保留一个模型".to_string());
+            }
+            if let Some(reference) = prefs.model_by_id(id).and_then(|m| m.credential_ref.clone()) {
+                *reference_to_delete.borrow_mut() = Some(reference);
+            }
+            prefs.remove_model(id);
+            Ok(())
+        },
+        || {
+            if let Some(reference) = reference_to_delete.borrow_mut().take() {
+                if let Err(error) = store.delete(&reference) {
+                    log::warn!(
+                        "delete_model: model {id} removed, but its keyring secret could not \
+                         be deleted: {}",
+                        error.user_message()
+                    );
+                }
+            }
+        },
+    )
     .map(|_| ())
     .map_err(|e| sanitize_command_error("delete_model", e))?;
-    if let Some(reference) = reference_to_delete {
-        if let Err(error) = store.delete(&reference) {
-            log::warn!(
-                "delete_model: model {id} removed, but its keyring secret could not be \
-                 deleted: {}",
-                error.user_message()
-            );
-        }
-    }
     Ok(())
 }
 
@@ -1342,35 +1390,104 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
 }
 
 fn persist_general_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
-    UserPrefs::update_transaction(|current| {
-        apply_general_settings_patch(current, patch);
-        *current = prepare_prefs_for_save(current.clone())?;
-        Ok(())
-    })
+    let store = SystemCredentialStore::new();
+    // The deferred deletes are handed to the post-commit hook through a
+    // RefCell because both closures need access to them while the mutate
+    // closure alone cannot return them; the hook runs inside the same
+    // prefs-lock critical section as the commit, so a concurrent credential
+    // replacement cannot slip a fresh secret between the commit and the
+    // delete (an aborted transaction never reaches the hook at all).
+    let deferred_deletes = std::cell::RefCell::new(Vec::new());
+    UserPrefs::update_transaction_with_post_commit(
+        |current| {
+            apply_general_settings_patch(current, patch);
+            let (prepared, deferred) = prepare_prefs_for_save(current.clone(), &store)?;
+            *current = prepared;
+            *deferred_deletes.borrow_mut() = deferred;
+            Ok(())
+        },
+        || {
+            delete_deferred_search_credentials("update_settings", &store, deferred_deletes.take());
+        },
+    )
     .map(refresh_safe_prefs)
 }
 
 fn persist_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
-    UserPrefs::update_transaction(|prefs| {
-        prefs.search = search;
-        *prefs = prepare_prefs_for_save(prefs.clone())?;
-        Ok(())
-    })
+    persist_search_settings_inner(search, &SystemCredentialStore::new())
+}
+
+/// Testable core of [`persist_search_settings`]: the credential store is
+/// injected so tests can pin the deferred-delete ordering, mirroring
+/// [`save_model_inner`] / [`delete_model_inner`].
+pub(super) fn persist_search_settings_inner(
+    search: SearchPrefs,
+    store: &dyn CredentialStore,
+) -> Result<UserPrefs, String> {
+    // Same ordering contract as `save_model`/`delete_model`: the keyring
+    // deletes deferred by the migration run in the post-commit hook, still
+    // inside the prefs-lock critical section — after the prefs save has
+    // committed (an aborted transaction leaves them unrun) and serialized
+    // against a concurrent replacement of the same credential, whose keyring
+    // write also runs under the prefs lock. A failed post-commit delete is
+    // downgraded to a warning.
+    let deferred_deletes = std::cell::RefCell::new(Vec::new());
+    UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            prefs.search = search;
+            let (prepared, deferred) = prepare_prefs_for_save(prefs.clone(), store)?;
+            *prefs = prepared;
+            *deferred_deletes.borrow_mut() = deferred;
+            Ok(())
+        },
+        || {
+            delete_deferred_search_credentials(
+                "save_search_settings",
+                store,
+                deferred_deletes.take(),
+            );
+        },
+    )
     .map(refresh_safe_prefs)
     .map_err(|e| sanitize_command_error("save search settings", e))
 }
 
 pub(crate) fn persist_web_settings(patch: WebSettingsPatch) -> Result<UserPrefs, String> {
-    UserPrefs::update_transaction(|prefs| {
-        if let Some(memory_enabled) = patch.memory_enabled {
-            prefs.memory_enabled = memory_enabled;
-        }
-        if let Some(search) = patch.search {
-            prefs.search = search;
-        }
-        *prefs = prepare_prefs_for_save(prefs.clone())?;
-        Ok(())
-    })
+    persist_web_settings_inner(patch, &SystemCredentialStore::new())
+}
+
+/// Testable core of [`persist_web_settings`]: the credential store is
+/// injected so tests can pin the deferred-delete ordering, mirroring
+/// [`persist_search_settings_inner`].
+pub(super) fn persist_web_settings_inner(
+    patch: WebSettingsPatch,
+    store: &dyn CredentialStore,
+) -> Result<UserPrefs, String> {
+    // Same ordering contract as `save_model`/`delete_model`: the keyring
+    // deletes deferred by the migration run in the post-commit hook, still
+    // inside the prefs-lock critical section — after the prefs save has
+    // committed (an aborted transaction leaves them unrun) and serialized
+    // against a concurrent replacement of the same credential, whose keyring
+    // write also runs under the prefs lock. A failed post-commit delete is
+    // downgraded to a warning.
+    let deferred_deletes = std::cell::RefCell::new(Vec::new());
+    UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            if let Some(memory_enabled) = patch.memory_enabled {
+                prefs.memory_enabled = memory_enabled;
+            }
+            if let Some(search) = patch.search {
+                prefs.search = search;
+            }
+            let (prepared, deferred) = prepare_prefs_for_save(prefs.clone(), store)?;
+            *prefs = prepared;
+            *deferred_deletes.borrow_mut() = deferred;
+            Ok(())
+        },
+        || {
+            delete_deferred_search_credentials("save_web_settings", store, deferred_deletes.take());
+        },
+    )
     .map(refresh_safe_prefs)
     .map_err(|e| sanitize_command_error("save web settings", e))
 }
