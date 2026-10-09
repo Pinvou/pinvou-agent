@@ -1716,6 +1716,42 @@ jobs:
             'features::memory::tests::topic_migration_' \
             'connector_introspection_guard_matches_complete_names_only' \
             'multiagent_depth_guard_enforces_two_level_inputs' \
+            'features::marketplace::scope::tests::' \
+            'before_landing' \
+            'before_anything_lands' \
+            'preserves_consent_state' \
+            'connector_gate_registers_only_when_shown' \
+            'command_bodies_register_deny_first' \
+            'vacuous_uninstall_keeps_fresh_consent_entries' \
+            'vacuous_skill_uninstall_keeps_fresh_consent_entries' \
+            'standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir' \
+            'restore_of_package_missing_entry_registers_no_deny_entry' \
+            'standalone_preset_install_never_folds_package_ids_on_save_or_remove' \
+            'owner_claimed' \
+            'import_rejects_case_variant_connector_ids' \
+            'strips_under_import_lock' \
+            'install_lands_under_the_per_id_import_lock' \
+            'standalone_components_deny_first' \
+            'market_id_collisions' \
+            'keeps_deny_entries' \
+            'keeps_deny_entry_when' \
+            'credentials_only_after' \
+            'stale_store_record_survives' \
+            'leaves_no_deny_entry' \
+            'entries_in_lock' \
+            'install_unknown_ids_write_no_consent_state' \
+            'connector_uninstall_withdraws_materialized_dirs' \
+            'materialized_dirs_without_the_ledger_trace' \
+            'physically_uninstalls_preset_companions' \
+            'install_waits_for_the_per_id' \
+            'restore_waits_for_the_cross_process' \
+            'manifest_load_failure' \
+            'record_present_arm' \
+            'pipeline_acquires_the_landing_lease' \
+            'keeps_the_latch_armed_while_the_memo_holds' \
+            'startup_read_reports_a_failed_freeze_persist' \
+            'cleanup_defers_consent_strip' \
+            'pre_land_gate_runs_under_the_landing_mark' \
             'features::projects::tests::' \
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
