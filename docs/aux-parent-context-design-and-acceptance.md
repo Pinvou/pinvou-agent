@@ -45,7 +45,7 @@ One-PR fallback: if review load prefers it, PR 1's files ride the same PR with a
 |---|---|---|
 | Scope arg + scoped mode | `pinvou3-app/resources/mcp-servers/session-reader/server.py` (modified) | `--only-session <id>`: validated at startup (charset, ≤128, isolated prefixes case-insensitively rejected → refuse to start). Scoped `read_session` accepts only the scoped id (structured error otherwise); scoped `list_sessions` returns the single entry. `tools/list` unchanged — the engine allowlist filters |
 | Manifest | same dir, `manifest.json` (modified) | version bump only; `mcp_tools` / `tool_features` unchanged (the aux instance is spawned from an app-written config, not the marketplace install) |
-| Per-aux config writer | `pinvou3-app/src-tauri/src/features/runtime_bundle/platform/extraction.rs` (new fn next to `write_work_mode_mcp_config`) | Build the one-server entry reusing the marketplace resolution (`connectors.rs` `local_server_command` / `local_server_args`: python command + released `~/.pinvou3/bundles/session-reader/mcp/server.py`), append `["--only-session", parent]`; write `{"servers":{"session-reader":…}}` to a token-named path; `atomic_write_private`, idempotent |
+| Per-aux config writer | `pinvou3-app/src-tauri/src/features/runtime_bundle/platform/extraction.rs` (new fn next to `write_work_mode_mcp_config`) | Build the one-server entry reusing the marketplace resolution (`connectors.rs` `local_server_command` / `local_server_args`: python command + released `~/.pinvou3/bundles/session-reader/mcp/server.py`), append the pin as `--only-session=<parent>` (the `=` form is dash-immune: the charset admits leading `-`, and a two-token pin would make argparse kill the server at boot — review round 3); write `{"servers":{"session-reader":…}}` to a token-named path; `atomic_write_private`, idempotent |
 | Token path | `pinvou3-app/src-tauri/src/platform/paths.rs` (new `aux_session_mcp_json`) | Mirrors `browser_session_mcp_json` (fnv1a digest filename — no raw session id in the path), under a NEW top-level `~/.pinvou3/mcp-sessions/` dir (not shared with the browser layout at `~/.pinvou3/browser/mcp-sessions/`) |
 | Decision center | `features/assistant/engine_pool.rs` (or bridge) — `AuxToolSurface` + `aux_tool_surface` | The single seam both consumers call (§3) |
 | Spawn config | `features/assistant/platform/bridge.rs` aux branch (~2302, rewritten) | `allowed_tools = Some([read_session])`; keep minimal instructions (rewritten text), subagents/memory/vision/tools off; **enable** `Feature::Mcp`; `mcp_config_path` → the per-aux file (written here, like the work-mode path at ~2312) |
@@ -53,7 +53,7 @@ One-PR fallback: if review load prefers it, PR 1's files ride the same PR with a
 | Reminder | `engine_pool.rs` rename + reword; merge sites unchanged | §3 |
 | ADR-0024 + registers | `docs/adr/0024-…md` (new), ADR-0006 errata, contract §5 row, registration doc-comments | PR 1 (§2) |
 
-Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message` → chokepoint composes scoped allowlist → engine boots (first spawn) with the per-aux config → one python `server.py --only-session <parent>` process → model calls `read_session(parent)` → paginated untrusted turns → answer rendered in the aux panel.
+Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message` → chokepoint composes scoped allowlist → engine boots (first spawn) with the per-aux config → one python `server.py --only-session=<parent>` process → model calls `read_session(parent)` → paginated untrusted turns → answer rendered in the aux panel.
 
 ## 5. Reserved interfaces (预留接口)
 
@@ -93,7 +93,7 @@ Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message`
 | # | Scenario | Expected | Verification | Pri |
 |---|---|---|---|---|
 | B1 | Aux engine config | `allowed_tools == ["mcp_session-reader_read_session"]` exactly; `Feature::Mcp` **enabled**; `mcp_config_path` == the per-aux token file; instructions still exactly one inline aux persona (rewritten text); subagents/memory/vision off; `tools == None` | ● Rust `aux_session_tools_are_scoped_read_only_on_spawn_and_send` | P0 |
-| B2 | Per-aux config file content | Exactly one server `session-reader`; args end `["--only-session", <parent>]`; resolved python + released server.py path; **no user servers, no browser entry, no timeouts drift** | ● Rust writer test (`aux_mcp_config_writes_exactly_one_scoped_session_reader_entry`) + the bridge leg inside B1's test | P0 |
+| B2 | Per-aux config file content | Exactly one server `session-reader`; args end `--only-session=<parent>` (= form, round-3 fix); resolved python + released server.py path; **no user servers, no browser entry, no timeouts drift** | ● Rust writer test (`aux_mcp_config_writes_exactly_one_scoped_session_reader_entry`) + the bridge leg inside B1's test | P0 |
 | B3 | Writer hygiene | Token filename (fnv1a — raw session id absent from the path); file 0600 / dir 0700; identical content → rewrite skipped | ● Rust (same test; the skip branch is proven by a read-only-dir probe on unix) | P0 |
 | B4 | Case-variant aux ids | `AUX-1` / `Aux-1` / `aUx-1`: scoped surface applies, parent part case preserved | ● Rust truth table (`aux_tool_surface_truth_table`) | P0 |
 

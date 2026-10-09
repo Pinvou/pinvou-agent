@@ -24,7 +24,8 @@
  *      JSON), the model's answer engages the quoted content
  *   7. quote-only send (empty draft) is allowed and answers
  *   8. closing the panel keeps staged quotes; a new quote re-opens the panel
- *   9. aux zero-tools: asking to run a command stays a pure Q&A turn
+ *   9. aux scoped tools (ADR-0024): asking to run a command stays a Q&A turn —
+ *      no tool entry beyond the scoped session-reader may appear
  *  10. main chat tool turn: a shell command executes and the output returns
  *
  * Usage: node tests/e2e/aux-quote.cdp.mjs [--cdp-port 9222]
@@ -434,22 +435,30 @@ scenario('closing the panel keeps staged quotes; a new selection re-opens the pa
   assert(cleared.chips === 0, `cleanup failed, ${cleared.chips} chips remain`);
 });
 
-scenario('aux chat zero-tools: asking to run a command stays pure Q&A', async () => {
-  assert(await evaluate('window.__t.setAux("Please run the shell command echo pinvou-zero-tools and tell me the output. If you cannot run tools, say so directly.")') === 'ok');
+scenario('aux chat scoped tools: asking to run a command stays a Q&A turn', async () => {
+  assert(await evaluate('window.__t.setAux("Please run the shell command echo pinvou-scoped-tools and tell me the output. If you cannot run tools, say so directly.")') === 'ok');
   assert(await evaluate('window.__t.sendAux()') === 'ok');
-  await waitForStableAux('zero-tools check');
+  await waitForStableAux('scoped-tools check');
   const answer = await evaluate('window.__t.auxAssistantText()');
-  assert(answer.length > 4, `zero-tools answer is empty: ${answer.slice(0, 80)}`);
-  // Leak regression: with zero tools DeepSeek emits native tool-call markers
-  // (DSML invoke blocks) as body text — after the boundary-prompt merge, the
-  // answer must not contain any tool-call markers.
+  assert(answer.length > 4, `scoped-tools answer is empty: ${answer.slice(0, 80)}`);
+  // Leak regression (scoped era, ADR-0024): the per-turn boundary reminder
+  // still forbids emitting native tool-call markers (DSML invoke blocks) as
+  // body text even though the turn now carries one scoped tool.
   assert(!/invoke name=|<｜|DSML｜|tool_calls|<tool_call/i.test(answer),
-    `zero-tools answer leaked tool-call markers: ${answer.slice(0, 200)}`);
-  const toolNodes = await evaluate(`(() => {
+    `scoped-tools answer leaked tool-call markers: ${answer.slice(0, 200)}`);
+  // Scoped surface: the only tool entry that may appear is the scoped
+  // session-reader (read_session); a shell/command execution must never.
+  // Rows are matched by their rendered title (the generic tool card titles
+  // entries with the registry tool name, e.g. mcp_session-reader_read_session).
+  const nonReaderRows = await evaluate(`(() => {
     const panel = document.querySelector('[data-testid="aux-chat-panel"]');
-    return panel ? panel.querySelectorAll('[data-testid="conversation-compact-item-toggle"]').length : 0;
+    if (!panel) return [];
+    return [...panel.querySelectorAll('[data-testid="conversation-compact-item-toggle"]')]
+      .map(node => node.textContent || '')
+      .filter(text => !text.includes('session-reader'));
   })()`);
-  assert(toolNodes === 0, `aux session must not show tool execution entries, got ${toolNodes}`);
+  assert(nonReaderRows.length === 0,
+    `aux session must show no tool entries beyond the scoped reader: ${JSON.stringify(nonReaderRows)}`);
 });
 
 scenario('main chat tool path: a shell command really executes and returns output', async () => {
