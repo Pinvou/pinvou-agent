@@ -49,7 +49,6 @@
 //! field casing varies — do not assume camelCase).
 
 use std::collections::HashMap;
-use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -4175,30 +4174,16 @@ fn session_mutation_lock(
     // before `open_store` runs on some paths, and a relative PINVOU3_HOME
     // would put it in a cwd-relative directory.
     crate::support::sandbox_home()?;
-    let dir = paths::pinvou3_home().join("locks");
     // Round-37 review: the construction failures ARE the docs' "lock file
     // itself cannot be taken" case (`locks/` replaced by a file, EACCES on
     // the lock path), so they carry the same stable `{action}_lock` code the
     // try_write arm emits — a prose-only shape let a whole failure class
-    // dodge the documented contract.
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CliError::failed(format!(
-            "{action}_lock: cannot create {}: {error}",
-            dir.display()
-        ))
-    })?;
-    let path = dir.join(format!("code-session-{session}.lock"));
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot open {}: {error}",
-                path.display()
-            ))
-        })?;
+    // dodge the documented contract. Round-49: the directory-create, open
+    // and 0600 tightening are the shared
+    // `support::open_family_lock_file` seam; the stable messages live in
+    // `family_lock_error` below.
+    let file = crate::support::open_family_lock_file(&format!("code-session-{session}.lock"))
+        .map_err(|error| family_lock_error(action, error))?;
     Ok(fd_lock::RwLock::new(file))
 }
 
@@ -4226,27 +4211,29 @@ fn execution_root_lock(
     // Same absolute-path contract as `open_store`: this lock is acquired
     // before `open_store` runs on some paths.
     crate::support::sandbox_home()?;
-    let dir = paths::pinvou3_home().join("locks");
-    // Same `{action}_lock` rule as the session lock above (round-37 review).
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CliError::failed(format!(
+    // Same `{action}_lock` rule as the session lock above (round-37 review);
+    // same shared seam (round-49).
+    let file = crate::support::open_family_lock_file(&format!("code-root-{}.lock", stable(root)))
+        .map_err(|error| family_lock_error(action, error))?;
+    Ok(fd_lock::RwLock::new(file))
+}
+
+/// The two code.rs lock sites' shared mapping of the
+/// `support::open_family_lock_file` failure arms onto the family's stable
+/// `{action}_lock` messages — byte-for-byte the text the hand-copied blocks
+/// carried, so scripts keying on the documented code (and the path named in
+/// it) see no change.
+fn family_lock_error(action: &str, error: crate::support::FamilyLockError) -> CliError {
+    match error {
+        crate::support::FamilyLockError::CreateDir { dir, error } => CliError::failed(format!(
             "{action}_lock: cannot create {}: {error}",
             dir.display()
-        ))
-    })?;
-    let path = dir.join(format!("code-root-{}.lock", stable(root)));
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot open {}: {error}",
-                path.display()
-            ))
-        })?;
-    Ok(fd_lock::RwLock::new(file))
+        )),
+        crate::support::FamilyLockError::Open { path, error } => CliError::failed(format!(
+            "{action}_lock: cannot open {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 /// Acquires the execution-root lock or fails fast with a stable busy error.
@@ -5624,6 +5611,13 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
     Ok(output_text)
 }
 
+/// Capture cap for the tracked-ness oracle below: `ls-files --error-unmatch
+/// -- <path>` prints at most the matched path(s), far below any plausible
+/// answer's size, while keeping the supervised drain bounded (the drain
+/// discards past the cap and can never deadlock either way — see
+/// [`read_capped_to_eof`]).
+const GIT_LS_FILES_CAPTURE_CAP: u64 = 64 * 1024;
+
 /// Tracked-ness oracle for the git lane: `ls-files --error-unmatch` exits 0
 /// with the path for a TRACKED file and exits 1 for an untracked one, but
 /// any other git failure (index.lock contention, broken repo, git missing)
@@ -5633,18 +5627,34 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
 /// (silence, never a fabricated diff); mirrors the app-side
 /// `ls_files_tracked` (round-48).
 fn git_ls_files_tracked(root: &Path, relative: &str) -> bool {
-    let output = match git_command(root, &["ls-files", "--error-unmatch", "--", relative]).output()
-    {
-        Ok(output) => output,
+    // Round-49: this was the crate's last bare vendor child (`Command::
+    // output()` — no process group, no supervision registration, no output
+    // cap) while every sibling git lane documents supervision as an
+    // invariant. Same capture core the diff lanes use, so an interrupt
+    // targeting the CLI alone takes this git child down with it instead of
+    // orphaning it; this call needs only the exit code, so the cap is the
+    // small [`GIT_LS_FILES_CAPTURE_CAP`]. `git_command` still owns the
+    // environment contract (stdin null, ambient git redirection variables
+    // stripped) and the exit-code oracle below is unchanged.
+    let arguments = ["ls-files", "--error-unmatch", "--", relative];
+    let (status, stdout_bytes) = match run_git_captured_capped(
+        git_command(root, &arguments),
+        &arguments,
+        GIT_LS_FILES_CAPTURE_CAP,
+    ) {
+        Ok((status, stdout_bytes, _, _)) => (status, stdout_bytes),
+        // A spawn/wait failure (git missing, a hard supervision refusal) is
+        // no answer either: keep the "tracked" (stay silent) verdict, as the
+        // bare `.output()` error arm did.
         Err(_) => return true,
     };
-    if output.status.success() {
-        !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    if status.success() {
+        !String::from_utf8_lossy(&stdout_bytes).trim().is_empty()
     } else {
         // `--error-unmatch` exits 1 exactly for the not-listed (untracked)
         // case; anything else is a git failure, not an answer, and keeps
         // the "tracked" (stay silent) answer.
-        output.status.code() != Some(1)
+        status.code() != Some(1)
     }
 }
 
