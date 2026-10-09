@@ -1500,7 +1500,7 @@ test('steer-loss branches route the notice on the restore verdict (round-8 M1)',
   // dropped-terminal (proven non-delivery → degraded re-queue + queued variant).
   assert.match(chatSource, /restoreSteerWithNotice\(sid, item\.text, "steerFailedUnconfirmed"\);\s*\n\s*return null;/);
   assert.match(chatSource, /makeQueuedItemLocal\(item\);\s*\n\s*const currentQueue = steeredQueueFor\(sid\);\s*\n\s*if \(currentQueue\) currentQueue\.splice\(Math\.min\(index, currentQueue\.length\), 0, item\);/);
-  assert.match(chatSource, /bt\(restoredText \? "steerFailed" : "steerFailedQueued"\)/);
+  assert.match(chatSource, /bt\(restoredText \? "steerFailed" : "steerDroppedDuringEdit"\)/);
   // settleSteerDropped zap-reconciling + settleZapSkipResend stashed-dropped:
   // proven non-delivery with nothing left to keep → the lost variant.
   assert.match(chatSource, /restoreSteerWithNotice\(sid, withdrawnText, "steerFailedLost"\);/);
@@ -1567,4 +1567,101 @@ test('the disabledNotice copy lives in uiSessionMention in all three locales (ro
   }
   const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
   assert.equal(chatViewSource.includes('t.uiBuiltinFeatures.disabledNotice'), false);
+});
+
+test('failure restores are stash-backed across unmount and draft materialization (round-14 MAJOR)', async () => {
+
+  // Scenario 1 — unmount mid-await: the dispatch cleared the chips, the
+  // scope cleanup stashed the post-dispatch [] for the (still-current) key,
+  // and the failed send's live setSessionRefs no-ops on the unmounted tree.
+  // Only the unconditional failure-arm stash keeps the picks reachable for
+  // the remount restore.
+  {
+    const fn = extractChatViewFunction('async function handleSend()');
+    const store = recordingDraftStore();
+    const live = { refs: [...REFS] };
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:sess-1' },
+      isMultiAgentReadOnly: false,
+      canSend: true,
+      chatVoice: null,
+      inputText: '正文',
+      inputTextRef: { current: '正文' },
+      constrainChatInput: (value) => ({ text: value, truncated: false }),
+      setInputText: () => {},
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      sessionRefs: REFS,
+      sendChatMessage: async () => {
+        // the unmount happened during the await: the scope cleanup stashed
+        // the post-dispatch empty list and the live setter went dead
+        store.stashSessionMentionDraft('session:sess-1', []);
+        live.refs = [];
+        return false;
+      },
+      setSessionRefs: () => { /* unmounted: no-op */ },
+      bridge: { chat: { prefillComposer: () => {} } },
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      console,
+    };
+    vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.handleSend = handleSend;`, sandbox);
+    await sandbox.handleSend();
+    assert.deepEqual(
+      store.calls.stashed.at(-1),
+      ['session:sess-1', [...REFS]],
+      'the failure arm stashes the snapshot even when the live setter is dead (remount restores it)',
+    );
+  }
+
+  // Scenario 2 — draft materialization: chips picked under draft:N survive
+  // the bridge materializing the session mid-flight because the scope effect
+  // migrates the draft stash to the session key (draft epochs are monotonic;
+  // nothing would read draft:N again).
+  {
+    const fn = extractChatViewFunction(`useEffect(() => {
+        const restored = bridge.available`);
+    const store = recordingDraftStore();
+    const applied = { refs: [], key: null };
+    let effectBody = null;
+    const mentionDraftKeyRef = { current: null };
+    const sessionRefsRef = { current: [] };
+    const runEffect = (scope) => {
+      const sandbox = {
+        useEffect: (callback) => { effectBody = callback; },
+        bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
+        bs: {},
+        setInputText: () => {},
+        ...scope,
+        mentionDraftKeyRef,
+        setSessionRefs: (value) => { applied.refs = value; sessionRefsRef.current = value; },
+        setMentionDismissedToken: () => {},
+        setMentionSelection: () => {},
+        sessionRefsRef,
+        stashSessionMentionDraft: store.stashSessionMentionDraft,
+        restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+        dedupeSessionRefs,
+        console,
+      };
+      vm.runInNewContext(`${fn})`, sandbox);
+      return effectBody();
+    };
+    store.stashSessionMentionDraft('draft:3', [REFS[0]]);
+    const cleanupDraft = runEffect({ activeSessionId: null, draftEpoch: 3 });
+    assert.deepEqual(applied.refs, [REFS[0]], 'the draft scope restores its stashed chips');
+    cleanupDraft(); // stashes the still-armed live refs under draft:3
+    // the bridge materializes the draft into a real session mid-flight
+    const cleanupSession = runEffect({ activeSessionId: 'NEW', draftEpoch: 4 });
+    assert.deepEqual(
+      restoreSessionMentionDraft('session:NEW'),
+      [REFS[0]],
+      'materialization carries the draft chips into the session key',
+    );
+    assert.deepEqual(restoreSessionMentionDraft('draft:3'), [], 'the dead draft key is emptied');
+    cleanupSession(); // the migrated entry stashes back under session:NEW
+    assert.deepEqual(restoreSessionMentionDraft('session:NEW'), [REFS[0]], 'round-trips after materialization');
+  }
 });

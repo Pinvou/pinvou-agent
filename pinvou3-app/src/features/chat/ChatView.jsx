@@ -1830,6 +1830,22 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // send context). The menu dismissal/keyboard selection reset on the
         // same scope change.
         const key = activeSessionId ? `session:${activeSessionId}` : `draft:${draftEpoch}`;
+        // Draft materialization (draft:N → session:ID) kills the old key
+        // forever — epochs are monotonic, nothing will read draft:N again.
+        // The composer text moves with the working set, so the chips must
+        // follow (round-14 MAJOR): migrate the draft's stash into the
+        // materialized session's key, which also keeps a late failure-arm
+        // stash written under the superseded draft key reachable.
+        const previousKey = mentionDraftKeyRef.current;
+        if (previousKey && previousKey !== key
+          && previousKey.startsWith('draft:') && key.startsWith('session:')) {
+          const carried = restoreSessionMentionDraft(previousKey);
+          if (carried.length) {
+            stashSessionMentionDraft(key, dedupeSessionRefs(
+              [...carried, ...restoreSessionMentionDraft(key)]));
+            stashSessionMentionDraft(previousKey, []);
+          }
+        }
         mentionDraftKeyRef.current = key;
         setSessionRefs(restoreSessionMentionDraft(key));
         setMentionDismissedToken(null);
@@ -2171,6 +2187,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const restoreRefsOnFailure = () => {
           if (mentionDraftKeyRef.current === draftKeyAtSend) {
             setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+          // Also merge into the draft store unconditionally (round-14 MAJOR):
+          // an unmount mid-await no-ops the live setSessionRefs and the scope
+          // cleanup has already stashed the post-dispatch [] — the remount
+          // would restore nothing. While mounted, the next scope cleanup
+          // overwrites the entry with the live list, so it never duplicates.
+          stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+            [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
           } else {
             stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
               [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
@@ -2207,6 +2230,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // which point the ref already points at the committed projection result).
       const latestArtifactIdsRef = useRef(latestArtifactIds);
       latestArtifactIdsRef.current = latestArtifactIds;
+      // Detached windows intentionally own one view and pass no switcher —
+      // a null onOpenSessionMention renders the cards' non-interactive state
+      // instead of an announced button that does nothing (round-14 minor 2).
       const handleTimelineRenderUser = useCallback((item) => (
         <ChatBubble
           item={item}
@@ -2215,11 +2241,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           t={t}
           editable={!busy && !isMultiAgentReadOnly && item.id === lastUserId}
           conversationVariant="unified"
-          onOpenSessionMention={handleOpenMentionSession}
+          onOpenSessionMention={onSwitchSession ? handleOpenMentionSession : null}
           knownSessionMentionIds={knownSessionMentionIds}
           sessionMentionDisabled={!sessionMentionEnabled}
         />
-      ), [activeSessionId, busy, handleOpenMentionSession, isMultiAgentReadOnly, knownSessionMentionIds, lastUserId, sessionMentionEnabled, t, theme]);
+      ), [activeSessionId, busy, handleOpenMentionSession, isMultiAgentReadOnly, knownSessionMentionIds, lastUserId, onSwitchSession, sessionMentionEnabled, t, theme]);
       const handleTimelineRenderItem = useCallback((item) => {
         // reasoning items are handled by ConversationTimeline's ReasoningItem and must not be handed to
         // the legacy ChatBubble; the latter does not know the type and would return null, silently
@@ -2287,6 +2313,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const restoreRefsOnFailure = () => {
           if (mentionDraftKeyRef.current === draftKeyAtSend) {
             setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+          // Also merge into the draft store unconditionally (round-14 MAJOR):
+          // an unmount mid-await no-ops the live setSessionRefs and the scope
+          // cleanup has already stashed the post-dispatch [] — the remount
+          // would restore nothing. While mounted, the next scope cleanup
+          // overwrites the entry with the live list, so it never duplicates.
+          stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+            [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
           } else {
             stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
               [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
@@ -2748,6 +2781,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const restoreRefsOnFailure = () => {
           if (mentionDraftKeyRef.current === draftKeyAtSend) {
             setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+          // Also merge into the draft store unconditionally (round-14 MAJOR):
+          // an unmount mid-await no-ops the live setSessionRefs and the scope
+          // cleanup has already stashed the post-dispatch [] — the remount
+          // would restore nothing. While mounted, the next scope cleanup
+          // overwrites the entry with the live list, so it never duplicates.
+          stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+            [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
           } else {
             // Merge with the switch cleanup's stash, never overwrite it:
             // chips picked mid-await in the outgoing scope ride that stash.
@@ -3017,6 +3057,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           const restoreRefsOnVoiceFailure = () => {
             if (mentionDraftKeyRef.current === draftKeyAtSend) {
               setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+            // Also merge into the draft store unconditionally (round-14
+            // MAJOR): an unmount mid-await no-ops the live setSessionRefs and
+            // the scope cleanup has already stashed the post-dispatch [] —
+            // the remount would restore nothing. While mounted, the next
+            // scope cleanup overwrites the entry with the live list.
+            stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+              [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
             } else {
               // Merge with the switch cleanup's stash, never overwrite it:
               // chips picked mid-await in the outgoing scope ride that stash.
