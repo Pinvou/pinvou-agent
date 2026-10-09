@@ -220,8 +220,10 @@ fn check_participant_id(session_id: Option<&String>, label: &str) -> Result<()> 
 }
 
 /// Delivery gates that need live app state beyond the record itself.
-/// ACP/code sessions are owned by the independent code page (chat.rs refuses
-/// the manual path with the same rule): a busy ACP target fails the steer
+/// ACP/code sessions are owned by the independent code page (chat.rs's
+/// manual path refuses ACP targets and deliberately delivers to native
+/// code sessions — this gate is NARROWER, refusing both): a busy ACP
+/// target fails the steer
 /// and the fallback would dispatch a *native* CodeWhale turn on an
 /// ACP-owned session — unattended transcript/acp-state divergence. Code
 /// sessions are sidecar-tracked (`session-agents.json`), not prefix-based,
@@ -389,6 +391,20 @@ pub async fn deliver_spooled_message(
 
 /// Append the L1 audit records (both sessions' workspaces; failures inside
 /// `audit::append` only log, never panic).
+/// Round-8 M1: bound sessions' audits route to the PRIVATE ledger root —
+/// `Bridge::audit_workspace`'s rule (bridge.rs), applied at the append
+/// site. Appending to `roots.execution` created/appended a
+/// `workflow_audit.jsonl` inside the user's bound project directory; the
+/// ledger root keeps the user's directory clean (unbound sessions are
+/// unaffected — both roots are the same private dir).
+fn audit_root_for(roots: &crate::features::sessions::SessionRoots) -> std::path::PathBuf {
+    if roots.bound {
+        roots.ledger.clone()
+    } else {
+        roots.execution.clone()
+    }
+}
+
 fn audit_delivery(
     store: &crate::features::sessions::SessionStore,
     message: &SpooledMessage,
@@ -410,7 +426,7 @@ fn audit_delivery(
     {
         if let Ok(roots) = store.session_roots(sid) {
             crate::features::assistant::audit::append(
-                &roots.execution,
+                &audit_root_for(&roots),
                 "session_message",
                 "app",
                 detail.clone(),
@@ -442,7 +458,7 @@ fn audit_quarantine(
     });
     if let Ok(roots) = store.session_roots(&message.to_session) {
         crate::features::assistant::audit::append(
-            &roots.execution,
+            &audit_root_for(&roots),
             "session_message",
             "app",
             detail,
@@ -556,7 +572,7 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
             });
             if let Ok(roots) = store.session_roots(&message.to_session) {
                 crate::features::assistant::audit::append(
-                    &roots.execution,
+                    &audit_root_for(&roots),
                     "session_message",
                     "app",
                     detail,
@@ -572,9 +588,8 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
     // original_bytes capture at the first read.)
     match delivery.deliver(&message).await {
         Ok(outcome) => {
-            let unchanged = std::fs::read(path)
-                .ok()
-                .map(|current| current.as_slice() == bytes.as_slice())
+            let unchanged = read_bounded(path)
+                .map(|current| spool_records_equal(&current, &bytes))
                 .unwrap_or(false);
             if !unchanged {
                 // The record was replaced mid-delivery: re-queue the NEW
@@ -596,11 +611,59 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
     }
 }
 
+/// Round-8 M5 + minor 2: the mid-delivery re-verify reads BOUNDED (the
+/// entry read's cap; a hostile mid-delivery swap to a multi-GB file must
+/// not be slurped whole — None means unreadable/oversize, which the caller
+/// treats as changed) ...
+fn read_bounded(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    let file = std::fs::File::open(path).ok()?;
+    file.take(MAX_SPOOL_FILE_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > MAX_SPOOL_FILE_BYTES {
+        return None;
+    }
+    Some(buf)
+}
+
+/// ... and compares SEMANTICALLY: a keyed retry re-spools with a fresh
+/// `created_at` (the server stamps it on every spool), so the round-7
+/// byte-compare treated every keyed retry landing inside the up-to-30s
+/// delivery window as a replacement and re-delivered the same logical
+/// message — breaking the tool's "a retried call cannot duplicate a
+/// delivery" promise on exactly the timing window retries hit. Two records
+/// equal with the volatile timestamp nulled are the same message: null the
+/// field on both sides (absent becomes null too) and compare. Unparseable
+/// (hostile surgery) compares unequal — the re-queue path.
+fn spool_records_equal(a: &[u8], b: &[u8]) -> bool {
+    let (Ok(mut a), Ok(mut b)) = (
+        serde_json::from_slice::<serde_json::Value>(a),
+        serde_json::from_slice::<serde_json::Value>(b),
+    ) else {
+        return false;
+    };
+    if let Some(a) = a.as_object_mut() {
+        a.insert("created_at".into(), serde_json::Value::Null);
+    }
+    if let Some(b) = b.as_object_mut() {
+        b.insert("created_at".into(), serde_json::Value::Null);
+    }
+    a == b
+}
+
 /// Retry bookkeeping per file: attempt count + last attempt time (for
 /// backoff). Entries are removed on every terminal path.
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, (u32, Instant)>,
+    /// Round-8 M8: post-delivery removal failures per file (the Windows
+    /// file-lock class). Unkeyed deliveries have no done-marker, so a
+    /// persistently failing remove would re-deliver + re-audit every 1s
+    /// poll forever; after [`MAX_DELIVERY_ATTEMPTS`] failures the file is
+    /// quarantined to stop the loop.
+    removal_failures: HashMap<String, u32>,
 }
 
 impl RetryState {
@@ -629,6 +692,15 @@ impl RetryState {
 
     fn clear(&mut self, name: &str) {
         self.attempts.remove(name);
+        self.removal_failures.remove(name);
+    }
+
+    /// Round-8 M8: count a failed post-delivery removal, returning the
+    /// streak.
+    fn record_removal_failure(&mut self, name: &str) -> u32 {
+        let entry = self.removal_failures.entry(name.to_string()).or_insert(0);
+        *entry += 1;
+        *entry
     }
 }
 
@@ -656,18 +728,23 @@ fn read_record_for_audit(path: &Path) -> Option<SpooledMessage> {
 fn quarantine(path: &Path) {
     let _ = std::fs::create_dir_all(failed_dir());
     let mut target = failed_dir().join(path.file_name().unwrap_or_default());
+    // Round-8 minor 5: the timestamp suffix has 1s resolution and the
+    // original shape re-checked nothing after composing it — a same-second
+    // re-quarantine replaced the earlier evidence (POSIX rename overwrites).
+    // Re-check after each suffix attempt (second-resolution, then
+    // millisecond) until the target is free.
     if target.exists() {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            target = failed_dir().join(format!(
-                "{name}.{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
-            ));
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            target = failed_dir().join(format!("{name}.{}", now.as_secs()));
+            if target.exists() {
+                target = failed_dir().join(format!("{name}.{}", now.as_millis()));
+            }
         }
     }
-    if let Err(error) = std::fs::rename(path, target) {
+    if let Err(error) = std::fs::rename(path, &target) {
         // Terminal-path failure: the poison file stays in the spool and will
         // be re-processed (and re-logged) every poll — say so loudly instead
         // of failing silently forever.
@@ -675,6 +752,13 @@ fn quarantine(path: &Path) {
             "[messaging] quarantine rename failed for {:?}: {error}",
             path
         );
+        return;
+    }
+    // Round-8 minor 8: the rename preserves the spool file's mtime, so
+    // evidence older than RETENTION pre-quarantine was pruned ~1h after
+    // landing instead of being retained a full window — restart the clock.
+    if let Ok(file) = std::fs::File::options().write(true).open(&target) {
+        let _ = file.set_modified(std::time::SystemTime::now());
     }
 }
 
@@ -754,13 +838,74 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
             quarantine(&path);
             continue;
         };
+        // Round-8 minor 7: a file that vanished since read_dir leaves a
+        // stale budget entry behind; the same name re-spooled later would
+        // inherit the old count and could quarantine after one failure.
+        if !path.exists() {
+            retries.clear(&name);
+            continue;
+        }
         if !retries.due(&name) {
             continue;
         }
-        match process_spool_file(&path, delivery, gates, store, skip_audited).await {
+        // Round-8 M2: the panic guard is PER FILE — the round-7 shape
+        // wrapped the whole poll, so a deterministic panic at a fixed
+        // sorted position starved every later-sorted file of delivery
+        // forever (silent, restart-surviving). A panicking file now burns
+        // its own budget and is quarantined after MAX attempts, like any
+        // other persistent failure.
+        let outcome = std::panic::AssertUnwindSafe(process_spool_file(
+            &path,
+            delivery,
+            gates,
+            store,
+            skip_audited,
+        ))
+        .catch_unwind()
+        .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(panic) => {
+                log::error!("[messaging] delivery of {name} panicked: {panic:?}");
+                let count = retries.record(&name);
+                if count >= MAX_DELIVERY_ATTEMPTS {
+                    log::warn!("[messaging] quarantining {name} after {count} panicking attempts");
+                    retries.clear(&name);
+                    let record = read_record_for_audit(&path);
+                    audit_quarantine(
+                        store,
+                        record.as_ref(),
+                        &format!("delivery panicked {count} times"),
+                    );
+                    quarantine(&path);
+                }
+                continue;
+            }
+        };
+        match outcome {
             Processed::Done => {
                 retries.clear(&name);
-                let _ = std::fs::remove_file(&path);
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {
+                        retries.removal_failures.remove(&name);
+                    }
+                    // Round-8 M8: say so every poll (the loop was silent),
+                    // and after MAX attempts quarantine — an unkeyed
+                    // delivery has no done-marker, so a Windows file lock
+                    // would otherwise re-deliver every second forever.
+                    Err(error) => {
+                        let fails = retries.record_removal_failure(&name);
+                        log::warn!(
+                            "[messaging] processed {name} but could not remove it (attempt {fails}): {error}"
+                        );
+                        if fails >= MAX_DELIVERY_ATTEMPTS {
+                            log::warn!(
+                                "[messaging] quarantining {name} after {fails} failed removals"
+                            );
+                            quarantine(&path);
+                        }
+                    }
+                }
             }
             Processed::Poison(error) => {
                 retries.clear(&name);
@@ -805,7 +950,11 @@ fn prune_stale_state() {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // Round-8 minor 4: entry.file_type() lstats — a SYMLINKED
+            // directory is pushed as a plain entry, never descended into
+            // (following it would prune the target's old files through
+            // the link, and a link cycle would hang the watcher).
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                 dirs.push(path);
                 continue;
             }
@@ -822,6 +971,16 @@ fn prune_stale_state() {
     }
 }
 
+/// Round-8 M2: the prune pass runs INSIDE a panic guard — it executes in
+/// the watcher task with its JoinHandle discarded, so an unguarded panic
+/// there killed cross-session delivery for the whole process lifetime with
+/// nothing but a dropped stderr hook.
+fn guarded_prune() {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(prune_stale_state)).is_err() {
+        log::error!("[messaging] prune pass panicked; continuing");
+    }
+}
+
 /// Spawn the delivery watcher: processes the boot backlog first, then polls
 /// until the process exits (the app lifetime is the watcher lifetime —
 /// started once from `lib.rs` setup). Uses `tauri::async_runtime::spawn`
@@ -835,7 +994,7 @@ pub fn spawn_delivery_watcher(
     store: crate::features::sessions::SessionStore,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        prune_stale_state();
+        guarded_prune();
         let mut retries = RetryState::default();
         // Round-7 Q1: created ONCE per process, outside the poll loop —
         // the round-6 version re-created it every poll, making the dedup
@@ -850,7 +1009,7 @@ pub fn spawn_delivery_watcher(
                 log::error!("[messaging] delivery watcher poll panicked: {panic:?}");
             }
             if last_prune.elapsed() > PRUNE_INTERVAL {
-                prune_stale_state();
+                guarded_prune();
                 last_prune = Instant::now();
             }
             tokio::time::sleep(POLL_INTERVAL).await;
@@ -933,6 +1092,240 @@ mod spool_pipeline_tests {
 
     fn sessions_store() -> crate::features::sessions::SessionStore {
         crate::features::sessions::SessionStore::boot_for_process_startup().expect("store")
+    }
+
+    /// Round-8 M3(a) + M5: a delivery whose body is swapped MID-DELIVERY.
+    struct SwappingDelivery {
+        /// Written over the spool file while `deliver` is "in flight".
+        replacement: Option<String>,
+        calls: Rc<RefCell<usize>>,
+    }
+
+    impl SpoolDelivery for SwappingDelivery {
+        async fn deliver(&self, _message: &SpooledMessage) -> Result<DeliveryOutcome> {
+            *self.calls.borrow_mut() += 1;
+            if let Some(body) = &self.replacement {
+                std::fs::write(spool_root().join("mid.json"), body).unwrap();
+            }
+            Ok(DeliveryOutcome::Dispatched)
+        }
+    }
+
+    /// Round-8 M3(a): a genuinely DIVERGENT replacement re-queues — Retry,
+    /// no done-marker, and the NEW body is what the next pass delivers.
+    #[tokio::test]
+    async fn divergent_mid_delivery_replacement_requeues_without_marker() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let original = record_json("mid", Some("k1"));
+        std::fs::write(spool.join("mid.json"), &original).unwrap();
+        // Same key, a DIFFERENT text: the model resent a corrected body
+        // while the first delivery was in flight.
+        let replacement = record_json("mid", Some("k1")).replace("正文", "更正后的正文");
+        let delivery = SwappingDelivery {
+            replacement: Some(replacement.clone()),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut skip_audited = std::collections::HashSet::new();
+        let outcome = process_spool_file(
+            &spool.join("mid.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Processed::Retry(_)),
+            "a divergent replacement re-queues"
+        );
+        assert!(
+            !done_dir().join("mid.json").exists(),
+            "no terminal marker for the replaced body"
+        );
+        assert_eq!(*delivery.calls.borrow(), 1);
+        // The next pass delivers the NEW body and completes.
+        let outcome = process_spool_file(
+            &spool.join("mid.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+        )
+        .await;
+        assert!(matches!(outcome, Processed::Done));
+        assert_eq!(*delivery.calls.borrow(), 2);
+    }
+
+    /// Round-8 M5: a keyed retry re-spools with a fresh `created_at` — the
+    /// same logical message. The semantic compare (volatile timestamp
+    /// nulled) must treat it as UNCHANGED: the delivery completes, the
+    /// marker is written, and NOTHING is re-delivered. The round-7
+    /// byte-compare re-delivered here, breaking the idempotency promise.
+    #[tokio::test]
+    async fn same_message_with_fresh_timestamp_is_not_a_replacement() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("mid.json"), record_json("mid", Some("k2"))).unwrap();
+        // Identical payload, only created_at differs (the server stamps a
+        // fresh one on every keyed re-spool).
+        let replacement =
+            record_json("mid", Some("k2")).replace("2026-09-28T00:00:00Z", "2026-09-29T08:00:00Z");
+        assert_ne!(
+            std::fs::read(spool.join("mid.json")).unwrap(),
+            replacement.as_bytes(),
+            "fixture guard: the bytes really differ"
+        );
+        let delivery = SwappingDelivery {
+            replacement: Some(replacement),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut skip_audited = std::collections::HashSet::new();
+        let outcome = process_spool_file(
+            &spool.join("mid.json"),
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Processed::Done),
+            "same message modulo the volatile timestamp"
+        );
+        assert_eq!(*delivery.calls.borrow(), 1, "delivered exactly once");
+        assert!(done_dir().join("mid.json").exists());
+    }
+
+    /// Round-8 M3(c): the gate is honored BEHAVIORALLY in the pipeline — a
+    /// rejected target poisons before any delivery attempt and lands in
+    /// quarantine with an audit trail. Deleting the
+    /// `gates.target_allowed` consult from process_spool_file (the exact
+    /// mutation the round-8 source pin could not catch) turns this red.
+    struct RejectingGates;
+    impl DeliveryGates for RejectingGates {
+        fn target_allowed(&self, _session_id: &str) -> Result<()> {
+            bail!("ACP/code targets cannot receive cross-session messages")
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_target_never_reaches_delivery() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("acp.json"), record_json("acp", None)).unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        let mut skip_audited = std::collections::HashSet::new();
+        process_pending_spool(
+            &delivery,
+            &RejectingGates,
+            &store,
+            &mut retries,
+            &mut skip_audited,
+        )
+        .await;
+        assert_eq!(
+            *delivery.calls.borrow(),
+            0,
+            "a gate-rejected target must never be delivered to"
+        );
+        assert!(
+            failed_dir().join("acp.json").exists(),
+            "the record is quarantined, not retried"
+        );
+        assert!(!spool.join("acp.json").exists());
+    }
+
+    /// Round-8 M1: a BOUND session's audit lands in the private ledger
+    /// root, never in the user's project directory (the
+    /// Bridge::audit_workspace rule, applied at the append site). The
+    /// round-7 shape created/appended `workflow_audit.jsonl` inside the
+    /// bound project.
+    #[tokio::test]
+    async fn bound_session_audits_route_to_the_ledger_root() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let project = std::env::temp_dir().join(format!(
+            "pinvou3-messaging-bound-project-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&project).unwrap();
+        // The production binding surface is the injected execution-root
+        // resolver (the same seam sessions/tests.rs uses): a hit binds the
+        // session's EXECUTION root to the project; the ledger stays on the
+        // session-private dir.
+        let bound_id = "tgt0001".to_string();
+        let bound_project = project.clone();
+        store.set_execution_root_resolver(std::sync::Arc::new(move |id: &str| {
+            (id == bound_id).then(|| bound_project.clone())
+        }));
+        // The private ledger dir exists for a created session; create it
+        // for this synthetic one.
+        let ledger = crate::platform::paths::session_workspace_dir("tgt0001");
+        std::fs::create_dir_all(&ledger).unwrap();
+        let message: SpooledMessage = serde_json::from_str(&record_json("b1", None)).unwrap();
+        audit_delivery(&store, &message, DeliveryOutcome::Dispatched);
+        assert!(
+            ledger.join("workflow_audit.jsonl").exists(),
+            "the audit line lands in the private ledger root"
+        );
+        assert!(
+            !project.join("workflow_audit.jsonl").exists(),
+            "the user's bound project directory stays clean"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// Round-8 M6: builder → stripper round-trip lives HERE (messaging may
+    /// depend on sessions; the reverse import would create a feature cycle
+    /// the architecture guard rejects). Plus the two restored guards — the
+    /// 64 KiB JSON-line bound and the parse/object validation.
+    #[test]
+    fn session_block_round_trip_and_restored_guards() {
+        use crate::features::sessions::{
+            MAX_SESSION_BLOCK_JSON_LINE, SESSION_MESSAGE_BLOCK_HEADER,
+            SESSION_MESSAGE_CONTRACT_LINES, strip_session_message_block_impl,
+        };
+        let block = build_session_message_block(Some("src0001"), Some("标题"), "正文\n两行");
+        assert_eq!(strip_session_message_block_impl(&block), "正文\n两行");
+
+        let envelope = format!(
+            "{}\n{}\n{}\n",
+            SESSION_MESSAGE_BLOCK_HEADER,
+            SESSION_MESSAGE_CONTRACT_LINES[0],
+            SESSION_MESSAGE_CONTRACT_LINES[1],
+        );
+        let garbage = format!("{envelope}not json[\n\n正文");
+        assert_eq!(
+            strip_session_message_block_impl(&garbage),
+            garbage,
+            "an unparseable sender line returns the input unchanged"
+        );
+        let non_object = format!("{envelope}\"42\"\n\n正文");
+        assert_eq!(
+            strip_session_message_block_impl(&non_object),
+            non_object,
+            "a non-object sender line returns the input unchanged"
+        );
+        let oversize = format!(
+            "{envelope}{{\"pad\":\"{}\"}}\n\n正文",
+            "x".repeat(MAX_SESSION_BLOCK_JSON_LINE),
+        );
+        assert_eq!(
+            strip_session_message_block_impl(&oversize),
+            oversize,
+            "an oversize sender line returns the input unchanged"
+        );
     }
 
     /// The delivered block layout is the receive-side contract: header,
@@ -1023,10 +1416,21 @@ mod spool_pipeline_tests {
     /// racing writer, but deleting the arm must not pass silently.
     #[test]
     fn post_read_size_recheck_is_pinned() {
+        // Round-8 M3(b): the old pin asserted a needle that also lived in
+        // this test's own text inside the included file — it could never
+        // fail while existing. Slice the source at the test module and
+        // require the needle twice (comment + the production error arm)
+        // within the production span only.
         let source = include_str!("mod.rs");
+        let test_module = source
+            .find("mod spool_pipeline_tests")
+            .expect("test module");
+        let production = &source[..test_module];
+        let needle = "grew between stat and read";
+        let occurrences = production.match_indices(needle).count();
         assert!(
-            source.contains("grew between stat and read"),
-            "the post-read cap re-check arm must exist"
+            occurrences >= 1,
+            "the post-read cap re-check arm must exist in PRODUCTION code              (found {occurrences} production occurrences; deleting the              bytes.len() re-check's error arm turns this red)"
         );
     }
 

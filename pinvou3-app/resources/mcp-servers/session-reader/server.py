@@ -291,7 +291,7 @@ TOOL_DEFS = [
                 },
                 "from_session": {
                     "type": "string",
-                    "description": "(optional) Your own session's sessionId, so the recipient sees who sent it and can jump back. Omit if unknown.",
+                    "description": "(optional) Your own session's sessionId, so the recipient sees who sent it and can jump back — a CLAIM, not an authenticated provenance (the recipient sees it as untrusted context). Omit if unknown; omitted senders render as 'From another session'. Note: self-send rejection applies to ATTRIBUTED sends only — an omitted from_session spooled to your own session id delivers.",
                 },
                 "idempotency_key": {
                     "type": "string",
@@ -996,7 +996,7 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
         return None, error
     if from_session is not None:
         if from_session.lower() == to_session.lower():
-            return None, "invalid from_session: sending to the current session itself is not supported"
+            return None, "invalid from_session: sending to the current session itself is not supported (attributed sends only)"
         _, from_title, error = _check_message_session_id(sessions_dir, from_session, "from_session")
         if error:
             return None, error

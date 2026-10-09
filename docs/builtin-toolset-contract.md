@@ -175,7 +175,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   the design must declare queue (wait for the current turn) vs steer (inject into the
   current turn); do not reinvent.
 - **Inter-session delivery semantics** (session-reader `send_message_to_session`,
-  landed 2026-09): a target that is mid-turn gets the message **steered** into its
+  landed 2026-10): a target that is mid-turn gets the message **steered** into its
   current turn; an idle or not-yet-loaded target gets a **new turn dispatched
   immediately** (the scheduled-task wake precedent — the receiving session's model
   sees the message at once and may reply by calling the same tool). Delivery never
@@ -252,7 +252,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 | `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-09; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log (no per-call confirmation exists under the current full-auto approval; a typed Ask rule is registered as the latent approval-mode-split pin); a typed execpolicy Ask rule is registered for the approval-mode split but does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-10; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log; a typed execpolicy Ask rule is registered as the latent approval-mode-split pin and does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---

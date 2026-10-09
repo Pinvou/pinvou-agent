@@ -18,6 +18,28 @@ test('message block contract: attributed sender round-trips; body extracted loss
   assert.equal(split.text, '请确认上次的结论\n第二行');
 });
 
+test('round-8 M4: the card renders fromUnknown for the unattributed shape', () => {
+  // Source pin: the SessionMessageCard guard must NOT suppress the
+  // {sessionId:null,title:null} parser output — the old two-clause guard
+  // returned null for exactly that shape and unattributed deliveries
+  // rendered as plain first-party bubbles with zero untrusted framing.
+  const source = readFileSync(
+    new URL('../src/features/chat/SessionMentionControls.jsx', import.meta.url),
+    'utf8',
+  );
+  const guard = source.match(/if \(!sender[^)]*\) return null;/);
+  assert.ok(guard, 'the card guard exists');
+  assert.equal(
+    guard[0],
+    'if (!sender) return null;',
+    'the guard passes the both-null shape to the fromUnknown arm',
+  );
+  assert.ok(
+    source.includes('copy.fromUnknown'),
+    'the static fromUnknown arm is reachable',
+  );
+});
+
 test('unattributed sender (null fields) still parses', () => {
   const delivered = buildBlock('{"sessionId":null,"title":null}', '交接正文');
   const split = splitSessionMessageBlock(delivered);
