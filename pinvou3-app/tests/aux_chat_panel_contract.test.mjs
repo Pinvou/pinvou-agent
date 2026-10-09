@@ -152,7 +152,7 @@ test('A5: tool calls ride the shared conversation projection and timeline (ADR-0
   // first tool card silently breaks.
   assert.match(
     auxChatState,
-    /import \{ projectDeepSeekConversation \} from '\.\.\/conversation\/deepseek-conversation\.js';/,
+    /from '\.\.\/conversation\/deepseek-conversation\.js'/,
     'the aux projection must keep riding the shared conversation projector',
   );
   assert.match(auxChatState, /projectDeepSeekConversation\(\{/);
