@@ -15,7 +15,7 @@ Confirmed implementation decisions (2026-10-09):
 
 - Ed25519; initial Root 2-of-3, other roles initially one valid signature; scoped configurable roles and separate high-risk dual approval.
 - Metadata 1 MiB, credentials 64 KiB, depth 32, decoded string 64 KiB, per-container 4,096-member bounds.
-- Service/admin engineering is in a **separate repository**. Repository location and backend technology will be provided later. No server project is created here.
+- Service/admin engineering is in a **separate repository**. Go + Gin + pgx + PostgreSQL 17 and React + TypeScript + Vite are approved; PostgreSQL durable jobs/transactional outbox, OIDC with community self-hosted Keycloak, and separate signing/file-storage ports follow that choice. Repository location and production provider/deployment details remain pending. No server project is created here.
 
 T01 adds Ajv 8.20.0 only to the isolated contract package; dependency audit reported
 no vulnerabilities at installation. Desktop behavior and runtime dependencies are
@@ -35,8 +35,8 @@ workflow, installer or physical platform certification is claimed.
 A parallel review run exposed a 15-second CLI subprocess test timeout; isolated
 and serial reruns passed. The test-only subprocess allowance was raised to 60
 seconds and rechecked. It does not set a network or download time limit. Remaining
-tasks retain their dependencies, including the separate backend repository and
-technology decisions that will be supplied later.
+tasks retain their dependencies, including the separate backend repository
+location and production infrastructure decisions that will be supplied later.
 
 T02 validation: 167 tests passed on Node 22 and Node 26, including local CLI E2E,
 legal transitions, binding failures, expiry equality and atomic race regressions.
@@ -54,9 +54,9 @@ expiry; there is no total or cumulative download deadline.
 
 T03 still requires approved OS certification coverage, all-user/service data
 scope and finite preparation budgets. The product owner approved local health
-criteria and strict trustworthy time option A on 2026-10-09, and requested the
-platform/data inventory, measured-budget test proposal and backend selection
-proposal in [implementation decisions](upgrade-implementation-decisions.md).
+criteria, strict trustworthy time option A and the Go backend stack on 2026-10-09,
+and requested the platform/data inventory and measured-budget test proposal in
+[implementation decisions](upgrade-implementation-decisions.md).
 That document distinguishes approved policy from proposals and physical evidence.
 Normal offline retention across shutdown also needs a proven trustworthy elapsed-time mechanism under
 the current strict requirement. Ordinary OS clocks or powered-on TPM clocks

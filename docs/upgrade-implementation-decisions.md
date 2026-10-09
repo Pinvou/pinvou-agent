@@ -1,6 +1,7 @@
 # Upgrade implementation decisions and certification proposal
 
-Date: 2026-10-09. Status: proposal pending product decisions and physical evidence.
+Date: 2026-10-09. Status: health, strict time policy and backend stack approved;
+platform/data scope, measurement plan and physical evidence remain pending.
 
 This supplements the [V1.0 task decision register](pinvou-upgrade-platform-development-tasks.zh-CN.md#10-实施前需要确认的决策).
 It does not change R/D/S/C/F/M/K, approve new support boundaries, or complete T03.
@@ -13,7 +14,11 @@ The product owner requested a platform/data inventory and proposals; preparation
 budgets must follow a test proposal, actual measurements and approval of concrete
 values. The suggested local health criteria are approved. Strict trustworthy time
 option A is approved: ordinary offline operation and shutdown are not fault exceptions.
-Backend technology is to be proposed; its engineering belongs in a separate repository.
+The backend stack is approved: Go, Gin, pgx and PostgreSQL 17; React, TypeScript
+and Vite for administration; PostgreSQL durable jobs/transactional outbox, OIDC
+with self-hosted Keycloak available for community deployment, and separate signing
+and file-storage ports. Engineering belongs in a separate repository whose
+location has not yet been provided. No server project is created in this repository.
 Previously approved Ed25519 thresholds, input limits and absence of a cumulative
 download deadline remain unchanged.
 
@@ -258,25 +263,28 @@ References: [Windows interrupt time](https://learn.microsoft.com/en-us/windows/w
 [Apple mach_time.h](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/mach_time.h),
 [TPM2 readclock](https://github.com/tpm2-software/tpm2-tools/blob/master/man/tpm2_readclock.1.md).
 
-## Recommended backend technology and repository boundary
+## Approved backend technology and repository boundary
 
-Recommend a separate `pinvou-upgrade-platform` repository (name/location pending),
-with a Rust/Axum/Tokio control service, PostgreSQL 17 with SQLx, and a React +
-TypeScript + Vite management application. Pin exact maintained versions and lock
-files when engineering starts; the named major is a proposal, not an installed
-dependency. Rust aligns with existing client/native expertise; React aligns with
-the desktop frontend. Go or Java remain alternatives if the operating team has a
-different language standard; neither choice removes C's consistency requirements.
+The product owner approved Go + Gin + pgx + PostgreSQL 17 for the control service,
+and React + TypeScript + Vite for the management application. The separate
+`pinvou-upgrade-platform` repository name remains a suggestion; its actual name
+and location are pending. Pin maintained Go/framework/driver versions and lock
+dependencies when engineering starts; this decision installs no dependencies here.
+Go supports straightforward HTTP/worker development and deployment; React aligns
+with the desktop frontend. C's consistency and R/S security requirements remain
+mandatory regardless of implementation language.
 
 Use a modular service with domain ownership following T05–T23/T44/T47 and narrow
 ports; workers can run separately while sharing the same transactional owner
 records. No microservice split that distributes one required atomic write set.
-Clients load the same published V1 contract version and fixed vectors; the backend
-ports/checks are implemented in its chosen language, not by running desktop Node.
+Clients load the same published V1 contract version and fixed vectors; backend
+ports/checks are implemented in Go, not by running desktop Node. Go canonicalization,
+signatures and digest bindings must match T01/T02 byte and behavior vectors;
+ordinary encoding/json output alone is not RFC 8785 canonicalization evidence.
 Publish a versioned contract artifact with revision/digest and verify no drift in
 both repositories. Do not create a second independently edited normative spec.
 
-| Concern | Recommended initial choice / constraint |
+| Concern | Approved stack choices / required constraints / pending infrastructure |
 |---|---|
 | Atomic business state | PostgreSQL transactions, domain serialization/row locking, revision/hash CAS and unique constraints; explicitly lock inventory/fanout domains or use SERIALIZABLE with bounded safe retry; no application-only check-then-write |
 | Durable operation/timeout/event work | Transactional operation/outbox/result/timeout records and PostgreSQL worker queues using ownership epochs; retries are at-least-once with idempotent exact bindings, not claimed exactly-once delivery |
@@ -312,8 +320,8 @@ PostgreSQL evidence: [synchronous replication](https://www.postgresql.org/docs/1
 1. Approve or amend the exact OS coverage list; it is a test commitment, not existing certification.
 2. Approve or amend the data-protection policy and inventory, including conditional external/service scopes and exclusions.
 3. Approve or amend the synthetic workloads, storage classes and measurement process; actual budgets return for approval after measurement.
-4. Approve or amend the proposed backend stack and provide its repository location before backend engineering starts.
+4. Provide the separate backend repository location before backend engineering starts. Its Go/Gin/pgx/PostgreSQL 17 and React/TypeScript/Vite stack is already approved.
 
-Strict time option A and local health criteria are already approved and are not
-asked again. Hardware/time mechanism research remains technical work; unresolved
+Strict time option A, local health criteria and the backend stack are already
+approved and are not asked again. Hardware/time mechanism research remains technical work; unresolved
 feasibility must be disclosed rather than treated as approval to relax the policy.
