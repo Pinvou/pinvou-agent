@@ -2593,12 +2593,14 @@ async function expand(page) {
   // strip is really hit-testable, then drag with trusted CDP mouse input.
   // Earlier steps leave view/modal state behind (search view, guidance
   // dialogs); pointer gestures unlike dispatched KeyboardEvents actually
-  // hit-test, so normalize to the plain draft view first.
+  // hit-test, so normalize to the plain draft view first. The structural nav
+  // selector beats exact-text matching: it cannot be shadowed by a future
+  // same-text node elsewhere in the DOM.
   await page.keyboard.press('Escape');
   await sleep(150);
   await page.keyboard.press('Escape');
   await sleep(150);
-  await clickText(page, '新对话');
+  await page.click('[data-testid="sidebar-primary-nav"] > div:first-child');
   await sleep(400);
   const handleGeometry = await page.evaluate(() => {
     const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
@@ -2639,17 +2641,42 @@ async function expand(page) {
   await dragHandleBy(-2000);
   const pointerClampWidth = await sidebarWidthOf();
   const pointerClampPersisted = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
-  // Headless CDP input never advances Chromium's OS-backed double-click count
-  // (consecutive clicks keep detail=1), so a native dblclick cannot be
-  // synthesized here; dispatch it directly to cover the onDoubleClick wiring.
-  await page.evaluate(() => {
-    const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
-    if (!handle) throw new Error('sidebar-resize-handle not found');
-    handle.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-  });
-  // 450ms lets the 300ms width transition settle, like ⑩c's settledWidth check.
-  await sleep(450);
-  const dblclickResetWidth = await sidebarWidthOf();
+  // Double-click reset through the real input pipeline: press(1)/release(1)
+  // then press(2)/release(2) is the CDP shape of a genuine double-click. On
+  // Chrome ≥154 that synthesizes a trusted native dblclick; on older headless
+  // Chromium (e.g. 153) the synthesized second press still carries detail=1
+  // and no dblclick is dispatched, so a dispatched-event fallback keeps the
+  // onDoubleClick wiring covered on every runner. Either path exercises the
+  // same resetSidebarWidth handler; note the check guards the wiring, not the
+  // pointerdown-preventDefault removal (native dblclick fires with or without
+  // the cancel on current Chromium).
+  let dblclickResetWidth = await (async () => {
+    const center = await handleCenter();
+    await page.mouse.click(center.x, center.y);
+    await page.mouse.click(center.x, center.y, { clickCount: 2 });
+    // Wait for the width to actually reach the reset target rather than for
+    // "stability": right after the React commit and before the transition's
+    // first frame, consecutive samples both read the old width and would
+    // falsely count as settled.
+    await page.evaluate(() => window.__uiWait__(
+      () => Math.round(document.querySelector('[data-testid="app-sidebar"]').getBoundingClientRect().width) === 280,
+      1200,
+    ));
+    return sidebarWidthOf();
+  })();
+  const dblclickViaNative = dblclickResetWidth === 280;
+  if (!dblclickViaNative) {
+    await page.evaluate(() => {
+      const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
+      if (!handle) throw new Error('sidebar-resize-handle not found');
+      handle.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+    });
+    await page.evaluate(() => window.__uiWait__(
+      () => Math.round(document.querySelector('[data-testid="app-sidebar"]').getBoundingClientRect().width) === 280,
+      1500,
+    ));
+    dblclickResetWidth = await sidebarWidthOf();
+  }
   const dblclickResetPersisted = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
   rec('⑩d sidebar splitter pointer drag (hit-test + drag + clamp + dblclick reset + persistence)',
     !!handleGeometry
@@ -2661,7 +2688,7 @@ async function expand(page) {
       && pointerClampPersisted === '220'
       && dblclickResetWidth === 280
       && dblclickResetPersisted === '280',
-    JSON.stringify({ handleGeometry, pointerDragWidth, pointerDragPersisted, pointerClampWidth, pointerClampPersisted, dblclickResetWidth, dblclickResetPersisted }));
+    JSON.stringify({ handleGeometry, pointerDragWidth, pointerDragPersisted, pointerClampWidth, pointerClampPersisted, dblclickViaNative, dblclickResetWidth, dblclickResetPersisted }));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();

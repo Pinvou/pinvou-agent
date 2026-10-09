@@ -1620,10 +1620,13 @@ const NAV_PREFETCH = {
         setSidebarWidth(w);
       };
       const beginSidebarResize = useCallback((event) => {
-        // Do NOT preventDefault here: canceling pointerdown suppresses the
-        // compatibility mousedown, and Chromium's double-click detection counts
-        // mousedowns — with it canceled the dblclick for resetSidebarWidth never
-        // fires (touch scrolling is already blocked by the handle's touch-none).
+        // Primary button only, mirroring ResizableSidePanel's splitter: without
+        // the guard a middle-press on the strip starts a resize (and the
+        // browser's autoscroll puck) instead of being ignored. No
+        // preventDefault: the drag path consumes only pointer events, the
+        // handle's touch-none already blocks touch scrolling, and canceling
+        // pointerdown would additionally suppress the compatibility mousedown.
+        if (event.button != null && event.button !== 0) return;
         const handle = event.currentTarget;
         const startX = event.clientX;
         const startWidth = sidebarWidthRef.current;
