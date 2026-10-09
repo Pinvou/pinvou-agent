@@ -324,6 +324,15 @@ jobs:
               # leaving the file out of this list means Rust-only changes to it
               # silently skip the node gate (same locking mechanism as above).
               - 'pinvou3-app/src-tauri/src/platform/filesystem.rs'
+              # consent_marker_frontend.test.mjs 读取下列 Rust 源做 marker
+              # 跨语言契约断言(round-24 MAJOR 2:不列出则 Rust-only 改动会
+              # 静默跳过该 node 门禁——marker 连同其 Rust 值 pin 一起 reword
+              # 时所有 leg 全绿,前端 includes() 静默失配;
+              # test_ci_gate_policy 锁定此路由)。
+              - 'pinvou3-app/src-tauri/src/features/marketplace/scope.rs'
+              - 'pinvou3-app/src-tauri/src/app/commands/marketplace.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/ima.rs'
+              - 'pinvou3-app/src-tauri/src/features/connectors/skill_gate.rs'
               - 'pinvou3-app/scripts/tauri/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
@@ -1750,12 +1759,17 @@ jobs:
             'pipeline_acquires_the_landing_lease' \
             'keeps_the_latch_armed_while_the_memo_holds' \
             'startup_read_reports_a_failed_freeze_persist' \
+            'freeze_persist_failures_mirror' \
+            'keeps_mark_on_failure' \
             'cleanup_defers_consent_strip' \
             'pre_land_gate_runs_under_the_landing_mark' \
             'uninstall_waits_for_the_cross_process' \
             'reconcile_spares_a_live_import' \
             'quarantine_of_empty_content' \
             'consent_failure_marker' \
+            'consent_failure_message' \
+            'cli_bundle_of_skill_folds_case_variant' \
+            'parks_while_a_peer_holds_the_landing_lease' \
             'cleanup_keeps_consent_rows_when_uninstall_rolls_back' \
             'private_data_read_serves_a_regular_file' \
             'uninstall_refuses_hostile_ids' \
