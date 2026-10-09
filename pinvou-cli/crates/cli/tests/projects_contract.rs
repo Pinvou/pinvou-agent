@@ -2010,3 +2010,104 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
     assert!(error.to_string().contains("not in a project"), "{error}");
     let _ = home;
 }
+
+/// Round-49 review: tier 2's agent-index half is read directly (bounded read
+/// + parse) instead of through `SessionAgentStore::load_or_empty`, whose
+/// corrupt-file path prints the app-side zh `[pinvou3-app] … starting empty`
+/// line into the CLI's stderr and answers tier 2 from an empty table. The
+/// codex-lane healthy arm also pins the field-for-field serde mirror the
+/// direct parse relies on: a `workspace_kind`/`workspace_path`
+/// representation change in the store must fail here, not silently drop
+/// tier 2.
+#[test]
+fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_line() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("move-corrupt-index");
+    let root_dir = make_root_dir("move-corrupt-index-root");
+    let root = std::fs::canonicalize(&root_dir).unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "create",
+        "--name",
+        "CorruptIndex",
+        "--root",
+        root.to_str().unwrap(),
+    ]);
+    let _project_id = value["id"].as_str().unwrap().to_owned();
+
+    // Healthy codex lane first: the session's project workspace comes from
+    // the agent index alone (no plain sidecar, no assignment), so the ungroup
+    // resolves through the parsed index and must keep succeeding.
+    let sessions = SessionStore::boot().expect("boot session store");
+    let healthy = sessions
+        .create_new("test-model".to_owned(), None, root.join("sub"))
+        .expect("create session");
+    let healthy_id = healthy.metadata.id;
+    drop(sessions);
+    let agents = SessionAgentStore::load_or_empty();
+    agents
+        .bind_code_native_session(
+            &healthy_id,
+            CodexWorkspaceKind::Project,
+            Some(root.join("sub")),
+        )
+        .expect("bind the codex workspace");
+    drop(agents);
+    let value = run_json(&["pinvou", "projects", "move", &healthy_id, "--yes"]);
+    assert!(
+        value.get("project_id").is_none() || value["project_id"].is_null(),
+        "the healthy index must still resolve tier 2: {value}"
+    );
+
+    // Corrupt run: a second codex-workspace-only session, then the index
+    // corrupted on disk. The in-process harness cannot capture the note's
+    // stderr, so this arm drives the real binary (same pattern as the
+    // corrupt-index delete-cascade tests in sessions_contract.rs).
+    let sessions = SessionStore::boot().expect("boot session store");
+    let corrupt = sessions
+        .create_new("test-model".to_owned(), None, root.join("sub"))
+        .expect("create session");
+    let corrupt_id = corrupt.metadata.id;
+    drop(sessions);
+    let agents = SessionAgentStore::load_or_empty();
+    agents
+        .bind_code_native_session(
+            &corrupt_id,
+            CodexWorkspaceKind::Project,
+            Some(root.join("sub")),
+        )
+        .expect("bind the codex workspace");
+    drop(agents);
+    let agents_path = home.root.join("session-agents.json");
+    std::fs::write(&agents_path, "{not json").unwrap();
+
+    let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["projects", "move", &corrupt_id, "--yes"])
+        .output()
+        .expect("spawn the pinvou binary");
+    let stderr = String::from_utf8_lossy(&spawned.stderr);
+    assert_eq!(
+        spawned.status.code(),
+        Some(1),
+        "the refusal exit class must not change: {stderr}"
+    );
+    assert!(
+        !stderr.contains("[pinvou3-app]"),
+        "the app-side boot recovery line must not leak into the CLI: {stderr}"
+    );
+    assert!(
+        stderr.contains("is unreadable") && stderr.contains("session-agents.json"),
+        "the CLI-styled note must disclose the failure and name the index: {stderr}"
+    );
+    assert!(
+        stderr.contains("nothing to move it out of"),
+        "the ungroup refusal must stand unchanged: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&agents_path).unwrap(),
+        "{not json",
+        "the corrupt index must be left in place for repair"
+    );
+}

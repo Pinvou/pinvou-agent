@@ -49,8 +49,9 @@
 //!   sidecars, including off-index orphans), plain-chat lane
 //!   (`workspace-binding.json` sidecars + legacy global table), SavedSession
 //!   metadata replay, baseline recapture, and project roots last. What is
-//!   NOT reproducible headless is the desktop-process half, and every run
-//!   discloses that on stderr: the active-turn fence, the post-migration
+//!   NOT reproducible headless is the desktop-process half, disclosed on the
+//!   success report's stderr note (early-aborted runs exit 1/2 before any
+//!   note): the active-turn fence, the post-migration
 //!   busy recheck and the idle-gated runtime eviction need the app's
 //!   `AcpPool`/`EnginePool`, so a live desktop app's active turns against
 //!   the old directory are not reclaimed from here — close the app or
@@ -84,9 +85,7 @@ use std::path::{Path, PathBuf};
 
 use crate::support::{render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
-use pinvou3_lib::features::codex_acp::{
-    CodexWorkspaceKind, SessionAgentStore, validate_codex_project_workspace,
-};
+use pinvou3_lib::features::codex_acp::{SessionAgentStore, validate_codex_project_workspace};
 use pinvou3_lib::features::projects::{
     Project, ProjectStore, RebindRootsError, rebind_source_display,
 };
@@ -544,6 +543,27 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     Ok(success(render(output, format!("deleted {id}"), &value)))
 }
 
+/// Read cap for the agent index (`session-agents.json`) tier 2 consults. A
+/// file this CLI only reads to resolve one session's workspace record is
+/// pathological beyond this size; over-cap degrades exactly like a parse
+/// failure (the fail-safe in [`session_workspace_path`]) instead of being
+/// slurped whole. Same fixed-path-index cap class as
+/// `support::VENDOR_CONFIG_READ_CAP_BYTES`.
+const AGENT_INDEX_READ_CAP_BYTES: usize = 16 * 1024 * 1024;
+
+/// What the direct agent-index probe answered for one session's
+/// project-workspace record.
+enum AgentIndexWorkspace {
+    /// The record names a project workspace.
+    Found(PathBuf),
+    /// The index is absent, or readable and holds no project workspace for
+    /// the session: fall through to the plain binding sidecar.
+    None,
+    /// The index exists but cannot be read or parsed. Tier 2 must not answer
+    /// from it (the fail-safe below), and the caller discloses why.
+    Unreadable(String),
+}
+
 /// The directory a session is bound to, for tier-2 auto-grouping.
 ///
 /// Same union the app's own execution-root resolver builds (`lib.rs`) and the
@@ -558,14 +578,80 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 /// `code_project_workspace`, which additionally requires code MODE: an ACP
 /// session in plain mode still carries a project workspace, and the frontend
 /// lists it.
+///
+/// The index is probed DIRECTLY instead of through `SessionAgentStore`
+/// loading (round-49 review, the round-45 `sessions delete` pattern):
+/// `load_or_empty` boot-loads the index, so on a corrupt file it prints the
+/// app-side zh `[pinvou3-app] … starting empty` line into this CLI's output
+/// and answers tier 2 from an empty table — the ungroup gate then refuses a
+/// codex-workspace-only session as "not in a project" without saying why in
+/// words the CLI user was given. Here the store's path is sourced without
+/// boot-loading, the file is read bounded and parsed, and an unreadable
+/// index fails safe: the agent half of tier 2 answers nothing (the refusal
+/// stands, as with an empty table) and a CLI-styled stderr note names the
+/// index so the user can repair it. The plain-binding half is independent of
+/// the index and keeps resolving either way, exactly as before.
 fn session_workspace_path(sessions: &SessionStore, session_id: &str) -> Option<PathBuf> {
-    let record = SessionAgentStore::load_or_empty().get(session_id);
-    if record.workspace_kind == CodexWorkspaceKind::Project
-        && let Some(path) = record.workspace_path
-    {
-        return Some(path);
+    match agent_index_workspace(session_id) {
+        AgentIndexWorkspace::Found(path) => Some(path),
+        AgentIndexWorkspace::None => sessions.session_workspace_binding(session_id),
+        AgentIndexWorkspace::Unreadable(reason) => {
+            note!(
+                "[projects] the ACP session index {} is unreadable ({}); sessions bound only \
+                 through it resolve to no project for this run",
+                agent_index_path().display(),
+                reason
+            );
+            sessions.session_workspace_binding(session_id)
+        }
     }
-    sessions.session_workspace_binding(session_id)
+}
+
+/// The agent index path, sourced WITHOUT boot-loading: `empty_without_loading`
+/// exists precisely so a caller that only needs the path never runs the
+/// boot-time load whose failure prints the app-side recovery line (store.rs).
+fn agent_index_path() -> PathBuf {
+    SessionAgentStore::empty_without_loading()
+        .path()
+        .to_path_buf()
+}
+
+/// Direct bounded read + parse of the agent index's record for one session.
+/// The parsed map is read field-for-field with `SessionAgentRecord`'s serde
+/// defaults (a missing `workspace_kind` is Temporary, a missing
+/// `workspace_path` is None), so an empty record answers "no project
+/// workspace" exactly like the store's `get` does.
+fn agent_index_workspace(session_id: &str) -> AgentIndexWorkspace {
+    let index_path = agent_index_path();
+    // A home that never ran an ACP session has no index: tier 2 simply has
+    // no agent half to consult — the same answer a store load gives, no note.
+    if !index_path.exists() {
+        return AgentIndexWorkspace::None;
+    }
+    let raw = match crate::support::read_text_file_capped(
+        &index_path,
+        AGENT_INDEX_READ_CAP_BYTES,
+        "projects move",
+    ) {
+        Ok(raw) => raw,
+        Err(error) => return AgentIndexWorkspace::Unreadable(error.to_string()),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => return AgentIndexWorkspace::Unreadable(error.to_string()),
+    };
+    let record = &parsed["sessions"][session_id];
+    // `CodexWorkspaceKind` serializes kebab-case (`#[serde(rename_all =
+    // "kebab-case")]`, store.rs), so the Project variant is "project" on
+    // disk. The healthy arm of the corrupt-index contract test seeds a real
+    // record through `bind_code_native_session`, so a repr change here fails
+    // there instead of silently dropping tier 2.
+    if record["workspace_kind"] == serde_json::json!("project")
+        && let Some(path) = record["workspace_path"].as_str()
+    {
+        return AgentIndexWorkspace::Found(PathBuf::from(path));
+    }
+    AgentIndexWorkspace::None
 }
 
 /// Containment rule behind tier-2 grouping.
@@ -782,7 +868,7 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
 ///
 /// Deviations, all disclosed: the desktop-process half (active-turn fence,
 /// post-migration busy recheck, idle-gated runtime eviction) needs the app's
-/// runtime pools and is skipped — the stderr note on every run says so; the
+/// runtime pools and is skipped — the success report's stderr note says so; the
 /// GUI's stranded-index detection/repair (`detect_stranded_index_records`,
 /// the divergence-repair-persist-failed shape that matches NEITHER prefix
 /// scan of any rerun) has no CLI counterpart, so that one class reports an
@@ -853,10 +939,14 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // canonicalizing validators that never emit one) but exactly the
     // asymmetry a future validator edit would trip on, so both sides trim
     // like the nesting predicate one line below.
+    // Round-49 review: the trim covers BOTH separators — a canonicalized
+    // Windows path can only ever carry `\`, but trimming `/` alone would let
+    // a future validator edit that emits a trailing `/` on Windows slip past
+    // the fold.
     if pinvou3_lib::platform::filesystem_path_identity_key(
-        &from_display.to_string_lossy().trim_end_matches('/'),
+        &from_display.to_string_lossy().trim_end_matches(['/', '\\']),
     ) == pinvou3_lib::platform::filesystem_path_identity_key(
-        &to_display.to_string_lossy().trim_end_matches('/'),
+        &to_display.to_string_lossy().trim_end_matches(['/', '\\']),
     ) {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
@@ -1347,14 +1437,21 @@ fn rebind_report(
     failed_session_ids: Vec<String>,
     affected_project_ids: Vec<String>,
 ) -> Result<CliOutcome, CliError> {
-    // Scope disclosure, every run and both output modes: stderr only, so a
-    // `--output json` consumer's stdout parse is unaffected.
+    // Scope disclosure, every successful run and both output modes: stderr
+    // only, so a `--output json` consumer's stdout parse is unaffected. The
+    // writer-interleaving clause names the one window the fence cannot close:
+    // `begin_rebind` fences root-accepting project writers in THIS process
+    // only, so a live desktop app's own project writes can interleave with
+    // this run — each side's write is atomic, and a rerun converges any
+    // interleaved half, which is the remedy the note points at.
     note!(
         "note: `projects rebind` migrates stored bindings only; a live desktop app is not \
-         fenced against this process — its in-memory bindings keep resolving the old \
-         directory until it restarts, and its active turns against the old directory are \
-         not reclaimed from here — close the app or re-run the rebind from the desktop \
-         for that half"
+         fenced against this process — the rebind fence is process-local, so the app's \
+         root-accepting project writes can interleave with this run (each write is atomic; \
+         a rerun converges any interleaved half), its in-memory bindings keep resolving \
+         the old directory until it restarts, and its active turns against the old \
+         directory are not reclaimed from here — close the app or re-run the rebind from \
+         the desktop for that half"
     );
     let mut human = format!(
         "rebound {} session(s) ({} failed), updated roots of {} project(s)",
@@ -1377,7 +1474,7 @@ fn rebind_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pinvou3_lib::features::codex_acp::AgentBackend;
+    use pinvou3_lib::features::codex_acp::{AgentBackend, CodexWorkspaceKind};
 
     /// Round-45 review: the codex fence must see bindings persisted to disk
     /// after an earlier in-process load — a GUI bind landing between the

@@ -557,13 +557,36 @@ enum DeleteGateRecheck {
     StillFactoryTitled,
 }
 
+/// How long the headless one-shot delete lanes wait for a session's turn
+/// gate before giving up and keeping the session. Same bounding philosophy
+/// as `evict_bounded`'s teardown reclaim — a headless run whose report is
+/// already built must not sit inside its own lifecycle: the delete gate's
+/// facts were sampled OUTSIDE the turn lock, and a submit admitting in that
+/// sample→gate window holds the lock for the turn's whole wall clock, so an
+/// unbounded wait would pin the one-shot process for minutes past its
+/// report. A gate still held after this bound belongs to a live transcript
+/// — the delete is skipped, nothing is touched (no reclaim, no forget, no
+/// delete) and the session stays inspectable, the safe direction. Same
+/// value as [`REBIND_EVICT_GATE_TIMEOUT`] for the same reason: comfortably
+/// longer than any ordinary send's gate hold, so a turn that is just
+/// finishing is still observed rather than skipped.
+const DELETE_GATE_WAIT: Duration = Duration::from_secs(2);
+
 /// Turn-gated durable delete. Under the gate the sampled fact is re-checked
 /// (per [`DeleteGateRecheck`]), and a record that no longer matches is kept
 /// (`Ok(false)`, engine reclaimed, nothing deleted) instead of destroyed.
+///
+/// `gate_wait` bounds the turn-gate acquisition for the headless one-shot
+/// lanes (round-49): `Some(DELETE_GATE_WAIT)` gives up on a gate still held
+/// past the budget — keep the session, touch nothing, report `Ok(false)` —
+/// instead of waiting out a live turn. `None` (the GUI chat delete and the
+/// aux reset) keeps the historical unbounded wait: an interactive caller
+/// chose to wait for the session to become deletable.
 async fn delete_chat_session_with_gate<F, Fut, G>(
     turn_locks: &SessionTurnLocks,
     store: &SessionStore,
     session_id: &str,
+    gate_wait: Option<Duration>,
     recheck: DeleteGateRecheck,
     evict_locked: F,
     forget: G,
@@ -574,7 +597,26 @@ where
     G: FnOnce(),
 {
     let turn_lock = turn_locks.for_session(session_id).await;
-    let _turn = turn_lock.lock().await;
+    let _turn = match gate_wait {
+        None => turn_lock.lock().await,
+        Some(wait) => {
+            let Ok(_turn) = tokio::time::timeout(wait, turn_lock.lock()).await else {
+                // Gate-timeout skip: nothing was touched (the recheck below
+                // never ran), so keeping the session is the whole outcome.
+                // The bounded waits only arrive from the headless builds'
+                // delete lanes; on GUI builds this arm is unreachable (every
+                // caller passes `None`), which is why the notice carries the
+                // same headless gate as the disposition-mismatch skip below.
+                #[cfg(any(feature = "benchmark-hooks", test))]
+                crate::features::assistant::product_runtime::note_stderr(&format!(
+                    "[agent-task] cleanup skipped: the session's turn gate did not free up \
+                     within {wait:?}; the session stays inspectable"
+                ));
+                return Ok(false);
+            };
+            _turn
+        }
+    };
     let holds = match recheck {
         DeleteGateRecheck::Unconditional => true,
         DeleteGateRecheck::StillAStub => {
@@ -669,6 +711,8 @@ where
         turn_locks,
         store,
         &aux_id,
+        // GUI-path lane (web relay / command layer): unbounded gate wait.
+        None,
         // An explicit aux reset is an explicit deletion (the aux id is
         // task-derived and cannot be user-renamed), so the gate recheck
         // stays unconditional under the round-26 enum.
@@ -2724,6 +2768,9 @@ impl EnginePool {
                     &self.turn_locks,
                     &self.store,
                     &id,
+                    // GUI-path lane: the interactive caller asked for this
+                    // delete, so the unbounded gate wait is theirs to wait.
+                    None,
                     DeleteGateRecheck::Unconditional,
                     || self.evict_locked(&id),
                     || self.forget_session(&id),
@@ -2758,13 +2805,17 @@ impl EnginePool {
     /// the durable delete is guarded — under the turn gate a record that
     /// carries messages (or whose state is unloadable) is a started
     /// transcript, not a stub, and is kept with only the engine reclaimed
-    /// ([`DeleteGateRecheck::StillAStub`]).
+    /// ([`DeleteGateRecheck::StillAStub`]). The gate wait itself is bounded
+    /// ([`DELETE_GATE_WAIT`]): a gate still held past the budget keeps the
+    /// session untouched instead of pinning the report-holding teardown for
+    /// the turn's whole wall clock.
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn delete_chat_session_if_still_empty(&self, session_id: &str) -> Result<()> {
         let deleted = delete_chat_session_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
+            Some(DELETE_GATE_WAIT),
             DeleteGateRecheck::StillAStub,
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
@@ -2862,14 +2913,19 @@ impl EnginePool {
     /// marker outside the gate, and a live turn can hold that gate for the
     /// turn's whole wall clock, so a rename landing during the wait makes
     /// the record an adopted (GUI-owned) session that must be kept. The
-    /// late sweep only fires on the delete outcome (or the failed-delete
-    /// backstop), never on the keep outcome.
+    /// gate wait itself is bounded ([`DELETE_GATE_WAIT`], the
+    /// `evict_bounded` "must produce its report" bounding): a gate still
+    /// held past the budget skips the delete and keeps the session
+    /// untouched. The late sweep only fires on the delete outcome (or the
+    /// failed-delete backstop), never on the keep outcome — the timeout
+    /// keep included.
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn delete_chat_session_unless_adopted(&self, session_id: &str) -> Result<()> {
         let deleted = delete_chat_session_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
+            Some(DELETE_GATE_WAIT),
             DeleteGateRecheck::StillFactoryTitled,
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
@@ -4571,11 +4627,11 @@ where
 mod scheduled_model_tests {
     const TEST_SUBMISSION: &str = "sub-test";
     use super::{
-        AUX_ZERO_TOOL_REMINDER, BoundedJoinOutcome, DeleteGateRecheck, EvalModelSnapshots,
-        ModelIdentity, ModelUpdateRevisions, Op, Pinvou3Bridge, PreparedRuntimeState,
-        REBIND_EVICT_GATE_TIMEOUT, SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard,
-        SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks,
-        TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity,
+        AUX_ZERO_TOOL_REMINDER, BoundedJoinOutcome, DELETE_GATE_WAIT, DeleteGateRecheck,
+        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op, Pinvou3Bridge,
+        PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT, SESSION_MODEL_BINDING_STALE_ERROR,
+        ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
+        SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity,
         bounded_join_while_holding_turn_gate, bounded_shutdown_sends, cancel_turn_with_gates,
         default_model_for_new_session_from, delete_chat_session_with_aux_cascade,
         delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
@@ -6536,6 +6592,7 @@ mod scheduled_model_tests {
                 &delete_locks,
                 &delete_store,
                 &delete_id,
+                None,
                 DeleteGateRecheck::Unconditional,
                 || async move {
                     delete_engine.store(false, Ordering::Release);
@@ -6676,6 +6733,97 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// Round-49 review: the headless one-shot delete lanes' turn-gate wait is
+    /// bounded (DELETE_GATE_WAIT — the `evict_bounded` "must produce its
+    /// report" bounding). A submit admitting in the disposition's
+    /// sample→gate window holds the gate for the turn's whole wall clock;
+    /// the delete must give up after the budget and keep the session —
+    /// touching nothing (no reclaim, no forget, no delete) — instead of
+    /// pinning the report-holding teardown for minutes. Mutation pin:
+    /// reverting `delete_chat_session_unless_adopted`'s bounded argument to
+    /// `None` restores the unbounded wait and the elapsed/skip assertions
+    /// here go red.
+    #[tokio::test(start_paused = true)]
+    async fn one_shot_delete_gate_timeout_keeps_the_session_untouched() {
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-engine-pool-delete-gate-timeout-{}",
+            std::process::id()
+        ));
+        let previous_home = std::env::var("PINVOU3_HOME").ok();
+        let _ = std::fs::remove_dir_all(&home);
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+        let store = SessionStore::boot().expect("session store");
+        let session_id = store
+            .create_new("wire-model".to_string(), None, home.join("workspace"))
+            .expect("chat session")
+            .metadata
+            .id;
+        let locks = SessionTurnLocks::default();
+        let gate = locks.for_session(&session_id).await;
+        // A live turn owns the gate — the submit admitted in the sample→gate
+        // window; the delete queues behind it until the bounded budget fires.
+        let _blocker = gate.lock().await;
+
+        let evicted = Arc::new(AtomicBool::new(false));
+        let forgotten = Arc::new(AtomicBool::new(false));
+        let evict_probe = evicted.clone();
+        let forget_probe = forgotten.clone();
+        let started = tokio::time::Instant::now();
+        let deleted = delete_chat_session_with_gate(
+            &locks,
+            &store,
+            &session_id,
+            Some(DELETE_GATE_WAIT),
+            // The one-shot lane's recheck: it must never run here — the
+            // timeout fires before the gate, so the sampled disposition is
+            // never even consulted.
+            DeleteGateRecheck::StillFactoryTitled,
+            move || {
+                let flag = evict_probe.clone();
+                async move {
+                    flag.store(true, Ordering::Release);
+                }
+            },
+            move || forget_probe.store(true, Ordering::Release),
+        )
+        .await
+        .expect("the gate timeout must not be an error");
+
+        assert!(
+            !deleted,
+            "a gate held past the budget must keep the session"
+        );
+        assert!(
+            started.elapsed() >= DELETE_GATE_WAIT,
+            "the delete waited the bounded budget rather than the whole turn"
+        );
+        assert!(
+            !evicted.load(Ordering::Acquire),
+            "no engine reclaim may run without the gate"
+        );
+        assert!(
+            !forgotten.load(Ordering::Acquire),
+            "no lifecycle forget may run without the gate"
+        );
+        assert!(
+            store.load(&session_id).is_ok(),
+            "the record must survive a timed-out delete"
+        );
+
+        match previous_home {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// M6: with no aux record the reset's delete half is an idempotent no-op
     /// (the create half then simply makes the fresh session).
     #[tokio::test]
@@ -6774,6 +6922,7 @@ mod scheduled_model_tests {
                 &locks,
                 &store,
                 &resolved_aux,
+                None,
                 DeleteGateRecheck::Unconditional,
                 || async move {
                     engine.store(false, Ordering::Release);
@@ -6791,6 +6940,7 @@ mod scheduled_model_tests {
                 &locks,
                 &store,
                 &main_id,
+                None,
                 DeleteGateRecheck::Unconditional,
                 || async move {
                     engine.store(false, Ordering::Release);
@@ -6868,6 +7018,7 @@ mod scheduled_model_tests {
             &locks,
             &store,
             &session_id,
+            None,
             DeleteGateRecheck::Unconditional,
             || async {},
             || {},
@@ -6944,6 +7095,7 @@ mod scheduled_model_tests {
             &locks,
             &store,
             &session_id,
+            None,
             DeleteGateRecheck::StillAStub,
             || async {},
             || {},
@@ -6969,6 +7121,7 @@ mod scheduled_model_tests {
             &locks,
             &store,
             &empty_id,
+            None,
             DeleteGateRecheck::StillAStub,
             || async {},
             || {},
@@ -7016,6 +7169,7 @@ mod scheduled_model_tests {
             &locks,
             &store,
             &adopted_id,
+            None,
             DeleteGateRecheck::StillFactoryTitled,
             || async {},
             || {},
@@ -7041,6 +7195,7 @@ mod scheduled_model_tests {
             &locks,
             &store,
             &fresh_id,
+            None,
             DeleteGateRecheck::StillFactoryTitled,
             || async {},
             || {},
@@ -7067,6 +7222,7 @@ mod scheduled_model_tests {
             &locks,
             &store,
             &adopted_stub_id,
+            None,
             DeleteGateRecheck::StillAStub,
             || async {},
             || {},
