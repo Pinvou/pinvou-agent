@@ -1984,6 +1984,102 @@ mod tests {
         );
     }
 
+    /// Round-24 MAJOR 6: behavioral twin of the source-text pin above. The
+    /// literals it greps survive a scoped-block release
+    /// (`let _g = { let mut l = open_landing_lease(&id)?; l.write()? };` —
+    /// every literal present, ordering kept, no `drop(`), and its own
+    /// comment concedes every behavioral lease test holds the lease as a
+    /// fixture — so tenancy needs the suite's established blocked-worker
+    /// harness (fixture-held lease + production fn on a thread + bounded
+    /// `recv_timeout`, the uninstall/restore/reconcile lanes' shape): the
+    /// import pipeline must PARK while a peer holds the landing lease and
+    /// proceed only after release.
+    #[test]
+    fn import_parks_while_a_peer_holds_the_landing_lease() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-import-lease-park-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let zip_path = dir.join("combo.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(
+                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("mcp/server.py", opts).unwrap();
+            zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
+                .unwrap();
+            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+            zw.finish().unwrap();
+        }
+
+        // The peer-import shape: hold the landing lease on a second fd.
+        let mut lease = open_landing_lease("demo").expect("fixture: the landing lease opens");
+        let guard = lease.write().expect("fixture: the landing lease acquires");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker_zip = zip_path.clone();
+        let worker = std::thread::spawn(move || {
+            let result = import_plugin_package(&worker_zip.to_string_lossy(), "combo.zip");
+            tx.send(result).expect("worker should send its result");
+        });
+        // Bounded: a regressed pipeline that ignores the lease completes
+        // here and fails this assertion with a diagnosable receive; a
+        // correct one stays parked on the lease.
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+            "the import must park while a peer import holds the landing lease"
+        );
+        drop(guard);
+        let report = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the import completes once the lease is released")
+            .expect("the import succeeds after waiting out the peer import");
+        worker.join().expect("worker should finish");
+        assert_eq!(report.id, "demo", "the released import landed its own pack");
+        assert!(
+            dir.join("bundles")
+                .join("demo")
+                .join("mcp")
+                .join("manifest.json")
+                .is_file(),
+            "the released import landed the package content"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Round-20 review (P1): the boot reconcile must treat a held landing
     /// lease as a LIVE import and defer, not as crash residue — the mark
     /// alone cannot distinguish the two, and sweeping a live import's staged
