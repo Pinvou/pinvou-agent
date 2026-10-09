@@ -247,13 +247,17 @@ every process sharing the home to run this version — binaries older than
 new GUI" still reproduces lost updates (the degraded direction is harmless:
 the lock file holds no data and old versions ignore every new sibling file);
 (3) the lock covers only this file — the other state files concurrently
-read-modify-written in the same two-process scenario (`installed.json`,
-`bundles.json`, `mcp.json`, `recycle-bin.json`) serialize on their own
-per-file OS locks since main's #656 (`file_lock.rs`, closing #521), so the
-lost-update family this section's fix closed for `disabled_bundles.json`
-cannot reproduce there; the remaining same-family boundary is structural —
-the funnel is a per-file helper family rather than one shared platform-layer
-primitive, registered as follow-up work.
+read-modify-written in the same two-process scenario (`bundles.json`,
+`mcp.json`, `recycle-bin.json`) serialize on their own per-file OS locks
+since main's #656 (`file_lock.rs`, closing #521), so the lost-update family
+this section's fix closed for `disabled_bundles.json` cannot reproduce
+there; `installed.json` is the one sibling still outside that guarantee — it
+serializes on the in-process marketplace transaction lock only
+(`MARKETPLACE_TRANSACTION_LOCK`), so two processes sharing the home can
+still drop each other's updates (round-24 review) — and it shares the
+follow-up registered below; the remaining boundary is structural — the
+funnel is a per-file helper family rather than one shared platform-layer
+primitive.
 Boundary (3)'s import family is likewise closed (round-20/21): the per-id
 landing lease gives the import pipeline's staged `bundles/<id>.tmp`, backup
 `bundles/<id>.old`, and registration write real cross-process mutual
@@ -267,7 +271,16 @@ paths (landing failure, supply-failure rollback) can strand content in
 `<id>.old` after the journal mark has cleared — logged loudly, and invisible
 to the reconcile (which only scans marks), so recovery is manual; this is
 the rollback form of the crash-strand residue disclosed with the reconcile
-arms below. Two more same-family boundaries: flock provides no cross-host exclusion
+arms below. The boot python-repair downgrade lane
+(`repair_installed_python_tools` → `mark_tool_uninstalled_locked`) is the
+remaining lease-less same-id teardown: it removes the record and strips the
+owner consent rows under the in-process transaction lock only — no landing
+lease, no landing probe (round-24 review). Its reachable blast radius is
+currently closed: the downgrade resolves only embedded-catalog dependency
+ids, and the import channel rejects catalog-id collisions case-folded before
+landing, so a peer import cannot hold the id it strips; it is disclosed here
+as a defense-in-depth asymmetry rather than leased like the uninstall
+command. Two more same-family boundaries: flock provides no cross-host exclusion
 — multiple hosts sharing one network-mounted home are outside this module's
 threat model (for lock semantics on NFS-like filesystems see the lock-file
 line's note); the single-instance constraint is per user — when different
@@ -395,6 +408,12 @@ family; the fail-open direction is exactly this one window).
 Across the channels, a same-id deny-first registration that happens inside a
 critical section, in the window between the record/teardown commit and the
 strip, can still be cleared by that strip (microsecond-scale, fail-open,
+disclosed); the by-name install/connect gates' owner-claim divergence refusal
+shares the family — the refusal and the consent sync's own fold are two
+unsynchronized evaluations (the import channel re-checks under its lock; the
+install/connect channels read the package state twice around it), so a
+claimant installed inside that microsecond-scale gap can still swallow an
+already-approved registration into its known-bundle skip (round-24 minor,
 disclosed); a registration made after the critical section ends survives
 necessarily, except for the skill channel, the non-Upload companion leg, the
 install-rollback leg in the next sentence, and the retired-tool startup
