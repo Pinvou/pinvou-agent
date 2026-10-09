@@ -1752,6 +1752,14 @@ jobs:
             'startup_read_reports_a_failed_freeze_persist' \
             'cleanup_defers_consent_strip' \
             'pre_land_gate_runs_under_the_landing_mark' \
+            'uninstall_waits_for_the_cross_process' \
+            'reconcile_spares_a_live_import' \
+            'quarantine_of_empty_content' \
+            'consent_failure_marker' \
+            'cleanup_keeps_consent_rows_when_uninstall_rolls_back' \
+            'private_data_read_serves_a_regular_file' \
+            'uninstall_refuses_hostile_ids' \
+            'install_gates_refuse_companion_claimed' \
             'features::projects::tests::' \
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
