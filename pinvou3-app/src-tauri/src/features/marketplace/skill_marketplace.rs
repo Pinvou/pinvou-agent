@@ -1563,10 +1563,16 @@ impl SkillMarketplaceManager {
                 continue;
             }
             let target = self.migration_skill_dir(&name, &legacy_companions);
-            let marker = std::fs::read_to_string(dir.join(INSTALLED_FROM_MARKER))
-                .unwrap_or_default()
-                .trim()
-                .to_string();
+            // Hardened open (round-22 review): boot-path read; a planted
+            // FIFO at the marker would otherwise block the migration.
+            // Refused (non-regular) reads empty → the same
+            // not-marked-for-preservation treatment as an absent marker.
+            let marker = crate::platform::filesystem::read_private_data_file(
+                &dir.join(INSTALLED_FROM_MARKER),
+            )
+            .unwrap_or_default()
+            .trim()
+            .to_string();
             if marker.is_empty() {
                 // 企微 0.1.9 退役目录（msg/schedule）：不搬移、直接删除——它们已
                 // 不在内置清单（cli_bundle_of_skill 反查不命中），且无论连接器

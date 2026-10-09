@@ -457,7 +457,13 @@ impl Pinvou3Bundle {
             if !dir.exists() {
                 continue;
             }
-            let marker = std::fs::read_to_string(dir.join(".installed-from")).unwrap_or_default();
+            // Hardened open (round-22 review): boot-path read; a planted
+            // FIFO at the marker would otherwise block the cleanup. Refused
+            // (non-regular) reads empty → the same unmarked treatment as an
+            // absent marker.
+            let marker =
+                crate::platform::filesystem::read_private_data_file(&dir.join(".installed-from"))
+                    .unwrap_or_default();
             let marker = marker.trim();
             if marker.starts_with("upload:") {
                 continue; // 用户上传的同名技能,保护不删

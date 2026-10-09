@@ -131,6 +131,12 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
     if let Ok(entries) = std::fs::read_dir(parent) {
         let identical_backup_exists = entries.flatten().any(|entry| {
             entry.file_name().to_string_lossy().starts_with(&prefix)
+                // Round-22 review: skip non-regular siblings before reading —
+                // a planted FIFO named like a backup would otherwise block
+                // this scan on the corrupt-recovery path. `file_type` does
+                // not follow symlinks, so a symlink sibling is skipped too
+                // (an extra evidence copy at worst, never a lost one).
+                && entry.file_type().is_ok_and(|t| t.is_file())
                 && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == content.as_bytes())
         });
         if identical_backup_exists {
@@ -2659,7 +2665,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 新布局优先（上传包/解压包落盘 `bundles/<id>/mcp/manifest.json`）；
         // 内嵌预设回退到编译期 catalog。旧布局 `bundle/mcp-servers/` 已退役，不再回退读取。
         let new_path = mcp_catalog::package_mcp_dir(tool_id).join("manifest.json");
-        if let Ok(content) = std::fs::read_to_string(&new_path) {
+        // Hardened open (round-22 review): reachable from connect/oauth/
+        // dependency flows under the per-id import lock — a planted FIFO at
+        // the manifest path would otherwise block this read while the lock
+        // is held. Read failure falls through to the embedded catalog, as
+        // before.
+        if let Ok(content) = read_private_data_file(&new_path) {
             if let Ok(manifest) = serde_json::from_str(&content) {
                 return Some(manifest);
             }
