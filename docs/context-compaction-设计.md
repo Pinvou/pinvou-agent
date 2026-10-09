@@ -71,7 +71,7 @@ served name 变 `qwen3.6-35b` 无 `_Nk` 后缀 → 底座兜底 128,000 窗口�
 1. `monitor.rs`：`probe_vllm_served_model` → `probe_vllm_model_info`，返回
    `(Option<String>, Option<u32>)`（name, max_model_len）。`parse_models_response`
    已解析两者，现在只是别丢 max——纯透传，零新增请求。
-   （2026-10-09 注：该透传链从未接线生产，`probe_vllm_model_info` 已随死代码清理移除；现役探测链路见 `resolve_served_model`。）
+   （2026-10-09 注：本条的 max 透传从未接线 `engine_pool`；`probe_vllm_model_info` 的最后一个生产调用方（voice 后处理，#419 引入）已随 #611 移除，函数本身已随死代码清理删除；现役探测链路见 `resolve_served_model`。）
 2. `engine_pool.rs`：探测结果两个都用，name 按 `resolve_served_model` 决策校正
    （配置名在服务列表中原样保留，仅单模型服务且不含配置名才跟随，其余保留配置名让
    `model_not_found` 显式浮现）+ 存 `max_model_len`。
