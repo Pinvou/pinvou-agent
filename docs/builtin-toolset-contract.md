@@ -208,10 +208,13 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
   next boot); a steer accepted against a mid-turn target can still be dropped
   by the foundation when that turn is cancelled (the `chat:steer_dropped`
-  window is not yet correlated); a mid-delivery keyed retry re-queues the
-  newest body (bytes re-verified before the terminal marker); the dispatch
-  arm has a slow-spawn double-deliver window (a >30s engine spawn that
-  completes after the timeout fires plus a retry duplicates the message);
+  window is not yet correlated); a mid-delivery keyed retry with a DIFFERENT body re-queues the
+  newest body (the round-8 semantic compare — created_at nulled — treats
+  the same logical message as unchanged); (round-9 minor 2: this list previously disclosed a "slow-spawn
+  double-deliver window" — an impossible event: submission is
+  cancel-safe (reserve + synchronous send), a timeout drop can only land
+  before submission and the dropped reservation rolls back, so
+  timeout+retry delivers exactly once);
   receive-side historical sender cards have no
   "feature off" degradation yet and the `session-messaging` switch is
   settings.json-only (no UI) — both follow the session-mention precedent and
@@ -249,10 +252,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 
 | Tool | Server | Level | Status |
 |---|---|---|---|
-| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
-| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (d93457d9a; built-in registration: #585) |
+| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (built-in registration: #585) |
+| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-10; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log; a typed execpolicy Ask rule is registered as the latent approval-mode-split pin and does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server, the watcher, and the delivery path) |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-10; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log; a typed execpolicy Ask rule is registered as the latent approval-mode-split pin and does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server and the watcher; the delivery path's gate is the ACP/code class — round-9 minor 3: the old text claimed a third checkpoint that does not exist) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---
