@@ -245,12 +245,18 @@ jobs:
               - 'scripts/check-linux-elf-policy.sh'
               - 'scripts/asr/build-sensevoice-runtime.sh'
               - 'scripts/asr/sensevoice-source.env'
+              - 'scripts/repack-deb-xz.sh'
+              - 'scripts/convert-dmg-ulmo.sh'
+              - 'scripts/release-deb.sh'
+              - 'scripts/release-macos.sh'
+              - 'scripts/build-windows-ota.ps1'
               - 'scripts/tests/sync-version.test.mjs'
               - 'scripts/tests/test_ci_gate_policy.py'
               - 'scripts/tests/test_release_arm64_policy.py'
               - 'scripts/tests/test_release_cache_policy.py'
               - 'scripts/tests/test_release_linux_floor_policy.py'
               - 'scripts/tests/test_release_manifest_probe.py'
+              - 'scripts/tests/test_release_size_policy.py'
               - '.github/workflows/release-packages.yml'
               - '.github/workflows/pr-check.yml'
               - '.gitmodules'
@@ -261,7 +267,9 @@ jobs:
               # tauri_effective_config.test.js parses this script's target
               # dispatch to pin the cross-build Node architecture mapping.
               - 'pinvou3-app/scripts/prepare-codex-bridge-runtime.sh'
+              - 'pinvou3-app/src-tauri/Cargo.toml'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
+              - 'pinvou-knowledge/Cargo.toml'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               - 'pinvou3-app/src-tauri/resources/**'
@@ -1912,24 +1920,13 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
-      # macOS 27+ compatibility: dyld added an 8-byte alignment check for the
-      # LINKEDIT string pool, and the default strip=symbols of release (and of
-      # the release-fast inheriting it) makes the proc-macro dylib dlopen fail
-      # with E0463 (macOS <= 26 has no such check). The runner is currently
-      # macos-15 (unaffected), but if GitHub upgrades the runner to macOS 27+
-      # without this injection, the release-fast/bundle builds below fail
-      # hard. Same workaround as release-macos.sh; see that script's "Problem
-      # A" comment for details.
-      - name: macOS 27+ strip workaround
-        run: |
-          if [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] 2>/dev/null; then
-            echo "CARGO_PROFILE_RELEASE_STRIP=none" >> "$GITHUB_ENV"
-            echo "CARGO_PROFILE_RELEASE_FAST_STRIP=none" >> "$GITHUB_ENV"
-            echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"
-            echo "⚠️ macOS $(sw_vers -productVersion) -> injecting strip=none (bypasses dyld alignment)"
-          else
-            echo "✓ macOS $(sw_vers -productVersion), keeping the default strip"
-          fi
+      # The macOS 27+ strip=none workaround (folded in from mac-build.yml) is
+      # removed: the 1.98.0 toolchain pinned in rust-toolchain.toml contains
+      # the Mach-O __LINKEDIT 8-byte alignment fix (rust#157750, LLVM backport
+      # #158410), so stripping in release/release-fast is safe again on every
+      # macOS version. release-fast also pins strip="none" explicitly in
+      # Cargo.toml now, making the injection redundant even if it returned.
+      # See release-packages.yml and docs/binary-size-optimization.md.
 
       # The compile smoke uses release-fast (the lightweight profile defined
       # in Cargo.toml specifically for CI: lto=false, codegen-units=16,
