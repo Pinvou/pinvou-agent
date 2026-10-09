@@ -2595,12 +2595,17 @@ async function expand(page) {
   // dialogs); pointer gestures unlike dispatched KeyboardEvents actually
   // hit-test, so normalize to the plain draft view first. The structural nav
   // selector beats exact-text matching: it cannot be shadowed by a future
-  // same-text node elsewhere in the DOM.
+  // same-text node elsewhere in the DOM. Assert the view actually flipped so
+  // the precondition is self-verifying instead of resting on fixed sleeps.
   await page.keyboard.press('Escape');
   await sleep(150);
   await page.keyboard.press('Escape');
   await sleep(150);
   await page.click('[data-testid="sidebar-primary-nav"] > div:first-child');
+  const onDraftView = await page.evaluate(() => window.__uiWait__(
+    () => document.querySelector('[data-testid="app-root"]')?.getAttribute('data-current-view') === 'chat',
+    3000,
+  ));
   await sleep(400);
   const handleGeometry = await page.evaluate(() => {
     const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
@@ -2642,14 +2647,15 @@ async function expand(page) {
   const pointerClampWidth = await sidebarWidthOf();
   const pointerClampPersisted = await page.evaluate(() => window.localStorage.getItem('pinvou_sidebar_width'));
   // Double-click reset through the real input pipeline: press(1)/release(1)
-  // then press(2)/release(2) is the CDP shape of a genuine double-click. On
-  // Chrome ≥154 that synthesizes a trusted native dblclick; on older headless
-  // Chromium (e.g. 153) the synthesized second press still carries detail=1
-  // and no dblclick is dispatched, so a dispatched-event fallback keeps the
-  // onDoubleClick wiring covered on every runner. Either path exercises the
-  // same resetSidebarWidth handler; note the check guards the wiring, not the
-  // pointerdown-preventDefault removal (native dblclick fires with or without
-  // the cancel on current Chromium).
+  // then press(2)/release(2) is the CDP shape of a genuine double-click.
+  // Whether that synthesizes a trusted native dblclick is transport- and
+  // build-dependent, not a version cliff — observed firing on one reviewer's
+  // Chrome 154 and not firing on local Chrome 153 nor on Chrome for Testing
+  // 155 in CI — so a dispatched-event fallback keeps the onDoubleClick wiring
+  // covered on every runner. Either path exercises the same
+  // resetSidebarWidth handler; the check guards that wiring, not the
+  // pointerdown preventDefault (the spec forbids the cancel from suppressing
+  // click/dblclick, and that held in every probe above).
   let dblclickResetWidth = await (async () => {
     const center = await handleCenter();
     await page.mouse.click(center.x, center.y);
@@ -2664,6 +2670,8 @@ async function expand(page) {
     ));
     return sidebarWidthOf();
   })();
+  // True only when the native input path both dispatched a dblclick AND the
+  // app handled it — i.e. "native double click worked end to end".
   const dblclickViaNative = dblclickResetWidth === 280;
   if (!dblclickViaNative) {
     await page.evaluate(() => {
@@ -2682,13 +2690,14 @@ async function expand(page) {
     !!handleGeometry
       && handleGeometry.height > 0
       && handleGeometry.hit
+      && onDraftView
       && pointerDragWidth === 480 - 100
       && pointerDragPersisted === '380'
       && pointerClampWidth === 220
       && pointerClampPersisted === '220'
       && dblclickResetWidth === 280
       && dblclickResetPersisted === '280',
-    JSON.stringify({ handleGeometry, pointerDragWidth, pointerDragPersisted, pointerClampWidth, pointerClampPersisted, dblclickViaNative, dblclickResetWidth, dblclickResetPersisted }));
+    JSON.stringify({ handleGeometry, onDraftView, pointerDragWidth, pointerDragPersisted, pointerClampWidth, pointerClampPersisted, dblclickViaNative, dblclickResetWidth, dblclickResetPersisted }));
 
   if (errs.length) console.log('⚠️ PAGEERRORS:', errs.slice(0, 3).join(' | '));
   await browser.close();
