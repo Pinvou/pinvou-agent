@@ -138,8 +138,8 @@ impl Pinvou3Bundle {
         // wedged boot. Any refusal (or absence) degrades to the empty string,
         // so the bundle re-extracts — the same fail-safe direction the
         // `unwrap_or_default` had.
-        let current = crate::platform::filesystem::read_private_data_file(&version_file)
-            .unwrap_or_default();
+        let current =
+            crate::platform::filesystem::read_private_data_file(&version_file).unwrap_or_default();
         let bundle_changed = current.trim() != BUNDLE_VERSION;
 
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
@@ -2428,9 +2428,10 @@ mod tests {
             let _ = tx.send(result.is_err());
         });
         assert!(
-            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!(
-                "write_if_changed must refuse a planted FIFO without hanging (5s bound)"
-            )),
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!(
+                    "write_if_changed must refuse a planted FIFO without hanging (5s bound)"
+                )),
             "a planted FIFO target must be refused"
         );
         worker.join().unwrap();

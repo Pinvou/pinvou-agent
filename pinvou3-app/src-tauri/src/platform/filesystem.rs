@@ -3606,9 +3606,11 @@ pub(crate) mod tests {
             let worker = std::thread::spawn(move || {
                 let _ = tx.send(read(&path).is_err());
             });
-            let refused = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| {
-                panic!("{label} must refuse a planted FIFO without hanging (5s bound)")
-            });
+            let refused = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    panic!("{label} must refuse a planted FIFO without hanging (5s bound)")
+                });
             worker.join().unwrap();
             assert!(refused, "{label} must be refused by the regular-file gate");
         };
@@ -3650,7 +3652,8 @@ pub(crate) mod tests {
         let temp = tempfile::tempdir().unwrap();
         let data_path = temp.path().join("huge.json");
         let file = std::fs::File::create(&data_path).unwrap();
-        file.set_len(super::MAX_PRIVATE_DATA_READ_BYTES + 1).unwrap();
+        file.set_len(super::MAX_PRIVATE_DATA_READ_BYTES + 1)
+            .unwrap();
         drop(file);
         let error = super::read_private_data_file(&data_path)
             .err()
