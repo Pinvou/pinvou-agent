@@ -1048,7 +1048,7 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
       if (currentQueue) currentQueue.splice(Math.min(index, currentQueue.length), 0, item);
     }
     runSyncOnSession(sid, function () {
-      addSystemItem("⚠️ " + bt(restoredText ? "steerFailed" : "steerFailedQueued"));
+      addSystemItem("⚠️ " + bt(restoredText ? "steerFailed" : "steerDroppedDuringEdit"));
     });
     notify();
     return null;
