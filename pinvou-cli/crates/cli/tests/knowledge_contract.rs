@@ -1544,9 +1544,10 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // The thread read the variable once at spawn; from here the FILE gates
-    // the park, so the variable can go away before any assertion that
-    // could fail.
+    // `launch_import` sampled the variable before the worker existed, so
+    // the running/2/0 observation above proves the hold path is already
+    // in the worker's hands: from here the FILE gates the park, and the
+    // variable can go away before any assertion that could fail.
     unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
 
     // The CLI sees the in-flight job as the (running) latest one and must
