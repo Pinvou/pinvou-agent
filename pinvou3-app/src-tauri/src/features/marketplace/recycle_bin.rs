@@ -884,8 +884,12 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 // ---------------------------------------------------------------------------
 
 /// 内层读：文件不存在 → 空清单；JSON 损坏 → Err（fail loud，不静默重建）。
+/// 经硬化打开读取（评审 22 轮）：所有调用方都持有 recycle-bin.json 的跨进程
+/// 文件锁，裸 `read_to_string` 会被植入的 FIFO 卡死在 `open()` 上——锁被持有
+/// 期间所有回收站操作（含 restore 持有的 per-id import 锁）全部停摆。硬化
+/// 语义与其它私有状态文件一致：非普通文件（FIFO/symlink/设备）一律响亮拒绝。
 fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
-    match std::fs::read_to_string(path) {
+    match crate::platform::filesystem::read_private_data_file(path) {
         Ok(content) => serde_json::from_str(&content).map_err(|e| {
             format!(
                 "解析 {} 失败: {e}（recycle-bin.json 损坏时 fail loud，不静默重建）",
@@ -1060,6 +1064,30 @@ mod tests {
         assert_eq!(zip.display_name, "zip-skill.zip", "无快照名时回退源文件名");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 评审 22 轮（P1 收尾）：清单读取走硬化打开后，植入的 symlink/FIFO 必须
+    /// 响亮拒绝而不是跟随/挂死——所有调用方持锁读，裸读会被 FIFO 卡死在
+    /// `open()` 上并拖死全部回收站操作。symlink 引脚（unix 专属 API）：拒绝
+    /// 必须指名清单路径（fail loud），且清单内容不得被越过。
+    #[cfg(unix)]
+    #[test]
+    fn recycle_manifest_read_refuses_a_planted_symlink() {
+        with_temp_home(|| {
+            let manifest = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("recycle-bin.json");
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            let target = crate::platform::paths::pinvou3_home().join("outside.json");
+            std::fs::write(&target, r#"{"entries":[]}"#).unwrap();
+            std::os::unix::fs::symlink(&target, &manifest).unwrap();
+
+            let error = RecycleBin::new().list().unwrap_err();
+            assert!(
+                error.contains("recycle-bin.json"),
+                "the refusal must name the manifest path, not follow the symlink: {error}"
+            );
+        });
     }
 
     /// purge：物理删除目录 + 清单条目；不在清单的 id 拒绝（fail-closed）；
