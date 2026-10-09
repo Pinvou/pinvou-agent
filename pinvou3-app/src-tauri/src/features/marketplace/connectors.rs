@@ -613,7 +613,11 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             // consent-adjacent state — the open must not hang on a
             // planted FIFO.
             let content = read_private_data_file(&mcp_path)
-                .map_err(|error| format!("读取 mcp.json: {error}"))?;
+                // Copy convention (round-24 minor): main's string here was
+                // English — this site's error copy was flipped to Chinese by
+                // the hardening wave; restore it. (The read site at the top
+                // of the file keeps main's Chinese — that one is main's.)
+                .map_err(|error| format!("read mcp.json: {error}"))?;
             let mut mcp: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|error| format!("parse mcp.json: {error}"))?;
             let entry = mcp
