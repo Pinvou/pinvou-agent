@@ -2144,10 +2144,30 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const mentionBlock = refsAtSend.length ? buildSessionMentionBlock(refsAtSend) : '';
         const outgoingText = mentionBlock ? mentionBlock + body : body;
         const draftKeyAtSend = mentionDraftKeyRef.current;
+        // Clear at dispatch, not post-await — the same two protections
+        // handleSend has (round-12 R4): an unmount mid-send must not let the
+        // scope cleanup stash the still-armed refs whose block already went
+        // out (they would resurrect onto the next unrelated composer send),
+        // and canSend staying true via hasSessionRefs must not re-dispatch
+        // the same armed refs as a duplicate queued message.
+        if (refsAtSend.length) setSessionRefs([]);
+        // Scope guard for the restore below: switching sessions mid-send
+        // must not wipe the target scope's freshly picked chips — merge with
+        // whatever the switch cleanup stashed, never overwrite it.
+        const restoreRefsOnFailure = () => {
+          if (mentionDraftKeyRef.current === draftKeyAtSend) {
+            setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+          } else {
+            stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+              [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
+          }
+        };
         return Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
-          // A non-true verdict (false / "restored" / undefined) keeps the
-          // chips armed: the text is back in the composer or queued, never
-          // silently dropped with its references consumed.
+          // A non-true verdict (false / "restored" / undefined) is a
+          // non-dispatch: the text is back in the composer or queued, and
+          // the chips cleared at dispatch go back with it (merged with any
+          // chips picked meanwhile) — never silently dropped with their
+          // references consumed.
           if (accepted === true) {
             if (mentionDraftKeyRef.current === draftKeyAtSend) {
               setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
@@ -2155,10 +2175,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               stashSessionMentionDraft(draftKeyAtSend, refsSurvivingAcceptance(
                 refsAtSend, restoreSessionMentionDraft(draftKeyAtSend), sessionMentionEnabled));
             }
+          } else {
+            restoreRefsOnFailure();
           }
           return accepted;
         }, (error) => {
           console.warn('[pinvou3][chat-ui] referenced send failed', error);
+          restoreRefsOnFailure();
           return false;
         });
       }, [sessionMentionEnabled, sessionRefs, sendChatMessage]);
@@ -2242,11 +2265,24 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // chips picked in the NEW scope must survive (they restore from the
         // per-scope draft store on return).
         const draftKeyAtSend = mentionDraftKeyRef.current;
+        // Clear at dispatch and restore on non-acceptance, mirroring
+        // handleSend (round-12 R4): the design lane's sendChatMessage await
+        // covers capability installs, so an unmount mid-send must not stash
+        // the still-armed refs whose block already went out.
+        if (refsAtSend.length) setSessionRefs([]);
+        const restoreRefsOnFailure = () => {
+          if (mentionDraftKeyRef.current === draftKeyAtSend) {
+            setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+          } else {
+            stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+              [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
+          }
+        };
         void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
           // Same acceptance semantics as handleSend: "restored" is a
           // non-dispatch (truthy, but the text is back — not sent), and only
-          // the serialized refs are consumed. This lane does not clear at
-          // dispatch, so a non-acceptance leaves the chips armed as they were.
+          // the serialized refs are consumed; a non-acceptance puts the
+          // chips cleared at dispatch back (merged with mid-await picks).
           if (accepted === true) {
             if (mentionDraftKeyRef.current === draftKeyAtSend) {
               setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
@@ -2254,7 +2290,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               stashSessionMentionDraft(draftKeyAtSend, refsSurvivingAcceptance(
                 refsAtSend, restoreSessionMentionDraft(draftKeyAtSend), sessionMentionEnabled));
             }
+          } else {
+            restoreRefsOnFailure();
           }
+        }, (error) => {
+          // The lane previously had no rejection arm at all — a send
+          // rejection escaped as an unhandled rejection.
+          console.warn('[pinvou3][chat-ui] design send failed', error);
+          restoreRefsOnFailure();
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
       }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
@@ -2692,7 +2735,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           if (mentionDraftKeyRef.current === draftKeyAtSend) {
             setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
           } else {
-            stashSessionMentionDraft(draftKeyAtSend, refsAtSend);
+            // Merge with the switch cleanup's stash, never overwrite it:
+            // chips picked mid-await in the outgoing scope ride that stash.
+            stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+              [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
           }
         };
         try {
@@ -2958,7 +3004,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             if (mentionDraftKeyRef.current === draftKeyAtSend) {
               setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
             } else {
-              stashSessionMentionDraft(draftKeyAtSend, refsAtSend);
+              // Merge with the switch cleanup's stash, never overwrite it:
+              // chips picked mid-await in the outgoing scope ride that stash.
+              stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+                [...refsAtSend, ...restoreSessionMentionDraft(draftKeyAtSend)]));
             }
           };
           try {
