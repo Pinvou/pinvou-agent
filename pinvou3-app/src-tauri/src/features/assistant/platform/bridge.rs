@@ -2840,8 +2840,10 @@ impl Pinvou3Bridge {
     /// (exit 2 + stdout JSON reason, the Hooks v2 contract). The
     /// sensitive-path/dangerous-command/sudo hard-deny segments the script
     /// used to carry have moved to the execpolicy rule engine
-    /// (`safety_deny_rules`); the script no longer hard-denies. The script
-    /// itself lives in the bundle and is unpacked on first start to
+    /// (`safety_deny_rules`). Only the two MCP introspection tools run this
+    /// advisory hook: interpreter failures warn without blocking execution,
+    /// while an explicit exit 2 still denies the mistaken introspection.
+    /// The script lives in the bundle and is unpacked on first start to
     /// `~/.pinvou3/bundle/deny_sensitive_paths.sh`.
     fn build_hooks_config(&self) -> HooksConfig {
         #[cfg(windows)]
@@ -2861,10 +2863,22 @@ impl Pinvou3Bridge {
         let hooks = vec![Hook {
             event: HookEvent::ToolCallBefore,
             command: sensitive_command,
-            condition: None,
-            timeout_secs: 5,
+            condition: Some(HookCondition::Any {
+                conditions: vec![
+                    HookCondition::ToolName {
+                        name: "list_mcp_resources".into(),
+                    },
+                    HookCondition::ToolName {
+                        name: "list_mcp_resource_templates".into(),
+                    },
+                ],
+            }),
+            // Windows PowerShell startup can exceed 5s even for `exit 0`.
+            // This budget applies only to connector introspection; ordinary
+            // tool calls must not spawn an interpreter for this correction.
+            timeout_secs: 30,
             background: false,
-            continue_on_error: false,
+            continue_on_error: true,
             name: Some("pinvou3-sensitive-firewall".into()),
             plugin_authority: None,
         }];
@@ -2906,10 +2920,9 @@ impl Pinvou3Bridge {
 
         // No global default: the foundation replaces every per-hook
         // timeout_secs with `default_timeout_secs` when it is set
-        // (`HooksConfig::effective_timeout_secs`), which would silently cap
-        // the shell-env hook back to 5s and defeat the budget above. Every
-        // hook here declares its own timeout explicitly; leaving this unset
-        // is behavior-identical to the old Some(5) for all of them (5s == 5s).
+        // (`HooksConfig::effective_timeout_secs`). A global 5s value would
+        // defeat both the connector correction's 30s budget and the Unix
+        // shell-env hook's 20s budget. Keep each hook's explicit budget.
         HooksConfig {
             enabled: true,
             hooks,
@@ -7420,6 +7433,97 @@ mod tests {
             "per-turn messages must not drop the ToolCallBefore hook \
              (connector introspection)"
         );
+    }
+
+    #[test]
+    fn connector_introspection_hook_skips_unrelated_tools() {
+        use deepseek_tui::hooks::HookContext;
+
+        let mut hooks = fixture_bridge().build_hooks_config();
+        let hook = hooks
+            .hooks
+            .iter_mut()
+            .find(|hook| hook.name.as_deref() == Some("pinvou3-sensitive-firewall"))
+            .unwrap();
+        // A dispatched hook returns a failure, making accidental dispatch
+        // observable without relying on interpreter startup timing.
+        hook.command = "exit 99".into();
+        assert_eq!(hook.timeout_secs, 30);
+        let executor = HookExecutor::new(hooks, std::env::temp_dir());
+
+        for tool in [
+            "write",
+            "read",
+            "bash",
+            "Bash",
+            "Web",
+            "tool_search",
+            "mcp__example__write",
+            "list_mcp_resources_extra",
+        ] {
+            let context = HookContext::new().with_tool_name(tool);
+            assert!(
+                executor
+                    .execute(HookEvent::ToolCallBefore, &context)
+                    .is_empty(),
+                "unrelated tool {tool} must not dispatch the connector hook"
+            );
+        }
+        for tool in ["list_mcp_resources", "list_mcp_resource_templates"] {
+            let context = HookContext::new().with_tool_name(tool);
+            let results = executor.execute(HookEvent::ToolCallBefore, &context);
+            assert_eq!(results.len(), 1, "{tool} must dispatch the correction");
+            assert_eq!(results[0].exit_code, Some(99));
+            assert!(!results[0].strict, "correction failure must be advisory");
+        }
+    }
+
+    #[test]
+    fn connector_introspection_hook_timeout_is_advisory() {
+        use deepseek_tui::hooks::HookContext;
+
+        let mut hooks = fixture_bridge().build_hooks_config();
+        let hook = hooks
+            .hooks
+            .iter_mut()
+            .find(|hook| hook.name.as_deref() == Some("pinvou3-sensitive-firewall"))
+            .unwrap();
+        hook.timeout_secs = 1;
+        #[cfg(windows)]
+        {
+            hook.command = "ping -n 6 127.0.0.1 >NUL".into();
+        }
+        #[cfg(not(windows))]
+        {
+            hook.command = "sleep 5".into();
+        }
+        let mut strict_gate = Hook::new(HookEvent::ToolCallBefore, "exit 0");
+        strict_gate.name = Some("test-security-gate".into());
+        strict_gate.continue_on_error = false;
+        hooks.hooks.push(strict_gate);
+        let executor = HookExecutor::new(hooks, std::env::temp_dir());
+        let context = HookContext::new().with_tool_name("list_mcp_resources");
+
+        assert_eq!(
+            executor.matched_strict_gate_labels(HookEvent::ToolCallBefore, &context),
+            vec!["test-security-gate"],
+            "only the security gate may fail closed"
+        );
+        let results = executor.execute(HookEvent::ToolCallBefore, &context);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].exit_code, None);
+        assert!(!results[0].success);
+        assert!(!results[0].strict, "connector timeout must not block tools");
+        assert!(
+            results[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("timed out")),
+            "expected a real hook timeout: {:?}",
+            results[0]
+        );
+        assert!(results[1].success);
+        assert!(results[1].strict, "security gates must remain strict");
     }
 
     #[cfg(unix)]

@@ -21,10 +21,11 @@
 # call arguments via environment variables. A hard-deny must **exit 2** with a
 # single-line stdout JSON {"decision":"deny","reason":...} (the v0.8.60 Hooks
 # v2 contract, #3026/#3049): turn_loop.rs fold_tool_call_before_results takes
-# the reason only from that stdout JSON. This hook is registered strict
-# (continue_on_error: false), so any exit that carries no verdict — exit 1, a
-# crash, a timeout — fails CLOSED (the call is blocked with a generic
-# message); a clean passthrough is exit 0 with no output.
+# the reason only from that stdout JSON. Registration limits this advisory
+# correction to the two MCP introspection tools with continue_on_error: true:
+# a crash or timeout warns without blocking the tool; an explicit exit 2
+# still denies the mistaken introspection. A clean passthrough is exit 0
+# with no output. Security decisions remain in the execpolicy rule engine.
 
 # Policy boundary: this concealment applies only to skill-based connectors.
 # Marketplace MCP packages deliberately expose installed/enabled metadata to the
