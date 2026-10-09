@@ -4133,15 +4133,26 @@ mod tests {
         // Round-20 P3: bound the post-release join — a funnel regression that
         // blocks even after the foreign lock is released must fail the test
         // in seconds, not hang the lane until the job timeout (the read-side
-        // twin already bounds its wait). A timed-out worker thread is leaked;
-        // the failure is already reported.
+        // twin already bounds its wait). Round-26 review: on timeout the
+        // worker is leaked while HOLDING the scope mutex and the OS flock —
+        // letting the test panic would cascade-hang every later scope test
+        // in the serial lane on the unbounded mutex, so die loudly instead:
+        // the regression wedges real users too, and a hard process death
+        // keeps the red contained to this point with its message printed.
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(handle.join());
         });
-        rx.recv_timeout(std::time::Duration::from_secs(30))
-            .expect("worker should finish once the foreign lock is released (30s bound)")
-            .expect("worker thread should not panic")
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(joined) => joined.expect("worker thread should not panic"),
+            Err(_) => {
+                eprintln!(
+                    "FAIL: the funnel worker was still blocked 30s after the foreign lock was released — \
+                     the deadlock also wedges real users; aborting the test process to contain the leaked lock holder"
+                );
+                std::process::abort();
+            }
+        }
     }
 
     /// Round-17 review: the once-per-failure-mode latch must survive degraded

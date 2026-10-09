@@ -324,6 +324,15 @@ class CiGatePolicyTests(unittest.TestCase):
             targets,
             "未能从 consent_marker_frontend.test.mjs 解析出 src-tauri 读取目标",
         )
+        # Round-26 review: the quoted-literal regex is the parser's contract —
+        # a refactor to template literals would silently shrink the target
+        # set and unroute a source. Pin the exact count so a parsing
+        # regression fails loudly here instead of opening a coverage hole.
+        self.assertEqual(
+            len(targets),
+            4,
+            f"consent marker 契约测试应读取 4 个 src-tauri 源,实际解析出 {len(targets)}: {sorted(targets)}",
+        )
         for target in targets:
             self.assertTrue(
                 _is_covered_by_trigger(target, frontend_entries),

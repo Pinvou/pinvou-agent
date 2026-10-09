@@ -74,9 +74,14 @@ const marketplaceSrc = readFileSync(
 const marketplaceProduction = marketplaceSrc.split('#[cfg(test)]')[0];
 const shapeCount = marketplaceProduction.split('but {}: new sessions will enable it by default')
   .length - 1;
+// Round-26 review: exact equality, not a lower bound — a NEW sixth emit
+// site carrying the wording without interpolating the marker used to pass
+// every leg while its alert silently degraded to generic copy. A legitimate
+// reshape updates this pin knowingly (the constant itself cannot drift: the
+// strict-equality leg above).
 assert.ok(
-  shapeCount >= 5,
-  `marketplace.rs must keep its post-landing consent-failure emit sites (found ${shapeCount}, expected >= 5)`,
+  shapeCount === 5,
+  `marketplace.rs must keep exactly its post-landing consent-failure emit sites (found ${shapeCount}, expected 5)`,
 );
 
 // Round-20 review: the shape pin counts the template wording, not the marker
@@ -87,8 +92,8 @@ assert.ok(
 // production region (currently exactly 5 sites).
 const markerRefCount = marketplaceProduction.split('CONSENT_SYNC_FAILURE_MARKER').length - 1;
 assert.ok(
-  markerRefCount >= 5,
-  `marketplace.rs emit sites must interpolate CONSENT_SYNC_FAILURE_MARKER, not just keep the template wording (found ${markerRefCount}, expected >= 5)`,
+  markerRefCount === 5,
+  `marketplace.rs emit sites must interpolate CONSENT_SYNC_FAILURE_MARKER, not just keep the template wording (found ${markerRefCount}, expected 5)`,
 );
 
 // Round-35 minor 1 (review #455): the Rust production templates must also
