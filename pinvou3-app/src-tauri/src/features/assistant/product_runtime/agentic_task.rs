@@ -390,7 +390,10 @@ pub fn run_agentic_task_headless(request: AgenticTaskRequest) -> Result<AgenticT
 /// eval cleanup as `KEEP_SESSION=0`, so no empty placeholder-titled chat is
 /// left behind — unless the record was adopted meanwhile (a rename, an
 /// admitted user message, or a turn the engine is still running), which
-/// keeps. The setup TIMEOUT is not a failed run in this sense: it is the one
+/// keeps. Round-48 disclosure: the lifecycle cascade itself is best-effort —
+/// a panic after submit (poll loop, report build) or a hard kill skips it
+/// entirely, so under the `KEEP_SESSION=0` opt-out the run's own record can
+/// survive despite the opt-out (the default keep contract is unaffected). The setup TIMEOUT is not a failed run in this sense: it is the one
 /// never-submitted path that still returns an `Ok` report, and a reported
 /// `session_id` must stay resolvable — so under the default keep contract
 /// its session is kept, and only the explicit one-shot opt-in deletes it
