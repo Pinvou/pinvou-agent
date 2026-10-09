@@ -83,7 +83,10 @@ use pinvou3_lib::features::memory as memory_feature;
 use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
 
-use crate::support::{collapse_control_characters, render, require_yes, sandbox_home, success};
+use crate::support::{
+    FamilyLockError, collapse_control_characters, open_family_lock_file, render, require_yes,
+    sandbox_home, success,
+};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
 const SCHEDULED_USAGE: &str = "usage: pinvou scheduled \
@@ -314,13 +317,13 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             let (options, _) = parse_flags(&rest[1..], &["--limit"], &[])?;
             Ok(ScheduledCommand::Runs {
                 id,
-                limit: parse_limit(&options, "--limit")?,
+                limit: parse_runs_limit(&options)?,
             })
         }
         "runs-all" => {
             let (options, _) = parse_flags(rest, &["--limit"], &[])?;
             Ok(ScheduledCommand::RunsAll {
-                limit: parse_limit(&options, "--limit")?,
+                limit: parse_runs_limit(&options)?,
             })
         }
         "mark-viewed" => {
@@ -497,6 +500,33 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 
 fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
     crate::support::parse_family_positive::<usize>(options, name, "scheduled")
+}
+
+/// Round-49 review: upper bound for the aggregate run lanes' `--limit`.
+/// Each accepted unit costs one run-record read — `runs` for one task,
+/// `runs-all` for EVERY task — so a huge value (the execute-time overflow
+/// probes only refused `usize::MAX` itself) sent the command to stat and
+/// read every run file in the store before the display truncate discarded
+/// the work. Generous by design: far past any display need (the default cap
+/// is [`DEFAULT_RUNS_DISPLAY_LIMIT`]); this is an abuse bound, not a
+/// content limit. `show` keeps the uncapped parse — its limit slices an
+/// already-read list, so it buys no reads.
+const MAX_RUNS_LIMIT: usize = 100_000;
+
+/// [`parse_limit`] plus the [`MAX_RUNS_LIMIT`] refusal, so an over-bound
+/// `--limit` dies at parse time (exit 2, the family's parse-refusal class
+/// for out-of-range argv) instead of at execute. The message mirrors the
+/// overflow probes' wording so scripts can match one shape.
+fn parse_runs_limit(options: &[(&str, &str)]) -> Result<Option<usize>, CliError> {
+    let Some(limit) = parse_limit(options, "--limit")? else {
+        return Ok(None);
+    };
+    if limit > MAX_RUNS_LIMIT {
+        return Err(CliError::usage(format!(
+            "--limit {limit} is too large (the maximum is {MAX_RUNS_LIMIT})"
+        )));
+    }
+    Ok(Some(limit))
 }
 
 // ---- rrule validation ----
@@ -993,25 +1023,19 @@ fn write_json_atomic_staged(path: &Path, tmp: &Path, content: &[u8]) -> Result<(
 /// (the GUI keeps its own in-process registry and persists wholesale) and
 /// stays a documented residual, like the code family's session locks.
 fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
-    let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
-    std::fs::create_dir_all(&dir).map_err(|error| {
-        CliError::failed(format!(
+    // Shared family helper (round-49): one copy of the directory-create and
+    // open this site hand-rolled, tightened to 0600 on every open. The arms
+    // map onto the exact messages the hand-rolled pair produced.
+    let file = open_family_lock_file("scheduled-store.lock").map_err(|error| match error {
+        FamilyLockError::CreateDir { dir, error } => CliError::failed(format!(
             "scheduled_storage_unavailable: cannot create the lock directory {}: {error}",
             dir.display()
-        ))
+        )),
+        FamilyLockError::Open { path, error } => CliError::failed(format!(
+            "scheduled_storage_unavailable: cannot open the store lock {}: {error}",
+            path.display()
+        )),
     })?;
-    let path = dir.join("scheduled-store.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!(
-                "scheduled_storage_unavailable: cannot open the store lock {}: {error}",
-                path.display()
-            ))
-        })?;
     Ok(fd_lock::RwLock::new(file))
 }
 
@@ -2114,12 +2138,36 @@ enabled in settings",
     // The workspace is allocated from the automation id exactly like the GUI
     // (`ensure_automation_workspace`); clients cannot provide a path.
     let workspace = store_holder.workspace_dir(&id);
-    std::fs::create_dir_all(&workspace).map_err(|error| {
-        CliError::failed(format!(
+    if let Err(error) = std::fs::create_dir_all(&workspace) {
+        // Round-49 review: `create_automation` above already persisted the
+        // record — for an ACTIVE create with an eagerly resolved
+        // `next_run_at` — so a bare `?` here left a committed, schedulable
+        // task on disk while the command exited 1 (the next app tick would
+        // fire a task whose command reported failure). Roll back exactly
+        // like the sibling arms below (definition + any workspace
+        // remnants), with the same disclose-on-failed-rollback-step policy.
+        if let Ok(path) = store_holder.def_path(&id)
+            && let Err(remove_error) = std::fs::remove_file(&path)
+        {
+            note!(
+                "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+            );
+        }
+        // The failure can precede the workspace leaf (a refused parent), so
+        // a NotFound here means there is nothing to remove, not a failed
+        // rollback step.
+        if let Err(remove_error) = std::fs::remove_dir_all(&workspace)
+            && remove_error.kind() != std::io::ErrorKind::NotFound
+        {
+            note!(
+                "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+            );
+        }
+        return Err(CliError::failed(format!(
             "scheduled_workspace_unavailable: cannot create {}: {error}",
             workspace.display()
-        ))
-    })?;
+        )));
+    }
     let def = if created.cwds.first().is_some_and(|cwd| cwd == &workspace) {
         def_to_value(&created)
     } else {

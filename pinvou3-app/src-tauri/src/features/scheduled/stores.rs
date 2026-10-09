@@ -348,6 +348,13 @@ impl FileStamp {
 /// is detected as changed by the next check and re-read. Any doubt — failed
 /// stat, failed read, different bytes — records "unknown", which forces the
 /// re-read that merges the foreign payload in instead of dropping it.
+///
+/// Cost note (round-49 review): the read-back makes every persist O(file)
+/// in extra reads. The history archive grows monotonically, so each archive
+/// mutation pays roughly 2× its size in I/O; this is deliberate — the
+/// alternative (recording a hash without reading back) cannot detect a
+/// same-length foreign write that landed between the rename and the stat,
+/// which is exactly the lost-update this guard exists to close.
 fn stamp_of_our_write(path: &Path, payload: &[u8]) -> Option<FileStamp> {
     let stamp = FileStamp::of(path)?;
     if stamp.len != payload.len() as u64 {
@@ -381,12 +388,6 @@ enum DiskRead<T> {
 }
 
 impl<T: VersionedRegistry> VersionedJsonStore<T> {
-    /// Read, parse and migrate the payload at `path`, applying this store's
-    /// quarantine policy to an unusable one, and report whether the payload
-    /// was migrated on read (the caller owns writing the migrated form back).
-    ///
-    /// Extracted so [`Self::open`] and [`Self::reload`] cannot drift: the
-    /// reload path exists precisely because a foreign process may have
     /// Round-48 review: the CLI lane caps registry reads at
     /// `SCHEDULED_REGISTRY_MAX_BYTES` (128 MiB — the pinvoy-cli `scheduled.rs`
     /// twin of this constant) because the history archive grows monotonically
@@ -424,6 +425,12 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
     }
 
+    /// Read, parse and migrate the payload at `path`, applying this store's
+    /// quarantine policy to an unusable one, and report whether the payload
+    /// was migrated on read (the caller owns writing the migrated form back).
+    ///
+    /// Extracted so [`Self::open`] and [`Self::reload`] cannot drift: the
+    /// reload path exists precisely because a foreign process may have
     /// rewritten the file, so it must honour the same version, migration and
     /// quarantine rules the initial read applies.
     fn read_from_disk(
