@@ -1774,6 +1774,9 @@ jobs:
             'private_data_read_serves_a_regular_file' \
             'uninstall_refuses_hostile_ids' \
             'install_gates_refuse_companion_claimed' \
+            'restores_the_reimport_backup' \
+            'restored_backup_quarantines' \
+            'mixed_case_journal_marks' \
             'features::projects::tests::' \
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \

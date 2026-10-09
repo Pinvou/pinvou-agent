@@ -1929,6 +1929,17 @@ mod startup_order_contract {
             headless_mirrors, 1,
             "headless_bridge.rs must keep its freeze-persist failure mirror (this host attaches no log plugin)"
         );
+        // Round-26 review (minor): the console bin mirrors via eprintln (the
+        // startup timeline is pub(crate) and this host has no window at all);
+        // deleting that mirror passed every leg — pin it with the same
+        // fragment needle.
+        let bin_mirrors = include_str!("bin/dump_system_prompt.rs")
+            .matches(&mirror_needle)
+            .count();
+        assert!(
+            bin_mirrors >= 1,
+            "dump_system_prompt.rs must keep its freeze-persist failure eprintln mirror (this host has neither window nor log plugin)"
+        );
     }
 }
 
