@@ -143,8 +143,14 @@ test("the CLI rejects unknown usage with exit code 2", () => {
   assert.match(result.stderr, /usage:/);
 });
 
-test("runSelected waits out the settle window before retrying", async () => {
-  const settleMs = 60;
+test("runSelected waits out the settle window before retrying", async (t) => {
+  const settleMs = 120;
+  const realSetTimeout = global.setTimeout;
+  let requestedMs = 0;
+  t.mock.method(global, "setTimeout", (callback, ms, ...rest) => {
+    requestedMs = ms;
+    return realSetTimeout(callback, ms, ...rest);
+  });
   let attempts = 0;
   const started = performance.now();
   await runSelected([item("npm", "flaky")], {
@@ -156,9 +162,13 @@ test("runSelected waits out the settle window before retrying", async () => {
     },
   });
   assert.equal(attempts, 2);
+  assert.equal(requestedMs, settleMs);
+  // libuv floors its loop clock to whole milliseconds, so the wall clock can
+  // observe a fired timer up to a couple of milliseconds early; anything below
+  // half the settle window means the sleep never ran at all.
   assert.ok(
-    performance.now() - started >= settleMs,
-    "the retry must wait the settle window",
+    performance.now() - started >= settleMs / 2,
+    "the retry must actually wait the settle window",
   );
 });
 
