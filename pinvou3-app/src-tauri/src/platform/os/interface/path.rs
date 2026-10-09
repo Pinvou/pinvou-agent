@@ -52,11 +52,30 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
 /// [`path_identity_is_same_or_nested`] on the folded identity keys, and the
 /// suffix is cut by `base`'s component count so a nested path keeps its
 /// original casing. `None` = not under `base`; an empty suffix = the path IS
-/// `base`. Single source of truth for the three rebind lanes' suffix cut
-/// (round-8 review should-fix 9): codex/ACP index records, plain-chat
-/// binding sidecars and project roots all translate `from`-prefixed paths
-/// the same way.
+/// `base`. An empty base or a `..`-bearing argument is also `None`: the
+/// former would return the full absolute path as the "suffix" (and
+/// `to.join(suffix)` with an absolute suffix REPLACES `to`), the latter would
+/// cut an escaping suffix. Single source of truth for the three rebind
+/// lanes' suffix cut (round-8 review should-fix 9): codex/ACP index records,
+/// plain-chat binding sidecars and project roots all translate
+/// `from`-prefixed paths the same way.
 pub fn path_relative_suffix_under(path: &Path, base: &Path) -> Option<PathBuf> {
+    // Sharp edges (review #464 follow-up, unreachable from today's callers):
+    // an empty base passes the string gate (the empty key nests every
+    // absolute POSIX/UNC key; a Windows drive-letter key does not start with
+    // `/`) and would return the full absolute path as the "suffix" — and
+    // `to.join(suffix)` with an absolute suffix REPLACES `to` downstream. A
+    // `..`-bearing argument passes the string gate too, but the component cut
+    // then yields an escaping suffix — the same blanket rule the
+    // scheduled-workspace gate applies (round-26 minor 4). A `..`-bearing
+    // BASE needs no arm of its own (round-13): the string gate only passes
+    // when the path textually starts with the base, which then makes the
+    // path itself `..`-bearing and `escapes(path)` refuses it first.
+    if base.as_os_str().is_empty() {
+        return None;
+    }
+    // Cheap string gate first (round-14): the common non-nested miss pays
+    // no components walk; a `..` that passes it is refused right after.
     let path_key = filesystem_path_identity_key(&path.to_string_lossy());
     let base_key = filesystem_path_identity_key(&base.to_string_lossy());
     if !path_identity_is_same_or_nested(
@@ -65,17 +84,12 @@ pub fn path_relative_suffix_under(path: &Path, base: &Path) -> Option<PathBuf> {
     ) {
         return None;
     }
-    // Round-26 minor 4 (path safety): a `..`-bearing stored binding must not
-    // translate into a target that lexically escapes `<to>` — a crafted
-    // `/base/../../escape` passes the textual nest test above but its suffix
-    // would carry the parent segments into the destination. Mirror the
-    // scheduled-workspace gate (`validate_scheduled_workspace_path`) and
-    // refuse: `None` leaves the lane's candidate untranslatable instead of
-    // persisting an escaping path.
-    if path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
+    let escapes = |candidate: &Path| {
+        candidate
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    };
+    if escapes(path) {
         return None;
     }
     Some(path.components().skip(base.components().count()).collect())
@@ -212,5 +226,33 @@ mod tests {
             None,
             "any parent segment refuses — the same blanket rule the scheduled-workspace gate applies"
         );
+    }
+
+    #[test]
+    fn path_relative_suffix_under_refuses_empty_base_and_parent_components() {
+        // review #464 follow-up: an empty base passes the string gate (the
+        // empty key nests every absolute POSIX/UNC key; a Windows
+        // drive-letter key does not start with `/`) and would return the
+        // full absolute path as the "suffix" — and `to.join(suffix)` with an
+        // absolute suffix REPLACES `to` downstream. A `..`-bearing argument
+        // passes the string gate too, but the component cut yields an
+        // escaping suffix. Both must be None.
+        let base = std::path::Path::new("/work/alpha");
+        assert_eq!(
+            path_relative_suffix_under(
+                std::path::Path::new("/work/alpha/sub"),
+                std::path::Path::new("")
+            ),
+            None,
+            "empty base"
+        );
+        assert_eq!(
+            path_relative_suffix_under(std::path::Path::new("/work/alpha/../beta"), base),
+            None,
+            "a `..`-bearing path would cut an escaping suffix"
+        );
+        // A `..`-bearing base is covered without its own arm: the string
+        // gate only passes when the path textually starts with it, which
+        // makes the path `..`-bearing — refused above.
     }
 }

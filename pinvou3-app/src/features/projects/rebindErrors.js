@@ -91,7 +91,7 @@ function splitReboundIdsSuffix(message) {
 }
 
 // `null` when the failure carries no marker (an unmapped backend error, which
-/// the dialog shows verbatim); otherwise the dialog state to apply.
+// the dialog shows verbatim); otherwise the dialog state to apply.
 function classifyRebindError(error, t) {
   const { message, reboundIds } = splitReboundIdsSuffix(String(error));
   if (message.startsWith(REBIND_OLD_ROOT_EXISTS)) {

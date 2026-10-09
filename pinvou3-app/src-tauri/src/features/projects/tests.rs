@@ -646,6 +646,47 @@ fn rebind_roots_rejects_overlap_and_keeps_state() {
 /// succeed has to be rejected before anything is written. `plan_rebind_roots`
 /// reports exactly what `rebind_roots` would commit and touches nothing.
 #[test]
+fn rebind_non_conflict_validation_stays_out_of_the_conflict_class() {
+    // Round-13 M1: only the nest/overlap/duplicate families may wear the
+    // localized re-pick copy. A relative `to` (the command entry rejects it
+    // outright; the store API defends in depth) makes `validate_roots`
+    // bail the absolute-path class through BOTH the plan and the commit
+    // path — it must surface as `Other`, never `Overlap`, or the re-pick
+    // dialog would claim re-choosing a destination can fix an
+    // infrastructure error.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store_in(&temp);
+    let from = abs("m1-other-from");
+    let _project = create(&store, "moved", std::slice::from_ref(&from));
+    let relative_to = std::path::Path::new("m1-relative-destination");
+    let error = store
+        .plan_rebind_roots(&from, relative_to)
+        .expect_err("relative destination must be rejected");
+    assert!(
+        matches!(error, crate::features::projects::RebindRootsError::Other(_)),
+        "absolute-path bail stays an ordinary error, got: {error}"
+    );
+    assert!(
+        !error.to_string().contains("overlapping"),
+        "the non-conflict class must not claim an overlap (round-14 MINOR 2): {error}"
+    );
+    let error = store
+        .rebind_roots(&from, relative_to)
+        .expect_err("relative destination must be rejected on the commit path too");
+    assert!(
+        matches!(error, crate::features::projects::RebindRootsError::Other(_)),
+        "commit path classifies identically, got: {error}"
+    );
+    // Expected form per this file's #447-D2 convention: compare through
+    // `display`, or the Windows verbatim prefix / macOS alias makes the
+    // raw spelling a false mismatch.
+    assert!(
+        store.list()[0].roots.contains(&display(&from)),
+        "nothing was mutated by either rejection"
+    );
+}
+
+#[test]
 fn plan_rebind_roots_previews_without_mutating() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store_in(&temp);
@@ -665,6 +706,16 @@ fn plan_rebind_roots_previews_without_mutating() {
     let error = store
         .plan_rebind_roots(&from, &occupied)
         .expect_err("overlap rejected in the pre-flight");
+    // Typed like `rebind_roots` (round-9 review minor 10): only a genuine
+    // overlap is classified Overlap — a bare anyhow error would launder every
+    // future infrastructure failure into the conflict marker (the M3 shape).
+    assert!(
+        matches!(
+            error,
+            crate::features::projects::RebindRootsError::Overlap(_)
+        ),
+        "overlap rejected as Overlap, got: {error}"
+    );
     assert!(error.to_string().contains("overlap"));
     assert_eq!(store.get(&project.id).unwrap(), before);
 
@@ -1029,13 +1080,15 @@ fn legacy_nested_touched_pair_is_exempted_from_the_overlap_conflict() {
     );
 }
 
-/// Round-24 minor 7: the preflight REBIND_ROOTS_CONFLICT partition
-/// string-matches the validator's root-cause prefixes, so a wording change
-/// in `validate_roots` would silently degrade the dialog's conflict copy.
-/// The prefixes are now single-sourced with the bail! texts; this pin drives
-/// every overlap class through the real validator and requires its
-/// root cause to carry exactly one of the partition's prefixes. Red-verified
-/// by rewording a bail! without touching the const.
+/// Round-24 minor 7: the store-side conflict classification in
+/// `plan_rebind_roots`/`rebind_roots` (which error wears the command
+/// layer's REBIND_ROOTS_CONFLICT copy) string-matches the validator's
+/// root-cause prefixes, so a wording change in `validate_roots` would
+/// silently degrade the dialog's conflict copy. The prefixes are now
+/// single-sourced with the bail! texts; this pin drives every conflict
+/// class through the real validator and requires its root cause to carry
+/// exactly one of the partition's prefixes. Red-verified by rewording a
+/// bail! without touching the const.
 #[test]
 fn roots_conflict_partition_prefixes_match_production_wording() {
     use crate::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES;
