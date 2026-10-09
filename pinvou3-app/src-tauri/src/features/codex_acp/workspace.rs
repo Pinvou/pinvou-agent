@@ -1,4 +1,4 @@
-// architecture-guard: allow-target-cfg -- the round-12 baseline-gate symlink-convergence pin is cfg(unix)-gated: std::os::unix::fs::symlink has no portable equivalent and the inner-symlink shape it pins is a POSIX alias; the gate itself is portable and no platform behavior leaks into shared code.
+// architecture-guard: allow-target-cfg -- two cfg(unix)-gated halves share this file. (1) The round-12 baseline-gate symlink-convergence pin: std::os::unix::fs::symlink has no portable equivalent and the inner-symlink shape it pins is a POSIX alias; the gate itself is portable and no platform behavior leaks into shared code. (2) The round-48 untracked-diff regression test needs a real symlink (unix) to prove the git-arm diff refuses a link that escapes the workspace and reads a local one through its canonical target; the semantics under test (canonicalize -> containment -> read canonical) are platform-independent, only the fixture cannot be expressed portably.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};

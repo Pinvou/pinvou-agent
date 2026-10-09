@@ -1487,14 +1487,31 @@ fn memory_rejects_empty_option_values() {
         &["pinvou", "memory", "add", "preference", "--content", ""][..],
         &["pinvou", "memory", "add", "preference", "--file", ""][..],
         &["pinvou", "memory", "profile", "set", "--call-name", ""][..],
-        &[
-            "pinvou", "memory", "pending", "confirm", "id", "--reason", "",
-        ][..],
+        &["pinvou", "memory", "pending", "never", "id", "--reason", ""][..],
     ] {
         let error = expect_command_error(arguments);
         assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
         assert!(
             error.to_string().contains("requires a value"),
+            "{arguments:?}: {error}"
+        );
+    }
+    // Round-48 review: --reason records the justification on the
+    // destructive `never` decision only; confirm/ignore never read it, so
+    // the flag is now rejected at parse instead of being accepted and
+    // silently dropped.
+    for arguments in [
+        &[
+            "pinvou", "memory", "pending", "confirm", "id", "--reason", "why",
+        ][..],
+        &[
+            "pinvou", "memory", "pending", "ignore", "id", "--reason", "why",
+        ][..],
+    ] {
+        let error = expect_command_error(arguments);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}: {error}");
+        assert!(
+            error.to_string().contains("--reason"),
             "{arguments:?}: {error}"
         );
     }

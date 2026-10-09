@@ -70,6 +70,7 @@
 //! offered: the CLI has no flag that names a bare wire model — edit the
 //! model in the GUI, or delete and recreate the task.
 
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -3362,7 +3363,7 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
                     .enumerate()
                     .map(|(index, run)| (record_sort_key(run), index))
                     .collect::<Vec<_>>();
-                newest_first.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+                newest_first.sort_by_key(|(time, index)| (Reverse(*time), Reverse(*index)));
                 let selected: Vec<&serde_json::Value> = newest_first
                     .iter()
                     .take(probe_limit)
