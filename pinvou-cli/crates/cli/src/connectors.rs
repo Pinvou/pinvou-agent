@@ -1635,18 +1635,20 @@ fn set_enabled(
             spec.id
         )));
     }
-    // Round-48 review: a probe ERROR (wedged shim, timeout) no longer folds
-    // into "not connected" on the DESTRUCTIVE direction. `enable`'s purpose
-    // is turning the connector on; deleting the skill tree because the
-    // status probe hung would remove the one artifact the CLI cannot
-    // restore (the show direction is app-only) — the module's own wedged
-    //-probe doctrine ("a panicked probe knows NOTHING about this connector")
-    // applies with even more force here. The gate still folds probe errors
-    // to not-connected for the GUI-parity SHOW decision; only the hide arm
-    // demands a clean probe verdict.
+    // Round-48 review: on ENABLE, a probe ERROR (wedged shim, timeout) no
+    // longer folds into "not connected" for the destructive direction —
+    // enable's purpose is turning the connector ON, and deleting the skill
+    // tree because the status probe hung would remove the one artifact the
+    // CLI cannot restore (the show direction is app-only). The module's own
+    // wedged-probe doctrine ("a panicked probe knows NOTHING about this
+    // connector") applies with even more force on a command that must never
+    // delete. DISABLE keeps the switch-driven hide unconditionally: the
+    // switch just turned the connector off, and the hide direction exists
+    // precisely so the engine stops offering its commands — the probe
+    // verdict is irrelevant to that decision.
     let probe = cli_connected(spec);
     let connected = probe.as_ref().copied().unwrap_or(false);
-    let probe_errored = probe.is_err();
+    let enable_probe_errored = enabled && probe.is_err();
     // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
     // the connection state + the legacy `<id>_disabled` marker
     // (`skill_gate.rs::ConnectorGate::skills_should_show`); the plain-scope
@@ -1665,9 +1667,8 @@ fn set_enabled(
     // app's embedded bundle.
     let skills_removed = if skills_should_show {
         false
-    } else if probe_errored {
-        // Probe unknown on the destructive direction: leave the tree in
-        // place and say so.
+    } else if enable_probe_errored {
+        // Enable + probe unknown: leave the tree in place and say so.
         false
     } else {
         hide_connector_skills(kind)?;
@@ -1686,10 +1687,10 @@ fn set_enabled(
         // one that already kept its skills) leaves the skill files exactly
         // as they are, and the "deferred" phrasing would imply pending work.
         "skills refresh: nothing to do (skill files match the current state)".to_owned()
-    } else if probe_errored {
-        // Round-48 review: name the probe-unknown case — the tree stays and
-        // a rerun (with a healthy shim) decides, instead of the misleading
-        // "deferred to the desktop app".
+    } else if enable_probe_errored {
+        // Round-48 review: name the enable-probe-unknown case — the tree
+        // stays and a rerun (with a healthy shim) decides, instead of the
+        // misleading "deferred to the desktop app".
         "skills refresh: left in place (connection probe failed — rerun once the connector CLI responds)".to_owned()
     } else {
         "skills refresh: deferred to the desktop app (embedded bundle unpack is app-only)"
