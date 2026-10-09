@@ -1,8 +1,12 @@
 //! Contract tests for the `models` + `settings` families (`pinvou models`,
 //! `pinvou settings` alias). Parse-level coverage runs against pure parser
-//! state; execute-level coverage uses a temporary `PINVOU3_HOME` so no test
-//! touches real user data. Network paths (connection probes) are `#[ignore]`
-//! only — see the bottom of this file.
+//! state; execute-level coverage is fully sandboxed: every test holds
+//! `ENV_LOCK` and a `SandboxHome`, which points `PINVOU3_HOME` at a
+//! throwaway directory AND forces the credential store onto the file backend
+//! inside it (`CODEWHALE_SECRET_BACKEND=file` plus sandboxed `CODEWHALE_HOME`
+//! / `HOME`), so no test reads or writes the real user keychain, settings, or
+//! fallback files. Network paths (connection probes) are `#[ignore]` only —
+//! see the bottom of this file.
 
 use std::sync::Mutex;
 
@@ -17,11 +21,24 @@ use pinvou3_lib::platform::prefs::{ColorScheme, ModelPreset, SearchProvider, The
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Creates a unique temporary product home and points `PINVOU3_HOME` at it.
-/// Restores the previous value and removes the directory on drop so an
-/// assertion failure cannot leak environment state into other tests.
+/// Round-49 review: it ALSO establishes the hermetic credential fixture —
+/// `CODEWHALE_SECRET_BACKEND=file` with `CODEWHALE_HOME` / `HOME` inside the
+/// sandbox root — so execute-level credential operations write the throwaway
+/// file backend instead of the real OS keychain or the real home's plaintext
+/// fallback files (the file backend resolves `CODEWHALE_HOME`, then `HOME`).
+/// Restores every variable and removes the directory on drop so an assertion
+/// failure cannot leak environment state into other tests.
+///
+/// The caller MUST hold `ENV_LOCK` for the guard's whole lifetime: the
+/// constructor and `Drop` mutate process-global environment state. The lock
+/// is deliberately NOT taken here — every caller already holds it and
+/// `std::sync::Mutex` is not reentrant, so taking it would deadlock.
 struct SandboxHome {
     root: std::path::PathBuf,
-    previous: Option<std::ffi::OsString>,
+    previous_home: Option<std::ffi::OsString>,
+    /// Secret-fixture variables established by [`Self::new`], saved for
+    /// restoration on drop (`(name, previous value)`).
+    secrets: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
 
 impl SandboxHome {
@@ -35,15 +52,38 @@ impl SandboxHome {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("create temporary PINVOU3_HOME");
-        let previous = std::env::var_os("PINVOU3_HOME");
+        let previous_home = std::env::var_os("PINVOU3_HOME");
+        // SAFETY: the caller holds ENV_LOCK for the guard's lifetime.
         unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { root, previous }
+        let secrets_home = root.join("secrets-home");
+        let mut secrets = Vec::new();
+        for (name, value) in [
+            ("CODEWHALE_SECRET_BACKEND", std::ffi::OsStr::new("file")),
+            ("CODEWHALE_HOME", secrets_home.as_os_str()),
+            ("HOME", secrets_home.as_os_str()),
+        ] {
+            secrets.push((name, std::env::var_os(name)));
+            // SAFETY: the caller holds ENV_LOCK for the guard's lifetime.
+            unsafe { std::env::set_var(name, value) };
+        }
+        Self {
+            root,
+            previous_home,
+            secrets,
+        }
     }
 }
 
 impl Drop for SandboxHome {
     fn drop(&mut self) {
-        match self.previous.take() {
+        // SAFETY: ENV_LOCK is held by the owning test.
+        for (name, value) in self.secrets.drain(..) {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+        match self.previous_home.take() {
             Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
@@ -1469,6 +1509,105 @@ fn models_edit_clear_api_key_requires_yes() {
     .expect("clear-api-key with --yes and a field change must parse");
 }
 
+/// Round-49 review: the deferred keyring deletes moved INSIDE the settings
+/// flock — `update_transaction_with_post_commit`'s post-commit hook runs the
+/// delete right after the save and before the lock releases, closing the
+/// peer-clobber window the GUI closed for its own lanes. The cross-process
+/// flock ordering itself has no hermetic seam an execute-level test can
+/// race; it is pinned BY CONSTRUCTION (the delete is wired through the hook,
+/// which the prefs layer documents as running under the lock) and by the
+/// crate's unit lane (`*_defers_the_keyring_delete_until_after_the_commit`
+/// forces a commit failure and asserts no delete). What this test pins is
+/// the single-process contract the rewiring must not change: through the
+/// real execute path, replacing rotates the stored value and clearing
+/// deletes the stored entry — observed at the reveal end, so the delete is
+/// known to have actually run against the sandboxed file backend, not
+/// merely that prefs bookkeeping changed.
+#[test]
+fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = SandboxHome::new("edit-clear-replace");
+    // An ambient DEEPSEEK_API_KEY would classify every model as env_override
+    // and hide the stored-credential lane entirely.
+    let _restore_deepseek_key =
+        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _first = RestoreEnvVar(
+        "PINVOU_CLI_TEST_ROTATE_A",
+        std::env::var_os("PINVOU_CLI_TEST_ROTATE_A"),
+    );
+    unsafe { std::env::set_var("PINVOU_CLI_TEST_ROTATE_A", "sk-rotate-first-1234567890") };
+    let _second = RestoreEnvVar(
+        "PINVOU_CLI_TEST_ROTATE_B",
+        std::env::var_os("PINVOU_CLI_TEST_ROTATE_B"),
+    );
+    unsafe { std::env::set_var("PINVOU_CLI_TEST_ROTATE_B", "sk-rotate-second-1234567890") };
+
+    let stdout = run_ok(ADD_ARGS);
+    let id = stdout
+        .strip_prefix("id: ")
+        .expect("prints the new id")
+        .trim()
+        .to_owned();
+
+    // Replace keeps replace semantics: still configured, and the revealed
+    // value is the NEW secret (stored in the sandboxed file backend).
+    let human = run_ok(&[
+        "pinvou",
+        "models",
+        "edit",
+        &id,
+        "--api-key-env",
+        "PINVOU_CLI_TEST_ROTATE_A",
+    ]);
+    assert!(human.contains("credential: replaced"), "{human}");
+    let human = run_ok(&["pinvou", "models", "show", &id, "--reveal-key"]);
+    assert!(
+        human.contains("api_key_source: credential_store"),
+        "{human}"
+    );
+    assert!(
+        human.contains("api_key: sk-rotate-first-1234567890"),
+        "the stored value must read back through the same backend: {human}"
+    );
+
+    let human = run_ok(&[
+        "pinvou",
+        "models",
+        "edit",
+        &id,
+        "--api-key-env",
+        "PINVOU_CLI_TEST_ROTATE_B",
+    ]);
+    assert!(human.contains("credential: replaced"), "{human}");
+    let human = run_ok(&["pinvou", "models", "show", &id, "--reveal-key"]);
+    assert!(
+        human.contains("api_key: sk-rotate-second-1234567890"),
+        "the rotation must overwrite under the same reference: {human}"
+    );
+    assert!(
+        !human.contains("sk-rotate-first"),
+        "the old value must not survive a rotation: {human}"
+    );
+
+    // Clear deletes the stored entry: the receipt says `cleared`, the model
+    // is recorded secretless, and the reveal end reports nothing stored —
+    // the entry the delete targeted is the one this sandbox wrote, so the
+    // delete demonstrably ran against the store.
+    let human = run_ok(&["pinvou", "models", "edit", &id, "--clear-api-key", "--yes"]);
+    assert!(human.contains("credential: cleared"), "{human}");
+    let prefs = load_prefs();
+    let model = prefs.model_by_id(&id).expect("model kept");
+    assert!(
+        !model.has_secret && model.credential_ref.is_none(),
+        "the cleared model must be recorded as secretless: {:?}",
+        model.credential_state
+    );
+    let human = run_ok(&["pinvou", "models", "show", &id, "--reveal-key"]);
+    assert!(human.contains("api_key_source: none"), "{human}");
+    assert!(human.contains("api_key: (not stored)"), "{human}");
+}
+
 /// Round-18 finding (same class): `settings search set --provider P --clear`
 /// wipes provider P's stored credential — the search-family sibling of
 /// `models edit --clear-api-key` — and ran without `--yes`. Same contract:
@@ -2136,38 +2275,64 @@ fn models_reject_plaintext_secret_flags_instead_of_ingesting_them() {
     );
 }
 
+/// The stray-positional lane (`reject_stray_positionals`, wired for
+/// `settings search set`) must report the COUNT of rejected tokens, never
+/// the tokens themselves: a positional there is usually a pasted secret
+/// meant for an interactive prompt, and echoing it back would write it to
+/// the terminal (round-49 review). The `--api-key`/`--token` value-flag
+/// lane above pins the same no-echo rule for its own path.
+#[test]
+fn settings_search_set_rejects_stray_positionals_without_echoing_them() {
+    let pasted = "sk-pasted-positional-secret-1234567890";
+    let message = usage_error(&[
+        "pinvou",
+        "settings",
+        "search",
+        "set",
+        pasted,
+        "--provider",
+        "metaso",
+    ]);
+    assert!(
+        message.contains("takes no positional arguments"),
+        "unexpected message: {message}"
+    );
+    assert!(
+        message.contains("(got 1)"),
+        "the rejection must report the count, not the tokens: {message}"
+    );
+    assert!(
+        !message.contains(pasted),
+        "the error must not echo the pasted token: {message}"
+    );
+    // Multiple stray tokens stay count-only (no token list either).
+    let message = usage_error(&[
+        "pinvou",
+        "settings",
+        "search",
+        "set",
+        pasted,
+        "another-stray-token",
+        "--provider",
+        "metaso",
+    ]);
+    assert!(
+        message.contains("(got 2)") && !message.contains("another-stray-token"),
+        "the rejection must stay count-only for several tokens: {message}"
+    );
+}
+
 /// The no-reveal redaction gate had no test for the state where a leak would
 /// matter: a CONFIGURED model (a stored credential) shown WITHOUT
 /// `--reveal-key` must print neither the key bytes nor an api_key line, in
-/// human and JSON output alike. Uses the file-backed secret backend pointed
-/// at a throwaway home so the fixture never touches the real keychain
-/// (round-38 review).
+/// human and JSON output alike. Hermeticity comes from `SandboxHome`'s
+/// default fixture (file-backed secret store inside the sandbox), so the
+/// stored credential never touches the real keychain (round-38 review;
+/// default since round-49).
 #[test]
 fn configured_model_show_without_reveal_key_leaks_nothing() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("no-reveal");
-    let mut homes: Vec<(&'static str, Option<std::ffi::OsString>)> = Vec::new();
-    for name in ["CODEWHALE_HOME", "HOME"] {
-        homes.push((name, std::env::var_os(name)));
-        unsafe { std::env::set_var(name, _home.root.join("secrets-home")) };
-    }
-    struct RestoreHomes(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for RestoreHomes {
-        fn drop(&mut self) {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            for (name, value) in self.0.drain(..) {
-                match value {
-                    Some(v) => unsafe { std::env::set_var(name, v) },
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
-    let _homes = RestoreHomes(homes);
-    let _backend = RestoreEnvVar(
-        "CODEWHALE_SECRET_BACKEND",
-        Some(std::ffi::OsString::from("file")),
-    );
     let secret = "sk-no-reveal-check-1234567890";
     // Hermeticity, same as the lifecycle test: an ambient DEEPSEEK_API_KEY
     // short-circuits credential_state to env_override, which would make the
@@ -2247,37 +2412,15 @@ fn search_provider_surface_matches_gui() {
 /// (only recorded, never gated), the in-memory sanitize cleared the key, and
 /// `save_unlocked` rewrote the whole file without it, exit 0. The transaction
 /// now refuses like the GUI's own `prepare_prefs_for_save`, and the file
-/// keeps the key. The store is broken hermetically: a RELATIVE
-/// `CODEWHALE_HOME` makes the file backend refuse the path and degrade to a
-/// write-refusing empty store, so `store.set` fails without touching any
-/// real keychain.
+/// keeps the key. The store is broken hermetically: `SandboxHome` already
+/// puts the file backend inside the sandbox, and this test then points
+/// `CODEWHALE_HOME` at a RELATIVE path mid-run, which makes the file backend
+/// refuse the path and degrade to a write-refusing empty store, so
+/// `store.set` fails without touching any real keychain.
 #[test]
 fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_store_fails() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("m1-broken-store");
-    let mut homes: Vec<(&'static str, Option<std::ffi::OsString>)> = Vec::new();
-    for name in ["CODEWHALE_HOME", "HOME"] {
-        homes.push((name, std::env::var_os(name)));
-        unsafe { std::env::set_var(name, home.root.join("secrets-home")) };
-    }
-    struct RestoreHomes(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for RestoreHomes {
-        fn drop(&mut self) {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            for (name, value) in self.0.drain(..) {
-                match value {
-                    Some(v) => unsafe { std::env::set_var(name, v) },
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
-    let _homes = RestoreHomes(homes);
-    let _backend = RestoreEnvVar(
-        "CODEWHALE_SECRET_BACKEND",
-        std::env::var_os("CODEWHALE_SECRET_BACKEND"),
-    );
-    unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", "file") };
     let _restore_deepseek_key =
         RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
     unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
@@ -2301,6 +2444,9 @@ fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_sto
     std::fs::write(&settings, serde_json::to_string_pretty(&document).unwrap()).unwrap();
 
     // Break the store and write: the transaction refuses, naming the cause.
+    // The sandbox value is restored on drop so the tail of the test (and any
+    // future assertions) keep reading the sandboxed backend.
+    let _broken = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
     unsafe { std::env::set_var("CODEWHALE_HOME", "relative-broken-home") };
     let (message, code) = run_err(&["pinvou", "settings", "set", "theme", "liquid-dark"]);
     assert_eq!(code, ExitCode::Failed);

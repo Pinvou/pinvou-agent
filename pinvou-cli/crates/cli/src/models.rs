@@ -46,9 +46,9 @@ use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialState, CredentialStore, SystemCredentialStore, redact_secret,
 };
 use pinvou3_lib::platform::prefs::{
-    ColorScheme, CredentialStateOps, Language, MODEL_PROVIDER_KIND_CODING_PLAN,
-    MODEL_PROVIDER_KIND_CUSTOM, MODEL_PROVIDER_KIND_OFFICIAL_API, ModelPreset, SavedModel,
-    SearchProvider, Theme, UserPrefs,
+    ColorScheme, CredentialStateOps, Language, MODEL_API_KEY_ENV_OVERRIDE,
+    MODEL_PROVIDER_KIND_CODING_PLAN, MODEL_PROVIDER_KIND_CUSTOM, MODEL_PROVIDER_KIND_OFFICIAL_API,
+    ModelPreset, SavedModel, SearchProvider, Theme, UserPrefs,
 };
 
 use crate::support::{collapse_control_characters, render, require_yes, resolve_secret, success};
@@ -541,7 +541,9 @@ impl Options {
 
     /// Option-only subcommands must not silently drop stray tokens
     /// (`settings search set junk --provider metaso` is a typo, not a
-    /// value).
+    /// value). The message reports the COUNT only, never the tokens: a
+    /// positional here is usually a pasted secret meant for an interactive
+    /// prompt, and echoing it back would write it into the terminal.
     fn reject_stray_positionals(&self) -> Result<(), CliError> {
         if self.positionals.is_empty() {
             Ok(())
@@ -549,7 +551,7 @@ impl Options {
             Err(CliError::usage(format!(
                 "{} takes no positional arguments (got {})",
                 self.label,
-                self.positionals.join(" ")
+                self.positionals.len()
             )))
         }
     }
@@ -1483,7 +1485,20 @@ fn edit<S: CredentialStore>(
     // reported without side effects (same ordering as `add`).
     let secret = resolve_secret(api_key_env, api_key_stdin)?;
     let replacement = secret.map(|raw| secret_for_storage(&raw).to_owned());
-    let mut reference_to_delete: Option<CredentialReference> = None;
+    // The deferred keyring delete travels from the mutate closure (which
+    // discovers the reference) to the post-commit hook (which issues it)
+    // through a `RefCell`: both closures are `FnOnce` over the same captured
+    // environment. Round-49 review: the hook runs via
+    // `update_transaction_with_post_commit` right after the save succeeds and
+    // BEFORE the settings flock releases, so the delete is totally ordered
+    // against a concurrent replacement of the same deterministic reference —
+    // the same barrier the GUI's `save_model_inner` applies. A delete that
+    // ran after the lock released could destroy a secret that replacement
+    // had just committed. `cleared_stored_reference` keeps the
+    // "was there actually something to clear" bit the `cleared`/`unchanged`
+    // receipt below reports (the hook consumes the reference itself).
+    let deferred_delete = std::cell::RefCell::new(Option::<CredentialReference>::None);
+    let cleared_stored_reference = std::cell::Cell::new(false);
     // What the closure actually wrote, and what was under that reference
     // before it did. Both are captured INSIDE the transaction rather than
     // read up front: `credential_reference()` prefers the model's stored
@@ -1494,59 +1509,77 @@ fn edit<S: CredentialStore>(
     // distinct from "no previous secret", the same three-way rollback
     // `search_set` documents.
     let mut written: Option<(CredentialReference, Result<Option<String>, String>)> = None;
-    let transaction = UserPrefs::update_transaction(|prefs| {
-        let Some(existing) = prefs.model_by_id(id) else {
-            return Err(format!("model not found: {id}"));
-        };
-        let mut updated = existing.clone();
-        apply_model_edit(&mut updated, changes);
-        // Validate only the reference this edit WRITES: a pre-existing
-        // dangling `vision_model_id` (the referenced model was removed —
-        // `remove_model` does not cascade) must not fail an unrelated edit,
-        // where the GUI's `save_model_inner` (this module's parity anchor)
-        // has no such gate. A carried-through reference keeps the GUI's
-        // behavior: the dead fallback silently never fires.
-        if changes.vision_model_id.is_some() {
-            require_known_vision_model(prefs, updated.vision_model_id.as_deref())?;
-        }
-        match (&replacement, clear_api_key) {
-            // Replace: store first, then mark configured, all inside the
-            // closure so the save that follows either commits both or neither.
-            (Some(key), _) if !key.is_empty() => {
-                let reference = updated.credential_reference();
-                let previous = store.get(&reference).map_err(|error| error.user_message());
-                written = Some((reference.clone(), previous));
-                store
-                    .set(&reference, key)
-                    .map_err(|error| format!("credential store unavailable: {error}"))?;
-                updated.mark_configured(reference);
+    let transaction = UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            let Some(existing) = prefs.model_by_id(id) else {
+                return Err(format!("model not found: {id}"));
+            };
+            let mut updated = existing.clone();
+            apply_model_edit(&mut updated, changes);
+            // Validate only the reference this edit WRITES: a pre-existing
+            // dangling `vision_model_id` (the referenced model was removed —
+            // `remove_model` does not cascade) must not fail an unrelated edit,
+            // where the GUI's `save_model_inner` (this module's parity anchor)
+            // has no such gate. A carried-through reference keeps the GUI's
+            // behavior: the dead fallback silently never fires.
+            if changes.vision_model_id.is_some() {
+                require_known_vision_model(prefs, updated.vision_model_id.as_deref())?;
             }
-            // Delete: the record is cleared now, the keyring entry after the
-            // commit — gated on the model actually holding a stored
-            // `credential_ref`. A never-configured model has no keyring
-            // entry, and deleting the `model:{id}` reference
-            // `credential_reference()` would synthesize anyway errors on
-            // most keyrings — a spurious warning for a no-op. The same gate
-            // `models remove` (its `credential_ref` lookup with no fallback)
-            // and `search set --clear` (a never-configured provider has no
-            // keyring entry) already apply; all three deletion lanes share
-            // one contract.
-            (_, true) => {
-                reference_to_delete = updated.credential_ref.clone();
-                updated.mark_missing();
+            match (&replacement, clear_api_key) {
+                // Replace: store first, then mark configured, all inside the
+                // closure so the save that follows either commits both or neither.
+                (Some(key), _) if !key.is_empty() => {
+                    let reference = updated.credential_reference();
+                    let previous = store.get(&reference).map_err(|error| error.user_message());
+                    written = Some((reference.clone(), previous));
+                    store
+                        .set(&reference, key)
+                        .map_err(|error| format!("credential store unavailable: {error}"))?;
+                    updated.mark_configured(reference);
+                }
+                // Delete: the record is cleared now, the keyring entry in the
+                // post-commit hook — gated on the model actually holding a
+                // stored `credential_ref`. A never-configured model has no
+                // keyring entry, and deleting the `model:{id}` reference
+                // `credential_reference()` would synthesize anyway errors on
+                // most keyrings — a spurious warning for a no-op. The same gate
+                // `models remove` (its `credential_ref` lookup with no fallback)
+                // and `search set --clear` (a never-configured provider has no
+                // keyring entry) already apply; all three deletion lanes share
+                // one contract.
+                (_, true) => {
+                    let reference = updated.credential_ref.clone();
+                    cleared_stored_reference.set(reference.is_some());
+                    *deferred_delete.borrow_mut() = reference;
+                    updated.mark_missing();
+                }
+                // KeepExisting: the clone already carries the stored credential
+                // bookkeeping, so there is nothing to do.
+                _ => {}
             }
-            // KeepExisting: the clone already carries the stored credential
-            // bookkeeping, so there is nothing to do.
-            _ => {}
-        }
-        // The plaintext key never reaches settings.json.
-        updated.api_key = String::new();
-        prefs.upsert_model(updated);
-        if set_active {
-            prefs.advanced.active_model_id = Some(id.to_owned());
-        }
-        Ok(())
-    });
+            // The plaintext key never reaches settings.json.
+            updated.api_key = String::new();
+            prefs.upsert_model(updated);
+            if set_active {
+                prefs.advanced.active_model_id = Some(id.to_owned());
+            }
+            Ok(())
+        },
+        // Runs only after `save_unlocked` succeeded, still under the prefs
+        // lock; a failed commit never reaches it, so the secret survives a
+        // failed clear (the ordering the unit lane pins).
+        || {
+            if let Some(reference) = deferred_delete.borrow_mut().take()
+                && let Err(error) = store.delete(&reference)
+            {
+                note!(
+                    "pinvou: warning: model {id} api key cleared from settings, but its keyring \
+                     entry could not be deleted: {}",
+                    error.user_message()
+                );
+            }
+        },
+    );
     if let Err(error) = transaction {
         if let Some((reference, previous)) = written {
             // Round-48 review: the rollback runs AFTER the settings flock is
@@ -1563,6 +1596,9 @@ fn edit<S: CredentialStore>(
                 Ok(current) => replacement.as_deref() != current.as_deref(),
                 Err(_) => true,
             };
+            // Residual (round-49 review): a peer write landing between this
+            // post-flock re-read and the restoring set/delete below is the
+            // last unclosable sub-window without a keyring compare-and-swap.
             match previous {
                 // The rotation destroyed the old secret: put it back — but
                 // only if a peer did not move the reference meanwhile.
@@ -1585,16 +1621,7 @@ fn edit<S: CredentialStore>(
         }
         return Err(prefs_error(error));
     }
-    let had_stored_reference = reference_to_delete.is_some();
-    if let Some(reference) = reference_to_delete
-        && let Err(error) = store.delete(&reference)
-    {
-        note!(
-            "pinvou: warning: model {id} api key cleared from settings, but its keyring \
-             entry could not be deleted: {}",
-            error.user_message()
-        );
-    }
+    let had_stored_reference = cleared_stored_reference.get();
     let credential = if replacement.as_ref().is_some_and(|key| !key.is_empty()) {
         "replaced"
     } else if clear_api_key {
@@ -1662,38 +1689,48 @@ fn remove<S: CredentialStore>(
     if prefs.model_by_id(id).is_some() && prefs.advanced.saved_models.len() <= 1 {
         return Err(CliError::usage(REMOVE_LAST_MODEL_MESSAGE));
     }
-    // The keyring delete moves AFTER the prefs save (the ordering this
-    // file's own `search set --clear` comment states): deleting first left
-    // a save failure with a model that is still configured but secretless.
-    // A secret left behind by a failed post-save delete is the benign
-    // direction — the prefs record no longer references it.
-    let mut reference_to_delete: Option<CredentialReference> = None;
-    UserPrefs::update_transaction(|prefs| {
-        if prefs.model_by_id(id).is_none() {
-            return Err(format!("model not found: {id}"));
-        }
-        if prefs.advanced.saved_models.len() <= 1 {
-            return Err(REMOVE_LAST_MODEL_MESSAGE.to_owned());
-        }
-        if let Some(reference) = prefs
-            .model_by_id(id)
-            .and_then(|model| model.credential_ref.clone())
-        {
-            reference_to_delete = Some(reference);
-        }
-        prefs.remove_model(id);
-        Ok(())
-    })
+    // The keyring delete runs in the post-commit hook, still inside the
+    // settings-flock critical section (`update_transaction_with_post_commit`):
+    // deleting first left a save failure with a model that is still
+    // configured but secretless, and deleting after the lock released would
+    // let a concurrent replacement of the same deterministic reference commit
+    // a fresh secret that the stale delete then destroys — the peer-clobber
+    // window the GUI's `delete_model_inner` already closed. A secret left
+    // behind by a failed delete is the benign direction: the prefs record no
+    // longer references it. The reference travels from the mutate closure to
+    // the hook through a `RefCell` because both closures are `FnOnce` over
+    // the same captured environment.
+    let deferred_delete = std::cell::RefCell::new(Option::<CredentialReference>::None);
+    UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            if prefs.model_by_id(id).is_none() {
+                return Err(format!("model not found: {id}"));
+            }
+            if prefs.advanced.saved_models.len() <= 1 {
+                return Err(REMOVE_LAST_MODEL_MESSAGE.to_owned());
+            }
+            if let Some(reference) = prefs
+                .model_by_id(id)
+                .and_then(|model| model.credential_ref.clone())
+            {
+                *deferred_delete.borrow_mut() = Some(reference);
+            }
+            prefs.remove_model(id);
+            Ok(())
+        },
+        || {
+            if let Some(reference) = deferred_delete.borrow_mut().take() {
+                if let Err(error) = store.delete(&reference) {
+                    note!(
+                        "pinvou: warning: model {id} removed, but its keyring secret could not \
+                         be deleted: {}",
+                        error.user_message()
+                    );
+                }
+            }
+        },
+    )
     .map_err(prefs_error)?;
-    if let Some(reference) = reference_to_delete {
-        if let Err(error) = store.delete(&reference) {
-            note!(
-                "pinvou: warning: model {id} removed, but its keyring secret could not be \
-                 deleted: {}",
-                error.user_message()
-            );
-        }
-    }
     let text = render(
         output,
         format!("removed: {id}"),
@@ -1857,9 +1894,12 @@ fn show<S: CredentialStore>(
         let value = match revealed.flatten() {
             Some(key) => key,
             // Not collapsed: this is a literal placeholder, not stored data.
-            None if key_source == "environment" => {
-                "(supplied by the DEEPSEEK_API_KEY environment override; not echoed)".to_owned()
-            }
+            // The variable name comes from the same const the env-override
+            // check reads (`refresh_credential_states_with_store`), so the
+            // wording cannot drift from what actually classifies the model.
+            None if key_source == "environment" => format!(
+                "(supplied by the {MODEL_API_KEY_ENV_OVERRIDE} environment override; not echoed)"
+            ),
             None => "(not stored)".to_owned(),
         };
         // `api_key_source` goes FIRST so the revealed secret — the one cell
@@ -1975,9 +2015,15 @@ fn test_connection<S: CredentialStore>(
     // `models test` outcome it renders a single-line JSON row on stdout
     // (with `credential_unavailable`), so scripts can branch on it instead
     // of parsing stderr text. Parity by design: the GUI's connection test
-    // resolves the stored key identically, so env-overridden keys (e.g.
-    // DEEPSEEK_API_KEY) are not honored here either.
-    let key = match resolve_saved_model_key(store, &model) {
+    // resolves the stored key identically, so env-overridden keys (the
+    // `MODEL_API_KEY_ENV_OVERRIDE` variable) are not honored here either.
+    // Round-49 review: the resolution is the HONEST variant — under the
+    // file-fallback valves a plain miss cannot distinguish "never stored"
+    // from "stored in the OS keyring this process cannot reach", and the
+    // latter must surface as `credential_unavailable`, not masquerade as an
+    // unauthenticated probe that the endpoint then 401s into `auth_invalid`
+    // (the same mapping `show --reveal-key` applies).
+    let key = match resolve_saved_model_key_honest(store, &model) {
         Ok(key) => key.unwrap_or_default(),
         Err(error) => {
             let probe = connection_result(
@@ -2704,10 +2750,13 @@ fn probe_local<S: CredentialStore>(
             // refresh (`safe_prefs`) its rows never render — the same
             // conversion the round-39 review applied to `test_connection`
             // and the active-model arm; the key resolves for exactly this
-            // one model via `resolve_saved_model_key` below.
+            // one model via the honest resolver below (round-49 review:
+            // an unreachable OS keyring must report
+            // `credential_unavailable`, not "no stored api key" — the key
+            // may well exist where this process cannot read it).
             let prefs = plain_prefs();
             let model = find_model(&prefs, id)?;
-            let key = resolve_saved_model_key(store, &model)
+            let key = resolve_saved_model_key_honest(store, &model)
                 .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
                 .filter(|key| !key.trim().is_empty());
             if key.is_none() {
@@ -2734,8 +2783,12 @@ fn probe_local<S: CredentialStore>(
                 None => {
                     // Swallowing a keychain failure here would turn every
                     // signed request into a 401 and classify a working
-                    // server as `generic` — surface it instead.
-                    resolve_saved_model_key(store, &model)
+                    // server as `generic` — surface it instead. Round-49
+                    // review: the honest resolver keeps an unreachable OS
+                    // keyring from degrading a miss into an anonymous probe
+                    // (the endpoint's 401 would misclassify it) — it fails
+                    // as `credential_unavailable` like every other lane.
+                    resolve_saved_model_key_honest(store, &model)
                         .map_err(|error| {
                             CliError::failed(format!("credential_unavailable: {error}"))
                         })?
@@ -3145,8 +3198,17 @@ fn search_set<S: CredentialStore>(
     // is the PERSISTING variant (it re-runs the migrations, including the
     // keyring write path) and reading it before the critical section made the
     // reference a TOCTOU snapshot of a different prefs state than the one the
-    // clear commits against. Captured by `&mut` exactly like `models remove`.
-    let mut reference_to_delete: Option<CredentialReference> = None;
+    // clear commits against. The reference travels to the post-commit hook
+    // through a `RefCell` (both closures are `FnOnce` over the same captured
+    // environment, exactly like `models remove`): round-49 review moved the
+    // delete inside `update_transaction_with_post_commit`'s hook, so it runs
+    // right after the save and BEFORE the settings flock releases — a
+    // concurrent replacement of the same deterministic reference is then
+    // totally ordered against it instead of racing a post-lock delete.
+    // `cleared_stored_reference` keeps the "was there actually something to
+    // clear" bit the receipt below reports (the hook consumes the reference).
+    let deferred_delete = std::cell::RefCell::new(Option::<CredentialReference>::None);
+    let cleared_stored_reference = std::cell::Cell::new(false);
     // Replacing an existing key OVERWRITES it in the keyring, so the
     // rollback below must restore the previous value — deleting would
     // destroy the old secret while prefs still references it (strictly
@@ -3159,42 +3221,65 @@ fn search_set<S: CredentialStore>(
     // from "no previous secret": rolling back on unknown state must not
     // delete a key that may still exist and still be referenced by prefs.
     let mut previous_secret = None;
-    let transaction = UserPrefs::update_transaction(|prefs| {
-        // Only a caller actually SELECTING a provider switches the active
-        // one. `--clear` is a credential operation: clearing a non-active
-        // provider's key used to activate that provider as a side effect, so
-        // `settings search set --provider tavily --clear` silently moved
-        // search off whatever the user had chosen.
-        if !clear {
-            prefs.search.provider = provider;
-        }
-        if let Some(key) = &stored {
-            let reference = provider.credential_reference();
-            previous_secret = Some(store.get(&reference));
-            // Normalized exactly like `models add` and the GUI
-            // (`platform/prefs` `apply_model_credential`). This call site
-            // used to pass `key` verbatim, so a `--api-key-env` secret with
-            // a trailing newline was stored with it and every search request
-            // 401'd while `settings search test` still reported
-            // `configured` — see `secret_for_storage`.
-            store
-                .set(&reference, secret_for_storage(key))
-                .map_err(|error| error.user_message())?;
-            prefs
-                .search
-                .credentials
-                .entry(provider)
-                .or_default()
-                .mark_configured(reference);
-        }
-        if clear {
-            if let Some(credential) = prefs.search.credentials.get_mut(&provider) {
-                reference_to_delete = credential.credential_ref.clone();
-                credential.mark_missing();
+    let transaction = UserPrefs::update_transaction_with_post_commit(
+        |prefs| {
+            // Only a caller actually SELECTING a provider switches the active
+            // one. `--clear` is a credential operation: clearing a non-active
+            // provider's key used to activate that provider as a side effect, so
+            // `settings search set --provider tavily --clear` silently moved
+            // search off whatever the user had chosen.
+            if !clear {
+                prefs.search.provider = provider;
             }
-        }
-        Ok(())
-    });
+            if let Some(key) = &stored {
+                let reference = provider.credential_reference();
+                previous_secret = Some(store.get(&reference));
+                // Normalized exactly like `models add` and the GUI
+                // (`platform/prefs` `apply_model_credential`). This call site
+                // used to pass `key` verbatim, so a `--api-key-env` secret with
+                // a trailing newline was stored with it and every search request
+                // 401'd while `settings search test` still reported
+                // `configured` — see `secret_for_storage`.
+                store
+                    .set(&reference, secret_for_storage(key))
+                    .map_err(|error| error.user_message())?;
+                prefs
+                    .search
+                    .credentials
+                    .entry(provider)
+                    .or_default()
+                    .mark_configured(reference);
+            }
+            if clear {
+                if let Some(credential) = prefs.search.credentials.get_mut(&provider) {
+                    let reference = credential.credential_ref.clone();
+                    cleared_stored_reference.set(reference.is_some());
+                    *deferred_delete.borrow_mut() = reference;
+                    credential.mark_missing();
+                }
+            }
+            Ok(())
+        },
+        // Runs only after `save_unlocked` succeeded, still under the prefs
+        // lock — deleting first would leave the prefs entry pointing at a
+        // credential that no longer exists if the save fails (a leftover
+        // keyring entry is the benign direction). The same benign direction
+        // applies on the way out: the prefs entry is already cleared, so a
+        // keyring deletion failure warns and succeeds like `models remove`,
+        // instead of reporting a failure whose only remedy (rerun) has
+        // nothing left to do.
+        || {
+            if let Some(reference) = deferred_delete.borrow_mut().take() {
+                if let Err(error) = store.delete(&reference) {
+                    note!(
+                        "pinvou: warning: credential cleared from settings, but the keyring entry \
+                         could not be deleted: {}",
+                        error.user_message()
+                    );
+                }
+            }
+        },
+    );
     // The transaction's own return value is the post-save prefs, so the
     // active provider reported below is read from the state that committed
     // rather than from a second `UserPrefs::load()`.
@@ -3220,6 +3305,10 @@ fn search_set<S: CredentialStore>(
                     (Some(written_value), Ok(current)) => current.as_deref() != Some(written_value),
                     _ => true,
                 };
+                // Residual (round-49 review): a peer write landing between
+                // this post-flock re-read and the restoring set/delete below
+                // is the last unclosable sub-window without a keyring
+                // compare-and-swap.
                 match previous_secret {
                     // A previous secret existed: the overwrite destroyed it,
                     // so the rollback must put it back.
@@ -3244,25 +3333,7 @@ fn search_set<S: CredentialStore>(
             return Err(prefs_error(error));
         }
     };
-    let had_reference = reference_to_delete.is_some();
-    if clear {
-        // Only after the prefs save succeeded — deleting first would leave
-        // the prefs entry pointing at a credential that no longer exists if
-        // the save fails (a leftover keyring entry is the benign direction).
-        // The same benign direction applies on the way out: the prefs entry
-        // is already cleared, so a keyring deletion failure warns and
-        // succeeds like `models remove`, instead of reporting a failure
-        // whose only remedy (rerun) has nothing left to do.
-        if let Some(reference) = reference_to_delete {
-            if let Err(error) = store.delete(&reference) {
-                note!(
-                    "pinvou: warning: credential cleared from settings, but the keyring entry \
-                     could not be deleted: {}",
-                    error.user_message()
-                );
-            }
-        }
-    }
+    let had_reference = cleared_stored_reference.get();
     let action = if clear {
         if had_reference {
             "cleared"
@@ -4950,7 +5021,42 @@ mod tests {
         }
     }
 
-    /// The store / read-back / delete cycle the lane had NO coverage for:
+    /// A store in the state an unreachable OS keyring produces: reads MISS
+    /// (the file fallback answers "absent" — the secret itself sits in the
+    /// keyring this process cannot reach) while
+    /// [`CredentialStore::os_keyring_unreachable`] reports that ambiguity.
+    /// `SystemCredentialStore` reaches exactly this state after its keyring
+    /// probe fails; the double makes it hermetic for the honest-resolver
+    /// pins below.
+    struct UnreachableKeyringStore {
+        inner: RecordingStore,
+    }
+
+    impl UnreachableKeyringStore {
+        fn new() -> Self {
+            Self {
+                inner: RecordingStore::new(),
+            }
+        }
+    }
+
+    impl CredentialStore for UnreachableKeyringStore {
+        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
+            self.inner.get(reference)
+        }
+
+        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            self.inner.set(reference, value)
+        }
+
+        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
+            self.inner.delete(reference)
+        }
+
+        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
+            true
+        }
+    }
     /// `add` stores the secret trimmed, `show --reveal-key` reads it back
     /// through the same seam, `edit --clear-api-key` deletes it after the
     /// commit, and the persisted model is marked missing, not configured.
@@ -5638,6 +5744,109 @@ mod tests {
             store.entries().contains(&"sk-search-defer".to_owned()),
             "the secret must survive the failed clear: {:?}",
             store.entries()
+        );
+    }
+
+    /// Round-49 review: with the OS keyring unreachable, a `get` MISS is not
+    /// "no key" — the honest resolver must fail the probe lanes as
+    /// `credential_unavailable` instead of letting the miss masquerade as an
+    /// absent credential. `models test` used to probe with an empty key (the
+    /// endpoint's 401 then reported `auth_invalid`); the probe-local lanes
+    /// used to degrade to an anonymous probe or claim "no stored api key".
+    /// The store is forced into exactly the ambiguous state through the
+    /// injectable seam (a stored `credential_ref` whose value reads back
+    /// absent while `os_keyring_unreachable` is true); no network is
+    /// touched, because the verdict short-circuits before any request.
+    #[test]
+    fn probe_lanes_report_credential_unavailable_when_the_keyring_is_unreachable() {
+        let _home = TempHome::new("probe-unreachable");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-unreachable");
+        let store = UnreachableKeyringStore::new();
+
+        // A loopback base_url so the probe-local lane's loopback gate passes
+        // and the failure is attributable to the resolver alone.
+        let outcome = add(
+            &store,
+            ModelPreset::Deepseek,
+            "Unreachable",
+            "M",
+            "http://127.0.0.1:8000/v1",
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            None,
+            None,
+            None,
+            ModelMetadata::default(),
+            false,
+            OutputMode::Human,
+        )
+        .expect("add succeeds");
+        let id = outcome
+            .stdout
+            .strip_prefix("id: ")
+            .expect("prints the new id")
+            .trim()
+            .to_owned();
+        assert!(
+            UserPrefs::load()
+                .model_by_id(&id)
+                .expect("model persisted")
+                .credential_ref
+                .is_some(),
+            "the fixture must hold a stored credential reference"
+        );
+        // Empty THIS process's view of the reference: under an unreachable
+        // keyring the file fallback answers the miss, which is exactly the
+        // "absent vs unreadable" ambiguity the honest resolver exists for.
+        store
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+
+        // `models test`: a probe RESULT, not a crash — single-line stdout
+        // row with `credential_unavailable`, exit 1, and no `auth_invalid`.
+        let outcome =
+            test_connection(&store, &id, OutputMode::Human).expect("a completed probe outcome");
+        assert_eq!(outcome.exit_code, ExitCode::Failed);
+        assert!(
+            outcome.stdout.contains("credential_unavailable"),
+            "the verdict must name the unreachable keyring: {}",
+            outcome.stdout
+        );
+        assert!(
+            !outcome.stdout.contains("auth_invalid"),
+            "an unreachable keyring must not masquerade as a rejected key: {}",
+            outcome.stdout
+        );
+
+        // probe-local's active-model arm fails the same way instead of
+        // silently probing anonymously (which would misclassify the server).
+        use_model(&id, OutputMode::Human).expect("use succeeds");
+        let error = probe_local(&store, None, None, None, OutputMode::Human)
+            .expect_err("must fail: the keyring holding the key is unreachable");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains("credential_unavailable"),
+            "the refusal must name the credential: {error}"
+        );
+
+        // probe-local's named-model arm (`--model ID`) rides the same honest
+        // resolver: the failure says the credential cannot be verified, not
+        // that no key was ever stored.
+        let error = probe_local(
+            &store,
+            Some("http://127.0.0.1:8000/v1"),
+            None,
+            Some(&id),
+            OutputMode::Human,
+        )
+        .expect_err("must fail: the keyring holding the key is unreachable");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains("credential_unavailable"),
+            "the refusal must name the credential: {error}"
         );
     }
 }
