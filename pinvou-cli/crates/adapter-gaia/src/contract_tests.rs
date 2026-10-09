@@ -10,9 +10,8 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use async_trait::async_trait;
 use benchmark_core::{
-    BenchmarkAdapter, BenchmarkService, ModelIdentity, RunContext, RunManifest,
-    RunStore, Split, TaskOutcome, TaskRunner, TaskSelection, TaskStatus, ToolPolicyId,
-    VerifiedDataset,
+    BenchmarkAdapter, BenchmarkService, ModelIdentity, RunContext, RunManifest, RunStore, Split,
+    TaskOutcome, TaskRunner, TaskSelection, TaskStatus, ToolPolicyId, VerifiedDataset,
 };
 use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
