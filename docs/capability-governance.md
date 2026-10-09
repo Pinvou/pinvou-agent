@@ -189,10 +189,16 @@ and degrade under contention to an unlocked, never-persisting snapshot
 (engine-side per-turn reads never block on a peer; "never persisting" means no
 policy state is written — a degraded read at most creates the empty lock file
 itself on demand); the opens of both the data file and the lock file are
-hardened (round-18/20/21: symlinks and FIFOs/devices are refused, only regular
-files are accepted; on Unix the hardening is `O_NOFOLLOW`/`O_NONBLOCK` +
-fstat, Windows has no equivalent and keeps the documented profile-ACL
-residual — for Windows behavior see platform/filesystem's module docs) — the
+hardened (round-18/20/21: on Unix `O_NOFOLLOW`/`O_NONBLOCK`, plus a
+regular-file fstat gate before any byte **on the data-file opens**, so
+FIFOs/devices/symlinks are refused there; the **lock-file** open has no
+regular-file gate — a planted FIFO that survives the open is locked on its
+own inode where flock works and fails flock where it does not, a deliberate
+platform-split outcome documented in platform/filesystem; Windows has no
+equivalent and keeps the documented profile-ACL residual — for Windows
+behavior see platform/filesystem's module docs); the hardening guards the
+final path component only — parent-directory symlinks are still followed,
+the same exposure as the rest of the private home's file access — the
 cost is that a legitimate dotfile/sync setup that makes
 `disabled_bundles.json` a symlink is treated as "unreadable" (the in-memory
 over-refusal direction), and the next write renames the symlink aside into a
@@ -242,26 +248,26 @@ new GUI" still reproduces lost updates (the degraded direction is harmless:
 the lock file holds no data and old versions ignore every new sibling file);
 (3) the lock covers only this file — the other state files concurrently
 read-modify-written in the same two-process scenario (`installed.json`,
-`bundles.json`, `mcp.json`, `recycle-bin.json`) still have only in-process
-serialization, the same race can still corrupt them, and the worst case is a
-lost `bundles.json` Upload registration making uninstall misjudge the source
-and treat the user's only uploaded copy as a redeliverable pack (the
-data-loss direction); consent gating consumes these files (installed checks,
-skill enumeration), so their corruption feeds the gate's inputs too.
-Boundary (3)'s same-family residue (round-20): the per-id import lock is
-in-process only, while the import pipeline's staging `bundles/<id>.tmp`,
-backup `bundles/<id>.old`, and registration write share deterministic paths
-across processes — two concurrent same-id imports can interleave so that one
-deletes the other's only `.old` backup and the supply-failure rollback then
-fails too (old content, staging, and backup all lost while an
-`installed=true` record remains — the data-loss direction); the startup
-reconcile handling stale markers also does not probe another process's
-in-flight import (in-flight detection is defined by marker presence and
-cannot distinguish a stale marker from an in-flight one); the window is the
-edge combination "same-id crash residue + another process importing at the
-same time". Cross-process serialization of those files (including the per-id
-import mutex) is left as future work and is not covered by this section's
-fix. Two more same-family boundaries: flock provides no cross-host exclusion
+`bundles.json`, `mcp.json`, `recycle-bin.json`) serialize on their own
+per-file OS locks since main's #656 (`file_lock.rs`, closing #521), so the
+lost-update family this section's fix closed for `disabled_bundles.json`
+cannot reproduce there; the remaining same-family boundary is structural —
+the funnel is a per-file helper family rather than one shared platform-layer
+primitive, registered as follow-up work.
+Boundary (3)'s import family is likewise closed (round-20/21): the per-id
+landing lease gives the import pipeline's staged `bundles/<id>.tmp`, backup
+`bundles/<id>.old`, and registration write real cross-process mutual
+exclusion — same-id imports, the uninstall command, the retired-tool startup
+sweep, and the recycle-bin restore all serialize on
+`marketplace/import_journal/<id>.landing.lock`, and the boot reconcile probes
+the lease non-blockingly and defers contended entries (the landing-journal
+section below documents the arms). What deliberately remains open in this
+family: a persistent rename failure in the import pipeline's own rollback
+paths (landing failure, supply-failure rollback) can strand content in
+`<id>.old` after the journal mark has cleared — logged loudly, and invisible
+to the reconcile (which only scans marks), so recovery is manual; this is
+the rollback form of the crash-strand residue disclosed with the reconcile
+arms below. Two more same-family boundaries: flock provides no cross-host exclusion
 — multiple hosts sharing one network-mounted home are outside this module's
 threat model (for lock semantics on NFS-like filesystems see the lock-file
 line's note); the single-instance constraint is per user — when different
@@ -495,7 +501,12 @@ just-restored only copy in its take_back→registration gap, and a same-id
 import can replace the restored directory wholesale) each take the same
 lease, blocking or non-blocking respectively (when the sweep hits contention
 it defers wholly to the next startup, and the directory-deletion leg is no
-longer guarded by record probing alone). The four startup-convergence arms:
+longer guarded by record probing alone; the blocking takers run in
+spawn_blocking and their span is local work only — staging, rename,
+registry, keyring deletes — so a peer import holds a same-id op for
+seconds at most, and a system-keychain prompt inside the uninstall
+span stalls peer same-id ops for the prompt's duration, the same
+accepted class as the scope lock's frozen-peer wait). The four startup-convergence arms:
 lease held (in-flight) → skip the whole thing, retry next startup; marker +
 no pack directory → sweep the staged `<id>.tmp` and clear the marker; marker
 + a registered record → sweep the crashed re-import's staged `<id>.tmp`
