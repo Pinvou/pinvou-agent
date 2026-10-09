@@ -884,7 +884,18 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             // installed.
             let staged = pkg_dir.with_extension("tmp");
             if staged.exists() {
-                let _ = std::fs::remove_dir_all(&staged);
+                // Round-24 minor (arm A gets the round-21 P3 treatment): a
+                // failed sweep must keep the mark so the next boot retries —
+                // the unconditional clear here stranded the ghost `.tmp`
+                // forever (nothing reschedules a swept mark) while the log
+                // claimed success. Same contract as the record-present arm
+                // below.
+                if let Err(e) = std::fs::remove_dir_all(&staged) {
+                    log::warn!(
+                        "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
+                    );
+                    continue;
+                }
                 log::warn!(
                     "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}'"
                 );
@@ -1519,9 +1530,22 @@ pub fn import_plugin_package_gated(
         }
     }
     if let Err(e) = rename_dir_with_retry(&staged, &pkg_dir) {
-        // rename 失败：尝试把旧目录复原，让已安装版本继续可用
+        // rename 失败：尝试把旧目录复原，让已安装版本继续可用。
+        // Round-24 minor: the restore must not be silent — `rename_dir_with_retry`
+        // never logs, so a failed restore stranded the pre-import content at
+        // `<id>.old` with no trace (§3.2 promises every rollback arm logs
+        // loudly). Name the strand in the log and in the caller's error,
+        // mirroring the supply-failure arm below.
         if moved_old {
-            let _ = rename_dir_with_retry(&backup, &pkg_dir);
+            if let Err(re) = rename_dir_with_retry(&backup, &pkg_dir) {
+                log::error!(
+                    "[plugin-import] 落盘失败且旧目录复原失败（{id}）: 旧内容滞留在 {backup:?}（数据未丢，请手动移回 {pkg_dir:?}）: {re}"
+                );
+                let _ = std::fs::remove_dir_all(&staged);
+                return Err(format!(
+                    "落盘: {e}; the previous version's restore also failed: the old content is stranded at {backup:?} (no data lost; move it back by hand): {re}"
+                ));
+            }
         }
         let _ = std::fs::remove_dir_all(&staged);
         return Err(format!("落盘: {e}"));
@@ -1603,7 +1627,16 @@ pub fn import_plugin_package_gated(
     // ordering comment's justification now matches the failure path.
     super::skill_marketplace::rebaseline_skill_desc_backup(&store, &id, "统一导入");
     if moved_old {
-        let _ = std::fs::remove_dir_all(&backup);
+        // Round-24 minor: the post-supply backup delete is the same
+        // silent-strand family — a failure leaves the pre-import content in
+        // `bundles/<id>.old` with no mark and no log (the reconcile scans
+        // marks only). Harmless to the import itself (the new content landed
+        // and registered), but the strand is invisible residue; log it.
+        if let Err(del_err) = std::fs::remove_dir_all(&backup) {
+            log::warn!(
+                "[plugin-import] 统一导入（{id}）: 旧内容备份删除失败，滞留在 {backup:?}（数据未丢，可手动删除）: {del_err}"
+            );
+        }
     }
 
     // 登记 BundleStore（上传 source=Upload(zip 展示名)，installed=true）。
@@ -1829,6 +1862,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Round-24 minor: the no-pkg-dir reconcile arm (the import never
+    /// landed) gets the same keep-mark-on-failure treatment as the
+    /// record-present arm above — its unconditional clear stranded the
+    /// ghost `.tmp` forever on EACCES/AV-hold (nothing reschedules a swept
+    /// mark) while the log claimed success. Same planted-regular-file trick
+    /// makes `remove_dir_all` fail deterministically on every platform;
+    /// the retry leg then sweeps and clears.
+    #[test]
+    fn no_pkg_dir_arm_sweeps_orphaned_staging_and_keeps_mark_on_failure() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou-arm-a2-tmp-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Fixture: NO package dir (the import never landed), no store
+        // record, landing mark, and a crash-orphaned staged `.tmp` planted
+        // as a regular FILE so remove_dir_all fails with ENOTDIR.
+        std::fs::create_dir_all(crate::platform::paths::bundles_root()).unwrap();
+        let pkg_dir = crate::platform::paths::bundles_root().join("never-tmp");
+        mark_landing("never-tmp");
+        let staged = pkg_dir.with_extension("tmp");
+        std::fs::write(&staged, b"stale staging").unwrap();
+
+        reconcile_import_journal().unwrap();
+
+        assert!(
+            staged.is_file(),
+            "a failing sweep must not destroy what it could not remove"
+        );
+        assert!(
+            landing_in_progress("never-tmp"),
+            "a failed sweep must keep the mark so the next boot retries"
+        );
+        assert!(
+            !pkg_dir.exists(),
+            "the no-pkg-dir precondition must hold throughout"
+        );
+
+        // Retry leg: make the sweep succeed and reconcile again — the
+        // staging path is swept and the mark cleared.
+        std::fs::remove_file(&staged).unwrap();
+        std::fs::create_dir(&staged).unwrap();
+        reconcile_import_journal().unwrap();
+        assert!(
+            !staged.exists(),
+            "the retry leg must sweep the orphaned staging dir"
+        );
+        assert!(
+            !landing_in_progress("never-tmp"),
+            "the resolved entry is cleared"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     /// round-21 review (P3): every lease test held the lease as a FIXTURE —
     /// deleting the pipeline's own acquisition (`open_landing_lease` +
     /// blocking `write()` before the mark) broke no test, so the round-20
