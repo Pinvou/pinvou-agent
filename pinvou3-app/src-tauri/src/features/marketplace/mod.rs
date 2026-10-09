@@ -386,7 +386,14 @@ fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
     }
-    deepseek_tui::utils::write_atomic(path, bytes)
+    // Round-24 minor: back to the platform layer's own private atomic write.
+    // The swap to the foundation's `deepseek_tui::utils::write_atomic` was
+    // behavior-preserving (both are private-mode tmp+rename) but it reached
+    // into the foundation crate's utils from a feature module and swapped a
+    // reviewed write primitive undisclosed; the app's platform primitive is
+    // the right dependency direction (features → platform/core) and the one
+    // this PR's write-path pins were reviewed against.
+    crate::platform::filesystem::atomic_write_private(path, bytes)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
 

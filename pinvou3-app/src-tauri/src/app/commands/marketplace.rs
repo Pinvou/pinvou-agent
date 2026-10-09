@@ -770,9 +770,7 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
                 .uninstall(sid)
                 .map_err(|e| {
-                    format!(
-                        "failed to uninstall the companion skill '{sid}' (the tool uninstall was aborted; please retry): {e}"
-                    )
+                    format!("联动卸载配套技能 '{sid}' 失败（已中止工具卸载，请重试）: {e}")
                 })?;
         if !torn_down {
             // Vacuous companion uninstall (declared but never installed):

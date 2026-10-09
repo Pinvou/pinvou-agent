@@ -251,7 +251,7 @@ impl RecycleBin {
                         &src,
                         &dst,
                         &e,
-                        "read the recycle manifest",
+                        "读取回收站清单",
                     ));
                 }
             };
@@ -265,13 +265,7 @@ impl RecycleBin {
                 extra: serde_json::Map::new(),
             });
             if let Err(e) = save_locked(&self.file, &file) {
-                return Err(self.rollback_recycled_dir(
-                    pkg_id,
-                    &src,
-                    &dst,
-                    &e,
-                    "write the recycle manifest",
-                ));
+                return Err(self.rollback_recycled_dir(pkg_id, &src, &dst, &e, "写入回收站清单"));
             }
             log::info!(
                 "[recycle-bin] 已回收包 {pkg_id}（kind={kind}）→ {}",
@@ -299,17 +293,20 @@ impl RecycleBin {
             // A directory stranded at the recycle root with no manifest entry
             // = an orphan invisible to list/restore/purge (no data lost). Log
             // loudly and report honestly (never claim a rollback that did
-            // not happen).
+            // not happen). Copy convention (round-24 minor): these are
+            // user-visible recycle errors — keep main's Chinese shape
+            // (写入回收站清单失败…) with the phase folded in, not the
+            // English the refactor authored.
             log::error!(
-                "[recycle-bin] recycle {pkg_id} {phase}: the directory rollback failed too: {} is stranded at the recycle root with no manifest entry (no data lost; move it back by hand): {re}",
+                "[recycle-bin] 回收 {pkg_id} {phase}失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
                 dst.display()
             );
             return format!(
-                "{phase}: {manifest_error}; the directory rollback failed too, the pack dir is stranded at {} (no data lost; move it back by hand): {re}",
+                "{phase}失败: {manifest_error}；目录回滚也失败，包目录滞留在 {}（数据未丢，需人工搬回）: {re}",
                 dst.display()
             );
         }
-        format!("{phase} (directory rolled back): {manifest_error}")
+        format!("{phase}失败（已回滚目录）: {manifest_error}")
     }
 
     /// Round-29 m2 (review #455): 清单是否列有该 id——恢复管线的 preflight
@@ -2854,7 +2851,7 @@ mod tests {
             .recycle_package("load-comp", KIND_SKILL, "load-comp.zip", record)
             .unwrap_err();
         assert!(
-            err.contains("read the recycle manifest (directory rolled back)"),
+            err.contains("读取回收站清单失败（已回滚目录）"),
             "the compensation must report the rollback: {err}"
         );
         assert!(
