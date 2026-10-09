@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:recovery-review-create-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "task": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/taskBinding"
+    },
+    "actionCredential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:recovery-review-action"
+    },
+    "eventCredential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:recovery-review-event"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "task",
+    "actionCredential",
+    "eventCredential"
+  ],
+  "additionalProperties": false
+}

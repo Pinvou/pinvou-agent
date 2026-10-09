@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deny-entry",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "subjectKind": {
+          "const": "signingKey"
+        },
+        "subjectId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:pinvou:upgrade:v1:api:trust-role"
+          },
+          "minItems": 1,
+          "maxItems": 4096,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "subjectKind",
+        "subjectId",
+        "roles"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "subjectKind": {
+          "enum": [
+            "deployment",
+            "release",
+            "releaseTarget",
+            "artifact",
+            "package",
+            "transform"
+          ]
+        },
+        "subjectId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "roles": {
+          "type": "array",
+          "maxItems": 0
+        }
+      },
+      "required": [
+        "subjectKind",
+        "subjectId",
+        "roles"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

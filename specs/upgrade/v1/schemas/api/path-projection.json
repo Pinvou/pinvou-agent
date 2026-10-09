@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:path-projection",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "projectionOwner": {
+      "const": "T13"
+    },
+    "state": {
+      "const": "approved"
+    },
+    "deploymentKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "deploymentRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "scopeKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "projectedWritesSha256": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rootKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "headKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "denyKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "registryKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "qualifiedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "expiresAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceProfileId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "currentVersion": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+          },
+          "actualHopIndex": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+          },
+          "groupIdentity": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "ordinary",
+                    "bridge"
+                  ]
+                },
+                "chain": {
+                  "$ref": "urn:pinvou:upgrade:v1:api:chain-keys"
+                },
+                "fromSourceProfileId": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+                },
+                "toSourceProfileId": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+                },
+                "activationMode": {
+                  "enum": [
+                    "directInstall",
+                    "stagedRestart"
+                  ]
+                },
+                "certificationKey": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+                },
+                "ordinaryApprovalKey": {
+                  "anyOf": [
+                    {
+                      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "transformKey": {
+                  "anyOf": [
+                    {
+                      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "chain",
+                "fromSourceProfileId",
+                "toSourceProfileId",
+                "activationMode",
+                "certificationKey",
+                "ordinaryApprovalKey",
+                "transformKey"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 4096
+          }
+        },
+        "required": [
+          "sourceProfileId",
+          "currentVersion",
+          "actualHopIndex",
+          "groupIdentity",
+          "steps"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "readSet": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:model-read-ref"
+      },
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "revision",
+    "projectionOwner",
+    "state",
+    "deploymentKey",
+    "deploymentRevision",
+    "scopeKey",
+    "projectedWritesSha256",
+    "rootKey",
+    "headKey",
+    "denyKey",
+    "registryKey",
+    "qualifiedAt",
+    "expiresAt",
+    "sources",
+    "readSet"
+  ],
+  "additionalProperties": false
+}

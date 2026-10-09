@@ -9,10 +9,10 @@ import { assertReference, envelopeReference, verifyEnvelope } from './signatures
  * No networking, publication or version selection is performed here.
  */
 export function verifyPublicChain({ trustedRoot, product, component, now,
-  timestampBytes, snapshotBytes, members, deniedKeyIds = [] }) {
+  timestampBytes, snapshotBytes, members, deniedKeyIds = [], deniedKeyIdsByRole = {} }) {
   const expected = (role, scope = {}) => ({ role, product, component, scope });
   const verify = (bytes, role, scope) => verifyEnvelope(bytes,
-    { trustedRoot, expected: expected(role, scope), now, deniedKeyIds });
+    { trustedRoot, expected: expected(role, scope), now, deniedKeyIds: [...deniedKeyIds, ...(deniedKeyIdsByRole[role] ?? [])] });
   const timestamp = verify(timestampBytes, 'timestamp', {}).signed;
   assertReference(timestamp.snapshot, snapshotBytes);
   const snapshot = verify(snapshotBytes, 'snapshot', {}).signed;

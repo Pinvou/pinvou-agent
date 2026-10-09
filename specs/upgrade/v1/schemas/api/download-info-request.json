@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:download-info-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "decision": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:decision"
+    },
+    "downloadKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "packageId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "decision",
+    "downloadKey",
+    "packageId"
+  ],
+  "additionalProperties": false
+}

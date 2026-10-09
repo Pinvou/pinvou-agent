@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:read-set",
+  "type": "array",
+  "items": {
+    "$ref": "urn:pinvou:upgrade:v1:api:revision-ref"
+  },
+  "minItems": 1,
+  "maxItems": 4096,
+  "uniqueItems": true
+}

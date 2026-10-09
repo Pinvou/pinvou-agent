@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:verification-archive",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "recordKind": {
+      "const": "verificationArchive"
+    },
+    "projectionOwner": {
+      "const": "T07"
+    },
+    "product": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "component": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "archivedAt": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+          },
+          "rootHead": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+              },
+              "revision": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+              },
+              "sha256": {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+              }
+            },
+            "required": [
+              "key",
+              "revision",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "lineage": {
+            "$ref": "urn:pinvou:upgrade:v1:api:root-lineage"
+          },
+          "root": {
+            "$ref": "urn:pinvou:upgrade:v1:metadata:root#/properties/signed"
+          },
+          "release": {
+            "$ref": "urn:pinvou:upgrade:v1:metadata:release"
+          },
+          "packages": {
+            "type": "array",
+            "items": {
+              "$ref": "urn:pinvou:upgrade:v1:metadata:package"
+            },
+            "minItems": 1,
+            "maxItems": 4096
+          }
+        },
+        "required": [
+          "archivedAt",
+          "rootHead",
+          "lineage",
+          "root",
+          "release",
+          "packages"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "revision",
+    "recordKind",
+    "projectionOwner",
+    "product",
+    "component",
+    "entries"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:check-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "requestNonce": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "facts": {
+      "$ref": "urn:pinvou:upgrade:v1:api:current-facts"
+    },
+    "grayTargeting": {
+      "$ref": "urn:pinvou:upgrade:v1:api:gray-targeting"
+    },
+    "executionPurpose": {
+      "enum": [
+        "preinstall",
+        "install",
+        "activate"
+      ]
+    },
+    "supportedIncrementalAlgorithms": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    },
+    "supportedIncrementalFormats": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "requestNonce",
+    "facts",
+    "grayTargeting",
+    "executionPurpose",
+    "supportedIncrementalAlgorithms",
+    "supportedIncrementalFormats"
+  ],
+  "additionalProperties": false
+}

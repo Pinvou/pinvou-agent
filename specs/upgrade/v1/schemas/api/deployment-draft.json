@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-draft",
+  "type": "object",
+  "properties": {
+    "releaseId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "releaseRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "releaseTargetId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "releaseTargetRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "upgradeType": {
+      "enum": [
+        "normal",
+        "silent",
+        "forced"
+      ]
+    },
+    "releaseVisibleAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "installNotBefore": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "installNotAfter": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:stage-plan"
+    },
+    "responsibilityIdentity": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    }
+  },
+  "required": [
+    "releaseId",
+    "releaseRevision",
+    "releaseTargetId",
+    "releaseTargetRevision",
+    "upgradeType",
+    "releaseVisibleAt",
+    "installNotBefore",
+    "installNotAfter",
+    "plan",
+    "responsibilityIdentity"
+  ],
+  "additionalProperties": false
+}

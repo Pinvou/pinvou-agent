@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:events-recovery-review-event-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "acknowledgements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "disposition": {
+            "enum": [
+              "committed",
+              "replayed",
+              "late-diagnostic"
+            ]
+          }
+        },
+        "required": [
+          "eventId",
+          "disposition"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "acknowledgements"
+  ],
+  "additionalProperties": false
+}

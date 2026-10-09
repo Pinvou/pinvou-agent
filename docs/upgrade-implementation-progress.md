@@ -8,7 +8,8 @@ client, service, physical platform certification or rollout readiness.
 | Task | Status | Delivery / outstanding dependency |
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
-| T02–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
+| T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
+| T03–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -36,3 +37,24 @@ and serial reruns passed. The test-only subprocess allowance was raised to 60
 seconds and rechecked. It does not set a network or download time limit. Remaining
 tasks retain their dependencies, including the separate backend repository and
 technology decisions that will be supplied later.
+
+T02 validation: 167 tests passed on Node 22 and Node 26, including local CLI E2E,
+legal transitions, binding failures, expiry equality and atomic race regressions.
+Both independent reviewers passed the fifth frozen code review after the primary
+role repaired all findings. Each independently ran the Node 26 suite and the
+architecture guard. Generated OpenAPI 3.1 and closed Schemas match their sources;
+an independent YAML parser resolved all 1,425 local references across 37 paths
+and 146 bundled Schemas. Diff whitespace checks passed.
+
+T02 freezes API contracts, owner projections, final guards and atomic reference
+models. It does not implement a database, production signing or authentication,
+real helper/launcher, desktop upgrade workflow or physical OS certification.
+Download handoff and credible progress/waiting remain independent of session
+expiry; there is no total or cumulative download deadline.
+
+T03 still requires approved OS certification coverage, all-user/service data
+scope, finite preparation budgets and health criteria. Normal offline retention
+across shutdown also needs a proven trustworthy elapsed-time mechanism under
+the current strict requirement. Ordinary OS clocks or powered-on TPM clocks
+alone do not demonstrate elapsed shutdown duration. Those decisions remain
+pending; no support restriction or retention-policy change is assumed approved.

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:synchronize-stable-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "sourceReleaseId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "selections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceStableDeploymentId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "sourceStableDeploymentRevision": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+          },
+          "targetKey": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+          },
+          "channel": {
+            "enum": [
+              "beta",
+              "internal"
+            ]
+          },
+          "configuration": {
+            "$ref": "urn:pinvou:upgrade:v1:api:deployment-draft"
+          }
+        },
+        "required": [
+          "sourceStableDeploymentId",
+          "sourceStableDeploymentRevision",
+          "targetKey",
+          "channel",
+          "configuration"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "commandKey",
+    "expectedReadSet",
+    "reason",
+    "sourceReleaseId",
+    "selections"
+  ],
+  "additionalProperties": false
+}

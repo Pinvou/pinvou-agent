@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:ratio",
+  "type": "object",
+  "properties": {
+    "numerator": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "denominator": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    }
+  },
+  "required": [
+    "numerator",
+    "denominator"
+  ],
+  "additionalProperties": false
+}

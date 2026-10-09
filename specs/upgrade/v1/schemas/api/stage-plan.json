@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:stage-plan",
+  "type": "object",
+  "properties": {
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stageId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "percentage": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "minimumObservationMs": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+          },
+          "minimumSamples": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+          },
+          "thresholds": {
+            "type": "object",
+            "properties": {
+              "download": {
+                "$ref": "urn:pinvou:upgrade:v1:api:ratio"
+              },
+              "verification": {
+                "$ref": "urn:pinvou:upgrade:v1:api:ratio"
+              },
+              "installation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:ratio"
+              },
+              "health": {
+                "$ref": "urn:pinvou:upgrade:v1:api:ratio"
+              },
+              "preinstallation": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:pinvou:upgrade:v1:api:ratio"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "activation": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:pinvou:upgrade:v1:api:ratio"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "download",
+              "verification",
+              "installation",
+              "health",
+              "preinstallation",
+              "activation"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "stageId",
+          "percentage",
+          "minimumObservationMs",
+          "minimumSamples",
+          "thresholds"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "snIncludeSetRef": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "snExcludeSetRef": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "progressReportIntervalMs": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "lossIntervalMs": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    }
+  },
+  "required": [
+    "stages",
+    "snIncludeSetRef",
+    "snExcludeSetRef",
+    "progressReportIntervalMs",
+    "lossIntervalMs"
+  ],
+  "additionalProperties": false
+}

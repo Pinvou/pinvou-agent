@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:reconciliation-action-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "actionKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "credential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:reconciliation-action"
+    },
+    "taskRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "evidenceSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "evidence": {
+      "$ref": "urn:pinvou:upgrade:v1:api:event-facts"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "actionKey",
+    "credential",
+    "taskRevision",
+    "evidenceSha256",
+    "evidence"
+  ],
+  "additionalProperties": false
+}

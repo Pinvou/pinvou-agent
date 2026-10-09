@@ -1,15 +1,17 @@
 # Upgrade V1 executable contracts
 
-This package implements development task **T01**, the metadata and credential
-byte/trust contract. It is a reference tool and test oracle, not an update service
+This package implements development tasks **T01** and **T02**: the metadata and
+credential byte/trust contract, control APIs and executable transition models.
+It is a reference tool and test oracle, not an update service
 or a production client. Successful verification proves the stated contract
 properties; it does not grant current download, preparation or execution rights.
 
 The input requirements remain the three V1.0 project documents and the four
 invariant specifications in this directory. The archived comprehensive design is
 not normative. The [contract profile](contract-profile.md) freezes the concrete
-encoding choices made here. T02 will define control APIs and business transition
-models; T03 defines actual platform/storage/backup adapters.
+encoding choices made here. The [model contract](model-contracts.md) defines T02's
+atomic boundaries and read-only owner ports. T03 defines actual platform,
+protected storage and backup interfaces; it is not implemented by these models.
 
 ## Run
 
@@ -41,6 +43,7 @@ The JSON Schemas are generated, committed artifacts. Regenerate them with:
 
 ```powershell
 node specs/upgrade/v1/reference/build-schemas.mjs
+node specs/upgrade/v1/reference/build-api.mjs
 ```
 
 Tests compare artifacts with their source, compile every Schema, test RFC 8785,
@@ -60,6 +63,10 @@ were discarded. They are not production trust anchors or credentials.
 | `semantics.mjs` | Declared bindings and strict time/purpose constraints |
 | `metadata-chain.mjs` | Public membership, candidate opening and Release-to-Package binding |
 | `cli.mjs` | Bounded local file input and stable diagnostic output |
+| `api-*.mjs`, `build-api.mjs` | Closed control/management Schemas and bundled OpenAPI 3.1 |
+| `command-contracts.mjs` | Internal ownership and mandatory read/write families |
+| `models/atomic.mjs`, `models/operation.mjs` | All-or-none final-instant CAS, absent-key races and worker fencing |
+| `models/` | In-scope state, publication, selection and quality guard compositions |
 
 `verifyEnvelope` checks an authenticated statement against an existing trusted
 Root. The caller supplies trusted expected context, current deny information and,
@@ -80,6 +87,9 @@ the historical Root expires. Its result cannot supply current online eligibility
 envelope's continued authorization. T07 owns obtaining the complete active
 component read set and committing it atomically with the root head; this reference
 does not discover components, publish metadata or implement CAS.
+T02's separate publication model discovers complete component/head inventories
+inside an explicitly complete, protected test snapshot and emits a CAS plan. It
+does not turn that snapshot into a database implementation.
 `verifyRootChain` traverses consecutive expired intermediate Roots for offline
 recovery but returns only after an unexpired final Root validates. The ordinary
 envelope verifier accepts only the caller's existing Root; new Root acceptance
@@ -88,3 +98,9 @@ must use these explicit continuous-transition functions.
 No production keys, API endpoints, remote signer, installer, application state,
 permission prompt, database, backup, download deadline or runtime Node dependency
 is introduced into the desktop application by this task.
+
+`openapi.yaml` uses JSON serialization, a valid YAML 1.2 subset. All OpenAPI
+references are bundled and local. The service/admin implementation belongs in a
+separate repository whose location and technology are still to be provided.
+Authentication providers, remote signing, RPO=0 transactions, secure physical
+facts, production server E2E and OS certification remain later tasks.

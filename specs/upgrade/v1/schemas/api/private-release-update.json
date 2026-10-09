@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:private-release-update",
+  "type": "object",
+  "properties": {
+    "releaseKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "envelope": {
+      "$ref": "urn:pinvou:upgrade:v1:metadata:release"
+    }
+  },
+  "required": [
+    "releaseKey",
+    "envelope"
+  ],
+  "additionalProperties": false
+}

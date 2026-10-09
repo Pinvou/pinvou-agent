@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:selection-input",
+  "type": "object",
+  "properties": {
+    "currentVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "supportFloorVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "channel": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/channel"
+    },
+    "now": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "stableFactsSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "baselineId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "candidateId": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rollout": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "percentage": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "snPresent": {
+              "type": "boolean"
+            },
+            "included": {
+              "type": "boolean"
+            },
+            "excluded": {
+              "type": "boolean"
+            },
+            "bucketBasisPoints": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+            }
+          },
+          "required": [
+            "percentage",
+            "snPresent",
+            "included",
+            "excluded",
+            "bucketBasisPoints"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:selection-node"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceProfileId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "stableFactsSha256": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "state": {
+            "enum": [
+              "selectable",
+              "forward-only",
+              "repair-only",
+              "revoked"
+            ]
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "policyId": {
+                    "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+                  },
+                  "revision": {
+                    "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+                  },
+                  "sha256": {
+                    "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+                  },
+                  "edges": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "urn:pinvou:upgrade:v1:api:forward-edge"
+                    },
+                    "minItems": 1,
+                    "maxItems": 4096
+                  }
+                },
+                "required": [
+                  "policyId",
+                  "revision",
+                  "sha256",
+                  "edges"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "sourceProfileId",
+          "stableFactsSha256",
+          "state",
+          "policy"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "currentVersion",
+    "supportFloorVersion",
+    "channel",
+    "now",
+    "stableFactsSha256",
+    "baselineId",
+    "candidateId",
+    "rollout",
+    "nodes",
+    "profiles"
+  ],
+  "additionalProperties": false
+}

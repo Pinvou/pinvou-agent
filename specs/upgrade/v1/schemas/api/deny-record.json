@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deny-record",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "recordKind": {
+      "const": "deny"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:deny-entry"
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "revision",
+    "recordKind",
+    "entries"
+  ],
+  "additionalProperties": false
+}

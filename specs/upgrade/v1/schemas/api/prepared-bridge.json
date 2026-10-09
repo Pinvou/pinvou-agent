@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:prepared-bridge",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "projectionOwner": {
+      "const": "T13"
+    },
+    "state": {
+      "const": "prepared"
+    },
+    "deploymentKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedDeploymentRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "eligibilityKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedEligibilityRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "validFrom": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "expiresAt": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "approvalKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    }
+  },
+  "required": [
+    "revision",
+    "projectionOwner",
+    "state",
+    "deploymentKey",
+    "expectedDeploymentRevision",
+    "eligibilityKey",
+    "expectedEligibilityRevision",
+    "validFrom",
+    "expiresAt",
+    "approvalKey"
+  ],
+  "additionalProperties": false
+}

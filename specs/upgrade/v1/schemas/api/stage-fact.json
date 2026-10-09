@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:stage-fact",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "rolloutKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "stageId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "windowId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "kind": {
+      "enum": [
+        "started",
+        "advanced",
+        "completed",
+        "paused",
+        "resumed",
+        "aborted",
+        "quality-unfrozen"
+      ]
+    },
+    "effectiveAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "sourceWatermark": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "planRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "planSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "revision",
+    "rolloutKey",
+    "stageId",
+    "windowId",
+    "kind",
+    "effectiveAt",
+    "sourceWatermark",
+    "planRevision",
+    "planSha256"
+  ],
+  "additionalProperties": false
+}

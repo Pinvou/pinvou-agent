@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:target-content",
+  "type": "object",
+  "properties": {
+    "targetVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "targetKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+    },
+    "packageManifest": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+    },
+    "packageId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "package": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+    },
+    "finalInstaller": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+    },
+    "activationMode": {
+      "enum": [
+        "directInstall",
+        "stagedRestart"
+      ]
+    }
+  },
+  "required": [
+    "targetVersion",
+    "targetKey",
+    "packageManifest",
+    "packageId",
+    "package",
+    "finalInstaller",
+    "activationMode"
+  ],
+  "additionalProperties": false
+}

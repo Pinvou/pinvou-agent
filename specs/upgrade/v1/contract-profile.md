@@ -187,3 +187,12 @@ act as a download deadline. Workflow/session handoff, events deduplication,
 late-diagnostic routing and original-stage quality are T02/T17/T20/T21/T44 duties.
 Only explicit isolated contract fixtures may contain incrementalPackages; normal
 production verification rejects them, and empty capabilities select FullPack.
+
+## Control and transition contract
+
+T02 adds bundled OpenAPI 3.1, closed API Schemas and finite executable atomic
+models. [model-contracts.md](model-contracts.md) specifies owner projections,
+original/future path guards, current Release envelope heads, scoped deny,
+workflow handoff and evidence boundaries. These reference CAS models do not
+replace T06 storage or T03 physical adapters. Signature verification, declared
+contract validation and protected current qualification remain separate steps.

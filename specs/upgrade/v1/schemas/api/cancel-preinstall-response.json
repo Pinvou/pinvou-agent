@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:cancel-preinstall-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "authorizationState": {
+      "enum": [
+        "cancelled",
+        "expired",
+        "consumed"
+      ]
+    },
+    "authorizationRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "authorizationState",
+    "authorizationRevision"
+  ],
+  "additionalProperties": false
+}

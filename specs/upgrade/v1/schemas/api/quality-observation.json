@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:quality-observation",
+  "type": "object",
+  "properties": {
+    "startedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "groupIdentity": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "download": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-counts"
+              },
+              "verification": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-counts"
+              },
+              "installation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-counts"
+              },
+              "health": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-counts"
+              },
+              "preinstallation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-counts"
+              },
+              "activation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-counts"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "groupIdentity",
+          "metrics"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "startedAt",
+    "groups"
+  ],
+  "additionalProperties": false
+}

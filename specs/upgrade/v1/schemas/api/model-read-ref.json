@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:model-read-ref",
+  "type": "object",
+  "properties": {
+    "key": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "recordKind": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "sha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "key",
+    "recordKind",
+    "revision",
+    "sha256"
+  ],
+  "additionalProperties": false
+}

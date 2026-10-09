@@ -145,6 +145,21 @@ export function verifyArchivedPackage(bytes, { archivedRoot, expected, now }) {
   return envelope;
 }
 
+/** Historical Release identity only: validate its original window and scoped
+ * signature under already protected archive material, without current rights.
+ * Callers must bind archivedRoot to T07's protected Root lineage, never accept
+ * a root supplied by an untrusted archive or use this for qualification.
+ */
+export function verifyArchivedRelease(bytes, { archivedRoot, expected }) {
+  requireCondition(expected.role === 'release', 'ARCHIVE_ROLE_INVALID');
+  const envelope = parseEnvelope(bytes, expected);
+  const keys = validateTrustedRoot(archivedRoot);
+  checkSemantics(archivedRoot, { now: archivedRoot.issuedAt });
+  verifySignatures(envelope, keys, [policyFor(archivedRoot, envelope.signed)]);
+  checkSemantics(envelope.signed, { now: envelope.signed.issuedAt });
+  return envelope;
+}
+
 export function signEnvelope(signed, privateKeys) {
   validateClaims(schemaName(signed.role), signed);
   const signatures = privateKeys.map((key) => {

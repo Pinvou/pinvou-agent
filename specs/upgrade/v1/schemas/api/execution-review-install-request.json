@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:execution-review-install-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "authorization": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:authorization-install"
+    },
+    "transactionId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "transactionRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "facts": {
+      "$ref": "urn:pinvou:upgrade:v1:api:current-facts"
+    },
+    "verifiedObjectSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "preparation": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/preparation"
+    },
+    "freezeEpoch": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "backup": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/backup"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "staged": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/staged"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "preinstallSlot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "slotIdentity": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+            },
+            "slotRevision": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+            },
+            "state": {
+              "const": "inactive"
+            }
+          },
+          "required": [
+            "slotIdentity",
+            "slotRevision",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "authorization",
+    "transactionId",
+    "transactionRevision",
+    "facts",
+    "verifiedObjectSha256",
+    "preparation",
+    "freezeEpoch",
+    "backup",
+    "staged",
+    "preinstallSlot"
+  ],
+  "additionalProperties": false
+}

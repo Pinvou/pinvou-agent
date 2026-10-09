@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:unactivated",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "code": {
+      "const": "SCOPE_UNACTIVATED"
+    },
+    "retryable": {
+      "const": true
+    },
+    "checkAfterMs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400000
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "code",
+    "retryable",
+    "checkAfterMs"
+  ],
+  "additionalProperties": false
+}

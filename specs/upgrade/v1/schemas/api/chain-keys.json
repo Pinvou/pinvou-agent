@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:chain-keys",
+  "type": "object",
+  "properties": {
+    "rootKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "denyKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "deploymentKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "releaseKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "releaseTargetKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "supplyChainKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "artifactKeys": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "bridgeKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    }
+  },
+  "required": [
+    "rootKey",
+    "denyKey",
+    "deploymentKey",
+    "releaseKey",
+    "releaseTargetKey",
+    "supplyChainKey",
+    "artifactKeys"
+  ],
+  "additionalProperties": false
+}

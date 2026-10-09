@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:refresh-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "requestNonce": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "facts": {
+      "$ref": "urn:pinvou:upgrade:v1:api:current-facts"
+    },
+    "grayTargeting": {
+      "$ref": "urn:pinvou:upgrade:v1:api:gray-targeting"
+    },
+    "workflowId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedWorkflowRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "previousSessionId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "immutableContextSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "decision": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:decision"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "requestNonce",
+    "facts",
+    "grayTargeting",
+    "workflowId",
+    "expectedWorkflowRevision",
+    "previousSessionId",
+    "immutableContextSha256",
+    "decision"
+  ],
+  "additionalProperties": false
+}

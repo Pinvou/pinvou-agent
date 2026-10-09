@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:approval-evidence",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "projectionOwner": {
+      "const": "T05"
+    },
+    "state": {
+      "const": "approved"
+    },
+    "bodySha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "authorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "reviewerIds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+      },
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "objectId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "objectRevision": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        }
+      },
+      "required": [
+        "command",
+        "scope",
+        "objectId",
+        "objectRevision"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "revision",
+    "projectionOwner",
+    "state",
+    "bodySha256",
+    "authorId",
+    "reviewerIds",
+    "context"
+  ],
+  "additionalProperties": false
+}

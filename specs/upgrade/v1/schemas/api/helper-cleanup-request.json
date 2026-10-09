@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:helper-cleanup-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "cleanupKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "facts": {
+      "$ref": "urn:pinvou:upgrade:v1:api:current-facts"
+    },
+    "preparation": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/preparation"
+    },
+    "deletionSet": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "identity": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+          },
+          "protectedPathId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          }
+        },
+        "required": [
+          "identity",
+          "protectedPathId"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "cleanupKey",
+    "facts",
+    "preparation",
+    "deletionSet"
+  ],
+  "additionalProperties": false
+}

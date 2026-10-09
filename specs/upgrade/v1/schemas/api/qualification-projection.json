@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:qualification-projection",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "projectionOwner": {
+      "enum": [
+        "T17",
+        "T19"
+      ]
+    },
+    "state": {
+      "const": "qualified"
+    },
+    "qualifiedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "expiresAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "qualifiedClaimsSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "selectionIdentitySha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "observationWindowId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "context": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+            },
+            "product": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+            },
+            "component": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+            },
+            "scope": {
+              "type": "object",
+              "properties": {
+                "installationScopeId": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+                },
+                "channel": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/channel"
+                },
+                "channelRevision": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+                },
+                "targetKey": {
+                  "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+                }
+              },
+              "required": [
+                "installationScopeId",
+                "channel",
+                "channelRevision",
+                "targetKey"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "role",
+            "product",
+            "component",
+            "scope"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "immutableContextSha256": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+            }
+          },
+          "required": [
+            "immutableContextSha256"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "endpointKind": {
+      "enum": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "hopKind": {
+      "enum": [
+        "ordinary",
+        "bridge"
+      ]
+    },
+    "ordinaryPathRequired": {
+      "type": "boolean"
+    },
+    "readSet": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:model-read-ref"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "contentIdentity": {
+      "type": "object",
+      "properties": {
+        "packageId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "package": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+        },
+        "finalInstaller": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/nativeIdentity"
+        },
+        "targetVersion": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+        }
+      },
+      "required": [
+        "packageId",
+        "package",
+        "finalInstaller",
+        "targetVersion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "revision",
+    "projectionOwner",
+    "state",
+    "qualifiedAt",
+    "expiresAt",
+    "qualifiedClaimsSha256",
+    "selectionIdentitySha256",
+    "observationWindowId",
+    "context",
+    "endpointKind",
+    "hopKind",
+    "ordinaryPathRequired",
+    "readSet"
+  ],
+  "additionalProperties": false
+}

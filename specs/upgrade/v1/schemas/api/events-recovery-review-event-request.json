@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:events-recovery-review-event-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "credential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:recovery-review-event"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "sequence": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+          },
+          "occurredAt": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+          },
+          "lineageId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "executionPurpose": {
+            "const": "recoveryReview"
+          },
+          "kind": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "fromState": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "toState": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "factsSha256": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "facts": {
+            "$ref": "urn:pinvou:upgrade:v1:api:event-facts"
+          },
+          "targetIdentitySha256": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          }
+        },
+        "required": [
+          "eventId",
+          "sequence",
+          "occurredAt",
+          "lineageId",
+          "executionPurpose",
+          "kind",
+          "fromState",
+          "toState",
+          "factsSha256",
+          "facts",
+          "targetIdentitySha256"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "credential",
+    "events"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:root-lineage",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "recordKind": {
+      "const": "rootLineage"
+    },
+    "projectionOwner": {
+      "const": "T07"
+    },
+    "product": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "anchorKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "anchorBodySha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "rootVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "rootBodySha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "chainMaterialKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "chainMaterialId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "chainMaterialSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "readSet": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:model-read-ref"
+      },
+      "minItems": 2,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "revision",
+    "recordKind",
+    "projectionOwner",
+    "product",
+    "anchorKey",
+    "anchorBodySha256",
+    "rootVersion",
+    "rootBodySha256",
+    "chainMaterialKey",
+    "chainMaterialId",
+    "chainMaterialSha256",
+    "readSet"
+  ],
+  "additionalProperties": false
+}

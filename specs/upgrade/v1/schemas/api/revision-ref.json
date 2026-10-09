@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:revision-ref",
+  "type": "object",
+  "properties": {
+    "recordKind": {
+      "enum": [
+        "rootHead",
+        "metadataHead",
+        "selectionScope",
+        "registry",
+        "artifact",
+        "release",
+        "releaseTarget",
+        "deployment",
+        "rollout",
+        "supplyChain",
+        "bridgeEligibility",
+        "workflow",
+        "session",
+        "authorization",
+        "transaction",
+        "staged",
+        "activeValidate",
+        "task",
+        "qualityProjection",
+        "freezeReason",
+        "stageObservation",
+        "operation"
+      ]
+    },
+    "recordId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "sha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "recordKind",
+    "recordId",
+    "revision",
+    "sha256"
+  ],
+  "additionalProperties": false
+}

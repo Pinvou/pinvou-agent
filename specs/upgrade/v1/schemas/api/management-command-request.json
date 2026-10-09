@@ -1,0 +1,978 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:management-command-request",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "RotateRoot"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "DenySigningKey"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "QuarantineArtifact"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ApproveSupplyChain"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "RevokeSupplyChain"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "AssembleRelease"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "SubmitReleaseTarget"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ApproveReleaseTarget"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "RejectReleaseTarget"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "RevokeReleaseTarget"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "CloseRelease"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "CancelRelease"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "SubmitDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ScheduleDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ActivateDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "PauseDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ResumeDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "WithdrawDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "SupersedeDeployment"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "PublishRegistryRevision"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "EnableBridgeEligibility"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "DisableBridgeEligibility"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ChangeSupportFloor"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "FreezeRolloutPlan"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "StartRollout"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "AbortRollout"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "expectedReadSet": {
+          "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+        },
+        "reason": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "command": {
+          "const": "ReleaseQualityFreeze"
+        },
+        "approvedChange": {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "commandKey",
+        "expectedReadSet",
+        "reason",
+        "command",
+        "approvedChange"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

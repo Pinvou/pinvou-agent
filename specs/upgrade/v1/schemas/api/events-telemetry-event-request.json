@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:events-telemetry-event-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "credential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:telemetry-event"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "sequence": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+          },
+          "occurredAt": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+          },
+          "lineageId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "executionPurpose": {
+            "enum": [
+              "preinstall",
+              "install",
+              "activate"
+            ]
+          },
+          "kind": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "fromState": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "toState": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "factsSha256": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+          },
+          "facts": {
+            "$ref": "urn:pinvou:upgrade:v1:api:event-facts"
+          },
+          "targetIdentitySha256": {
+            "anyOf": [
+              {
+                "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "eventId",
+          "sequence",
+          "occurredAt",
+          "lineageId",
+          "executionPurpose",
+          "kind",
+          "fromState",
+          "toState",
+          "factsSha256",
+          "facts",
+          "targetIdentitySha256"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "credential",
+    "events"
+  ],
+  "additionalProperties": false
+}

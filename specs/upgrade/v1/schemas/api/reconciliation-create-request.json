@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:reconciliation-create-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "originalTransactionId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "originalConsumeRequestDigest": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "target": {
+      "$ref": "urn:pinvou:upgrade:v1:api:target-content"
+    },
+    "originalStage": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/originalStage"
+    },
+    "windowStart": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "windowEnd": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "commandKey",
+    "originalTransactionId",
+    "originalConsumeRequestDigest",
+    "target",
+    "originalStage",
+    "windowStart",
+    "windowEnd",
+    "reason",
+    "expectedReadSet"
+  ],
+  "additionalProperties": false
+}

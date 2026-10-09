@@ -11,8 +11,8 @@ export const native = (format, identity = format) => ({ size: 123, sha256: HASH,
   identity, publisher: 'test-publisher', format });
 export const byteIdentity = () => ({ size: 123, sha256: HASH });
 
-export function createFixtureSet({ component = 'app' } = {}) {
-  const keys = Array.from({ length: 4 }, () => generateKeyPairSync('ed25519').privateKey);
+export function createFixtureSet({ component = 'app', clock = NOW, signingKeys = null } = {}) {
+  const keys = signingKeys ?? Array.from({ length: 4 }, () => generateKeyPairSync('ed25519').privateKey);
   const descriptors = keys.map(publicKeyDescriptor);
   const roles = ['root', 'timestamp', 'snapshot', 'target', 'release', 'package', 'decision', 'download',
     'authorization-preinstall', 'authorization-install', 'authorization-activate', 'helper-cleanup',
@@ -27,8 +27,8 @@ export function createFixtureSet({ component = 'app' } = {}) {
   });
   const context = (role, scope = {}) => ({ protocolVersion: 1, role, product: 'pinvou',
     component: role === 'root' ? null : component, scope });
-  const timed = { version: 1, issuedAt: NOW, expiresAt: NOW + DAY };
-  const root = { ...context('root'), ...timed, expiresAt: NOW + 365 * DAY,
+  const timed = { version: 1, issuedAt: clock, expiresAt: clock + DAY };
+  const root = { ...context('root'), ...timed, expiresAt: clock + 365 * DAY,
     keys: descriptors, roles: policies };
   const packageManifest = { ...context('package', { targetKey: TARGET }), appVersion: '2.0.0',
     activationModes: ['directInstall', 'stagedRestart'],
@@ -43,7 +43,7 @@ export function createFixtureSet({ component = 'app' } = {}) {
   const metadata = { root, package: packageManifest };
   const bytes = { root: signEnvelope(root, keys.slice(0, 2)), package: signEnvelope(packageManifest, [keys[3]]) };
   const release = { ...context('release', { releaseId: 'release-2' }), revision: 1,
-    issuedAt: NOW, expiresAt: NOW + 90 * DAY, appVersion: '2.0.0',
+    issuedAt: clock, expiresAt: clock + 90 * DAY, appVersion: '2.0.0',
     notes: { 'zh-CN': 'Test release', en: 'Test release', ja: 'Test release' },
     targets: [{ targetKey: TARGET, releaseTargetId: 'release-target-2', releaseTargetRevision: 1,
       minimumSourceVersion: '1.0.0', migrationMode: 'none', backupPolicy: 'notRequired',
@@ -71,10 +71,10 @@ export function createFixtureSet({ component = 'app' } = {}) {
     releaseId: 'release-2', releaseRevision: 1, releaseState: 'closed', releaseManifest: envelopeReference(bytes.release),
     releaseTargetId: 'release-target-2', releaseTargetRevision: 1, releaseTargetState: 'approved',
     packageManifest: envelopeReference(bytes.package), artifactId: 'artifact-2', artifactState: 'valid',
-    packageId: 'package-2', package: byteIdentity(), releaseVisibleAt: NOW, installNotBefore: NOW,
-    installNotAfter: NOW + DAY, supplyChain: { approvalId: 'approval-2', revision: 1, effectiveExpiresAt: NOW + DAY } };
+    packageId: 'package-2', package: byteIdentity(), releaseVisibleAt: clock, installNotBefore: clock,
+    installNotAfter: clock + DAY, supplyChain: { approvalId: 'approval-2', revision: 1, effectiveExpiresAt: clock + DAY } };
   const update = { workflowId: 'workflow-1', originalStage: { deploymentId: 'deployment-2', rolloutId: null,
-    stageId: 'baseline', groupIdentity: HASH, firstQualifiedAt: NOW }, endpointKind: 'baseline', hopKind: 'ordinary',
+    stageId: 'baseline', groupIdentity: HASH, firstQualifiedAt: clock }, endpointKind: 'baseline', hopKind: 'ordinary',
     baselineDeploymentId: 'deployment-2', baselineRevision: 1,
     endpointChain: structuredClone(chain), hopChain: structuredClone(chain), rollout: null, bridge: null,
     ordinaryPathApproval: null, targetVersion: '2.0.0', packageId: 'package-2', finalInstaller: native('deb'),
@@ -86,24 +86,24 @@ export function createFixtureSet({ component = 'app' } = {}) {
   const credentialScope = { installationScopeId: 'scope-1', channel: 'stable', channelRevision: 1, targetKey: TARGET };
   const credential = (role, audience, purpose, fields = {}) => ({ ...context(role, credentialScope),
     credentialType: role, aud: audience, purpose, credentialPurpose: purpose, jti: 'jti-1', signingKeyId: descriptors[3].keyId,
-    iat: NOW, nbf: NOW, exp: NOW + 300_000, ...fields });
+    iat: clock, nbf: clock, exp: clock + 300_000, ...fields });
   const qualification = { installId: 'install-1', decisionId: 'decision-1', decisionRevision: 1,
     telemetrySessionId: 'session-1', currentVersion: '1.0.0', host: { os: 'linux', arch: 'x86_64', osVersion: '22.04' },
     selectionGeneration: 1, metadataSet, registryVersion: 1, sourceProfileId: HASH, clientFactsDigest: HASH,
     updaterFactsDigest: HASH, helperFactsDigest: HASH, launcherFactsDigest: HASH, forwardPath: null };
   const claims = {
     decision: credential('decision', 'upgrade-control', 'check', { ...qualification,
-      exp: NOW + 900_000, requestNonce: 'nonce-1', updateAvailable: true, update, reason: null }),
+      exp: clock + 900_000, requestNonce: 'nonce-1', updateAvailable: true, update, reason: null }),
     download: credential('download', 'upgrade-download-info', 'download', { ...qualification,
-      exp: NOW + 900_000, update, packageId: 'package-2', package: byteIdentity() }),
+      exp: clock + 900_000, update, packageId: 'package-2', package: byteIdentity() }),
     'helper-cleanup': credential('helper-cleanup', 'upgrade-helper-cleanup', 'cleanup', {
-      exp: NOW + 120_000, installId: 'install-1', registryVersion: 1, selectionGeneration: 1,
+      exp: clock + 120_000, installId: 'install-1', registryVersion: 1, selectionGeneration: 1,
       beforeFactsDigest: HASH, afterFactsDigest: HASH, preparation: { ownerEpoch: 1, scopeRevision: 1 },
       deletionSet: [{ identity: native('helper'), protectedPathId: 'obsolete-helper-1' }] }),
     'telemetry-event': credential('telemetry-event', 'update-events', 'telemetry', {
-      exp: NOW + 7 * DAY, installId: 'install-1', decisionId: 'decision-1', decisionRevision: 1,
-      telemetrySessionId: 'session-1', selectionGeneration: 1, sessionStartedAt: NOW, denyRevisionAtIssue: 0,
-      eventModel: 'telemetry-v1', allowedEvents: ['download_started', 'download_progress'], eventNotAfter: NOW + DAY }),
+      exp: clock + 7 * DAY, installId: 'install-1', decisionId: 'decision-1', decisionRevision: 1,
+      telemetrySessionId: 'session-1', selectionGeneration: 1, sessionStartedAt: clock, denyRevisionAtIssue: 0,
+      eventModel: 'telemetry-v1', allowedEvents: ['download_started', 'download_progress'], eventNotAfter: clock + DAY }),
   };
   for (const purpose of ['preinstall', 'install', 'activate']) {
     const authorizationUpdate = structuredClone(update);
@@ -111,16 +111,16 @@ export function createFixtureSet({ component = 'app' } = {}) {
       authorizationUpdate.activationMode = 'stagedRestart'; authorizationUpdate.upgradeType = 'silent';
     }
     const staged = purpose === 'activate' ? { preinstallTransactionId: 'preinstall-1', stagedRevision: 1,
-      slotIdentity: 'slot-1', stagedAt: NOW - 1000, stagedValidUntil: NOW + DAY } : null;
+      slotIdentity: 'slot-1', stagedAt: clock - 1000, stagedValidUntil: clock + DAY } : null;
     claims[`authorization-${purpose}`] = credential(`authorization-${purpose}`, 'upgrade-consume', purpose,
       { ...qualification, update: authorizationUpdate, authorizationJti: 'jti-1', transactionId: 'transaction-1',
         preparation: { ownerEpoch: 1, scopeRevision: 1 }, freezeEpoch: purpose === 'preinstall' ? null : 1,
         backup: null, staged, preinstallSlot: purpose === 'preinstall'
           ? { slotIdentity: 'slot-1', slotRevision: 1, state: 'inactive' } : null });
     claims[`${purpose}-transaction-event`] = credential(`${purpose}-transaction-event`, 'update-events', purpose,
-      { exp: NOW + 37 * DAY, installId: 'install-1', decisionId: 'decision-1', decisionRevision: 1,
-        authorizationJti: 'jti-1', transactionId: 'transaction-1', transactionStartedAt: NOW,
-        denyRevisionAtIssue: 0, eventModel: 'transaction-v1', allowedEvents: ['authorization_consumed'], eventNotAfter: NOW + 30 * DAY });
+      { exp: clock + 37 * DAY, installId: 'install-1', decisionId: 'decision-1', decisionRevision: 1,
+        authorizationJti: 'jti-1', transactionId: 'transaction-1', transactionStartedAt: clock,
+        denyRevisionAtIssue: 0, eventModel: 'transaction-v1', allowedEvents: ['authorization_consumed'], eventNotAfter: clock + 30 * DAY });
   }
   for (const [prefix, purpose] of [['reconciliation', 'reconcile'], ['recovery-review', 'recoveryReview']]) {
     const task = { taskId: 'task-1', revision: 1, taskPurpose: purpose, originalTransactionId: 'transaction-1',
@@ -131,12 +131,12 @@ export function createFixtureSet({ component = 'app' } = {}) {
       endpointChain: structuredClone(chain), hopChain: structuredClone(chain),
       targetVersion: '2.0.0', sourceVersion: '1.0.0', upgradeType: 'normal',
       packageManifest: envelopeReference(bytes.package), package: byteIdentity(),
-      activationMode: 'directInstall', windowId: 'window-1', windowStart: NOW, windowEnd: NOW + DAY };
+      activationMode: 'directInstall', windowId: 'window-1', windowStart: clock, windowEnd: clock + DAY };
     claims[`${prefix}-action`] = credential(`${prefix}-action`, 'upgrade-task-action', purpose,
       { installId: 'install-1', task });
     claims[`${prefix}-event`] = credential(`${prefix}-event`, 'update-events', purpose,
-      { exp: NOW + 7 * DAY, installId: 'install-1', task, taskStartedAt: NOW,
-        denyRevisionAtIssue: 0, eventModel: `${prefix}-v1`, allowedEvents: ['task_observation'], eventNotAfter: NOW + DAY });
+      { exp: clock + 7 * DAY, installId: 'install-1', task, taskStartedAt: clock,
+        denyRevisionAtIssue: 0, eventModel: `${prefix}-v1`, allowedEvents: ['task_observation'], eventNotAfter: clock + DAY });
   }
   const sourceFacts = { product: 'pinvou', component, targetKey: TARGET, canonicalAppVersion: '1.0.0',
     application: native('deb', 'app'), helper: native('helper'), launcher: native('launcher'),

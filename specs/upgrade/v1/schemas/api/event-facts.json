@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:event-facts",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "factType": {
+          "const": "local-state"
+        },
+        "verifiedObjectSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "verifiedSlotId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "isolatedSlotId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "verificationResult": {
+          "enum": [
+            "verified",
+            "rejected"
+          ]
+        },
+        "preflightResult": {
+          "enum": [
+            "supported",
+            "unsupported"
+          ]
+        },
+        "targetScopeId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "permissionScopeId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "permissionSource": {
+          "enum": [
+            "existing-helper",
+            "os-confirmed"
+          ]
+        },
+        "ownerEpoch": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "freezeEpoch": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "writerCount": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "activeWriterCount": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "allExecutorsStopped": {
+          "type": "boolean"
+        },
+        "frozenDataScopeSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "dataScopeSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "backupFreezeEpoch": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "backupPreparationEpoch": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "backupDataScopeSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "lastOnlineAuthorizationJti": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "lastOnlineAt": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "installerInvokedAt": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "firstActiveWriteAt": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pointerSwitchedAt": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boundaryAt": {
+          "anyOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeMutationCount": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "activeObjectSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "oldIdentitySha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "oldDataSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "stoppedOwnerEpoch": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "safetyResult": {
+          "enum": [
+            "intact",
+            "damaged",
+            "unproven"
+          ]
+        },
+        "healthResult": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "dataResult": {
+          "enum": [
+            "consistent",
+            "inconsistent",
+            "unknown"
+          ]
+        },
+        "healthStartedAt": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "healthAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "lastHealthAttemptMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120000
+        },
+        "confirmedHopSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "workflowId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "writableSessionId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "hopSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "trigger": {
+          "enum": [
+            "restart"
+          ]
+        },
+        "preinstallState": {
+          "const": "staging_completed"
+        },
+        "stagedRevision": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "stagedValidUntil": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        }
+      },
+      "required": [
+        "factType"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "factType": {
+          "const": "download-progress"
+        },
+        "bytesReceived": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "totalBytes": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "observation": {
+          "enum": [
+            "progress",
+            "waiting",
+            "backoff",
+            "paused"
+          ]
+        },
+        "updatedAt": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        "fileSourceClass": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        }
+      },
+      "required": [
+        "factType",
+        "bytesReceived",
+        "totalBytes",
+        "observation",
+        "updatedAt",
+        "fileSourceClass"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "factType": {
+          "const": "task-observation"
+        },
+        "originalTargetIdentitySha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "activeObjectSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "dataResult": {
+          "enum": [
+            "consistent",
+            "inconsistent",
+            "unknown"
+          ]
+        },
+        "healthResult": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "windowId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        }
+      },
+      "required": [
+        "factType",
+        "originalTargetIdentitySha256",
+        "activeObjectSha256",
+        "dataResult",
+        "healthResult",
+        "windowId"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:frozen-stage-plan",
+  "type": "object",
+  "properties": {
+    "upgradeType": {
+      "enum": [
+        "normal",
+        "silent",
+        "forced"
+      ]
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stageId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "percentage": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "minimumObservationMs": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+          },
+          "requiredMetrics": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "download",
+                "verification",
+                "installation",
+                "health",
+                "preinstallation",
+                "activation"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 4096,
+            "uniqueItems": true
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "download": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-metric-policy"
+              },
+              "verification": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-metric-policy"
+              },
+              "installation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-metric-policy"
+              },
+              "health": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-metric-policy"
+              },
+              "preinstallation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-metric-policy"
+              },
+              "activation": {
+                "$ref": "urn:pinvou:upgrade:v1:api:quality-metric-policy"
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "stageId",
+          "percentage",
+          "minimumObservationMs",
+          "requiredMetrics",
+          "metrics"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "snIncludeSetRef": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "snExcludeSetRef": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "progressReportIntervalMs": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "lossIntervalMs": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    }
+  },
+  "required": [
+    "upgradeType",
+    "stages",
+    "snIncludeSetRef",
+    "snExcludeSetRef",
+    "progressReportIntervalMs",
+    "lossIntervalMs"
+  ],
+  "additionalProperties": false
+}

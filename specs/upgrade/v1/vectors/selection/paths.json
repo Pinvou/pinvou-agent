@@ -1,0 +1,33 @@
+{
+  "description": "Initial hand-authored selection expectations. Node patches are fixture construction only, not wire operations.",
+  "cases": [
+    { "id": "baseline-ordinary", "patch": {}, "expected": { "endpointKind": "baseline", "hopKind": "ordinary", "endpointId": "baseline", "hopId": "baseline" } },
+    { "id": "candidate-ordinary", "patch": { "candidate": true }, "expected": { "endpointKind": "candidate", "hopKind": "ordinary", "endpointId": "candidate", "hopId": "candidate" } },
+    { "id": "baseline-bridge", "patch": { "baselineMin": "2.0.0", "bridge": true }, "expected": { "endpointKind": "baseline", "hopKind": "bridge", "endpointId": "baseline", "hopId": "hop" } },
+    { "id": "candidate-bridge", "patch": { "candidate": true, "candidateMin": "2.0.0", "baselinePaused": true, "bridge": true }, "expected": { "endpointKind": "candidate", "hopKind": "bridge", "endpointId": "candidate", "hopId": "hop" } },
+    { "id": "floor-refuses-zero-fallback", "patch": { "current": "0.9.0" }, "expected": { "reason": "source_below_support_floor" } },
+    { "id": "unknown-source", "patch": { "profiles": "none" }, "expected": { "reason": "source_profile_unknown" } },
+    { "id": "ambiguous-source", "patch": { "profiles": "duplicate" }, "expected": { "reason": "source_profile_ambiguous" } },
+    { "id": "revoked-source", "patch": { "sourceState": "revoked" }, "expected": { "reason": "source_revoked" } },
+    { "id": "repair-only-source", "patch": { "sourceState": "repair-only" }, "expected": { "reason": "source_repair_only" } },
+    { "id": "equal-version-no-reinstall", "patch": { "current": "3.0.0" }, "expected": { "reason": "no_higher_version" } },
+    { "id": "higher-version-no-downgrade", "patch": { "current": "5.0.0" }, "expected": { "reason": "no_higher_version" } },
+    { "id": "no-forward-path", "patch": { "baselineMin": "2.1.0", "hopMinimum": "2.0.0" }, "expected": { "reason": "source_path_unavailable" } },
+    { "id": "ordinary-paused-cannot-borrow-endpoint", "patch": { "baselineMin": "2.0.0", "hopPaused": true }, "expected": { "reason": "source_path_unavailable" } },
+    { "id": "bridge-disabled", "patch": { "baselineMin": "2.0.0", "bridge": true, "bridgeDisabled": true }, "expected": { "reason": "source_path_unavailable" } },
+    { "id": "highest-reachable-next-hop", "patch": { "baselineMin": "2.5.0", "secondHop": true }, "expected": { "endpointKind": "baseline", "hopKind": "ordinary", "endpointId": "baseline", "hopId": "hop-high" } },
+    { "id": "forward-only-single-exact", "patch": { "sourceState": "forward-only", "policy": "exact" }, "expected": { "endpointKind": "baseline", "hopKind": "ordinary", "endpointId": "baseline", "hopId": "baseline" } },
+    { "id": "forward-only-zero-no-fallback", "patch": { "sourceState": "forward-only", "policy": "wrong-channel" }, "expected": { "reason": "source_forward_path_unavailable" } },
+    { "id": "forward-only-multiple-fails-closed", "patch": { "sourceState": "forward-only", "policy": "duplicate" }, "error": "MODEL_POLICY_AMBIGUOUS" },
+    { "id": "candidate-not-above-baseline", "patch": { "candidate": true, "candidateVersion": "3.0.0" }, "error": "MODEL_CANDIDATE_INVALID" }
+  ],
+  "buckets": [
+    { "id": "exclude-before-include", "percentage": 100, "snPresent": true, "included": true, "excluded": true, "bucketBasisPoints": 0, "hit": false },
+    { "id": "include-before-percentage", "percentage": 1, "snPresent": true, "included": true, "excluded": false, "bucketBasisPoints": 9999, "hit": true },
+    { "id": "below-bucket-boundary", "percentage": 25, "snPresent": true, "included": false, "excluded": false, "bucketBasisPoints": 2499, "hit": true },
+    { "id": "at-bucket-boundary", "percentage": 25, "snPresent": true, "included": false, "excluded": false, "bucketBasisPoints": 2500, "hit": false },
+    { "id": "after-bucket-boundary", "percentage": 25, "snPresent": true, "included": false, "excluded": false, "bucketBasisPoints": 2501, "hit": false },
+    { "id": "no-sn-before-100", "percentage": 99, "snPresent": false, "included": false, "excluded": false, "bucketBasisPoints": 0, "hit": false },
+    { "id": "no-sn-at-100", "percentage": 100, "snPresent": false, "included": false, "excluded": false, "bucketBasisPoints": 9999, "hit": true }
+  ]
+}

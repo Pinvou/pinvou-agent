@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:helper-cleanup-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "credential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:helper-cleanup"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "credential"
+  ],
+  "additionalProperties": false
+}

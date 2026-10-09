@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:download-info-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "credential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:download"
+    },
+    "packageId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "size": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "sha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "url": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "pattern": "^https://"
+    },
+    "expiresAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "fileSourceClass": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "credential",
+    "packageId",
+    "size",
+    "sha256",
+    "url",
+    "expiresAt",
+    "fileSourceClass"
+  ],
+  "additionalProperties": false
+}

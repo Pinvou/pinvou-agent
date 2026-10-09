@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:approved-change",
+  "type": "object",
+  "properties": {
+    "changeId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "sha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "changeId",
+    "revision",
+    "sha256"
+  ],
+  "additionalProperties": false
+}

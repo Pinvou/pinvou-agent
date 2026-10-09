@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:channel-change-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "channel": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/channel"
+    },
+    "channelRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "channel",
+    "channelRevision"
+  ],
+  "additionalProperties": false
+}

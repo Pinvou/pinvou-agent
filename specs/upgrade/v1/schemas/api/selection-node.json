@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:selection-node",
+  "type": "object",
+  "properties": {
+    "deploymentId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "channel": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/channel"
+    },
+    "version": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "minimumSourceVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "hopKind": {
+      "enum": [
+        "ordinary",
+        "bridge"
+      ]
+    },
+    "deploymentState": {
+      "enum": [
+        "scheduled",
+        "active",
+        "paused",
+        "withdrawn",
+        "superseded"
+      ]
+    },
+    "releaseState": {
+      "enum": [
+        "assembled",
+        "closed",
+        "cancelled"
+      ]
+    },
+    "releaseTargetState": {
+      "enum": [
+        "approved",
+        "revoked",
+        "rejected"
+      ]
+    },
+    "artifactState": {
+      "enum": [
+        "valid",
+        "quarantined",
+        "rejected"
+      ]
+    },
+    "supplyChainState": {
+      "enum": [
+        "approved",
+        "expired",
+        "revoked"
+      ]
+    },
+    "supplyChainExpiresAt": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "releaseVisibleAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "installNotBefore": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "installNotAfter": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "isBaseline": {
+      "type": "boolean"
+    },
+    "ordinaryPathApproval": {
+      "anyOf": [
+        {
+          "enum": [
+            "approved",
+            "revoked"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ownRolloutState": {
+      "anyOf": [
+        {
+          "enum": [
+            "draft",
+            "running",
+            "paused",
+            "completed",
+            "aborted"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "bridgeState": {
+      "anyOf": [
+        {
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "releaseTargetId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "releaseTargetRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "packageId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "packageSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "transformId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "transformRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "upgradeType": {
+      "enum": [
+        "normal",
+        "silent",
+        "forced"
+      ]
+    },
+    "activationMode": {
+      "enum": [
+        "directInstall",
+        "stagedRestart"
+      ]
+    },
+    "certificationState": {
+      "enum": [
+        "certified",
+        "unverified"
+      ]
+    }
+  },
+  "required": [
+    "deploymentId",
+    "channel",
+    "version",
+    "minimumSourceVersion",
+    "hopKind",
+    "deploymentState",
+    "releaseState",
+    "releaseTargetState",
+    "artifactState",
+    "supplyChainState",
+    "supplyChainExpiresAt",
+    "releaseVisibleAt",
+    "installNotBefore",
+    "installNotAfter",
+    "isBaseline",
+    "ordinaryPathApproval",
+    "ownRolloutState",
+    "bridgeState",
+    "releaseTargetId",
+    "releaseTargetRevision",
+    "packageId",
+    "packageSha256",
+    "transformId",
+    "transformRevision",
+    "upgradeType",
+    "activationMode",
+    "certificationState"
+  ],
+  "additionalProperties": false
+}

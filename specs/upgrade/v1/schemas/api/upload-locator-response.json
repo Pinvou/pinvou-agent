@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:upload-locator-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "uploadId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "url": {
+      "type": "string",
+      "maxLength": 8192,
+      "pattern": "^https://"
+    },
+    "expiresAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "artifact": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "uploadId",
+    "url",
+    "expiresAt",
+    "artifact"
+  ],
+  "additionalProperties": false
+}

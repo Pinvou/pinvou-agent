@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:complete-upload-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "uploadId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "artifactDraftId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "artifactRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "artifact": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "commandKey",
+    "expectedReadSet",
+    "reason",
+    "uploadId",
+    "artifactDraftId",
+    "artifactRevision",
+    "artifact"
+  ],
+  "additionalProperties": false
+}

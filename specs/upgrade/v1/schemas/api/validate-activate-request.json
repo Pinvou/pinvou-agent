@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:validate-activate-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scope"
+    },
+    "decision": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:decision"
+    },
+    "validateKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "facts": {
+      "$ref": "urn:pinvou:upgrade:v1:api:current-facts"
+    },
+    "preparation": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/preparation"
+    },
+    "freezeEpoch": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "backup": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/backup"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "staged": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/staged"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "preinstallSlot": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "slotIdentity": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+            },
+            "slotRevision": {
+              "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+            },
+            "state": {
+              "const": "inactive"
+            }
+          },
+          "required": [
+            "slotIdentity",
+            "slotRevision",
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "decision",
+    "validateKey",
+    "facts",
+    "preparation",
+    "freezeEpoch",
+    "backup",
+    "staged",
+    "preinstallSlot"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:synchronize-stable-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "batchId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "enum": [
+              "beta",
+              "internal"
+            ]
+          },
+          "targetKey": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+          },
+          "deploymentId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          },
+          "rolloutId": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+          }
+        },
+        "required": [
+          "channel",
+          "targetKey",
+          "deploymentId",
+          "rolloutId"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "batchId",
+    "drafts"
+  ],
+  "additionalProperties": false
+}

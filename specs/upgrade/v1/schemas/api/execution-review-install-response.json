@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:execution-review-install-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "transactionId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "transactionRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "reviewedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "currentReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    },
+    "verifiedObjectSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "transactionId",
+    "transactionRevision",
+    "reviewedAt",
+    "currentReadSet",
+    "verifiedObjectSha256"
+  ],
+  "additionalProperties": false
+}

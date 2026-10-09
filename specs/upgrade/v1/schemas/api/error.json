@@ -1,0 +1,521 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:error",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "CONTRACT_INVALID"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "CREDENTIAL_INVALID"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "EVENT_KEY_DENIED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "AUTHORIZATION_EXPIRED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "AUTHORIZATION_CONFLICT"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "IDEMPOTENCY_CONFLICT"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "REVISION_CONFLICT"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "QUALIFICATION_CHANGED"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "METADATA_SYNC_PENDING"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "UNKNOWN_CONSUME_OUTCOME"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "RATE_LIMITED"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "SERVICE_UNAVAILABLE"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "PERMISSION_DENIED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "MFA_REQUIRED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "INVALID_TRANSITION"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "CANDIDATE_NOT_ABOVE_BASELINE"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "QUALITY_INCOMPLETE"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "OWNER_FENCED"
+        },
+        "retryable": {
+          "const": true
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "UNSUPPORTED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

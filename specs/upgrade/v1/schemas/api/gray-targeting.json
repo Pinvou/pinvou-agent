@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:gray-targeting",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "disabled",
+            "unavailable"
+          ]
+        },
+        "serialNumber": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "mode",
+        "serialNumber"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "enabled"
+        },
+        "serialNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        }
+      },
+      "required": [
+        "mode",
+        "serialNumber"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

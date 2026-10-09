@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:release-draft",
+  "type": "object",
+  "properties": {
+    "appVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "notes": {
+      "type": "object",
+      "properties": {
+        "zh-CN": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/text"
+        },
+        "en": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/text"
+        },
+        "ja": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/text"
+        }
+      },
+      "required": [
+        "zh-CN",
+        "en",
+        "ja"
+      ],
+      "additionalProperties": false
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "targetKey": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+          },
+          "packageManifest": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/metadataReference"
+          },
+          "minimumSourceVersion": {
+            "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+          },
+          "migrationMode": {
+            "enum": [
+              "none",
+              "backwardCompatible",
+              "irreversible"
+            ]
+          },
+          "backupPolicy": {
+            "enum": [
+              "notRequired",
+              "required"
+            ]
+          },
+          "activationModes": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "directInstall",
+                "stagedRestart"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 4096,
+            "uniqueItems": true
+          },
+          "certificationRef": {
+            "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+          }
+        },
+        "required": [
+          "targetKey",
+          "packageManifest",
+          "minimumSourceVersion",
+          "migrationMode",
+          "backupPolicy",
+          "activationModes",
+          "certificationRef"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "appVersion",
+    "notes",
+    "targets"
+  ],
+  "additionalProperties": false
+}

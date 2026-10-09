@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:management-authorization",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "projectionOwner": {
+      "const": "T05"
+    },
+    "state": {
+      "enum": [
+        "authorized",
+        "revoked"
+      ]
+    },
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "mfaVerified": {
+      "type": "boolean"
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "key-management"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true
+    },
+    "authorizedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "expiresAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "bodySha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+        },
+        "objectId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "objectRevision": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        }
+      },
+      "required": [
+        "command",
+        "scope",
+        "objectId",
+        "objectRevision"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "revision",
+    "projectionOwner",
+    "state",
+    "actorId",
+    "mfaVerified",
+    "permissions",
+    "authorizedAt",
+    "expiresAt",
+    "bodySha256",
+    "context"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:trust-role",
+  "enum": [
+    "root",
+    "timestamp",
+    "snapshot",
+    "target",
+    "release",
+    "package",
+    "decision",
+    "download",
+    "authorization-preinstall",
+    "authorization-install",
+    "authorization-activate",
+    "helper-cleanup",
+    "telemetry-event",
+    "preinstall-transaction-event",
+    "install-transaction-event",
+    "activate-transaction-event",
+    "reconciliation-action",
+    "recovery-review-action",
+    "reconciliation-event",
+    "recovery-review-event"
+  ]
+}

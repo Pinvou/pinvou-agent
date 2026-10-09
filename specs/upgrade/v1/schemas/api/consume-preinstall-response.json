@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:consume-preinstall-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "authorizationState": {
+      "const": "consumed"
+    },
+    "authorizationRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "transactionId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "transactionCredential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:preinstall-transaction-event"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "authorizationState",
+    "authorizationRevision",
+    "transactionId",
+    "transactionCredential"
+  ],
+  "additionalProperties": false
+}

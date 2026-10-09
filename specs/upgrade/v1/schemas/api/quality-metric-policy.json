@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:quality-metric-policy",
+  "type": "object",
+  "properties": {
+    "minimumSamples": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "threshold": {
+      "type": "object",
+      "properties": {
+        "numerator": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "denominator": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        }
+      },
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "minimumSamples",
+    "threshold"
+  ],
+  "additionalProperties": false
+}

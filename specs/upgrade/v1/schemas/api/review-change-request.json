@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:review-change-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:management-scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "expectedReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "change": {
+      "$ref": "urn:pinvou:upgrade:v1:api:approved-change"
+    },
+    "expectedChangeRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "disposition": {
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "commandKey",
+    "expectedReadSet",
+    "reason",
+    "change",
+    "expectedChangeRevision",
+    "disposition"
+  ],
+  "additionalProperties": false
+}

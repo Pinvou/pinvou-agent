@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:quality-counts",
+  "type": "object",
+  "properties": {
+    "succeeded": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "failed": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "incomplete": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "unknown": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    }
+  },
+  "required": [
+    "succeeded",
+    "failed",
+    "incomplete",
+    "unknown"
+  ],
+  "additionalProperties": false
+}

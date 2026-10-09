@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scope",
+  "type": "object",
+  "properties": {
+    "product": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "component": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "installId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "installationScopeId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "channel": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/channel"
+    },
+    "channelRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "targetKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+    }
+  },
+  "required": [
+    "product",
+    "component",
+    "installId",
+    "installationScopeId",
+    "channel",
+    "channelRevision",
+    "targetKey"
+  ],
+  "additionalProperties": false
+}

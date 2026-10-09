@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:check-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "decision": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:decision"
+    },
+    "telemetryCredential": {
+      "$ref": "urn:pinvou:upgrade:v1:credentials:telemetry-event"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "decision",
+    "telemetryCredential"
+  ],
+  "additionalProperties": false
+}

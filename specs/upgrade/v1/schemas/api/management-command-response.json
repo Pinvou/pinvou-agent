@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:management-command-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "resultId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "committedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "resultingReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "resultId",
+    "committedAt",
+    "resultingReadSet"
+  ],
+  "additionalProperties": false
+}

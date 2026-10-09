@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:key-use",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "recordKind": {
+      "const": "keyUse"
+    },
+    "projectionOwner": {
+      "const": "T07"
+    },
+    "product": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "component": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "role": {
+      "$ref": "urn:pinvou:upgrade:v1:api:trust-role"
+    },
+    "channel": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/channel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "targetKey": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/signingKey"
+      },
+      "minItems": 1,
+      "maxItems": 4096,
+      "uniqueItems": true
+    },
+    "threshold": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "issuanceState": {
+      "enum": [
+        "active",
+        "stopped"
+      ]
+    },
+    "lastIssuedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "objectValidUntil": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "uploadUntil": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "recoveryUntil": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "retainUntil": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "readSet": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:model-read-ref"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "revision",
+    "recordKind",
+    "projectionOwner",
+    "product",
+    "component",
+    "role",
+    "channel",
+    "targetKey",
+    "keys",
+    "threshold",
+    "issuanceState",
+    "lastIssuedAt",
+    "objectValidUntil",
+    "uploadUntil",
+    "recoveryUntil",
+    "retainUntil",
+    "readSet"
+  ],
+  "additionalProperties": false
+}

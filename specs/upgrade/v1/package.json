@@ -6,6 +6,8 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test reference/tests/*.test.mjs",
+    "generate:schemas": "node reference/build-schemas.mjs",
+    "generate:api": "node reference/build-api.mjs",
     "validate": "node reference/cli.mjs"
   },
   "dependencies": { "ajv": "8.20.0" }

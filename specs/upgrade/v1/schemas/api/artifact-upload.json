@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:artifact-upload",
+  "type": "object",
+  "properties": {
+    "artifactKind": {
+      "enum": [
+        "composite-upload",
+        "full-package",
+        "native-installer",
+        "helper",
+        "launcher",
+        "sbom",
+        "provenance"
+      ]
+    },
+    "artifact": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/byteIdentity"
+    },
+    "targetKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/targetKey"
+    },
+    "appVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+    },
+    "sourceRevision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "algorithm": {
+              "const": "git-sha1"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          },
+          "required": [
+            "algorithm",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "algorithm": {
+              "const": "git-sha256"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "algorithm",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "required": [
+    "artifactKind",
+    "artifact",
+    "targetKey",
+    "appVersion",
+    "sourceRevision"
+  ],
+  "additionalProperties": false
+}

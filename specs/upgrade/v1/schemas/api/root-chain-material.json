@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:root-chain-material",
+  "type": "object",
+  "properties": {
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "recordKind": {
+      "const": "rootChainMaterial"
+    },
+    "projectionOwner": {
+      "const": "T07"
+    },
+    "product": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "materialId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "materialSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "rootVersion": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "rootBodySha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "previousRootBodySha256": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rootEnvelopeSha256": {
+      "anyOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "revision",
+    "recordKind",
+    "projectionOwner",
+    "product",
+    "materialId",
+    "materialSha256",
+    "rootVersion",
+    "rootBodySha256",
+    "previousRootBodySha256",
+    "rootEnvelopeSha256"
+  ],
+  "additionalProperties": false
+}

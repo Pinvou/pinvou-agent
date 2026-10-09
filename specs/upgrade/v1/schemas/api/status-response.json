@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:status-response",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "state": {
+          "const": "consumed"
+        },
+        "transactionId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "state",
+        "transactionId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "state": {
+          "const": "cancelled"
+        },
+        "transactionId": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "state",
+        "transactionId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "state": {
+          "const": "expired"
+        },
+        "transactionId": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "state",
+        "transactionId"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
