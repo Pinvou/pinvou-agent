@@ -2132,12 +2132,12 @@ enabled in settings",
             // exited 1 — the caller believes the create failed. Roll back
             // exactly like the siblings (definition + workspace), with the
             // same disclose-on-failed-rollback-step policy.
-            if let Ok(path) = store_holder.def_path(&id) {
-                if let Err(remove_error) = std::fs::remove_file(&path) {
-                    note!(
-                        "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
-                    );
-                }
+            if let Ok(path) = store_holder.def_path(&id)
+                && let Err(remove_error) = std::fs::remove_file(&path)
+            {
+                note!(
+                    "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+                );
             }
             if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
                 note!(
