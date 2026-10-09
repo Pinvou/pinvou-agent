@@ -1194,6 +1194,18 @@ test('buildSessionMentionBlock caps titles like the parser (round-6 minor 3)', (
   const split = splitSessionMentionBlock(block + '正文');
   assert.equal(split.matched, true, 'the builder output must parse as a block');
   assert.equal(split.refs[0].title.length, 200);
+  // The cap must not split an astral character at the boundary (round-11/12):
+  // a lone trailing surrogate escapes in the JSON line and degrades chips and
+  // the Rust auto-title — the capped title ends on a complete code point.
+  // 99 pairs (198 units) + 'x' puts the next pair's high surrogate at unit
+  // index 199, exactly on the cap boundary.
+  const astralAtBoundary = '😀'.repeat(99) + 'x' + '😀'.repeat(2);
+  const astralBlock = buildSessionMentionBlock([{ sessionId: 's1', title: astralAtBoundary }]);
+  const astralSplit = splitSessionMentionBlock(astralBlock + '正文');
+  assert.equal(astralSplit.matched, true, 'an astral-straddling title still builds a parseable block');
+  const cappedTitle = astralSplit.refs[0].title;
+  assert.equal(cappedTitle.length, 199, 'the split surrogate pair is dropped whole');
+  assert.ok(!/[\ud800-\udbff]$/.test(cappedTitle), 'no trailing lone high surrogate survives the cap');
 });
 
 // The Rust auto-titler mirrors the JS splitter (strip_session_mention_block in
