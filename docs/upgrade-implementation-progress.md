@@ -53,8 +53,13 @@ Download handoff and credible progress/waiting remain independent of session
 expiry; there is no total or cumulative download deadline.
 
 T03 still requires approved OS certification coverage, all-user/service data
-scope, finite preparation budgets and health criteria. Normal offline retention
-across shutdown also needs a proven trustworthy elapsed-time mechanism under
+scope and finite preparation budgets. The product owner approved local health
+criteria and strict trustworthy time option A on 2026-10-09, and requested the
+platform/data inventory, measured-budget test proposal and backend selection
+proposal in [implementation decisions](upgrade-implementation-decisions.md).
+That document distinguishes approved policy from proposals and physical evidence.
+Normal offline retention across shutdown also needs a proven trustworthy elapsed-time mechanism under
 the current strict requirement. Ordinary OS clocks or powered-on TPM clocks
-alone do not demonstrate elapsed shutdown duration. Those decisions remain
-pending; no support restriction or retention-policy change is assumed approved.
+alone do not demonstrate elapsed shutdown duration. OS/data scope and concrete
+budget approvals, and time-implementation evidence, remain pending. No support
+restriction or retention-policy change is assumed approved.
