@@ -754,11 +754,20 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
     // （M-8；锁见 file_lock.rs）。
     connectors::with_mcp_json_lock(|| {
         let mcp_path = paths::mcp_config_path();
-        if !mcp_path.is_file() {
-            return Ok(false);
-        }
-        let content =
-            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+        // Round-26 MAJOR 3: the read goes through the hardened private-data
+        // primitive. The raw `is_file()` + `read_to_string` pair was a
+        // check-then-act inside the mcp.lock critical section: a planted
+        // FIFO swapped in after the check blocked `open()` forever while
+        // HOLDING mcp.lock, wedging every mcp.json writer in every process —
+        // the exact class the round-22 P1 fix closed for recycle-bin.json.
+        // Absent stays `Ok(false)`; a refused read (FIFO/symlink/non-regular)
+        // now fails the migration loudly instead of silently skipping, the
+        // same fail-closed direction as the sibling in-lock reads.
+        let content = match crate::platform::filesystem::read_private_data_file(&mcp_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("读取 mcp.json 失败: {e}")),
+        };
         let mut mcp: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
         let mut changed = false;
@@ -3054,6 +3063,44 @@ mod tests {
                 command.starts_with(&*new_dir.to_string_lossy()),
                 "重写后应指向新包目录，实际: {command}"
             );
+        });
+    }
+
+    /// Round-26 MAJOR 3: the in-lock mcp.json read goes through the hardened
+    /// private-data primitive. The raw `is_file()` + `read_to_string` pair
+    /// was check-then-act INSIDE mcp.lock — a planted FIFO swapped in after
+    /// the check blocked `open()` forever while holding the lock, wedging
+    /// every mcp.json writer in every process. The hardened read refuses, so
+    /// the migration fails loudly; the bounded worker makes a regression to
+    /// the raw read fail this test instead of hanging the lane while holding
+    /// the fixture lock.
+    #[test]
+    #[cfg(unix)]
+    fn migrate_mcp_json_paths_refuses_a_planted_fifo_without_hanging() {
+        with_temp_home(|| {
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let c_path = std::ffi::CString::new(mcp_path.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: mkfifo on a fresh temp-home path; no other thread touches it.
+            let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+            assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = migrate_mcp_json_paths();
+                let _ = tx.send(result);
+            });
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    panic!("migrate must refuse a planted mcp.json FIFO without hanging (5s bound)")
+                });
+            let error = result.expect_err("a planted FIFO must fail the migration loudly");
+            assert!(
+                error.contains("读取 mcp.json 失败"),
+                "the refusal must keep the migration's error shape: {error}"
+            );
+            worker.join().unwrap();
         });
     }
 
