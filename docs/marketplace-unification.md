@@ -210,8 +210,13 @@ resources or prompts.
 
 This disclosure is deliberately limited to marketplace MCP packages. Disabled
 skill-based connectors retain the existing concealment policy enforced by
-`deny_sensitive_paths.sh`. That hook matches only complete skill-connector names,
-so marketplace IDs or display names that contain such a name remain introspectable. Native submit
+`deny_sensitive_paths.sh` (PowerShell on Windows). The advisory correction runs only
+for `list_mcp_resources` and `list_mcp_resource_templates`, with a 30-second budget.
+Interpreter failures and timeouts warn without blocking execution; an explicit
+exit 2 with a JSON deny reason still redirects mistaken introspection. Sensitive-path
+and dangerous-command restrictions remain in the independent execpolicy rules.
+The script matches only complete skill-connector names, so marketplace IDs or
+display names that contain such a name remain introspectable. Native submit
 rereads the installed registry and scope toggle file on every turn, accepting the
 marketplace list path's existing corrupt-registry repair behavior so live sessions
 converge on the same source of truth. External ACP sessions do not receive these
