@@ -80,6 +80,19 @@ for (const language of ['zh', 'en', 'ja']) {
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
+  // Round-8 minor 15: key-pins for the two messaging-critical builtin keys
+  // that previously could be deleted from all three locales with the suite
+  // green — the switch-off notice and the plugin-card write capability line.
+  for (const language of ['en', 'zh', 'ja']) {
+    assert.ok(
+      dict[language].uiBuiltinFeatures.disabledNotice,
+      `${language}.uiBuiltinFeatures.disabledNotice must exist`,
+    );
+    assert.ok(
+      dict[language].uiBuiltinPlugins.dataAccess['sessions.write'],
+      `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
+    );
+  }
   // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
   // deleted from every dictionary with the suite green — and quoteChipCount's
