@@ -16,6 +16,14 @@ use crate::platform::credential_store::{
 mod search;
 pub use search::{SearchCredential, SearchPrefs, SearchProvider};
 
+/// The environment variable that overrides every saved model's API key:
+/// while it is set to a non-empty value,
+/// `refresh_credential_states_with_store` classifies all models as
+/// [`CredentialState::EnvOverride`]. Defined once so the check and every
+/// surface that names the variable (e.g. the CLI's
+/// `models show --reveal-key` placeholder) cannot drift apart.
+pub const MODEL_API_KEY_ENV_OVERRIDE: &str = "DEEPSEEK_API_KEY";
+
 /// 密封的凭据状态机字段访问:`SavedModel` 与 `SearchCredential` 的凭据字段
 /// 同构(`api_key` / `credential_ref` / `credential_state` / `has_secret` /
 /// `credential_action`),字段访问由各结构体提供,状态迁移逻辑见
@@ -1472,7 +1480,7 @@ impl UserPrefs {
     }
 
     pub fn refresh_credential_states_with_store(&mut self, store: &dyn CredentialStore) {
-        let env_override = std::env::var("DEEPSEEK_API_KEY")
+        let env_override = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
         for model in &mut self.advanced.saved_models {
