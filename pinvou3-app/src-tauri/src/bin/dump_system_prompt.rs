@@ -28,7 +28,16 @@ fn main() -> Result<()> {
     // migration verdict before bridge.boot()'s first-boot self-writes
     // (ensure_dirs/default settings.json), so the dev tool's first touch of a
     // fresh home cannot persist a polluted verdict (review #455 blocking item 3).
-    let _ = pinvou3_lib::features::marketplace::load_disabled_bundles();
+    let (_, freeze_persist_failed) =
+        pinvou3_lib::features::marketplace::load_disabled_bundles_startup();
+    if freeze_persist_failed {
+        // Mirror the GUI/headless hosts: the CRITICAL log fired inside the
+        // read and this tool attaches no logger. It is a console tool, so
+        // stderr is visible (the platform startup timeline is pub(crate)).
+        eprintln!(
+            "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart"
+        );
+    }
 
     let bridge = Pinvou3Bridge::boot()?;
     let cfg = bridge.build_engine_config_for_session(sid);
