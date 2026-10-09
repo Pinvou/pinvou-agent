@@ -59,7 +59,18 @@ const MAX_BLOCK_JSON_LINE_LENGTH = 64 * 1024;
 /** Per-title cap when parsing refs out of stored messages (a huge stored title must not flood chips/cards). */
 const MAX_REF_TITLE_LENGTH = 200;
 
-const capRefTitle = (title) => (title.length > MAX_REF_TITLE_LENGTH ? title.slice(0, MAX_REF_TITLE_LENGTH) : title);
+// Cap at a code-unit boundary but never split an astral character: a
+// trailing lone surrogate serializes to the escaped \udXXX form, which IPC
+// serde passes but leaves as a replacement char in chips — and the Rust
+// titler's lone-surrogate floor fails open to the raw contract header as
+// the auto-title. Drop the unpaired unit instead.
+const capRefTitle = (title) => {
+  if (title.length <= MAX_REF_TITLE_LENGTH) return title;
+  const capped = title.slice(0, MAX_REF_TITLE_LENGTH);
+  const last = capped.codePointAt(capped.length - 1);
+  const lastIsHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+  return lastIsHighSurrogate ? capped.slice(0, -1) : capped;
+};
 
 /**
  * Serialize the reference list into an injection block (placed before the user
