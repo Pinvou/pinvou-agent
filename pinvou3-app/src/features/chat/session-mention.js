@@ -30,7 +30,7 @@
 export const MAX_SESSION_REFS = 5;
 
 /** Feature id in the builtin feature registry (matches the builtin plugin manifest's tool_features declaration). */
-export const SESSION_MENTION_FEATURE_ID = 'session-mention';
+const SESSION_MENTION_FEATURE_ID = 'session-mention';
 
 /**
  * Session-mention feature switch judgement (§3.3): enabled by default — when
@@ -58,6 +58,13 @@ const BLOCK_CONTRACT_LINES = [
 const MAX_BLOCK_JSON_LINE_LENGTH = 64 * 1024;
 /** Per-title cap when parsing refs out of stored messages (a huge stored title must not flood chips/cards). */
 const MAX_REF_TITLE_LENGTH = 200;
+/**
+ * Session ids are engine-generated slugs (^[A-Za-z0-9_-]+$); a longer id is
+ * dirty/crafted data. Capped here at the session-reader's own id limit so an
+ * oversized id degrades like a deleted session instead of flowing into
+ * labels, aria-labels, React keys, and the rebuilt block (round-13 minor 6).
+ */
+const MAX_SESSION_ID_LENGTH = 128;
 
 // Cap at a code-unit boundary but never split an astral character: a
 // trailing lone surrogate serializes to the escaped \udXXX form, which IPC
@@ -89,7 +96,7 @@ export function buildSessionMentionBlock(refs) {
       // on edit-resend.
       title: capRefTitle(String((ref && ref.title) || '')),
     }))
-    .filter((ref) => ref.sessionId);
+    .filter((ref) => ref.sessionId && ref.sessionId.length <= MAX_SESSION_ID_LENGTH);
   if (!items.length) return '';
   const lines = [BLOCK_HEADER, ...BLOCK_CONTRACT_LINES, JSON.stringify(items)];
   return lines.join('\n') + '\n\n';
@@ -228,7 +235,7 @@ export function dedupeSessionRefs(refs) {
   const out = [];
   for (const ref of Array.isArray(refs) ? refs : []) {
     const sessionId = String((ref && ref.sessionId) || '');
-    if (!sessionId || seen.has(sessionId) || isIsolatedSessionId(sessionId)) continue;
+    if (!sessionId || sessionId.length > MAX_SESSION_ID_LENGTH || seen.has(sessionId) || isIsolatedSessionId(sessionId)) continue;
     seen.add(sessionId);
     out.push({ sessionId, title: capRefTitle(String((ref && ref.title) || '')) });
     if (out.length >= MAX_SESSION_REFS) break;
@@ -260,7 +267,10 @@ export function stashSessionMentionDraft(key, refs) {
   if (!mentionDrafts.has(key) && mentionDrafts.size >= MENTION_DRAFT_CACHE_LIMIT) {
     mentionDrafts.delete(mentionDrafts.keys().next().value);
   }
-  mentionDrafts.set(key, list);
+  // Store a copy: every current writer replaces immutably, but a future
+  // in-place mutation of the caller's array must not leak into the store
+  // (round-13 minor 8).
+  mentionDrafts.set(key, [...list]);
 }
 
 /** Restore a scope's refs through the shared choke point (dedupe + cap + isolation). */

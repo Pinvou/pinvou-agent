@@ -245,13 +245,15 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
         return text;
     }
     // Parser-floor note (deliberate divergence): serde_json is stricter than
-    // the JS JSON.parse on lone-surrogate escapes ("\ud800") and extreme
-    // float exponents, so a hand-forged block carrying such content is
-    // `matched` on the JS side but fail-open passthrough here. Unreachable
-    // through the real send path (Tauri's IPC JSON rejects the escaped lone
-    // surrogate at the command boundary), and both sides fail OPEN toward
-    // "keep the raw text" on dirty data, so the asymmetry only ever surfaces
-    // as a kept-block title on hand-crafted input.
+    // the JS JSON.parse on lone-surrogate escapes ("\ud800"), extreme float
+    // exponents, and nesting depth (serde_json refuses arrays nested deeper
+    // than 128 levels, which JSON.parse accepts), so a hand-forged block
+    // carrying such content is `matched` on the JS side but fail-open
+    // passthrough here. Unreachable through the real send path (Tauri's IPC
+    // JSON rejects the escaped lone surrogate at the command boundary; real
+    // blocks are one flat ref array), and both sides fail OPEN toward "keep
+    // the raw text" on dirty data, so the asymmetry only ever surfaces as a
+    // kept-block title on hand-crafted input.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
         return text;
     };
@@ -498,12 +500,21 @@ mod session_mention_title_tests {
             r#"[{{"sessionId":"abc123","title":"{huge_title}"}}]"#
         ));
         assert_eq!(strip_session_mention_block(&oversized), oversized);
-        // Just under the cap the block still strips.
+        // Just under the cap (UTF-16 units) the block still strips.
         let near_cap = mention_block(&format!(
             r#"[{{"sessionId":"a","title":"{}"}}]"#,
-            "t".repeat(1000)
+            "t".repeat(65_500)
         ));
         assert_eq!(strip_session_mention_block(&near_cap), "");
+        // Astral-heavy boundary (round-13 minor 7): the cap counts UTF-16
+        // code units to mirror the JS `.length`, not Rust `chars` — this line
+        // is ~33k chars but ~66k UTF-16 units and must stay passthrough; a
+        // regression to `chars().count()` would strip it and turn this red.
+        let astral_oversized = mention_block(&format!(
+            r#"[{{"sessionId":"a","title":"{}"}}]"#,
+            "😀".repeat(33_000)
+        ));
+        assert_eq!(strip_session_mention_block(&astral_oversized), astral_oversized);
     }
 
     #[test]
