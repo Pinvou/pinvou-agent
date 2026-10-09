@@ -157,23 +157,6 @@ fn is_authoritative_turn_complete(event: &Event) -> bool {
     matches!(event, Event::TurnComplete { .. })
 }
 
-fn event_kind(e: &Event) -> &'static str {
-    match e {
-        Event::MessageDelta { .. } => "MessageDelta",
-        Event::ThinkingDelta { .. } => "ThinkingDelta",
-        Event::ToolCallStarted { .. } => "ToolCallStarted",
-        Event::ToolCallComplete { .. } => "ToolCallComplete",
-        Event::TurnComplete { .. } => "TurnComplete",
-        Event::Error { .. } => "Error",
-        Event::ApprovalRequired { .. } => "ApprovalRequired",
-        Event::UserInputRequired { .. } => "UserInputRequired",
-        Event::CompactionStarted { .. } => "CompactionStarted",
-        Event::CompactionCompleted { .. } => "CompactionCompleted",
-        Event::CompactionFailed { .. } => "CompactionFailed",
-        _ => "OtherEvent",
-    }
-}
-
 /// 单 scenario 期望项 —— **只保留 judge 看不见的硬指标**。
 ///
 /// 砍掉的 (judge 更准): tool_use_counts / tools_never / output_contains_any /

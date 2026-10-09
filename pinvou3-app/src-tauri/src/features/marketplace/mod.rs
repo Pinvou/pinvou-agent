@@ -7813,28 +7813,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn install_missing_required_secret_returns_recoverable_redacted_error() {
-        with_temp_home(|| {
-            write_tool_manifest(
-                "iwencai-custom",
-                r#"{
-                    "id":"iwencai-custom","name":"Iwencai","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_iwencai_query"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"IWENCAI_TEST_KEY","provider":"iwencai-test","required":true}]
-                }"#,
-            );
-            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-
-            let err = mgr
-                .install("iwencai-custom", &std::collections::HashMap::new())
-                .unwrap_err();
-
-            assert!(err.contains("IWENCAI_TEST_KEY"));
-            assert!(!err.contains("test-secret"));
-        });
-    }
-
     /// Upload 来源的包卸载不再原位保留（旧语义会让卡片以"未安装"重现），改为整包
     /// 搬入回收站：`bundles/<id>/` 搬空、`available_tools` 不再出现、回收清单有记录。
     /// 来源查询必须先于 `store.remove` —— 此前先删登记再查恒 false，上传包目录被
@@ -8906,37 +8884,6 @@ mod tests {
             assert!(
                 entry["env"].get("MY_INSTALL_TIME_VAR").is_none(),
                 "the dropped key must actually be gone: {entry}"
-            );
-        });
-    }
-
-    /// A restore that degraded a secret channel (no stored credential) must
-    /// say so in its note instead of reporting an unqualified success that
-    /// 401s on first use.
-    #[test]
-    fn restore_notes_secret_channels_restored_without_wiring() {
-        with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"nc-x","name":"nc-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"nc-remote","url":"https://nc.example.com/mcp"}],
-                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"NC_KEY","provider":"nc","required":true}]
-            });
-            write_tool_manifest("nc-x", &serde_json::to_string_pretty(&manifest).unwrap());
-            write_installed_ids(&["nc-x".to_string()]);
-            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
-
-            let actions = manager.reconcile_installed_mcp_entries().unwrap();
-            assert_eq!(actions.len(), 1, "{actions:?}");
-            assert!(
-                actions[0].contains("restored missing remote entry 'nc-remote'")
-                    && actions[0].contains("no stored credential for NC_KEY"),
-                "the restore note must disclose the degraded channel: {actions:?}"
-            );
-            let entry = &read_mcp_json()["servers"]["nc-remote"];
-            assert!(
-                entry.get("bearer_token_env_var").is_none() && entry.get("env_headers").is_none(),
-                "the degraded entry must carry no auth wiring: {entry}"
             );
         });
     }

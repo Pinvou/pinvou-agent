@@ -1151,45 +1151,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Test-only seam: the production CAS consumer (the legacy web
-    /// transcript-save command) was removed with the dead-code sweep. Kept
-    /// gated because these tests pin the revision-conflict, truncation-guard,
-    /// and write-race semantics shared with the live revision-checked writers.
-    #[cfg(test)]
-    pub fn compare_and_swap_messages(
-        &self,
-        id: &str,
-        expected_revision: &str,
-        messages: Vec<Message>,
-    ) -> Result<String> {
-        let _mutation = self.scheduled_mutation.lock();
-        if self.is_scheduled_session(id)? {
-            bail!("Cannot replace messages for scheduled-run session '{id}'");
-        }
-        let mut session = self
-            .manager
-            .load_session_snapshot(id)
-            .with_context(|| format!("load_session({id}) for transcript CAS"))?;
-        let current_revision = transcript_revision(&session.messages)?;
-        if current_revision != expected_revision {
-            bail!("session_revision_conflict: 会话内容已在远程控制编辑期间发生变化");
-        }
-        if looks_like_truncating_overwrite(&session.messages, &messages) {
-            bail!(
-                "refusing to overwrite {} existing messages with {} unrelated messages",
-                session.messages.len(),
-                messages.len()
-            );
-        }
-
-        let next_revision = transcript_revision(&messages)?;
-        session.metadata.message_count = messages.len();
-        session.metadata.updated_at = Utc::now();
-        session.messages = messages;
-        self.persist_then_reconcile(&session, "transcript CAS")?;
-        Ok(next_revision)
-    }
-
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {

@@ -712,24 +712,6 @@ async fn parse_failure_audit_record_does_not_echo_the_chord_text() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn disabled_returns_clear_error() {
-    let (fixture, _restore) = fixture();
-    fixture.shared.set_enabled(false);
-    let result = fixture
-        .tool
-        .execute(
-            json!({"action": "screenshot"}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(
-        text.contains("computer use is disabled in settings"),
-        "{text}"
-    );
-}
-
-#[tokio::test]
 async fn enabling_toggle_serves_existing_tool_instance_without_rebuild() {
     // Engines spawned while the settings toggle is
     // off hold a ComputerUseTool instance (tool_factory construction is

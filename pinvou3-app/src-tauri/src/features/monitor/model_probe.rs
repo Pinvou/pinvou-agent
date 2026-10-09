@@ -697,32 +697,6 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     "remote"
 }
 
-/// Lightweight local vLLM probe: one `/v1/models` fetch yields two things —
-/// the actual served model name and `max_model_len` (context window). The
-/// name is for monitor display only; the model name used for inference must
-/// go through [`resolve_served_model`] (this function returns the first list
-/// entry, which is only correct for single-model vLLM servers). The window
-/// fills `active_route_limits.context_tokens` so compaction thresholds derive
-/// from the real window (see docs/context-compaction-设计.md). On probe
-/// failure (vLLM down/timeout) returns `(None, None)`, and the caller falls
-/// back to the configured values plus the name hint. See
-/// `core::model_endpoint::apply_bearer` for `bearer` semantics: authenticated
-/// vLLM (`--api-key`) 401s on `/v1/models` without credentials,
-/// so pass a key from the same origin as real inference.
-pub async fn probe_vllm_model_info(
-    base_url: &str,
-    bearer: Option<&str>,
-) -> (Option<String>, Option<u32>) {
-    // HTTP layer and URL assembly reuse the shared core probe (no /v1/models
-    // semantics drift). Local single-model probe: no configured name to match,
-    // so the first list entry stays the served-name source (unchanged here;
-    // the configured-name matching lives in `snapshot_for_model_config`).
-    match crate::core::model_endpoint::fetch_v1_models(base_url, bearer).await {
-        Some(v) => parse_models_response(v, None).unwrap_or((None, None)),
-        None => (None, None),
-    }
-}
-
 /// Final link of the "probe → user picks → use the pick" chain: decides the
 /// model name a local OpenAI-compatible engine actually sends. LM Studio /
 /// Ollama return **every downloaded model** in `/v1/models` (a multi-entry
@@ -764,8 +738,9 @@ fn resolve_served_model_from_entries(
 
 /// Fetches `/v1/models` and decides the actual model name via
 /// `resolve_served_model_from_entries` (private helper). On probe failure
-/// returns the configured name with `None` window/limit. `bearer` semantics
-/// match `probe_vllm_model_info` (inference-same-origin key).
+/// returns the configured name with `None` window/limit. Pass `bearer` from
+/// the same origin as real inference: authenticated engines (`--api-key`)
+/// 401 on `/v1/models` without credentials.
 pub async fn resolve_served_model(
     base_url: &str,
     bearer: Option<&str>,
@@ -817,40 +792,6 @@ mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
     use crate::platform::prefs::ModelPreset;
-
-    #[tokio::test]
-    #[ignore]
-    async fn live_probe_returns_window() {
-        let base = std::env::var("PINVOU3_LIVE_VLLM")
-            .unwrap_or_else(|_| "http://127.0.0.1:8000/v1".to_string());
-        let (name, window) = probe_vllm_model_info(&base, None).await;
-        eprintln!("live probe @ {base}: name={name:?} max_model_len={window:?}");
-        let window = window.expect("真机 vLLM 必须探测到 max_model_len(客户 bug 的核心修复)");
-        assert!(
-            window >= 100_000,
-            "窗口应为真实 max_model_len(期望 262144),实得 {window}"
-        );
-        // 端到端佐证:探测窗口喂进 derive 公式应得按窗口缩放的 T(非写死 190K)。
-        // 复算 derive_compaction_threshold(bridge 私有,此处内联同公式):
-        //   E = W − O − 1024; T = (E−S)/1.5 − 22000, clamp[4096, 0.75W].
-        // O = the window-tier declaration — taken from the same source as
-        // production, core::model_context::operator_owned_output_declaration;
-        // do not inline a copy again.
-        let o = crate::core::model_context::operator_owned_output_declaration(Some(window))
-            .expect("a real-machine window >=100K always yields a tier declaration");
-        let e = (window as usize)
-            .saturating_sub(o as usize)
-            .saturating_sub(1_024);
-        let t = (e.saturating_sub(4_000).saturating_mul(2) / 3)
-            .saturating_sub(22_000)
-            .clamp(4_096, window as usize * 3 / 4);
-        eprintln!("derived token_threshold for W={window}: T={t}  E={e}");
-        assert!(
-            t < e,
-            "推导 T({t}) 必须低于紧急线 E({e})——nice 主路径先于 emergency(不倒置);\
-             按真实窗口缩放,而非写死单值"
-        );
-    }
 
     #[test]
     fn vllm_target_kind_classifies_by_host() {

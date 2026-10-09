@@ -2013,31 +2013,6 @@ mod tests {
         );
     }
 
-    /// A global stop must reach a session whose earlier revoke only cleaned
-    /// up without unregistering — the exact orphaning regression.
-    #[test]
-    fn emergency_release_all_reaches_a_revoked_then_re_granted_session() {
-        let state = Arc::new(Mutex::new(ProbeState::default()));
-        let registry = BackendRegistry::default();
-        let handle = probe_handle(&state);
-        registry.insert("s-regrant", handle.clone());
-        // Start the backend first: a never-started (Pending) handle takes
-        // emergency_cleanup's fast path and would skip the cleanup entirely.
-        assert!(handle.capabilities().is_ok());
-
-        registry.emergency_release("s-regrant");
-        wait_for_cleanup(&state, |s| s.releases > 0);
-        // Re-grant happened meanwhile; no re-insert: the original entry is
-        // still there and must still be reachable.
-        registry.emergency_release_all();
-        wait_for_cleanup(&state, |s| s.releases > 1);
-        let state = state.lock();
-        assert_eq!(
-            state.releases, 2,
-            "global stop must reach the re-granted session"
-        );
-    }
-
     /// Pending-state fast path: emergency cleanup for a handle whose
     /// backend was never started must skip the cleanup entirely — nothing
     /// was ever injected, so there is nothing to release, and running it

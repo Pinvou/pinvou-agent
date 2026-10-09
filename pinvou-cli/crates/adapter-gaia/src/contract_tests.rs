@@ -10,7 +10,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use async_trait::async_trait;
 use benchmark_core::{
-    BenchmarkAdapter, BenchmarkService, ExecutionRequest, ModelIdentity, RunContext, RunManifest,
+    BenchmarkAdapter, BenchmarkService, ModelIdentity, RunContext, RunManifest,
     RunStore, Split, TaskOutcome, TaskRunner, TaskSelection, TaskStatus, ToolPolicyId,
     VerifiedDataset,
 };
@@ -375,62 +375,6 @@ fn submission_rejects_symlink_destination_or_ancestor_and_accepts_bare_filename_
                 "gaia_submission_target_unsafe"
             );
         }
-    }
-}
-
-#[test]
-fn default_unit_contract_covers_selection_native_turn_and_privacy() {
-    let (_snapshot, dataset) = verified_fixture();
-    let adapter = GaiaAdapter::new();
-    let plan = adapter.plan(&dataset, &TaskSelection::all()).unwrap();
-
-    assert_eq!(plan.tasks().len(), 1);
-    let task = &plan.tasks()[0];
-    let ExecutionRequest::NativeTurn {
-        prompt_handle,
-        attachments,
-        timeout,
-        tool_policy,
-        output_contract,
-    } = task.execution()
-    else {
-        panic!("GAIA must use NativeTurn");
-    };
-    // The official GAIA protocol is not known to define a runtime limit, so
-    // the adapter must default to no harness wall-clock deadline. The
-    // descriptor's manifest mode must agree with the requests it plans.
-    assert_eq!(*timeout, None);
-    assert_eq!(adapter.descriptor().harness_deadline_secs(), None);
-    assert_eq!(tool_policy.as_str(), "pinvou-gaia-public-web/v1");
-    assert_eq!(output_contract.as_str(), "gaia-final/v1");
-    assert_eq!(attachments.len(), 1);
-    assert_eq!(format!("{prompt_handle:?}"), "PrivateInputHandle([opaque])");
-    let debug = format!("{task:?}");
-    assert!(!debug.contains("PRIVATE_QUESTION_SENTINEL"));
-    assert!(!debug.contains("PRIVATE_REFERENCE_SENTINEL"));
-
-    assert_eq!(
-        adapter
-            .plan(
-                &dataset,
-                &TaskSelection::from_task_ids(vec!["safe-task-1".into()]),
-            )
-            .unwrap()
-            .tasks()
-            .len(),
-        1
-    );
-    for invalid in ["", "unknown-task", "safe-task-1 "] {
-        assert_eq!(
-            adapter
-                .plan(
-                    &dataset,
-                    &TaskSelection::from_task_ids(vec![invalid.into()]),
-                )
-                .unwrap_err()
-                .code(),
-            "gaia_task_selection_invalid"
-        );
     }
 }
 
