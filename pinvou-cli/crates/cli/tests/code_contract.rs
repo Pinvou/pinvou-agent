@@ -1778,7 +1778,115 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
     );
 }
 
-/// The git-environment isolation behind the CLI workspace lanes is the app's
+/// Round-48 review MAJOR: the GIT arm of `workspace diff` resolved untracked
+/// files through the LEXICAL workspace path — an untracked symlink planted
+/// in the agent-writable workspace (`leak.md -> ~/.ssh/id_ed25519`) dumped
+/// the target's bytes as a synthetic new-file diff, and the aggregate
+/// whole-workspace diff amplified it. The round-48 fix mirrors the app's
+/// root fix: canonicalize → containment re-check → read the CANONICAL path.
+/// A workspace-LOCAL untracked symlink still diffs through its (inside-root)
+/// target, and the tracked-ness oracle is exit-code aware so a git failure
+/// answers "tracked" (no fabricated addition). Unix-only: `std::os::unix::fs::symlink`.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(project) = init_git_repo("diff-git-symlink") else {
+        eprintln!("skipping workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace: git unavailable");
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    // A tracked commit so the repo has a HEAD (the tracked-unmodified arm).
+    std::fs::write(project.join("tracked.txt"), "hello\n").unwrap();
+    let ok = std::process::Command::new("git")
+        .current_dir(&project)
+        .args(["add", "tracked.txt"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    assert!(ok, "fixture add failed");
+    let ok = std::process::Command::new("git")
+        .current_dir(&project)
+        .args(["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    assert!(ok, "fixture commit failed");
+
+    // Control: a plain untracked file inside the workspace still diffs.
+    std::fs::write(project.join("inside.txt"), "plain\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "inside.txt"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("plain"),
+        "an inside untracked file must still diff: {}",
+        cli["text"]
+    );
+
+    // The tracked-unmodified arm stays silent through the exit-code-aware
+    // oracle.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert_eq!(
+        cli["text"].as_str().unwrap(),
+        "",
+        "a tracked unmodified file has no diff: {}",
+        cli["text"]
+    );
+
+    // The attack: an untracked symlink resolving OUTSIDE the workspace. The
+    // diff must refuse, naming the symlink, and the secret must never reach
+    // the output — including through the aggregate whole-workspace lane.
+    let secret = std::env::temp_dir().join(format!(
+        "pinvou-cli-git-symlink-secret-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::write(&secret, "TOP SECRET\n").unwrap();
+    symlink(&secret, project.join("leak.md")).unwrap();
+    let parsed = parse_args(
+        [
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "leak.md",
+            "--output",
+            "json",
+        ]
+        .to_vec(),
+    )
+    .expect("diff parses");
+    let error = execute(parsed).expect_err("an escaping symlink must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("symlink") && message.contains("escapes the workspace"),
+        "the refusal must name the symlink escape: {message}"
+    );
+    assert!(
+        !message.contains("TOP SECRET"),
+        "the secret must not leak into the error: {message}"
+    );
+
+    // A workspace-LOCAL untracked symlink still diffs through its canonical
+    // (inside-root) target.
+    std::fs::write(project.join("inner.txt"), "inner bytes\n").unwrap();
+    symlink("inner.txt", project.join("inner-link.md")).unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "inner-link.md"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("inner bytes"),
+        "a local untracked symlink must diff via its canonical target: {}",
+        cli["text"]
+    );
+    let _ = std::fs::remove_file(&secret);
+}
+
+/// The git-environment isolation behind the CLI workspace lanes is the app's/// The git-environment isolation behind the CLI workspace lanes is the app's
 /// `GIT_OVERRIDE_KEYS`, imported through the `features::codex_acp` facade —
 /// not a local copy. A former local mirror in `code.rs` had drifted three
 /// keys behind the app's list (`GIT_NOGLOB_PATHSPECS`,

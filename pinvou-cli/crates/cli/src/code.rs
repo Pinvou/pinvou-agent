@@ -5060,16 +5060,23 @@ fn workspace_changes(
         .map_err(|error| CliError::failed(format!("code workspace changes: {error:#}")))?;
     let value = serde_json::to_value(&changes)
         .map_err(|error| CliError::failed(format!("code workspace changes: {error}")))?;
+    // Round-48 review: `relative_path` is agent-controlled (git
+    // `--porcelain=v1 -z` bytes or a filesystem walk) and is the one
+    // human-table cell in this family still rendered raw — a filename
+    // carrying a tab/newline/ESC would forge table columns or inject a
+    // terminal escape. The siblings (workspace list's `entry.name`, search's
+    // `relative_path`, checkpoints' `label`) all collapse for exactly this
+    // threat; JSON stays verbatim by design.
     let human = changes
         .changes
         .iter()
         .map(|change| {
             format!(
                 "{}\t{}\t{}\t{}",
-                change.status,
+                crate::support::collapse_control_characters(&change.status),
                 if change.staged { "staged" } else { "-" },
-                change.origin,
-                change.relative_path,
+                crate::support::collapse_control_characters(&change.origin),
+                crate::support::collapse_control_characters(&change.relative_path),
             )
         })
         .collect::<Vec<_>>()
@@ -5484,14 +5491,15 @@ fn workspace_diff_one(
             // as added from /dev/null. The app's `workspace_diff` carries
             // the same arm and the same `ls-files --error-unmatch` fix
             // (root-fixed there, mirrored here — the differential pin test
-            // now covers the tracked-unmodified case).
-            let tracked = git_output(root, &["ls-files", "--error-unmatch", "--", &relative])
-                .map(|output| !output.trim().is_empty())
-                .unwrap_or(false);
-            if tracked {
+            // now covers the tracked-unmodified case). Round-48: the
+            // tracked-ness oracle is exit-code aware — `--error-unmatch`
+            // exits 1 exactly for the untracked case, and any other git
+            // failure answers "tracked" (silence) instead of fabricating a
+            // whole-file addition.
+            if git_ls_files_tracked(root, &relative) {
                 String::new()
             } else {
-                untracked_diff(&path, &relative)?
+                untracked_diff(root, &path, &relative)?
             }
         } else {
             combined
@@ -5502,10 +5510,11 @@ fn workspace_diff_one(
         // ~/.ssh/id_ed25519` resolves through the workspace path. The GUI
         // preview lane this arm mirrors canonicalizes and re-checks
         // containment (`resolve_existing_path` →
-        // `ensure_path_within_workspace`); do the same before opening. (The
-        // git-lane `untracked_diff` above shares this hole byte-for-byte
-        // with the app's own `untracked_diff` — that half is an upstream
-        // fix, not a CLI-only divergence.)
+        // `ensure_path_within_workspace`); do the same before opening. The
+        // git-lane `untracked_diff` used to share this hole byte-for-byte
+        // with the app's own `untracked_diff`; round-48 root-fixed the app
+        // side and mirrors the same canonicalize → containment →
+        // read-canonical discipline here.
         let canonical_root = std::fs::canonicalize(root).map_err(|error| {
             CliError::failed(format!(
                 "code workspace diff: cannot resolve the workspace: {error}"
@@ -5560,8 +5569,28 @@ fn workspace_diff_one(
     Ok((relative, text, truncated))
 }
 
-fn untracked_diff(path: &Path, relative: &str) -> Result<String, CliError> {
-    if file_kind(path) != "text" {
+fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, CliError> {
+    // Round-48 review MAJOR: resolve through symlinks and re-check
+    // containment BEFORE opening, then read the CANONICAL path — the
+    // lexical `root.join(relative)` let an untracked symlink planted in
+    // the agent-writable workspace (`notes.md -> ~/.ssh/id_ed25519`) dump
+    // the target's bytes as a synthetic "new file" diff. Root-fixed in the
+    // app's `untracked_diff` the same way (round-48), so the two surfaces
+    // keep their differential guarantee.
+    let canonical_root = std::fs::canonicalize(root).map_err(|error| {
+        CliError::failed(format!(
+            "code workspace diff: cannot resolve the workspace: {error}"
+        ))
+    })?;
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        CliError::failed(format!("code workspace diff: cannot resolve {relative}: {error}"))
+    })?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(CliError::failed(
+            "code workspace diff: path escapes the workspace through a symlink",
+        ));
+    }
+    if file_kind(&canonical) != "text" {
         return Ok("untracked binary files do not support diff preview".to_owned());
     }
     // The output is truncated at DIFF_LIMIT, but the read itself must also be
@@ -5570,7 +5599,7 @@ fn untracked_diff(path: &Path, relative: &str) -> Result<String, CliError> {
     // loop's final iteration overshoots by one line at most, which the loop
     // already tolerates); a torn multi-byte tail is lossy-decoded away.
     const READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
-    let file = std::fs::File::open(path)
+    let file = std::fs::File::open(&canonical)
         .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
     let mut capped = std::io::Read::take(file, READ_CAP);
     let mut raw = Vec::new();
@@ -5591,6 +5620,30 @@ fn untracked_diff(path: &Path, relative: &str) -> Result<String, CliError> {
         }
     }
     Ok(output_text)
+}
+
+/// Tracked-ness oracle for the git lane: `ls-files --error-unmatch` exits 0
+/// with the path for a TRACKED file and exits 1 for an untracked one, but
+/// any other git failure (index.lock contention, broken repo, git missing)
+/// lands in `git_output`'s `Err` too — the previous `unwrap_or(false)`
+/// flattened that into "untracked" and degraded a tracked unmodified file
+/// back into a fabricated whole-file addition. Unknown answers "tracked"
+/// (silence, never a fabricated diff); mirrors the app-side
+/// `ls_files_tracked` (round-48).
+fn git_ls_files_tracked(root: &Path, relative: &str) -> bool {
+    let output = match git_command(root, &["ls-files", "--error-unmatch", "--", relative]).output()
+    {
+        Ok(output) => output,
+        Err(_) => return true,
+    };
+    if output.status.success() {
+        !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    } else {
+        // `--error-unmatch` exits 1 exactly for the not-listed (untracked)
+        // case; anything else is a git failure, not an answer, and keeps
+        // the "tracked" (stay silent) answer.
+        output.status.code() != Some(1)
+    }
 }
 
 /// Session → workspace root with the same gate as the GUI's
