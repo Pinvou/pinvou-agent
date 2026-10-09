@@ -1967,7 +1967,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // surface through the localized template — the generic
           // operationFailed copy would swallow actionable guidance. The
           // matcher keys on the backend marker pinned by
-          // ima::consent_failure_message_keeps_the_frontend_marker.
+          // ima::consent_failure_marker_matches_the_frontend_contract.
           const msg = String(e && e.message ? e.message : e);
           const consentFailure = msg.includes(CONSENT_SYNC_FAILURE_MARKER);
           setAlert({
