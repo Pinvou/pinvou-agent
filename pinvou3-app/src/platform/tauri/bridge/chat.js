@@ -58,20 +58,24 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // targets the active working set and would leak background text into the
   // active draft. Must be called outside runSyncOnSession(sid): inside it,
   // state.activeSessionId is temporarily sid even for background sessions.
+  // Returns whether anything went back: an empty text (attachment-only chip)
+  // or a missing background buffer restores nothing, and the caller's notice
+  // must say "lost" instead of claiming a restoration that did not happen.
   function restoreSteerText(sid, text) {
     const value = String(text || "");
-    if (!sid || !value) return;
+    if (!sid || !value) return false;
     if (sid === state.activeSessionId) {
       const current = String(state.composerDraft || "");
       setComposerDraft(current ? current + "\n" + value : value);
       state.draftEpoch = (state.draftEpoch || 0) + 1;
       notify();
-      return;
+      return true;
     }
     const buffer = sessionStates[sid];
-    if (!buffer) return;
+    if (!buffer) return false;
     const current = String(buffer.composerDraft || "");
     buffer.composerDraft = current ? current + "\n" + value : value;
+    return true;
   }
 
   // Retained recovery for a task draft whose send was abandoned mid-await:
@@ -172,6 +176,37 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // window: dropped proves the old copy is safe to mutate, while committed
   // proves the old copy won and the requested mutation must be abandoned.
   const queueMutationTerminals = {};
+
+  // Zap-owned reconcile claims: runQueuedZap registers its steer id before
+  // withdrawSteerOutcome so a chat:steer_dropped landing inside the
+  // withdraw-await window routes to the zap recovery (failure notice +
+  // restore) instead of settleSteerDropped's silent chip-absent branch —
+  // that branch assumed no zap was mid-flight and silently consumed the
+  // withdrawn registration, dismantling both safety nets for the exact
+  // window the zap opened (the outcome reconcile watchdog is armed only
+  // after the withdraw outcome returns). Claims are consumed by the
+  // recovery or cleared when the withdraw outcome proves resend (no
+  // reconcile window remains).
+  const zapReconcileClaims = {};
+  function beginZapReconcileClaim(sid, steerId) {
+    if (!sid || !steerId) return;
+    let byId = zapReconcileClaims[sid];
+    if (!byId) {
+      byId = Object.create(null);
+      zapReconcileClaims[sid] = byId;
+    }
+    byId[steerId] = true;
+  }
+  function takeZapReconcileClaim(sid, steerId) {
+    const byId = zapReconcileClaims[sid];
+    if (!byId || !byId[steerId]) return false;
+    delete byId[steerId];
+    return true;
+  }
+  function clearZapReconcileClaim(sid, steerId) {
+    const byId = zapReconcileClaims[sid];
+    if (byId) delete byId[steerId];
+  }
 
   function beginQueueMutationReconciliation(sid, steerId) {
     let byId = queueMutationTerminals[sid];
@@ -1427,6 +1462,10 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
   const outcomeReconcileWatchdog = createSteerWatchdog(function (sid, steerId) {
     const text = takeWithdrawn(sid, steerId);
     if (text === undefined) return; // already reconciled (a settle consumed the registration)
+    // The reconcile window closed here: drop any zap claim that is still
+    // open so a late duplicate dropped event cannot fire a second, false
+    // recovery notice after this expiry already restored the text.
+    clearZapReconcileClaim(sid, steerId);
     runSyncOnSession(sid, function () {
       addSystemItem("⚠️ " + bt("steerFailed"));
     });
@@ -1519,6 +1558,7 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
     delete interruptInFlight[sid];
     delete queueMutationInFlight[sid];
     delete queueMutationTerminals[sid];
+    delete zapReconcileClaims[sid];
     delete steerSettlements[sid];
     steerSettleWatchdog.purge(sid);
     outcomeReconcileWatchdog.purge(sid);
@@ -1637,6 +1677,10 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
   function settleSteerCommitted(sid, steerId) {
     clearSteerSettleWatchdog(sid, steerId);
     clearOutcomeReconcileWatchdog(sid, steerId);
+    // A committed terminal closes the zap reconcile window too: a late
+    // duplicate dropped event must not fire a recovery notice for a message
+    // that was actually delivered.
+    clearZapReconcileClaim(sid, steerId);
     recordQueueMutationTerminal(sid, steerId, "committed");
     if (findSteerChipIndex(sid, steerId) < 0) {
       const withdrawnText = takeWithdrawn(sid, steerId);
@@ -1700,6 +1744,25 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
         // detachQueuedForMutation owns this copy. Keep the user's text in its
         // detached item so a racing not_pending/timeout can consume this
         // authoritative terminal and explicitly restore the original text.
+        return;
+      }
+      if (takeZapReconcileClaim(sid, steerId)) {
+        // A zap is mid-withdraw on this exact steer: the dropped terminal is
+        // the authoritative non-delivery proof for the chip the zap already
+        // removed — recover immediately (failure notice + session-scoped
+        // restore) instead of silently consuming the withdrawn registration
+        // here and leaving the zap's own reconcile to find nothing later.
+        // The notice keys on the restore verdict: a restored text reads the
+        // "restored to the input" variant, and only a text that restores
+        // nothing (attachment-only chip, missing background buffer) reads
+        // the lost variant — claiming "could not be restored" while the text
+        // sits back in the composer invites a duplicate send.
+        const claimedText = takeWithdrawn(sid, steerId) || "";
+        const restored = restoreSteerText(sid, claimedText);
+        runSyncOnSession(sid, function () {
+          addSystemItem("⚠️ " + bt(restored ? "steerFailed" : "steerFailedLost"));
+        });
+        notify();
         return;
       }
       const withdrawnText = takeWithdrawn(sid, steerId);
@@ -2080,7 +2143,10 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       // watchdog would wait a full window for. Settle now with the same
       // recovery semantics as the watchdog expiry and settleSteerDropped's
       // zap-reconciling branch (failure notice + session-scoped restore);
-      // the chip itself was already removed by the zap.
+      // the chip itself was already removed by the zap. The window is
+      // closed: drop any still-open zap claim so a late duplicate dropped
+      // event cannot fire a second, false recovery notice.
+      clearZapReconcileClaim(sid, item.steerId);
       const withdrawnText = takeWithdrawn(sid, item.steerId);
       runSyncOnSession(sid, function () {
         addSystemItem("⚠️ " + bt("steerFailed"));
@@ -2108,6 +2174,26 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
     }
   }
 
+  // Only an explicit foundation "retired" (or a deterministic rejection of
+  // the steer_chat invoke itself, which never accepted anything) proves
+  // resend safety; not_pending / transport timeout / an unreachable engine
+  // are all uncertain and defer to the reconcile path (zhuowp re-review
+  // P1-1: a reclaimed engine may have committed the steer first).
+  function withdrawOutcomeForbidsResend(outcome) {
+    return ["not_pending", "withdraw_timeout", "withdraw_unreachable"].includes(outcome);
+  }
+
+  // Shared tail of runQueuedZap's withdraw-gated branches: a resend-safe
+  // outcome kills the zap's reconcile claim (the old steer id is dead — no
+  // window remains); a forbids-resend outcome keeps the claim open for
+  // settleSteerDropped until the terminal lands or the watchdog consumes the
+  // registration.
+  function settleWithdrawOutcomeForZap(sid, steerId, outcome) {
+    const forbidsResend = withdrawOutcomeForbidsResend(outcome);
+    if (!forbidsResend) clearZapReconcileClaim(sid, steerId);
+    return forbidsResend;
+  }
+
   async function runQueuedZap(sid, queuedId) {
     const q = steeredQueueFor(sid);
     if (!q) return false;
@@ -2120,17 +2206,17 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
     q.splice(index, 1);
     let skipResend = false;
     let steerSettlement = null;
-    // Only an explicit foundation "retired" (or a deterministic rejection of
-    // the steer_chat invoke itself, which never accepted anything) proves
-    // resend safety; not_pending / transport timeout / an unreachable engine
-    // are all uncertain and defer to the reconcile path (zhuowp re-review
-    // P1-1: a reclaimed engine may have committed the steer first).
-    const withdrawOutcomeForbidsResend = function (outcome) {
-      return ["not_pending", "withdraw_timeout", "withdraw_unreachable"].includes(outcome);
-    };
     if (item.steered && item.steerId && sid) {
+      // Register the claim BEFORE the withdraw await: a chat:steer_dropped
+      // landing inside that await is the authoritative non-delivery proof
+      // for this exact steer, and without the claim settleSteerDropped's
+      // chip-absent branch would silently consume the withdrawn
+      // registration (rememberWithdrawn ran inside withdrawSteerOutcome)
+      // while the reconcile watchdog is armed only after the outcome
+      // returns — both safety nets skipped, the message lost.
+      beginZapReconcileClaim(sid, item.steerId);
       const outcome = await withdrawSteerOutcome(sid, item.steerId, item.text);
-      skipResend = withdrawOutcomeForbidsResend(outcome);
+      skipResend = settleWithdrawOutcomeForZap(sid, item.steerId, outcome);
     } else if (item.steered && sid) {
       // steerId not backfilled (steer_chat invoke in flight): the engine may
       // already hold the steer, and a copy parked by this zap's own keepInbox
@@ -2157,8 +2243,12 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       const settled = await steerSettlement;
       if (settled && settled.ok && settled.steerId && sid) {
         item.steerId = settled.steerId;
+        // Same withdraw-window claim as the backfilled branch above: the
+        // settlement await moved past the steer invoke, but the withdraw
+        // below has its own window for a dropped terminal to land in.
+        beginZapReconcileClaim(sid, settled.steerId);
         const outcome = await withdrawSteerOutcome(sid, settled.steerId, item.text);
-        skipResend = withdrawOutcomeForbidsResend(outcome);
+        skipResend = settleWithdrawOutcomeForZap(sid, settled.steerId, outcome);
       } else if (settled && !settled.ok && settled.timedOut) {
         runSyncOnSession(sid, function () {
           addSystemItem("⚠️ " + bt("steerFailed"));
@@ -2306,6 +2396,9 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
       steer,
       settleSteerCommitted,
       settleSteerDropped,
+      // test seam: the zap withdraw-window test clears the 60s reconcile
+      // watchdog so a red assertion does not stretch the run
+      clearOutcomeReconcileWatchdog,
       captureSteerPositions,
       purgeSteerState,
     };
