@@ -1,11 +1,12 @@
 name: release-packages
 
-# 仅正式版本或人工明确要求时构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
+# 仅正式版本 tag 或人工明确要求时构建全平台安装包,挂为 GitHub Actions artifact(保留 90 天)。
 #
-# 触发条件:
-# - push main 且 VERSION 被修改;
+# 触发条件(2026-10 CI 成本重构:全平台构建只挂 release tag):
+# - push tag v*(tag 名必须等于 v$VERSION,fail closed);
 # - workflow_dispatch 手动触发:无条件全量构建(用于补打/重打或显式验证)。
 # 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
+# main 上 VERSION bump 的 push 不再自动构建安装包——发布动作 = 打 tag。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
 # scripts/sync-version.mjs --check,把该脚本登记的每个版本文件逐一与 VERSION 比对
@@ -16,8 +17,8 @@ name: release-packages
 #
 # 与其他 workflow 的分工:
 # - pr-check:PR 快速门禁与发布契约验证(不产出安装包)。
-# - mac-build:相关改动进入 main 后跑 macOS 原生回归。
-# - release-packages(本 workflow):VERSION bump 或人工触发时产出全平台安装包 artifact。
+# - mac-build:每日夜间调度的 macOS 原生回归心跳。
+# - release-packages(本 workflow):release tag push 或人工触发时产出全平台安装包 artifact。
 # - 本 workflow 只上传 CI artifact,绝不创建/推送 GitHub Release,release 由人工填写。
 #
 # 签名:Windows nsis 不签名(config/platforms/windows 无证书配置);macOS ad-hoc
@@ -27,9 +28,8 @@ name: release-packages
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'VERSION'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -42,7 +42,8 @@ concurrency:
 
 jobs:
   # ── Job 1: 发布 gate(跑 ubuntu 快) ─────────────────────────────────
-  # 只有 VERSION push 或人工触发能进入本工作流，因此通过版本一致性检查后直接放行。
+  # 只有 release tag push 或人工触发能进入本工作流，因此通过版本一致性
+  # 检查与 tag 名比对后直接放行。
   check-version-bump:
     name: 校验发布版本
     runs-on: ubuntu-22.04
@@ -73,13 +74,22 @@ jobs:
       - name: 校验各处版本文件与 VERSION 一致
         run: node scripts/sync-version.mjs --check
 
-      - name: 输出发布版本
+      - name: 输出发布版本 (tag 触发时校验 tag 名 = v$VERSION)
         id: release
         run: |
           set -euo pipefail
 
           V=$(tr -d '[:space:]' < VERSION)
           echo "当前 VERSION: $V"
+          # fail closed:tag 触发时 tag 名必须等于 v$VERSION,防止错版本
+          # 的 tag(或打了 tag 后 VERSION 又被改)产出号实不符的安装包。
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [ "$TAG" != "v$V" ]; then
+              echo "❌ tag ($TAG) 与 VERSION (v$V) 不一致;请修正 tag 或 VERSION 后重试" >&2
+              exit 1
+            fi
+          fi
           echo "build_required=true" >> "$GITHUB_OUTPUT"
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
@@ -350,11 +360,11 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 4: Windows x86_64 nsis(仅受保护的 main 上下文) ─────────────
+  # ── Job 4: Windows x86_64 nsis(仅受保护的 main / release tag 上下文) ──
   build-windows-x64:
     name: 构建 Windows x86_64 nsis
     needs: check-version-bump
-    if: github.ref == 'refs/heads/main' && needs.check-version-bump.outputs.build_required == 'true'
+    if: (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && needs.check-version-bump.outputs.build_required == 'true'
     runs-on: windows-latest
     # 0.10.5 的 nsis 构建耗时 ~86min,90min 上限在 post cache save 阶段被撞掉。
     timeout-minutes: 150
@@ -396,7 +406,7 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           shared-key: release-windows-x64
-          # 该 job 只在 main 或受控手动构建中运行。
+          # 该 job 只在 main(手动)或 release tag 上下文运行;tag 构建只读缓存。
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Node.js

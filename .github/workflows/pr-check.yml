@@ -1,5 +1,18 @@
 name: PR Check
 
+# 事件分层(2026-10 CI 成本重构,应对 Actions 账单 8→9 月 2.7 倍暴涨):
+# - pull_request:只跑零编译的静态/逻辑检查(秒级~分钟级,ubuntu)。
+#   PR 不再触发任何 cargo 编译、原生平台构建、Vite build 与浏览器 smoke——
+#   这些统一由 Merge Queue(Linux 全量)与 schedule(原生平台)承接。
+# - merge_group:真实组合树跑 Linux 全量门禁(rust-test/cli-test/rust-lint
+#   clippy/前端 build+smoke/打包契约/原生 codex runtime 路径门),是合并前
+#   唯一的安全网,不省略。
+# - push(main):Linux 编译验证暖 cache(--no-run)+基础检查;不再触发
+#   原生 Windows/macOS 腿。
+# - schedule(每日 UTC 20:41):windows-rust-test/macos-rust-check/两平台
+#   codex runtime 冒烟的累计回归心跳,取代此前"每次 ready PR push + 每次
+#   main push 全量原生腿"的模式(9 月实测:macOS 7.7 万分钟/月,占毛成本 63%)。
+#
 # Jobs:
 # - commit-message: enforce the Git commit convention on pull requests and pushes.
 # - version-consistency:强制校验 VERSION 单一事实来源与 SemVer 规则。
@@ -7,34 +20,35 @@ name: PR Check
 #   compliance linkage + actionlint + Python determinism tests.
 # - changes: detect whether a PR touches Rust code, release contracts, or
 #   frontend files; used as the paths filter for later jobs.
-# - frontend-test: Draft runs lint/build/logic tests. Ready PRs and Merge Queue
-#   select browser smokes from their actual base/head diff and fail closed for
-#   unknown or shared paths.
-# - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
-# - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动跑 fmt/clippy/test 与 shell
-#   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
-# - rust-test: Draft and explicitly low-risk Rust changes skip the large test
-#   binary. Ready high-risk PRs and their combined Merge Queue tree run Linux
-#   regressions; Windows runs once on the ready PR. main push 无条件累计编译
-#   验证并写暖 cache(--no-run,不执行测试;MQ 已对同一组合树跑过全量测试)。
+# - frontend-test: PR 与 Queue 共用 lint/逻辑测试;Vite build 与浏览器
+#   smoke 仅在 Merge Queue 按真实 base/head 组合 diff 选取,unknown/shared
+#   paths fail closed。
+# - release-contract-test:发布链路改动只跑配置/脚本契约,不构建安装包。
+# - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动;PR 只跑 fmt 与
+#   shell 语法检查,clippy/test 收口到 Queue/main;依赖或策略改动时追加
+#   cargo-deny,不依赖 Tauri workspace 间接覆盖。
+# - rust-test: Merge Queue 组合树跑 Linux 全量回归;main push 无条件累计
+#   编译验证并写暖 cache(--no-run,不执行测试)。PR 阶段不再编译 Rust。
 # - cli-test: pinvou-cli workspace contract suite (fmt + all-target tests),
 #   triggered by cli_rust/rust_full changes; follows the rust-test push and
 #   cache policies (memory setup, --no-run on push, ~/.cargo-only cache).
-# - rust-lint:Draft 只跑 fmt；Ready/Queue/main 跑 clippy；cargo-deny 仅在依赖
+# - rust-lint:PR 只跑 fmt；Queue/main 跑 clippy；cargo-deny 仅在依赖
 #   或策略路径变化时追加，三项均无 continue-on-error。
 #   与 rust-test 并行,各自独立 cache。clippy 规则见 Cargo.toml [lints] 表:
 #   只启用实测零欠账的 lint(deny),有欠账的 lint/group 显式 allow,
 #   欠账由清理 PR(#35 及后续)消化后逐个升 deny。
-# - windows-rust-test: Native Windows coverage runs for ready high-risk paths or
-#   ci:full-rust. Merge Queue does not repeat it; main retains cumulative coverage.
-#   The all-target check and the linked native regressions run as two parallel
-#   matrix legs under the same routing; both must pass.
-# - macos-rust-check: Native macOS compile check (check does not link, no signing/packaging)
-#   mirrors windows-rust-test gating; the Linux leg cannot expose platform-specific type errors.
-# - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
-#   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
+# - windows-rust-test: Native Windows coverage（全部目标编译 + 链接态回归）,
+#   每日 schedule 累计回归;PR 与 main push 不再触发。The all-target check
+#   and the linked native regressions run as two parallel matrix legs; both
+#   must pass.
+# - macos-rust-check: Native macOS compile check + computer_use 测试执行,
+#   每日 schedule 累计回归;PR 与 main push 不再触发(the Linux leg cannot
+#   expose platform-specific type errors — 原生平台问题由次日心跳兜住)。
+# - windows-codex-runtime-test / macos-codex-runtime-test:Queue 按路径触发
+#   的原生打包冒烟 + 每日 schedule 累计回归;PR 不再触发。
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
-# - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
+# - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check;重型
+#   job 在 PR 上一律 skipped,聚合脚本将 skipped 视为通过。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
 #   最新 main + 入队 PR；因此无冲突 PR 不需要为主线日常前进反复人工 rebase。
 #
@@ -53,20 +67,25 @@ name: PR Check
 
 on:
   pull_request:
-    # 不限制 base 分支:堆叠 PR(base 为功能分支而非 main)同样必须跑完整
-    # lint + test gate。此前 `branches: [main]` 使栈中段 PR(base=功能分支)
+    # 不限制 base 分支:堆叠 PR(base 为功能分支而非 main)同样必须跑轻量
+    # 静态/逻辑 gate。此前 `branches: [main]` 使栈中段 PR(base=功能分支)
     # 只触发无 base 过滤的 DCO/Gitleaks/dependency-review,整条 pr-check
-    # (含 lint:ui / npm test / 浏览器 smoke / required-gate)被静默跳过,
-    # 导致 no-undef 与签名回归在栈中段漏检(见 #166/#168 评审)。changes
-    # job 已按路径短路无关 job(rust-test 默认跳过等),不会无差别烧 CI 分钟。
-    # ready/converted 事件用于切换 Draft 快检与 Ready 定向门禁；标签事件用于
-    # 按需开启/关闭 ci:full-rust。
+    # 被静默跳过,导致 no-undef 与签名回归在栈中段漏检(见 #166/#168 评审)。
+    # 2026-10 成本重构:ready_for_review/labeled/unlabeled 事件随"PR 阶段
+    # 禁止构建"策略一并移除——Ready 切换与 ci:full-rust 标签不再切换 PR
+    # 侧门禁强度,编译类验证只看 Merge Queue 与夜间调度。
     # closed 事件会进入同一个 concurrency group，及时取消已合并/关闭 PR 的旧任务。
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, closed]
+    types: [opened, synchronize, reopened, converted_to_draft, closed]
   merge_group:
     types: [checks_requested]
   push:
     branches: [main]   # 暖 cache:见上方 Cache 策略
+  schedule:
+    # 每日原生平台回归心跳(UTC 20:41 = UTC+8 04:41):windows-rust-test、
+    # macos-rust-check 与两平台 codex runtime 冒烟从 PR/main push 收口至此,
+    # 一天一次累计覆盖(此前每次 push 全量原生腿是 Actions 成本暴涨主因)。
+    - cron: '41 20 * * *'
+  workflow_dispatch:   # 手动触发夜间原生回归腿(等价 schedule,用于补跑/验证)
 
 permissions:
   contents: read
@@ -76,7 +95,7 @@ permissions:
 # main push 保留当前正在运行的暖缓存任务；GitHub 同一 concurrency group 最多保留
 # 一个 running 和一个 pending，新 push 会替换旧 pending。为避免被替换的 pending
 # 恰好包含 Rust 变更、而保留下来的后续 push 只看相邻非 Rust diff，main 的 Rust
-# 累计验证不依赖单次 push 的 paths-filter(见 rust-test/windows-rust-test)。
+# 累计验证不依赖单次 push 的 paths-filter(见 rust-test)。
 concurrency:
   group: pr-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -141,7 +160,10 @@ jobs:
   # concurrency pending 替换盲区，有意不依赖单次 push 的相邻 diff。
   changes:
     name: changes
-    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' }}
+    # schedule 也运行(只做 checkout,跳过 paths-filter):outputs 留空即可,
+    # 夜间原生腿在各自 if 里按事件短路,不读 outputs;让 changes 在 schedule
+    # 上保持 success,避免下游 needs 传播出现 skipped 歧义。
+    if: ${{ (github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group' || github.event_name == 'push' || github.event_name == 'schedule' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:
@@ -159,12 +181,16 @@ jobs:
       windows_codex: ${{ steps.filter.outputs.windows_codex }}
     steps:
       - uses: actions/checkout@v7
+        if: ${{ github.event_name != 'schedule' }}
         with:
           fetch-depth: 0
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        # schedule 下无 checkout,无脚本可跑,直接跳过(本 job 仅保持 success)。
+        if: ${{ github.event_name != 'schedule' }}
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
       - uses: dorny/paths-filter@v4
+        if: ${{ github.event_name != 'schedule' }}
         id: filter
         with:
           predicate-quantifier: some-with-excludes
@@ -467,9 +493,9 @@ jobs:
     # 合并原 diff-viewer-test + pet-frontend-test:两者各自 npm ci + build:ui 纯重复,
     # pet 跑 npm test(链尾含 test:diff-parser)与 diff-viewer 的 test:diff-parser 也重复,
     # 且 pet 缺 lint:ui。统一为一个 job 后:依赖/build 各装一次、lint 全覆盖。
-    # Draft runs lint/build/logic tests. Ready PRs and merge groups select browser
-    # smokes from their actual base/head diff. Shared, unknown, test-infrastructure,
-    # and empty diffs fail closed to the complete smoke set.
+    # 2026-10 成本重构:PR 只跑零构建的 lint + 逻辑测试;Vite build、web build、
+    # WebView 兼容审计与浏览器 smoke 全部收口到 Merge Queue,按真实 base/head
+    # 组合 diff 选取,unknown/shared paths fail closed。
     if: ${{ !cancelled() && github.event.action != 'closed' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.pet == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
@@ -498,8 +524,9 @@ jobs:
 
       # test:webui smoke (本 job 末尾) 会 spawn remote-control-relay/server.js,
       # 其顶层 require('ws') 解析自 remote-control-relay/node_modules,故必须装 relay 依赖。
+      # 仅 Merge Queue 需要(smoke 已收口到 Queue)。
       - name: 安装 Remote relay 依赖 (供 test:webui smoke)
-        if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
+        if: ${{ github.event_name == 'merge_group' }}
         run: npm --prefix ../remote-control-relay ci --prefer-offline --no-audit
 
       - name: ESLint (含 pet 缺失项,现已全覆盖)
@@ -522,48 +549,35 @@ jobs:
       - name: madge (circular imports)
         run: npm run lint:cycles
 
+      # ── 以下构建/浏览器步骤仅在 Merge Queue 运行(PR 阶段禁止构建) ──
       - name: Vite build
+        if: ${{ github.event_name == 'merge_group' }}
         run: npm run build:ui
 
       # Web (relay) build: the startup-bundle layer and the web index contract
       # test (tests/vite_static_assets_contract.test.mjs) only cover the web
-      # dist when it exists, so build it unconditionally here instead of
-      # relying on the diff-selected test:webui smoke.
+      # dist when it exists, so build it unconditionally on the queue instead
+      # of relying on the diff-selected test:webui smoke.
       - name: Vite web build (remote relay)
+        if: ${{ github.event_name == 'merge_group' }}
         run: npm run build:web
 
       # Dist-layer compatibility audit (a marked@16-style lookbehind parse
       # regression is caught by exactly this layer); build:ui above already
       # produced dist/, while the contract test only covers static/inline layers.
       - name: WebView compatibility audit (Safari 14 baseline)
+        if: ${{ github.event_name == 'merge_group' }}
         run: npm run audit:compat
 
       - name: 前端逻辑测试 (pet 全套 + diff parser + markdown)
         run: npm test
 
       - name: 准备浏览器
-        if: ${{ github.event_name == 'merge_group' || github.event.pull_request.draft == false }}
+        if: ${{ github.event_name == 'merge_group' }}
         run: |
           chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser)"
           test -n "$chrome"
           echo "CHROME=$chrome" >> "$GITHUB_ENV"
-
-      - name: Ready PR 定向浏览器 smoke
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
-            | node ../scripts/select-frontend-smokes.mjs \
-            > "$RUNNER_TEMP/frontend-smokes.tsv"
-          while IFS="$(printf '\t')" read -r kind target; do
-            case "$kind" in
-              npm) npm run "$target" ;;
-              node) node "$target" ;;
-              *) echo "未知 smoke 类型: $kind" >&2; exit 1 ;;
-            esac
-          done < "$RUNNER_TEMP/frontend-smokes.tsv"
 
       - name: Merge Queue diff-selected browser smoke
         if: ${{ github.event_name == 'merge_group' }}
@@ -644,6 +658,8 @@ jobs:
   # pinvou-knowledge 是可单独部署的 crate，必须直接验证自己的默认 feature 图、
   # 测试与部署入口，而不只依赖 Tauri 作为 client-only path dependency 的间接编译。
   # 各项收在同一 job 复用一份缓存，避免过度分拆。
+  # 2026-10 成本重构:PR 只跑零编译的 fmt 与 shell 语法检查;clippy/test 收口
+  # 到 Merge Queue 与 main push(编译类验证不在 PR 阶段触发)。
   knowledge-rust:
     name: knowledge-rust
     needs: changes
@@ -659,11 +675,13 @@ jobs:
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
       - name: Rust toolchain
+        if: ${{ github.event_name != 'pull_request' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - name: Cargo cache
+        if: ${{ github.event_name != 'pull_request' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: pinvou-knowledge
@@ -674,21 +692,23 @@ jobs:
         run: cargo fmt --manifest-path pinvou-knowledge/Cargo.toml -- --check
 
       - name: cargo clippy (all targets, all features)
+        if: ${{ github.event_name != 'pull_request' }}
         run: cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --all-targets --all-features --no-deps
 
       # Same hard gate rust-lint applies to src-tauri: deny every warning on
-      # lib/bins/tests with the server feature, only outside Drafts. This lives
+      # lib/bins/tests with the server feature. This lives
       # here instead of rust-lint so the standalone workspace is compiled once
       # per knowledge change in one job and one shared cache (-D warnings on
       # --all-targets --all-features is not viable: test code legitimately uses
       # unwrap/expect beyond the [lints] table).
       - name: cargo clippy (hard gate, lib/bins/tests + server)
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+        if: ${{ github.event_name != 'pull_request' }}
         run: |
           cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server -- -D warnings
           cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --tests --no-deps --features server
 
       - name: cargo test
+        if: ${{ github.event_name != 'pull_request' }}
         run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features
 
       - name: 部署脚本 shell 语法
@@ -715,7 +735,7 @@ jobs:
   # 不接入 sccache:clippy 产物与 test 不通用,接入会使 sccache 写入量翻倍并
   # 挤压 10GB 配额。benchmark/product backend 只在此做 cargo check；需要链接的
   # headless 合同放在 rust-test 的 lib harness，与全量单测只链接一个大型
-  # Tauri 测试二进制，并复用其 lld/内存扩容配置。
+  # Tauri 测试二进制，并复用 ThinLTO/lld/内存看门狗的 hosted-runner 边界。
   rust-lint:
     name: rust-lint
     needs: changes
@@ -726,8 +746,9 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     env:
-      # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
-      RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+      # PR 只跑无系统依赖的 fmt 快检（2026-10 成本重构:PR 阶段零编译）；
+      # Queue、main push 与夜间调度跑 clippy。
+      RUN_HEAVY_RUST_CHECKS: ${{ github.event_name != 'pull_request' }}
       # clippy 编译依赖(codewhale-tui)时同样可能触发 rustc/LLVM 栈溢出
       # (v0.9.5 升级后 O2 同源风险,与闭源 pinvou3 pr-check 保持一致)。
       # 正式入口按平台注入 RUSTC_WRAPPER(见 config.toml 注释);必须用
@@ -890,10 +911,11 @@ jobs:
   rust-test:
     name: rust-test
     needs: changes
-    # Ready high-risk PRs and matching merge groups run the full Linux regression.
-    # Explicitly low-risk leaf changes stay on compile/lint feedback; unknown Rust
-    # paths fail closed through rust_full. main push 无条件执行累计编译验证并写暖
-    # cache(防 concurrency pending 替换盲区),但只编译不执行测试(见下方 --no-run)。
+    # Merge Queue 组合树跑全量 Linux 回归;main push 无条件执行累计编译验证
+    # 并写暖 cache(防 concurrency pending 替换盲区),但只编译不执行测试
+    # (见下方 --no-run)。2026-10 成本重构:PR 阶段不再编译 Rust——每个
+    # ready PR push 都全量编译是 9 月 Actions 成本暴涨的主因之一;编译反馈
+    # 由入队后的 MQ 组合树运行承接( clippy 编译反馈在 rust-lint 的 Queue/main 腿)。
     if: >-
       ${{
         !cancelled() &&
@@ -903,17 +925,6 @@ jobs:
           (
             github.event_name == 'merge_group' &&
             needs.changes.outputs.rust_full == 'true'
-          ) ||
-          (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.draft == false &&
-            (
-              needs.changes.outputs.rust_full == 'true' ||
-              (
-                needs.changes.outputs.rust_code == 'true' &&
-                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
-              )
-            )
           )
         )
       }}
@@ -1115,14 +1126,6 @@ jobs:
               needs.changes.outputs.cli_rust == 'true' ||
               needs.changes.outputs.rust_full == 'true'
             )
-          ) ||
-          (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.draft == false &&
-            (
-              needs.changes.outputs.cli_rust == 'true' ||
-              needs.changes.outputs.rust_full == 'true'
-            )
           )
         )
       }}
@@ -1246,28 +1249,12 @@ jobs:
   windows-rust-test:
     name: windows-rust-test (${{ matrix.phase }})
     needs: changes
-    # Native Windows coverage runs once on ready high-risk/explicit PRs and on main.
-    # Merge Queue does not repeat these legs (each capped at its own
-    # timeout-minutes below); Linux validates the combined tree.
-    if: >-
-      ${{
-        !cancelled() &&
-        (
-          github.event_name == 'push' ||
-          (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.draft == false &&
-            (
-              needs.changes.outputs.rust_full == 'true' ||
-              needs.changes.outputs.cli_rust == 'true' ||
-              (
-                needs.changes.outputs.rust_code == 'true' &&
-                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
-              )
-            )
-          )
-        )
-      }}
+    # Native Windows coverage(全目标编译 + 链接态回归)每日 schedule 累计回归,
+    # workflow_dispatch 可手动补跑。2026-10 成本重构:此前"每次 ready 高危 PR
+    # push + 每次 main push"全量原生腿(冷编译 85-240 分钟/腿)是 9 月 Windows
+    # 计费分钟(14.4 万/月)的来源;Merge Queue 本就不重复这些腿,Linux 组合树
+    # 验证是合并前唯一门禁,平台特定回归由次日心跳兜住。
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     # `cargo check --all-targets --features dev-tools` (plus the pinvou-cli
     # check) produces metadata-only graphs, while `cargo test --lib --no-run`
     # must codegen and link the default-feature test harness; a prior check
@@ -1623,38 +1610,20 @@ jobs:
   macos-rust-check:
     name: macos-rust-check
     needs: changes
-    # Native macOS compile coverage plus computer_use test execution for ready
-    # high-risk/explicit PRs and main; same gate as windows-rust-test. Type
-    # errors in platform-specific code (e.g. computer_use/platform/macos.rs)
-    # are only caught by a native cargo check; the Linux leg (ubuntu) never
-    # compiles the macOS target. Round-17: this leg also RUNS the
-    # computer_use unit tests — macOS-only tests previously executed on no CI
-    # leg at all (check does not run tests; the Windows leg runs Windows
-    # filters; the Linux leg runs Linux tests), leaving macOS runtime behavior
-    # author-machine-only. The Merge Queue does not repeat this leg; the Linux
-    # rust-test verifies the combined tree; check does not link, so no
-    # signing/packaging/frontend artifacts are needed (same as windows-rust-test: verified
-    # empirically on macOS in 2026-08 that cargo check --all-targets does not depend on
-    # node_modules, hence no node/npm install).
-    if: >-
-      ${{
-        !cancelled() &&
-        (
-          github.event_name == 'push' ||
-          (
-            github.event_name == 'pull_request' &&
-            github.event.pull_request.draft == false &&
-            (
-            needs.changes.outputs.rust_full == 'true' ||
-              needs.changes.outputs.cli_rust == 'true' ||
-              (
-                needs.changes.outputs.rust_code == 'true' &&
-                contains(github.event.pull_request.labels.*.name, 'ci:full-rust')
-              )
-            )
-          )
-        )
-      }}
+    # Native macOS compile coverage plus computer_use test execution,每日
+    # schedule 累计回归(workflow_dispatch 可手动补跑)。Type errors in
+    # platform-specific code (e.g. computer_use/platform/macos.rs) are only
+    # caught by a native cargo check; the Linux leg (ubuntu) never compiles
+    # the macOS target. Round-17: this leg also RUNS the computer_use unit
+    # tests — macOS-only tests previously executed on no CI leg at all. The
+    # Merge Queue does not repeat this leg; the Linux rust-test verifies the
+    # combined tree; check does not link, so no signing/packaging/frontend
+    # artifacts are needed (verified empirically on macOS in 2026-08 that
+    # cargo check --all-targets does not depend on node_modules, hence no
+    # node/npm install). 2026-10 成本重构:此前每次 ready 高危 PR push +
+    # 每次 main push 全量原生腿是 9 月 macOS 计费分钟(7.7 万/月,占毛成本
+    # 63%)的主因;PR 与 main push 不再触发,平台回归由次日心跳兜住。
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-15
     # A cold check build is slow (macOS runners slower still); same cap as windows-rust-test
     # (180: the 90-minute cap was once killed at the link phase on the Windows leg, see
@@ -1730,7 +1699,9 @@ jobs:
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true') && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    # 2026-10 成本重构:PR 阶段不再触发原生构建;Queue 按真实路径触发,
+    # 夜间心跳(workflow_dispatch 可补跑)做累计回归。
+    if: ${{ !cancelled() && github.event.action != 'closed' && ((github.event_name == 'merge_group' && (needs.changes.outputs.windows_codex == 'true' || needs.changes.outputs.acp_runtime == 'true')) || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -1766,7 +1737,9 @@ jobs:
   macos-codex-runtime-test:
     name: macos-codex-runtime-test
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && needs.changes.outputs.acp_runtime == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    # 2026-10 成本重构:PR 阶段不再触发原生构建;Queue 按真实路径触发,
+    # 夜间心跳(workflow_dispatch 可补跑)做累计回归。
+    if: ${{ !cancelled() && github.event.action != 'closed' && ((github.event_name == 'merge_group' && needs.changes.outputs.acp_runtime == 'true') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
