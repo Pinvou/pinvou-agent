@@ -1150,6 +1150,10 @@ impl ProviderManager {
         // landing in that window must not leave the just-written key in the
         // keychain under a reference no record names any more.
         let mut written_credential: Option<CredentialReference> = None;
+        // The plaintext value THIS call wrote at `written_credential`. The
+        // persist-failure take-back below re-reads the entry and only deletes
+        // while it still holds this exact value (round-49 review).
+        let mut written_key_value: Option<String> = None;
         let credential = match api_key_action {
             CredentialEditAction::Replace => {
                 let key = api_key
@@ -1157,6 +1161,7 @@ impl ProviderManager {
                     .with_context(|| "替换 Provider key 时 api_key 不能为空")?;
                 self.credentials.set(&reference, key)?;
                 written_credential = Some(reference.clone());
+                written_key_value = Some(key.to_string());
                 Some(reference)
             }
             CredentialEditAction::KeepExisting => match self.credentials.get(&reference)? {
@@ -1165,6 +1170,7 @@ impl ProviderManager {
                     Some(key) => {
                         self.credentials.set(&reference, &key)?;
                         written_credential = Some(reference.clone());
+                        written_key_value = Some(key.to_string());
                         Some(reference)
                     }
                     None => existing
@@ -1265,7 +1271,20 @@ impl ProviderManager {
                 .as_ref()
                 .and_then(|record| record.credential.clone());
             if fresh.credential != existing_pointer {
-                self.credentials.delete(wrote).ok();
+                // Round-49 review: the reference is deterministic, so a
+                // genuine divergence only moves the pointer in one of two
+                // directions. `Some → None` (a peer cleared it) must take
+                // the written key back — the peer already deleted the
+                // keychain entry, so ours would be an orphan. `None → Some`
+                // is a peer FIRST-KEY save landing in this window: the entry
+                // at the reference is now the peer's committed, live pointer,
+                // and our value was clobbered anyway — deleting it would
+                // leave the peer's record with `has_credential: true` over an
+                // empty keychain, so the key SURVIVES this honest bail and
+                // the retry re-reads the peer's record fresh.
+                if fresh.credential.is_none() {
+                    self.credentials.delete(wrote).ok();
+                }
                 anyhow::bail!(
                     "Provider {} 被并发修改（凭据已被另一端更改），请重试",
                     record.id
@@ -1287,6 +1306,18 @@ impl ProviderManager {
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
             if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
+                // Round-49 review: a persist failure must not leave the
+                // just-written key behind either. The take-back is a narrowed
+                // read-compare-delete window: re-read the entry at the
+                // reference and delete only while it still equals what THIS
+                // call wrote — a peer rotation landing in the window replaced
+                // that value and owns the entry now, so it is left alone.
+                if let (Some(wrote), Some(wrote_value)) = (&written_credential, &written_key_value)
+                {
+                    if self.credentials.get(wrote).ok().flatten().as_deref() == Some(wrote_value) {
+                        self.credentials.delete(wrote).ok();
+                    }
+                }
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
                 let mut context = "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试".to_string();
@@ -2231,14 +2262,23 @@ mod tests {
             "我的中转"
         );
         assert_eq!(store.current("codex").unwrap(), "pv-1234567890ab");
-        // 原子写：无残留 .tmp 文件。断言必须匹配 persist 实际写的 pid tmp
-        // 名（`acp-providers.json.<pid>.tmp`）——固定名 `json.tmp` 从未
-        // 被写过，旧断言恒真、钉不住泄漏。
+        // Atomic write: no leftover staging tmp file. persist goes through
+        // `atomic_write`, which stages as `.acp-providers.json.tmp-<pid>-<nanos>`
+        // in this directory; assert NO file of that prefix remains. The old
+        // assertion targeted a `json.<pid>.tmp` name nothing ever wrote —
+        // trivially true, so it pinned no leak.
+        let tmp_leftovers: Vec<std::path::PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".acp-providers.json.tmp-"))
+            })
+            .collect();
         assert!(
-            !store
-                .path
-                .with_extension(format!("json.{}.tmp", std::process::id()))
-                .exists()
+            tmp_leftovers.is_empty(),
+            "persist must not leave staging tmp files behind: {tmp_leftovers:?}"
         );
         // 从同一路径重新加载验证往返
         let reloaded = load_from_path(&store.path);
@@ -2695,6 +2735,125 @@ mod tests {
                 .expect("keychain read"),
             None,
             "the save must take back the key it wrote"
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-49 review, the mirror direction of the peer-clear test: a peer
+    /// FIRST-KEY save landing in the same parked window moves the pointer
+    /// `None → Some`, so the entry at the deterministic reference is now the
+    /// PEER's committed, live pointer. The save must still refuse honestly,
+    /// but must NOT take back the key it wrote — deleting it would leave the
+    /// peer's record with `has_credential: true` over an empty keychain (our
+    /// value was clobbered by the peer's write anyway).
+    #[test]
+    fn save_keeps_the_written_key_when_a_peer_commits_a_first_key() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-peer-first-key-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let store_path = home.join("acp-providers.json");
+
+        // Bootstrap a KEYLESS record: both saves below are first-key saves.
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::KeepExisting,
+            )
+            .expect("keyless create saves");
+        assert!(
+            created.credential.is_none(),
+            "the bootstrapped record must be keyless"
+        );
+
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // Same parked window as the peer-clear test: the worker's save
+            // has written its key and read the keyless record, then parks
+            // before the under-lock fresh read.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            let worker_manager = worker_manager.expect("worker manager");
+            gate_tx.send(gate).unwrap();
+            worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round49-ours".into()),
+                CredentialEditAction::Replace,
+            )
+        });
+
+        // The peer lands its FIRST-KEY save inside the parked window: the
+        // keychain entry at the reference now holds the PEER's value and the
+        // store file carries the peer's committed `Some(reference)` pointer.
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        SystemCredentialStore::new()
+            .set(&reference, "sk-round49-peer-first-key")
+            .expect("peer keychain write");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        file["agents"]["codex"]["providers"][0]["credential"] =
+            serde_json::to_value(&reference).unwrap();
+        fs::write(&store_path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Release only AFTER the peer writes are on disk: the worker's fresh
+        // re-read must observe them.
+        gate.release();
+
+        let result = worker.join().unwrap();
+        let error = result.expect_err("the diverged save must fail honestly");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("被并发修改"),
+            "the refusal must name the concurrent modification, got: {rendered}"
+        );
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round49-peer-first-key"),
+            "the peer's live key must survive the refused save"
         );
         let _ = fs::remove_dir_all(&home);
     }

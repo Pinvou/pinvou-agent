@@ -134,18 +134,31 @@ impl SessionConfigChange<'_> {
 }
 
 impl AcpPool {
-    fn remember_config_choice(&self, session_id: &str, config_id: &str, value_id: &str) {
+    async fn remember_config_choice(&self, session_id: &str, config_id: &str, value_id: &str) {
         let backend = self.backend(session_id);
-        let mut errors = Vec::new();
-        if let Err(error) = self
-            .agents
-            .set_acp_config_value(session_id, config_id, value_id)
-        {
-            errors.push(format!("会话配置: {error:#}"));
-        }
-        if let Err(error) = self.config_defaults.set(backend, config_id, value_id) {
-            errors.push(format!("新会话默认值: {error:#}"));
-        }
+        // Round-49 review: both store writes poll the cross-process section
+        // lock (up to SECTION_LOCK_TIMEOUT) and rewrite their whole JSON
+        // store, so they run on a blocking worker — the async runtime
+        // workers here also drive the ACP engine session pumps.
+        let agents = self.agents.clone();
+        let config_defaults = self.config_defaults.clone();
+        let session_owned = session_id.to_string();
+        let config_owned = config_id.to_string();
+        let value_owned = value_id.to_string();
+        let errors = tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            if let Err(error) =
+                agents.set_acp_config_value(&session_owned, &config_owned, &value_owned)
+            {
+                errors.push(format!("会话配置: {error:#}"));
+            }
+            if let Err(error) = config_defaults.set(backend, &config_owned, &value_owned) {
+                errors.push(format!("新会话默认值: {error:#}"));
+            }
+            errors
+        })
+        .await
+        .unwrap_or_else(|error| vec![format!("配置持久化任务: {error}")]);
         if !errors.is_empty() {
             let message = errors.join("；");
             eprintln!(
@@ -171,7 +184,8 @@ impl AcpPool {
         if let Err(error) = change.apply(&runtime).await {
             return Err(error);
         }
-        self.remember_config_choice(session_id, config_id, value_id);
+        self.remember_config_choice(session_id, config_id, value_id)
+            .await;
         let info = runtime.info(
             &self.agents,
             self.pending_permissions_for(session_id).await,
