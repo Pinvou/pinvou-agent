@@ -302,19 +302,58 @@ pub async fn cancel_draft_upload(upload_id: &str) -> Result<(), String> {
     cancel_upload(&draft_attachment_workspace(), upload_id).await
 }
 
+/// Failure classification returned by [`canonical_completed_child`]; each
+/// lane maps the variants onto its own error texts, so the shared helper
+/// owns no wording.
+enum CompletedChildLookupError {
+    /// Root or supplied path missing (`io::ErrorKind::NotFound`).
+    Missing,
+    /// The completed root itself failed to resolve (non-NotFound).
+    Root(std::io::Error),
+    /// The supplied path failed to resolve (non-NotFound).
+    Child(std::io::Error),
+}
+
+/// Canonicalize the completed-attachments root plus one caller-supplied path
+/// beneath it — the shared path-resolution mechanics of the two lanes that
+/// consume a completed upload. The "resolved child sits directly under the
+/// resolved root" containment check is lane-specific (the discard lane
+/// resolves a file one level deeper than the draft lane's upload directory),
+/// so it stays with the callers over the returned pair.
+async fn canonical_completed_child(
+    workspace: &Path,
+    relative: &Path,
+) -> Result<(PathBuf, PathBuf), CompletedChildLookupError> {
+    let canonical_root = match tokio::fs::canonicalize(completed_root(workspace)).await {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CompletedChildLookupError::Missing);
+        }
+        Err(error) => return Err(CompletedChildLookupError::Root(error)),
+    };
+    let canonical_child = match tokio::fs::canonicalize(relative).await {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CompletedChildLookupError::Missing);
+        }
+        Err(error) => return Err(CompletedChildLookupError::Child(error)),
+    };
+    Ok((canonical_root, canonical_child))
+}
+
 async fn managed_completed_file(
     workspace: &Path,
     upload_id: &str,
 ) -> Result<(PathBuf, PathBuf), String> {
     let upload_id = validate_upload_id(upload_id)?;
-    let root = completed_root(workspace);
-    let canonical_root = tokio::fs::canonicalize(&root)
-        .await
-        .map_err(|_| "附件草稿不存在".to_string())?;
     let upload_dir = upload_completed_dir(workspace, upload_id);
-    let canonical_dir = tokio::fs::canonicalize(&upload_dir)
-        .await
-        .map_err(|_| "附件草稿不存在".to_string())?;
+    let (canonical_root, canonical_dir) =
+        match canonical_completed_child(workspace, &upload_dir).await {
+            Ok(paths) => paths,
+            // Both resolution failures surfaced as the same "draft absent"
+            // text before the shared helper existed; keep that mapping.
+            Err(_) => return Err("附件草稿不存在".to_string()),
+        };
     if canonical_dir.parent() != Some(canonical_root.as_path()) {
         return Err("附件草稿目录无效".into());
     }
@@ -562,17 +601,17 @@ pub(crate) async fn cancel_upload(workspace: &Path, upload_id: &str) -> Result<(
 /// filesystem target from the frontend.
 pub async fn discard_attachment(workspace: &Path, path: &str) -> Result<(), String> {
     let supplied = Path::new(path);
-    let root = completed_root(workspace);
-    let canonical_root = match tokio::fs::canonicalize(&root).await {
-        Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("解析会话附件目录失败：{error}")),
-    };
-    let canonical_file = match tokio::fs::canonicalize(supplied).await {
-        Ok(path) => path,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("解析会话附件失败：{error}")),
-    };
+    let (canonical_root, canonical_file) =
+        match canonical_completed_child(workspace, supplied).await {
+            Ok(paths) => paths,
+            Err(CompletedChildLookupError::Missing) => return Ok(()),
+            Err(CompletedChildLookupError::Root(error)) => {
+                return Err(format!("解析会话附件目录失败：{error}"));
+            }
+            Err(CompletedChildLookupError::Child(error)) => {
+                return Err(format!("解析会话附件失败：{error}"));
+            }
+        };
     let upload_dir = canonical_file
         .parent()
         .ok_or_else(|| "附件路径无效".to_string())?;

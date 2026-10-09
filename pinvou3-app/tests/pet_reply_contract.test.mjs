@@ -47,6 +47,14 @@ assert.match(petWindow, /className="pet-activity-body-row"/);
 assert.match(petWindow, /className="pet-reply-composer"/);
 assert.match(petWindow, /import \{ renderPetMarkdown \} from ['"]\.\/pet-markdown\.js['"]/);
 assert.match(petWindow, /dangerouslySetInnerHTML=\{\{ __html: renderPetMarkdown\(source\) \}\}/);
+// Pet 活动卡与主窗口共用同一份 DOMPurify 配置(USE_PROFILES html):宠物窗口渲染
+// 同样不可信的模型输出,不允许再拼一份更宽的白名单(USE_PROFILES 缺省会放进
+// 整个 SVG/MathML 标签集)。
+const petMarkdown = readFileSync(path.join(here, '..', 'src', 'features', 'pet', 'pet-markdown.js'), 'utf8');
+const markdownRenderer = readFileSync(path.join(here, '..', 'src', 'shared', 'markdown-renderer.js'), 'utf8');
+assert.match(petMarkdown, /SANITIZE_OPTIONS/);
+assert.doesNotMatch(petMarkdown, /FORBID_TAGS/);
+assert.match(markdownRenderer, /export const SANITIZE_OPTIONS/);
 assert.match(petWindow, /event\.key === ['"]Enter['"] && !event\.shiftKey/);
 assert.match(petWindow, /event\.key === ['"]Escape['"]/);
 assert.match(petWindow, /useAutoResizeTextarea\(/);

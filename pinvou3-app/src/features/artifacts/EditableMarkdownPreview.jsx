@@ -15,7 +15,6 @@ const buildAiPrompt = ({ t, artifact, selectedText, instruction }) => {
   const fence = markdownFenceFor(selectedText);
   return t.apMdAiPrompt({
     path: artifact.path,
-    title: artifact.basename || artifact.path,
     selectedText,
     instruction,
     fence,
@@ -26,7 +25,7 @@ const statusText = (t, state) => {
   if (state === 'dirty') return t.apMdDirty || '';
   if (state === 'saving') return t.apMdSaving || '';
   if (state === 'error') return t.apMdSaveFailed || '';
-  return t.apMdSaved || '';
+  return '';
 };
 
 const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({

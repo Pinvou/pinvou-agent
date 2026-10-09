@@ -96,11 +96,6 @@ fn bundled_engine_dir() -> Option<PathBuf> {
     BUNDLED_ENGINE_DIR.get().cloned()
 }
 
-fn bundled_engine_intact(path: &Path) -> bool {
-    let bundled_dir = bundled_engine_dir();
-    super::platform::bundled_engine_intact(path, bundled_dir.as_deref())
-}
-
 pub fn ffmpeg_available() -> bool {
     Command::new("ffmpeg")
         .arg("-version")
@@ -167,13 +162,7 @@ fn compose_status(engine: bool, ffmpeg: bool, model: bool, installable: bool) ->
 }
 
 pub async fn download_current_model(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    download_asr_model(app, current_model_spec()).await
-}
-
-pub async fn download_asr_model(
-    app: &tauri::AppHandle,
-    spec: AsrModelSpec,
-) -> Result<PathBuf, String> {
+    let spec = current_model_spec();
     std::fs::create_dir_all(asr_dir()).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
     let dest = model_download_path();
     debug_assert_eq!(
@@ -390,9 +379,6 @@ pub fn transcribe(wav: &Path) -> Result<String, String> {
     // 钉死 CWD 到可写的 asr_dir,让这个副产物落在那里、不污染源码树。
     let work_dir = asr_dir();
     let _ = std::fs::create_dir_all(&work_dir);
-    if !bundled_engine_intact(&engine) {
-        return Err("本地语音识别引擎完整性校验失败，已拒绝执行；请重新安装 pinvou3。".to_string());
-    }
     let out = Command::new(&engine)
         .current_dir(&work_dir)
         .arg("-m")

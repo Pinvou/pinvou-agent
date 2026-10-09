@@ -128,16 +128,158 @@ for (const f of docs) {
   }
 }
 
-// 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain；行首 `|` 的表格行为描述性语境，豁免）
+// 5) lark 域不得引导裸 auth login（按需授权走 --scope/--domain）。
+// 2026-10-07 收紧：表格行不再豁免——此前 12 处「表格里让模型跑阻塞式
+// auth login --scope」全靠该豁免漏网（模型照做会回合内阻塞到超时，用户
+// 看不到授权 URL，见 lark-skills/NOTICE.md 2026-10-07 节）。现在含 --scope
+// 的行必须内联 --no-wait，或属于点名流程载体的描述性/指针语境（指向
+// lark-shared 按需授权流程）。同轮复审再堵三个漏网形态：代码围栏内的
+// 可执行行（最该扫的语境此前完全不可见）；「描述性」误判——hint/prompt
+// 等字段名出现在行内代码段里就让整行豁免（改按剥锚后的纯文本判定）；
+// 只转述 CLI 提示而不点名流程载体（裸 prompt/hint/surfaces/提示 不再
+// 豁免——wiki 两处与 flag-create/feed-groups 旧句正是靠它漏网）。
+// 第 7 轮外部复审补两处围栏盲区：围栏分支从「仅扫 --scope 行」放宽到
+// 「所有阻塞形态都必须 --no-wait」（围栏是最可执行语境，fenced
+// `auth login --domain …` 与裸形态同样会让模型照跑阻塞到超时；
+// lark-shared 的 --device-code 第二步是文档化例外，不受影响）；围栏
+// 状态机同时识别 blockquoted 围栏（`> ``` `）——引用块里的围栏此前
+// 不翻转状态，内容按宽松的正文规则判定。
 // Since PR #302 the lark skills live in lark-skills/ (the old skills/ path no
 // longer exists, so this rule had been silently dead until then).
-for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
-  for (const line of read(f).split("\n")) {
-    if (/^\s*\|/.test(line)) continue;
-    if (/auth login/.test(line) && !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(line)) {
-      assert.fail(`${rel(f)}: lark 域裸 auth login: ${line.trim()}`);
-    }
+const larkAuthLoginViolation = (line, inFence) => {
+  if (!/auth login/.test(line)) return null;
+  // 代码围栏是最可执行语境：任何阻塞形态（含 --scope、--domain、裸 auth
+  // login）都必须内联 --no-wait，无描述性豁免；--device-code 第二步是
+  // lark-shared 两段式的文档化收尾，天然不带 --scope 也不带 --no-wait，
+  // 显式豁免——带 --scope 的混合形态是第一步的阻塞形态，不得借
+  // --device-code 子串混入豁免。
+  if (inFence) {
+    const isDeviceCodeStep2 = /--device-code/.test(line) && !/--scope/.test(line);
+    return !/--no-wait/.test(line) && !isDeviceCodeStep2
+      ? "fenced `auth login` 阻塞形态须内联 --no-wait（lark-shared 两段式；--device-code 第二步除外）"
+      : null;
   }
+  // frontmatter description 是能力枚举（≤280 字符受规则 6 约束），恒为描述性语境。
+  if (/^\s*description:/.test(line)) return null;
+  // 不含 --scope 的表格行是能力枚举（如「`auth login` 等」），维持豁免；
+  // 盲点只在含可执行 --scope 形态的表格行，那些必须扫。
+  if (/^\s*\|/.test(line) && !/--scope/.test(line)) return null;
+  if (
+    !/logout|\bscope\b|--domain|--device-code|--no-wait|--recommend|\bstatus\b|不要|无需|不必|禁止|按需|规则/.test(
+      line,
+    )
+  ) {
+    return "lark 域裸 auth login";
+  }
+  if (!/--scope/.test(line) || /--no-wait/.test(line)) return null;
+  // 可执行形态 = 反引号片段同时含 auth login 与 --scope（教模型原样运行
+  // 的命令）；规则陈述/flag 枚举（auth login 在反引号外）不算。
+  const spans = line.match(/`[^`]+`/g) || [];
+  if (!spans.some((s) => /auth login/.test(s) && /--scope/.test(s))) return null;
+  // 描述性 = 剥锚后的纯文本点名流程载体（lark-shared 按需授权流程）。
+  // hint/prompt/提示/surfaces 这类 CLI 提示转述词不再单独豁免：旧行的
+  // error 字段名 hint 出现在代码段里、或「CLI 会提示重新执行 …」的转述句，
+  // 都曾让整行漏网，而它们恰恰是要模型照抄的阻塞命令。
+  const descriptive = /按需授权流程|lark-shared|on-demand/i.test(stripAnchors(line));
+  return descriptive
+    ? null
+    : "lark auth login --scope 须内联 --no-wait（lark-shared 两段式）";
+};
+
+// 扫描器走真实的逐行围栏状态机（与下方 pack 扫描同一实现），固定装置也必须
+// 经过它——若只直接调 larkAuthLoginViolation，围栏跟踪自身的回退（比如围栏
+// 正则被改坏）不会让任何固定装置变红，围栏覆盖会静默失效。
+const scanLarkAuthLogin = (text) => {
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*(?:>\s*)?```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    const violation = larkAuthLoginViolation(line, inFence);
+    if (violation) return violation;
+  }
+  return null;
+};
+
+for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
+  const violation = scanLarkAuthLogin(read(f));
+  if (violation) assert.fail(`${rel(f)}: ${violation}`);
+}
+
+// 规则 5 盲点自检：七个曾漏网的历史形态（3 围栏 + 4 正文，blockquoted
+// 围栏单测）必须保持「必失败」，现行合法
+// 形态必须保持「必通过」（防下次收紧/放松时静默回退）。全部经由
+// scanLarkAuthLogin（含围栏状态机）判定。
+{
+  const fencedOldForms = [
+    // 围栏内可执行行（message-enrichment 旧形）
+    "lark-cli auth login --scope \"im:message.reactions:read\"",
+    // 围栏内无 --scope 的阻塞形态（--domain 同样让模型照跑阻塞到超时；
+    // 第 7 轮外部复审把围栏分支从「仅 --scope」放宽到所有阻塞形态）
+    "lark-cli auth login --domain docs",
+    // 围栏内混合形态：--scope 第一步借 --device-code 子串伪装成第二步
+    // （lark-shared 第二步从不带 --scope），豁免必须按「无 --scope」收紧
+    "lark-cli auth login --scope \"im:message\" --device-code <device_code>",
+  ];
+  const plainOldForms = [
+    // 裸「提示」转述（wiki delete-space/move 旧形）
+    "| 异常 | 处理：CLI 会直接**提示**重新执行 `lark-cli auth login --scope \"docs:wiki\"` |",
+    // hint 字段名落在代码段内（drive-export 99991679 行旧形）
+    "| 99991679 | `hint: auth login --scope \"drive:drive\"` |",
+    // 裸 hint 转述（feed-groups 旧形）
+    "If a required scope is missing, the CLI surfaces a hint such as `lark-cli auth login --scope \"im:feed_group_v1:write\"`.",
+    // 流程载体名只落在代码段里（剥锚后可描述性判定必须仍然生效）
+    "重新执行 `lark-cli auth login --scope \"docs:wiki\"`（详见 `lark-shared`）",
+  ];
+  for (const line of fencedOldForms) {
+    assert.ok(
+      scanLarkAuthLogin(`\`\`\`bash\n${line}\n\`\`\`\n`) !== null,
+      `围栏旧形必须判违例: ${line}`,
+    );
+  }
+  for (const line of plainOldForms) {
+    assert.ok(
+      scanLarkAuthLogin(`${line}\n`) !== null,
+      `非围栏旧形必须判违例: ${line}`,
+    );
+  }
+  // blockquoted 围栏此前不翻转围栏状态，内容按宽松正文规则判定——围栏
+  // 状态机必须同样识别 `> ``` ` 形态（引用块里的可执行行最易漏）。
+  assert.ok(
+    scanLarkAuthLogin('> 原文如下：\n> ```bash\n> lark-cli auth login --scope "docs:wiki"\n> ```\n') !== null,
+    "blockquoted 围栏内的阻塞 --scope 行必须判违例",
+  );
+  const okForms = [
+    "可提示用户按 [`lark-shared`](../../lark-shared/SKILL.md) 的按需授权流程（`auth login --scope ...`）完成登录",
+    "If missing, run the login per the lark-shared on-demand split-flow (`--no-wait --json`), never the blocking in-turn login",
+    "1. 执行 `lark-cli auth login --scope \"xxx\" --no-wait --json`（必须加 `--no-wait --json`）",
+  ];
+  for (const line of okForms) {
+    assert.equal(
+      scanLarkAuthLogin(`${line}\n`),
+      null,
+      `合法指针形态不得误伤: ${line}`,
+    );
+  }
+  // 围栏内的合法两段式形态必须放行（围栏收紧不得反向误伤可执行行）。
+  assert.equal(
+    scanLarkAuthLogin('```bash\nlark-cli auth login --scope "xxx" --no-wait --json\n```\n'),
+    null,
+    "围栏内 --no-wait 两段式不得误伤",
+  );
+  // lark-shared 的 --device-code 第二步（两段式收尾，天然不带 --no-wait
+  // 也不带 --scope）必须保持豁免——收紧不得误伤文档化流程。
+  assert.equal(
+    scanLarkAuthLogin('```bash\nlark-cli auth login --device-code <device_code>\n```\n'),
+    null,
+    "围栏内 --device-code 第二步不得误伤",
+  );
+  assert.equal(
+    scanLarkAuthLogin('> ```bash\n> lark-cli auth login --scope "xxx" --no-wait --json\n> ```\n'),
+    null,
+    "blockquoted 围栏内 --no-wait 两段式不得误伤",
+  );
 }
 
 // 6) frontmatter 契约：连接器技能 description ≤280、「何时用」开头、bins 正确
@@ -182,7 +324,9 @@ const DWS_GATED_CMD = /\bdws oa approval (?:approve|reject|revoke)\b/;
 for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
   let inFence = false;
   for (const line of read(f).split("\n")) {
-    if (/^\s*```/.test(line)) {
+    // 与规则 5 的围栏状态机同口径：blockquoted 围栏（`> ``` `）同样翻转
+    // 状态——引用块里的可执行示例与普通围栏同等可照抄。
+    if (/^\s*(?:>\s*)?```/.test(line)) {
       inFence = !inFence;
       continue;
     }
@@ -249,5 +393,136 @@ assert.ok(
 // the exemption point and are registered in the domain's NOTICE file instead.
 const EXEMPT_FILES = [];
 assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由，不得静默扩权");
+
+// 10) dws 不得再引用不存在的 `calendar participant *` 命令组（2026-10-07
+// 模型向文本审计：dws calendar 的参会人二级子命令是 `attendee`，无
+// `participant` 组；危险表/references/脚本照抄会让模型执行不存在的命令，
+// 而 SKILL.md 错误处理又禁止自行换方案，任务直接卡死。已改 7 个文件 8 处，
+// 见 NOTICE-dingtalk.md 2026-10-07 节第 1 条）。todo 模块的
+// `task add-participant`/`remove-participant` 是另一真实命令组、todo
+// `--participants` flag、`--role-types ...participant` 与 minutes 的
+// `participants` API 字段名均不含 `calendar participant`，不受影响。
+// 2026-10-07 第 5 轮复审收紧：历史缺陷的真实形状不是连续写法——危险表的
+// 「`calendar` | `participant delete`」单元格拆分、07-minutes 的
+// 「`calendar event list` + `participant list`」跨反引号拆分、脚本的
+// argv 数组 ['calendar', 'participant', 'add'] 都逃过连续子串匹配（8 处
+// 历史缺陷里本规则原本只能抓到 4 处，两处 PR 内回归恰在其中）。现在把
+// 引号/表格竖线/逗号/括号归一成空白再匹配（覆盖单元格拆分与 argv 形态），
+// 并增补第二形态：participant 后紧跟动词的命令形引用（覆盖跨反引号拆分；
+// todo 的连字符命令 add-participant 与 --participants flag 均不匹配）。
+// .py 脚本一并纳入扫描（连续 grep 与 .md-only 扫描都抓不到 argv 数组）。
+const dwsTexts = files.filter(
+  (f) =>
+    rel(f).includes("dingtalk-skills") &&
+    /\.(md|py)$/i.test(path.basename(f)) &&
+    !path.basename(f).startsWith("NOTICE"),
+);
+const unquoteDws = (line) => line.replace(/[`'"|,[\](){}]/g, " ");
+const DWS_PARTICIPANT_VERB =
+  /\bparticipant\s+(?:list|add|delete|get|set|remove|update|create)\b/;
+const scanDwsParticipant = (text) => {
+  for (const line of text.split("\n")) {
+    const t = unquoteDws(line);
+    if (/calendar\s+participant(?![\w-])/.test(t))
+      return `残留不存在的 calendar participant 命令（应为 calendar attendee + --attendees）: ${line.trim()}`;
+    if (DWS_PARTICIPANT_VERB.test(t))
+      return `残留不存在的 participant 命令形引用（dws 参会人二级命令是 attendee）: ${line.trim()}`;
+  }
+  return null;
+};
+for (const f of dwsTexts) {
+  const violation = scanDwsParticipant(read(f));
+  if (violation) assert.fail(`${rel(f)}: ${violation}`);
+}
+
+// 规则 10 盲点自检：四个曾漏网/曾回归的历史形状必须保持「必失败」，现行
+// 合法形态必须保持「必通过」（全部经由与 pack 扫描同一实现 scanDwsParticipant
+// 判定——归一化被改坏时固定装置必须跟着变红，而不是静默失效）。
+{
+  const dwsOldForms = [
+    // 危险表单元格拆分（SKILL.md 旧形，首轮修复对象）
+    "| `calendar` | `participant delete` | 删除参会人 |",
+    // 跨反引号拆分（07-minutes 旧形，第二轮 MAJOR）
+    "| 分钟纪要摘要 | `calendar event list` + `participant list` |",
+    // 脚本 argv 数组（calendar_schedule_meeting.py 旧形，第二轮 BLOCKER）
+    "run_dws(['calendar', 'participant', 'add', '--event', ev, '--users', uid])",
+    // 连续写法（03-meeting/minutes/10-minutes/lite-recipes 旧形）
+    "```bash\ndws calendar participant add --event ev1 --users u1\n```",
+  ];
+  for (const text of dwsOldForms) {
+    assert.ok(
+      scanDwsParticipant(`${text}\n`) !== null,
+      `dws 旧形必须判违例: ${text.split("\n")[0]}`,
+    );
+  }
+  const dwsOkForms = [
+    "`dws calendar attendee add --event ev1 --attendees u1,u2`",
+    "`dws todo task add-participant --event ev1 --participants u1`",
+    "返回的 `participants` 字段为空时提示无参会人",
+    "`--role-types creator,executor,participant` 枚举参会角色",
+    "所有 calendar participants 会收到日程变更通知",
+  ];
+  for (const text of dwsOkForms) {
+    assert.equal(
+      scanDwsParticipant(`${text}\n`),
+      null,
+      `dws 合法形态不得误伤: ${text}`,
+    );
+  }
+  // 第一形态专属固定装置:无动词的裸 `calendar participant` 引用只有归一化
+  // 第一形态能抓(动词形态抓不到);单坏第一形态时此装置必须保持红。
+  assert.ok(
+    scanDwsParticipant("| `calendar` | `participant` | 参会人（无动词命令名） |\n") !== null,
+    "裸 calendar participant（无动词）必须由第一形态判违例",
+  );
+  // 文件范围自检:argv 数组形态只存在于 .py 脚本,.py 一旦被剔出扫描范围,
+  // 上面的 argv 固定装置仍绿而真实防线已死——这里直接钉住范围本身。
+  assert.ok(
+    dwsTexts.some((f) => rel(f).endsWith("scripts/calendar_schedule_meeting.py")),
+    "规则 10 扫描范围必须包含 dws scripts/*.py(argv 数组唯一载体)",
+  );
+  assert.ok(dwsTexts.length > 0, "规则 10 扫描范围不得为空");
+}
+
+// 11) tmeet `--meeting-id` 不得用 9~12 位数字示例（2026-10-07 模型向文本
+// 审计：包内格式表把 9~12 位数字归类为会议号 meeting-code，meeting-id 为
+// 13 位以上；54 处占位已统一为 19 位，见 NOTICE-tmeet.md 第 20 条）。
+// `--sub-meeting-id` 是另一真实 flag（包内未规定位数），不受此规则约束。
+const scanTmeetMeetingId = (text) => text.match(/(?<![\w-])--meeting-id[=: ]+["']?\d{1,12}\b/);
+for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
+  const hit = scanTmeetMeetingId(read(f));
+  assert.ok(
+    !hit,
+    `${rel(f)}: --meeting-id 示例用了会议号形态的短数字（meeting-id 为 13 位以上）: ${hit?.[0]}`,
+  );
+}
+// 规则 11 盲点自检（与规则 5/10 同款，经由与 pack 扫描同一实现判定）:
+// 历史短占位必须保持「必失败」，19 位占位与合法短 flag 必须保持「必通过」。
+{
+  const tmeetOldForms = [
+    'tmeet meeting get --meeting-id "100000000"',
+    "--meeting-id=123456789",
+    '--meeting-id "200000001"',
+  ];
+  for (const text of tmeetOldForms) {
+    assert.ok(
+      scanTmeetMeetingId(`${text}\n`) !== null,
+      `tmeet 短占位必须判违例: ${text}`,
+    );
+  }
+  const tmeetOkForms = [
+    "--meeting-id 6953553464429888300",
+    '--meeting-id "<meeting-id>"',
+    "--meeting-code 100000000",
+    "--sub-meeting-id \"200000001\"",
+  ];
+  for (const text of tmeetOkForms) {
+    assert.equal(
+      scanTmeetMeetingId(`${text}\n`),
+      null,
+      `tmeet 合法形态不得误伤: ${text}`,
+    );
+  }
+}
 
 console.log("✓ connector skills pinvou-contract lint passed");

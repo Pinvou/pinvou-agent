@@ -65,7 +65,7 @@ function shouldUsePptDesignScene(subtab) {
   return subtab === PPT_DESIGN_SCENE_KEY;
 }
 
-function buildWorkScenePayloadText(text, context, audit) {
+export function buildScenePayloadText(text, context, audit) {
   const raw = String(text || '').trim();
   if (!raw) return raw;
   return `${raw}\n\n---\n${context}\n\n${audit}`;
@@ -74,26 +74,21 @@ function buildWorkScenePayloadText(text, context, audit) {
 function createDocumentWritingMessageMeta(text) {
   return {
     pinvouScene: pinvouSceneTag(DOCUMENT_WRITING_SCENE_KEY),
-    pinvouRequiredSkill: 'government-writing',
-    pinvouRequiredTool: 'gongwen',
-    pinvouPayloadText: buildWorkScenePayloadText(text, DOCUMENT_WRITING_CONTEXT, DOCUMENT_WRITING_AUDIT),
+    pinvouPayloadText: buildScenePayloadText(text, DOCUMENT_WRITING_CONTEXT, DOCUMENT_WRITING_AUDIT),
   };
 }
 
 function createDataVisualizationMessageMeta(text) {
   return {
     pinvouScene: pinvouSceneTag(DATA_VISUALIZATION_SCENE_KEY),
-    pinvouRequiredSkill: 'visualizer',
-    pinvouPayloadText: buildWorkScenePayloadText(text, DATA_VISUALIZATION_CONTEXT, DATA_VISUALIZATION_AUDIT),
+    pinvouPayloadText: buildScenePayloadText(text, DATA_VISUALIZATION_CONTEXT, DATA_VISUALIZATION_AUDIT),
   };
 }
 
 function createPptDesignMessageMeta(text) {
   return {
     pinvouScene: pinvouSceneTag(PPT_DESIGN_SCENE_KEY),
-    pinvouRequiredSkill: 'pptx',
-    pinvouRequiredTool: 'pptx',
-    pinvouPayloadText: buildWorkScenePayloadText(text, PPT_DESIGN_CONTEXT, PPT_DESIGN_AUDIT),
+    pinvouPayloadText: buildScenePayloadText(text, PPT_DESIGN_CONTEXT, PPT_DESIGN_AUDIT),
   };
 }
 

@@ -252,8 +252,6 @@ async function pauseScheduledTask(id) { return pinvouSharedtauriScheduled().paus
 
 async function resumeScheduledTask(id) { return pinvouSharedtauriScheduled().resumeScheduledTask(id); }
 
-async function toggleScheduledTaskPinned(id, pinned) { return pinvouSharedtauriScheduled().toggleScheduledTaskPinned(id, pinned); }
-
 async function deleteScheduledTask(id) { return pinvouSharedtauriScheduled().deleteScheduledTask(id); }
 
 async function runScheduledTaskNow(id) { return pinvouSharedtauriScheduled().runScheduledTaskNow(id); }
@@ -307,7 +305,6 @@ async function startScheduledTaskChat() { return pinvouSharedtauriScheduled().st
       updateScheduledTask,
       pauseScheduledTask,
       resumeScheduledTask,
-      toggleScheduledTaskPinned,
       deleteScheduledTask,
       runScheduledTaskNow,
       startScheduledTaskChat

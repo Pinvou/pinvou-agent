@@ -36,6 +36,59 @@ pub(crate) fn asr_tool_path_from_env() -> Option<std::path::PathBuf> {
     None
 }
 
+/// 就绪探测与执行路径必须同判定。本骨架只适配"执行必经 env CLI"的平台
+/// （Windows：`recognize_native` 恒为 None）：设置了覆盖命令时，就绪 = 该命令
+/// 本身可执行——执行会原样 spawn 它，打包运行时再完好也不能替它报就绪；未设置
+/// 时才由平台判定打包运行时。否则会出现"面板报就绪、转写仍 spawn 失败"（env
+/// 失效却落到 bundled）或反向的假阴性。Linux 的执行序是"引擎+模型齐先走内置
+/// 转写、否则才 CLI"，env 命令只在回退分支参与，单布尔表达不了，由
+/// `linux::asr_tool_exists` 自行复刻执行序。
+pub(crate) fn asr_ready_decision(
+    env_command: Option<&str>,
+    command_exists: impl Fn(&str) -> bool,
+    bundled_ready: bool,
+) -> bool {
+    match env_command {
+        Some(command) => command_exists(command),
+        None => bundled_ready,
+    }
+}
+
+/// "执行必经 env CLI"平台（Windows）的 `asr_tool_exists` 共用骨架：取 env 覆盖
+/// 命令的判定，未设置时交给平台的 `bundled_ready`。
+pub(crate) fn asr_tool_exists_with_env(bundled_ready: impl FnOnce() -> bool) -> bool {
+    let env_command = asr_tool_path_from_env().map(|path| path.to_string_lossy().into_owned());
+    asr_ready_decision(
+        env_command.as_deref(),
+        |command| crate::platform::os::command_exists(command),
+        bundled_ready(),
+    )
+}
+
+#[cfg(test)]
+mod asr_ready_tests {
+    use super::asr_ready_decision;
+
+    #[test]
+    fn env_override_missing_never_falls_back_to_bundled() {
+        // 覆盖命令失效时，即使打包运行时完好也必须报未就绪（执行会原样
+        // spawn 失效路径并失败）。这是 Windows 探测回归的判定级 pin。
+        assert!(!asr_ready_decision(Some("missing-asr"), |_| false, true));
+    }
+
+    #[test]
+    fn env_override_present_is_ready_even_without_bundled() {
+        assert!(asr_ready_decision(Some("asr"), |_| true, false));
+        assert!(!asr_ready_decision(Some("asr"), |_| false, true));
+    }
+
+    #[test]
+    fn no_env_uses_bundled_verdict() {
+        assert!(asr_ready_decision(None, |_| true, true));
+        assert!(!asr_ready_decision(None, |_| true, false));
+    }
+}
+
 // linux/macOS 共用的 SenseVoice GGUF（q4_k）模型契约。windows 打包不同量化
 // 模型（sensevoice-small-q8），unsupported 平台为占位实现——两者的
 // `asr_model_spec` 有意不同，保留在各自模块（经下方 glob re-export 暴露）。

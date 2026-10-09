@@ -147,7 +147,43 @@ pub(crate) use crate::platform::connector_skills::{
 ///       the semantic bump is required for connected users to refresh
 ///       at startup (otherwise the refresh waits for the post-first-frame
 ///       refresh_connector_auth_gates backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.32-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.33: model-facing text audit fixes across the bundle (no upstream sync).
+/// Skill trees: dws danger-table row, five reference files, and the
+/// calendar_schedule_meeting.py script all stopped citing the nonexistent
+/// `calendar participant *` (`attendee` + `--attendees` is the real
+/// surface), stale P0/P1 attendance marker dropped, non-blocking auth
+/// guidance added across SKILL.md first-use pointer, global-reference.md,
+/// event.md, and the attendance_report_checkin.py error outputs (NOTICE-dingtalk.md);
+/// wecomcli-email send/reply body files unified
+/// to tmp/mail/ so intermediate mail bodies stop landing in the
+/// artifact-panel root (NOTICE-wecom.md); tmeet example `--meeting-id`
+/// placeholders moved from the 9-digit meeting-code form to the 19-digit
+/// meeting-id form, 54 sites, and the agent_init invocation path is now
+/// Skill-root-qualified (NOTICE-tmeet.md); 20 lark sites across 19 files
+/// rewritten from blocking `auth login --scope` to the lark-shared
+/// `--no-wait --json` split-flow form or carrier-pointer-only phrasing
+/// (lark-skills/NOTICE.md; connector contract rule 5
+/// tightened to match). Hooks:
+/// multiagent_depth_guard now emits its deny reason as stdout
+/// JSON (the engine reads reasons only from stdout; stderr never reaches the
+/// model) with a truthful narrow-only rationale (foundation #5253 min-clamp)
+/// and covers the workflow snake_case alias plus the quoted camelCase key;
+/// deny_sensitive_paths names both
+/// blocked tools, matches connector aliases case-insensitively, and its
+/// header now documents the real fail-closed contract (deny_sensitive_paths.sh
+/// is content-hashed and self-invalidates; the depth-guard twins,
+/// deny_sensitive_paths.ps1, and shell_env.sh are not hashed and ride this
+/// bump). Built-in visual-design skill: real images inlined as data URLs
+/// only (no external URLs, no relative-path image files — the artifact-card
+/// srcDoc preview has no asset resolver), matching the poster scene;
+/// present_artifact protocol stated once. mcp-servers browser protocol text
+/// aligned with the enforced URL gate and uid lifetime (browser-wrapper-protocol.mjs,
+/// browser-core-protocol.mjs; MCP server scripts are rewritten on every boot
+/// and do not depend on this bump). Next free slot after 0.32.
+/// Skill trees are excluded from the content hash, so the semantic bump is
+/// required for connected users to refresh at startup (otherwise the refresh
+/// waits for the post-first-frame refresh_connector_auth_gates backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.33-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
@@ -169,19 +205,32 @@ pub const INSTRUCTIONS_SHARED_MD: &str =
 /// ("remember this") would get the guided confirmation 「已记下」 ("noted") while the
 /// background writes no memory — exactly violating rule 3 of the section, 「不编造已记住
 /// 的内容」 ("never fabricate remembered content"). So the skeleton keeps only the
-/// placeholder line, and the session render layer fills the body or drops the whole line
-/// based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
+/// placeholder line, and the session render layer fills the body or an explicit
+/// off-notice based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
 /// `{{PINVOU3_SUDO_INSTRUCTION}}`'s lifecycle (setting changes take effect on new sessions).
 const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 - 用户明确要你记住(「记住」「记一下」「帮我记下」/\"remember this\" 之类):**简短确认已记下,同轮照常把任务做完**;要点由应用后台在回合结束后写入长期记忆(个别情况会先请用户确认),无需你复述或调用工具。\n\
 - 对「以后都…」这类没有明说「记」的偏好表述:自然回应即可,不要断言已记住,是否入库由后台判断。\n\
 - **不编造、不夸大已记住的内容**;不确定是否已记住就如实说,别假装记得。与当下指令冲突时以当下指令为准(权威顺序见「底线」)。\n\n";
 
+/// Off-state fill for the same placeholder: memory is off by default (and
+/// force-disabled for non-Simplified-Chinese users), so the default session has
+/// no 「用户记忆」 section at all. Without this line the model's default behavior
+/// on 「记住」 is still a confirmation ("sure, noted") while nothing persists —
+/// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. Chinese
+/// is used to match the all-Chinese instruction file this line embeds into (the
+/// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
+const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅在简体中文界面提供,若当前界面非简体中文需先切换后再在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
+
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
-/// [`MEMORY_SECTION_MD`] when memory is on, an empty string when off (the placeholder
-/// line's own newline makes the whole line disappear).
+/// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
+/// when off so the model never claims a memory write that will not happen.
 pub(crate) fn memory_section(enabled: bool) -> &'static str {
-    if enabled { MEMORY_SECTION_MD } else { "" }
+    if enabled {
+        MEMORY_SECTION_MD
+    } else {
+        MEMORY_OFF_NOTICE_MD
+    }
 }
 
 /// Work-mode layer: the `## 工作环境` section for artifact-panel and tmp/ semantics, the
@@ -856,7 +905,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_section_renders_verbatim_when_enabled_and_vanishes_when_disabled() {
+    fn memory_section_renders_verbatim_when_enabled_and_off_notice_when_disabled() {
         // Enabled: the whole section body lands in the skeleton verbatim with no
         // placeholder left; the section directly follows the baseline section.
         let enabled =
@@ -867,14 +916,18 @@ mod tests {
         // The section's trailing blank line catches the mode-layer environment placeholder,
         // preserving the original inter-section blank line.
         assert!(enabled.contains("权威顺序见「底线」)。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
-        // Disabled: the whole line disappears, no blank line or placeholder left; exactly
-        // one blank line remains between the baseline section and the mode-layer
-        // environment section.
+        // Disabled: the section body is replaced by the truthful off-notice (no
+        // 「用户记忆」 header, no placeholder left, exactly one blank line between the
+        // baseline section and the mode-layer environment section).
         let disabled =
             INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(false));
-        assert!(!disabled.contains("用户记忆"));
+        assert!(disabled.contains(MEMORY_OFF_NOTICE_MD));
+        assert!(!disabled.contains("## 用户记忆"));
+        assert!(!disabled.contains("已记下"));
         assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
-        assert!(disabled.contains("语气平实,少感叹号与最高级。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
+        assert!(disabled.contains(
+            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅在简体中文界面提供,若当前界面非简体中文需先切换后再在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
+        ));
     }
 
     #[test]
@@ -951,7 +1004,7 @@ mod tests {
         // The bound variant's existence does not affect unbound rendering: the
         // default work instructions keep their original semantics.
         let rendered = instructions_md();
-        assert!(rendered.contains("自动落到本会话专属工作目录"));
+        assert!(rendered.contains("自动落到工作区"));
         assert!(!rendered.contains("用户选择的工作目录"));
     }
 
@@ -1338,6 +1391,17 @@ mod tests {
                 Some(2),
                 "exact skill-connector names must be redirected: {output:?}"
             );
+            // The stdout JSON reason is the model's only corrective copy (the
+            // engine folds deny reasons from stdout alone). Pinning the reason
+            // text also pins the script's UTF-8 stdout encoding: a writer that
+            // regresses to the console codepage would fail this byte match on
+            // Windows (PS 5.1 consoles emit GBK without an explicit UTF-8
+            // StreamWriter) while still exiting 2.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains("list_mcp_resources 或 list_mcp_resource_templates"),
+                "deny reason must reach stdout as intact UTF-8 JSON: {stdout:?}"
+            );
         }
         for args in [
             r#"{"server":"wecom-bot"}"#,
@@ -1365,9 +1429,31 @@ mod tests {
 
         let positive = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
         assert_eq!(positive.status.code(), Some(2));
+        // The engine reads the deny reason ONLY from stdout JSON (turn_loop
+        // fold_tool_call_before_results); stderr never reaches the model, so
+        // the guidance must ride the stdout contract.
+        let positive_stdout = String::from_utf8_lossy(&positive.stdout);
         assert!(
-            String::from_utf8_lossy(&positive.stderr).contains("at most two child levels"),
-            "拒绝原因必须能指导模型重试: {positive:?}"
+            positive_stdout.contains("\"decision\":\"deny\"")
+                && positive_stdout.contains("caps children at two levels"),
+            "拒绝原因必须以 stdout JSON 抵达模型并能指导重试: {positive:?}"
+        );
+        // The engine renders denial receipts through sanitize_hook_denial_reason
+        // with a 240-char cap and path-like-field redaction, so guidance that is
+        // too long gets cut mid-sentence and slashes/standalone path/file labels
+        // are destroyed. Both deny reasons must fit the budget and survive it.
+        let stdout_reason = |stdout: &str| -> String {
+            stdout
+                .trim()
+                .strip_prefix("{\"decision\":\"deny\",\"reason\":\"")
+                .and_then(|rest| rest.strip_suffix("\"}"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let depth_reason = stdout_reason(&positive_stdout);
+        assert!(
+            !depth_reason.is_empty() && depth_reason.chars().count() <= 240,
+            "深度拒绝原因必须完整通过引擎 240 字符回执上限: {depth_reason:?}"
         );
 
         let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
@@ -1384,7 +1470,7 @@ mod tests {
         assert_eq!(
             positive_one.status.code(),
             Some(2),
-            "正数覆盖会让嵌套代理逐层扩大上限，必须拒绝"
+            "多智能体会话固定两层,正数覆盖一律拦截(bundle 0.20 决策;引擎 #5253 起覆盖本就只能收窄,拦截保持会话上限权威)"
         );
 
         let alias = run_depth_guard(
@@ -1411,12 +1497,78 @@ mod tests {
         );
         assert_eq!(workflow.status.code(), Some(2));
 
+        // Inline JS also accepts the snake_case serde alias; the guard must
+        // catch it too (it previously matched only the quoted "max_depth" or
+        // camelCase maxDepth forms).
+        let workflow_snake = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"script":"return task({ description: 'x', max_depth: 2 });"}"#,
+        );
+        assert_eq!(
+            workflow_snake.status.code(),
+            Some(2),
+            "inline JS 的 snake_case max_depth 覆盖同样必须拦截: {workflow_snake:?}"
+        );
+
+        // TaskOptions' canonical camelCase key also arrives quoted inside
+        // JSON payloads; the guard must catch the quoted form too (it used
+        // to match only bare camelCase, so a quoted "maxDepth" override was
+        // silently allowed through).
+        let workflow_quoted_camel = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"tasks":[{"options":{"maxDepth": 2}}]}"#,
+        );
+        assert_eq!(
+            workflow_quoted_camel.status.code(),
+            Some(2),
+            "workflow JSON 载荷里引号包裹的 camelCase maxDepth 覆盖同样必须拦截: {workflow_quoted_camel:?}"
+        );
+        // The escaped-quote carve-out must cover the camel key as well: a
+        // quoted example inside task prose is not an override.
+        let workflow_camel_example = run_depth_guard(
+            &bundle,
+            "workflow",
+            r#"{"note":"use \"maxDepth\":2 for children"}"#,
+        );
+        assert!(
+            workflow_camel_example.status.success(),
+            "正文里的转义 camelCase 示例不得误伤: {workflow_camel_example:?}"
+        );
+
+        // Prose that merely mentions max_depth next to a quote or paren is not
+        // an override: the bare-snake-case class must stay identical across the
+        // .sh and .ps1 guards (a looser Windows class used to false-deny these).
+        // CI executes this test natively on both hook platforms: the Linux
+        // rust-test leg runs the full lib suite (.sh), and the Windows
+        // regression leg runs this filter via its native filter list (.ps1).
+        let workflow_prose =
+            run_depth_guard(&bundle, "workflow", r#"{"note":"max_depth: 2 here"}"#);
+        assert!(
+            workflow_prose.status.success(),
+            "正文里提及 max_depth 不构成覆盖,不得误拦: {workflow_prose:?}"
+        );
+
         let opaque_workflow = run_depth_guard(
             &bundle,
             "workflow",
             r#"{"source_path":"workflows/review.workflow.js"}"#,
         );
         assert_eq!(opaque_workflow.status.code(), Some(2));
+        // The opaque-source reason must survive the engine redactor: it names
+        // the parameter (source_path) without embedding slashes or standalone
+        // path/file labels, which the sanitizer replaces with [path] markers.
+        let opaque_stdout = String::from_utf8_lossy(&opaque_workflow.stdout);
+        let opaque_reason = stdout_reason(&opaque_stdout);
+        assert!(
+            opaque_reason.contains("source_path reference is rejected")
+                && !opaque_reason.contains('/')
+                && !opaque_reason.contains(" path ")
+                && !opaque_reason.contains(" file ")
+                && opaque_reason.chars().count() <= 240,
+            "opaque workflow 拒绝原因必须原样通过引擎脱敏管线: {opaque_reason:?}"
+        );
 
         cleanup(&tmp);
     }
@@ -1931,6 +2083,99 @@ mod tests {
             servers.keys().collect::<Vec<_>>()
         );
         assert!(!servers.contains_key("pinvou"), "旧 pinvou 不残留");
+        cleanup(&tmp);
+    }
+
+    /// #521/#515 cross-process contention on the boot builtin-refresh write
+    /// path: while a foreign fd holds the `mcp.lock` OS lock, the builtin
+    /// refresh (which owns `with_mcp_json_lock` since #521) must not land its
+    /// write; after the release the pinvou3 entry lands and the marketplace
+    /// sentinel survives. The worker handshake observes the mcp in-process
+    /// mutex, so the absence assert cannot pass before the worker even
+    /// reached the lock (#517 test shape).
+    #[test]
+    fn cross_process_lock_blocks_mcp_builtin_refresh_write_until_release() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempdir();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        paths::ensure_dirs().unwrap();
+        let bundle = Pinvou3Bundle::paths();
+        let mcp_json = bundle.mcp_json.clone();
+        std::fs::create_dir_all(mcp_json.parent().unwrap()).unwrap();
+        // Seed one marketplace sentinel; the refresh must add pinvou3 without
+        // touching it, contended or not.
+        std::fs::write(
+            &mcp_json,
+            r#"{"servers":{"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
+        )
+        .unwrap();
+        let lock_path = crate::features::marketplace::file_lock::lock_path_for(&mcp_json);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .expect("test should be able to open the lock file");
+        let mut foreign = fd_lock::RwLock::new(file);
+        let foreign_guard = foreign
+            .write()
+            .expect("test should be able to take the foreign cross-process write lock");
+
+        let worker = std::thread::spawn(move || {
+            bundle
+                .ensure_builtin_mcp_servers()
+                .expect("refresh should succeed once the foreign lock is released");
+        });
+        // Handshake: wait until the worker holds the mcp.json in-process mutex
+        // — with the foreign lock held, it is now parked on (or just failed)
+        // the OS-lock acquisition (#517 test shape).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match crate::features::marketplace::file_lock::process_mutex_for(&lock_path).try_lock()
+            {
+                Ok(guard) => drop(guard),
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                Err(std::sync::TryLockError::Poisoned(p)) => {
+                    drop(p.into_inner());
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker never reached the mcp.json lock acquisition point"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The refresh must not land while the peer holds the lock.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            let content = std::fs::read_to_string(&mcp_json).unwrap();
+            assert!(
+                !content.contains("\"pinvou3\""),
+                "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+            );
+            assert!(
+                content.contains("\"weather\""),
+                "the marketplace sentinel must survive the contended window: {content}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        drop(foreign_guard);
+        worker
+            .join()
+            .expect("worker should finish once the foreign lock is released");
+        let mcp: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
+        assert!(
+            mcp["servers"].get("pinvou3").is_some(),
+            "the builtin entry must land after the lock is released: {mcp}"
+        );
+        assert!(
+            mcp["servers"].get("weather").is_some(),
+            "the marketplace sentinel must survive: {mcp}"
+        );
         cleanup(&tmp);
     }
 

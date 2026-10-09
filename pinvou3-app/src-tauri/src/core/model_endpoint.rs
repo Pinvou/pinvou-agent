@@ -379,14 +379,11 @@ pub async fn probe_ollama_models(
             },
             Err(_) => Default::default(),
         };
-    // 已下载列表：/api/tags 是必需项，失败则整个候选离线。
-    let resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
-        .send()
+    // 已下载列表：/api/tags 是必需项，失败或为空则整个候选离线。
+    let tags = fetch_ollama_tag_names(&client, &host, bearer)
         .await
-        .and_then(|r| r.error_for_status())
-        .ok()?;
-    let tags = parse_ollama_tag_names(resp.json::<serde_json::Value>().await.ok()?);
-    (!tags.is_empty()).then_some(OpenAiModelsProbe {
+        .filter(|tags| !tags.is_empty())?;
+    Some(OpenAiModelsProbe {
         models: tags
             .into_iter()
             .map(|name| {
@@ -1234,6 +1231,24 @@ pub(crate) async fn fetch_v1_models(
     resp.json::<serde_json::Value>().await.ok()
 }
 
+/// `/api/tags` 取数单一来源：GET（带可选 Bearer）→ 200 → 解析模型名列表；
+/// 任一步失败返回 None。`probe_ollama_models`（候选装配）与
+/// `probe_ollama_tags`(kind 识别) 共用，保证两处决策口径一致。
+/// See [`apply_bearer`] for `bearer` semantics.
+async fn fetch_ollama_tag_names(
+    client: &reqwest::Client,
+    host: &str,
+    bearer: Option<&str>,
+) -> Option<Vec<String>> {
+    let resp = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .ok()?;
+    let value = resp.json::<serde_json::Value>().await.ok()?;
+    Some(parse_ollama_tag_names(value))
+}
+
 /// Lightweight Ollama probe for identification: checks only `/api/tags` (200
 /// with a non-empty model list); the decision matches `probe_ollama_models`
 /// but does not fetch `/api/ps` — kind probing does not need loaded state,
@@ -1246,17 +1261,9 @@ async fn probe_ollama_tags(base_url: &str, bearer: Option<&str>) -> bool {
     let Some(client) = shared_probe_client() else {
         return false;
     };
-    let Ok(resp) = apply_bearer(client.get(format!("{host}/api/tags")), bearer)
-        .send()
+    fetch_ollama_tag_names(&client, &host, bearer)
         .await
-        .and_then(|r| r.error_for_status())
-    else {
-        return false;
-    };
-    let Ok(v) = resp.json::<serde_json::Value>().await else {
-        return false;
-    };
-    !parse_ollama_tag_names(v).is_empty()
+        .is_some_and(|tags| !tags.is_empty())
 }
 
 /// Probe KoboldCpp: `/api/extra/version` returns 200 and the JSON `result`
@@ -1410,6 +1417,21 @@ fn v1_models_owned_by_matches(v: &serde_json::Value, expected: &str) -> bool {
 
 /// Messages API 版本头，与连接测试同一口径。
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Anthropic 原生协议鉴权头对（`x-api-key` + `anthropic-version`）在探测/图片探测/
+/// monitor 路径的统一装配点：官方端点不接受 Bearer。key 为空时不加任何头（探测点
+/// "无凭据裸发"的现状）。注意：Messages 正文装配另有站点，未收拢到这里。
+pub(crate) fn apply_anthropic_auth_headers(
+    req: reqwest::RequestBuilder,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    if api_key.trim().is_empty() {
+        req
+    } else {
+        req.header("x-api-key", api_key.trim())
+            .header("anthropic-version", ANTHROPIC_VERSION)
+    }
+}
 
 /// Messages 协议请求地址：upstream 带 `/v1` 后缀直接拼 `/messages`，否则补
 /// `/v1/messages`（官方 preset 上游为 `https://api.anthropic.com`，Messages

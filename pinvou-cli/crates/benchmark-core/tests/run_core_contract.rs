@@ -156,7 +156,6 @@ fn task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,
         None,
-        None,
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
             vec![],
@@ -170,7 +169,6 @@ fn task(id: &str) -> BenchmarkTask {
 fn attachment_task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,
-        None,
         None,
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
@@ -658,7 +656,6 @@ async fn unsafe_native_tool_policy_is_rejected_before_backend_or_outcome_process
     let unsafe_task = BenchmarkTask::new(
         "unsafe-policy",
         None,
-        None,
         ExecutionRequest::native_turn(
             PrivateInputHandle::new("private-unsafe-policy"),
             vec![],
@@ -759,7 +756,6 @@ async fn attachment_resolution_consumes_the_same_task_deadline() {
             &BenchmarkTask::new(
                 "attachment-timeout",
                 None,
-                None,
                 ExecutionRequest::native_turn(
                     PrivateInputHandle::new("private"),
                     vec![AttachmentHandle::new("attachment")],
@@ -838,7 +834,6 @@ async fn generic_resume_completes_a_plan_interrupted_during_planning() {
 fn short_task(id: &str) -> BenchmarkTask {
     BenchmarkTask::new(
         id,
-        None,
         None,
         ExecutionRequest::native_turn(
             PrivateInputHandle::new(format!("private-{id}")),
@@ -1223,7 +1218,6 @@ fn external_harness_is_contract_only() {
     let external = BenchmarkTask::new(
         "external",
         None,
-        None,
         ExecutionRequest::external_harness(
             benchmark_core::VerifiedArtifact::new("workspace"),
             "sha256:0123456789abcdef",
@@ -1266,7 +1260,6 @@ async fn unbounded_deadline_runs_without_a_harness_task_timeout() {
             &BenchmarkTask::new(
                 "unbounded",
                 None,
-                None,
                 ExecutionRequest::native_turn(
                     PrivateInputHandle::new("private"),
                     vec![],
@@ -1293,7 +1286,6 @@ async fn some_deadline_cuts_off_the_same_slow_backend() {
         .run_task(
             &BenchmarkTask::new(
                 "some-deadline-slow",
-                None,
                 None,
                 ExecutionRequest::native_turn(
                     PrivateInputHandle::new("private"),

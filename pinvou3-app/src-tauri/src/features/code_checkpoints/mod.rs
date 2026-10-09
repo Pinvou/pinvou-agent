@@ -482,17 +482,32 @@ fn run_git_with_stale_lock_retry(
     Ok(output)
 }
 
-fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
+/// [`git`] 与 [`git_ref`] 的公共主体：组装 `--git-dir`（及可选 `--work-tree`）
+/// 的隔离 git 命令并以带超时方式执行，交 [`run_git_with_stale_lock_retry`]
+/// 收尾；`run_error` 保留两条调用链各自的失败文案。
+fn git_bounded(
+    repo: &Path,
+    work_tree: Option<&Path>,
+    arguments: &[&str],
+    run_error: impl Fn(&str) -> anyhow::Error,
+) -> Result<std::process::Output> {
     let run_bounded = || {
         let mut command = isolated_git_command();
-        command
-            .arg(format!("--git-dir={}", repo.display()))
-            .arg(format!("--work-tree={}", work_tree.display()))
-            .args(arguments);
+        command.arg(format!("--git-dir={}", repo.display()));
+        if let Some(work_tree) = work_tree {
+            command.arg(format!("--work-tree={}", work_tree.display()));
+        }
+        command.args(arguments);
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
-            .map_err(|error| anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" ")))
+            .map_err(|error| run_error(&error))
     };
     run_git_with_stale_lock_retry(run_bounded, repo)
+}
+
+fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
+    git_bounded(repo, Some(work_tree), arguments, |error| {
+        anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" "))
+    })
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
@@ -1393,15 +1408,9 @@ pub fn restore_checkpoint(
 /// 与写路径共用陈旧锁清扫重试：被超时 kill 的 git 会留下
 /// `refs/checkpoints/*.lock`，无清扫时删 ref 永久失败，ref 与其对象泄漏。
 fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    let run_bounded = || {
-        let mut command = isolated_git_command();
-        command
-            .arg(format!("--git-dir={}", repo.display()))
-            .args(arguments);
-        crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
-            .map_err(|error| anyhow::anyhow!("执行 git {} 失败: {error}", arguments.join(" ")))
-    };
-    run_git_with_stale_lock_retry(run_bounded, repo)
+    git_bounded(repo, None, arguments, |error| {
+        anyhow::anyhow!("执行 git {} 失败: {error}", arguments.join(" "))
+    })
 }
 
 /// 回退后作废被截对话分支的 Turn checkpoint（设计审阅 P0 修复）。

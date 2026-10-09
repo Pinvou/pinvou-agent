@@ -238,7 +238,9 @@ const searchViewSource = await readFile(
 );
 assert.match(
   searchViewSource,
-  /sessionTitlePresentation\(s\.title \|\| t\.newChat, s\.title_attachment_names\)/,
+  // Same adapter as the main list, with the trilingual default-title sentinel
+  // mapped to the current language's t.newChat (main.jsx isDefaultChatTitle).
+  /sessionTitlePresentation\(!s\.title \|\| isDefaultChatTitle\(s\.title\) \? t\.newChat : s\.title, s\.title_attachment_names\)/,
   'archived session titles must use the same attachment presentation adapter',
 );
 

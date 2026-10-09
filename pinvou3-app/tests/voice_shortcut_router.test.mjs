@@ -48,7 +48,10 @@ assert.ok(
 // Alt cancels the owner's pending start (fall through to trigger below).
 const purge = source.indexOf("if (payload && payload.route === 'recording' && !recording");
 const exemption = source.indexOf("status !== 'requesting_permission'", purge);
-const fallthroughTrigger = source.indexOf("target.trigger('dictation');", purge);
+// The tail dispatch is the shared triggerVoiceShortcutTarget helper (recording
+// → stop with preserveMode; otherwise start 'dictation'), so pin the helper
+// call instead of the literal target.trigger('dictation').
+const fallthroughTrigger = source.indexOf("triggerVoiceShortcutTarget(target, 'dictation', status, mode);", purge);
 assert.ok(purge !== -1 && exemption > purge, 'the stale-recording-route purge must exist with the requesting_permission exemption');
 assert.ok(fallthroughTrigger > exemption, 'a recording-routed Alt during the permission probe must cancel the pending start, not purge the claim');
 

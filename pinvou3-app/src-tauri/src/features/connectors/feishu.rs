@@ -39,11 +39,47 @@ fn lark(args: &[&str]) -> Command {
     FEISHU_CTX.cli(args)
 }
 
-/// Whether lark-cli is already on PATH (fast, ~seconds). Mirrors DingTalk's
-/// `dws_cli_present`: reuse the three-state probe below and fold both failure
-/// classes into "unavailable".
+/// Minimum acceptable lark-cli version for the skill pack's command surface.
+/// The skill pack documents the lock baseline (1.0.95, see NOTICE.md); older
+/// installs are missing dozens of taught shortcuts (e.g. `+get`/`+table-copy`),
+/// so they count as not installed and trigger the locked-version replacement —
+/// same policy as wecom/tmeet, which carry per-connector minimums and lark
+/// historically did not (installed 1.0.65 silently degraded to generic help).
+const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
+
+/// 解析 `lark-cli --version` 输出为三段语义版本。输出形如
+/// `lark-cli version 1.0.65`(程序名与版本之间夹着字面量 `version`),故锚定
+/// `version` 标记、只解析其后的 token;不取「首个可解析 token」,否则更新提示
+/// 等前导数字噪声会被误当成版本号,门静默放行旧版。标记取最后一个:若上游
+/// 某天在真实版本行前打印更新提示(`a new version 1.0.96 is available`),
+/// 首个标记会读到提示里的新版本号而放行旧 CLI,末位标记落在真实行(tmeet
+/// 仍是首个标记口径,对齐属后续事项)。
+fn parse_lark_version(s: &str) -> Option<(u64, u64, u64)> {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let marker = tokens.iter().rposition(|t| *t == "version")?;
+    tokens.get(marker + 1).and_then(|t| cc::parse_semver3(t))
+}
+
+/// Installed lark-cli version, if the `--version` probe runs and parses.
+fn lark_cli_version() -> Option<(u64, u64, u64)> {
+    let Ok((ok, so, se)) = cc::run(lark(&["--version"])) else {
+        return None;
+    };
+    if !ok {
+        return None;
+    }
+    parse_lark_version(&so).or_else(|| parse_lark_version(&se))
+}
+
+/// Whether lark-cli is installed at or above [`LARK_MIN_VERSION`]; older
+/// installs count as not installed and trigger the online replacement.
+/// Failure states (spawn error, non-zero probe, unparsable version output)
+/// fold into "unavailable", mirroring `lark_cli_probe`'s disconnect-path
+/// folding.
 fn lark_cli_present() -> bool {
-    lark_cli_probe().unwrap_or(false)
+    lark_cli_version()
+        .map(|v| v >= LARK_MIN_VERSION)
+        .unwrap_or(false)
 }
 
 /// `--version` three-state probe, mirroring DingTalk's `dws_cli_probe`:
@@ -71,7 +107,9 @@ pub(crate) fn is_user_ready() -> bool {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// 引导:首次使用时下载并校验锁定版本的 lark-cli，已装则秒返回。
+/// 引导:首次使用、或已装 CLI 低于 [`LARK_MIN_VERSION`] 时,下载并校验锁定
+/// 版本的 lark-cli;满足最低版本的已装 CLI 秒返回。托管目录内的旧版 CLI 在
+/// lock 哈希不匹配时被整体替换(wecom 同款)。
 pub async fn feishu_ensure_cli() -> Result<Value, String> {
     cc::ensure_cli_with(
         "feishu",
@@ -90,8 +128,11 @@ pub async fn feishu_ensure_cli() -> Result<Value, String> {
 pub async fn feishu_status() -> Result<Value, String> {
     tokio::task::spawn_blocking(|| {
         // 没装就别 spawn auth status —— 未装用户每次白等子进程且拿到的是 Err,
-        // 统一返回结构化未装态(其余 CLI 连接器同款短路)。
-        if !lark_cli_present() {
+        // 统一返回结构化未装态(其余 CLI 连接器同款短路)。installed 只看
+        // 「是否装了能解析出版本号的任意版本」:probe 失败或输出解析不出版本号
+        // 一律 installed:false(交给 ensure 重装钉死版本);可解析但过旧的版本报
+        // installed:true,升级引导由 ensure_cli 的最低版本门负责(wecom 同款分工)。
+        if lark_cli_version().is_none() {
             return Ok::<Value, String>(json!({
                 "ok": false, "connected": false, "configured": false, "installed": false
             }));
@@ -439,4 +480,100 @@ pub async fn feishu_apply_skills() -> Result<Value, String> {
 /// 给前端渲染开关态:`{connected, enabled(=未停用), visible(=connected&&enabled)}`。
 pub async fn feishu_skills_state() -> Result<Value, String> {
     FEISHU_GATE.skills_state_command().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--version` 输出 → 三段版本号。lark-cli 的输出在程序名与版本号之间夹
+    /// 字面量 `version`(`lark-cli version 1.0.65`),按 `version` 标记锚定取值
+    /// (按「首个可解析 token」会把输出前部的日期噪声当成版本号);版本号之后
+    /// 的构建信息尾巴不参与解析。
+    #[test]
+    fn parses_lark_versions() {
+        assert_eq!(
+            parse_lark_version("lark-cli version 1.0.65"),
+            Some((1, 0, 65))
+        );
+        assert_eq!(
+            parse_lark_version("lark-cli version 1.0.95 (build 2026-09-30T00:00:00Z abc1234)"),
+            Some((1, 0, 95)),
+        );
+        // `go install`/模块构建产物经 buildinfo 携带 `v` 前缀
+        // (`lark-cli version v1.0.95`);goreleaser 的 release 产物注入的是
+        // 去 `v` 的 tag,两种形态都必须解析。
+        assert_eq!(
+            parse_lark_version("lark-cli version v1.0.95"),
+            Some((1, 0, 95)),
+        );
+        // 两段式按共享口径补 0(不因假想的「1.1」误判未装触发降级重装)。
+        assert_eq!(parse_lark_version("lark-cli version 1.1"), Some((1, 1, 0)));
+        // 版本号前面的数字噪声(更新提示/日期)不参与解析,锚定 `version`
+        // 标记后取值——取「首个可解析 token」会把这类前导数字误当版本号,
+        // 门静默放行旧版。
+        assert_eq!(
+            parse_lark_version("2026.10.01 update check, version 1.0.95"),
+            Some((1, 0, 95))
+        );
+        // 若上游在真实版本行前打印更新提示,首个 `version` 标记会读到提示里的
+        // 新版本号而静默放行旧 CLI——锚定取最后一个 `version` 标记,落到真实行。
+        assert_eq!(
+            parse_lark_version("a new version 1.0.96 is available\nlark-cli version 1.0.65"),
+            Some((1, 0, 65))
+        );
+        assert_eq!(parse_lark_version("hello"), None);
+        // 纯噪声(无版本段)不解析出误值。
+        assert_eq!(parse_lark_version("error: something"), None);
+    }
+
+    /// 最低版本门必须与平台 lock 表钉住的 lark-cli 版本一致:lock 升级而门
+    /// 不升,技能包教的命令面就会在旧 CLI 上静默缺失;门高于 lock 则会触发
+    /// 安装/替换循环。
+    #[test]
+    fn lark_min_version_matches_platform_lock() {
+        // All five platforms' locks must agree with the gate: lock_json() is
+        // cfg-selected to the compile target and the full cargo test run only
+        // executes on a subset of platforms, so a partial lock bump touching
+        // another platform's lark-cli entry could only be caught statically
+        // here (same rationale as native_installer's all-platform mirror test).
+        const ALL_PLATFORM_LOCKS: [&str; 5] = [
+            include_str!(
+                "../../../resources/platforms/linux/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/linux/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/windows/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+        ];
+        for lock in ALL_PLATFORM_LOCKS {
+            assert!(!lock.is_empty(), "platform lock json must be embedded");
+            let parsed: Value = serde_json::from_str(lock).expect("lock json parses");
+            let entries = parsed
+                .pointer("/artifacts")
+                .and_then(|v| v.as_array())
+                .expect("lock json carries an artifacts list");
+            let lark = entries
+                .iter()
+                .find(|e| e.get("name").and_then(|v| v.as_str()) == Some("lark-cli"))
+                .expect("lock must pin lark-cli");
+            let locked = lark
+                .get("version")
+                .and_then(|v| v.as_str())
+                .expect("lark-cli lock entry carries a version");
+            assert_eq!(
+                cc::parse_semver3(locked),
+                Some(LARK_MIN_VERSION),
+                "LARK_MIN_VERSION must equal every platform lock's lark-cli version ({locked})"
+            );
+        }
+    }
 }

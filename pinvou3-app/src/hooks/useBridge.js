@@ -88,7 +88,6 @@ export {
   bridge,
   useBridgeState,
   usePlatformCapability,
-  baseUrlIsLoopback,
   isLocalModel,
   activeModelIsLocal,
   shouldShowApiKeyGate,

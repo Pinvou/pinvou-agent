@@ -60,7 +60,6 @@ impl BenchmarkAdapter for ContractAdapter {
 fn native_task() -> BenchmarkTask {
     BenchmarkTask::new(
         "task-1",
-        Some("search".into()),
         Some("1".into()),
         ExecutionRequest::native_turn(
             PrivateInputHandle::new("private-prompt-1"),

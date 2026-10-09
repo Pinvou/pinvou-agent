@@ -44,7 +44,7 @@
 
 用 `write` 把回复正文写入本地 Markdown 文件：
 
-- `{工作目录}/temp/output/mail_reply_<唯一后缀>.md`，文件内容为 Markdown 片段
+- `tmp/mail/mail_reply_<唯一后缀>.md`，文件内容为 Markdown 片段（与 send-mail 统一：正文是中间文件，一律写 `tmp/mail/`，不放产出物面板根目录，也不用自创的 `temp/output/` 路径）
 
 调用 `mail send` 时，`content_type` 固定填 `"markdown"`，`file_path` 指向这个 `.md` 文件。
 

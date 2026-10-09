@@ -87,8 +87,6 @@ function createPersonalWorkbenchMessageMeta(userText = '', templateRef = null) {
     : getPersonalWorkbenchTemplate(templateRef);
   const meta = {
     pinvouScene: `work:${PERSONAL_WORKBENCH_SCENE_KEY}`,
-    pinvouTemplateId: template ? template.id : undefined,
-    pinvouTemplateTitle: template ? template.title : undefined,
   };
   if (!template) {
     const payloadText = buildDefaultPersonalWorkbenchPayloadText(userText);

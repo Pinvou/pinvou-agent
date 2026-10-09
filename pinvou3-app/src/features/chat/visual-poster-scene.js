@@ -1,11 +1,12 @@
 import { POSTER_SCENE_KEY, pinvouSceneTag } from './scene-registry.js';
+import { buildScenePayloadText } from './work-scene-routes.js';
 
 const VISUAL_POSTER_CONTEXT = `Pinvou 视觉海报场景约束：
 - 交付物优先生成自包含 HTML/CSS 视觉海报或 Banner，保证可以在 Pinvou 产物预览里继续点选、编辑文字和样式。
 - 构图必须有一个明确视觉焦点，用户第一眼能看出主标题或主视觉；不要让 3 个以上元素竞争焦点。
 - 先建立阅读路径：主视觉/主标题 -> 副标题 -> 关键信息 -> 行动入口/落款。
 - 主视觉优先使用真实图片、真实产品图、真实场景图或真实质感素材；不要只靠渐变、抽象 SVG、装饰纹理撑完整画面。
-- 如果当前环境具备联网、图片搜索、下载或写文件能力，必须优先检索并下载与主题贴合的真实图片，保存到当前工作区后用本地相对路径引用；也可以使用稳定可访问的图片 URL。
+- 如果当前环境具备联网、图片搜索、下载或写文件能力，必须优先检索并下载与主题贴合的真实图片，下载后 base64 内联为 data URL 引用；不要使用外链图片 URL，也不要用相对路径图片文件（产物必须自包含、零网络请求，应用内产物预览和离线打开都不裂图）。
 - 图片必须服务主题和文案，不要使用无关风景、抽象背景或通用图库图凑数；关键文案仍保持 live text，不要烘焙进图片。
 - 只有在无法联网、无法搜索或无法下载图片时，才允许降级为可替换图片占位、真实质感背景和明确图片尺寸/位置，并在回复中说明能力限制。
 - 字体控制在 1-2 套以内，通过字号、字重、位置建立层级；关键文字保持 live text，不要烘焙进图片。
@@ -28,17 +29,10 @@ function shouldUseVisualPosterScene(subtab) {
   return subtab === POSTER_SCENE_KEY;
 }
 
-function buildVisualPosterPayloadText(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return raw;
-  return `${raw}\n\n---\n${VISUAL_POSTER_CONTEXT}\n\n${VISUAL_POSTER_AUDIT}`;
-}
-
 function createVisualPosterMessageMeta(text) {
   return {
     pinvouScene: pinvouSceneTag(POSTER_SCENE_KEY),
-    pinvouDesignScene: POSTER_SCENE_KEY,
-    pinvouPayloadText: buildVisualPosterPayloadText(text),
+    pinvouPayloadText: buildScenePayloadText(text, VISUAL_POSTER_CONTEXT, VISUAL_POSTER_AUDIT),
   };
 }
 

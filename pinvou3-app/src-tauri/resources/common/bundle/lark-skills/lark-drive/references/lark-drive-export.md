@@ -148,7 +148,7 @@ lark-cli drive +export \
 | `1069902` | 没有当前导出任务所需权限 | 不要直接重试同一命令；先确认当前 `--as` 身份是否能访问该文档、是否有下载/导出权限，以及文档是否受分享、密级或租户策略限制。需要补权限时，让文档 owner 或管理员授权后再执行 |
 | `99991400` / `rate_limit` | OpenAPI 请求频率受限 | 立即停止并按错误 `hint` 处理：没有 `ticket` 时，至少等待 1 分钟后重跑原 `drive +export`；已有 `ticket` 时，只执行 `drive +task_result --scenario export` 续查，不要重复创建任务。持续限频时从 1 分钟开始指数退避 |
 | `9499` + `too many request(s)` | 导出任务接口的另一种限频响应；同一个 `9499` 在其它 Drive 接口也可能表示参数类型错误，CLI 会结合服务端消息区分 | 按 `rate_limit` 处理：立即停止，等待至少 1 分钟并指数退避；已有 `ticket` 时只续查该任务，不要重新创建 |
-| `99991679` | 缺少 OpenAPI scope | 按错误 envelope 中的 `missing_scopes` / `required_scope` / `hint` 补齐授权；常见方式是重新执行 `lark-cli auth login --scope "<缺失 scope>"`。补 scope 前不要反复重试导出命令 |
+| `99991679` | 缺少 OpenAPI scope | 按错误 envelope 中的 `missing_scopes` / `required_scope` / `hint` 补齐授权；常见方式是按 lark-shared 按需授权流程执行 `lark-cli auth login --scope "<缺失 scope>" --no-wait --json`（勿跑阻塞式登录）。补 scope 前不要反复重试导出命令 |
 
 ## 推荐续跑方式
 

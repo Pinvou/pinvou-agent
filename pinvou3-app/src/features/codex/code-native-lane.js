@@ -911,15 +911,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
 /// lane → ConversationTimeline 使用的 turn 投影。
 export function projectNativeLane(lane, sessionId, options = {}) {
   // legacyConversationOnly items (terminal error bubbles) are filtered
-  // here: the flag is only consumed by conversationItemsForMode, the
-  // native lane has no legacy mode and is always filtered as unified -
-  // otherwise a terminal-upgraded error would show both the bubble and
-  // the timeline error card.
+  // by conversationItemsForMode, so the native lane never shows both
+  // the bubble and the timeline error card.
   // Spawn annotation runs on the projection input, mirroring ChatView:
   // without it the timeline's ToolCard would render one degenerate
   // "spawned 1 agent" count row per spawn call.
   return projectDeepSeekConversation({
-    chatItems: conversationItemsForMode(annotateAgentSpawnGroups(lane ? lane.items : []), true),
+    chatItems: conversationItemsForMode(annotateAgentSpawnGroups(lane ? lane.items : [])),
     busy: Boolean(lane && lane.busy),
     thinking: lane ? lane.thinking : null,
     tokens: lane ? lane.tokens : null,

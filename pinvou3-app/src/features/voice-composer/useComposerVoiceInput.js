@@ -103,8 +103,8 @@ function useComposerVoiceInput(adapter) {
     current.bridge.voice.clearVoiceInput();
   }, []);
 
-  // closeVoice shares cancelVoice's "cancel + reset" teardown; both names stay
-  // because callers use them interchangeably at different call sites.
+  // closeVoice 是 cancelVoice 的内部别名:hook 内部的取消/清理调用点沿用
+  // closeVoice 拼写,对外只导出 cancelVoice 一个名字。
   const closeVoice = cancelVoice;
 
   // Dismissing the finished notice (or applying an edit preview) only hides
@@ -313,8 +313,7 @@ function useComposerVoiceInput(adapter) {
     }
     if (!bridge || !bridge.available) return false;
     if (voiceInput.status === 'requesting_permission') {
-      bridge.voice.cancelVoiceInput();
-      bridge.voice.clearVoiceInput();
+      cancelVoice();
       return false;
     }
     if (voiceInput.status === 'recording') {
@@ -366,7 +365,7 @@ function useComposerVoiceInput(adapter) {
       },
     );
     return true;
-  }, [handleVoiceResult, discardEditPreview]);
+  }, [handleVoiceResult, discardEditPreview, cancelVoice]);
 
   useEffect(() => {
     const current = adapterRef.current || {};
@@ -486,7 +485,6 @@ function useComposerVoiceInput(adapter) {
     editPreview,
     triggerVoice,
     cancelVoice,
-    closeVoice,
     dismissVoice,
     cancelVoiceEditPreview,
     applyVoiceEditPreview,

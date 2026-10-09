@@ -681,7 +681,7 @@ export function CodexAcpView({
   const [error, setError] = useState('');
   const showError = (nextError) => {
     console.error('Codex operation failed:', nextError);
-    setError(acpErrorMessage(nextError, codexCopy, { allowRaw: !isWeb }));
+    setError(acpErrorMessage(nextError, codexCopy, { allowRaw: isWeb ? false : undefined }));
   };
   const [respondingSessionId, setRespondingSessionId] = useState(null);
   const responding = Boolean(activeId && respondingSessionId === activeId);
@@ -1851,6 +1851,16 @@ export function CodexAcpView({
     acpEventSeqTrackerRef.current.rebase(sessionId, maxSeq);
   }
 
+  // reload 前置归属检查（评审 M4）：回退/撤销在途时用户切到其它会话，
+  // loadSession(原会话) 会把 activeIdRef 改回原会话、作废新会话的在途
+  // 加载并冻结其流式输出。已切走则跳过重载——磁盘已是目标状态，切回时
+  // loadSession 自然重注水；notice 补发走 pendingNotice 暂存。
+  function guardedReload(sessionId) {
+    return activeIdRef.current === sessionId
+      ? loadSession(sessionId)
+      : Promise.resolve(null);
+  }
+
   // 打开回退确认弹窗；有快照的目标懒加载 diff 预览（「将撤销的变更」摘要）。
   function openRewindDialog(entry) {
     setRewindError('');
@@ -1889,13 +1899,7 @@ export function CodexAcpView({
           conversationOnly: target.conversationOnly,
         });
       const { error: reloadError } = await reloadSessionAfterRewind({
-        // reload 前置归属检查（评审 M4）：回退/撤销在途时用户切到其它会话，
-        // loadSession(原会话) 会把 activeIdRef 改回原会话、作废新会话的在途
-        // 加载并冻结其流式输出。已切走则跳过重载——磁盘已是目标状态，切回时
-        // loadSession 自然重注水；notice 补发走 pendingNotice 暂存。
-        reload: () => (activeIdRef.current === sessionId
-          ? loadSession(sessionId)
-          : Promise.resolve(null)),
+        reload: () => guardedReload(sessionId),
         bumpTick: () => setNativeLaneTick(tick => tick + 1),
       });
       // 跨会话竞态：await 期间会话被程序化切换（remote control）时，UI 收口
@@ -1968,13 +1972,7 @@ export function CodexAcpView({
         await invoke('undo_last_rewind', { sessionId });
       }
       const { error: reloadError } = await reloadSessionAfterRewind({
-        // reload 前置归属检查（评审 M4）：回退/撤销在途时用户切到其它会话，
-        // loadSession(原会话) 会把 activeIdRef 改回原会话、作废新会话的在途
-        // 加载并冻结其流式输出。已切走则跳过重载——磁盘已是目标状态，切回时
-        // loadSession 自然重注水；notice 补发走 pendingNotice 暂存。
-        reload: () => (activeIdRef.current === sessionId
-          ? loadSession(sessionId)
-          : Promise.resolve(null)),
+        reload: () => guardedReload(sessionId),
         bumpTick: () => setNativeLaneTick(tick => tick + 1),
       });
       // 跨会话竞态：await 期间会话被程序化切换时不再写原会话的 UI 状态。
@@ -3137,7 +3135,7 @@ export function CodexAcpView({
     setNativeLaneTick(tick => tick + 1);
   }
 
-  // 原生车道手动压缩：语义镜像 bridge interaction.compactNow——调 compact_now 后，
+  // 原生车道手动压缩：直接调 compact_now 命令（与 work 侧共享同一条命令）——调完后，
   // 进行中/结果由 chat:compaction 系统项呈现（compactStart/compactDone/compactFail）；
   // invoke 本身失败按 work 侧同款补一条 compactFail 系统提示项。
   async function compactNativeSession() {
@@ -4444,6 +4442,8 @@ export function CodexAcpView({
             initialAgentId={subagentPanel.agentId}
             selectionRequestId={subagentPanel.selectionRequestId}
             t={t}
+            language={nativeModelServiceLanguage}
+            modelServiceState={nativeModelServiceState}
             onClose={closeSubagentPanel}
           />
         )}

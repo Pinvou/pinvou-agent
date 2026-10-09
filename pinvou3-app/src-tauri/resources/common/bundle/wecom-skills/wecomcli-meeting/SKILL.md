@@ -27,12 +27,12 @@ metadata:
 - 查看 / 浏览会议列表（最近有什么会、查某时间段的会议）
 - 搜索会议（按关键词、会议名找某个会议）
 - 查看会议详情（主题、时间、参会人等）
-- 更新 / 修改会议（改时间、加减人；不支持更新周期会议）
-- 取消会议（不支持取消周期会议）
+- 更新 / 修改会议（改时间、加减人；周期会议为产品暂未开放的能力，见「已知限制」）
+- 取消会议（周期会议为产品暂未开放的能力，见「已知限制」）
 
 ### 不适用
 
-- 创建、更新、取消周期 / 重复会议（每周 / 每月 / 每天重复）→ 均不支持，引导用户在企业微信客户端手动操作
+- 创建、更新、取消周期 / 重复会议（每周 / 每月 / 每天重复）→ 产品暂未开放该能力，引导用户在企业微信客户端手动操作
 - 回复 / 拒绝会议邀请（接受 / 拒绝 / 待定，含"拒绝这个会""不参加"）→ 不支持，引导用户在企业微信客户端操作或私信发起人
 
 ### 易混淆场景路由
@@ -272,7 +272,7 @@ wecom-cli meeting [action] --json '{"key": "value"}'
 | `get` | `meeting_status` | 判断会议状态（`"init"` / `"started"` / `"end"`） |
 | `get` | `repeat_rule` | 判断是否周期会议（非空即周期会议）：命中时 `cancel`/`update` 均不支持，告知用户并引导企业微信客户端操作 |
 | `create` | `meeting_id` | 会议唯一标识 |
-| `search` / `list` + `get` | 会议 ID（search 取 `meetings[]`、list 取 `created_meetings[]`/`attended_meetings[]`）、`repeat_rule` | `update` 的定位与周期会议判断（命中周期会议则不支持更新） |
+| `search` / `list` + `get` | 会议 ID（search 取 `meetings[]`、list 取 `created_meetings[]`/`attended_meetings[]`）、`repeat_rule` | `update` 的定位与周期会议判断（命中周期会议则更新暂未开放，见「已知限制」） |
 
 ## 错误处理
 
@@ -351,7 +351,7 @@ wecom-cli meeting [action] --json '{"key": "value"}'
 
 | 限制 | 替代方案 |
 |------|---------|
-| **不支持创建/更新/取消周期（重复）会议** | 用户希望创建"每周/每月/每天重复"等周期会议，或对已识别为周期会议（`repeat_rule` 非空）的会议发起更新、取消时，均直接告知用户目前不支持，并引导用户在企业微信客户端手动操作；禁止用批量创建多条单次会议、传入未公开参数等方式变通绕过 |
+| **周期会议的创建/更新/取消为产品暂未开放的能力** | 用户希望创建"每周/每月/每天重复"等周期会议，或对已识别为周期会议（`repeat_rule` 非空）的会议发起更新、取消时，均直接告知用户该能力产品暂未开放，并引导用户在企业微信客户端手动操作；禁止用批量创建多条单次会议、传入未公开参数等方式变通绕过 |
 | **不支持回复 / 拒绝会议邀请（RSVP）** | 本技能不支持对收到的会议邀请做接受 / 拒绝 / 待定等回复（含"拒绝这个会""不参加""婉拒邀请"等）。用户有此需求时，告知其本技能不支持，建议直接在企业微信客户端对该会议邀请操作，或通过消息告知会议发起人 |
 | **参会人上限 100 人** | `attendees` 数组不超过 100 个 userid |
 | **时长上限 24 小时** | `begin_time` 与 `end_time` 间隔不超过 24 小时。出现超 24h 的单场会议需求时，直接告知不支持并拒绝，禁止自行拆分成多场会议或变通绕过；用户确需多天安排时，由其明确拆分要求后再分别创建 |
@@ -375,6 +375,6 @@ wecom-cli meeting [action] --json '{"key": "value"}'
 | `meeting list` | `begin_time`、`end_time`（均选填，须同时传入或同时省略）、`cursor`、`limit` |
 | `meeting get` | `meeting_ids`（必填，对象数组，格式 `[{"meeting_id": "xxx"}]`，**单次最多 10 个**，超出需分批多次调用；周期会议需加 `sub_meeting_id`） |
 | `meeting search` | `keywords`（必填，字符串数组）、`begin_time`、`end_time`、`cursor`、`limit`（固定传 `20`）；`keywords` 可匹配会议主题、参会人姓名、会议纪要内容、会议室名称等信息 |
-| `meeting cancel` | `meeting_id`（必填）；不支持取消周期会议 |
-| `meeting update` | `meeting_id`（必填）、`subject`、`begin_time`、`end_time`、`add_attendees`/`remove_attendees`（对象数组 `[{"userid": "x"}]`）、`location`（地点文本；会议室须走 `meeting_room_id`）、`meeting_room_id`（更换会议室时传，须先经 `rooms search` 确认 `status=bookable`）、`description`；不支持更新周期会议 |
+| `meeting cancel` | `meeting_id`（必填）；周期会议暂未开放取消（见「已知限制」） |
+| `meeting update` | `meeting_id`（必填）、`subject`、`begin_time`、`end_time`、`add_attendees`/`remove_attendees`（对象数组 `[{"userid": "x"}]`）、`location`（地点文本；会议室须走 `meeting_room_id`）、`meeting_room_id`（更换会议室时传，须先经 `rooms search` 确认 `status=bookable`）、`description`；周期会议暂未开放更新（见「已知限制」） |
 | `meeting original get` | `meeting_id`（必填，`mt` 长字符串）、`sub_meeting_id`（周期会议某场时传）、`media_index`（第几段，从 0 开始，**默认不传返回全部段**，仅用户明确指定"第 N 段"时传 `N-1`）、`cursor`、`limit`（默认 100，上限 500） |

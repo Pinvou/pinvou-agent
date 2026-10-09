@@ -417,7 +417,7 @@ Flags:
    根据用户选择分别处理：
    - 选 1 → 进入 `minutes-speaker-summarize` recipe 的智能推断流程（见 [10-minutes-speaker-match.md](../best_practices/10-minutes-speaker-match.md)）
    - 选 2 → 请用户提供日程链接或参会人姓名列表：
-     - 有日程链接 → 从链接提取 eventId → `dws calendar participant list --event <eventId>` 获取参与人 → 与转写发言人数量/顺序对照匹配 → 展示匹配结果请用户确认 → 确认后逐条执行 `speaker replace`
+     - 有日程链接 → 从链接提取 eventId → `dws calendar attendee list --event <eventId>` 获取参与人 → 与转写发言人数量/顺序对照匹配 → 展示匹配结果请用户确认 → 确认后逐条执行 `speaker replace`
      - 有参会人名单（用户直接列出姓名）→ 与转写中匿名发言人做数量对照 → 结合发言内容/角色推断匹配 → 展示匹配结果请用户确认 → 确认后逐条执行 `speaker replace`
    - 选 3 → 用户提供映射关系（如「发言人1:张三」格式）→ 按「发言人映射模式识别」流程执行（见下方"修改说话人"章节）
    - 选 4 → 正常结束，不做发言人处理

@@ -165,7 +165,7 @@ lark-cli im +chat-list --page-size 100 --page-token "<page_token>" \
 |---------|---------|---------|
 | `invalid --page-size 101: must be between 1 and 100` | page-size is out of range | Use an integer between 1 and 100 |
 | Permission denied (99991672) | The bot app does not have `im:chat:read` TAT permission enabled | Enable the permission for the app in the Open Platform console |
-| Permission denied (99991679) with `--as user` | UAT is not authorized for `im:chat:read` | Run `lark-cli auth login --scope "im:chat:read"` |
+| Permission denied (99991679) with `--as user` | UAT is not authorized for `im:chat:read` | Run the on-demand auth flow: `lark-cli auth login --scope "im:chat:read" --no-wait --json` (per lark-shared split-flow; never the blocking login) |
 | `Bot ability is not activated` (232025) | The app does not have bot capability enabled | Enable bot capability in the Open Platform console |
 | `--exclude-muted` returns all chats unfiltered and `hint` says "no effect under bot identity" | Running under `--as bot` (mute API is UAT-only) | Switch to `--as user` for mute filtering |
 | `--types=p2p (single chats) is only supported with user identity` | `--as bot` + `--types=p2p` (single-value only; mixed `--types=p2p,group` is downgraded to `group` and surfaces a `bot_strip_p2p` notice via stderr + `outData["notices"]` — see "Bot identity and p2p") | Use `--as user`, or include `group` in `--types` (the bot proceeds with `group` only and emits the `bot_strip_p2p` notice) |

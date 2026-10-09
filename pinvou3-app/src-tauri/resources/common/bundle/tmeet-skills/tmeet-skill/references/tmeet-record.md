@@ -72,7 +72,7 @@
 
 ```bash
 # 按会议 ID 圈定"自己有权限"的录制范围（要查该会议全部录制及权限状态，请改用 meeting get）
-tmeet record list --meeting-id "100000000"
+tmeet record list --meeting-id "6953553464429888300"
 
 # 按会议码圈定（同上）
 tmeet record list --meeting-code "123456789"
@@ -84,13 +84,13 @@ tmeet record list \
 
 # 组合使用：会议 ID + 时间范围（进一步缩小结果范围）
 tmeet record list \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --start "2026-04-01T00:00:00+08:00" \
   --end "2026-04-30T23:59:59+08:00"
 
 # 分页查询（使用 page-token翻下一页）
 tmeet record list \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --page-token "<next_page_token>" \
   --page-size 30
 ```
@@ -261,7 +261,7 @@ tmeet record transcript-get --record-file-id "file_abc123"
 # 指定起始段落 ID 与查询段落数
 tmeet record transcript-get \
   --record-file-id "file_abc123" \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --pid "<paragraph_id>" \
   --limit "30"
 ```
@@ -288,7 +288,7 @@ tmeet record transcript-paragraphs --record-file-id "file_abc123"
 # 指定会议 ID
 tmeet record transcript-paragraphs \
   --record-file-id "file_abc123" \
-  --meeting-id "100000000"
+  --meeting-id "6953553464429888300"
 ```
 
 ### 参数
@@ -313,7 +313,7 @@ tmeet record transcript-search \
 # 指定会议 ID 搜索
 tmeet record transcript-search \
   --record-file-id "file_abc123" \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --text "行动项"
 ```
 
@@ -346,7 +346,7 @@ tmeet record permission-apply-prepare --meeting-record-id "record_abc123"
 # 同时指定会议 ID
 tmeet record permission-apply-prepare \
   --meeting-record-id "record_abc123" \
-  --meeting-id "100000000"
+  --meeting-id "6953553464429888300"
 ```
 
 ### 参数
@@ -381,7 +381,7 @@ tmeet record permission-apply-commit --meeting-record-id "record_abc123"
 # 同时指定会议 ID
 tmeet record permission-apply-commit \
   --meeting-record-id "record_abc123" \
-  --meeting-id "100000000"
+  --meeting-id "6953553464429888300"
 ```
 
 ### 参数

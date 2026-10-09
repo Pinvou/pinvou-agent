@@ -132,22 +132,43 @@ fn build_unified_context_block(hits: &[UnifiedHit], warnings: &[String]) -> Stri
     out
 }
 
+/// 本地与远程两臂共用的 chunk 窗口收尾：把窗口内 chunk 拼成
+/// `## chunk <ord>` 文本，块间分隔由 `block_gap` 决定（本地臂沿用
+/// 空一行，远程臂沿用无分隔），并按最后一块的下一序号算出
+/// 续读游标与截断标记。返回 `(content, next_start_chunk, truncated)`；
+/// 外壳 JSON 字段两臂各自保留（本地 `kb_source` / 远程 `kb_remote_source`
+/// 的身份与来源字段不同）。
+fn finalize_source_window<'a>(
+    chunks: impl IntoIterator<Item = (i64, &'a str)>,
+    total_chunks: i64,
+    block_gap: &str,
+) -> (String, Option<i64>, bool) {
+    let mut content = String::new();
+    let mut last_ord: Option<i64> = None;
+    for (ord, text) in chunks {
+        if !content.is_empty() {
+            content.push_str(block_gap);
+        }
+        content.push_str(&format!("## chunk {ord}\n{}\n", text.trim()));
+        last_ord = Some(ord);
+    }
+    let next_start_chunk = last_ord
+        .map(|ord| ord + 1)
+        .filter(|next| *next < total_chunks);
+    let truncated = next_start_chunk.is_some();
+    (content, next_start_chunk, truncated)
+}
+
 fn render_source_window(
     source_ref_value: &str,
     document: &Document,
     chunks: &[(i64, String)],
 ) -> Value {
-    let mut content = String::new();
-    for (ord, text) in chunks {
-        if !content.is_empty() {
-            content.push('\n');
-        }
-        content.push_str(&format!("## chunk {ord}\n{}\n", text.trim()));
-    }
-    let next_start_chunk = chunks
-        .last()
-        .map(|(ord, _)| ord + 1)
-        .filter(|next| *next < document.n_chunks);
+    let (content, next_start_chunk, truncated) = finalize_source_window(
+        chunks.iter().map(|(ord, text)| (*ord, text.as_str())),
+        document.n_chunks,
+        "\n",
+    );
     json!({
         "type": "kb_source",
         "source_ref": source_ref_value,
@@ -160,7 +181,7 @@ fn render_source_window(
         "shown_chunks": chunks.len(),
         "total_chunks": document.n_chunks,
         "next_start_chunk": next_start_chunk,
-        "truncated": next_start_chunk.is_some(),
+        "truncated": truncated,
         "content": content,
     })
 }
@@ -575,15 +596,14 @@ impl ToolSpec for KbOpenSourceTool {
                 .map_err(|error| {
                     ToolError::execution_failed(format!("kb_open_source remote failed: {error}"))
                 })?;
-            let mut content = String::new();
-            for chunk in &window.chunks {
-                content.push_str(&format!("## chunk {}\n{}\n", chunk.ord, chunk.text.trim()));
-            }
-            let next_start_chunk = window
-                .chunks
-                .last()
-                .map(|chunk| chunk.ord + 1)
-                .filter(|next| *next < window.document.n_chunks);
+            let (content, next_start_chunk, truncated) = finalize_source_window(
+                window
+                    .chunks
+                    .iter()
+                    .map(|chunk| (chunk.ord, chunk.text.as_str())),
+                window.document.n_chunks,
+                "",
+            );
             let rendered = json!({
                 "type": "kb_remote_source",
                 "source_ref": source_ref_value,
@@ -594,7 +614,7 @@ impl ToolSpec for KbOpenSourceTool {
                 "shown_chunks": window.chunks.len(),
                 "total_chunks": window.document.n_chunks,
                 "next_start_chunk": next_start_chunk,
-                "truncated": next_start_chunk.is_some(),
+                "truncated": truncated,
                 "content": content,
             });
             return ToolResult::json(&rendered).map_err(|error| {

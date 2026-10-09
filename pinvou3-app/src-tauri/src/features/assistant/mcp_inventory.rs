@@ -9,12 +9,7 @@ use crate::features::marketplace::{ConnectorScope, MarketplaceManager, Marketpla
 /// 清单展示名与上传展示名校验共用同一上限：清单每轮进 `<system-reminder>`
 /// 信封，超长的第三方清单名按内容字符如实截断，不得按原样膨胀每轮上下文。
 fn bounded_inventory_name(value: &str) -> String {
-    let stripped = crate::features::personas::strip_invisible_chars(value);
-    let mut out: String = stripped.chars().take(MAX_DISPLAY_NAME_CHARS).collect();
-    if stripped.chars().count() > MAX_DISPLAY_NAME_CHARS {
-        out.push('…');
-    }
-    out
+    crate::features::personas::bounded_visible(value, MAX_DISPLAY_NAME_CHARS)
 }
 
 #[derive(Serialize)]

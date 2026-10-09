@@ -1370,7 +1370,7 @@ pub async fn rebind_workspace_root(
     // Idle-gated runtime reclaim (review #463 M1/M2 + eviction-tail TOCTOU):
     // rebind only translates stored bindings — resident processes still hold
     // the cwd captured at spawn (ACP get_or_spawn's reuse branch does not
-    // compare workspaces; the native engine's PreparedRuntimeModel rebuild
+    // compare workspaces; the native engine's runtime-model rebuild
     // key excludes the workspace), so the next turn would keep executing in
     // the vanished folder while the UI promises the new one. Both pools
     // reclaim through their idle-aware primitives: the recheck and the

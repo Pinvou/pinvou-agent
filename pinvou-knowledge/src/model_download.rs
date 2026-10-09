@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use url::Url;
 
@@ -775,26 +774,10 @@ fn safe_candidate_path(candidate: &Path, relative: &str) -> Result<PathBuf, Stri
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
-    use std::io::Read;
-
     let mut file = std::fs::File::open(path)
         .map_err(|error| format!("无法打开模型校验文件({}): {error}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| format!("读取模型校验文件失败({}): {error}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    crate::hash_file_sha256(&mut file, 1024 * 1024)
+        .map_err(|error| format!("读取模型校验文件失败({}): {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -804,6 +787,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
+
+    use sha2::{Digest, Sha256};
 
     use super::*;
 

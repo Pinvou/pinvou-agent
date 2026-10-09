@@ -584,17 +584,6 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     Ok(card.summary())
 }
 
-/// Delete a user card (only `user-` cards) for a caller outside the desktop
-/// app, such as the headless CLI. Which sessions equip a card is in-memory
-/// state of the running app, so this cannot clear it; the app reconciles on
-/// its own: its readers reload the pool once the file is gone, and the chat
-/// path unequips a card that no longer exists before its next turn. In-app
-/// deletes go through `delete_user_persona_with`, which clears sessions
-/// synchronously.
-pub fn delete_user_persona(id: &str) -> Result<(), String> {
-    delete_user_persona_with(id, || ())
-}
-
 /// Delete a card and run cross-feature cleanup before another operation can
 /// publish a snapshot of that card.
 pub(crate) fn delete_user_persona_with<T>(
@@ -708,6 +697,21 @@ fn is_unseen(c: char) -> bool {
         )
 }
 
+/// 用户自建文案的统一限长出口：先剥不可见字符，再按 char 计数限长并如实
+/// 标注——超出 `limit` 个字符截断并追加 `…`。与信封出口
+/// [`bounded_envelope_text`] 不同，这里不做信封标签转义：只用于不进
+/// `<system-reminder>` 信封的插值面（如专家名册投影描述）。
+pub(crate) fn bounded_visible(value: &str, limit: usize) -> String {
+    let sanitized = strip_invisible_chars(value);
+    let truncated = sanitized.chars().count() > limit;
+    let text: String = sanitized.chars().take(limit).collect();
+    if truncated {
+        format!("{text}…")
+    } else {
+        text
+    }
+}
+
 /// 把信封标签字符（`<`/`>`）转义成 `\u003c`/`\u003e`。这是不可信文案
 /// （卡片名/摘要、市场 MCP 应用清单等）进入 `<system-reminder>` 信封的
 /// 统一出口（锚点、候选行、知识集引导与 assistant 域 `mcp_inventory`
@@ -814,11 +818,11 @@ const CARD_CREATOR_BODY: &str = r##"# 卡牌制造专家
 
 ## 硬规则
 - **绝不调用任何文件或命令工具**(`read` / `write` / `bash` 等)。卡牌不是文件,加持期间工具表已清空,**直接在回复正文里输出代码块**就行,不要写盘、不要产出 .txt/.md 文件,也不要尝试读取文件。
-- 代码块**必须以 ```persona-card 这个字面标签起头**(不是 ```json,不是无标签)。前端靠这个识别成可保存的卡。
+- 代码块**必须以 ```persona-card 这个字面标签起头**(不是 ```json,不是无标签)。前端优先识别这个标签。
 - **body 要详实**(至少几百字),是真能指导 AI 干活的方法论,不能是空话套话。
 - **一次只产一张卡**的 `persona-card` 块。块以外可以正常跟 Boss 对话/确认。
 - JSON 必须能被解析:body 里的换行用 `\n`,引号转义。
-- 输出 `persona-card` 块后,告诉 Boss:**点卡片下方的「存入卡牌池」按钮即可保存**,保存前还能在编辑器里改。
+- 输出 `persona-card` 块后,告诉 Boss:**点卡片下方的保存按钮(简体中文界面显示为「查看 / 存入」)即可保存**,保存前还能在编辑器里改。
 "##;
 
 #[cfg(test)]
@@ -876,7 +880,13 @@ mod tests {
         // 确保 r##".."## 原始串没被 "#色 提前终止 —— body 完整。
         let c = get("pinvou-card-creator").unwrap();
         assert!(c.body.contains("硬规则"));
-        assert!(c.body.ends_with("改。\n") || c.body.contains("存入卡牌池"));
+        assert!(c.body.ends_with("改。\n"));
+        // 正文必须引用前端真实按钮文案(i18n cpDraftView,zh 为「查看 / 存入」),
+        // 并标注界面语言限定 —— en/ja 界面同一按钮显示 View / Save、表示 / 保存;
+        // 「存入卡牌池」只是保存后的 toast,不能作为按钮教学。
+        assert!(c.body.contains("「查看 / 存入」"));
+        assert!(c.body.contains("简体中文界面显示为「查看 / 存入」"));
+        assert!(!c.body.contains("「存入卡牌池」按钮"));
     }
 
     #[test]

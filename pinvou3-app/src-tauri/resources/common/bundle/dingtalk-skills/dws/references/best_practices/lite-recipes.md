@@ -48,7 +48,7 @@
 
 ### invite-participant
 
-视频会议邀请入会当前 CLI 不支持，请在钉钉客户端操作。若用户要给已有日程加参会人，走 `calendar participant add`。
+视频会议邀请入会当前 CLI 不支持，请在钉钉客户端操作。若用户要给已有日程加参会人，走 `calendar attendee add`。
 
 ### share-screen
 

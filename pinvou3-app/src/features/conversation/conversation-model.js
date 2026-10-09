@@ -240,8 +240,9 @@ function collectSearchResults(rawOutput) {
   return results;
 }
 
-export function searchToolDetails(tool) {
-  if (!isSearchTool(tool)) return null;
+// search/fetch 工具卡片共用的原始输入/输出规整:rawInput 仅接受对象;
+// rawOutput 优先取 rawOutput 字段,缺省回退 content,非字符串一律 JSON 化。
+function toolRawIO(tool) {
   const rawInput = tool && tool.rawInput && typeof tool.rawInput === 'object'
     ? tool.rawInput
     : {};
@@ -251,6 +252,12 @@ export function searchToolDetails(tool) {
     : rawOutputValue == null
       ? ''
       : JSON.stringify(rawOutputValue, null, 2);
+  return { rawInput, rawOutput };
+}
+
+export function searchToolDetails(tool) {
+  if (!isSearchTool(tool)) return null;
+  const { rawInput, rawOutput } = toolRawIO(tool);
   const name = searchToolName(tool);
   const countMatch = rawOutput.match(/"count"\s*:\s*(\d+)/i);
   const query = String(rawInput.query || rawInput.q || rawInput.keyword || '').trim();
@@ -276,17 +283,11 @@ function fetchContentTypeLabel(contentType) {
 
 export function fetchToolDetails(tool) {
   if (!isFetchTool(tool)) return null;
-  const rawInput = tool && tool.rawInput && typeof tool.rawInput === 'object'
-    ? tool.rawInput
-    : {};
-  const rawOutputValue = tool && (tool.rawOutput == null ? tool.content : tool.rawOutput);
-  const rawOutput = typeof rawOutputValue === 'string'
-    ? rawOutputValue
-    : rawOutputValue == null
-      ? ''
-      : JSON.stringify(rawOutputValue, null, 2);
-  let payload = rawOutputValue && typeof rawOutputValue === 'object' ? rawOutputValue : null;
-  if (!payload && rawOutput) {
+  const { rawInput, rawOutput } = toolRawIO(tool);
+  // rawOutputValue 为对象时 rawOutput 即其 JSON 文本,这里统一走解析取回;
+  // 非字符串对象的字段读取与直取原对象等价(payload 只读)。
+  let payload = null;
+  if (rawOutput) {
     try { payload = JSON.parse(rawOutput); } catch { /* non-JSON output is treated as text */ }
   }
   payload = payload && typeof payload === 'object' ? payload : {};

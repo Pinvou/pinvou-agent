@@ -127,16 +127,6 @@ CREATE TRIGGER IF NOT EXISTS remote_chunks_ad AFTER DELETE ON chunks BEGIN
     INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.id, old.text);
 END;
 
-CREATE TABLE IF NOT EXISTS invites (
-    id TEXT PRIMARY KEY,
-    secret_hash TEXT NOT NULL UNIQUE,
-    scope TEXT NOT NULL,
-    label TEXT,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL,
-    consumed_at INTEGER
-);
-
 CREATE TABLE IF NOT EXISTS devices (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -326,8 +316,7 @@ impl Store {
         let sql = format!(
             "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
              (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id AND d.deleted_at IS NULL),\
-             (SELECT COUNT(*) FROM chunks k JOIN documents d ON d.id=k.document_id WHERE k.collection_id=c.id AND d.deleted_at IS NULL),\
-              COALESCE((SELECT SUM(d.size) FROM documents d WHERE d.collection_id=c.id AND d.deleted_at IS NULL),0) \
+             (SELECT COUNT(*) FROM chunks k JOIN documents d ON d.id=k.document_id WHERE k.collection_id=c.id AND d.deleted_at IS NULL) \
              FROM collections c {filter} ORDER BY c.updated_at DESC,c.id DESC"
         );
         self.with_read_connection(|connection| {
@@ -348,8 +337,7 @@ impl Store {
             let mut statement = connection.prepare(
                 "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
                  (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id),\
-                 (SELECT COUNT(*) FROM chunks k WHERE k.collection_id=c.id),\
-                 COALESCE((SELECT SUM(d.size) FROM documents d WHERE d.collection_id=c.id),0) \
+                 (SELECT COUNT(*) FROM chunks k WHERE k.collection_id=c.id) \
                  FROM collections c WHERE c.deleted_at IS NOT NULL \
                  ORDER BY c.deleted_at DESC,c.id DESC LIMIT ?1 OFFSET ?2",
             )?;
@@ -388,8 +376,7 @@ impl Store {
         let sql = format!(
             "SELECT c.id,c.name,c.description,c.status,c.created_at,c.updated_at,c.deleted_at,\
              (SELECT COUNT(*) FROM documents d WHERE d.collection_id=c.id AND d.deleted_at IS NULL),\
-             (SELECT COUNT(*) FROM chunks k JOIN documents d ON d.id=k.document_id WHERE k.collection_id=c.id AND d.deleted_at IS NULL),\
-              COALESCE((SELECT SUM(d.size) FROM documents d WHERE d.collection_id=c.id AND d.deleted_at IS NULL),0) \
+             (SELECT COUNT(*) FROM chunks k JOIN documents d ON d.id=k.document_id WHERE k.collection_id=c.id AND d.deleted_at IS NULL) \
              FROM collections c WHERE c.id=?1 {deleted}"
         );
         self.with_read_connection(|connection| {
@@ -470,14 +457,7 @@ impl Store {
         transaction.commit()
     }
 
-    pub fn set_collection_status(&self, id: i64, status: &str) -> rusqlite::Result<()> {
-        self.conn.lock().execute(
-            "UPDATE collections SET status=?2,updated_at=?3 WHERE id=?1",
-            params![id, status, now()],
-        )?;
-        Ok(())
-    }
-
+    #[cfg(test)]
     pub fn insert_document(
         &self,
         collection_id: i64,
@@ -599,7 +579,7 @@ impl Store {
             "AND deleted_at IS NULL"
         };
         let sql = format!(
-            "SELECT id,collection_id,name,ext,size,sha256,status,n_chunks,created_at,updated_at,deleted_at,error \
+            "SELECT id,collection_id,name,ext,size,sha256,status,n_chunks,deleted_at,error \
              FROM documents WHERE collection_id=?1 {filter} ORDER BY created_at DESC,id DESC \
              LIMIT ?2 OFFSET ?3"
         );
@@ -624,7 +604,7 @@ impl Store {
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
                 "SELECT d.id,d.collection_id,d.name,d.ext,d.size,d.sha256,d.status,d.n_chunks,\
-                 d.created_at,d.updated_at,d.deleted_at,d.error,c.name \
+                 d.deleted_at,d.error,c.name \
                  FROM documents d JOIN collections c ON c.id=d.collection_id \
                  WHERE d.deleted_at IS NOT NULL AND c.deleted_at IS NULL \
                  ORDER BY d.deleted_at DESC,d.id DESC LIMIT ?1 OFFSET ?2",
@@ -632,7 +612,7 @@ impl Store {
             let rows = statement.query_map(params![limit, offset], |row| {
                 Ok(TrashedDocument {
                     document: map_document(row)?,
-                    collection_name: row.get(12)?,
+                    collection_name: row.get(10)?,
                 })
             })?;
             rows.collect()
@@ -650,7 +630,7 @@ impl Store {
             "AND deleted_at IS NULL"
         };
         let sql = format!(
-            "SELECT id,collection_id,name,ext,size,sha256,status,n_chunks,created_at,updated_at,deleted_at,error,storage_path \
+            "SELECT id,collection_id,name,ext,size,sha256,status,n_chunks,deleted_at,error,storage_path \
              FROM documents WHERE id=?1 {filter}"
         );
         self.with_read_connection(|connection| {
@@ -658,7 +638,7 @@ impl Store {
                 .query_row(&sql, params![id], |row| {
                     Ok(StoredDocument {
                         document: map_document(row)?,
-                        storage_path: row.get(12)?,
+                        storage_path: row.get(10)?,
                     })
                 })
                 .optional()
@@ -680,7 +660,7 @@ impl Store {
         }
         let sql = format!(
             "SELECT d.id,d.collection_id,d.name,d.ext,d.size,d.sha256,d.status,d.n_chunks,\
-             d.created_at,d.updated_at,d.deleted_at,d.error FROM documents d \
+             d.deleted_at,d.error FROM documents d \
              JOIN collections c ON c.id=d.collection_id WHERE d.id IN ({}) \
              AND d.deleted_at IS NULL AND c.deleted_at IS NULL ORDER BY d.id",
             id_list(&ids)
@@ -1149,7 +1129,8 @@ impl Store {
             device_id: scope.map(|_| device_id.to_string()),
             created_at,
             expires_at,
-            resolved_at,
+            // 刚创建的请求必然未决议;字段本身是旧客户端线上兼容项(model.rs)。
+            resolved_at: None,
         })
     }
 
@@ -1167,7 +1148,7 @@ impl Store {
             params![id, claim_hash, timestamp],
         )?;
         let request = transaction.query_row(
-            "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at,resolved_at \
+            "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at \
              FROM join_requests WHERE id=?1 AND claim_hash=?2",
             params![id, claim_hash],
             map_join_request,
@@ -1183,7 +1164,7 @@ impl Store {
     ) -> rusqlite::Result<Vec<JoinRequestRecord>> {
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at,resolved_at \
+                "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at \
                  FROM join_requests ORDER BY created_at DESC,id DESC LIMIT ?1 OFFSET ?2",
             )?;
 
@@ -1243,7 +1224,7 @@ impl Store {
             params![id, scope_text(scope), timestamp],
         )?;
         let request = transaction.query_row(
-            "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at,resolved_at \
+            "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at \
              FROM join_requests WHERE id=?1",
             params![id],
             map_join_request,
@@ -1289,7 +1270,7 @@ impl Store {
         }
         self.with_read_connection(|connection| {
             connection.query_row(
-                "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at,resolved_at \
+                "SELECT id,device_name,status,scope,share_id,device_id,created_at,expires_at \
                  FROM join_requests WHERE id=?1",
                 params![id],
                 map_join_request,
@@ -1347,26 +1328,12 @@ impl Store {
         let device = self.with_read_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE token_hash=?1",
+                    "SELECT id,name,scope,revoked FROM devices WHERE token_hash=?1",
                     params![token_hash],
                     map_device,
                 )
                 .optional()
         })?;
-        if let Some(grant) = &device
-            && !grant.revoked
-        {
-            // Authentication must remain responsive while a large index
-            // transaction owns the primary connection. Presence updates are
-            // telemetry, so skip rather than queue behind that transaction.
-            if let Some(connection) = self.conn.try_lock() {
-                let timestamp = now();
-                let _ = connection.execute(
-                        "UPDATE devices SET last_seen_at=?2 WHERE id=?1 AND (last_seen_at IS NULL OR last_seen_at<?3)",
-                        params![grant.id, timestamp, timestamp - 60],
-                    );
-            }
-        }
         Ok(device.filter(|grant| !grant.revoked))
     }
 
@@ -1381,7 +1348,7 @@ impl Store {
     ) -> rusqlite::Result<Vec<DeviceGrant>> {
         self.with_read_connection(|connection| {
             let mut statement = connection.prepare(
-                "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices \
+                "SELECT id,name,scope,revoked FROM devices \
                  ORDER BY created_at DESC,id DESC LIMIT ?1 OFFSET ?2",
             )?;
             let rows = statement.query_map(
@@ -1399,7 +1366,7 @@ impl Store {
         self.with_read_connection(|connection| {
             connection
                 .query_row(
-                    "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+                    "SELECT id,name,scope,revoked FROM devices WHERE id=?1",
                     params![id],
                     map_device,
                 )
@@ -1418,7 +1385,7 @@ impl Store {
         let transaction = connection.transaction()?;
         let current = transaction
             .query_row(
-                "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+                "SELECT id,name,scope,revoked FROM devices WHERE id=?1",
                 params![id],
                 map_device,
             )
@@ -1437,7 +1404,7 @@ impl Store {
             ],
         )?;
         let updated = transaction.query_row(
-            "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+            "SELECT id,name,scope,revoked FROM devices WHERE id=?1",
             params![id],
             map_device,
         )?;
@@ -1495,7 +1462,7 @@ impl Store {
         }
         let current = transaction
             .query_row(
-                "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+                "SELECT id,name,scope,revoked FROM devices WHERE id=?1",
                 params![id],
                 map_device,
             )
@@ -1516,7 +1483,7 @@ impl Store {
             ],
         )?;
         let updated = transaction.query_row(
-            "SELECT id,name,scope,created_at,last_seen_at,revoked FROM devices WHERE id=?1",
+            "SELECT id,name,scope,revoked FROM devices WHERE id=?1",
             params![id],
             map_device,
         )?;
@@ -1761,7 +1728,8 @@ fn map_collection(row: &rusqlite::Row<'_>) -> rusqlite::Result<Collection> {
         deleted_at: row.get(6)?,
         doc_count: row.get(7)?,
         chunk_count: row.get(8)?,
-        total_bytes: row.get(9)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        total_bytes: 0,
     })
 }
 
@@ -1775,10 +1743,11 @@ fn map_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
         sha256: row.get(5)?,
         status: row.get(6)?,
         n_chunks: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
-        deleted_at: row.get(10)?,
-        error: row.get(11)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        created_at: 0,
+        updated_at: 0,
+        deleted_at: row.get(8)?,
+        error: row.get(9)?,
         already_exists: false,
     })
 }
@@ -1799,9 +1768,10 @@ fn map_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceGrant> {
         id: row.get(0)?,
         name: row.get(1)?,
         scope: parse_scope(&row.get::<_, String>(2)?),
-        created_at: row.get(3)?,
-        last_seen_at: row.get(4)?,
-        revoked: row.get(5)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        created_at: 0,
+        last_seen_at: None,
+        revoked: row.get(3)?,
     })
 }
 
@@ -1843,7 +1813,8 @@ fn map_join_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<JoinRequestReco
         device_id: scope.and_then(|_| row.get(5).ok()),
         created_at: row.get(6)?,
         expires_at: row.get(7)?,
-        resolved_at: row.get(8)?,
+        // 旧客户端必需的线上兼容占位,见 model.rs wire_compat_tests。
+        resolved_at: None,
     })
 }
 

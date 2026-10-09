@@ -3540,7 +3540,7 @@ fn build_webview<P: PlatformWebviewConfig>(
             // plus final CAS publication and safely rejects a late page when user
             // takeover commits first.
             let authorization =
-                popup_agent_authorization(&popup_control, &popup_session_id, &popup_tab_token);
+                popup_control.retain_agent_operation_for_popup(&popup_session_id, &popup_tab_token);
             let app = popup_app.clone();
             let session_id = popup_session_id.clone();
             tauri::async_runtime::spawn(async move {
@@ -3614,14 +3614,6 @@ fn build_webview<P: PlatformWebviewConfig>(
         };
     }
     Ok(entry)
-}
-
-fn popup_agent_authorization(
-    control: &WorkspaceControl,
-    session_id: &str,
-    source_tab_token: &str,
-) -> Option<RetainedAgentOperation> {
-    control.retain_agent_operation_for_popup(session_id, source_tab_token)
 }
 
 fn active_entry(workspace: &Workspace) -> Option<&SurfaceEntry> {
@@ -5543,9 +5535,10 @@ mod tests {
             epoch.clone()
         ));
 
-        let retained =
-            popup_agent_authorization(&workspace.control, "session-a", "0123456789abcdef")
-                .expect("popup must retain the begun operation");
+        let retained = workspace
+            .control
+            .retain_agent_operation_for_popup("session-a", "0123456789abcdef")
+            .expect("popup must retain the begun operation");
         assert_eq!(retained.authorization(), &authorization);
         assert_eq!(retained.caller_epoch(), &epoch);
         workspace
@@ -5565,7 +5558,9 @@ mod tests {
         let (_snapshot, authorization) = issue_authorized_lease(&workspace.control);
 
         assert!(
-            popup_agent_authorization(&workspace.control, "session-a", "0123456789abcdef")
+            workspace
+                .control
+                .retain_agent_operation_for_popup("session-a", "0123456789abcdef")
                 .is_none()
         );
         assert!(workspace.control.begin_agent_operation_for_caller(
@@ -5575,7 +5570,9 @@ mod tests {
         ));
         workspace.control.bump(Some(NativeControlOwner::User));
         assert!(
-            popup_agent_authorization(&workspace.control, "session-a", "0123456789abcdef")
+            workspace
+                .control
+                .retain_agent_operation_for_popup("session-a", "0123456789abcdef")
                 .is_none()
         );
     }

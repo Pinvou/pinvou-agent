@@ -481,8 +481,12 @@ pub struct VisualResult {
     pub html: Option<String>,
     /// mode=images：图片 data URI 列表（pdf 多页 / 单图）
     pub images: Vec<String>,
-    /// 缺工具 / 转换失败 / 截断 的人话提示
+    /// 缺工具 / 转换失败 / 截断 的原始提示。文案由后端生成(中文),仅供日志排查;
+    /// 前端只按 `warning_code` 渲染三语文案,不得直接展示本字段。
     pub warning: Option<String>,
+    /// warning 的稳定分类码,前端据此取三语文案:
+    /// "truncatedPages"(仅渲染前若干页) | "convertFailed"(缺工具/转换失败/无输出页)。
+    pub warning_code: Option<&'static str>,
 }
 
 impl VisualResult {
@@ -491,6 +495,7 @@ impl VisualResult {
             mode: "unsupported".into(),
             html: None,
             images: vec![],
+            warning_code: warning.as_ref().map(|_| "convertFailed"),
             warning,
         }
     }
@@ -621,6 +626,7 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
                         html: None,
                         images: vec![uri],
                         warning: None,
+                        warning_code: None,
                     },
                     Err(e) => VisualResult::unsupported(Some(e)),
                 }
@@ -639,6 +645,8 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
                         images: imgs,
                         warning: truncated
                             .then(|| format!("页数较多，仅渲染前 {VISUAL_PDF_MAX_PAGES} 页")),
+                        // 文案里的页数上限与 VISUAL_PDF_MAX_PAGES 一致,两端同改。
+                        warning_code: truncated.then_some("truncatedPages"),
                     },
                     Err(e) => VisualResult::unsupported(Some(e)),
                 }
@@ -651,6 +659,7 @@ pub async fn render_artifact_visual(path: String) -> Result<VisualResult, String
                         html: Some(html),
                         images: vec![],
                         warning: None,
+                        warning_code: None,
                     },
                     Err(e) => VisualResult::unsupported(Some(e)),
                 }
@@ -1036,6 +1045,7 @@ mod visual_cache_tests {
             html: Some("x".repeat(bytes)),
             images: vec![],
             warning: None,
+            warning_code: None,
         }
     }
 

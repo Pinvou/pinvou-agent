@@ -23,6 +23,9 @@ const ENV_KEY_NAME: &str = "OPENAI_API_KEY";
 /// catalog 后警告消除且上下文窗口等参数正确（格式按 codex 0.146 实测）。
 const CATALOG_FILE_NAME: &str = "pinvou3-model-catalog.json";
 /// catalog 里 base_instructions 必须与原值一致（codex 内置，勿自创文案）。
+/// 已知局限：该句把「GPT-5」身份钉在中转的每一个模型上——用户经此中转
+/// 非 GPT 模型时，模型会自称 GPT-5。若 codex 校验放开，应替换为真实模型名；
+/// 在此之前仅在文档登记，不改文案（改了会被 codex 拒收 catalog）。
 const CATALOG_BASE_INSTRUCTIONS: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 /// 无法获知中转模型真实窗口时的保守默认（与 kimi 侧默认一致量级）。
 const CATALOG_DEFAULT_CONTEXT_WINDOW: i64 = 200_000;

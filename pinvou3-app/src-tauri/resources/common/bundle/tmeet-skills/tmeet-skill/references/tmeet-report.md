@@ -23,22 +23,22 @@
 
 ```bash
 # 获取会议参会人列表
-tmeet report participants --meeting-id "100000000"
+tmeet report participants --meeting-id "6953553464429888300"
 
 # 分页获取（每页 50 条，翻下一页）
 tmeet report participants \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --page-token "<next_page_token>" \
   --page-size 50
 
 # 获取周期性会议某个子会议的参会人
 tmeet report participants \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --sub-meeting-id "200000001"
 
 # 按时间范围过滤参会人
 tmeet report participants \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --start "2026-04-10T14:00:00+08:00" \
   --end "2026-04-10T15:00:00+08:00"
 ```
@@ -68,11 +68,11 @@ tmeet report participants \
 
 ```bash
 # 获取等候室成员列表
-tmeet report waiting-room-log --meeting-id "100000000"
+tmeet report waiting-room-log --meeting-id "6953553464429888300"
 
 # 分页获取（翻下一页）
 tmeet report waiting-room-log \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --page-token "<next_page_token>" \
   --page-size 50
 ```
@@ -98,21 +98,21 @@ tmeet report waiting-room-log \
 
 ```bash
 # 导出会议参会成员明细（默认 xlsx 格式）
-tmeet report participants-export --meeting-id "100000000"
+tmeet report participants-export --meeting-id "6953553464429888300"
 
 # 导出为 json 格式
 tmeet report participants-export \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --file-type "json"
 
 # 导出周期性会议某个子会议的参会成员
 tmeet report participants-export \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --sub-meeting-id "200000001"
 
 # 按时间范围过滤并指定超时时间
 tmeet report participants-export \
-  --meeting-id "100000000" \
+  --meeting-id "6953553464429888300" \
   --start "2026-04-10T14:00:00+08:00" \
   --end "2026-04-10T15:00:00+08:00"
 ```
@@ -139,7 +139,7 @@ tmeet report participants-export \
 
 ```
 1. 提交导出任务，获取 job_id
-   tmeet report participants-export --meeting-id "100000000"
+   tmeet report participants-export --meeting-id "6953553464429888300"
 
 2. 每隔 5 秒调用 job-result 轮询任务状态
    tmeet report job-result --job-id <job_id>

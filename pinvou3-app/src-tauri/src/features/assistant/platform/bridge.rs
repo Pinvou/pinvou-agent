@@ -345,11 +345,15 @@ impl Pinvou3Bridge {
     /// On first launch a default `settings.json` is written so users/
     /// developers can conveniently hand-edit advanced.
     ///
-    /// **workspace is now `$HOME`** (phase C adjustment) — so the AI can use
-    /// read_file/glob to find the user's real files on Desktop/Documents/
-    /// Downloads. The companion sensitive-directory ban is guided in
-    /// `bundle/instructions.md`; hard interception later goes through a
-    /// deepseek-tui hook registration.
+    /// **Default `workspace` is `$HOME`**, but the per-session engine workspace
+    /// is resolved through `SessionRoots` (`roots.execution`, see
+    /// `build_engine_config_for_session_roots`): session-private for unbound
+    /// plain sessions, the bound directory for bound/code sessions. The engine
+    /// prints the resolved `Current workspace` every turn;
+    /// instructions-work.md teaches relative paths against that value and
+    /// locates the user's real files under `$HOME`. The companion
+    /// sensitive-directory ban is guided in `bundle/instructions-*.md`; hard
+    /// interception goes through the deny-sensitive-paths hook registration.
     ///
     /// The session artifacts dir `PINVOU3_SESSION_ARTIFACTS` is NOT injected here:
     /// boot runs in the multi-threaded phase, and process env writes are
@@ -575,8 +579,9 @@ impl Pinvou3Bridge {
                 "{{PINVOU3_SUDO_INSTRUCTION}}",
                 crate::platform::super_permission::instruction_block(),
             )
-            // The user memory section is filled or dropped with the memory toggle (off by
-            // default plus force-off for en/ja, see the memory_section comment). Replaced
+            // The user memory placeholder is filled with the section or the off-notice
+            // per the memory toggle (off by default plus force-off for en/ja, see the
+            // memory_section comment). Replaced
             // at the session render layer rather than inside the OnceLock instructions_md,
             // so a setting change takes effect on new sessions; old session prompts are
             // left unchanged.
@@ -3146,7 +3151,10 @@ impl Pinvou3Bridge {
         let full_content = if reminder_body.is_empty() {
             content
         } else {
-            format!("<system-reminder>\n{reminder_body}\n</system-reminder>\n\n{content}")
+            crate::features::assistant::engine_support::wrap_system_reminder(
+                &reminder_body,
+                &content,
+            )
         };
         let model = self.model();
         // Approval parameters come from the session policy (R-2), the same
@@ -3682,9 +3690,9 @@ mod tests {
         // work semantics.
         let prompt = bridge.build_session_system_prompt("sess-plain-bound");
         assert!(prompt.contains("用户选择的工作目录"), "应渲染绑定环境段");
-        assert!(!prompt.contains("自动落到本会话专属工作目录"));
+        assert!(!prompt.contains("自动落到工作区"));
         let plain_prompt = bridge.build_session_system_prompt("sess-plain");
-        assert!(plain_prompt.contains("自动落到本会话专属工作目录"));
+        assert!(plain_prompt.contains("自动落到工作区"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
