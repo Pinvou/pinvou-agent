@@ -1903,6 +1903,120 @@ fn index_retry_names_a_bad_item_id_instead_of_the_job() {
     assert_eq!(after["resumable"], serde_json::json!(true));
 }
 
+/// Round-49 review: `index retry`'s EXECUTING success path had no contract
+/// coverage — only its failure modes were exercised end to end. A
+/// `done_with_errors` job with exactly one failed item is seeded hermetically
+/// through the real store: the import thread runs in THIS process parked on
+/// the hold file, one staged source is removed during the park (its item
+/// then fails on the vanished file's metadata read), and releasing the hold
+/// drains the job to `done_with_errors` with the other item completed.
+/// Restoring the file and running `index retry` must requeue exactly that
+/// item (`index failed` names it), finish the job `done` with exit 0, and
+/// report the final state — the same one-shot wait-and-report contract the
+/// resume lane carries.
+#[test]
+fn index_retry_requeues_the_failed_item_and_finishes_the_job_done() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("retry-success");
+    // Park the import thread between `prepare_items` (which stages and
+    // promotes the row to `running`) and the first claim, so a staged source
+    // can vanish while its item is still pending. HoldEnvGuard removes the
+    // variable on drop so a failing assertion cannot leak the hold into
+    // later tests of this binary.
+    let hold = home.path().join("import-hold");
+    unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
+    let _hold_guard = HoldEnvGuard;
+    let (_collection, job_id) = seed_running_job(&home, "retry-success", 2);
+    let ghost = home.path().join("retry-success-src").join("item-001.txt");
+
+    // State-based wait (no sleep budget): `running` with the full queue and
+    // zero completions proves the thread is parked with both items staged.
+    let parked_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        if state["running"] == serde_json::json!(true)
+            && state["total"] == serde_json::json!(2)
+            && state["done"] == serde_json::json!(0)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < parked_deadline,
+            "the seeded import never reached its parked window: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // `launch_import` sampled the variable before the worker existed, so the
+    // running/2/0 observation above proves the hold path is already in the
+    // worker's hands: the FILE gates the park from here, and the variable
+    // can go away before any assertion that could fail.
+    unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
+
+    // The vanished staged file is a real ingest failure (the metadata read
+    // fails), not a skip: mark_failed records it and `finish` promotes the
+    // job to `done_with_errors` with the other item completed.
+    std::fs::remove_file(&ghost).expect("remove the staged source during the park");
+    std::fs::write(&hold, b"release").unwrap();
+    let drain_deadline = Instant::now() + Duration::from_secs(60);
+    let settled = loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        if state["phase"] == serde_json::json!("done_with_errors") {
+            break state;
+        }
+        assert!(
+            Instant::now() < drain_deadline,
+            "the released import never settled at done_with_errors (last: {state})"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(settled["jobId"], serde_json::json!(job_id));
+    // `done` counts PROCESSED files (completed + skipped + failed, the
+    // store's own field doc), so the settled job reports done=2 with
+    // failed=1 — the item-level truth lives in `failed` and the failed page.
+    assert_eq!(settled["done"], serde_json::json!(2));
+    assert_eq!(settled["failed"], serde_json::json!(1));
+
+    // The failed page names the item the retry below requeues.
+    let failed = run_json(&["pinvou", "knowledge", "index", "failed", &job_id]);
+    let files = failed["files"].as_array().expect("failed files array");
+    assert_eq!(files.len(), 1, "{failed}");
+    let item_id = files[0]["itemId"].as_i64().expect("failed item id");
+
+    // Restore the source so the retried item can genuinely succeed, then run
+    // the retry: it re-arms, waits for the job, and reports the FINAL state
+    // with a success exit — the executing success path, not a failure mode.
+    std::fs::write(&ghost, "restored for the retry. ".repeat(64)).unwrap();
+    let retried = run_json(&[
+        "pinvou",
+        "knowledge",
+        "index",
+        "retry",
+        &job_id,
+        &item_id.to_string(),
+    ]);
+    assert_eq!(retried["jobId"], serde_json::json!(job_id));
+    assert_eq!(retried["phase"], serde_json::json!("done"));
+    assert_eq!(retried["running"], serde_json::json!(false));
+    assert_eq!(retried["resumable"], serde_json::json!(false));
+    assert_eq!(retried["failed"], serde_json::json!(0));
+    assert_eq!(
+        retried["done"], retried["total"],
+        "the retry must finish every item"
+    );
+
+    // Document-level end state: the retried item really re-ingested, so the
+    // collection holds both files parsed.
+    let documents = run_json(&["pinvou", "knowledge", "documents", &_collection.to_string()]);
+    let documents = documents["documents"].as_array().expect("documents array");
+    assert_eq!(documents.len(), 2, "{documents:?}");
+    assert!(
+        documents
+            .iter()
+            .all(|document| document["parseStatus"] == serde_json::json!("parsed")),
+        "every item must have completed after the retry: {documents:?}"
+    );
+}
+
 /// `scan start` waits for the scan to finish inside the invocation (a
 /// fire-and-forget scan would be killed by process exit before doing any
 /// work), so the returned state is already terminal and the completion

@@ -1725,6 +1725,16 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     // error that never says the signal landed (the cancel is idempotent,
     // but the first answer would mislead). Fold the report back to the
     // pre-transition state already in hand.
+    //
+    // Untestable seam note (round-49): the contract suite cannot reach this
+    // fold-back hermetically. The two reads run back-to-back on one
+    // connection inside a single invocation (cancel's own pre-read and this
+    // report read), so the only errors possible here — a sustained store
+    // fault or the job row vanishing under a concurrent `collections
+    // delete` — must land inside a sub-millisecond window that no external
+    // actor (held SQLite lock, corrupted file, racing process) can target
+    // deterministically, and `KnowledgeService` is concrete (no fault
+    // injection seam). The fold stays covered by review only.
     let state = named_job_state(&service, job_id, "cancel").unwrap_or_else(|_| pre.clone());
     let header = if was_active {
         format!("index cancel signalled for job {job_id}")
@@ -1904,7 +1914,10 @@ fn import_no_progress_timeout() -> Duration {
 /// without waiting for a desktop-app boot. The interrupt is best-effort: it
 /// cannot mask the timeout report, and the remedy text states the job's real
 /// on-disk state (interrupted-and-resumable, or still running when the
-/// interrupt could not land).
+/// interrupt could not land). Round-49 review: a status read that stays
+/// unreadable across EITHER tolerance burst (the first poll and the loop
+/// step) takes the same interrupt route instead of propagating a raw store
+/// error with no remedy.
 fn wait_for_terminal_job(
     service: &KnowledgeService,
     job_id: &str,
@@ -1933,7 +1946,22 @@ fn wait_for_terminal_job(
                     );
                     std::thread::sleep(READ_ERROR_BACKOFF);
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // Round-49 review: the exhausted FIRST burst used to
+                    // propagate the raw read error with no remedy — exiting 1
+                    // while this same process's import thread dies at exit,
+                    // stranding an ownerless `running` job, the exact shape
+                    // this function exists to prevent. The loop's burst below
+                    // already attempted the interrupt and reported whether it
+                    // landed; both arms now share that tail.
+                    return Err(fail_unreadable_job(
+                        service,
+                        job_id,
+                        operation,
+                        &error,
+                        READ_ERROR_TOLERANCE,
+                    ));
+                }
             }
         }
     };
@@ -2048,28 +2076,52 @@ fn wait_for_terminal_job(
                     std::thread::sleep(Duration::from_millis(500));
                     continue;
                 }
-                let interrupted = service.interrupt_index(job_id).is_ok();
-                let remedy = if interrupted {
-                    format!(
-                        "the job was interrupted and is resumable (`pinvou knowledge index \
-                         resume {job_id}` continues it)"
-                    )
-                } else {
-                    format!(
-                        "the interrupt could not land either; the job is left as-is on disk \
-                         and stays resumable once a recovery-owning process (the desktop \
-                         app's next start) relabels it, or `pinvou knowledge index cancel \
-                         {job_id}` drops it"
-                    )
-                };
-                return Err(CliError::failed(format!(
-                    "{operation}: index job {job_id} status stayed unreadable across \
-                     {READ_ERROR_TOLERANCE} consecutive polls ({error}); the wait cannot own \
-                     the job to completion — {remedy}",
-                )));
+                return Err(fail_unreadable_job(
+                    service,
+                    job_id,
+                    operation,
+                    &error,
+                    READ_ERROR_TOLERANCE,
+                ));
             }
         }
     }
+}
+
+/// The exhausted-status-tolerance tail shared by [`wait_for_terminal_job`]'s
+/// two read-error bursts (the first poll and the loop step): the wait can no
+/// longer observe the job, so it attempts the same best-effort
+/// [`KnowledgeService::interrupt_index`] as the stall arm — landing the job
+/// `interrupted`/resumable on disk when it applies — and fails with a report
+/// whose remedy states the real outcome: interrupted-and-resumable, or
+/// left as-is (still running, recoverable by the desktop app's next boot or
+/// an explicit `index cancel`) when the interrupt could not land either.
+fn fail_unreadable_job(
+    service: &KnowledgeService,
+    job_id: &str,
+    operation: &str,
+    error: &CliError,
+    polls: u32,
+) -> CliError {
+    let interrupted = service.interrupt_index(job_id).is_ok();
+    let remedy = if interrupted {
+        format!(
+            "the job was interrupted and is resumable (`pinvou knowledge index \
+             resume {job_id}` continues it)"
+        )
+    } else {
+        format!(
+            "the interrupt could not land either; the job is left as-is on disk \
+             and stays resumable once a recovery-owning process (the desktop \
+             app's next start) relabels it, or `pinvou knowledge index cancel \
+             {job_id}` drops it"
+        )
+    };
+    CliError::failed(format!(
+        "{operation}: index job {job_id} status stayed unreadable across \
+         {polls} consecutive polls ({error}); the wait cannot own \
+         the job to completion — {remedy}",
+    ))
 }
 
 /// The observable-progress signature of an in-flight job (see
