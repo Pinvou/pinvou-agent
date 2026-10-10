@@ -767,19 +767,21 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
     notifier: &N,
 ) -> Processed {
     let poisoned = |error: anyhow::Error| Processed::Poison(error);
-    let size = match std::fs::metadata(path).map(|meta| meta.len()) {
-        Ok(size) => size,
-        Err(error) => return poisoned(anyhow::Error::new(error).context("stat spool file")),
-    };
-    if size > MAX_SPOOL_FILE_BYTES {
-        return poisoned(anyhow::anyhow!(
-            "spool file exceeds the {} byte cap",
-            MAX_SPOOL_FILE_BYTES
-        ));
-    }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => return poisoned(anyhow::Error::new(error).context("read spool file")),
+    // Round-12 MAJOR-2: the entry read goes through the same gated helper
+    // as every other read — the collection-time is_file() filter is stale
+    // by processing time (files drain sequentially across awaited applies),
+    // so a FIFO or /dev/zero symlink swapped in after collection would
+    // wedge the single drain task in a blocking open or grow an unbounded
+    // Vec; stat+regular-file+cap now refuse it (poison: same class as
+    // oversize).
+    let bytes = match read_regular_bounded(path, MAX_SPOOL_FILE_BYTES as usize) {
+        Some(bytes) => bytes,
+        None => {
+            return poisoned(anyhow::anyhow!(
+                "spool file unreadable, not a regular file, or exceeds the {} byte cap",
+                MAX_SPOOL_FILE_BYTES
+            ));
+        }
     };
     let request: SpooledCreationRequest = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
@@ -1213,8 +1215,13 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 // whole wait window. An unreadable/diverged file stays for
                 // the next poll (it fails the marker's digest gate and
                 // applies afresh).
-                let still_applied = std::fs::read(&path)
-                    .ok()
+                // Round-12 MAJOR-1: this re-read runs exactly in the
+                // replacement window the guard targets (after the awaited
+                // apply) — the ungated std::fs::read would let a swap-to-
+                // FIFO block the drain forever or a /dev/zero symlink grow
+                // an unbounded Vec. Gated+bounded like every other read
+                // (refusal counts as "not the applied record" → kept).
+                let still_applied = read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize)
                     .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
                     .map(|request| spool_request_digest(&request) == applied_digest)
                     .unwrap_or(false);
@@ -2158,6 +2165,112 @@ mod tests {
             true,
         )
         .expect("re-enable scheduled-task-automation");
+    }
+
+    /// Round-12 MAJOR-4: the apply-time replacement — the creator writes a
+    /// DIVERGENT keyed retry over the spool file (the server's os.replace
+    /// landing during the awaited apply) before delegating to the real
+    /// domain. The Done arm must NOT unlink the untried newest body:
+    /// deleting the still_applied digest check ships this test red.
+    struct DivergentApplyCreator(pub ScheduledTaskState);
+
+    impl TaskCreator for DivergentApplyCreator {
+        async fn create(
+            &self,
+            input: CreateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            std::fs::write(
+                spool_root().join("div.json"),
+                spool_record_json(&[
+                    ("idempotency_key", serde_json::json!("k-div")),
+                    ("name", serde_json::json!("更正后的名字")),
+                ]),
+            )
+            .unwrap();
+            self.0.create_task(input).await
+        }
+        async fn update(
+            &self,
+            task_id: &str,
+            input: UpdateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            self.0.update_task(task_id.to_string(), input).await
+        }
+        async fn delete(&self, task_id: &str) -> std::result::Result<ScheduledTaskDto, String> {
+            self.0.delete_task(task_id.to_string()).await
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_time_replacement_is_not_unlinked() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("div.json"),
+            spool_record_json(&[("idempotency_key", serde_json::json!("k-div"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &DivergentApplyCreator(state.clone()),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            1,
+            "the old body applied exactly once"
+        );
+        assert!(
+            spool.join("div.json").exists(),
+            "the untried divergent newest body survives for the next poll"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("div.json")).expect("receipt"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], true, "the applied record's receipt stands");
+    }
+
+    /// Round-12 MAJOR-2: a symlink to /dev/zero at the spool path is
+    /// REFUSED by the gated read (symlink_metadata never follows it, so
+    /// is_file() is false) — the ungated read would follow the link and
+    /// read unbounded, growing a Vec until OOM. If the gate regresses,
+    /// this poll balloons or blocks and the test times out.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn devzero_symlink_at_the_spool_path_is_refused() {
+        use std::time::Duration;
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", spool.join("p.json")).unwrap();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            process_spool_file(
+                spool.join("p.json").as_path(),
+                &StateCreator(&state),
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            ),
+        )
+        .await
+        .expect("the gated read must refuse the FIFO without blocking");
+        assert!(
+            matches!(outcome, Processed::Poison(_)),
+            "a FIFO record poisons instead of wedging the drain"
+        );
     }
 
     /// Round-9 M5: the receipt guard — apply a record (receipt lands),
