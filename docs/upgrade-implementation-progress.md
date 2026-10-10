@@ -296,3 +296,37 @@ This low-level adapter requires a previously committed approved durable intent,
 domain issuance fence and serialized controller. It introduces no durable jobs,
 registry, authoritative deny, HTTP dispatch or completed T07 acceptance. The main
 role continues those code paths; production deployment remains deferred.
+
+T07 permanent provisioning ledger (2026-10-10) is committed and pushed as
+`9a4f654c6893bad582aca38d2de0b1f00cfa2c54` on `feat/t07-signing-root`.
+The protected internal intent binds the exact actor, full non-Root role/scope,
+permanent provider reference, complete approval reference and command hash. One
+T06 result permanently owns one intent and version-one provider name. SQL-clock
+claims use monotonic epochs and an original two-minute window; exact canonical
+public material and completion time become immutable ready records. This storage
+port grants no execution, publication, enablement, client trust or issuance rights.
+
+Both independent line-by-line reviews passed after the main role repaired test
+map contamination. Each closed-shape rejection now starts from independent valid
+input. The main role also added raw SQL descriptor counterexamples in a running
+claim, V2-to-V3 upgrade preserving an actual signed Root, column-write and retained
+trigger startup refusal, and corrected the old V1 upgrade fixture to remove newer
+migration objects first. Earlier SQL migration bytes/digests remain unchanged.
+
+All Go packages passed across the full serial regression and affected reruns.
+Actual signing PostgreSQL passed (276.494s), including natural job-lease expiry,
+takeover, old-owner refusal, concurrency and rollback; operations PostgreSQL
+passed (181.046s) and real OpenBao (8.217s). The initial untouched management
+browser test failed with a route.fetch/route.abort already-handled timing error;
+its original unchanged real browser rerun passed (12.090s). This is recorded as a
+test timing issue, not a claimed repair or proof of test stability. Final pure
+contracts/lifecycle runs passed (2.130s/1.708s), and the three final affected actual
+PostgreSQL tests passed (14.207s). Full vet, module verification, build, pinned
+artifact and diff checks passed. No production logic changed in the test-only
+repair; no skipped database/browser opt-in is claimed as physical evidence.
+
+Actual T05/T06 command composition, authenticated recoverable provider controller,
+configuration ownership, OpenBao invocation/reconciliation, enabled key registry,
+atomic issuance/key-use and T08 stop/deny integration remain required. Permanent
+ledger fixtures do not complete those owners or T07. Main development continues;
+production deployment remains deferred and downloads retain no cumulative limit.
