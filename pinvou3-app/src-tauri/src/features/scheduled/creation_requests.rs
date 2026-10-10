@@ -1188,10 +1188,11 @@ struct RetryState {
     attempts: HashMap<String, u32>,
     spool_dir_error_logged: bool,
     /// Round-1 M4 (#680 review), generalized round-3 M4/M5: stuck records
-    /// whose episode already wrote its audit line + failure marker — a
-    /// stuck record used to re-append one audit line and rewrite the
-    /// marker EVERY poll (86,400/day on an append-only jsonl with no
-    /// rotation). The value is the audited record's digest for gate-arm
+    /// whose episode already appended its audit line + wrote its failure
+    /// marker — a stuck record used to append one jsonl line and rewrite
+    /// the marker EVERY poll (86,400/day on an append-only jsonl with no
+    /// rotation; the read/parse/digest probe stays per-poll, m-C — only
+    /// the append and the write are deduped). The value is the audited record's digest for gate-arm
     /// episodes (identity: a same-name corrected re-spool with a DIFFERENT
     /// digest starts a fresh episode instead of being gated on the old
     /// budget — round-3 M5), and empty for Poison/ceiling-tail episodes
@@ -1244,6 +1245,29 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     files.sort();
+    // Round-3 m2 / round-4 R1: the retain set is built from the PRE-SPLIT
+    // listing — the ceiling tail names were listed too, and building it
+    // after split_off dropped their just-inserted episode entries every
+    // poll, reinstating the per-poll audit/marker spam the dedupe exists
+    // to stop (and re-arming a budget-exhausted record that drifts into
+    // the tail). Entries for externally-vanished files (deleted by the
+    // same user mid-episode) are what this retain exists to drop — a
+    // keyed re-spool would otherwise inherit the stale counts/identity.
+    let listed: std::collections::HashSet<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+        .collect();
+    retries.attempts.retain(|name, _| listed.contains(name));
+    retries
+        .stuck_episode_audited
+        .retain(|name, _| listed.contains(name));
+    // Round-3 m-D: a hostile 10k-file burst reserves O(N) buckets that
+    // HashMap::retain never shrinks — release them when everything is
+    // empty again.
+    if retries.attempts.is_empty() && retries.stuck_episode_audited.is_empty() {
+        retries.attempts.shrink_to_fit();
+        retries.stuck_episode_audited.clear();
+    }
 
     // Round-11 sibling parity: the ceiling quarantines the sorted tail.
     // The record read is BOUNDED (the tail is exactly the hostile zone,
@@ -1287,12 +1311,13 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     "pending-ceiling tail record is unreadable or oversize"
                 )),
             };
-            // Round-3 M4: the audit line and the marker rewrite fire ONCE
-            // per stuck episode (a squatted failed/ used to re-read,
-            // re-parse, re-digest and rewrite the marker for every tail
-            // record EVERY poll); the quarantine retry stays per-poll so
-            // the record still self-heals when failed/ unlocks. Round-3
-            // M3: the disposition is AUDITED like every other terminal arm
+            // Round-3 M4: the audit APPEND and the marker REWRITE fire
+            // once per stuck episode (a squatted failed/ used to append a
+            // jsonl line and rewrite the marker for every tail record
+            // EVERY poll — the read/parse/digest probe itself stays
+            // per-poll, m-C); the quarantine retry stays per-poll so the
+            // record still self-heals when failed/ unlocks. Round-3 M3:
+            // the disposition is AUDITED like every other terminal arm
             // (the tail can hold legitimate-looking records — the trail
             // must show where they went and why).
             if let Some(reason) = marker_reason.as_ref() {
@@ -1321,17 +1346,6 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             }
         }
     }
-    // Round-3 m2: entries for externally-vanished files leak forever (and
-    // a keyed re-spool would inherit the stale counts/episode state) —
-    // retain only what this poll actually listed, before anything moves.
-    let listed: std::collections::HashSet<String> = files
-        .iter()
-        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
-        .collect();
-    retries.attempts.retain(|name, _| listed.contains(name));
-    retries
-        .stuck_episode_audited
-        .retain(|name, _| listed.contains(name));
     for path in files {
         let Some(name) = path
             .file_name()
@@ -1361,7 +1375,11 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 .map(|request| spool_request_digest(&request));
             let audited = retries.stuck_episode_audited.get(&name).cloned();
             if let (Some(current), Some(audited)) = (current_digest.clone(), audited) {
-                if !audited.is_empty() && audited != current {
+                // An empty identity marks a Poison episode (its record was
+                // unparseable) — a record that PARSES now necessarily
+                // differs from the one audited, so it rebinds too
+                // (round-4 m-A).
+                if audited.is_empty() || audited != current {
                     // A corrected same-name re-spool: fresh episode.
                     log::warn!(
                         "[scheduled-creation] {name} was replaced with a corrected payload; resetting the exhausted budget for the new body"
@@ -1464,9 +1482,14 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 // path.exists() was always true and the clear never ran (a
                 // leaked entry let a same-name keyed re-spool inherit a
                 // stale count and quarantine a fresh record after one
-                // failure).
+                // failure). Round-4 m-A: the EPISODE entry clears here too
+                // — a lingering empty-identity entry would silence the
+                // audit/marker of a fresh same-name poison episode, and its
+                // empty identity would block the gate arm's rebind for a
+                // corrected re-spool.
                 if !path.exists() {
                     retries.attempts.remove(&name);
+                    retries.stuck_episode_audited.remove(&name);
                 }
                 if first_of_episode {
                     let stem = path
@@ -2559,13 +2582,20 @@ mod tests {
         // Round-3 M6a: the audit line + failure marker are ONCE per stuck
         // episode — the jsonl line count must not grow across polls (the
         // one-shot insert made unconditional = 86,400 lines/day shipped
-        // green before this pin).
+        // green before this pin). The workspace dir is created FIRST so
+        // the audit appends actually land.
         let exec_root = state
             .sessions
             .session_roots("reqsrc01")
             .expect("roots")
             .execution;
         std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|c| c.lines().count())
+                .unwrap_or(0)
+        };
+        let _ = audit_lines();
         let audit_lines = || {
             std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
                 .map(|c| c.lines().count())
@@ -2608,6 +2638,56 @@ mod tests {
                 .map(|digest| !digest.is_empty())
                 .unwrap_or(false),
             "the episode stays audited (with the record's digest identity) while stuck"
+        );
+        // Round-4 R2: the digest-identity REBIND is the fix's headline — a
+        // corrected same-name re-spool must start a fresh episode and
+        // APPLY, not be gated on the old record's exhausted budget
+        // (deleting the rebind block ships this red).
+        std::fs::write(
+            spool.join("stuck.json"),
+            spool_record_json(&[
+                ("idempotency_key", serde_json::json!("k-stuck")),
+                ("name", serde_json::json!("更正后的名字")),
+            ]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            retries.attempts.is_empty(),
+            "the corrected body resets the exhausted budget"
+        );
+        assert!(
+            !failed_dir().join("stuck.json").exists(),
+            "the corrected body is not quarantined untried when failed/ unlocks"
+        );
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            1,
+            "the corrected body applies after the rebind"
+        );
+        assert!(!spool.join("stuck.json").exists(), "then is consumed");
+        assert!(
+            done_dir().join("stuck.json").exists(),
+            "its receipt is written"
         );
     }
 
@@ -2697,6 +2777,68 @@ mod tests {
             marker["error"].as_str().unwrap().contains("unparseable"),
             "the marker names the real cause: {}",
             marker["error"]
+        );
+    }
+
+    /// Round-4 R1: a stuck CEILING-TAIL record's audit/marker fire ONCE per
+    /// episode — the pre-split `listed` set must include tail names, or the
+    /// retain drops their episode entries every poll and reinstates the
+    /// per-poll audit spam (probe-proven [1,2,3] before the ordering fix).
+    #[tokio::test]
+    async fn stuck_ceiling_tail_audit_is_once_per_episode() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        // Parseable but invalid (CRON rrule): validate() poisons them AND
+        // audit_failure can attribute them (unparseable records have the
+        // documented no-audit carve-out, so they cannot pin this).
+        for i in 0..=MAX_PENDING_FILES {
+            let name = format!("c{i:05}.json");
+            std::fs::write(
+                spool.join(&name),
+                spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;*"))]),
+            )
+            .unwrap();
+        }
+        // Squat failed/: every quarantine rename fails, so every record
+        // re-runs its terminal arm every poll.
+        std::fs::write(failed_dir(), b"not a directory").unwrap();
+        let exec_root = state
+            .sessions
+            .session_roots("reqsrc01")
+            .expect("roots")
+            .execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|c| c.lines().count())
+                .unwrap_or(0)
+        };
+        let mut retries = RetryState::default();
+        let mut counts = Vec::new();
+        for _ in 0..3 {
+            process_pending_spool(
+                &StateCreator(&state),
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+            counts.push(audit_lines());
+        }
+        assert_eq!(
+            counts[0], counts[1],
+            "poll 2 must not re-append tail audit lines: {counts:?}"
+        );
+        assert_eq!(
+            counts[1], counts[2],
+            "poll 3 must not re-append tail audit lines: {counts:?}"
+        );
+        assert!(
+            counts[0] > 0,
+            "fixture guard: every record audited exactly once on poll 1"
         );
     }
 
@@ -2816,6 +2958,21 @@ mod tests {
         assert_eq!(
             marker["ok"], true,
             "the landed receipt is not overwritten by a failure marker"
+        );
+        // Round-4 m-B: what the suppression branch buys is audit accuracy —
+        // a receipt-answered tail must NOT gain a "ceiling exceeded"
+        // failure audit line (the marker half is independently protected by
+        // write_failure_marker's ok-receipt guard; this line is not).
+        let audit_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        assert!(
+            !audit_root.exists()
+                || !std::fs::read_to_string(&audit_root)
+                    .unwrap_or_default()
+                    .contains("pending-file ceiling"),
+            "a receipt-answered tail must not be audited as a ceiling failure"
         );
     }
 
@@ -2984,6 +3141,9 @@ mod tests {
             &mut retries,
         )
         .await;
+        // Round-4 m10 (the assert round-3 claimed but had not shipped):
+        // the poison path clears the attempt budget.
+        assert!(retries.attempts.is_empty(), "poison clears the budget");
         // The waiting MCP call receives a terminal failure instead of
         // "pending" (the poison arm writes the marker too).
         let marker: serde_json::Value = serde_json::from_str(
