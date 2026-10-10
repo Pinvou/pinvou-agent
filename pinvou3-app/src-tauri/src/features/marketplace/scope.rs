@@ -98,135 +98,26 @@ fn disabled_bundles_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.json")
 }
 
-/// In-process serialization for the `disabled_bundles.json` read-modify-write.
-///
-/// #515: an in-process mutex alone cannot stop cross-process races — the GUI
-/// and headless hosts can share one `~/.pinvou3` home and both install/toggle
-/// packs, so two concurrent load→save sections silently drop each other's
-/// writes (a lost update; the lost side is the user's explicit off, which is
-/// fail-open on the DenyAll gate). Every write critical section must go
-/// through `with_scope_file_lock`: take this mutex first, then the OS-level
-/// file lock (flock / LockFileEx via `fd-lock`, the same primitive and crate
-/// as the remote-control process-ownership lock). Each acquisition opens a
-/// fresh file, so the OS lock actually excludes other threads of this process
-/// too; the in-process mutex stays in front of it so the read path's
-/// `try_write` can only ever be beaten by a *peer* process, and so a write's
-/// load→modify→save is exclusive before the OS lock is even attempted.
-static DISABLED_BUNDLES_FILE_LOCK: Mutex<()> = Mutex::new(());
-
 /// Cross-process lock file path (same directory as the data file; holds no
-/// user data).
+/// user data). `super::file_lock::with_file_lock(&disabled_bundles_path(), …)`
+/// derives exactly this path from the data path (`with_extension("lock")`), so
+/// it is both the key the shared in-process mutex registry is keyed by and the
+/// path spelled out in every lock refusal.
+///
+/// WHY the scope RMW is serialized at all (#515): an in-process mutex alone
+/// cannot stop cross-process races — the GUI and headless hosts can share one
+/// `~/.pinvou3` home and both install/toggle packs, so two concurrent
+/// load→save sections silently drop each other's writes (a lost update; the
+/// lost side is the user's explicit off, which is fail-open on the DenyAll
+/// gate). Every write critical section runs through the shared funnel's
+/// in-process mutex + OS file lock (flock / LockFileEx via `fd-lock`), and
+/// each acquisition opens a fresh lock file, so the OS lock also excludes this
+/// process's other threads while the mutex stays in front of it — the hot
+/// read's `try_write` can only ever be beaten by a *peer* process, and a
+/// write's load→modify→save is exclusive before the OS lock is even attempted.
 fn disabled_bundles_lock_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.lock")
 }
-
-/// Opens (creating if missing) the cross-process lock file. Shared by the
-/// blocking write path and the try-lock read path.
-fn open_scope_lock_file() -> Result<std::fs::File, String> {
-    let lock_path = disabled_bundles_lock_path();
-    let open = || crate::platform::filesystem::open_private_lock_file(&lock_path);
-    // Open first: once the home exists — the steady state, and hot reads are
-    // the common case — this skips the per-read create_dir_all probe; only a
-    // missing file/directory pays for it.
-    match open() {
-        Ok(file) => Ok(file),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(parent) = lock_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("create {}: {e}", parent.display()))?;
-            }
-            open().map_err(|error| format!("open {}: {error}", lock_path.display()))
-        }
-        Err(error) => Err(format!("open {}: {error}", lock_path.display())),
-    }
-}
-
-/// Runs a write critical section `f` while holding the combined in-process
-/// mutex + OS file lock that serializes every `disabled_bundles.json`
-/// load→save against the peer process (GUI / headless sharing the home)
-/// (#515). Fallible, not non-blocking: the wait is unbounded by design. Hot
-/// readers are immune to that hang via `try_lock` degradation (see
-/// `load_disabled_bundles_file`).
-///
-/// Returns `Err` when cross-process serialization cannot be established (the
-/// lock file cannot be opened or locked, e.g. a filesystem without lock
-/// support). Callers must then refuse the read-modify-write instead of running
-/// it unsynchronized — an unlocked RMW is exactly the cross-process lost
-/// update this module guards against.
-///
-/// Blocking has no timeout (fd-lock v4 has no timeout API): the OS releases
-/// the lock when the peer process exits or crashes (flock / LockFileEx die
-/// with the fd), but a frozen peer (SIGSTOP / debugger) makes this process
-/// wait indefinitely. Locking is same-host by construction: flock provides no
-/// cross-host mutual exclusion on network filesystems, so hosts sharing a
-/// network-mounted home are outside this module's threat model. The critical
-/// section is a local JSON read-modify-write (the widest variant, the
-/// connector-switch sync, additionally enumerates installed ids), so that
-/// fail-stop hang (frozen peer only) is accepted over a fail-open lost update.
-///
-/// Lock order within this module is uniform: in-process mutex → OS file lock, and
-/// the only other lock reachable inside a critical section is the bundle
-/// store's own mutex, on one leg: the DenyAll resolution's installed-ids
-/// enumeration (`installed_skill_ids_strict` reads the bundle store's
-/// records under its lock; round-17 review — the legacy-migration leg's id
-/// normalization and `try_installed_ids` are lock-free filesystem walks, and
-/// the save-side input normalization walks the in-memory manifest without
-/// taking the store mutex). That ordering is never
-/// reversed — no store method enters this module's critical sections — so no
-/// deadlock class exists. Conversely, a scope critical section never takes any
-/// lock beyond the store mutex above, but the nesting across it is NOT uniform
-/// module-wide (round-12 review): the uninstall path holds the transaction
-/// lock across scope strips, the restore path holds the per-id import lock
-/// across the scope registration, and the import pre-land gate deliberately
-/// holds NO other lock; the recycle-bin lock is never held across a scope
-/// section.
-fn with_scope_file_lock<F, R>(f: F) -> Result<R, String>
-where
-    F: FnOnce() -> R,
-{
-    let _process_guard = DISABLED_BUNDLES_FILE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let file = open_scope_lock_file()?;
-    let mut lock = fd_lock::RwLock::new(file);
-    // The in-process mutex is already held while the OS lock is taken, and
-    // the store mutex (see the lock-order note above) is never held by
-    // another thread waiting on this one, so deadlock is impossible. A
-    // signal-interrupted flock retries instead of surfacing as a spurious
-    // write refusal. So does the Windows blocking LockFileEx race that
-    // surfaces a transient ERROR_LOCK_VIOLATION as a raw error instead of
-    // blocking (the races fd-lock's own try path maps to WouldBlock): a
-    // bounded retry turns it into a normal wait, and a persistent failure
-    // still refuses fail-closed once the bound is exhausted.
-    let mut lock_write_retries = 0u32;
-    let _os_guard = loop {
-        match lock.write() {
-            Ok(guard) => break guard,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                if lock_write_retries < LOCK_WRITE_TRANSIENT_RETRIES {
-                    lock_write_retries += 1;
-                    std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
-                    continue;
-                }
-                return Err(format!(
-                    "lock {}: {error}",
-                    disabled_bundles_lock_path().display()
-                ));
-            }
-        }
-    };
-    Ok(f())
-}
-
-/// Bounded retry for OS-lock acquisition errors in `with_scope_file_lock`
-/// and `load_disabled_bundles_startup`: every non-`Interrupted` error is
-/// retried (the motivating case being the Windows blocking-`LockFileEx`
-/// ERROR_LOCK_VIOLATION race, which can hit the startup read just as it hits
-/// a writer); a persistent failure still refuses fail-closed (writer) or
-/// degrades fail-closed (startup read) after the bound.
-const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
-const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Per-mode once-only logging for scope-read failures. The engine-side hot
 /// readers hit these paths on every turn, so a persistently unavailable lock
@@ -292,14 +183,15 @@ fn clear_scope_read_failure_log() {
 /// degradation; an unexpected lock error is logged once per failure mode and
 /// degrades the same way.
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
-    let _process_guard = match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+    let process_mutex = super::file_lock::process_mutex_for(&disabled_bundles_lock_path());
+    let _process_guard = match process_mutex.try_lock() {
         Ok(guard) => guard,
         // A local writer is inside its critical section (possibly parked on a
         // frozen peer's OS lock): degrade exactly like peer contention.
         Err(std::sync::TryLockError::WouldBlock) => return read_disabled_bundles_file(false),
         Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
     };
-    match open_scope_lock_file() {
+    match super::file_lock::open_lock_file(&disabled_bundles_lock_path()) {
         Ok(file) => match fd_lock::RwLock::new(file).try_write() {
             Ok(_guard) => read_disabled_bundles_file(true),
             // Peer contention is the designed, silent degradation.
@@ -407,6 +299,16 @@ static FAIL_NEXT_DISABLED_BUNDLES_WRITE: std::sync::atomic::AtomicBool =
 #[cfg(test)]
 pub(crate) fn fail_next_disabled_bundles_write_for_test() -> super::FailpointResetGuard {
     super::arm_failpoint(&FAIL_NEXT_DISABLED_BUNDLES_WRITE)
+}
+
+/// The fail-closed recovered state shared by the corrupt/lost-store recovery
+/// arms: only the migration marker is set and no scope is initialized, so the
+/// DenyAll fallback keeps every previously opted-out pack off.
+fn fail_closed_recovered_file() -> DisabledBundlesFile {
+    DisabledBundlesFile {
+        plain_defaults_migrated: true,
+        ..DisabledBundlesFile::default()
+    }
 }
 
 /// Shared freeze-persist tail of the NotFound-branch recovery arms (the
@@ -524,10 +426,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     LOG_RECOVERY,
                     "[marketplace] disabled_bundles.json is gone but a .corrupt.* copy proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
-                let recovered = DisabledBundlesFile {
-                    plain_defaults_migrated: true,
-                    ..DisabledBundlesFile::default()
-                };
+                let recovered = fail_closed_recovered_file();
                 try_freeze_verdict(&recovered, persist_repairs, "lost-store recovery verdict");
                 return recovered;
             }
@@ -601,10 +500,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     LOG_RECOVERY,
                     "[marketplace] a legacy scope file exists but cannot be consumed; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
-                let recovered = DisabledBundlesFile {
-                    plain_defaults_migrated: true,
-                    ..DisabledBundlesFile::default()
-                };
+                let recovered = fail_closed_recovered_file();
                 try_freeze_verdict(
                     &recovered,
                     persist_repairs,
@@ -697,10 +593,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
             // then would turn "unreadable but recoverable" into "permanently
             // lost" (review #455 R6-B1). The in-memory fail-closed state is
             // already correct; the next read retries.
-            let recovered = DisabledBundlesFile {
-                plain_defaults_migrated: true,
-                ..DisabledBundlesFile::default()
-            };
+            let recovered = fail_closed_recovered_file();
             match read_private_data_file_bytes(&path) {
                 Ok(bytes) => {
                     // Raw bytes quarantine (R7-M1: a lossy copy is mojibake) with
@@ -838,38 +731,43 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
 /// LockFileEx race skips a freeze just as it refuses a write), the read
 /// degrades (and logs once): an unsynchronized freeze would be worse.
 ///
-/// Returns the read state plus whether the freeze verdict this boot relies
-/// on is NOT persisted on disk: either the persist failed during this read,
-/// or the read degraded and memoized the fresh shape (round-17 review) —
-/// in both cases the `UNPERSISTED_VERDICT` memo is armed for this home and
-/// the verdict is lost across a restart (the registered
-/// crash-during-freeze family). The bool exists because the failure logs at
-/// a point where the Tauri log plugin is not yet attached (round-16
-/// review) — the caller mirrors it onto the startup timeline, which
-/// persists before any logger exists.
-pub fn load_disabled_bundles_startup() -> (DisabledBundlesFile, bool) {
-    let _process_guard = DISABLED_BUNDLES_FILE_LOCK
+/// Returns whether the freeze verdict this boot relies on is NOT persisted
+/// on disk: either the persist failed during this read, or the read
+/// degraded and memoized the fresh shape (round-17 review) — in both cases
+/// the `UNPERSISTED_VERDICT` memo is armed for this home and the verdict is
+/// lost across a restart (the registered crash-during-freeze family). The
+/// bool exists because the failure logs at a point where the Tauri log
+/// plugin is not yet attached (round-16 review) — the caller mirrors it
+/// onto the startup timeline, which persists before any logger exists. The
+/// read state itself is not returned: every production caller gates on the
+/// flag alone (the read's effect is the on-disk/memo state), and the one
+/// file-using caller was a test whose disk-state asserts subsume the
+/// in-memory one.
+pub fn load_disabled_bundles_startup() -> bool {
+    let process_mutex = super::file_lock::process_mutex_for(&disabled_bundles_lock_path());
+    let _process_guard = process_mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let file = match open_scope_lock_file() {
+    let _file = match super::file_lock::open_lock_file(&disabled_bundles_lock_path()) {
         Ok(file) => {
             let mut lock = fd_lock::RwLock::new(file);
             // Some: the OS lock is held for the read below (freezes persist).
             // None: acquisition failed — degrade to the unlocked,
             // never-persisting read.
+            // Same bounded retry as the write funnel (round-18 review): the
+            // Windows blocking-LockFileEx transient race must not skip the
+            // boot freeze; a persistent failure still degrades fail-closed
+            // after the bound (the bounds are shared with the funnel; this
+            // caller degrades where the funnel refuses).
             let mut startup_lock_retries = 0u32;
             let os_guard = loop {
                 match lock.write() {
                     Ok(guard) => break Some(guard),
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) => {
-                        // Same bounded retry as the write funnel (round-18
-                        // review): the Windows blocking-LockFileEx transient
-                        // race must not skip the boot freeze; a persistent
-                        // failure still degrades fail-closed after the bound.
-                        if startup_lock_retries < LOCK_WRITE_TRANSIENT_RETRIES {
+                        if startup_lock_retries < super::file_lock::LOCK_WRITE_TRANSIENT_RETRIES {
                             startup_lock_retries += 1;
-                            std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
+                            std::thread::sleep(super::file_lock::LOCK_WRITE_RETRY_DELAY);
                             continue;
                         }
                         log_scope_read_failure(
@@ -908,12 +806,54 @@ pub fn load_disabled_bundles_startup() -> (DisabledBundlesFile, bool) {
         .as_ref()
         .map(|(memo_home, _)| *memo_home == paths::pinvou3_home())
         .unwrap_or(false);
-    (file, freeze_persist_failed)
+    freeze_persist_failed
+}
+
+/// Mirrors the freeze-persist failure onto the startup timeline — the CRITICAL
+/// log fires inside the read before any logger attaches (round-16 review), so
+/// the timeline file is the only durable channel naming the failure. Single
+/// source of the mirror copy: both GUI startup reads and the windowless host
+/// call this (pinned per host by lib.rs's
+/// `freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts`);
+/// the console bin keeps its own eprintln (the timeline is `pub(crate)` and
+/// the tool has no window at all).
+pub(crate) fn mirror_freeze_persist_failure() {
+    crate::platform::startup::mark_with_detail(
+        "rust",
+        "disabled_bundles_migration",
+        "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
+    );
 }
 
 /// Read under the full lock: read-time repairs persist (serialized with every
-/// other lock holder). Write critical sections load through this. The
-/// read-failure latch is re-armed by `read_disabled_bundles_file` itself on
+/// other lock holder). Write critical sections load through this, after the
+/// caller entered `super::file_lock::with_file_lock(&disabled_bundles_path(),
+/// …)` — the shared marketplace funnel that generalized this module's former
+/// `with_scope_file_lock` (#521). The funnel's wait is the unbounded flock
+/// wait by design (a peer's normal critical section is millisecond-scale; a
+/// FROZEN peer blocks the writer indefinitely; fd-lock v4 has no timeout), and
+/// the critical section is a local JSON read-modify-write (the widest variant,
+/// the connector-switch sync, additionally enumerates installed ids), so that
+/// fail-stop hang (frozen peer only) is accepted over a fail-open lost update.
+///
+/// Lock order within the funnel call is uniform: in-process mutex → OS file
+/// lock, and the only other lock reachable inside a critical section is the
+/// bundle store's own mutex, on one leg: the DenyAll resolution's installed-ids
+/// enumeration (`installed_skill_ids_strict` reads the bundle store's
+/// records under its lock; round-17 review — the legacy-migration leg's id
+/// normalization and `try_installed_ids` are lock-free filesystem walks, and
+/// the save-side input normalization walks the in-memory manifest without
+/// taking the store mutex). That ordering is never
+/// reversed — no store method enters this module's critical sections — so no
+/// deadlock class exists. Conversely, a scope critical section never takes any
+/// lock beyond the store mutex above, but the nesting across it is NOT uniform
+/// module-wide (round-12 review): the uninstall path holds the transaction
+/// lock across scope strips, the restore path holds the per-id import lock
+/// across the scope registration, and the import pre-land gate deliberately
+/// holds NO other lock; the recycle-bin lock is never held across a scope
+/// section.
+///
+/// The read-failure latch is re-armed by `read_disabled_bundles_file` itself on
 /// its clean exits only (round-16 review): a locked load that just traveled a
 /// recovery arm must not wipe the bit that arm just set.
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
@@ -939,10 +879,7 @@ fn quarantine_and_recover_disabled_bundles(
     error: &str,
     persist_repairs: bool,
 ) -> (DisabledBundlesFile, bool) {
-    let recovered = DisabledBundlesFile {
-        plain_defaults_migrated: true,
-        ..DisabledBundlesFile::default()
-    };
+    let recovered = fail_closed_recovered_file();
     {
         let memo = PENDING_CORRUPT_RECOVERY
             .lock()
@@ -1842,7 +1779,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     // exclude builtin ids, so legitimate internal callers are unaffected.
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let normalized = fold_and_dedup_input_ids(ids);
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let key = scope.as_str().to_string();
         let was_uninitialized = !file.initialized.contains(&key);
@@ -1940,7 +1877,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         // resurrection (round-14 M1) — but a lost write now surfaces instead of
         // rendering success over unpersisted state.
         try_save_disabled_bundles_file(&file)
-    })?
+    })
 }
 
 /// 读某 scope 被「不可见」（可见性过滤）的包 id 列表。缺省空 = 全可见。
@@ -1972,12 +1909,12 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
     // same layering as the disable path (review round-5 minor 3).
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let normalized = fold_and_dedup_input_ids(ids);
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         file.hidden_scopes
             .insert(scope.as_str().to_string(), normalized);
         try_save_disabled_bundles_file(&file)
-    })?
+    })
 }
 
 /// 该 scope 对底座「不可用」的包 id 并集 = 开关关（disabled）+ 不可见（hidden）。
@@ -2218,7 +2155,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
     if consent_gate_bundle_already_known(&package_id) {
         return Ok(());
     }
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let mut changed = false;
         for mode in SessionMode::ALL {
@@ -2226,6 +2163,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
                 continue;
             }
             let key = mode.as_str();
+            let ledger_key = format!("{key}:{package_id}");
             if !file.initialized.contains(key) {
                 // Round-32 MAJOR 1 (review #455): the uninitialized arm must still
                 // record the pair. A connect/install sync on a fresh home runs
@@ -2237,14 +2175,12 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
                 // row — the uninitialized scope is covered by the on-the-fly
                 // expansion) marks the pair as seen, so the post-materialization
                 // refresh leaves the enable in place.
-                let ledger_key = format!("{key}:{package_id}");
                 if !file.install_default_synced.contains(&ledger_key) {
                     file.install_default_synced.push(ledger_key);
                     changed = true;
                 }
                 continue;
             }
-            let ledger_key = format!("{key}:{package_id}");
             if ledger_gated && file.install_default_synced.contains(&ledger_key) {
                 continue;
             }
@@ -2272,7 +2208,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             try_save_disabled_bundles_file(&file)?;
         }
         Ok(())
-    })?
+    })
 }
 
 /// Sync every scope after a bundle uninstall/disconnect: drop the id from each
@@ -2311,7 +2247,7 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
 /// corrupt file is left for the regular read path's fail-closed recovery)
 /// and removes exactly the caller-resolved owner's rows from the three sets.
 pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), String> {
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let path = disabled_bundles_path();
         // Round-20 review (P2): the hardened private read, like every other
         // read of this file — a bare read_to_string here let a planted FIFO
@@ -2386,7 +2322,7 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
             try_save_disabled_bundles_file(&file)?;
         }
         Ok(())
-    })?
+    })
 }
 
 /// Batch-enable entry for user actions such as scenario opt-ins (review #455
@@ -2455,7 +2391,7 @@ pub fn enable_packages_in_scope(
     if ids.is_empty() {
         return Ok(EnablePackagesOutcome::default());
     }
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let key = scope.as_str();
         if file.initialized.contains(key) {
@@ -2572,7 +2508,7 @@ pub fn enable_packages_in_scope(
             not_applied,
             state_changed: changed,
         })
-    })?
+    })
 }
 
 /// Consent gate for trash restores (review #455 R5-m5 / R9-M2): a **single
@@ -2645,7 +2581,7 @@ fn apply_restore_consent_gate_impl(
     if ids.is_empty() {
         return Ok(());
     }
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let mut changed = false;
         // Round-16 MAJOR1, force pass: materialize uninitialized DenyAll scopes
@@ -2714,7 +2650,7 @@ fn apply_restore_consent_gate_impl(
             try_save_disabled_bundles_file(&file)?;
         }
         Ok(())
-    })?
+    })
 }
 
 /// 项目级 skills 开关（默认关）。
@@ -2727,19 +2663,20 @@ pub fn project_skills_enabled() -> bool {
 /// (user governance state must not be silently lost — same principle as the
 /// toggle/visibility writes).
 pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
-    with_scope_file_lock(|| {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         if file.project_skills_enabled == enabled {
             return Ok(());
         }
         file.project_skills_enabled = enabled;
         try_save_disabled_bundles_file(&file)
-    })?
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::marketplace::file_lock;
     use crate::features::marketplace::tests::corrupt_sibling_count;
     use crate::platform::test_support::{make_dir_unreadable_for_test, with_temp_home};
 
@@ -3108,13 +3045,13 @@ mod tests {
     fn startup_read_reports_a_failed_freeze_persist() {
         with_temp_home("pinvou3-scope-startup-freeze-fail", || {
             let _failpoint = fail_next_disabled_bundles_write_for_test();
-            let (_, failed) = load_disabled_bundles_startup();
+            let failed = load_disabled_bundles_startup();
             assert!(failed, "the failed freeze persist must be reported");
             // Round-20 P2: the next fully locked read re-attempts the persist
             // through the memo-hit arm. The one-shot failpoint is consumed
             // and the home is writable, so the retry lands: the freeze
             // becomes durable and the report clears without any writer.
-            let (_, failed_after_retry) = load_disabled_bundles_startup();
+            let failed_after_retry = load_disabled_bundles_startup();
             assert!(
                 !failed_after_retry,
                 "the memo-hit retry must land the freeze once persisting works"
@@ -3124,7 +3061,7 @@ mod tests {
                 "the memo-hit retry must persist the frozen verdict"
             );
             // Subsequent reads take the normal on-disk path and stay down.
-            let (_, failed_after_save) = load_disabled_bundles_startup();
+            let failed_after_save = load_disabled_bundles_startup();
             assert!(!failed_after_save, "a landed freeze keeps the report down");
         });
     }
@@ -3165,11 +3102,7 @@ mod tests {
             // save (a restart before that writer re-evaluates the polluted
             // signal and can flip plain to AllowAll permanently).
             std::fs::remove_dir(&lock).expect("test should heal the lock path");
-            let (file, unpersisted) = load_disabled_bundles_startup();
-            assert!(
-                !file.initialized.contains("plain"),
-                "the memoized fresh verdict must survive the first-boot trace: {file:?}"
-            );
+            let unpersisted = load_disabled_bundles_startup();
             assert!(
                 !unpersisted,
                 "the healed locked read must land the freeze via the memo-hit retry"
@@ -4019,8 +3952,12 @@ mod tests {
         });
     }
 
-    /// 读路径的「读到即迁移落盘」必须取 `DISABLED_BUNDLES_FILE_LOCK` 与持锁写方
-    /// 串行：持锁期间并发 load（磁盘为旧连接器文件、必然触发迁移落盘）不得先行落盘。
+    /// The read path's read-time migration persist must serialize with the
+    /// locked writers through the shared per-path in-process mutex
+    /// (`file_lock::process_mutex_for`, the same key the write funnel takes):
+    /// a concurrent load while the mutex is held (the disk still carries the
+    /// legacy connector file, so the read would trigger the migration persist)
+    /// must not land the persist first.
     #[test]
     fn read_path_migration_serializes_with_file_lock() {
         with_temp_home("pinvou3-scope", || {
@@ -4028,9 +3965,10 @@ mod tests {
             let conn = paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
             std::fs::write(&conn, legacy).unwrap();
-            let guard = DISABLED_BUNDLES_FILE_LOCK
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            // Bind the Arc first: the guard borrows the mutex inside it, so a
+            // temporary here would be dropped while still borrowed (E0716).
+            let process_mutex = file_lock::process_mutex_for(&disabled_bundles_lock_path());
+            let guard = process_mutex.lock().unwrap_or_else(|p| p.into_inner());
             let (ready_tx, ready_rx) = std::sync::mpsc::channel();
             let reader = std::thread::spawn(move || {
                 ready_tx
@@ -4099,7 +4037,7 @@ mod tests {
     fn wait_until_scope_mutex_held() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            match DISABLED_BUNDLES_FILE_LOCK.try_lock() {
+            match file_lock::process_mutex_for(&disabled_bundles_lock_path()).try_lock() {
                 // Not held by the worker yet — retry shortly.
                 Ok(guard) => drop(guard),
                 // Held by the worker: with the foreign lock held, it is now

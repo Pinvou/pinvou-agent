@@ -788,18 +788,10 @@ pub fn run() {
             // persists the frozen fresh-vs-upgrade verdict, ahead of every
             // first-startup write.
             startup::mark("disabled_bundles_migration:start");
-            let (_, freeze_persist_failed) =
+            let freeze_persist_failed =
                 crate::features::marketplace::scope::load_disabled_bundles_startup();
             if freeze_persist_failed {
-                // The CRITICAL log line for this failure fires inside the read
-                // — before the log plugin attaches below — so release builds
-                // would never see it (round-16 review). The startup timeline
-                // file persists from startup::init above and survives.
-                startup::mark_with_detail(
-                    "rust",
-                    "disabled_bundles_migration",
-                    "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
-                );
+                crate::features::marketplace::scope::mirror_freeze_persist_failure();
             }
             startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
@@ -1245,14 +1237,10 @@ pub fn run() {
             // hoisted site's does (round-20 review): the hoisted read's
             // success does not cover a failure developing in between, and
             // this mirror is the only durable channel that can name it.
-            let (_, freeze_persist_failed) =
+            let freeze_persist_failed =
                 crate::features::marketplace::scope::load_disabled_bundles_startup();
             if freeze_persist_failed {
-                startup::mark_with_detail(
-                    "rust",
-                    "disabled_bundles_migration",
-                    "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
-                );
+                crate::features::marketplace::scope::mirror_freeze_persist_failure();
             }
             startup::mark("disabled_skills:done");
 
@@ -1903,27 +1891,25 @@ mod startup_order_contract {
     /// Round-20 review (P2): the freeze-persist failure mirror is the only
     /// durable channel naming the failure before the log plugin attaches
     /// (the windowless host attaches none at all) — but nothing pinned its
-    /// existence, so deleting either host's `mark_with_detail` block passed
-    /// the whole suite. lib.rs must keep the mirror at BOTH startup reads
-    /// (the hoisted freeze and the second-chance re-read); headless keeps
-    /// one. Needle assembled from fragments so this test module's own source
+    /// existence, so deleting either host's mirror passed the whole suite.
+    /// lib.rs must keep the mirror call at BOTH startup reads (the hoisted
+    /// freeze and the second-chance re-read); headless keeps one. Cleanup:
+    /// the mirror copy itself now lives in the shared scope helper, so the
+    /// needles count the helper CALL per file instead of the message text.
+    /// Needle assembled from fragments so this test module's own source
     /// (scanned together with lib.rs) cannot self-match — the established
     /// review #455 R4-S1 trick.
     #[test]
     fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts() {
-        let mirror_needle = [
-            "CRITICAL: the fresh-vs-",
-            "upgraded verdict could not be persisted",
-        ]
-        .concat();
-        let gui_mirrors = include_str!("lib.rs").matches(&mirror_needle).count();
+        let helper_call = ["mirror_", "freeze_persist_failure()"].concat();
+        let gui_mirrors = include_str!("lib.rs").matches(&helper_call).count();
         assert!(
             gui_mirrors >= 2,
             "lib.rs must keep the freeze-persist failure mirrors at BOTH startup reads (the hoisted freeze and the second-chance re-read): found {gui_mirrors}"
         );
         let headless_mirrors =
             include_str!("features/assistant/product_runtime/headless_bridge.rs")
-                .matches(&mirror_needle)
+                .matches(&helper_call)
                 .count();
         assert_eq!(
             headless_mirrors, 1,
@@ -1932,7 +1918,13 @@ mod startup_order_contract {
         // Round-26 review (minor): the console bin mirrors via eprintln (the
         // startup timeline is pub(crate) and this host has no window at all);
         // deleting that mirror passed every leg — pin it with the same
-        // fragment needle.
+        // fragment needle (this leg still counts the message text itself,
+        // which the bin owns directly instead of calling the helper).
+        let mirror_needle = [
+            "CRITICAL: the fresh-vs-",
+            "upgraded verdict could not be persisted",
+        ]
+        .concat();
         let bin_mirrors = include_str!("bin/dump_system_prompt.rs")
             .matches(&mirror_needle)
             .count();

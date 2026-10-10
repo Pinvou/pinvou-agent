@@ -28,8 +28,7 @@ fn main() -> Result<()> {
     // migration verdict before bridge.boot()'s first-boot self-writes
     // (ensure_dirs/default settings.json), so the dev tool's first touch of a
     // fresh home cannot persist a polluted verdict (review #455 blocking item 3).
-    let (_, freeze_persist_failed) =
-        pinvou3_lib::features::marketplace::load_disabled_bundles_startup();
+    let freeze_persist_failed = pinvou3_lib::features::marketplace::load_disabled_bundles_startup();
     if freeze_persist_failed {
         // Mirror the GUI/headless hosts: the CRITICAL log fired inside the
         // read and this tool attaches no logger. It is a console tool, so

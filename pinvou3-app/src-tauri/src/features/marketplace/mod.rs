@@ -53,7 +53,9 @@ use crate::platform::paths;
 /// domain. Install, uninstall, and startup repair must take this lock before reading committed
 /// state so cleanup never acts on a stale snapshot.
 ///
-/// Lock order vs `scope::DISABLED_BUNDLES_FILE_LOCK` (round-11 M1): the only
+/// Lock order vs the scope file's cross-process lock (`scope::`
+/// `disabled_bundles_lock_path()`, held via `file_lock::with_file_lock`)
+/// (round-11 M1): the only
 /// permitted nesting is TRANSACTION → FILE (e.g. uninstall's state cleanup
 /// re-enters the scope file lock). The reverse order is forbidden: scope
 /// read/write paths (DenyAll resolution, save_disabled_bundles_for) must
@@ -347,10 +349,13 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
                 .file_name()
                 .to_string_lossy()
                 .starts_with(&sibling_prefix)
-                && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                // One metadata() covers both predicates: a DirEntry's
+                // metadata does not traverse symlinks (the same lstat
+                // semantics the file_type() check had) and already carries
+                // the length, so the second syscall bought nothing.
                 && entry
                     .metadata()
-                    .map(|m| m.len() > 0 || empty_content)
+                    .map(|m| m.is_file() && (m.len() > 0 || empty_content))
                     .unwrap_or(false)
             {
                 return Ok(());
@@ -1008,8 +1013,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// set unknown" (review #455 R5-B2). The corrupt recovery is **read-only
     /// here**: persistence is owned by writer callers under the marketplace
     /// transaction lock (round-11 B1), so this path never acquires
-    /// MARKETPLACE_TRANSACTION_LOCK — a read under DISABLED_BUNDLES_FILE_LOCK
-    /// (DenyAll resolution) must not block on the transaction lock, and a
+    /// MARKETPLACE_TRANSACTION_LOCK — a read under the scope file's
+    /// cross-process lock (DenyAll resolution) must not block on the
+    /// transaction lock, and a
     /// corrupt installed.json must not hang installs or the startup repair.
     pub(crate) fn try_installed_ids(&self) -> Result<Vec<String>, String> {
         self.read_installed(false)
@@ -1648,6 +1654,38 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             };
             removed_install_record = removed_by_us;
 
+            // Write-back core shared by both abort legs below: an aborted
+            // uninstall must leave the bundles.json mirror exactly as it
+            // found it, so the record THIS call removed is written back (and
+            // only that one — a record a concurrent actor already removed is
+            // never revived). The legs' log copies are pinned
+            // review-observable text (Chinese on the recycle leg, English on
+            // the round-17 withdrawal leg) and are deliberately NOT unified:
+            // `context` selects each leg's exact wording.
+            let write_back_removed_record = |record: Option<store::BundleRecord>, context: &str| {
+                match record {
+                    Some(record) => {
+                        if let Err(re) = store.upsert(record) {
+                            if context == "recycle" {
+                                log::warn!(
+                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
+                                );
+                            } else {
+                                log::warn!(
+                                    "[marketplace] record write-back after a failed withdrawal ({tool_id}): {re}"
+                                );
+                            }
+                        }
+                    }
+                    // Only the withdrawal leg restores an optional snapshot
+                    // (the recycle leg always holds its record), so the
+                    // missing-snapshot copy is withdrawal-worded.
+                    None => log::warn!(
+                        "[marketplace] record cannot be written back after a failed withdrawal ({tool_id}): no pre-uninstall record"
+                    ),
+                }
+            };
+
             // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
             // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
             // commands::marketplace::uninstall_marketplace_tool_sync）。
@@ -1683,11 +1721,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // installed.json / mcp.json 由下方事务 rollback 恢复；
                         // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
                         if removed_by_us {
-                            if let Err(re) = store.upsert(record) {
-                                log::warn!(
-                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
-                                );
-                            }
+                            write_back_removed_record(Some(record), "recycle");
                         }
                         return Err(format!("移入回收站失败（{tool_id}）: {e}"));
                     }
@@ -1730,18 +1764,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // uninstall leaves the registration state exactly as
                         // it found it.
                         if removed_by_us {
-                            match pre_remove_record.clone() {
-                                Some(record) => {
-                                    if let Err(re) = store.upsert(record) {
-                                        log::warn!(
-                                            "[marketplace] record write-back after a failed withdrawal ({tool_id}): {re}"
-                                        );
-                                    }
-                                }
-                                None => log::warn!(
-                                    "[marketplace] record cannot be written back after a failed withdrawal ({tool_id}): no pre-uninstall record"
-                                ),
-                            }
+                            write_back_removed_record(pre_remove_record.clone(), "withdrawal");
                         }
                         return Err(withdraw_error);
                     }

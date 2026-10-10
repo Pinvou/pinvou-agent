@@ -510,7 +510,7 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// instead. Windows has no `O_NOFOLLOW` equivalent; the same documented
 /// residual applies (profile-directory ACL reliance, consistent with the
 /// rest of the application data tree).
-pub(crate) fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
+fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -550,52 +550,34 @@ pub(crate) fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
 #[cfg(unix)]
 const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Read one of the private-home data files whose bytes are consent state:
-/// the Unix symlink/FIFO/device hardening of [`open_private_data_file`]
-/// (round-18 review — the lock file got this hardening with an explicit
-/// rationale; the data file a hot reader touches every turn is the same
-/// trust surface), plus on Windows the full-share-mode open so a concurrent
-/// writer's atomic rename-replace (`MoveFileEx` persist) is never blocked by
-/// this reader — a missing `FILE_SHARE_DELETE` would turn a read in flight
-/// during a peer's locked persist into a sharing violation and a spurious
-/// refusal of that write after its retry budget. std's `OpenOptions` default
-/// share mode already includes all three flags; the `cfg(windows)` leg pins
-/// the requirement by name rather than relying on callers knowing the std
-/// default.
+/// Read one of the private-home data files whose bytes are consent state,
+/// as UTF-8. Delegates to [`read_private_data_file_bytes`], whose body is
+/// the single hardened read (Unix symlink/FIFO/device refusal plus the
+/// Windows full-share-mode open); only the UTF-8 decode is added here.
+/// Disclosed delta vs the former inline `read_to_string`: an invalid-UTF-8
+/// refusal's message text comes from `FromUtf8Error` instead of std's
+/// stream text — the `ErrorKind` stays `InvalidData`, so kind-matched
+/// callers are unaffected.
 pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
-    #[cfg(unix)]
-    {
-        use std::io::Read as _;
-        let mut file = open_private_data_file(path)?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
-        Ok(content)
-    }
-    #[cfg(windows)]
-    {
-        use std::io::Read as _;
-        use std::os::windows::fs::OpenOptionsExt as _;
-        const FILE_SHARE_READ: u32 = 0x0000_0001;
-        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
-        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
-        let mut options = std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-        let mut file = options.open(path)?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
-        Ok(content)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        std::fs::read_to_string(path)
-    }
+    read_private_data_file_bytes(path).and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    })
 }
 
 /// [`read_private_data_file`] for raw bytes: the salvage read that preserves
-/// a corrupt store's bytes before quarantine. The same hardening applies —
-/// the salvage path must not hang on a planted FIFO either.
+/// a corrupt store's bytes before quarantine — and the single hardened body
+/// both readers share, so the salvage path must not hang on a planted FIFO
+/// either. That hardening (round-18 review — the lock file got it with an
+/// explicit rationale; the data file a hot reader touches every turn is the
+/// same trust surface) is the Unix symlink/FIFO/device refusal of
+/// [`open_private_data_file`], plus on Windows the full-share-mode open so a
+/// concurrent writer's atomic rename-replace (`MoveFileEx` persist) is never
+/// blocked by this reader — a missing `FILE_SHARE_DELETE` would turn a read
+/// in flight during a peer's locked persist into a sharing violation and a
+/// spurious refusal of that write after its retry budget. std's `OpenOptions`
+/// default share mode already includes all three flags; the `cfg(windows)`
+/// leg pins the requirement by name rather than relying on callers knowing
+/// the std default.
 pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(unix)]
     {
