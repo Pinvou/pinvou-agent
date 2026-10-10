@@ -2740,17 +2740,7 @@ mod tests {
 
             // The unreadable original survived the overwrite, renamed aside.
             let parent = path.parent().unwrap();
-            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".unreadable."))
-                        .unwrap_or(false)
-                })
-                .collect();
+            let sidecars = evidence_sidecars(parent, ".unreadable.");
             assert_eq!(
                 sidecars.len(),
                 1,
@@ -2816,17 +2806,7 @@ mod tests {
             // no sidecar remains.
             assert!(path.exists(), "the store must not sit absent");
             let parent = path.parent().unwrap();
-            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".unreadable."))
-                        .unwrap_or(false)
-                })
-                .collect();
+            let sidecars = evidence_sidecars(parent, ".unreadable.");
             assert!(
                 sidecars.is_empty(),
                 "the sidecar was renamed back: {sidecars:?}"
@@ -2839,17 +2819,7 @@ mod tests {
                 result.is_ok(),
                 "a writable home lets the retry succeed: {result:?}"
             );
-            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(parent)
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".unreadable."))
-                        .unwrap_or(false)
-                })
-                .collect();
+            let sidecars = evidence_sidecars(parent, ".unreadable.");
             assert_eq!(
                 sidecars.len(),
                 1,
@@ -2936,17 +2906,7 @@ mod tests {
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
             try_save_disabled_bundles_file(&recovered).unwrap();
 
-            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".unreadable."))
-                        .unwrap_or(false)
-                })
-                .collect();
+            let sidecars = evidence_sidecars(&home, ".unreadable.");
             assert_eq!(
                 sidecars.len(),
                 1,
@@ -2998,17 +2958,7 @@ mod tests {
             try_save_disabled_bundles_file(&DisabledBundlesFile::default())
                 .expect("an armed marker must not block the write");
 
-            let preserved: Vec<std::path::PathBuf> = std::fs::read_dir(paths::pinvou3_home())
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".unreadable."))
-                        .unwrap_or(false)
-                })
-                .collect();
+            let preserved = evidence_sidecars(&paths::pinvou3_home(), ".unreadable.");
             assert_eq!(
                 preserved.len(),
                 1,
@@ -3155,17 +3105,7 @@ mod tests {
                 file.plain_defaults_migrated && !file.initialized.contains("plain"),
                 "the invalid-UTF-8 read must recover fail-closed: {file:?}"
             );
-            let sidecars: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".corrupt."))
-                        .unwrap_or(false)
-                })
-                .collect();
+            let sidecars = evidence_sidecars(&home, ".corrupt.");
             assert_eq!(
                 sidecars.len(),
                 1,
@@ -4029,6 +3969,25 @@ mod tests {
         load_disabled_bundles_for(ConnectorScope::Plain)
     }
 
+    /// Collect the evidence sidecar paths beside `dir` whose file name
+    /// carries `marker` (`.corrupt.` = quarantine evidence, `.unreadable.` =
+    /// rename-aside evidence) — the path-returning twin of
+    /// `crate::features::marketplace::tests::corrupt_sibling_count`, which
+    /// counts only and so cannot pin a sidecar's bytes.
+    fn evidence_sidecars(dir: &std::path::Path, marker: &str) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.contains(marker))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// Blocks until the spawned worker holds the in-process scope mutex: with
     /// the foreign OS lock held by the test, a worker past the mutex is
     /// parked on (or just failed) the OS-lock acquisition. Without this
@@ -4059,10 +4018,9 @@ mod tests {
     /// Runs `worker` on another thread while the test holds the OS-level
     /// scope lock through a second fd (the peer-process shape), asserting the
     /// data file stays untouched until the foreign lock is released.
-    fn assert_blocked_until_foreign_lock_release<R, F>(worker: F) -> R
+    fn assert_blocked_until_foreign_lock_release<F>(worker: F)
     where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
+        F: FnOnce() + Send + 'static,
     {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -4167,12 +4125,7 @@ mod tests {
             // it, and a degraded read would never clear the bits anyway).
             try_save_disabled_bundles_file(&DisabledBundlesFile::default())
                 .expect("the fixture store must save");
-            let _lock_precreated = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(disabled_bundles_lock_path())
-                .expect("pre-create the lock file");
+            std::fs::write(disabled_bundles_lock_path(), b"").expect("pre-create the lock file");
             // Corrupt store bytes so every read re-enters the parse-error
             // recovery.
             std::fs::write(disabled_bundles_path(), b"not-json{{{").unwrap();
@@ -4296,12 +4249,7 @@ mod tests {
                 .expect("the fixture store must save");
             // Pre-create the lock file too: a read-only home cannot create it,
             // and a degraded read would never attempt the freeze persist.
-            let _lock_precreated = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(disabled_bundles_lock_path())
-                .expect("pre-create the lock file");
+            std::fs::write(disabled_bundles_lock_path(), b"").expect("pre-create the lock file");
             let path = disabled_bundles_path();
             let sidecar = path.with_extension("json.corrupt.1790000000000000000");
             std::fs::rename(&path, &sidecar).expect("stage the lost-store sibling");

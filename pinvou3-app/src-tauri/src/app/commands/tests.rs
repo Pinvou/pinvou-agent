@@ -471,8 +471,6 @@ fn vacuous_uninstall_keeps_fresh_consent_entries() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let _home = TempPinvou3Home::new("vacuous-uninstall-consent");
-    // Deny-first install window: the consent entry is registered before the
-    // install record lands, so a mid-install id has an entry but no record.
     let both_ids = &[
         "gate-race-probe".to_string(),
         "gate-race-skill-probe".to_string(),
