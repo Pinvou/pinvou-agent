@@ -308,12 +308,27 @@ pub struct ElementInfo {
     pub height: i32,
     /// Password/secure text field (one of the T3 forced-confirmation signals).
     pub secure: bool,
-    /// Wider control-folded copy of the raw accessible name for denylist
-    /// screening (`helpers::screening_name`): `name` is display-truncated, so
-    /// a padded attacker-controlled label could push a consequential term
-    /// past its window. Internal only — never serialized to the model.
+    /// Whether the **raw** (untruncated, unfolded) accessible name hits the
+    /// T3 denylist, as decided by `helpers::screening_hit`.
+    ///
+    /// `name` is display-truncated and the raw label is attacker-controlled,
+    /// so the verdict has to be taken where the raw text still exists. It is
+    /// carried as a boolean rather than as a wider copy of the text so an
+    /// arbitrarily long label costs bounded memory and cannot be padded past
+    /// a match window. Internal only — never serialized to the model.
     #[serde(skip)]
-    pub screening_name: Option<String>,
+    pub name_screening_hit: bool,
+    /// Keyed hash of the raw (untruncated, unsanitized) name and role,
+    /// computed at the platform boundary where the raw strings still exist
+    /// ([`guard::raw_element_binding`]). `name` is a display copy, so two
+    /// different elements can carry identical `name`/`role` pairs (payloads
+    /// differing only past the truncation tail, or only in characters
+    /// sanitization rewrites); this binding is how the spend path tells them
+    /// apart when it re-screen a replayed action's target. Internal only —
+    /// never serialized to the model. A u64, not a text copy, so a hostile
+    /// multi-megabyte label still costs bounded memory.
+    #[serde(skip)]
+    pub raw_binding: u64,
 }
 
 /// `ui_tree` fetch options. `None` lets the backend apply its defaults.

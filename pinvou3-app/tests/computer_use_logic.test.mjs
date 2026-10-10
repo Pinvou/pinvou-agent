@@ -219,10 +219,28 @@ const zhConfirmCopy = {
   confirmKeyChordMasked: (chord, count) => chord ? `按下组合键 ${chord} + ${count} 个隐藏字符` : `按下 ${count} 个隐藏字符`,
   confirmHoldKeyMasked: (chord, count, ms) => chord ? `按住 ${chord} + ${count} 个隐藏字符 ${ms} 毫秒` : `按住 ${count} 个隐藏字符 ${ms} 毫秒`,
   confirmDrag: (from, to) => `从 ${from} 拖拽到 ${to}`,
-  confirmMouseDown: (button) => `按下${button}`,
+  confirmMouseDown: (button) => `按住${button}`,
   confirmMouseUp: (button) => `松开${button}`,
 };
 const structured = (fields) => ({ sessionId: 's1', confirmId: 'c1', summary: 'english fallback', actionName: null, button: null, clickCount: null, point: null, endPoint: null, textLength: null, textPreview: null, textPreviewTruncated: false, chord: null, holdMs: null, ...fields });
+
+// ── Shipped i18n hold copy ───────────────────────────────────────────────
+// The fixture above is a hand-copied dictionary; the round-5 fix (ja said
+// 押す "press", zh said 按下 "press down" for a multi-second HOLD) was pinned
+// nowhere, so a revert kept every suite green. These read the SHIPPED
+// dictionaries so the hold verbs cannot silently regress to press verbs.
+for (const [locale, holdKey, mouseDown] of [
+  ['zh', /confirmHoldKey:\(chord, ms\)=>`按住/, /confirmMouseDown:button=>`按住/],
+  ['ja', /confirmHoldKey:\(chord, ms\)=>`.*押し続ける/, /confirmMouseDown:button=>`.*押し続ける/],
+  ['en', /confirmHoldKey:\(chord, ms\)=>`Hold /, /confirmMouseDown:button=>`Press and hold /],
+]) {
+  const source = readFileSync(
+    fileURLToPath(new URL(`../src/shared/i18n/${locale}.js`, import.meta.url)),
+    'utf8',
+  );
+  assert.match(source, holdKey, `${locale} confirmHoldKey must say hold, not press`);
+  assert.match(source, mouseDown, `${locale} confirmMouseDown must say hold, not press`);
+}
 
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'click', button: 'left', clickCount: 1, point: { x: 5, y: 6 } })),
@@ -298,8 +316,8 @@ assert.deepEqual(
 // confirmation-required actions), mapped through CANONICAL_ACTION_FIELDS.
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'left_mouse_down', button: null })),
-  { description: '按下左键', preview: null, previewTooLong: false },
-  'a canonical mouse down renders the mapped button',
+  { description: '按住左键', preview: null, previewTooLong: false },
+  'a mouse down renders the button (hold copy, matching the shipped zh dictionary)',
 );
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'left_mouse_up', button: null })),
@@ -310,7 +328,7 @@ assert.deepEqual(
 // the mapped default.
 assert.deepEqual(
   formatComputerUseConfirmAction(zhConfirmCopy, structured({ actionName: 'mouse_down', button: 'right' })),
-  { description: '按下右键', preview: null, previewTooLong: false },
+  { description: '按住右键', preview: null, previewTooLong: false },
   'a mouse down renders the requested button',
 );
 assert.deepEqual(
@@ -567,6 +585,7 @@ const dialogCopy = {
   grantDesc: 'desc',
   grantAllow: 'Allow',
   grantDeny: 'Deny',
+  unreadableTarget: '【読み取れないターゲット】',
   confirmTitle: 'Confirm this action',
   confirmActionLabel: 'Action',
   confirmElementLabel: 'Target element',
@@ -661,6 +680,36 @@ try {
     'a 4096-char preview renders inline in the scrollable container');
   assert.equal(findByTestId(tree, 'computer-use-confirm-once').props.disabled, false,
     '"Allow this once" stays enabled for a max-size preview');
+
+  // ── UI-1b. The unreadable-target sentinel is localized everywhere ──
+  // The wire label keeps the canonical English sentinel (it is part of the
+  // approval-token binding), and drag labels join every screened point, so
+  // the sentinel can arrive as one segment of a longer label. An
+  // exact-equality localization left that case as raw English inside a
+  // non-English safety dialog; every occurrence must be replaced.
+  {
+    const dragSlice = { enabled: true, granted: true, stopped: false,
+      confirmRequest: { sessionId: 's1', action: 'drag',
+        element: 'Transfer all funds (AXButton) → (no readable target)', confirmId: 'cu-4' } };
+    tree = render(dragSlice);
+    const text = allText(tree);
+    assert.ok(text.includes(dialogCopy.unreadableTarget),
+      'the unreadable-target sentinel must render localized');
+    assert.ok(!text.includes('(no readable target)'),
+      'no raw English sentinel may survive into the rendered dialog');
+    assert.ok(text.includes('Transfer all funds'),
+      'the readable half of the label must still be shown');
+    // A label that is ONLY the sentinel (single unreadable point) localizes
+    // as well — the case the original equality handled.
+    const soloSlice = { enabled: true, granted: true, stopped: false,
+      confirmRequest: { sessionId: 's1', action: 'left_mouse_down',
+        element: '(no readable target)', confirmId: 'cu-5' } };
+    tree = render(soloSlice);
+    assert.ok(allText(tree).includes(dialogCopy.unreadableTarget),
+      'a solo unreadable-target label must render localized');
+    assert.ok(!allText(tree).includes('(no readable target)'),
+      'a solo label must not keep the raw sentinel either');
+  }
 
   // ── UI-2. A failed action's error must not leak into the next dialog ──
   // actionError used to survive after a dialog closed and was then rendered
@@ -776,6 +825,83 @@ try {
   // z-[1200] portal — a security prompt must never lose a same-z DOM-order
   // race (round-17 nit, bumped from z-[1200]).
   assert.match(consentSource, /fixed inset-0 z-\[1210\]/);
+  // Height bound + pinned decision row. An over-tall target label used to push
+  // Deny/Allow out of a panel that did not scroll; capping alone is not the
+  // fix, because buttons left inside the scroll region can still be scrolled
+  // away from. Both panels therefore cap, clip, and give the body its own
+  // scroller with the button row outside it. The harness below stubs the DOM
+  // (it emits `ref: null`), so this can only be pinned at the source level.
+  assert.equal(
+    consentSource.match(/max-h-\[85vh\] flex flex-col overflow-hidden/g)?.length,
+    2,
+    'both dialogs must cap their height and clip at the panel',
+  );
+  assert.equal(
+    consentSource.match(/min-h-0 flex-1 overflow-y-auto/g)?.length,
+    2,
+    'both dialogs must scroll their body, not the whole panel',
+  );
+  assert.equal(
+    consentSource.match(/shrink-0 flex items-center justify-end gap-2/g)?.length,
+    2,
+    'both dialogs must keep the Deny/Allow row outside the scroll region',
+  );
+  // Deny is the last control in the panel, so focusing it without
+  // preventScroll would open a tall dialog already scrolled past the action
+  // the user is being asked to approve.
+  assert.match(
+    consentSource,
+    /target\.focus\(\{ preventScroll: true \}\)/,
+    'initial focus must not scroll the consent body out of view',
+  );
+}
+
+// ── Leaving to the draft screen must run the session-less refresh ──
+// The r2/r3 session-less branch fixed the stale slice, but until the fourth
+// round it had no production caller on the actual leave transition:
+// ChatView's effect early-returned on a null activeSessionId, so
+// createNewSession / leaveSessionView / delete all left the phantom banner
+// (and any unanswered dialog) rendered on the welcome composer. Like the
+// class pins above, the wiring can only be pinned at the source level — the
+// harness stubs the DOM and never mounts ChatView.
+{
+  const chatSource = readFileSync(
+    new URL('../src/features/chat/ChatView.jsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    chatSource,
+    /if \(!activeSessionId\) \{\s*bridge\.computerUse\.refreshStatus\(null\)/,
+    'leaving to the draft screen must fire the session-less refreshStatus',
+  );
+}
+
+// ── The unreadable-target sentinel must stay in step across languages ──
+// The sentinel is part of the approval-token binding (tool.rs owns the wire
+// value) and is localized at render time by split/join on the JS constant.
+// The two constants live in different languages with no shared module; if
+// they drift, the split silently stops matching and zh/ja dialogs fall back
+// to the raw English sentinel mid-label — invisible to any test on either
+// side alone (the Rust pins never render, the JS render pins never read the
+// Rust value). Same cross-language step pattern as `invisible_lists_stay_in_step`.
+{
+  const rustSource = readFileSync(
+    new URL('../src-tauri/src/features/computer_use/tool.rs', import.meta.url),
+    'utf8',
+  );
+  const consent = readFileSync(
+    new URL('../src/features/computer-use/ComputerUseConsent.jsx', import.meta.url),
+    'utf8',
+  );
+  const rustValue = rustSource.match(/UNREADABLE_TARGET_LABEL: &str = "([^"]+)"/)?.[1];
+  const jsValue = consent.match(/const UNREADABLE_TARGET = '([^']+)'/)?.[1];
+  assert.ok(rustValue, 'the Rust sentinel constant must be found');
+  assert.ok(jsValue, 'the JS sentinel constant must be found');
+  assert.equal(
+    jsValue,
+    rustValue,
+    'the JS sentinel must stay byte-identical to the wire value the token binds',
+  );
 }
 
 console.log('computer use consent dialog UI tests passed');

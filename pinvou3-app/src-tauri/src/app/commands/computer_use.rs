@@ -69,8 +69,9 @@ pub struct ComputerUseStatus {
     /// master-switch-off, or engine idle reclaim, ends it — see guard.rs).
     /// Always false when the request carries no session id.
     pub granted: bool,
-    /// Emergency-stop flag (set by `computer_use_stop`, cleared when the
-    /// master toggle is re-enabled).
+    /// Emergency-stop flag (set by `computer_use_stop`; cleared on re-enable
+    /// and also lowered when the master toggle is switched off, which leaves
+    /// nothing for a stop to protect).
     pub stopped: bool,
     /// Whether the current OS has a computer_use backend implementation.
     pub platform_supported: bool,

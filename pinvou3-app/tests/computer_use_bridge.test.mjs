@@ -914,7 +914,6 @@ function emit(harness, event, payload) {
   );
 }
 
-console.log('computer use bridge behavior tests passed');
 
 // ── N. state_changed reconciles cross-window ────────────────────────
 {
@@ -1043,3 +1042,204 @@ console.log('computer use bridge behavior tests passed');
     'the confirm inert branch must handle a missing slice the same way',
   );
 }
+
+// ── 35. the global stop flag must survive a session-less status refresh ──
+// `stopped` is process-global and the backend reports it for an empty session
+// id too, but the session-less branch only copied enabled/platformSupported.
+// On the draft screen (no active session) the settings page therefore kept
+// showing the "turn it off and back on" hint after a successful resume.
+// `refreshStatus` resolves `sessionId || state.activeSessionId`, so passing
+// null is NOT enough to reach the session-less branch — the harness seeds an
+// active session. Clearing it is what actually exercises the code under test.
+{
+  const harness = createHarness({
+    initialState: { stopped: true },
+    status: { enabled: true, stopped: false, platform_supported: true },
+  });
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.stopped,
+    false,
+    'a session-less refresh must adopt the backend stop flag',
+  );
+}
+{
+  const harness = createHarness({
+    initialState: { stopped: false },
+    status: { enabled: true, stopped: true, platform_supported: true },
+  });
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.stopped,
+    true,
+    'a session-less refresh must also surface a latched stop',
+  );
+}
+
+// ── 35b. a session-less refresh must clear a stale per-session grant ──
+// The draft screen has no session, so no grant can describe what the user is
+// looking at. The session-less branch never touched `granted`, so leaving a
+// granted session for the draft kept the control banner (and its Stop
+// button) on the welcome page — the same stale-state class as the stop flag
+// above, in the same branch.
+{
+  const harness = createHarness({
+    initialState: { enabled: true, granted: true, stopped: false },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.granted,
+    false,
+    'a session-less refresh must clear the stale per-session grant',
+  );
+}
+
+// ── 35c. a session-less refresh must clear stale grant/confirm requests ──
+// Same branch, one field over: a request left in the slice kept the previous
+// session's consent dialog (and its working Allow button) floating over the
+// draft composer. The per-session pending map is NOT the slice; nulling the
+// slice fields here must not lose the request for a later switch-back — that
+// resurfacing is refreshStatus's job for the active session.
+{
+  const harness = createHarness({
+    initialState: {
+      enabled: true,
+      granted: true,
+      stopped: false,
+      grantRequest: { sessionId: 's1' },
+      confirmRequest: { sessionId: 's1', action: 'click', element: 'Buy now', confirmId: 'c1' },
+    },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.grantRequest,
+    null,
+    'a session-less refresh must clear a stale grant request',
+  );
+  assert.equal(
+    harness.state.computerUse.confirmRequest,
+    null,
+    'a session-less refresh must clear a stale confirm request',
+  );
+}
+
+// ── 35d. a deleted session's parked request must not resurface ──
+// The per-session pending map is what makes switch-back resurfacing work,
+// but nothing dropped an entry when its session was deleted, so a request
+// (including its full type preview) outlived the session for the whole
+// webview lifetime. The prune rides the status refresh — the deleted-
+// session helper in the shared bridge knows nothing about this module — and
+// must leave live sessions' entries untouched (the control half below).
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.sessions = [{ id: 's1' }, { id: 's2' }];
+  emit(harness, 'computer_use:grant_required', { session_id: 's2' });
+  // Control: a live background request resurfaces on switch-back.
+  harness.state.activeSessionId = 's2';
+  await harness.feature.refreshStatus('s2');
+  const resurfaced = harness.published().at(-1);
+  assert.ok(
+    resurfaced && resurfaced.grantRequest && resurfaced.grantRequest.sessionId === 's2',
+    `control: a live parked request must resurface: ${JSON.stringify(resurfaced)}`,
+  );
+  // Delete s2 from the frontend state, run the session-less refresh the
+  // prune rides, and switch back: the deleted session's request must be gone.
+  harness.state.sessions = [{ id: 's1' }];
+  await harness.feature.refreshStatus(null);
+  await harness.feature.refreshStatus('s2');
+  const after = harness.published().at(-1);
+  assert.equal(
+    after && after.grantRequest,
+    null,
+    'a deleted session’s parked request must not resurface',
+  );
+}
+
+// ── 35e. the session-less refresh must keep the switch-back pending map ──
+// 35c pins the slice nulling; this pins the other half of that branch's
+// contract: the per-session pending map itself must survive, so leaving a
+// session with an unanswered request for the draft and coming back
+// resurfaces the still-live request immediately (not just after the
+// reconciler's next tick). The request must arrive through the event path —
+// a slice-seeded request like 35c's never enters the map, so that shape
+// cannot see an over-clear.
+{
+  const harness = createHarness({
+    initialState: { enabled: true },
+    status: { enabled: true, granted: false, stopped: false, platform_supported: true },
+  });
+  harness.state.sessions = [{ id: 's1' }];
+  emit(harness, 'computer_use:grant_required', { session_id: 's1' });
+  emit(harness, 'computer_use:confirm_required', {
+    session_id: 's1',
+    confirm_id: 'c1',
+    action: 'left_click',
+    element: 'Buy now',
+  });
+  // Leave for the draft: the session-less refresh nulls the live slice.
+  harness.state.activeSessionId = null;
+  await harness.feature.refreshStatus(null);
+  assert.equal(
+    harness.state.computerUse.grantRequest,
+    null,
+    'the leave-to-draft refresh must clear the live grant request',
+  );
+  assert.equal(
+    harness.state.computerUse.confirmRequest,
+    null,
+    'the leave-to-draft refresh must clear the live confirm request',
+  );
+  // Switch back: the parked entries must resurface from the map.
+  harness.state.activeSessionId = 's1';
+  await harness.feature.refreshStatus('s1');
+  const back = harness.published().at(-1);
+  assert.ok(
+    back && back.grantRequest && back.grantRequest.sessionId === 's1',
+    `switch-back must resurface the parked grant request: ${JSON.stringify(back)}`,
+  );
+  assert.ok(
+    back && back.confirmRequest && back.confirmRequest.confirmId === 'c1',
+    `switch-back must resurface the parked confirm request: ${JSON.stringify(back)}`,
+  );
+}
+
+// ── 36. turning the feature off must clear the latched stop ──
+// The documented resume path is "turn it off and back on". Keeping `stopped`
+// set through the off step made the settings row tell a user who had just
+// switched the toggle OFF to turn it off — halfway through that same path.
+//
+// The backend lowers the latch in `set_enabled(false)` (guard.rs), so the
+// status this harness answers with is the corrected one. That matters: the
+// local write and the authoritative read have to AGREE, or the next refresh
+// silently re-latches the flag and the hint comes back.
+{
+  const harness = createHarness({
+    initialState: { enabled: true, stopped: true },
+    status: { enabled: false, stopped: false, platform_supported: true },
+  });
+  await harness.feature.setEnabled(false);
+  assert.equal(harness.state.computerUse.enabled, false);
+  assert.equal(
+    harness.state.computerUse.stopped,
+    false,
+    'disabling must clear the latched stop: the feature is off, not stopped',
+  );
+  // The status read that follows any `state_changed` must not undo it.
+  await harness.feature.refreshStatus('s1');
+  assert.equal(
+    harness.state.computerUse.stopped,
+    false,
+    'the authoritative refresh must agree, not re-latch the stop',
+  );
+}
+
+console.log('computer use bridge behavior tests passed');
