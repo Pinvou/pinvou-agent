@@ -5,7 +5,7 @@ import {
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
 import { sceneStatusKey } from './scene_status_key.js';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, FolderOpen, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
@@ -14,6 +14,8 @@ import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { formatCompactCount } from '../../shared/format-number.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
+import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePickerState.js';
+import { interpretFolderEnsureOutcomes } from '../projects/folderEnsure.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
 import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
@@ -180,7 +182,8 @@ import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
 import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
-import { workspaceName } from '../../shared/workspace-recents.js';
+import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
+import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import {
   VoiceComposerButton,
   VoiceEditPreview,
@@ -649,7 +652,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy main view: session/mode/artifact/browser state is highly cohesive; split refactor tracked separately
-    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock }) => {
+    const ChatView = ({ theme, t, bs, prefill, prefillAppend = false, focusComposerTick = 0, onPrefillConsumed, onOpenEditor, justInstalledTool, setJustInstalledTool, onGotoSettings, onGotoModelSettings, onGotoTools, onBackScheduledRun, codeModeAvailable = false, onSwitchHomeMode, browserDockAvailable = false, browserDockOpen = false, rightDockActivePanelId = null, onRightDockPanelSelectionChange, onOpenBrowserDock, onOpenWorkspacePicker, onNotify }) => {
       const chatCopy = t.uiChat;
       const chatViewCopy = t.uiChatView;
       const sceneCopy = chatCopy.sceneModes;
@@ -2264,6 +2267,64 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         }
         return true;
       }
+      // Recents channel (§9.9 folder-channel parity): picking a recent
+      // directory is the same explicit folder choice as the picker's browse
+      // channel, so it goes through the same ensure (anchor reuse /
+      // materialize) and stages the anchored project id — without it the
+      // session has no tier-1 assignment and tier-2 nested grouping adopts it
+      // into a broader project whose root covers the folder (e.g. a
+      // Desktop-rooted project), the "group only on an exact primary-root
+      // match" regression.
+      async function handleSelectRecentWorkspace(path) {
+        if (!path) { bridge.sessions.setDraftWorkspace(null); return; }
+        if (bridge.projects && typeof bridge.projects.ensureFolderProjects === 'function') {
+          let interpreted;
+          try {
+            interpreted = interpretFolderEnsureOutcomes(await bridge.projects.ensureFolderProjects([path]));
+          } catch (error) {
+            // IPC-level failure: same promise as the browse channel — the
+            // conversation still starts at the picked folder, as a plain one.
+            console.warn('ensure folder project failed', error);
+            if (bridge.sessions.setDraftWorkspace(path) === false) {
+              // The staging no-op rides an IPC failure; keep the original as
+              // the cause instead of discarding it (preserve-caught-error).
+              throw new Error(t.uiProjects.opFailed, { cause: error });
+            }
+            return;
+          }
+          if (!interpreted.materialized && interpreted.failed) {
+            // A backend refusal (nesting conflict etc.) is not the exclusion
+            // list: staging a plain folder would let tier-2 adopt it into a
+            // broader project. Surface the failure (selector pickError) and
+            // do not stage.
+            throw new Error(t.uiProjects.opFailed);
+          }
+          // Excluded folders (no outcome) stage plain with projectId null.
+          // The boolean return is honored on every staging site (review #484
+          // round-10 m12): false = an active session owns the composer and
+          // nothing was staged — surfacing beats a silently ignored pick.
+          if (bridge.sessions.setDraftWorkspace(path, { projectId: interpreted.projectId, workspaceRoots: [path] }) === false) {
+            throw new Error(t.uiProjects.opFailed);
+          }
+          return;
+        }
+        if (bridge.sessions.setDraftWorkspace(path) === false) {
+          throw new Error(t.uiProjects.opFailed);
+        }
+      }
+      // Grant-notice mode for the chat lane's workspace surfaces (review #484
+      // round-11 M6): the notice must describe the posture the draft takes
+      // ONCE the pick binds it — the bridge resolves a bound draft to the
+      // code lane's default (fallback plan), matching the composer chip that
+      // flips to exactly that mode when the pick lands. The snapshot still
+      // shows the unbound draft's mode at notice time. Older hosts without
+      // the query keep the previous snapshot read.
+      function boundDraftNoticeMode() {
+        if (bridge.sessions && typeof bridge.sessions.boundDraftMode === 'function') {
+          return bridge.sessions.boundDraftMode();
+        }
+        return (bs && bs.modeState && bs.modeState.mode) || null;
+      }
       async function handleModeChipSwitch(target, { isPlan }) {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {
@@ -3313,24 +3374,84 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     <ComposerWorkspaceSelector
                       copy={t.uiChatWorkspace}
                       draftWorkspacePath={(bs && bs.draftWorkspacePath) || null}
-                      onPickWorkspace={() => bridge.sessions.pickDraftWorkspace()}
-                      onSelectWorkspace={path => bridge.sessions.setDraftWorkspace(path)}
+                      onPickWorkspace={() => {
+                        // Single entry (§2): the in-app "choose workspace"
+                        // picker; the system directory dialog is folded into the
+                        // picker's "browse for another folder" channel. Hosts
+                        // without the picker wired fall back to the old behavior
+                        // (test stubs / old hosts). Both branches return a
+                        // promise — the selector refreshes recents from the
+                        // resolved path (review #484 round-6).
+                        if (onOpenWorkspacePicker) {
+                          onOpenWorkspacePicker({ lane: 'chat', mode: boundDraftNoticeMode() });
+                          return Promise.resolve(null);
+                        }
+                        return bridge.sessions.pickDraftWorkspace();
+                      }}
+                      onSelectWorkspace={handleSelectRecentWorkspace}
+                      // Grant notice parity (§9.4): the recents channel grants
+                      // the picked folder directly (single root), the same
+                      // notice weight as the in-app picker rows.
+                      grantNotice={workspaceNoticeTone(boundDraftNoticeMode()) === 'restricted'
+                        ? t.uiWorkspacePicker.noticeRestricted(1)
+                        : t.uiWorkspacePicker.noticeVisibility(1)}
                     />
                   )}
                   {/* Workspace binding indicator for the active session (read-only
                       chip: directory name + full path in title); bound sessions
                       match the code mode safety posture, styled like the draft-mode
                       selector. */}
-                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (
-                    <span
-                      data-testid="chat-workspace-binding"
-                      title={sessionWorkspaceBinding}
-                      className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
-                    >
-                      <FolderOpen size={13} className="shrink-0" />
-                      <span className="truncate">{workspaceName(sessionWorkspaceBinding, t.uiChatWorkspace.unknownDirectory)}</span>
-                    </span>
-                  )}
+                  {shouldShowWorkspaceBindingChip({ activeSessionId, sessionBinding: sessionWorkspaceBinding }) && (() => {
+                    const activeItem = ((bs && bs.sessions) || []).find(s => s.id === activeSessionId);
+                    const keychain = describeKeychain(activeItem && activeItem.workspace_roots);
+                    const projectsData = (bs && bs.projectsList) || {};
+                    const owningProjectId = resolveSessionProjectId(
+                      { id: activeSessionId, workspaceKind: 'bound', workspacePath: sessionWorkspaceBinding },
+                      projectsData.projects || [],
+                      projectsData.assignments || {},
+                    );
+                    // Align to project (§9.7): the chat lane goes through the
+                    // projects bridge domain; typed ALIGN_* markers map to copy
+                    // (codex lane parity). busy is the session's real turn flag.
+                    const align = async () => {
+                      try {
+                        const outcome = await bridge.projects.alignSessionToProject(activeSessionId);
+                        // live_push_failed: the stores are written but the
+                        // live engine kept the previous (possibly wider) root
+                        // set — over-grant must not be silent (review #484
+                        // round-9 N2).
+                        // Round-10 M2: surface a stale sidecar copy like the
+                        // deferred live push (over-grant window, not success).
+                        if (outcome && outcome.applied) onNotify && onNotify(outcome.sidecar_stale
+                          ? t.uiKeychain.alignSidecarStale
+                          : (outcome.live_push_failed ? t.uiKeychain.alignPushDeferred : t.uiKeychain.alignDone));
+                        else if (outcome && outcome.reason === 'no_change') onNotify && onNotify(t.uiKeychain.alignNoChange);
+                        else if (outcome && outcome.reason === 'write_skipped') onNotify && onNotify(t.uiKeychain.alignWriteSkipped);
+                        else if (outcome && outcome.reason === 'no_project') onNotify && onNotify(t.uiKeychain.alignNoProject);
+                        // Any other non-applied outcome is unexpected; surface it
+                        // instead of failing silently (codex lane parity).
+                        else if (onNotify) onNotify(t.uiKeychain.alignFailed);
+                      } catch (error) {
+                        const message = String((error && error.message) || error || '');
+                        if (onNotify) {
+                          onNotify(message.startsWith('ALIGN_BUSY') ? t.uiKeychain.alignBusy
+                            : (message.startsWith('ALIGN_NO_WORKSPACE') ? t.uiKeychain.alignNoWorkspace : t.uiKeychain.alignFailed));
+                        }
+                      }
+                    };
+                    return (
+                      <WorkspaceKeychainChip
+                        key={activeSessionId}
+                        copy={t.uiKeychain}
+                        primary={keychain.primary || sessionWorkspaceBinding}
+                        additionalCount={keychain.primary ? keychain.additional : 0}
+                        roots={keychain.primary ? keychain.roots : [sessionWorkspaceBinding]}
+                        canAlign={!!owningProjectId && !!bridge.projects}
+                        busy={busy}
+                        onAlign={align}
+                      />
+                    );
+                  })()}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the

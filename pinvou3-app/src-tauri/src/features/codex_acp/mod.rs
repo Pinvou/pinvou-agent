@@ -569,6 +569,22 @@ fn acp_recovery_record(
         }
         None => CodexWorkspaceKind::Project,
     };
+    // Keychain snapshot source = the workspace.roots spawn writes to acp-state.json
+    // (review #484 round-11 M8): old files lack the key → empty = single-root
+    // semantics, the base normalizes by cwd; alignment converges in place via
+    // set_session_workspace_roots and never revives a wider set. Non-string /
+    // non-absolute entries drop (fail-closed, same absolute-path rule as intake).
+    let workspace_roots = state["workspace"]["roots"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str())
+                .map(PathBuf::from)
+                .filter(|root| root.is_absolute())
+                .collect::<Vec<PathBuf>>()
+        })
+        .unwrap_or_default();
     Ok(SessionAgentRecord {
         backend: expected_backend,
         acp_session_id: Some(acp_session_id),
@@ -579,6 +595,7 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
+        workspace_roots,
         mode: SessionMode::Plain,
     })
 }
@@ -3897,8 +3914,13 @@ impl AcpPool {
             PROBE_SEQ.fetch_add(1, Ordering::Relaxed),
         );
         // 临时工作区：spawn 时自动创建独立目录，不污染真实项目。
-        self.agents
-            .set_acp_workspace(&probe_id, backend, CodexWorkspaceKind::Temporary, None)?;
+        self.agents.set_acp_workspace(
+            &probe_id,
+            backend,
+            CodexWorkspaceKind::Temporary,
+            None,
+            Vec::new(),
+        )?;
         let result = self.session_info(&probe_id).await;
         // 无论成败都必须收口，不得留下运行中的探针进程或 store 残留记录；
         // 清理失败只告警，主结果（上报或原始错误）优先透传。
@@ -4664,6 +4686,13 @@ impl AcpPool {
                 "workspace": {
                     "kind": saved.workspace_kind,
                     "path": &workspace,
+                    // The durable roots snapshot (review #484 round-11 M8):
+                    // acp-state.json is the only per-session ACP artifact that
+                    // survives a session-agents.json loss, so the recovery
+                    // path below reads the keychain back from here instead of
+                    // hardcoding single-root semantics. align keeps this copy
+                    // convergent (set_session_workspace_roots patches it).
+                    "roots": &saved.workspace_roots,
                 },
                 "lastStatus": "ready",
             }),
@@ -5794,11 +5823,55 @@ mod tests {
             &temporary,
         )
         .unwrap();
+
         assert_eq!(
             temporary_recovered.workspace_kind,
             CodexWorkspaceKind::Temporary
         );
         assert_eq!(temporary_recovered.workspace_path, None);
+    }
+
+    #[test]
+    fn acp_recovery_reads_the_durable_roots_snapshot() {
+        // review #484 round-11 M8: acp-state.json is the durable per-session
+        // ACP keychain artifact — the recovery path must read
+        // workspace.roots back instead of hardcoding single-root semantics
+        // (a session-agents.json loss used to silently resume multi-root
+        // sessions single-root). Relative entries are dropped (intake
+        // requires absolute paths); a legacy file without the key stays
+        // empty, as the sibling test pins.
+        let temporary = std::env::temp_dir().join("pinvou-roots-recovery-workspace");
+        let project = std::env::temp_dir().join("pinvou-roots-recovery-project");
+        let extra = std::env::temp_dir().join("pinvou-roots-recovery-extra");
+        let state = json!({
+            "pinvouSessionId": "pinvou-session",
+            "adapter": {
+                "agentId": "kimi",
+                "package": KIMI_ACP_PACKAGE,
+            },
+            "session": {
+                "session_id": "acp-session",
+            },
+            "workspace": {
+                "kind": "project",
+                "path": &project,
+                "roots": [&project, &extra, "relative/path"],
+            },
+        });
+        let recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            project.clone(),
+            &temporary,
+        )
+        .unwrap();
+        assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(recovered.workspace_path, Some(project.clone()));
+        // Verbatim durability: the snapshot round-trips the full set
+        // (primary included, spawn wrote it that way); the base normalizes
+        // cwd-first per turn. The relative entry is dropped.
+        assert_eq!(recovered.workspace_roots, vec![project, extra]);
     }
 
     #[test]
@@ -5881,7 +5954,12 @@ mod tests {
         // 写入一个已绑定的原生代码会话（索引 + sidecar）。
         let writer = SessionAgentStore::for_test(path.clone());
         writer
-            .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "code-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         // 模拟辅助索引丢失：空内存索引 + 磁盘 sidecar 仍在 → 真实恢复一次。
         let agents = SessionAgentStore::for_test(path.clone());
@@ -5908,6 +5986,8 @@ mod tests {
             .join("code-1")
             .join("code-session.json");
         std::fs::remove_file(&sidecar_path).unwrap();
+        // Round-31 minor 5: seed the live owner the backfill's gate stats.
+        std::fs::write(root.join("sessions").join("code-1.json"), b"{}").unwrap();
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(
             summary,
@@ -5925,6 +6005,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .unwrap();
         let leftover_dir = root.join("sessions").join("acp-1");
@@ -5935,6 +6016,7 @@ mod tests {
                 version: 1,
                 workspace_kind: CodexWorkspaceKind::Temporary,
                 workspace_path: None,
+                workspace_roots: Vec::new(),
                 bound_at: None,
             })
             .unwrap(),
@@ -5946,7 +6028,7 @@ mod tests {
             SidecarRecoverySummary {
                 restored: 0,
                 backfilled: 0,
-                cleaned: 1
+                cleaned: 1,
             }
         );
         assert!(!leftover_dir.join("code-session.json").exists());

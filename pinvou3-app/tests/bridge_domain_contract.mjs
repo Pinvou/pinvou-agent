@@ -7,7 +7,7 @@ export const desktopBridgeApi = {
   voice: ['abandonVoiceResult', 'appendVoiceText', 'beginVoiceSubmission', 'cancelVoiceAsrSetup', 'cancelVoiceInput', 'clearVoiceInput', 'closeVoiceAsrSetup', 'completeVoiceSubmission', 'dismissVoiceInput', 'getVoiceOperationId', 'hasVoiceSubmissionPending', 'installVoiceAsr', 'setVoiceShortcutEnabled', 'startVoiceInput', 'syncVoiceShortcutRecording'],
   knowledge: ['downloadKbModel', 'kbModelStatus', 'listCollections', 'loadKnowledgeEmbedderAfterFirstFrame', 'mountCollection', 'mountRemoteCollection', 'removeCollection', 'removeRemoteCollection', 'setCollectionEnabled', 'setRemoteCollectionEnabled', 'unmountCollection'],
   scheduled: ['createScheduledTask', 'deleteScheduledTask', 'dismissScheduledTaskError', 'exitScheduledRunChat', 'loadScheduledTaskRecentRuns', 'loadScheduledTasks', 'openScheduledRunChat', 'pauseScheduledTask', 'refreshScheduledTaskData', 'resumeScheduledTask', 'runScheduledTaskNow', 'selectScheduledTask', 'startScheduledTaskChat', 'updateScheduledTask'],
-  sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
+  sessions: ['archiveSession', 'boundDraftMode', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'rememberDraftWorkspaceRecent', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
 
   settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setSelectedPet'],
@@ -20,12 +20,19 @@ export const desktopBridgeApi = {
   remoteControl: ['getWebRelaySettings', 'refreshRemoteControlQr', 'setWebRelayAddress', 'startRemoteControl', 'stopRemoteControl'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'openArtifactExternal', 'openContainingFolder', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
   attachments: ['addAttachmentByPath', 'addPasteImage', 'addPasteImageFromClipboard', 'openConversationAttachment', 'pickAndAttach', 'removeAttachment', 'resolveConversationAttachment', 'revealConversationAttachment', 'uploadDeviceFiles'],
-  files: ['pickFeedbackFiles', 'pickFiles', 'pickFolders', 'pickRebindFolder'],
+  files: [
+    'pickFeedbackFiles',
+    'pickFiles',
+    'pickFolders',
+    'pickManageFolder',
+    'pickRebindFolder',
+    'pickWorkspaceFolder',
+  ],
   personas: ['createPersona', 'deletePersona', 'equipPersona', 'getPersonas', 'loadPersonas', 'postCardCreatorIntro', 'readPersonaBody', 'unequipPersona', 'updatePersona'],
   memory: ['confirmMemoryCandidate', 'deleteMemoryItem', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'loadOrganizeHistory', 'neverMemoryCandidate', 'organizeMemory', 'saveMemoryProfilePatch', 'updateMemoryItem'],
   updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
   dependencies: ['checkDependencies', 'installDependencies'],
-  projects: ['createProject', 'deleteProject', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject'],
+  projects: ['alignSessionToProject', 'createProject', 'deleteProject', 'ensureFolderProjects', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject', 'setNeverMaterialize', 'setPrimaryRoot', 'updateProjectRoots'],
   // Computer use drives the local machine: the desktop backend exposes it, the
   // web surface carries only rejecting stubs (the RPC allowlist excludes the
   // commands entirely, same policy as browser:*).
@@ -46,8 +53,13 @@ export const desktopOnlyBridgeApi = {
   // selector.
   // Session archive export writes the local-disk tar.xz via a native save
   // dialog over ~/.pinvou3/sessions; web keeps no local session store.
-  sessions: ['exportSessionArchive', 'pickDraftWorkspace', 'setDraftWorkspace'],
-
+  // boundDraftMode (round-11 M6) describes the posture a CHAT DRAFT takes
+  // once a workspace pick binds it — the workspace channel itself is
+  // desktop-only, so the web side has no such surface.
+  // rememberDraftWorkspaceRecent (round-18 M3) records the single-entry
+  // picker's pick into the recents list; without the desktop staging channel
+  // there is nothing to record, so it rides the same desktop-only lane.
+  sessions: ['exportSessionArchive', 'pickDraftWorkspace', 'rememberDraftWorkspaceRecent', 'setDraftWorkspace', 'boundDraftMode'],
   // The queued chip's zap-send goes through the foundation EnginePool and needs
   // the Tauri command channel; web has no such backend.
   chat: ['interruptAndSendQueued'],

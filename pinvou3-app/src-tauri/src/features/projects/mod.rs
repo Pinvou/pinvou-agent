@@ -19,6 +19,7 @@ mod store;
 mod tests;
 
 pub use store::{
-    DeleteProjectReport, MoveSessionOutcome, Project, ProjectStore, REBIND_ROOTS_CONFLICT_PREFIXES,
-    RebindRootsError, SessionAssignments, rebind_source_display,
+    DeleteProjectReport, EnsureFolderOutcome, MoveSessionOutcome, Project, ProjectStore,
+    REBIND_ROOTS_CONFLICT_PREFIXES, RebindFence, RebindRootsError, SessionAssignments,
+    rebind_source_display, removed_roots, workspace_covered_by_roots,
 };

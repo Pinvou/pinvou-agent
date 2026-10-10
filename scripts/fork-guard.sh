@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 57 commits, nine maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 70 commits, nine maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="0bc868ff010d2ef1b8cea103c8fad3c9cc53481d"
-EXPECTED_COMMITS=57
+EXPECTED_HEAD="5b471f0b8757a6dd462de285b5449a0ee1ad6237"
+EXPECTED_COMMITS=70
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
 # 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
@@ -27,10 +27,10 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 42 个登记提交，r3 收口后过渡期）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 55 个登记提交，r3 收口后过渡期）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（gitlink=维护分支头；过渡期内领先钉在 r3 收口的 tag）"
+  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（过渡期：gitlink 领先公共维护头 0bc868ff0，领先量恰为 workspace_roots 主题提交；见 fork-policy 第 0 节豁免）"
 else
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
   fail=1
@@ -44,9 +44,33 @@ else
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; then
-  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（过渡期内 gitlink=分支头，领先钉在 r3 收口的 tag）"
+  green "  ✓ 过渡期领先成立：r1 收口是当前 head 的祖先（gitlink 沿主题分支领先 tag）"
 else
   red "  ✗ r1 收口 $R1_CLOSURE 不是当前 head 的祖先，线性前进关系断裂"
+  fail=1
+fi
+
+# Round-34 N12: the banner's transition claims, now as assertions — the
+# gitlink must CONTAIN the public maintenance head (a diverged history with
+# both anchors would otherwise green), and the lead must be exactly the
+# workspace_roots topic commits (a maintenance advance silently absorbed
+# into the pin would also green).
+MAINTENANCE_HEAD="0bc868ff010d2ef1b8cea103c8fad3c9cc53481d"
+# The maintenance head is reachable via the public remote's clean branch
+# (the submodule's default remote may be the author fork); fetch through a
+# URL refspec so no remote-name assumption enters the guard.
+git -C "$CODEWHALE" fetch --quiet https://github.com/Pinvou/CodeWhale.git pinvou3-clean 2>/dev/null || true
+if git -C "$CODEWHALE" merge-base --is-ancestor "$MAINTENANCE_HEAD" HEAD 2>/dev/null; then
+  green "  ✓ 过渡期包含性：gitlink 包含公共维护头 ${MAINTENANCE_HEAD:0:9}"
+else
+  red "  ✗ 公共维护头 ${MAINTENANCE_HEAD:0:9} 不是当前 gitlink 的祖先（分叉或漏吸收）"
+  fail=1
+fi
+topic_lead="$(git -C "$CODEWHALE" rev-list --count "$MAINTENANCE_HEAD..HEAD" 2>/dev/null || true)"
+if [[ "$topic_lead" == "13" ]]; then
+  green "  ✓ 过渡期领先量：公共维护头之上恰为 13 个主题提交"
+else
+  red "  ✗ 公共维护头之上有 ${topic_lead:-<unreadable>} 个提交，登记主题提交为 13"
   fail=1
 fi
 
@@ -94,6 +118,21 @@ fingerprints=(
   "T1|自启续轮陈旧 stop 端到端回归        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_idle_subagent_completion_self_start_ignores_a_stale_previous_turn_cancel"
   "T1|处置入口不触发任何 token 回归      |CodeWhale/crates/tui/src/core/engine/tests.rs|engine_handle_stop_disposition_publishes_without_firing_any_token"
   "T1|TurnStarted 回显宿主提交令牌回归    |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_turn_started_echoes_submission_id_self_starts_stay_none"
+
+  "T1|workspace_roots 线程 DTO 字段（serde default） |CodeWhale/crates/protocol/src/lib.rs|pub workspace_roots: Vec<PathBuf>,"
+  "T1|workspace_roots 归一化（cwd 居首、空集 ≡ 单根）|CodeWhale/crates/core/src/lib.rs|pub fn normalize_workspace_roots("
+  "T1|workspace_roots SQLite v5 迁移列              |CodeWhale/crates/state/src/lib.rs|ADD COLUMN workspace_roots TEXT NOT NULL DEFAULT '[]';"
+  "T1|每回合策略物化全量根集合                       |CodeWhale/crates/tui/src/core/authority.rs|writable_roots: codewhale_core::normalize_workspace_roots(workspace, workspace_roots),"
+  "T1|多根沙箱逐根物化回归                           |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_sandbox_materializes_every_root"
+  "T1|写豁免 carve-out 跨根判定回归                  |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_carve_out_spans_attached_roots"
+  "T1|resolve_path 跨根放行回归                      |CodeWhale/crates/tui/src/tools/spec/tests.rs|forkguard_workspace_roots_resolve_path_spans_attached_roots"
+  "T1|指令发现仅主根回归                             |CodeWhale/crates/tui/src/project_context.rs|forkguard_workspace_roots_instruction_discovery_takes_only_the_primary_root"
+  "T1|线程记录 roots 持久化与旧载荷缺省回归            |CodeWhale/crates/tui/src/runtime_threads/tests.rs|forkguard_workspace_roots_thread_record_persists_and_legacy_defaults_empty"
+  "T1|turn_meta 附加根披露回归                        |CodeWhale/crates/tui/src/core/engine/tests.rs|forkguard_workspace_roots_turn_meta_lists_attached_roots"
+  "T1|只读 Scout shell 不信任附加根程序回归          |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_workspace_roots_readonly_shell_distrusts_attached_root_programs"
+  "T1|只读 Scout shell 操作数/工作目录跨根回归       |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_workspace_roots_readonly_shell_operands_span_attached_roots"
+  "T1|未修剪拼写的 carve-out 分支回归                  |CodeWhale/crates/tui/src/core/authority.rs|forkguard_workspace_roots_carve_out_branches_on_the_untrimmed_spelling"
+  "T1|相对目标按主根解析回归                           |CodeWhale/crates/tui/src/tools/spec/tests.rs|fn forkguard_workspace_roots_relative_target_resolves_against_primary_root"
 
   "T1|GLM-5.3 强制思考改写禁用 payload    |CodeWhale/crates/tui/src/client/chat.rs|fn apply_zai_forced_thinking_effort"
   "T1|BigModel host 纳入第一方 Chat 路由  |CodeWhale/crates/config/src/provider.rs|is_exact_https_route(base_url, \"open.bigmodel.cn\", \"api/paas/v4\")"
@@ -174,13 +213,13 @@ fingerprints=(
   "T3|worker 记录共享 handle_read 激活提示 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|if \`handle_read\` is not in your tool list, activate it via \`tool_search\` first"
   "T3|worker 记录激活提示回归             |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_worker_record_hints_teach_handle_read_activation"
   "T3|目标续轮直呼兜底                   |CodeWhale/crates/tui/src/prompts/text.rs|call \`update_goal\` directly anyway"
-  "T3|父上下文提示直呼兜底                |CodeWhale/crates/tui/src/core/engine/context.rs|Use \`handle_read\` on \`transcript_handle\` for bounded transcript slices"
+  "T3|父上下文提示直呼兜底                |CodeWhale/crates/tui/src/core/engine/context.rs|handle_read_hint = crate::tools::subagent::HANDLE_READ_ACTIVATION_HINT"
   "T3|fetch 溢出证据可取回标记            |CodeWhale/crates/tui/src/tools/fetch_url.rs|\"evidence_available\": true,"
   "T3|web.run 溢出证据可取回标记          |CodeWhale/crates/tui/src/tools/web_run.rs|\"evidence_available\": true,"
   "T3|/agent 派发简报补激活回归           |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|fn forkguard_slash_agent_dispatch_teaches_handle_read_activation"
   "T3|/goal 简报补 create_goal 激活        |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|if \`create_goal\` is not in your tool list"
   "T3|/goal 简报补直呼兜底                 |CodeWhale/crates/tui/src/commands/groups/project/goal.rs|call \`create_goal\` directly anyway"
-  "T3|/agent 简报补直呼兜底                |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|Use \`handle_read\` on a sub-agent transcript handle if you need more detail"
+  "T3|/agent 简报补直呼兜底                |CodeWhale/crates/tui/src/commands/groups/core/agent.rs|handle_read_hint = crate::tools::subagent::HANDLE_READ_ACTIVATION_HINT"
   "T3|幻影清单锚定 canonical 退役名        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_phantom_denylist_covers_canonical_lists"
 
   "T4|Automation 稳定 conversation key |CodeWhale/crates/tui/src/automation_manager.rs|add_task_with_conversation_key(new_task, Some(automation.id.clone()))"
@@ -308,10 +347,10 @@ for fp in "${fingerprints[@]}"; do
 done
 
 forkguard_count="$(grep -Rho --include='*.rs' 'forkguard_[A-Za-z0-9_]*' "$CODEWHALE/crates" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
-if [[ "$forkguard_count" -ge 64 ]]; then
-  green "  ✓ CodeWhale 至少保留 64 条独立 forkguard 行为名（实际 ${forkguard_count}）"
+if [[ "$forkguard_count" -ge 96 ]]; then
+  green "  ✓ CodeWhale 至少保留 96 条独立 forkguard 行为名（实际 ${forkguard_count}）"
 else
-  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 64"
+  red "  ✗ CodeWhale forkguard 行为名仅 ${forkguard_count:-0}，登记下限为 96"
   fail=1
 fi
 
