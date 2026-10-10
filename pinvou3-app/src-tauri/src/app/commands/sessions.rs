@@ -2028,4 +2028,26 @@ mod web_projection_tests {
             "no host path component may cross the web boundary"
         );
     }
+    #[test]
+    fn rust_strip_call_sites_are_pinned() {
+        // Round-16 m2: three Rust surfaces consume the strip with no
+        // behavior-level harness (the JS↔Rust differential covers the
+        // function itself; these pins cover the wiring) — reverting any
+        // call site must turn rust-test red.
+        let chat = include_str!("chat.rs");
+        assert!(
+            chat.contains("let checkpoint_label = super::sessions::strip_session_mention_block(&display_content)"),
+            "the turn-checkpoint label must strip the injection block (round-10 M1)"
+        );
+        assert!(
+            chat.contains("crate::features::memory::record_turn_user(\n                    &sid,\n                    super::sessions::strip_session_mention_block(&raw_message),"),
+            "long-memory must record the stripped user text, not the contract (round-15 m6)"
+        );
+        let codex = include_str!("codex.rs");
+        assert!(
+            codex.contains(".or_else(|| workspace_references.first().map(String::as_str)),"),
+            "the ACP first-send fallback must stay conditional — no unconditional 附件 floor (round-15 m6)"
+        );
+    }
+
 }
