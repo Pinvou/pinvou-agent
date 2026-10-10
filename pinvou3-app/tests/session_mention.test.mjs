@@ -19,6 +19,8 @@ import {
   isSessionMentionEnabled,
   stashSessionMentionDraft,
   restoreSessionMentionDraft,
+  resolveMaterializedDraftKey,
+  recordDraftMaterialization,
 } from '../src/features/chat/session-mention.js';
 
 const REFS = [
@@ -348,6 +350,9 @@ test('handleSend assembles and prepends the injection block on dispatch (behavio
   const live = { refs: [...REFS] };
   const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
+      recordDraftMaterialization,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -389,6 +394,8 @@ test('handleSend acceptance keeps chips picked during the send await (round-9)',
   const midAwaitPick = { sessionId: 'new789', title: '会议纪要' };
   const sandbox = {
     mentionDraftKeyRef: { current: 'session:sess-1' },
+    mentionPendingDraftSendsRef: { current: new Set() },
+    resolveMaterializedDraftKey,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -428,6 +435,8 @@ test('handleSend treats "restored" as a non-dispatch and keeps the chips armed (
   const calls = { inputText: '' };
   const sandbox = {
     mentionDraftKeyRef: { current: 'session:sess-1' },
+    mentionPendingDraftSendsRef: { current: new Set() },
+    resolveMaterializedDraftKey,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -466,6 +475,8 @@ test('handleSend clears the serialized chips at dispatch, before the send settle
   const gate = new Promise((resolve) => { release = resolve; });
   const sandbox = {
     mentionDraftKeyRef: { current: 'session:sess-1' },
+    mentionPendingDraftSendsRef: { current: new Set() },
+    resolveMaterializedDraftKey,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -530,6 +541,8 @@ test('every send lane writes the switched-away scope stash through the choke poi
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       isMultiAgentReadOnly: false,
       canSend: true,
       chatVoice: null,
@@ -569,6 +582,8 @@ test('every send lane writes the switched-away scope stash through the choke poi
     const fn = chatViewSource.slice(start, tail + tailMarker.length);
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       useCallback: (callback) => callback,
       sessionMentionEnabled: true,
       buildSessionMentionBlock,
@@ -589,6 +604,8 @@ test('every send lane writes the switched-away scope stash through the choke poi
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       useCallback: (callback) => callback,
       selectedDesignElement: null,
       chatViewCopy: { designElementFallback: '选中元素', designAdjustSelected: (label, raw) => `【调整${label}】${raw}` },
@@ -614,6 +631,8 @@ test('every send lane writes the switched-away scope stash through the choke poi
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       mentionSendScopeRef: { current: null },
       inputTextRef: { current: '帮我把这份纪要排成 PPT' },
       activeSessionIdRef: { current: 'sess-1' },
@@ -780,6 +799,8 @@ test('handleSend sends the bare body when the feature gate is off (behavioral)',
   const live = { refs: [...REFS] };
   const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -973,6 +994,8 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       mentionSendScopeRef: { current: null },
       inputTextRef: { current: '帮我把这份纪要排成 PPT' },
       activeSessionIdRef: { current: 'sess-1' },
@@ -1058,6 +1081,8 @@ test('handleDesignAiSubmit assembles the block under the gate and consumes chips
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       useCallback: (callback) => callback,
       selectedDesignElement: selectedElement,
       chatViewCopy: {
@@ -1135,6 +1160,8 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       useCallback: (callback) => callback,
       sessionMentionEnabled: enabled,
       buildSessionMentionBlock,
@@ -1511,6 +1538,19 @@ test('steer-loss branches route the notice on the restore verdict (round-8 M1)',
   assert.equal(chatSource.includes('addSystemItem("⚠️ " + bt("steerFailed"))'), false);
 });
 
+test('steer-notice keys exist exactly once per locale in the BT table (round-15 m4)', () => {
+  // Count-3 pattern (web_access_contract precedent): deleting one locale's
+  // copy must fail instead of silently falling back at runtime.
+  const bridgeSource = readFileSync(new URL('../src/platform/tauri/bridge.js', import.meta.url), 'utf8');
+  for (const key of [
+    'steerDroppedQueued', 'steerFailedQueued', 'steerFailedUnconfirmed',
+    'steerFailedLost', 'steerDroppedDuringEdit',
+  ]) {
+    const occurrences = bridgeSource.split(`\n      ${key}:`).length - 1;
+    assert.equal(occurrences, 3, `${key} must appear exactly once per locale (en/ja/zh), got ${occurrences}`);
+  }
+});
+
 test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', () => {
   const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8');
   const webSource = readFileSync(new URL('../src/platform/web/bridge.js', import.meta.url), 'utf8');
@@ -1582,6 +1622,8 @@ test('failure restores are stash-backed across unmount and draft materialization
     const live = { refs: [...REFS] };
     const sandbox = {
       mentionDraftKeyRef: { current: 'session:sess-1' },
+      mentionPendingDraftSendsRef: { current: new Set() },
+      resolveMaterializedDraftKey,
       isMultiAgentReadOnly: false,
       canSend: true,
       chatVoice: null,
@@ -1617,18 +1659,107 @@ test('failure restores are stash-backed across unmount and draft materialization
     );
   }
 
-  // Scenario 2 — draft materialization: chips picked under draft:N survive
-  // the bridge materializing the session mid-flight because the scope effect
-  // migrates the draft stash to the session key (draft epochs are monotonic;
-  // nothing would read draft:N again).
+  // Round-15 m3: the same unmount shape pinned on every lane — the stash
+  // lines are four near-copies and a copy-paste regression must not stay
+  // green on the untested three.
   {
-    const fn = extractChatViewFunction(`useEffect(() => {
+    const lanes = [
+      {
+        name: 'sendWithSessionRefs',
+        build: (sandbox) => {
+          const marker = 'const sendWithSessionRefs = useCallback((text) => {';
+          const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+          const start = chatViewSource.indexOf(marker);
+          const tailMarker = '}, [sessionMentionEnabled, sessionRefs, sendChatMessage]);';
+          const tail = chatViewSource.indexOf(tailMarker, start);
+          const fn = chatViewSource.slice(start, tail + tailMarker.length);
+          sandbox.useCallback = (callback) => callback;
+          vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn}\nthis.sendWithSessionRefs = sendWithSessionRefs;`, sandbox);
+          return () => sandbox.sendWithSessionRefs('正文');
+        },
+      },
+      {
+        name: 'handleDesignAiSubmit',
+        build: (sandbox) => {
+          const fn = extractChatViewFunction('const handleDesignAiSubmit = useCallback((text) => {');
+          sandbox.useCallback = (callback) => callback;
+          sandbox.selectedDesignElement = null;
+          sandbox.chatViewCopy = { designElementFallback: '选中元素', designAdjustSelected: (label, raw) => raw };
+          vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${fn})\nthis.handleDesignAiSubmit = handleDesignAiSubmit;`, sandbox);
+          return () => { sandbox.handleDesignAiSubmit('正文'); return new Promise((resolve) => { setTimeout(resolve, 0); }); };
+        },
+      },
+      {
+        name: 'sendTask',
+        build: (sandbox) => {
+          const fn = extractChatViewFunction('sendTask: async (outgoing, context) =>');
+          sandbox.mentionSendScopeRef = { current: null };
+          sandbox.activeSessionIdRef = { current: 'sess-1' };
+          sandbox.draftEpoch = 3;
+          sandbox.personalWorkbenchTemplateIdRef = { current: null };
+          sandbox.setPersonalWorkbenchTemplateId = () => {};
+          sandbox.bridge = { chat: { restoreTaskDraft: () => {}, prefillComposer: () => {} } };
+          vm.runInNewContext(`${refsSurvivingAcceptanceFn}\nconst config = ({ ${fn} });\nthis.sendTask = config.sendTask;`, sandbox);
+          return () => sandbox.sendTask('正文');
+        },
+      },
+    ];
+    for (const lane of lanes) {
+      const store = recordingDraftStore();
+      const sandbox = {
+        mentionDraftKeyRef: { current: 'session:sess-1' },
+        mentionPendingDraftSendsRef: { current: new Set() },
+        isMultiAgentReadOnly: false,
+        canSend: true,
+        chatVoice: null,
+        inputText: '正文',
+        inputTextRef: { current: '正文' },
+        constrainChatInput: (value) => ({ text: value, truncated: false }),
+        setInputText: () => {},
+        sessionMentionEnabled: true,
+        buildSessionMentionBlock,
+        dedupeSessionRefs,
+        stashSessionMentionDraft: store.stashSessionMentionDraft,
+        restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+        resolveMaterializedDraftKey,
+        sessionRefs: REFS,
+        sendChatMessage: async () => {
+          store.stashSessionMentionDraft('session:sess-1', []);
+          return false;
+        },
+        setSessionRefs: () => { /* unmounted: no-op */ },
+        personalWorkbenchTemplateIdRef: { current: null },
+        setPersonalWorkbenchTemplateId: () => {},
+        bridge: { chat: { prefillComposer: () => {}, restoreTaskDraft: () => {} } },
+        console,
+      };
+      const drive = lane.build(sandbox);
+      await drive();
+      assert.deepEqual(
+        store.calls.stashed.at(-1),
+        ['session:sess-1', [...REFS]],
+        `${lane.name}: the failure arm stashes the snapshot when the live setter is dead`,
+      );
+    }
+  }
+
+  // Scenario 2 — the send-driven materialization loss shape (round-15 B1):
+  // the REAL timeline is dispatch-clear → bridge materializes the draft
+  // mid-await (scope effect re-runs; the cleanup stashes the post-dispatch []
+  // and DELETES the draft entry) → the send fails and its snapshot must land
+  // under the materialized session key via the ledger, not the dead draft
+  // epoch key. Red on the pre-fix tree (no ledger: the stash lands under
+  // draft:N forever).
+  {
+    const effectFn = extractChatViewFunction(`useEffect(() => {
         const restored = bridge.available`);
+    const sendFn = extractChatViewFunction('async function handleSend()');
     const store = recordingDraftStore();
-    const applied = { refs: [], key: null };
-    let effectBody = null;
     const mentionDraftKeyRef = { current: null };
     const sessionRefsRef = { current: [] };
+    const pendingDraftSends = new Set();
+    let effectBody = null;
+    const applied = { refs: [] };
     const runEffect = (scope) => {
       const sandbox = {
         useEffect: (callback) => { effectBody = callback; },
@@ -1637,6 +1768,8 @@ test('failure restores are stash-backed across unmount and draft materialization
         setInputText: () => {},
         ...scope,
         mentionDraftKeyRef,
+        mentionPendingDraftSendsRef: { current: pendingDraftSends },
+        recordDraftMaterialization,
         setSessionRefs: (value) => { applied.refs = value; sessionRefsRef.current = value; },
         setMentionDismissedToken: () => {},
         setMentionSelection: () => {},
@@ -1646,22 +1779,96 @@ test('failure restores are stash-backed across unmount and draft materialization
         dedupeSessionRefs,
         console,
       };
-      vm.runInNewContext(`${fn})`, sandbox);
+      vm.runInNewContext(`${effectFn})`, sandbox);
       return effectBody();
     };
-    store.stashSessionMentionDraft('draft:3', [REFS[0]]);
-    const cleanupDraft = runEffect({ activeSessionId: null, draftEpoch: 3 });
-    assert.deepEqual(applied.refs, [REFS[0]], 'the draft scope restores its stashed chips');
-    cleanupDraft(); // stashes the still-armed live refs under draft:3
-    // the bridge materializes the draft into a real session mid-flight
-    const cleanupSession = runEffect({ activeSessionId: 'NEW', draftEpoch: 4 });
+    const sendSandbox = {
+      mentionDraftKeyRef,
+      mentionPendingDraftSendsRef: { current: pendingDraftSends },
+      isMultiAgentReadOnly: false,
+      canSend: true,
+      chatVoice: null,
+      inputText: '正文',
+      inputTextRef: { current: '正文' },
+      constrainChatInput: (value) => ({ text: value, truncated: false }),
+      setInputText: () => {},
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      resolveMaterializedDraftKey,
+      sessionRefs: REFS,
+      sendChatMessage: async () => {
+        // mid-await: the bridge materializes the draft — the scope effect
+        // re-runs (cleanup stashes the post-dispatch [], then the ledger
+        // records draft:3 → session:NEW) — and then the send FAILS.
+        const cleanup = runEffect({ activeSessionId: null, draftEpoch: 3 });
+        cleanup();
+        runEffect({ activeSessionId: 'NEW', draftEpoch: 4 });
+        throw new Error('reserve conflict');
+      },
+      setSessionRefs: (value) => { sessionRefsRef.current = typeof value === 'function' ? value(sessionRefsRef.current) : value; },
+      bridge: { chat: { prefillComposer: () => {} } },
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      console,
+    };
+    // chips picked in the draft; the composer scope is draft:3
+    runEffect({ activeSessionId: null, draftEpoch: 3 });
+    vm.runInNewContext(`${refsSurvivingAcceptanceFn}\n${sendFn}\nthis.handleSend = handleSend;`, sendSandbox);
+    await sendSandbox.handleSend();
     assert.deepEqual(
       restoreSessionMentionDraft('session:NEW'),
-      [REFS[0]],
-      'materialization carries the draft chips into the session key',
+      [...REFS],
+      'the failed send snapshot lands under the materialized session key',
     );
-    assert.deepEqual(restoreSessionMentionDraft('draft:3'), [], 'the dead draft key is emptied');
-    cleanupSession(); // the migrated entry stashes back under session:NEW
-    assert.deepEqual(restoreSessionMentionDraft('session:NEW'), [REFS[0]], 'round-trips after materialization');
+    assert.deepEqual(restoreSessionMentionDraft('draft:3'), [], 'nothing stays stranded under the dead draft key');
+    assert.equal(pendingDraftSends.size, 0, 'the in-flight registration settles');
+    // Round-15 m1 (negative): plain navigation (no in-flight send) must NOT
+    // carry the draft's chips into the unrelated session — they stay stashed
+    // under the draft key, reachable on draft return, and never leak across
+    // scopes.
+    const navStore = recordingDraftStore();
+    const navKeyRef = { current: null };
+    const navSends = { current: new Set() };
+    const navRefsRef = { current: [] };
+    let navEffect = null;
+    const navRun = (scope) => {
+      const sandbox = {
+        useEffect: (callback) => { navEffect = callback; },
+        bridge: { available: true, chat: { getComposerDraft: () => '' } },
+        bs: {},
+        setInputText: () => {},
+        ...scope,
+        mentionDraftKeyRef: navKeyRef,
+        mentionPendingDraftSendsRef: navSends,
+        recordDraftMaterialization,
+        setSessionRefs: (value) => { navRefsRef.current = value; },
+        setMentionDismissedToken: () => {},
+        setMentionSelection: () => {},
+        sessionRefsRef: navRefsRef,
+        stashSessionMentionDraft: navStore.stashSessionMentionDraft,
+        restoreSessionMentionDraft: navStore.restoreSessionMentionDraft,
+        dedupeSessionRefs,
+        console,
+      };
+      vm.runInNewContext(`${effectFn})`, sandbox);
+      return navEffect();
+    };
+    navStore.stashSessionMentionDraft('draft:7', [REFS[0]]);
+    const navCleanup = navRun({ activeSessionId: null, draftEpoch: 7 });
+    navCleanup(); // plain navigation away from the draft (no send in flight)
+    navRun({ activeSessionId: 'OTHER', draftEpoch: 8 });
+    assert.deepEqual(
+      navStore.calls.stashed.filter(([key]) => key === 'session:OTHER'),
+      [],
+      'navigation never writes the draft chips into the other session',
+    );
+    assert.deepEqual(
+      restoreSessionMentionDraft('draft:7'),
+      [REFS[0]],
+      'the draft keeps its chips stashed for the return',
+    );
   }
 });

@@ -231,15 +231,16 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
     // session-mention block; first_send_title_source strips it before the
     // fallback branch (round-5 minor 5 + round-9): a refs-only + attachment
     // first send still titles after the attachment.
+    // No fallback when there is nothing to fall back to: a refs-only first
+    // send with no attachments keeps 「新对话」, mirroring the native chat
+    // path's None semantics (round-15 m6 — the unconditional "附件" floor
+    // titled attachment-less refs-only sends).
     let title_source = super::sessions::first_send_title_source(
         &message,
-        Some(
-            attachments
-                .first()
-                .map(|attachment| attachment.basename.as_str())
-                .or_else(|| workspace_references.first().map(String::as_str))
-                .unwrap_or("附件"),
-        ),
+        attachments
+            .first()
+            .map(|attachment| attachment.basename.as_str())
+            .or_else(|| workspace_references.first().map(String::as_str)),
     );
     super::sessions::apply_default_session_title(store, &session_id, title_source)?;
     // Timing registration lives inside `AcpPool::send_message`, after busy

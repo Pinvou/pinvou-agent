@@ -441,7 +441,7 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       steerFailed: "Interrupt failed (session unavailable or engine not running); your text was restored to the input",
       steerFailedLost: "Interrupt failed (turn interrupted); the message was not delivered and could not be restored — send it again",
       steerFailedQueued: "Interrupt failed (session unavailable or engine not running); the message stayed queued and will be sent in order",
-      steerDroppedDuringEdit: "The queued copy was not delivered (turn interrupted) while the edit was being applied; it stayed queued and will be sent in order",
+      steerDroppedDuringEdit: "The queued message was not delivered (turn interrupted) while the edit was being applied; it stayed queued and will be sent in order",
       steerFailedUnconfirmed: "Interrupt failed (delivery could not be confirmed); the referenced message was not re-queued — check the transcript before sending it again",
       interruptQueuedFailed: "Interrupt & send failed; the message was restored to the queue",
       interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
