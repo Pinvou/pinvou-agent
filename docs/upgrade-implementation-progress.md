@@ -271,3 +271,28 @@ that frozen V1 does not yet define a trustworthy confirmation of a specific
 client's accepted new Root; this protocol-extension decision was returned to the
 product owner. No caller-declared trust, device authentication or hardware proof
 is substituted. T07 remains incomplete; independent code development continues.
+
+T07 protected Transit retirement (2026-10-10) is committed and pushed as
+`ff74abecf0e6094a08c8f9d2781caa36b5948296` on `feat/t07-signing-root`.
+The protected tooling adapter pins the original name/version-one/public identity,
+reserves an unused provider successor when required by actual Transit behavior,
+raises the signing floor and inspects the final retained material. Unknown ACKs
+remain unknown until a new instance reconciles the same original identity.
+The runtime provider has no lifecycle method; historical public verification
+material remains available. Every physical name permanently belongs to one
+protocol key; reserved successor versions never become registered issuers.
+
+Both independent line-by-line reviewers passed the five-file adapter batch.
+Real isolated OpenBao tests covered the version prerequisite, forbidden runtime
+mutation, both lost-ACK boundaries, recovery, idempotence, pinned signing refusal
+and historical verification (12.641s affected run; 13.630s final full-suite package).
+The complete Go suite, full vet, module verification, build, pinned artifacts and
+diff checks passed. PostgreSQL and Chrome opt-ins were skipped in this adapter-only
+full run: database/browser code was unchanged and the preceding pre-signing batch
+had passed their actual physical regressions. No race or production custody
+acceptance is claimed.
+
+This low-level adapter requires a previously committed approved durable intent,
+domain issuance fence and serialized controller. It introduces no durable jobs,
+registry, authoritative deny, HTTP dispatch or completed T07 acceptance. The main
+role continues those code paths; production deployment remains deferred.
