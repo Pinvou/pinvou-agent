@@ -561,7 +561,14 @@ fn connectors_enable_disable_switch_through_scope_state_only() {
     assert_eq!(value["id"], "feishu");
     assert_eq!(value["action"], "disabled");
     assert_eq!(value["enabled"], false);
-    assert_eq!(value["connected"], false);
+    // The vendor CLI is absent (empty PATH), so the probe ERRORS: round-50
+    // review — the unknown verdict stays null in the JSON, the same honest
+    // shape the enable arm pins below (`enable_with_an_erroring_probe...`);
+    // only a probe that ANSWERED not-connected renders a real `false`.
+    assert!(
+        value["connected"].is_null(),
+        "an erroring probe must not read as a clean connected:false: {value}"
+    );
     assert_eq!(value["skills_should_show"], false);
     // The hide direction needs no embedded bundle, so the CLI performs it.
     assert_eq!(value["skills_removed"], true);
@@ -1506,6 +1513,15 @@ fn feishu_with_an_unparseable_version_reports_not_installed() {
 /// is app-only). The command still succeeds (the switch did persist) but
 /// reports `skills_removed: false` and the human note says the tree was
 /// left in place so a rerun with a healthy shim decides.
+///
+/// Round-50 review: the unknown verdict must also be REPORTED as unknown —
+/// `connected` stays null in the JSON (the status family's degraded-row
+/// shape; null is not false) and the human row says "connected: unknown
+/// (probe failed)" — because a fabricated `connected: false` here is
+/// indistinguishable from a real verdict. The clean not-connected verdict
+/// really does render `connected: false`; that half is pinned by
+/// `enable_with_a_clean_not_connected_verdict_removes_the_skill_tree`
+/// below.
 #[test]
 #[cfg(unix)]
 fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
@@ -1525,9 +1541,10 @@ fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
     let value = run_json(&["pinvou", "connectors", "enable", "wecom"]);
     assert_eq!(value["ok"], true);
     assert_eq!(value["enabled"], true, "{value}");
-    assert_eq!(
-        value["connected"], false,
-        "an unspawnable probe is not a connection: {value}"
+    assert!(
+        value["connected"].is_null(),
+        "a probe ERROR knows nothing: connected must stay null, not a clean-looking \
+         false (unknown is not a verdict): {value}"
     );
     assert_eq!(
         value["skills_removed"], false,
@@ -1535,13 +1552,19 @@ fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
          the CLI cannot restore: {value}"
     );
     assert_eq!(value["skills_refresh"], "app-only", "{value}");
-    // The human note names the state and the remedy (rerun decides).
+    // The human note names the state and the remedy (rerun decides), and
+    // the connected cell says unknown instead of a fabricated no.
     let outcome = run(&["pinvou", "connectors", "enable", "wecom"]).expect("human enable");
     assert!(
         outcome
             .stdout
             .contains("left in place (connection probe failed"),
         "the human output must say the tree was left in place and why: {}",
+        outcome.stdout
+    );
+    assert!(
+        outcome.stdout.contains("connected: unknown (probe failed)"),
+        "the human row must refuse to render the unknown verdict as a clean no: {}",
         outcome.stdout
     );
 
@@ -1560,7 +1583,10 @@ fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
 /// The other half of the round-48 guard: enable with a CLEAN not-connected
 /// verdict (the probe ran and honestly answered "not connected") is the
 /// ordinary switch-driven hide — the tree the GUI's gate would keep deleting
-/// anyway goes away, unlisted siblings stay.
+/// anyway goes away, unlisted siblings stay. Round-50 review: this test is
+/// also the clean half of the honest-verdict shape — a probe that ANSWERED
+/// not-connected renders a real `connected: false`, exactly what the
+/// erroring-probe arm above must NOT fabricate.
 #[test]
 #[cfg(unix)]
 fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {

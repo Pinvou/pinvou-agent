@@ -1442,6 +1442,57 @@ fn apply_model_edit(model: &mut SavedModel, changes: &ModelEdit) {
 ///   model's stored `credential_ref`: a never-configured model has no keyring
 ///   entry, so there is nothing to delete (the same gate `models remove` and
 ///   `search set --clear` apply).
+/// Round-50 review: the post-flock rollback below is single-homed in
+/// [`rollback_keyring_write`] — the two write lanes used to carry
+/// line-for-line copies of the module's subtlest invariant, where a
+/// one-line divergence would be invisible.
+/// Single home for the failed-write keyring rollback `edit` and
+/// `settings search set` share. The restore is narrowed to the value THIS
+/// call wrote (`wrote`) — a peer rotation landing in the post-flock window
+/// must not be rolled back to a stale secret, so if the reference no longer
+/// holds what this call wrote (or the check cannot be done) the keyring is
+/// left untouched. A pre-transaction read error means the old state is
+/// unknown, and unknown leaves the keyring alone rather than destroy a
+/// secret prefs may still reference (a stale orphaned entry is the benign
+/// direction). `previous` being `None` means this call wrote nothing and
+/// there is nothing to roll back. Residual (round-49 review): a peer write
+/// landing between this post-flock re-read and the restoring set/delete is
+/// the last unclosable sub-window without a keyring compare-and-swap.
+fn rollback_keyring_write<S: CredentialStore>(
+    store: &S,
+    reference: &CredentialReference,
+    wrote: Option<String>,
+    previous: Option<Result<Option<String>, ()>>,
+) {
+    let peer_moved = match (
+        wrote.as_deref(),
+        store.get(reference).map_err(|e| e.user_message()),
+    ) {
+        (Some(written_value), Ok(current)) => current.as_deref() != Some(written_value),
+        _ => true,
+    };
+    match previous {
+        // A previous secret existed and the failed write destroyed it: put
+        // it back — unless a peer moved the reference meanwhile.
+        Some(Ok(Some(old))) if !peer_moved => {
+            let _ = store.set(reference, old.as_str());
+        }
+        Some(Ok(Some(_))) => {}
+        // Nothing was there before: remove what was just stored — unless a
+        // peer re-pointed/rewrote the reference meanwhile (deleting would
+        // destroy the peer's secret).
+        Some(Ok(None)) if !peer_moved => {
+            let _ = store.delete(reference);
+        }
+        Some(Ok(None)) => {}
+        // Pre-transaction state unknown (keychain read failed): leave it
+        // alone rather than delete a secret prefs may still reference.
+        Some(Err(_)) => {}
+        // No write happened (nothing to store), so no rollback.
+        None => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn edit<S: CredentialStore>(
     store: &S,
@@ -1582,42 +1633,15 @@ fn edit<S: CredentialStore>(
     );
     if let Err(error) = transaction {
         if let Some((reference, previous)) = written {
-            // Round-48 review: the rollback runs AFTER the settings flock is
-            // released, so the restore is narrowed to the value THIS call
-            // wrote — a peer rotation landing in that window must not be
-            // rolled back to a stale secret. If the reference no longer
-            // holds what this call wrote (or the check cannot be done), a
-            // peer moved under us and the keyring is left untouched (the
-            // same conservative direction as the unknown arm below).
             // (The Replace arm only writes non-empty values, so `written`
             // being Some implies `replacement` is Some and holds exactly
             // what was stored.)
-            let peer_moved = match store.get(&reference).map_err(|e| e.user_message()) {
-                Ok(current) => replacement.as_deref() != current.as_deref(),
-                Err(_) => true,
-            };
-            // Residual (round-49 review): a peer write landing between this
-            // post-flock re-read and the restoring set/delete below is the
-            // last unclosable sub-window without a keyring compare-and-swap.
-            match previous {
-                // The rotation destroyed the old secret: put it back — but
-                // only if a peer did not move the reference meanwhile.
-                Ok(Some(old)) if !peer_moved => {
-                    let _ = store.set(&reference, old.as_str());
-                }
-                Ok(Some(_)) => {}
-                // Nothing was there before: remove what was just stored —
-                // unless a peer re-pointed/rewrote the reference meanwhile
-                // (deleting would destroy the peer's secret).
-                Ok(None) if !peer_moved => {
-                    let _ = store.delete(&reference);
-                }
-                Ok(None) => {}
-                // Pre-transaction state unknown (keychain read failed): leave
-                // it alone rather than delete a secret prefs may still
-                // reference.
-                Err(_) => {}
-            }
+            rollback_keyring_write(
+                store,
+                &reference,
+                replacement.map(|value| value.to_owned()),
+                Some(previous.map_err(|_| ())),
+            );
         }
         return Err(prefs_error(error));
     }
@@ -3290,45 +3314,17 @@ fn search_set<S: CredentialStore>(
             // failed; restore the pre-transaction state so no orphaned entry
             // outlives the prefs record (same standard as models add). An
             // overwrite restores the previous secret; a fresh store deletes.
+            // (`stored` is storage-normalized exactly like the write above;
+            // `previous_secret` is None when nothing was stored.)
             if let Some(reference) = stored_reference.as_ref() {
-                // Round-48 review: the rollback runs after the settings flock
-                // is released, so both restore arms are narrowed to the value
-                // THIS call wrote (`stored`, storage-normalized exactly like
-                // the write above) — a peer rotation landing in that window
-                // must not be rolled back to a stale secret. If the
-                // reference no longer holds it (or the check cannot be
-                // done), a peer moved under us and the keyring is left
-                // untouched (the same conservative direction as the unknown
-                // arm below).
-                let wrote = stored.as_ref().map(|key| secret_for_storage(key));
-                let peer_moved = match (wrote, store.get(reference).map_err(|e| e.user_message())) {
-                    (Some(written_value), Ok(current)) => current.as_deref() != Some(written_value),
-                    _ => true,
-                };
-                // Residual (round-49 review): a peer write landing between
-                // this post-flock re-read and the restoring set/delete below
-                // is the last unclosable sub-window without a keyring
-                // compare-and-swap.
-                match previous_secret {
-                    // A previous secret existed: the overwrite destroyed it,
-                    // so the rollback must put it back.
-                    Some(Ok(Some(old))) if !peer_moved => {
-                        let _ = store.set(reference, old.as_str());
-                    }
-                    Some(Ok(Some(_))) => {}
-                    // No previous secret existed: remove the just-stored one.
-                    Some(Ok(None)) if !peer_moved => {
-                        let _ = store.delete(reference);
-                    }
-                    Some(Ok(None)) => {}
-                    // The pre-transaction state is unknown (keychain read
-                    // failed): leave the keyring untouched. Deleting could
-                    // destroy a secret prefs still references; a stale
-                    // orphaned entry is the benign direction.
-                    Some(Err(_)) => {}
-                    // No write happened (nothing to store), so no rollback.
-                    None => {}
-                }
+                rollback_keyring_write(
+                    store,
+                    reference,
+                    stored
+                        .as_ref()
+                        .map(|key| secret_for_storage(key).to_owned()),
+                    previous_secret.map(|previous| previous.map_err(|_| ())),
+                );
             }
             return Err(prefs_error(error));
         }
@@ -3938,6 +3934,20 @@ fn resolve_search_key<S: CredentialStore>(
         .map_err(|error| error.user_message())?
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
+    // Round-50 review: the same honest-miss rule the model lanes apply via
+    // `resolve_saved_model_key_honest` — under the file-fallback valves a
+    // `get` miss cannot distinguish "never stored" from "stored in an OS
+    // keyring this process cannot reach", and reporting the false
+    // `no_api_key` verdict here would hand a script a state it might act on
+    // (this lane's own suggested repair, `settings search set`, overwrites
+    // the same deterministic reference). The caller maps this error to the
+    // `credential_unavailable` probe row like every other lane.
+    if value.is_none() && store.os_keyring_unreachable(&reference) {
+        return Err(format!(
+            "the OS keyring holding the {} search key is unreachable from this process; the stored key cannot be verified here",
+            provider.as_str()
+        ));
+    }
     Ok(value)
 }
 
@@ -5847,6 +5857,45 @@ mod tests {
         assert!(
             error.to_string().contains("credential_unavailable"),
             "the refusal must name the credential: {error}"
+        );
+
+        // Round-50 review: the search-test lane rides the same honest-miss
+        // rule — a stored-but-unreachable search key used to report the
+        // false `no_api_key` verdict (the one lane the round-49 rollout
+        // skipped); it must fail as `credential_unavailable` like every
+        // other lane.
+        let outcome = search_set(
+            &store,
+            SearchProvider::Metaso,
+            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            false,
+            false,
+            OutputMode::Human,
+        )
+        .expect("search set succeeds");
+        assert!(
+            outcome.stdout.contains("credential: configured"),
+            "{}",
+            outcome.stdout
+        );
+        store
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        let outcome = search_test(&store, SearchProvider::Metaso, OutputMode::Human)
+            .expect("a completed probe outcome");
+        assert_eq!(outcome.exit_code, ExitCode::Failed);
+        assert!(
+            outcome.stdout.contains("credential_unavailable"),
+            "the verdict must name the unreachable keyring: {}",
+            outcome.stdout
+        );
+        assert!(
+            !outcome.stdout.contains("no_api_key"),
+            "an unreachable keyring must not masquerade as a missing key: {}",
+            outcome.stdout
         );
     }
 }

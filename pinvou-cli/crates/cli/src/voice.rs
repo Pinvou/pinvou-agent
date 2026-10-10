@@ -13,6 +13,14 @@
 //!   `PADDLESPEECH_BIN` external-CLI fallback chain with the same `asr
 //!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
 //!   "no speech" convention.
+//! - the NATIVE engine lane's wait budget is GUI parity by default: 300 s,
+//!   mirroring the app's `features::voice::voice_asr::transcribe` ("long
+//!   recordings can take minutes", voice_asr.rs:405), while the external-CLI
+//!   protocol lane keeps the 60 s default of the app's `run_local_asr_cli`;
+//!   both lanes honor the same `PINVOU3_ASR_TIMEOUT_SECS` /
+//!   `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS` override (round-50 review: the
+//!   native lane previously borrowed the external lane's 60 s default
+//!   without disclosure).
 //! - the app verifies downloaded models by size **and** sha256; the CLI
 //!   mirrors both (sha256 through the shared `platform::sha256_file`).
 //! - the app's transcript parser (`features::voice::transcript`) is shared
@@ -969,6 +977,10 @@ fn asr_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 fn download_asr_model() -> Result<PathBuf, CliError> {
     let spec = model_spec();
     let dest = asr_dir().join(spec.filename);
+    // The app twin computes this band from the spec at request-build time
+    // (`spec.expected_size.max(16 * 1024 * 1024) * 2`, voice_asr.rs); same
+    // arithmetic, same input, so the two size gates cannot disagree.
+    let max_bytes = asr_download_max_bytes(spec.expected_size);
     std::fs::create_dir_all(asr_dir()).map_err(|error| {
         CliError::failed(format!("voice asr-install: cannot create asr dir: {error}"))
     })?;
@@ -995,7 +1007,7 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
         // the public model behind the operator's back. The error class from
         // `download_to` is URL-safe by construction, so surface it instead
         // of mislabeling every failure as a checksum gate failure.
-        if let Err(error) = download_to(custom, &dest, spec.sha256) {
+        if let Err(error) = download_to(custom, &dest, spec.sha256, max_bytes) {
             let _ = std::fs::remove_file(&dest);
             return Err(CliError::failed(format!(
                 "voice asr-install: the PINVOU3_ASR_MODEL_URL download failed ({error}); \
@@ -1010,7 +1022,7 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
     // it beside the generic advice.
     let mut last_error: Option<String> = None;
     for url in [spec.primary_url, spec.mirror_url] {
-        match download_to(url, &dest, spec.sha256) {
+        match download_to(url, &dest, spec.sha256, max_bytes) {
             Ok(()) => return Ok(dest),
             Err(error) => {
                 let _ = std::fs::remove_file(&dest);
@@ -1076,7 +1088,16 @@ fn open_staged_part(part: &Path) -> std::io::Result<std::fs::File> {
     }
 }
 
-fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliError> {
+/// Downloads one model file into `dest`, staged and verified. `max_bytes` is
+/// the caller's per-spec cap — [`asr_download_max_bytes`] computes the same
+/// band the app's `DownloadRequest.max_bytes` carries, so the size gate the
+/// two downloaders enforce scales with the spec identically.
+fn download_to(
+    url: &str,
+    dest: &Path,
+    expected_sha256: &str,
+    max_bytes: u64,
+) -> Result<(), CliError> {
     // Staged through a .part sibling and size-capped: a crashed or hostile
     // download must never leave a truncated/garbage file at the real path.
     // The checksum is verified on the .part BEFORE the rename (the app's
@@ -1159,7 +1180,7 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
         let mut file = open_staged_part(&part).map_err(|error| {
             CliError::failed(format!("voice asr-install: {}: {error}", part.display()))
         })?;
-        let mut reader = response.take(MAX_DOWNLOAD_BYTES + 1);
+        let mut reader = response.take(max_bytes + 1);
         std::io::copy(&mut reader, &mut file)
             .map_err(|error| CliError::failed(format!("voice asr-install: write: {error}")))?;
         // Same pre-verify `sync_all` as the app's `download_to_part_with_verify`
@@ -1188,7 +1209,7 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
             )));
         }
     };
-    if size > MAX_DOWNLOAD_BYTES {
+    if size > max_bytes {
         let _ = std::fs::remove_file(&part);
         return Err(CliError::failed(
             "voice asr-install: model exceeds the size cap",
@@ -1205,9 +1226,17 @@ fn download_to(url: &str, dest: &Path, expected_sha256: &str) -> Result<(), CliE
     Ok(())
 }
 
-/// Hard upper bound for one model download (largest expected model is ~254
-/// MiB; the cap exists so a hostile mirror cannot balloon the disk).
-const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+/// Per-spec download cap, the app twin's exact arithmetic
+/// (`features/voice/voice_asr.rs`, `download_asr_model`: `spec.expected_size
+/// .max(16 * 1024 * 1024) * 2`) — the expected model size with a 16 MiB
+/// floor, doubled, so the band scales with the spec instead of a flat cap
+/// silently over- or under-fitting a future model bump. DRIFT GUARD: the
+/// formula is a hand copy of the app line and must be bumped in the same
+/// pull request as it (the app helper is `pub(crate)` and the constant is
+/// computed inline, so it cannot be imported — verified, not assumed).
+fn asr_download_max_bytes(expected_size: u64) -> u64 {
+    expected_size.max(16 * 1024 * 1024) * 2
+}
 
 /// The native lane feeds a missing-ffmpeg installation the raw wav (GUI
 /// parity), so only non-wav inputs make an ffmpeg-only gap fatal.
@@ -1627,8 +1656,8 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     let _ = std::fs::create_dir_all(&work_dir);
     // Bounded like the external ASR lane: stdin is unused (the input file is
     // passed as an argument), both pipes are drained size-capped, and a
-    // wedged engine is killed after the shared timeout budget instead of
-    // hanging the one-shot CLI forever.
+    // wedged engine is killed after the native lane's GUI-parity timeout
+    // budget instead of hanging the one-shot CLI forever.
     let mut engine_command = std::process::Command::new(&engine);
     engine_command
         .current_dir(&work_dir)
@@ -1675,7 +1704,7 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
         let _ = stderr_tx.send(drain_capped(stderr_pipe));
     });
 
-    let timeout = asr_timeout_secs();
+    let timeout = native_engine_timeout_secs();
     let started = Instant::now();
     // The group kill lives on the two branches that leave the engine
     // unreaped — a timeout and a broken wait — where the leader is
@@ -1756,16 +1785,42 @@ fn spawn_asr_engine(
     })
 }
 
-/// Engine wait budget shared by both ASR lanes: the same env overrides the
-/// GUI honors (`PINVOU3_ASR_TIMEOUT_SECS` /
-/// `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS`), 60 s by default.
-fn asr_timeout_secs() -> u64 {
+/// The env override both ASR lanes honor, the same variables the GUI reads
+/// (`PINVOU3_ASR_TIMEOUT_SECS` / `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS`). Shared
+/// by both lane budgets below so the parse rules cannot drift (an invalid or
+/// non-positive value falls through to the lane's own default).
+fn asr_timeout_env_override_secs() -> Option<u64> {
     std::env::var("PINVOU3_ASR_TIMEOUT_SECS")
         .or_else(|_| std::env::var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS"))
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .filter(|secs| *secs > 0)
-        .unwrap_or(60)
+}
+
+/// External-CLI protocol lane's wait budget: the module header scopes this
+/// lane as a mirror of the app's `run_local_asr_cli`, whose
+/// `local_asr_timeout` (`app/commands/voice.rs`) defaults to 60 s under the
+/// same env override.
+fn asr_timeout_secs() -> u64 {
+    asr_timeout_env_override_secs().unwrap_or(60)
+}
+
+/// Native engine lane's wait budget, GUI parity: the app's native lane
+/// (`features::voice::voice_asr::transcribe`) gives the engine a generous
+/// 300 s "because long recordings can take minutes" (voice_asr.rs:405) — a
+/// 60 s cut there turns a legitimate long-recording transcription into a
+/// spurious timeout, which is exactly what this lane silently did before
+/// round-50 by reusing the external-CLI lane's default. The app constant is
+/// a literal inside a `pub(crate)` module the CLI cannot import, so it is
+/// mirrored here as a named constant; the same env override still wins over
+/// it.
+const NATIVE_ENGINE_TIMEOUT_SECS: u64 = 300;
+
+/// The native engine lane's wait budget: the env override first (see
+/// [`asr_timeout_env_override_secs`]), then the GUI-parity default
+/// ([`NATIVE_ENGINE_TIMEOUT_SECS`]).
+fn native_engine_timeout_secs() -> u64 {
+    asr_timeout_env_override_secs().unwrap_or(NATIVE_ENGINE_TIMEOUT_SECS)
 }
 
 /// Size bound for one captured ASR stream (stdout or stderr): a chatty
@@ -1778,28 +1833,20 @@ const MAX_ENGINE_OUTPUT_BYTES: u64 = 8 * 1024 * 1024;
 /// fails the whole transcription over an invalid byte.
 ///
 /// The bytes past the cap are read and discarded rather than left in the
-/// pipe. A `take(cap)` that simply stops reading leaves the write end full,
-/// so the engine blocks in `write()` until `asr_timeout` fires — turning a
-/// merely verbose engine into a 60 s stall reported as a timeout. Same
-/// discard loop as `code.rs`'s `read_capped_to_eof`; the GUI's equivalent
-/// (`app/commands/voice.rs`) reads to EOF for the same reason.
+/// pipe: a `take(cap)` that simply stops reading leaves the write end full,
+/// so the engine blocks in `write()` until its wait budget fires — turning a
+/// merely verbose engine into a full-budget stall reported as a timeout.
+/// The keep-cap-but-drain-to-EOF loop is the shared
+/// [`drain_capped_to_eof`](crate::support::drain_capped_to_eof) (hoisted
+/// from code.rs, round-50 review); the GUI's equivalent
+/// (`app/commands/voice.rs`) reads to EOF for the same reason. The shared
+/// helper keeps a `cap + 1` window (code.rs's truncation-bookkeeping
+/// convention); this lane's documented bound is exactly
+/// [`MAX_ENGINE_OUTPUT_BYTES`], so the extra byte is trimmed before the
+/// lossy decode — behavior-identical to the previous local loop.
 fn drain_capped<R: std::io::Read>(pipe: Option<R>) -> String {
-    let mut kept: Vec<u8> = Vec::new();
-    if let Some(mut pipe) = pipe {
-        let mut chunk = [0u8; 64 * 1024];
-        loop {
-            match std::io::Read::read(&mut pipe, &mut chunk) {
-                Ok(0) => break,
-                Ok(read) => {
-                    let room = MAX_ENGINE_OUTPUT_BYTES.saturating_sub(kept.len() as u64) as usize;
-                    if room > 0 {
-                        kept.extend_from_slice(&chunk[..read.min(room)]);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    }
+    let (mut kept, _) = crate::support::drain_capped_to_eof(pipe, MAX_ENGINE_OUTPUT_BYTES);
+    kept.truncate(MAX_ENGINE_OUTPUT_BYTES as usize);
     String::from_utf8_lossy(&kept).into_owned()
 }
 
@@ -3118,10 +3165,11 @@ mod review_fix_tests {
     }
 
     /// Stopping the drain at the cap leaves the write end full, so a merely
-    /// verbose engine blocks in `write()` until `asr_timeout` fires and the
-    /// user gets a 60 s stall reported as a timeout instead of a bounded
-    /// read. The bytes past the cap must be consumed and discarded (the same
-    /// contract as `code.rs`'s `read_capped_to_eof`).
+    /// verbose engine blocks in `write()` until its lane's wait budget fires
+    /// and the user gets a full-budget stall reported as a timeout instead of
+    /// a bounded read. The bytes past the cap must be consumed and discarded
+    /// (the same contract as the shared
+    /// `support::drain_capped_to_eof`, hoisted from code.rs).
     #[test]
     fn drain_capped_keeps_the_cap_but_still_reads_to_eof() {
         struct Chatty {
@@ -3286,9 +3334,10 @@ mod review_fix_tests {
 mod tests {
     use super::{
         AsrLanes, AsrPreflight, OutputMode, PostprocessMode, VoiceCommand,
-        anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls, asr_preflight,
-        execute, ffmpeg_missing_is_fatal_for, postprocess_anthropic_body, postprocess_chat_body,
-        postprocess_http_exchange, postprocess_prompt, transcribe_with,
+        anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls,
+        asr_download_max_bytes, asr_preflight, asr_timeout_secs, download_to, execute,
+        ffmpeg_missing_is_fatal_for, native_engine_timeout_secs, postprocess_anthropic_body,
+        postprocess_chat_body, postprocess_http_exchange, postprocess_prompt, transcribe_with,
     };
 
     /// Panic-safe `PINVOU3_ASR_CMD` restore for the resolution test below:
@@ -3354,6 +3403,221 @@ mod tests {
                 "a configured-but-missing value must not resolve to itself"
             );
         }
+    }
+
+    /// Panic-safe restore for both ASR timeout variables, with `ENV_LOCK`
+    /// held for the guard's whole lifetime (the same RAII rule as
+    /// [`RestoreAsrCmd`]).
+    struct RestoreTimeoutEnv(
+        Option<std::sync::MutexGuard<'static, ()>>,
+        Option<std::ffi::OsString>,
+        Option<std::ffi::OsString>,
+    );
+    impl RestoreTimeoutEnv {
+        /// `(asr, deepspeech)`: `Some(value)` sets the variable, `None`
+        /// removes it, mirroring the combined-fixture shape the test needs.
+        fn set(asr: Option<&str>, deepspeech: Option<&str>) -> Self {
+            let guard = crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous_asr = std::env::var_os("PINVOU3_ASR_TIMEOUT_SECS");
+            match asr {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_ASR_TIMEOUT_SECS", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_ASR_TIMEOUT_SECS") },
+            }
+            let previous_deepspeech = std::env::var_os("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS");
+            match deepspeech {
+                Some(value) => unsafe {
+                    std::env::set_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", value)
+                },
+                None => unsafe { std::env::remove_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS") },
+            }
+            Self(Some(guard), previous_asr, previous_deepspeech)
+        }
+    }
+    impl Drop for RestoreTimeoutEnv {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_ASR_TIMEOUT_SECS", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_ASR_TIMEOUT_SECS") },
+            }
+            match self.2.take() {
+                Some(value) => unsafe {
+                    std::env::set_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", value)
+                },
+                None => unsafe { std::env::remove_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS") },
+            }
+            drop(self.0.take());
+        }
+    }
+
+    /// The native engine lane's wait budget must default to the GUI's 300 s
+    /// (`voice_asr.rs:405`, "long recordings can take minutes") — borrowing
+    /// the external-CLI lane's 60 s default cut legitimate long-recording
+    /// transcriptions into spurious `asr_engine_error` timeouts, undisclosed.
+    /// The external-CLI lane keeps its own 60 s default, and the env override
+    /// (`PINVOU3_ASR_TIMEOUT_SECS`, falling back to
+    /// `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS`) wins over either lane's default,
+    /// with invalid values falling through.
+    #[test]
+    fn native_engine_budget_defaults_to_gui_parity_and_env_override_wins() {
+        // Each fixture lives in its own scope: `ENV_LOCK` is non-reentrant
+        // and shadowing a guard does not drop it (see the resolution test).
+        {
+            let _env = RestoreTimeoutEnv::set(None, None);
+            assert_eq!(
+                native_engine_timeout_secs(),
+                300,
+                "the native lane's default must be the GUI's 300 s"
+            );
+            assert_eq!(
+                asr_timeout_secs(),
+                60,
+                "the external-CLI lane keeps its scoped 60 s default"
+            );
+        }
+        {
+            let _env = RestoreTimeoutEnv::set(Some("45"), None);
+            assert_eq!(
+                native_engine_timeout_secs(),
+                45,
+                "the env override must reach the native lane"
+            );
+            assert_eq!(asr_timeout_secs(), 45);
+        }
+        {
+            let _env = RestoreTimeoutEnv::set(None, Some("77"));
+            assert_eq!(
+                native_engine_timeout_secs(),
+                77,
+                "the deepspeech fallback variable must reach both lanes"
+            );
+            assert_eq!(asr_timeout_secs(), 77);
+        }
+        {
+            let _env = RestoreTimeoutEnv::set(Some("0"), Some("not-a-number"));
+            assert_eq!(
+                native_engine_timeout_secs(),
+                300,
+                "an invalid override must fall through to the lane default"
+            );
+            assert_eq!(asr_timeout_secs(), 60);
+        }
+    }
+
+    /// The band arithmetic must be the app twin's exact formula
+    /// (`spec.expected_size.max(16 * 1024 * 1024) * 2`, voice_asr.rs): the
+    /// 16 MiB floor applies before doubling, and the shipped specs' bands
+    /// are pinned so neither the floor nor the doubling can move silently.
+    /// (The pre-round-50 shape was a flat 512 MiB cap, which over-admitted
+    /// the q4 model and had no spec coupling.)
+    #[test]
+    fn asr_download_band_mirrors_the_app_twin_arithmetic() {
+        assert_eq!(
+            asr_download_max_bytes(0),
+            32 * 1024 * 1024,
+            "a tiny spec is raised to the 16 MiB floor before doubling"
+        );
+        assert_eq!(
+            asr_download_max_bytes(8 * 1024 * 1024),
+            32 * 1024 * 1024,
+            "below the floor the spec is raised to 16 MiB first"
+        );
+        assert_eq!(
+            asr_download_max_bytes(182_278_688),
+            364_557_376,
+            "the Linux/macOS q4 spec's band"
+        );
+        assert_eq!(
+            asr_download_max_bytes(254_208_320),
+            508_416_640,
+            "the Windows q8 spec's band"
+        );
+    }
+
+    /// The size gate's boundary: a payload exactly at the caller's band is
+    /// accepted (sha256 verified, renamed into place) and one byte over is
+    /// refused with the size-cap error, leaving nothing at the real path.
+    /// Hermetic: the server is a `std::net::TcpListener` on loopback (no
+    /// external network), and the band is kept tiny so the test stays fast.
+    #[test]
+    fn download_to_accepts_at_cap_and_refuses_over_cap_band() {
+        const BAND: u64 = 4096;
+        // Serves `body` once on a loopback port and returns its URL.
+        fn serve(body: Vec<u8>) -> String {
+            use std::io::{Read as _, Write as _};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let length = body.len();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).unwrap();
+                    request.extend_from_slice(&buffer[..read]);
+                    // The GET's header block is the whole request; once the
+                    // terminator is buffered, stop reading (reqwest holds
+                    // the connection open awaiting the response).
+                    if read == 0 || request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let mut response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                )
+                .into_bytes();
+                response.extend_from_slice(&body);
+                stream.write_all(&response).unwrap();
+                stream.flush().unwrap();
+            });
+            format!("http://{addr}/band.gguf")
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-cli-voice-band-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // At-cap: exactly `BAND` bytes passes the `size > max_bytes` gate
+        // and the sha256 verify.
+        let body = vec![b'a'; BAND as usize];
+        let scratch = dir.join("at-cap.body");
+        std::fs::write(&scratch, &body).unwrap();
+        let sha = pinvou3_lib::platform::sha256_file(&scratch).unwrap();
+        let dest = dir.join("at-cap.gguf");
+        download_to(&serve(body), &dest, &sha, BAND)
+            .expect("a payload exactly at the band must be accepted");
+        assert_eq!(
+            std::fs::metadata(&dest).unwrap().len(),
+            BAND,
+            "the accepted download must land at the real path intact"
+        );
+
+        // Over-cap: one byte past the band is refused before any sha check
+        // and leaves no file at the real path.
+        let body = vec![b'b'; BAND as usize + 1];
+        let scratch = dir.join("over-cap.body");
+        std::fs::write(&scratch, &body).unwrap();
+        let sha = pinvou3_lib::platform::sha256_file(&scratch).unwrap();
+        let dest = dir.join("over-cap.gguf");
+        let error = download_to(&serve(body), &dest, &sha, BAND)
+            .expect_err("a payload over the band must be refused");
+        assert!(
+            error.to_string().contains("exceeds the size cap"),
+            "the refusal must name the size cap, got: {error}"
+        );
+        assert!(
+            !dest.exists(),
+            "a refused download must not leave the model at the real path"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The call site, not just the helper: against a loopback endpoint

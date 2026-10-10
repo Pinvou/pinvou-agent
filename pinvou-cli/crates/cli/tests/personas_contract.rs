@@ -352,6 +352,40 @@ fn personas_delete_without_yes_is_refused_before_any_state_change() {
     );
 }
 
+/// Round-50 review: a `--source` filter matching nothing (a fresh home's
+/// `user` pool) prints an explicit `No personas.` line in human mode
+/// instead of silent empty stdout; the JSON deck stays the authoritative
+/// empty pool. (The unfiltered pool never empties — builtins ship
+/// embedded.)
+#[test]
+fn personas_list_prints_an_explicit_empty_line_in_human_mode() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("list-empty");
+    // The user-pool cache reloads on a directory-stamp change; an ABSENT
+    // personas dir fails open to whatever the previous test in this process
+    // cached (the same fail-open that protects a real user's cards from a
+    // transient read failure). Materialize the empty dir so this test's
+    // stamp is a real, empty one.
+    std::fs::create_dir_all(home.root.join("user/personas"))
+        .expect("materialize the empty user persona dir");
+
+    let outcome = run(&["pinvou", "personas", "list", "--source", "user"])
+        .expect("filtered list must succeed");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        outcome.stdout.contains("No personas."),
+        "a filter matching nothing must say so in human mode: {:?}",
+        outcome.stdout
+    );
+
+    let value = run_json(&["pinvou", "personas", "list", "--source", "user"]);
+    assert_eq!(
+        value["personas"].as_array().map(Vec::len),
+        Some(0),
+        "the json deck stays the authoritative empty pool: {value}"
+    );
+}
+
 #[test]
 fn personas_list_shows_builtin_catalog_and_source_filters() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

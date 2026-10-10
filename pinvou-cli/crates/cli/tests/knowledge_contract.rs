@@ -1684,7 +1684,14 @@ fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
         ])
         .env("PINVOU3_HOME", home.path())
         .env("PINVOU_NO_COLOR", "1")
-        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "300");
+        // Round-50 review: the bound only has to sit ABOVE the slowest
+        // 5000-entry heartbeat stretch of a healthy walk — it never fires
+        // on one, so generosity costs nothing (the walk ends when the walk
+        // ends). The old 300 ms assumed a warm runner; a loaded one blew
+        // the margin and falsely tripped the very bound this test asserts
+        // must NOT trip. The negative twin below still uses 1 ms to
+        // exercise the interrupt path for real.
+        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "5000");
     let outcome = command.output().expect("walking add-sources child runs");
     assert!(
         outcome.status.success(),

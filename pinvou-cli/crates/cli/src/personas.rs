@@ -465,11 +465,20 @@ fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError
         let wanted = source.as_str();
         summaries.retain(|summary| summary.source == wanted);
     }
-    let human = summaries
-        .iter()
-        .map(persona_row)
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Round-50 review: an empty pool (or a `--source` filter matching
+    // nothing) prints an explicit empty line in human mode — a silent empty
+    // stdout reads as a hang or a broken pipe to a human, while the JSON
+    // deck stays authoritative either way (the same convention
+    // `memory organize-history`'s "No organize history." follows).
+    let human = if summaries.is_empty() {
+        "No personas.".to_owned()
+    } else {
+        summaries
+            .iter()
+            .map(persona_row)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     // A serialization failure is a failure, not an empty deck. The previous
     // fallback answered `{"personas": []}` with exit 0 — a caller scripting
     // "the pool is empty, seed it" cannot tell that apart from a genuinely

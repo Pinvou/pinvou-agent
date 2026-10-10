@@ -3942,6 +3942,13 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
         .iter()
         .zip(items.iter())
         .map(|(metadata, item)| {
+            // Round-50 review: the workspace_path cell comes from the bound
+            // workspace the store record names (project) or a session id
+            // (temporary) — user-controlled store data rendered into the
+            // tab-separated human table, so it goes through the row
+            // sanitizer like the title cell beside it (the id column is
+            // argv-validated and cannot carry a control byte). JSON above
+            // keeps the verbatim path.
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
                 metadata.id,
@@ -3949,7 +3956,10 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 item["workspace_kind"].as_str().unwrap_or("-"),
                 metadata.updated_at.to_rfc3339(),
                 crate::support::collapse_control_characters(&metadata.title),
-                item["workspace_path"].as_str().unwrap_or("-"),
+                item["workspace_path"]
+                    .as_str()
+                    .map(crate::support::collapse_control_characters)
+                    .unwrap_or_else(|| "-".to_owned()),
             )
         })
         .collect::<Vec<_>>()
@@ -3995,11 +4005,15 @@ fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliErr
         "workspace_path": info.1.display().to_string(),
         "workspace_available": info.2,
     });
+    // Round-50 review: `workspace_path` is user-controlled store data (the
+    // bound project directory or the session's execution root), so the human
+    // block collapses it like every other store-fed cell in this module; the
+    // JSON object above stays verbatim by design.
     let human = format!(
         "id: {}\nagent: {}\nworkspace: {}\navailable: {}\nacp_session: {}\nmodel: {}",
         id,
         agent_id,
-        info.1.display(),
+        crate::support::collapse_control_characters(&info.1.display().to_string()),
         info.2,
         record.acp_session_id.as_deref().unwrap_or("-"),
         record.acp_model_id.as_deref().unwrap_or("-"),
@@ -4770,7 +4784,8 @@ fn run_git_output(command: std::process::Command, arguments: &[&str]) -> Result<
 
 /// Upper bound for the small-output git lanes (identity probe, rev-parse,
 /// branch and stash lists, status): far above any real repository's payload,
-/// while the drain-past-cap discipline in [`read_capped_to_eof`] keeps a
+/// while the drain-past-cap discipline in
+/// [`drain_capped_to_eof`](crate::support::drain_capped_to_eof) keeps a
 /// pathological repo from buffering unbounded into memory.
 const GIT_CAPTURE_CAP: u64 = 16 * 1024 * 1024;
 
@@ -4842,8 +4857,9 @@ fn run_git_captured_capped(
     let _group = crate::support::supervise::GroupGuard::arm(child.id());
     let stdout_pipe = child.stdout.take().expect("git stdout is piped");
     let stderr_pipe = child.stderr.take().expect("git stderr is piped");
-    let stderr_thread = std::thread::spawn(move || read_capped_to_eof(stderr_pipe, cap));
-    let (stdout_bytes, stdout_total) = read_capped_to_eof(stdout_pipe, cap);
+    let stderr_thread =
+        std::thread::spawn(move || crate::support::drain_capped_to_eof(Some(stderr_pipe), cap));
+    let (stdout_bytes, stdout_total) = crate::support::drain_capped_to_eof(Some(stdout_pipe), cap);
     let (stderr_bytes, _) = stderr_thread.join().unwrap_or_default();
     let status = match child.wait() {
         Ok(status) => status,
@@ -4904,29 +4920,9 @@ fn git_output_capped(
     ))
 }
 
-/// Keeps the first `cap + 1` bytes of a stream and discards the rest while
-/// still reading to EOF, reporting the total bytes seen. The discard loop is
-/// what lets a writer that outproduces the cap finish instead of blocking on
-/// a full pipe.
-fn read_capped_to_eof(mut pipe: impl std::io::Read, cap: u64) -> (Vec<u8>, u64) {
-    let mut kept = Vec::new();
-    let mut total: u64 = 0;
-    let mut chunk = [0u8; 64 * 1024];
-    loop {
-        match pipe.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                total += n as u64;
-                if (kept.len() as u64) <= cap {
-                    let remaining = (cap + 1 - kept.len() as u64) as usize;
-                    kept.extend_from_slice(&chunk[..n.min(remaining)]);
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    (kept, total)
-}
+// The former local `read_capped_to_eof` was hoisted (round-50 review) into
+// `crate::support::drain_capped_to_eof` — the shared keep-cap-but-drain-to-EOF
+// helper voice.rs's ASR lanes also call — byte-for-byte.
 
 fn git_root(root: &Path) -> Option<PathBuf> {
     // Supervised like every git lane (see `run_git_captured`): the probe is
@@ -5615,7 +5611,7 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
 /// -- <path>` prints at most the matched path(s), far below any plausible
 /// answer's size, while keeping the supervised drain bounded (the drain
 /// discards past the cap and can never deadlock either way — see
-/// [`read_capped_to_eof`]).
+/// [`drain_capped_to_eof`](crate::support::drain_capped_to_eof)).
 const GIT_LS_FILES_CAPTURE_CAP: u64 = 64 * 1024;
 
 /// Tracked-ness oracle for the git lane: `ls-files --error-unmatch` exits 0

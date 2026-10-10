@@ -817,7 +817,27 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // rename gate on existence): the store's own delete treats NotFound as
     // success for the GUI cascade, but a CLI caller asking to delete a
     // session that is not there must not be told "deleted".
-    require_existing(&store, id, "delete")?;
+    //
+    // Round-50 review: the gate probes the record file's presence
+    // (`durable_session_record_is_absent` — the same fail-closed probe the
+    // projects rebind orphan classification and the GUI's delete plumbing
+    // use) instead of `require_existing`'s full `load`. The store delete
+    // never parses the record (it removes the JSON like the GUI and the
+    // CodeWhale session manager do), so a strict load made a corrupt record
+    // exit 1 exactly when deletion is most needed. The other
+    // `require_existing` callers keep the strict load on purpose: show,
+    // folder, timeline, and the sidecar writers cannot do their job without
+    // a readable record.
+    if store.durable_session_record_is_absent(id) {
+        // The record is durably gone: reproduce the load gate's exact
+        // NotFound message. The probe guarantees this load fails with
+        // NotFound, never a parse error; its `Ok` arm only covers a session
+        // created inside the probe→load window, which falls through to the
+        // delete the caller asked for.
+        if let Err(error) = store.load(id) {
+            return Err(store_error("delete", id, error));
+        }
+    }
     // The store delete path mirrors the GUI chat-session cascade (session
     // JSON + artifacts directory) and refuses scheduled-run sessions, which
     // the GUI deletes through their automation only.
@@ -1269,8 +1289,18 @@ fn folder(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     } else {
         home.join("sessions").join(id)
     };
+    // Round-50 review: the folder path is derived from the sandbox home and
+    // the session id, so a hostile-but-legal home directory name (POSIX
+    // filenames may carry `\t`/ESC) would reach the terminal raw. The human
+    // line goes through the same column collapse as every other
+    // user-controlled cell in this family (list's id/title, export's
+    // destination); JSON keeps the verbatim path.
     let value = serde_json::json!({ "id": id, "path": path.display().to_string() });
-    Ok(success(render(output, path.display().to_string(), &value)))
+    Ok(success(render(
+        output,
+        crate::support::collapse_control_characters(&path.display().to_string()),
+        &value,
+    )))
 }
 
 #[cfg(test)]

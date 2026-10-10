@@ -1962,10 +1962,18 @@ fn update(
         // `execute`) deserves a refusal it can handle rather than a crash
         // that also loses the report.
         MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => {
+            // Round-50 review: echo the canonical hyphen spelling (the one
+            // the valid list in this very message uses), not `as_str()`'s
+            // underscore form.
+            let name = match store {
+                MemoryStore::RecentWork => "recent-work",
+                MemoryStore::Pending => "pending",
+                MemoryStore::Never => "never",
+                _ => store.as_str(),
+            };
             return Err(CliError::usage(format!(
-                "memory update does not support store '{}' (valid: preferences, \
-work-context, current-focus, recent-activity)",
-                store.as_str()
+                "memory update does not support store '{name}' (valid: preferences, \
+work-context, current-focus, recent-activity)"
             )));
         }
     };
@@ -2046,7 +2054,14 @@ fn delete(
             return Err(CliError::usage(format!(
                 "memory delete does not support store '{}' (valid: preferences, \
 work-context, current-focus, recent-activity)",
-                store.as_str()
+                match store {
+                    // Round-50 review: canonical hyphen spellings (as_str()
+                    // is the underscore storage form).
+                    MemoryStore::RecentWork => "recent-work",
+                    MemoryStore::Pending => "pending",
+                    MemoryStore::Never => "never",
+                    other => other.as_str(),
+                }
             )));
         }
     };

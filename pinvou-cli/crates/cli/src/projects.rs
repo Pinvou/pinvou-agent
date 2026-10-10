@@ -383,10 +383,14 @@ fn open_session_store() -> Result<SessionStore, CliError> {
     // startup. Without it, the rebind's wholesale legacy-table rewrite
     // would publish `cache ∪ plan` from a cache that never saw the legacy
     // entries — silently dropping legacy-format-only bindings (including
-    // ones unrelated to the rebind) while reporting success. A table this
-    // process failed to read or parse is left untouched: the migration
-    // sets the store's parse-failed guard, which bars the rewrite from
-    // deleting a file it never parsed.
+    // ones unrelated to the rebind) while reporting success. Round-50
+    // review: a table this process failed to read or parse is left
+    // untouched by two mechanisms, neither a stored flag — the migration
+    // returns early on a read or parse failure and keeps the file as-is
+    // (workspace_bindings.rs "refuses to touch a table it cannot parse"),
+    // and the rebind's wholesale rewrite goes through the typed sync whose
+    // `REBIND_LEGACY_TABLE_CORRUPT` refusal aborts the run with nothing
+    // moved when the per-run re-check also fails to parse.
     sessions.migrate_legacy_session_workspaces();
     Ok(sessions)
 }

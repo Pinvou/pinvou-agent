@@ -207,13 +207,26 @@ pub(crate) enum FamilyLockError {
 /// 0644 file from an older build heals the next time the lane opens it.
 ///
 /// Deliberately free of the `fd_lock::RwLock` wrap: each caller keeps its
-/// own blocking/try acquire and error code. Callers that need the
-/// absolute-path contract (the lock must not land in a cwd-relative root)
-/// keep their own `sandbox_home()?` ahead of this, exactly as before.
+/// own blocking/try acquire and error code.
 ///
-/// The sibling lock files in memory/personas/scheduled/voice adopt this
-/// helper in a later wave; the three sites below are the first conversion.
+/// Round-50 review: the absolute-path contract is enforced HERE, not by
+/// caller discipline — a relative/empty `$HOME` would have materialized a
+/// cwd-relative `.pinvou3/locks/`, and two invocations from different cwds
+/// would then have taken DIFFERENT lock files, silently voiding the mutual
+/// exclusion the lock exists for. Every caller already ran
+/// `sandbox_home()?` first, so the helper-level call is a second
+/// idempotent gate (and `FamilyLockError::CreateDir` now carries the
+/// sandbox refusal instead of a silently wrong lock path).
 pub(crate) fn open_family_lock_file(name: &str) -> Result<std::fs::File, FamilyLockError> {
+    if let Err(error) = crate::support::sandbox_home() {
+        // The locks dir cannot be soundly established in a cwd-relative
+        // root; the io::Error text carries the real reason so every
+        // family's `{action}_lock` message prints it verbatim.
+        return Err(FamilyLockError::CreateDir {
+            dir: pinvou3_lib::platform::paths::pinvou3_home(),
+            error: std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()),
+        });
+    }
     let dir = pinvou3_lib::platform::paths::pinvou3_home().join("locks");
     std::fs::create_dir_all(&dir).map_err(|error| FamilyLockError::CreateDir {
         dir: dir.clone(),
@@ -894,6 +907,46 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// The shared bounded pipe drain, stated once: KEEP the first `cap + 1`
+/// bytes of one stream, but keep reading — and DISCARDING — everything past
+/// the cap until true EOF, and report the total bytes seen. Draining past
+/// the cap is the load-bearing half of the invariant: a `take(cap)` that
+/// simply stops reading leaves the write end full, so a child that
+/// outproduces the cap blocks in `write()` forever instead of finishing.
+/// The keep window is `cap + 1` (not `cap`) so a caller can hold one byte
+/// past its reporting cap, and `total` is the truncation signal
+/// (`total > cap` means the stream was cut). A missing pipe (`None` — the
+/// child died before the fd could be taken) drains to an empty buffer.
+///
+/// Moved verbatim from code.rs's `read_capped_to_eof` (round-50 review):
+/// the loop math, the `cap + 1` accounting and the `(kept, total)` return
+/// are byte-for-byte the code.rs original; the `Option`-tolerant pipe is
+/// the defensive piece reconciled in from voice.rs's local copy. voice.rs
+/// and code.rs call this; connectors.rs keeps its own exact-cap variant.
+pub fn drain_capped_to_eof<R: std::io::Read>(pipe: Option<R>, cap: u64) -> (Vec<u8>, u64) {
+    let mut pipe = match pipe {
+        Some(pipe) => pipe,
+        None => return (Vec::new(), 0),
+    };
+    let mut kept = Vec::new();
+    let mut total: u64 = 0;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n as u64;
+                if (kept.len() as u64) <= cap {
+                    let remaining = (cap + 1 - kept.len() as u64) as usize;
+                    kept.extend_from_slice(&chunk[..n.min(remaining)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    (kept, total)
+}
+
 /// Serializes `value` for `--output json` (single line) and renders `human`
 /// verbatim otherwise.
 pub fn render(output: crate::OutputMode, human: String, value: &serde_json::Value) -> String {
@@ -940,6 +993,31 @@ fn json_failure_payload(message: &str) -> String {
 #[cfg(test)]
 mod tests {
 
+    /// Pins the moved drain primitive at its new home: the `cap + 1` keep
+    /// window, the total-bytes signal, and the `None` arm — the contract
+    /// code.rs's `read_capped_to_eof` carried before the hoist. The
+    /// drain-past-cap behavior itself is pinned end-to-end by voice.rs's
+    /// `drain_capped_keeps_the_cap_but_still_reads_to_eof` and the
+    /// code_contract diff tests.
+    #[test]
+    fn drain_capped_to_eof_keeps_cap_plus_one_and_reports_total() {
+        struct Fixed(std::io::Cursor<Vec<u8>>);
+        impl std::io::Read for Fixed {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                // A small chunk size exercises the keep-window arithmetic
+                // across several reads instead of one.
+                let take = buf.len().min(7);
+                self.0.read(&mut buf[..take])
+            }
+        }
+        let payload = vec![b'x'; 100];
+        let (kept, total) = drain_capped_to_eof(Some(Fixed(std::io::Cursor::new(payload))), 40);
+        assert_eq!(kept.len(), 41, "the keep window is cap + 1");
+        assert_eq!(total, 100, "total counts everything drained to EOF");
+        let (kept, total) = drain_capped_to_eof(None::<std::io::Empty>, 40);
+        assert_eq!((kept.len(), total), (0, 0), "a missing pipe drains empty");
+    }
+
     #[test]
     fn block_sanitizer_neutralizes_bidi_and_zero_width_like_rows() {
         // The row set (bidi overrides/isolates, zero-width, soft hyphen,
@@ -963,8 +1041,9 @@ mod tests {
     }
     use super::{
         ENV_LOCK, FamilyLockError, collapse_block_control_characters, collapse_control_characters,
-        decode_arguments, emit_report, json_failure_payload, open_family_lock_file,
-        read_bytes_capped, read_text_file_capped, resolve_secret, validate_sandbox_home,
+        decode_arguments, drain_capped_to_eof, emit_report, json_failure_payload,
+        open_family_lock_file, read_bytes_capped, read_text_file_capped, resolve_secret,
+        validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};

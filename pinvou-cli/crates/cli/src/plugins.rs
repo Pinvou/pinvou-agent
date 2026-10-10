@@ -547,8 +547,23 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
     // or the single-dash `plugins disable -x` that used to persist a junk
     // `-x` row into disabled_bundles.json); recording either into the store
     // would disable nothing and confuse the next list read.
-    if id.is_empty() || id.starts_with('-') {
+    if id.trim().is_empty() || id.starts_with('-') {
         return Err(CliError::usage("plugins command requires an id"));
+    }
+    // A path-shaped id (`..`, `.`, `a/b`, `a\b`, a trailing slash) names a
+    // filesystem location, not a bundle: `plugins disable ..` used to pass
+    // this guard and `to_package_id_with`'s pack-row probe canonified it per
+    // scope (`bundles_root().join("..")` names the parent directory, which
+    // exists), persisting a junk row that read-time
+    // `normalize_stored_pkg_ids` then preserved forever. Installed pack dirs
+    // and skill ids can never contain either separator (the importer rejects
+    // them at the zip-entry and skill-name level), so this refusal can never
+    // reject a real id; a malformed id is argv-decidable, so every caller
+    // keeps the usage class.
+    if id == "." || id == ".." || id.contains('/') || id.contains('\\') {
+        return Err(CliError::usage(format!(
+            "plugins command requires an id (got `{id}`: a path, not a package or skill id)"
+        )));
     }
     Ok(id)
 }
@@ -1572,11 +1587,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     // The wrapper-zip lane's temp name is CLI-generated ASCII; the direct
     // lane's path is the validated `path_str` from above.
-    let pipeline_path: &str = if import_path == path {
-        path_str
-    } else {
-        import_path.to_str().unwrap_or(path_str)
-    };
+    let pipeline_path: &str = wrapper_pipeline_path(&import_path, path_str)?;
     let result = plugin_import::import_plugin_package(pipeline_path, &display);
     // Dropping the armed guard removes the wrapper; every earlier failure
     // path already removed it through Drop.
@@ -1606,6 +1617,30 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         format!("imported {} (kind={kind} icon={})", report.id, report.icon) + HOT_REFRESH_NOTE,
         &value,
     )))
+}
+
+/// The path text the shared package pipeline receives: the direct zip lane
+/// hands over the validated input path itself (`built` is that same path),
+/// the wrapper lanes hand over the just-written temp zip. A non-UTF-8 temp
+/// path (a non-UTF-8 `TMPDIR`) cannot become that text, and a lossy fallback
+/// to `original` would hand the pipeline the ORIGINAL .md file or SKILL.md
+/// directory instead of the zip the CLI built — a wrong-file import that
+/// could still report success. Fail loudly instead: unlike the input-path
+/// refusal above (argv-decidable, usage class), the temp path is derived
+/// from the environment, so this is the same failed class as the
+/// create/write failures of the very zip this path names.
+fn wrapper_pipeline_path<'a>(built: &'a Path, original: &'a str) -> Result<&'a str, CliError> {
+    if built.as_os_str() == std::ffi::OsStr::new(original) {
+        return Ok(original);
+    }
+    built.to_str().ok_or_else(|| {
+        CliError::failed(format!(
+            "plugins import: the built package path {} is not valid UTF-8, and the shared \
+             package pipeline takes the path as text (falling back to the original input \
+             path would import the wrong file)",
+            built.display()
+        ))
+    })
 }
 
 /// Reserves an export destination atomically: the exclusive create closes
@@ -2880,5 +2915,80 @@ mod tests {
         assert_eq!(&bytes[eocd..eocd + 4], &[0x50, 0x4b, 0x05, 0x06]);
         let count = u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]);
         assert_eq!(count, 2);
+    }
+
+    // `plugins disable ..` used to pass `require_id` and land as a junk row
+    // in disabled_bundles.json for every requested scope (`to_package_id_with`'s
+    // pack-row probe canonifies a path onto the directory it names, and
+    // read-time `normalize_stored_pkg_ids` preserves the row forever), so the
+    // refusal must happen at parse/validation, as a usage error naming the id.
+    #[test]
+    fn path_shaped_ids_are_refused_at_parse_as_usage() {
+        for bad in ["..", ".", "a/b", "a\\b", "skills/"] {
+            let error =
+                parse(&["plugins".to_owned(), "disable".to_owned(), bad.to_owned()]).unwrap_err();
+            assert_eq!(
+                error.exit_code(),
+                crate::ExitCode::Usage,
+                "a malformed id is argv-decidable, so it must stay a usage error: {bad}"
+            );
+            assert!(
+                error.to_string().contains(&format!("`{bad}`")),
+                "the refusal must name the offending id {bad}: {error}"
+            );
+        }
+        // A whitespace-only id is empty after trim, refused by the existing
+        // shape (there is no meaningful id to name).
+        assert!(parse(&["plugins".to_owned(), "disable".to_owned(), " ".to_owned()]).is_err());
+        // A normal id still parses, with the default both-scope arm.
+        assert_eq!(
+            parse(&[
+                "plugins".to_owned(),
+                "disable".to_owned(),
+                "weather".to_owned()
+            ])
+            .unwrap(),
+            PluginsCommand::Disable {
+                id: "weather".to_owned(),
+                scope: ScopeArg::Both,
+            }
+        );
+    }
+
+    // The wrapper lane must hand the pipeline the zip the CLI built, never
+    // fall back to the original input when the temp path is not UTF-8 (a
+    // non-UTF-8 TMPDIR): that fallback imported the .md file or SKILL.md
+    // directory instead of the wrapper and could still report success.
+    #[test]
+    fn wrapper_pipeline_path_refuses_non_utf8_built_path() {
+        // Direct lane: no wrapper was built (built IS the validated input
+        // path), so the pipeline receives the input path text unchanged.
+        let zip = "/tmp/pkg.zip";
+        assert_eq!(wrapper_pipeline_path(Path::new(zip), zip).unwrap(), zip);
+
+        // Wrapper lane with a representable temp path: the pipeline receives
+        // the wrapper, not the original input.
+        let built = Path::new("/tmp/pinvou-cli-import-md1.zip");
+        assert_eq!(
+            wrapper_pipeline_path(built, "/home/u/notes.md").unwrap(),
+            "/tmp/pinvou-cli-import-md1.zip"
+        );
+
+        // A non-UTF-8 temp path fails loudly in the failed class (the same
+        // class as the create/write failures of the very zip it names),
+        // instead of silently importing the original file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt as _;
+            let mojibake = PathBuf::from(std::ffi::OsStr::from_bytes(
+                b"/tmp/pinvou-cli-import-md\xff.zip",
+            ));
+            let error = wrapper_pipeline_path(&mojibake, "/home/u/notes.md").unwrap_err();
+            assert_eq!(error.exit_code(), crate::ExitCode::Failed);
+            assert!(
+                error.to_string().contains("not valid UTF-8"),
+                "the failure must name the built-package-path problem: {error}"
+            );
+        }
     }
 }
