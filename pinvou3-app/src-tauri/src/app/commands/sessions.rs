@@ -888,10 +888,13 @@ fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
 /// the user cancels.
 ///
 /// Accepts any persisted session id under read-only semantics (same as
-/// `load_session`, without calling `ensure_chat_session`): scheduled run
-/// sessions can be exported too; external ACP sessions have no local
-/// persisted record, and `store.export_archive` naturally reports "not
-/// found". The menu entry only appears on chat sessions.
+/// `load_session`, without calling `ensure_chat_session`) — a deliberate
+/// any-id read stance registered in ADR-0024's read-surface register:
+/// scheduled run sessions AND auxiliary side chats (`aux-<parent_id>` records,
+/// persisted like any other session) can be exported too; external ACP
+/// sessions have no local persisted record, and `store.export_archive`
+/// naturally reports "not found". The menu entry only appears on chat
+/// sessions — the capability itself never rejects an id class.
 #[tauri::command]
 pub async fn export_session(
     app: AppHandle,

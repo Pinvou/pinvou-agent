@@ -113,11 +113,22 @@ fn validate_multi_agent_session_web_scope(
     command: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    // Documented exception (round-34 minor 7): the three aux commands are
-    // NOT in the denylist even when the MAIN session runs multi-agent — an
-    // aux conversation on a multi-agent main stays fully usable over the
-    // relay. Intended: the aux engine is the isolated pure-Q&A config
-    // (zero tools, no subagents — the denylist's threat model never
+    // Documented exception (round-34 minor 7; comment reworded per the
+    // round-37 review — that reword (commit ef48f0701) was dropped by a
+    // branch rewrite before it could merge, never reaching main in any
+    // form, and is restored here re-keyed on the mechanism, ADR-0024): the
+    // early return keys on the SESSION ARGUMENT being aux-shaped — an
+    // `aux-` id bypasses this denylist scope check for ANY command, not
+    // only for the three auxChat commands. That is exactly what keeps an
+    // aux conversation fully usable over the relay while its MAIN session
+    // runs multi-agent: today only `get_or_create_aux_session` /
+    // `discard_aux_session` / `reset_aux_session` and `web_access_chat`
+    // (denylist entry #11 — the WebUI aux send path) ever carry an aux id
+    // here, so the two readings coincide behaviorally — the invariant to
+    // preserve is "aux ids are never subject to the multi-agent web
+    // execution denylist", because the aux engine is the isolated pure-Q&A
+    // config (at most one scoped read-only context tool, never an
+    // execution surface, no subagents — the denylist's threat model never
     // applies to it), the desktop offers the same entry, and blocking it
     // would break the side chat for exactly the heaviest users. The
     // denylist's "web is read-only" promise is scoped to the multi-agent
