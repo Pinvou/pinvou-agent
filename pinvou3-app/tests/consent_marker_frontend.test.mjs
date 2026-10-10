@@ -64,58 +64,87 @@ assert.strictEqual(
   'the Rust marker constant and the frontend matcher literal have drifted — reword both sides in the same commit',
 );
 
-// Round-19 review: the marketplace command layer carries the post-landing
-// consent-failure templates too (tool/skill/import channels, the same
-// "installed, but {marker}: new sessions…" shape as skill_gate.rs). Pin the
-// shared interpolation shape in the production region with a lower bound so
-// deleting the emit sites outright fails here instead of silently degrading
-// the alert copy; legitimate reshapes update this leg knowingly.
+// Helper-design rework (PR #517 CI fix): supersedes the counted-===5 shape
+// pins over marketplace.rs below (the emit sites had legitimately collapsed
+// to 3, leaving those legs permanently red). The consent-failure copy is now
+// SINGLE-SOURCED: the sentence lives once, inside the shared scope.rs helper
+// consent_sync_failure_message(subject, error) which interpolates the marker
+// between the subject and the fixed tail; every emit site (the marketplace
+// command layer and the skill gate) calls the helper instead of hand-rolling
+// the wording. The rounds 19/20/26 rationale is preserved structurally: the
+// helper IS the marker interpolation, so a wording without the marker is
+// impossible by construction (round 20), one-site drift cannot survive
+// (round 19), and any hand-rolled copy fails the exact-count legs below
+// (round 26's no-silent-degradation guarantee). The per-channel call counts
+// are LOWER BOUNDS so deleting an emit site still fails a leg while a
+// legitimately added fourth channel routed through the helper does not.
+const TEMPLATE_TAIL = 'new sessions will enable it by default';
+
+// (a) The template tail must exist exactly once in scope.rs PRODUCTION —
+// inside the helper. scope.rs cannot use the plain `productionOf` split
+// above: test-only items (`#[cfg(test)] fn ...` failpoints and test helpers)
+// are scattered through the file BEFORE the marker/helper region, so its
+// first `#[cfg(test)]` is not the test MODULE — anchor the production cut at
+// the module instead.
+const scopeTestsIdx = scopeSrc.search(/#\[cfg\(test\)\]\s*mod tests\b/);
+assert.ok(
+  scopeTestsIdx > 0,
+  'scope.rs must keep its test module after the production body',
+);
+const scopeProduction = scopeSrc.slice(0, scopeTestsIdx);
+assert.ok(
+  scopeSrc.includes('fn consent_sync_failure_message'),
+  'scope.rs must define the shared consent_sync_failure_message helper',
+);
+assert.ok(
+  scopeProduction.split(TEMPLATE_TAIL).length - 1 === 1,
+  'the consent-failure template must exist exactly once in scope.rs production — inside the shared helper',
+);
+
+// (b) Round-19 review: the marketplace command layer carries the post-landing
+// consent-failure channels (tool/skill/import). Round-26 review: exact
+// equality, not a lower bound — the shape and marker-interpolation counts
+// over the hand-rolled format! sites used to be pinned at 5 so a site could
+// not keep the wording while dropping the marker. Under the helper design
+// that becomes: every channel calls the helper (lower bound 3), and the
+// template tail is hand-rolled exactly ONCE — the round-24 minor 6 join-arm
+// copy ("its consent state could not be applied (background task failed)"),
+// a deliberately distinct middle wording that stays byte-for-byte. Any OTHER
+// hand-rolled copy (marker interpolated or not) pushes the count past 1 and
+// fails here; deleting an emit site drops one of the two legs.
 const marketplaceSrc = readFileSync(
   join(root, 'src-tauri/src/app/commands/marketplace.rs'),
   'utf8',
 );
 const marketplaceProduction = productionOf(marketplaceSrc);
-const shapeCount = marketplaceProduction.split('but {}: new sessions will enable it by default')
+const helperCalls = marketplaceProduction.split('consent_sync_failure_message(')
   .length - 1;
-// Round-26 review: exact equality, not a lower bound — a NEW sixth emit
-// site carrying the wording without interpolating the marker used to pass
-// every leg while its alert silently degraded to generic copy. A legitimate
-// reshape updates this pin knowingly (the constant itself cannot drift: the
-// strict-equality leg above).
 assert.ok(
-  shapeCount === 5,
-  `marketplace.rs must keep exactly its post-landing consent-failure emit sites (found ${shapeCount}, expected 5)`,
+  helperCalls >= 3,
+  `marketplace.rs emit sites must route through consent_sync_failure_message (found ${helperCalls}, expected >= 3)`,
+);
+const templateCopies = marketplaceProduction.split(TEMPLATE_TAIL).length - 1;
+assert.ok(
+  templateCopies === 1,
+  `marketplace.rs must keep exactly the one distinct join-arm consent-failure copy (found ${templateCopies}, expected 1) — every other channel must call the shared helper`,
 );
 
-// Round-20 review: the shape pin counts the template wording, not the marker
-// ARGUMENT — keeping the sentence but swapping or dropping the
-// CONSENT_SYNC_FAILURE_MARKER interpolation at an emit site kept every leg
-// green while ToolStoreView's includes() stopped matching and the alert
-// degraded to generic copy. Pin the constant-reference count in the same
-// production region (currently exactly 5 sites).
-const markerRefCount = marketplaceProduction.split('CONSENT_SYNC_FAILURE_MARKER').length - 1;
-assert.ok(
-  markerRefCount === 5,
-  `marketplace.rs emit sites must interpolate CONSENT_SYNC_FAILURE_MARKER, not just keep the template wording (found ${markerRefCount}, expected 5)`,
-);
-
-// Round-35 minor 1 (review #455): the Rust production templates must also
-// carry the marker — a pin that only asserts the constant cannot catch a
-// deleted interpolation at an emit site. Round-16: the ima-local wrap site is
-// production-dead since deny-first (a refused gate aborts before anything
-// lands, so ima connect surfaces the raw refusal — see the comment on
-// consent_failure_marker_matches_the_frontend_contract in ima.rs), so the
-// ima leg pins the shared-constant reference only; skill_gate.rs keeps a
-// real production template and still pins its emit site.
-for (const [file, emitSite, valueTest] of [
+// (c) Round-35 minor 1 (review #455): per-channel Rust legs, reworked for the
+// helper design — skill_gate.rs production routes its emit site through the
+// shared helper (its old hand-rolled-template pin died with the two-hop
+// shape); ima.rs has no production template since deny-first (a refused gate
+// aborts before anything lands, so ima connect surfaces the raw refusal —
+// see the comment on consent_failure_marker_matches_the_frontend_contract
+// in ima.rs) and stays reference-only.
+for (const [file, minHelperCalls, valueTest] of [
   [
     'connectors/skill_gate.rs',
-    'but {}: new sessions will enable it by default',
+    1,
     'fn skill_gate_consent_failure_message_keeps_the_frontend_marker',
   ],
   [
     'connectors/ima.rs',
-    null,
+    0,
     'fn consent_failure_marker_matches_the_frontend_contract',
   ],
 ]) {
@@ -124,23 +153,32 @@ for (const [file, emitSite, valueTest] of [
     src.includes('scope::CONSENT_SYNC_FAILURE_MARKER'),
     `${file} must reference the shared consent marker constant`,
   );
-  // Round-18 review (P3): for the reference-only legs this assertion can be
-  // satisfied by the Rust test module alone, so pin the Rust-side VALUE test
-  // by name too — a rename or rewrite that left the constant referenced only
-  // from a comment would otherwise hollow this leg silently.
+  // Round-18 review (P3): the reference leg can be satisfied by the Rust
+  // test module alone, so pin the Rust-side VALUE test by name too — a
+  // rename or rewrite that left the constant referenced only from a comment
+  // would otherwise hollow this leg silently.
   assert.ok(
     src.includes(valueTest),
     `${file} must keep the Rust-side value contract test this leg leans on (${valueTest})`,
   );
-  if (emitSite) {
+  if (minHelperCalls > 0) {
     // Round-17 review: grep the PRODUCTION region only (up to the test
     // module) — the test module carries its own hand-built copy of the
     // template for the Rust-side message pin, so a whole-file grep would
-    // keep passing after the production emit site drifted.
+    // keep passing after the production emit site drifted. Helper legs: the
+    // production region must call the shared helper (lower bound, same
+    // deletion/insertion tradeoff as the marketplace leg) and must not
+    // hand-roll the template at all.
     const production = productionOf(src);
+    const channelHelperCalls = production.split('consent_sync_failure_message(')
+      .length - 1;
     assert.ok(
-      production.includes(emitSite),
-      `${file} production emit site drifted — re-check the marker interpolation`,
+      channelHelperCalls >= minHelperCalls,
+      `${file} production must route its consent-failure emit site through the shared helper (found ${channelHelperCalls}, expected >= ${minHelperCalls})`,
+    );
+    assert.ok(
+      production.split(TEMPLATE_TAIL).length - 1 === 0,
+      `${file} production must not hand-roll the consent-failure template — call the shared helper`,
     );
   }
 }

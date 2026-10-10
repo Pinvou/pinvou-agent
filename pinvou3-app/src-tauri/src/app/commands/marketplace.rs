@@ -292,9 +292,9 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
         // Honest sibling wording (skill path :640-645): no rollback runs on
         // this arm — the pack stays installed with zero consent rows, so the
         // message must say exactly that (review #455 round-22 MAJOR 1).
-        format!(
-            "connector '{tool_id}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        crate::features::marketplace::scope::consent_sync_failure_message(
+            &format!("connector '{tool_id}' installed"),
+            &e,
         )
     })?;
 
@@ -427,10 +427,12 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             // sync's fail-visible persist above.
             if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
             {
-                return Err(format!(
-                    "companion skill '{sid}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-                    crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-                ));
+                return Err(
+                    crate::features::marketplace::scope::consent_sync_failure_message(
+                        &format!("companion skill '{sid}' installed"),
+                        &e,
+                    ),
+                );
             }
         }
         Ok::<(), String>(())
@@ -858,7 +860,7 @@ pub async fn install_marketplace_skill(
 /// BEFORE the package lands (deny-first, #517 review round 4): a refusal
 /// aborts the install before the package is exposed or an existing
 /// installation is overwritten — nothing on disk has been touched yet.
-pub(super) fn install_marketplace_tool_gates(tool_id: &str) -> Result<(), String> {
+fn install_marketplace_tool_gates(tool_id: &str) -> Result<(), String> {
     // The sync itself skips known bundles (their consent is recorded), so a
     // reinstall never re-runs the write and never needs the lock.
     refuse_owner_claimed_install_id(tool_id)?;
@@ -889,10 +891,9 @@ fn refuse_owner_claimed_install_id(id: &str) -> Result<(), String> {
         // folds (ima-skills maps to ima with no pack installed), so the
         // refusal states the divergence without prescribing a fix. The
         // test pins ("companion-skill", the claimant id) stay intact.
-        return Err(format!(
-            "'{id}' is claimed by pack '{folded}'s companion-skill vocabulary; \
-             the consent gate would govern '{folded}', not '{id}'"
-        ));
+        // Wording single-sourced with the connector gate through the shared
+        // scope fn (identical bytes; scope.rs carries the same reword note).
+        return crate::features::marketplace::scope::refuse_owner_claimed_id(id, &folded);
     }
     Ok(())
 }
@@ -1016,12 +1017,12 @@ fn stable_stem_hash(stem: &str) -> String {
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
 /// 统一导入。frontmatter 有 `name` 用之；没有则用文件名 stem 兜底并注入最小
 /// frontmatter。返回 PluginImportReport（调用方负责热刷 skills 组合目录）。
-/// `pre_land` is forwarded as the pre-land hook of the unified import
-/// pipeline (the DenyAll deny-first gate).
+/// The unified import pipeline's pre-land hook is always the DenyAll
+/// deny-first gate (`deny_all_pre_land` below) — the former `pre_land`
+/// parameter existed only for that single call shape.
 fn import_skill_md_content(
     md: String,
     filename: &str,
-    pre_land: &dyn Fn(&str, &[String]) -> Result<(), String>,
 ) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
     use std::io::Write;
     let stem = filename
@@ -1063,7 +1064,7 @@ fn import_skill_md_content(
     let result = crate::features::marketplace::plugin_import::import_plugin_package_gated(
         &tmp.to_string_lossy(),
         &display,
-        pre_land,
+        &deny_all_pre_land,
     );
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     result
@@ -1145,7 +1146,7 @@ fn deny_all_pre_land(id: &str, skills: &[String]) -> Result<(), String> {
 
 /// Import + DenyAll gate for one zip plugin package (the dialog and drag-drop
 /// channels share this; callers only refresh pools on success).
-pub(super) fn import_plugin_package_sync(
+fn import_plugin_package_sync(
     zip_path: &str,
     display_name: &str,
 ) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
@@ -1157,11 +1158,11 @@ pub(super) fn import_plugin_package_sync(
 }
 
 /// Import + DenyAll gate for one wrapped-.md skill upload.
-pub(super) fn import_skill_md_content_gated(
+fn import_skill_md_content_gated(
     md: String,
     filename: &str,
 ) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
-    import_skill_md_content(md, filename, &deny_all_pre_land)
+    import_skill_md_content(md, filename)
 }
 
 /// Upload safe default after an import lands (same contract as
@@ -1177,10 +1178,9 @@ async fn persist_upload_consent_default(what: &str, id: &str) -> Result<(), Stri
     .await
     .map_err(|e| format!("任务执行失败: {e}"))?
     .map_err(|e| {
-        format!(
-            "{what} '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            id,
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        crate::features::marketplace::scope::consent_sync_failure_message(
+            &format!("{what} '{id}' installed"),
+            &e,
         )
     })
 }
