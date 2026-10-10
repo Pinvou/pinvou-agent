@@ -317,7 +317,10 @@ pub(crate) async fn chat_with_reservation(
         // the session-mention injection block the way titles/bubbles do, so a
         // refs-carrying first turn labels the checkpoint with the user's text
         // instead of the machine contract (review round-10 M1). Lookalike
-        // prose passes through unchanged, matching the strip semantics.
+        // prose passes through unchanged, matching the strip semantics. A
+        // refs-only turn (no user text after the strip) persists an EMPTY
+        // label by intent (round-16 m2): the rewind UI keys off checkpoint
+        // counts, and an empty label beats leaking the contract header.
         let checkpoint_label = super::sessions::strip_session_mention_block(&display_content)
             .trim()
             .to_string();

@@ -303,6 +303,20 @@ export function resolveMaterializedDraftKey(key) {
   return materializedDraftKeys.get(key) || key;
 }
 
+/**
+ * Undo a supersession record (round-16 MAJOR-2). The scope effect records
+ * the mapping provisionally on any draft:→session: transition while a send
+ * from that draft is in flight; the bridge, though, ABORTS the
+ * materialization when the user switches to an existing session mid-create
+ * (the text goes back to the draft, the send resolves "restored"). In that
+ * outcome the draft is still alive and the mapping points at an unrelated
+ * session — the send tails call this before resolving their stash key so
+ * the snapshot stays scoped to the draft instead of leaking.
+ */
+export function clearDraftMaterialization(draftKey) {
+  materializedDraftKeys.delete(draftKey);
+}
+
 // Classic-script bridges (platform/{tauri,web}) reuse the same contract parsing
 // for auto-titling via the window global — bridges cannot import features back,
 // so the global publication keeps a single source of truth for the block format.
