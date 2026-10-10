@@ -418,3 +418,47 @@ specific-client trust-confirmation decision remain required. Next development
 addresses the real T08 protected inventory/genesis/deny source needed by Root
 publication, without treating empty fixtures as owner state or marking T08
 complete. Deployment remains deferred and downloads retain no hard elapsed limit.
+
+T08 protected metadata genesis (2026-10-10) is committed and pushed as
+`f1992b07eb2c088be24f1cd422afa4cea3db82fa` on `feat/t08-metadata-genesis`.
+The actual internal owner initializes a protected empty product catalog and typed
+deny, then registers unpublished components after actual approved Root publication.
+Separate exact actor/product/component/base-bound policies require current T05
+authority, two distinct reviewers and fresh MFA. Final SQL rechecks canonical
+receipts, current Root/catalog, complete independent inventory and authorization
+time before atomic head/catalog, original result/outbox, audit and T06 completion.
+The original ACK survives later mutable state changes without granting new rights.
+
+The actual Root source enumerates protected heads independently, rejects missing
+catalog/deny or published heads, and resolves each retention reference only through
+its actual registered owner in the same transaction. There is no empty-source or
+requested-hash fallback. This independent additive metadata schema leaves T07 SQL
+migrations one through five and frozen V1 contract bytes intact. Runtime receives
+only SELECT, three typed mutations and a read-only resource-budget helper.
+
+Both independent line-by-line reviewers passed the frozen code and documentation.
+The main role repaired two prospective Root-maintenance capacity findings: all
+actual key-use and distinct retention references join the full count budget and
+protected key-use records/index join the registration's final read-set CAS. Their
+actual protected encoded sizes also join the conservative 1MiB projection budget.
+Root publication separately verifies and captures actual retention records through
+their registered owners. Count and byte limits are repeated by final SQL. Tests
+verify actual Root rotation at 4096 reads and reject the next registration with no
+business writes; long retention references can exhaust bytes before the count.
+Bulk capacity fixtures are not claimed as thousands of actual approvals/issuances.
+
+All eleven actual isolated metadata PostgreSQL tests passed (92.908s), including
+natural lease-expiry worker recovery without the caller (33.89s), concurrent
+registration, stale Root capture, immutable replay, current/final authority refusal,
+independent new approval after failure, SQL positive/negative canonical controls,
+rollback, runtime ACLs and migration digest/missing-schema checks. The affected
+actual T05 PostgreSQL regression also passed (4.054s). Default full Go tests, full
+vet, module verification, build, pinned-contract and diff checks passed. External
+opt-ins in the default suite were skipped; no new browser, physical provider,
+production Keycloak OTP or custody acceptance is claimed for this metadata batch.
+
+T08 remains in progress: full signed selection/refresh publication, public/private
+current metadata, first activation, actual immediate deny plus pending/job generation
+and durable reconciliation are still required. T07 controlled enablement/issuance
+and the pending specific-client trust decision remain separate. Development
+continues without deployment work; downloads have no hard total/cumulative limit.
