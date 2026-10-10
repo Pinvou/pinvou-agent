@@ -452,6 +452,14 @@ fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
     assert!(mcp["servers"].get(server_name).is_some());
 }
 
+/// Vacuous uninstall guard, both channels (the skill channel got the same
+/// guard as the tool channel in round-10 review): deny-first registers the
+/// consent entry before the install record lands, so a mid-install id has
+/// an entry but no record. An id with no install record and nothing on disk
+/// uninstalls nothing, so both sync cores must leave every deny entry alone
+/// — stripping there would remove the deny-first consent entry a concurrent
+/// same-id install just registered (its install record lands after the
+/// gate) and re-enable the tool/skill as it lands.
 #[test]
 fn vacuous_uninstall_keeps_fresh_consent_entries() {
     use crate::features::marketplace::ConnectorScope;
@@ -465,49 +473,21 @@ fn vacuous_uninstall_keeps_fresh_consent_entries() {
     let _home = TempPinvou3Home::new("vacuous-uninstall-consent");
     // Deny-first install window: the consent entry is registered before the
     // install record lands, so a mid-install id has an entry but no record.
-    save_disabled_bundles_for(ConnectorScope::Code, &["gate-race-probe".to_string()]).unwrap();
-    save_disabled_bundles_for(ConnectorScope::Plain, &["gate-race-probe".to_string()]).unwrap();
+    let both_ids = &[
+        "gate-race-probe".to_string(),
+        "gate-race-skill-probe".to_string(),
+    ];
+    save_disabled_bundles_for(ConnectorScope::Code, both_ids).unwrap();
+    save_disabled_bundles_for(ConnectorScope::Plain, both_ids).unwrap();
 
     uninstall_marketplace_tool_sync("gate-race-probe").unwrap();
+    uninstall_marketplace_skill_sync("gate-race-skill-probe").unwrap();
 
     for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
         assert!(
             load_disabled_bundles_for(scope).contains(&"gate-race-probe".to_string()),
             "a vacuous uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
         );
-    }
-}
-
-/// Round-10 review: the skill channel gets the same vacuous-uninstall guard
-/// as the tool channel. A skill with no install record and nothing on disk
-/// uninstalls nothing, so `uninstall_marketplace_skill_sync` must leave every
-/// deny entry alone — stripping there would remove the deny-first consent
-/// entry a concurrent same-id install just registered (its install record
-/// lands after the gate) and re-enable the skill as it lands.
-#[test]
-fn vacuous_skill_uninstall_keeps_fresh_consent_entries() {
-    use crate::features::marketplace::ConnectorScope;
-    use crate::features::marketplace::scope::{
-        load_disabled_bundles_for, save_disabled_bundles_for,
-    };
-
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("vacuous-skill-uninstall-consent");
-    // Deny-first install window: the consent entry is registered before the
-    // install record lands, so a mid-install id has an entry but no record.
-    save_disabled_bundles_for(ConnectorScope::Code, &["gate-race-skill-probe".to_string()])
-        .unwrap();
-    save_disabled_bundles_for(
-        ConnectorScope::Plain,
-        &["gate-race-skill-probe".to_string()],
-    )
-    .unwrap();
-
-    uninstall_marketplace_skill_sync("gate-race-skill-probe").unwrap();
-
-    for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
         assert!(
             load_disabled_bundles_for(scope).contains(&"gate-race-skill-probe".to_string()),
             "a vacuous skill uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"

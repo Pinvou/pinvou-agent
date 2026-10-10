@@ -801,6 +801,29 @@ impl Drop for LandingJournalGuard {
     }
 }
 
+/// Sweeps a crash-orphaned staged `bundles/<id>.tmp` from the reconcile arms
+/// below (`why` only distinguishes the arm in the success log). A failed sweep
+/// returns `false`: the caller keeps the landing mark and retries next
+/// startup — the round-24 minor / round-21 P3 contract (the unconditional
+/// clear stranded the ghost `.tmp` forever — nothing reschedules a swept
+/// mark — while the log claimed success).
+fn sweep_crash_orphaned_staging(id: &str, pkg_dir: &Path, why: &str) -> bool {
+    let staged = pkg_dir.with_extension("tmp");
+    if !staged.exists() {
+        return true;
+    }
+    if let Err(e) = std::fs::remove_dir_all(&staged) {
+        log::warn!(
+            "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
+        );
+        return false;
+    }
+    log::warn!(
+        "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}'{why}"
+    );
+    true
+}
+
 /// Round-32 minor 6 (review #455): resolve leftover landing marks from crashed
 /// imports. For each journaled id: missing pack dir → the import never landed
 /// or rolled back (clear); registry record present → the import completed and
@@ -916,23 +939,8 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             // been moved back into place; a strand left by a FAILED
             // in-process rollback (whose mark the guard cleared) is the
             // disclosed residual in §3.2 — this arm must not guess at it.
-            let staged = pkg_dir.with_extension("tmp");
-            if staged.exists() {
-                // Round-24 minor (arm A gets the round-21 P3 treatment): a
-                // failed sweep must keep the mark so the next boot retries —
-                // the unconditional clear here stranded the ghost `.tmp`
-                // forever (nothing reschedules a swept mark) while the log
-                // claimed success. Same contract as the record-present arm
-                // below.
-                if let Err(e) = std::fs::remove_dir_all(&staged) {
-                    log::warn!(
-                        "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
-                    );
-                    continue;
-                }
-                log::warn!(
-                    "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}'"
-                );
+            if !sweep_crash_orphaned_staging(id, &pkg_dir, "") {
+                continue;
             }
             clear_landing(id);
             continue;
@@ -958,17 +966,9 @@ pub fn reconcile_import_journal() -> Result<(), String> {
                 // like the no-pkg-dir arm; a failed sweep keeps the mark so
                 // the next boot retries instead of silently stranding the
                 // residue (round-21 review P3).
-                let staged = pkg_dir.with_extension("tmp");
-                if staged.exists() {
-                    if let Err(e) = std::fs::remove_dir_all(&staged) {
-                        log::warn!(
-                            "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
-                        );
-                        continue;
-                    }
-                    log::warn!(
-                        "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}' (a reimport crashed mid-staging)"
-                    );
+                if !sweep_crash_orphaned_staging(id, &pkg_dir, " (a reimport crashed mid-staging)")
+                {
+                    continue;
                 }
                 clear_landing(id);
             }
@@ -1000,17 +1000,12 @@ pub fn reconcile_import_journal() -> Result<(), String> {
                         // `available_tools` has no `.tmp` exclusion, so sweep
                         // it like the other arms; a failed sweep keeps the
                         // mark for the retry.
-                        let staged = pkg_dir.with_extension("tmp");
-                        if staged.exists() {
-                            if let Err(e) = std::fs::remove_dir_all(&staged) {
-                                log::warn!(
-                                    "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
-                                );
-                                continue;
-                            }
-                            log::warn!(
-                                "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}' (a re-import crashed mid-renames)"
-                            );
+                        if !sweep_crash_orphaned_staging(
+                            id,
+                            &pkg_dir,
+                            " (a re-import crashed mid-renames)",
+                        ) {
+                            continue;
                         }
                         clear_landing(id);
                     }
@@ -3070,10 +3065,7 @@ mod tests {
         // A planted FIFO at the mark path: the write must refuse, not open-block.
         let fifo = landing_mark_path("fifo-id");
         std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
-        let c_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
-        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+        crate::platform::paths::tests::plant_fifo(&fifo);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             mark_landing("fifo-id");

@@ -81,7 +81,8 @@ def _extract_consent_marker_read_targets(consent_test):
 
     该测试的读取形态与 multiagent_plan_normalize 不同:`join(rustDir,
     '<rel>.rs')`(rustDir = src-tauri/src/features)单文件读取、
-    `'../src-tauri/<rel>.rs'` 单文件读取,以及数组字面量里经
+    `'../src-tauri/<rel>.rs'` 与 `join(root, 'src-tauri/<rel>.rs')`
+    (root = pinvou3-app)单文件读取,以及数组字面量里经
     `join(rustDir, file)` 消费的 `<rel>.rs` 条目。统一按「以 .rs 结尾的
     字符串字面量即一个 src-tauri 源读取」归一化——数组未来新增条目自动
     纳入路由锁,不会 fail-open。
@@ -90,6 +91,10 @@ def _extract_consent_marker_read_targets(consent_test):
     for literal in re.findall(r"['\"]([^'\"]*\.rs)['\"]", consent_test):
         if literal.startswith("../src-tauri/"):
             targets.add("pinvou3-app/" + literal[3:].lstrip("/"))
+        elif literal.startswith("src-tauri/"):
+            # join(root, 'src-tauri/<rel>.rs'):root 即 pinvou3-app/(测试
+            # 文件共享 hoisted root 常量后的形态),与 `../src-tauri/` 同义。
+            targets.add("pinvou3-app/" + literal)
         else:
             targets.add("pinvou3-app/src-tauri/src/features/" + literal)
     return sorted(targets)

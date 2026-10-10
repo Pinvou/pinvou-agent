@@ -234,25 +234,18 @@ const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_mi
 /// occurrence per failure mode is enough to make the degradation diagnosable.
 static READ_FAILURE_LOGGED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-fn log_scope_read_failure(mode: u8, detail: &str) {
+/// Same latch at caller-chosen level: the freeze-persist CRITICAL lines log
+/// at `log::error!` level because they sit on arms that re-run on EVERY
+/// fully locked read while the condition persists (the lost-store arm
+/// deliberately outranks the verdict memo and re-attempts the persist, and
+/// the parse-tail migration leg consults no memo at all), so an ungated
+/// `log::error!` there printed a line per engine turn in exactly the
+/// broken-environment state the latch exists for (round-18 review).
+fn log_scope_read_failure(level: log::Level, mode: u8, detail: &str) {
     use std::sync::atomic::Ordering;
     if READ_FAILURE_LOGGED.fetch_or(mode, Ordering::Relaxed) & mode == 0 {
         // log (not stderr): packaged Windows GUIs never see eprintln output.
-        log::warn!("[scope] {detail}");
-    }
-}
-
-/// Same latch at error level, for the freeze-persist CRITICAL lines: they sit
-/// on arms that re-run on EVERY fully locked read while the condition
-/// persists (the lost-store arm deliberately outranks the verdict memo and
-/// re-attempts the persist, and the parse-tail migration leg consults no memo
-/// at all), so an ungated `log::error!` there printed a line per engine turn
-/// in exactly the broken-environment state the latch exists for (round-18
-/// review).
-fn log_scope_read_failure_error(mode: u8, detail: &str) {
-    use std::sync::atomic::Ordering;
-    if READ_FAILURE_LOGGED.fetch_or(mode, Ordering::Relaxed) & mode == 0 {
-        log::error!("[scope] {detail}");
+        log::log!(level, "[scope] {detail}");
     }
 }
 
@@ -315,6 +308,7 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
             }
             Err(error) => {
                 log_scope_read_failure(
+                    log::Level::Warn,
                     LOG_LOCK_PROBE,
                     &format!(
                         "cross-process lock probe failed; unlocked read without persist: {error}"
@@ -325,6 +319,7 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
         },
         Err(error) => {
             log_scope_read_failure(
+                log::Level::Warn,
                 LOG_LOCK_OPEN,
                 &format!("cross-process lock unavailable; unlocked read without persist: {error}"),
             );
@@ -414,6 +409,45 @@ pub(crate) fn fail_next_disabled_bundles_write_for_test() -> super::FailpointRes
     super::arm_failpoint(&FAIL_NEXT_DISABLED_BUNDLES_WRITE)
 }
 
+/// Shared freeze-persist tail of the NotFound-branch recovery arms (the
+/// lost-store sidecar arm, the memo-hit re-attempt, and the unconsumable-
+/// legacy arm): on a fully locked read (`persist_repairs`), persist the
+/// frozen verdict; on failure, log the latched CRITICAL and arm the
+/// `UNPERSISTED_VERDICT` memo so later reads reuse this verdict instead of
+/// re-evaluating from first-boot traces. `what` is the verdict noun in the
+/// pinned CRITICAL copy.
+///
+/// Degraded reads (`persist_repairs = false`) do neither: neither the disk
+/// persist nor the verdict memo — the memo is a fully-locked-read artifact,
+/// and a degraded view must never freeze an evaluation that ran without the
+/// migration writes.
+///
+/// Latched (LOG_FREEZE_PERSIST): these arms outrank the verdict memo by
+/// design, so they re-attempt the persist on every fully locked read — the
+/// retry is the healing path, but an ungated CRITICAL printed one line per
+/// engine turn while the persist kept failing (round-18 review). The
+/// memo-hit re-attempt site reuses this helper: re-arming the memo on a
+/// failed retry writes back the entry it just read, so the memo state is
+/// unchanged.
+fn try_freeze_verdict(file: &DisabledBundlesFile, persist_repairs: bool, what: &str) {
+    if !persist_repairs {
+        return;
+    }
+    if let Err(freeze_error) = try_save_disabled_bundles_file(file) {
+        log_scope_read_failure(
+            log::Level::Error,
+            LOG_FREEZE_PERSIST,
+            &format!(
+                "[marketplace] CRITICAL: failed to persist the {what}: {freeze_error}; holding the in-process verdict until restart"
+            ),
+        );
+        *UNPERSISTED_VERDICT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some((paths::pinvou3_home(), file.clone()));
+    }
+}
+
 /// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
 /// 串行（与旧两份文件的 #287 竞态范式一致）。
 
@@ -486,6 +520,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
             // recovery must outrank it.
             if corrupt_sidecar_evidence_exists(&home) {
                 log_scope_read_failure(
+                    log::Level::Warn,
                     LOG_RECOVERY,
                     "[marketplace] disabled_bundles.json is gone but a .corrupt.* copy proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
@@ -493,32 +528,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     plain_defaults_migrated: true,
                     ..DisabledBundlesFile::default()
                 };
-                let freeze_result = if persist_repairs {
-                    try_save_disabled_bundles_file(&recovered)
-                } else {
-                    // Degraded read: neither the disk persist nor the verdict
-                    // memo — the memo is a fully-locked-read artifact, and a
-                    // degraded view must never freeze an evaluation that ran
-                    // without the migration writes.
-                    Ok(())
-                };
-                if let Err(freeze_error) = freeze_result {
-                    // Latched (LOG_FREEZE_PERSIST): this arm outranks the
-                    // verdict memo by design, so it re-attempts the persist on
-                    // every fully locked read — the retry is the healing path,
-                    // but an ungated CRITICAL printed one line per engine turn
-                    // while the persist kept failing (round-18 review).
-                    log_scope_read_failure_error(
-                        LOG_FREEZE_PERSIST,
-                        &format!(
-                            "[marketplace] CRITICAL: failed to persist the lost-store recovery verdict: {freeze_error}; holding the in-process verdict until restart"
-                        ),
-                    );
-                    *UNPERSISTED_VERDICT
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                        Some((home, recovered.clone()));
-                }
+                try_freeze_verdict(&recovered, persist_repairs, "lost-store recovery verdict");
                 return recovered;
             }
             {
@@ -544,16 +554,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     // signal and can flip plain to AllowAll permanently.
                     // Degraded reads still return without persisting or
                     // logging (the memo is a fully-locked-read artifact).
-                    if persist_repairs {
-                        if let Err(freeze_error) = try_save_disabled_bundles_file(&file) {
-                            log_scope_read_failure_error(
-                                LOG_FREEZE_PERSIST,
-                                &format!(
-                                    "[marketplace] CRITICAL: failed to persist the lost-store recovery verdict: {freeze_error}; holding the in-process verdict until restart"
-                                ),
-                            );
-                        }
-                    }
+                    try_freeze_verdict(&file, persist_repairs, "lost-store recovery verdict");
                     return file;
                 }
             }
@@ -596,6 +597,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 // parser (and its pins, removed earlier in this PR) is
                 // restored here over the new fail-closed recovery shape.
                 log_scope_read_failure(
+                    log::Level::Warn,
                     LOG_RECOVERY,
                     "[marketplace] a legacy scope file exists but cannot be consumed; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
@@ -603,23 +605,11 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     plain_defaults_migrated: true,
                     ..DisabledBundlesFile::default()
                 };
-                let freeze_result = if persist_repairs {
-                    try_save_disabled_bundles_file(&recovered)
-                } else {
-                    Ok(())
-                };
-                if let Err(freeze_error) = freeze_result {
-                    log_scope_read_failure_error(
-                        LOG_FREEZE_PERSIST,
-                        &format!(
-                            "[marketplace] CRITICAL: failed to persist the unconsumable-legacy recovery verdict: {freeze_error}; holding the in-process verdict until restart"
-                        ),
-                    );
-                    *UNPERSISTED_VERDICT
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                        Some((home, recovered.clone()));
-                }
+                try_freeze_verdict(
+                    &recovered,
+                    persist_repairs,
+                    "unconsumable-legacy recovery verdict",
+                );
                 return recovered;
             }
             if upgraded_install {
@@ -663,7 +653,8 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 Ok(())
             };
             if let Err(freeze_error) = freeze_result {
-                log_scope_read_failure_error(
+                log_scope_read_failure(
+                    log::Level::Error,
                     LOG_FREEZE_PERSIST,
                     &format!(
                         "[marketplace] CRITICAL: failed to persist the plain-defaults migration verdict: {freeze_error}; holding the in-process verdict (plain initialized = {}) until restart - first-boot traces will not re-open the fresh/upgraded evaluation",
@@ -725,6 +716,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 }
                 Err(salvage_error) => {
                     log_scope_read_failure(
+                        log::Level::Warn,
                         LOG_RECOVERY,
                         &format!(
                             "[marketplace] disabled_bundles.json exists but is unreadable ({error}; salvage read failed: {salvage_error}); skipping quarantine and overwrite this read, fail-closed applies in memory"
@@ -796,7 +788,8 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
             // the NotFound branch), so an ungated CRITICAL printed one line
             // per locked read while the persist kept failing.
             freeze_persist_failed = true;
-            log_scope_read_failure_error(
+            log_scope_read_failure(
+                log::Level::Error,
                 LOG_FREEZE_PERSIST,
                 &format!(
                     "[marketplace] CRITICAL: failed to persist the legacy migration verdict: {error}; holding the in-process verdict until a save succeeds"
@@ -858,7 +851,7 @@ pub fn load_disabled_bundles_startup() -> (DisabledBundlesFile, bool) {
     let _process_guard = DISABLED_BUNDLES_FILE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (file, _read_persists) = match open_scope_lock_file() {
+    let file = match open_scope_lock_file() {
         Ok(file) => {
             let mut lock = fd_lock::RwLock::new(file);
             // Some: the OS lock is held for the read below (freezes persist).
@@ -880,6 +873,7 @@ pub fn load_disabled_bundles_startup() -> (DisabledBundlesFile, bool) {
                             continue;
                         }
                         log_scope_read_failure(
+                            log::Level::Warn,
                             LOG_LOCK_OPEN,
                             &format!("startup locked read degraded to unlocked: {error}"),
                         );
@@ -887,19 +881,19 @@ pub fn load_disabled_bundles_startup() -> (DisabledBundlesFile, bool) {
                     }
                 }
             };
-            match os_guard {
-                Some(_os_guard) => (read_disabled_bundles_file(true), true),
-                None => (read_disabled_bundles_file(false), false),
-            }
+            // The guard stays held for the read: Some = fully locked read
+            // (freezes persist), None = the degraded, never-persisting read.
+            read_disabled_bundles_file(os_guard.is_some())
         }
         Err(error) => {
             log_scope_read_failure(
+                log::Level::Warn,
                 LOG_LOCK_OPEN,
                 &format!(
                     "cross-process lock unavailable at startup; unlocked read without persist: {error}"
                 ),
             );
-            (read_disabled_bundles_file(false), false)
+            read_disabled_bundles_file(false)
         }
     };
     // The verdict this boot relies on is unpersisted when the persist
@@ -978,6 +972,7 @@ fn quarantine_and_recover_disabled_bundles(
         // only home) reached this arm on every locked read and printed one
         // warn per read.
         log_scope_read_failure(
+            log::Level::Warn,
             LOG_RECOVERY,
             &format!(
                 "[marketplace] {quarantine_err}; skipping disabled_bundles.json overwrite this read"
@@ -997,6 +992,7 @@ fn quarantine_and_recover_disabled_bundles(
     }
     if let Err(save_error) = try_save_disabled_bundles_file(&recovered) {
         log_scope_read_failure(
+            log::Level::Warn,
             LOG_RECOVERY,
             &format!(
                 "[marketplace] {save_error}; corrupt recovery overwrite failed - holding the in-memory fail-closed state, re-quarantine suppressed until a save succeeds"
@@ -1800,6 +1796,26 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
     }
 }
 
+/// Shared whole-list writer prelude (round-26 hoist): the input fold reads
+/// the bundles manifests, not the locked state, so it belongs ABOVE the
+/// exclusive section (same shape as enable_packages_in_scope /
+/// apply_restore_consent_gate_impl) — the OS-lock hold narrows to the pure
+/// JSON RMW instead of a full manifest walk plus per-row canonicalize. (The
+/// round-23 hoist had already collapsed the walk to once per list; this
+/// keeps it out of the lock entirely.) Persist deduped: read-side
+/// normalization dedups anyway, so repeated toggles cannot accumulate
+/// duplicate entries on disk.
+fn fold_and_dedup_input_ids(ids: &[String]) -> Vec<String> {
+    let tools = MarketplaceManager::new().available_tools();
+    let mut normalized: Vec<String> = ids
+        .iter()
+        .map(|id| to_package_id_with(&tools, id))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    normalized.retain(|id| seen.insert(id.clone()));
+    normalized
+}
+
 /// 写某 scope 被禁用的包 id 列表（写入即标记该 scope 已初始化）。入参统一归一为包
 /// id（剥 `skill:` 前缀 + companion 映射），防御历史版本误写入的带前缀条目。
 /// Write failures propagate as-is (round-19 MAJOR 1: main #563's fail-loud
@@ -1814,22 +1830,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     // The DenyAll computed default and the install-sync exemption already
     // exclude builtin ids, so legitimate internal callers are unaffected.
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
-    // Round-26 review (minor): the input fold reads the bundles manifests,
-    // not the locked state, so it belongs ABOVE the exclusive section (same
-    // shape as enable_packages_in_scope / apply_restore_consent_gate_impl) —
-    // the OS-lock hold narrows to the pure JSON RMW instead of a full
-    // manifest walk plus per-row canonicalize. (The round-23 hoist had
-    // already collapsed the walk to once per list; this moves that walk out
-    // of the lock entirely.)
-    let tools = MarketplaceManager::new().available_tools();
-    let mut normalized: Vec<String> = ids
-        .iter()
-        .map(|id| to_package_id_with(&tools, id))
-        .collect();
-    // Read-side normalization dedups anyway; persist deduped so repeated
-    // toggles cannot accumulate duplicate entries on disk.
-    let mut seen = std::collections::HashSet::new();
-    normalized.retain(|id| seen.insert(id.clone()));
+    let normalized = fold_and_dedup_input_ids(ids);
     with_scope_file_lock(|| {
         let mut file = load_disabled_bundles_file_locked();
         let key = scope.as_str().to_string();
@@ -1959,20 +1960,7 @@ pub fn save_hidden_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<
     // function (not just the command layer) so every caller inherits it —
     // same layering as the disable path (review round-5 minor 3).
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
-    // Round-26 review (minor): the input fold reads the bundles manifests,
-    // not the locked state, so it belongs ABOVE the exclusive section (same
-    // shape as enable_packages_in_scope / apply_restore_consent_gate_impl) —
-    // the OS-lock hold narrows to the pure JSON RMW instead of a full
-    // manifest walk plus per-row canonicalize.
-    let tools = MarketplaceManager::new().available_tools();
-    let mut normalized: Vec<String> = ids
-        .iter()
-        .map(|id| to_package_id_with(&tools, id))
-        .collect();
-    // Read-side normalization dedups anyway; persist deduped so repeated
-    // toggles cannot accumulate duplicate entries on disk.
-    let mut seen = std::collections::HashSet::new();
-    normalized.retain(|id| seen.insert(id.clone()));
+    let normalized = fold_and_dedup_input_ids(ids);
     with_scope_file_lock(|| {
         let mut file = load_disabled_bundles_file_locked();
         file.hidden_scopes
@@ -2014,6 +2002,20 @@ pub fn save_disabled_bundles(ids: &[String]) {
     // The documented best-effort contract (round-20 minor 5: the Result must
     // be consumed explicitly now that the writer is fail-loud).
     let _ = save_disabled_bundles_for(ConnectorScope::Plain, ids);
+}
+
+/// Fold-divergence refusal shared by the consent gates (`id` is the
+/// PRE-FOLDED id, `folded` the fold result): the fold routes through the
+/// installed packs' companion-skill vocabulary, and the consent gate must
+/// govern the id the caller was given, so a claimant divergence refuses
+/// outright. Round-26 review (minor): no "uninstall ... first" advice — the
+/// unconditional hard-rule folds make it impossible to follow (the twin in
+/// commands/marketplace.rs carries the same reword).
+pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), String> {
+    Err(format!(
+        "'{id}' is claimed by pack '{folded}'s companion-skill vocabulary; \
+         the consent gate would govern '{folded}', not '{id}'"
+    ))
 }
 
 /// Deny-first consent registration for the CLI connector channels
@@ -2064,13 +2066,7 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
     // return early. Both call sites (apply_skills_command, the auth-gate
     // refresh/backfill) propagate the Err before any skill materializes.
     if package_id != connector_id {
-        // Round-26 review (minor): no "uninstall ... first" advice — the
-        // unconditional hard-rule folds make it impossible to follow (the
-        // twin in commands/marketplace.rs carries the same reword).
-        return Err(format!(
-            "'{connector_id}' is claimed by pack '{package_id}'s companion-skill vocabulary; \
-             the consent gate would govern '{package_id}', not '{connector_id}'"
-        ));
+        return refuse_owner_claimed_id(connector_id, &package_id);
     }
     // LEDGER-GATED (the startup-refresh boundary, #455 round-31): the sync
     // itself skips only *known* bundles; a ledgered-but-uninstalled pair
@@ -2081,15 +2077,20 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
     // uninstall — the CLI connectors' hide/logout runs none) re-arms a
     // later show.
     let ledger = load_disabled_bundles_file().install_default_synced;
-    if SessionMode::ALL
-        .iter()
-        .any(|mode| ledger.contains(&format!("{}:{package_id}", mode.as_str())))
-    {
+    if ledger_has_any_mode(&ledger, &package_id) {
         return Ok(());
     }
     // The sync itself skips known bundles (their consent is recorded), so a
     // re-show never re-denies an enable.
     sync_deny_all_scopes_after_install(connector_id)
+}
+
+/// Sync-ledger probe shared by the consent gates: a ledger entry for any
+/// scope mode = a sync already ran for this pack.
+fn ledger_has_any_mode(ledger: &[String], package_id: &str) -> bool {
+    SessionMode::ALL
+        .iter()
+        .any(|mode| ledger.contains(&format!("{}:{package_id}", mode.as_str())))
 }
 
 /// Whether the normalized consent-gate id is already a user-consented
@@ -2140,10 +2141,7 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
         // Degrade direction: a contended read may miss a just-written entry
         // and register (over-denial, idempotent).
         let ledger = load_disabled_bundles_file().install_default_synced;
-        if SessionMode::ALL
-            .iter()
-            .any(|mode| ledger.contains(&format!("{}:{package_id}", mode.as_str())))
-        {
+        if ledger_has_any_mode(&ledger, package_id) {
             return true;
         }
     }
@@ -2731,6 +2729,7 @@ pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::marketplace::tests::corrupt_sibling_count;
     use crate::platform::test_support::{make_dir_unreadable_for_test, with_temp_home};
 
     /// Round-19 MAJOR 2 regression: an MCP-free skills-only plugin pack whose
@@ -4541,21 +4540,6 @@ mod tests {
             );
             READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
         });
-    }
-
-    fn corrupt_sibling_count(data_path: &std::path::Path) -> usize {
-        let prefix = format!(
-            "{}.corrupt.",
-            data_path.file_name().unwrap().to_string_lossy()
-        );
-        std::fs::read_dir(data_path.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .filter(|entry| {
-                entry.file_name().to_string_lossy().starts_with(&prefix)
-                    && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-            })
-            .count()
     }
 
     /// Round-13 B1: the first composer whole-list write on a fresh install

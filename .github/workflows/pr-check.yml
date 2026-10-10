@@ -1732,7 +1732,6 @@ jobs:
             'connector_gate_registers_only_when_shown' \
             'command_bodies_register_deny_first' \
             'vacuous_uninstall_keeps_fresh_consent_entries' \
-            'vacuous_skill_uninstall_keeps_fresh_consent_entries' \
             'standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir' \
             'restore_of_package_missing_entry_registers_no_deny_entry' \
             'standalone_preset_install_never_folds_package_ids_on_save_or_remove' \
