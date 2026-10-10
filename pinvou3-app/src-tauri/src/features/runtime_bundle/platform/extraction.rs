@@ -517,6 +517,15 @@ impl Pinvou3Bundle {
                 // open or lock the lease defers fail-closed too: without
                 // provable exclusion the sweep must not uninstall or
                 // delete.
+                // The deferred-sweep timeline marker repeats across every
+                // defer arm below; bind it once (copy unchanged).
+                let defer = |detail: &str| {
+                    crate::platform::startup::mark_with_detail(
+                        "rust",
+                        "retired_tool_cleanup:deferred",
+                        detail,
+                    );
+                };
                 let mut landing_lease =
                     match crate::features::marketplace::plugin_import::open_landing_lease(tool_id) {
                         Ok(lease) => lease,
@@ -525,11 +534,7 @@ impl Pinvou3Bundle {
                                 "[cleanup] retired tool '{tool_id}': the landing lease is \
                              unavailable, deferring the residue sweep to the next startup: {error}"
                             );
-                            crate::platform::startup::mark_with_detail(
-                                "rust",
-                                "retired_tool_cleanup:deferred",
-                                "landing lease unavailable",
-                            );
+                            defer("landing lease unavailable");
                             return Ok(());
                         }
                     };
@@ -541,11 +546,7 @@ impl Pinvou3Bundle {
                              holds the landing lease; deferring the residue sweep to the next \
                              startup"
                         );
-                        crate::platform::startup::mark_with_detail(
-                            "rust",
-                            "retired_tool_cleanup:deferred",
-                            "landing lease contended",
-                        );
+                        defer("landing lease contended");
                         return Ok(());
                     }
                     Err(error) => {
@@ -553,11 +554,7 @@ impl Pinvou3Bundle {
                             "[cleanup] retired tool '{tool_id}': the landing lease is \
                              un-lockable, deferring the residue sweep to the next startup: {error}"
                         );
-                        crate::platform::startup::mark_with_detail(
-                            "rust",
-                            "retired_tool_cleanup:deferred",
-                            "landing lease un-lockable",
-                        );
+                        defer("landing lease un-lockable");
                         return Ok(());
                     }
                 };
@@ -576,11 +573,7 @@ impl Pinvou3Bundle {
                          present under the import lock; keeping bundles/<id> and deferring the \
                          residue sweep to the next startup"
                     );
-                    crate::platform::startup::mark_with_detail(
-                        "rust",
-                        "retired_tool_cleanup:deferred",
-                        "upload-record present under import lock",
-                    );
+                    defer("upload-record present under import lock");
                     return Ok(());
                 }
                 // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
@@ -661,11 +654,7 @@ impl Pinvou3Bundle {
                         log::warn!(
                             "[cleanup] retired tool '{tool_id}': an import for the same id is mid-landing; deferring the rest of the cleanup to the next startup"
                         );
-                        crate::platform::startup::mark_with_detail(
-                            "rust",
-                            "retired_tool_cleanup:deferred",
-                            "import landing mark present",
-                        );
+                        defer("import landing mark present");
                         // Defer the WHOLE sweep — the deletion legs below
                         // (the mcp-servers dir and bundles/<id>) run behind
                         // record-only probes and would destroy a just-landed
@@ -689,11 +678,7 @@ impl Pinvou3Bundle {
                         "[cleanup] retired tool '{tool_id}' uninstall deferred: {error}; \
                          retrying on the next startup"
                     );
-                    crate::platform::startup::mark_with_detail(
-                        "rust",
-                        "retired_tool_cleanup:deferred",
-                        &error,
-                    );
+                    defer(&error);
                     return Ok(());
                 }
 
@@ -726,11 +711,7 @@ impl Pinvou3Bundle {
                          appeared during cleanup; keeping bundles/<id> and deferring the \
                          residue sweep to the next startup"
                     );
-                    crate::platform::startup::mark_with_detail(
-                        "rust",
-                        "retired_tool_cleanup:deferred",
-                        "upload-record appeared mid-cleanup",
-                    );
+                    defer("upload-record appeared mid-cleanup");
                     return Ok(());
                 }
                 let _ = std::fs::remove_dir_all(paths::bundles_root().join(tool_id));
@@ -789,7 +770,7 @@ impl Pinvou3Bundle {
                 continue; // 文件不存在 = 该清理面本就干净,不算误报
             }
             // read_private_data_file keeps the Windows shared-read semantics
-            // (it delegates to read_shared off unix) and adds the Unix
+            // (a plain shared read off unix) and adds the Unix
             // symlink/FIFO/device hardening of the scope readers: these are
             // the same private-home consent surfaces scope.rs reads hardened
             // every turn, so a planted FIFO at the data path must not hang
@@ -2417,10 +2398,7 @@ mod tests {
 
         // FIFO leg.
         let fifo = temp.path().join("target.fifo");
-        let c_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
-        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+        crate::platform::paths::tests::plant_fifo(&fifo);
         let (tx, rx) = std::sync::mpsc::channel();
         let bundle_for_worker = super::Pinvou3Bundle::paths();
         let worker = std::thread::spawn(move || {

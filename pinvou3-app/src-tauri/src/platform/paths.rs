@@ -641,6 +641,19 @@ pub(crate) mod tests {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Plant a FIFO at `path` for the hardening fixtures: a planted FIFO must
+    /// be refused by the regular-file-gated reads instead of blocking the
+    /// caller (mkfifo is POSIX-only, so callers gate themselves with
+    /// `#[cfg(unix)]`).
+    #[cfg(test)]
+    #[cfg(unix)]
+    pub(crate) fn plant_fifo(path: &std::path::Path) {
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+    }
+
     #[test]
     fn pinvou3_home_respects_env_override() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

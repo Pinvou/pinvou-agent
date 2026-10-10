@@ -2904,12 +2904,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 // the lock is held across await only inside a current_thread runtime with no reentrant path,
 // so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore, MemoryCredentialStore,
     };
-    use crate::platform::paths::tests::ENV_LOCK;
+    use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard};
     use secrets::{
         mcp_secret_env_var, mcp_secret_reference, snapshot_secret_values, store_secret_value,
     };
@@ -2920,6 +2920,42 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+
+    /// Count regular files named `{file}.corrupt.*` beside `path` — the
+    /// quarantine sibling-count assertion helper. Shared with scope.rs's
+    /// tests, which import it as
+    /// `crate::features::marketplace::tests::corrupt_sibling_count`.
+    #[cfg(test)]
+    pub(crate) fn corrupt_sibling_count(path: &std::path::Path) -> usize {
+        let parent = path.parent().unwrap();
+        let prefix = format!("{}.corrupt.", path.file_name().unwrap().to_string_lossy());
+        std::fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&prefix)
+                    && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Panic-safe cleanup for the two temp-home harnesses (round-11 P3): a
+    /// failing assertion unwinds past this guard, so a leaked in-process
+    /// secret registry or temp dir can no longer cascade unrelated failures
+    /// into every later test in the binary. Env vars are restored by the
+    /// paired `EnvVarGuard` (paths::tests); ENV_LOCK is held by the harness
+    /// throughout, so the drop order of the two guards is immaterial.
+    struct RestoreEnv {
+        prev_secrets: std::collections::HashMap<String, String>,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            secrets::restore_secret_values(std::mem::take(&mut self.prev_secrets));
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
 
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
@@ -3003,7 +3039,6 @@ mod tests {
         // placeholders, and the test outcome would depend on whether the
         // bridge boot tests have already run (order coupling).
         super::install_mcp_secret_resolver();
-        let prev = std::env::var("PINVOU3_HOME").ok();
         // Round-26 MAJOR 4 (review): restore main's hermeticity valve. The
         // rewritten harness had dropped the capture of
         // PINVOU3_TEST_KEYRING_FILE_FALLBACK + CODEWHALE_HOME, so every
@@ -3015,8 +3050,11 @@ mod tests {
         // must be pointed at the same temp dir — otherwise valved reads and
         // writes land in the developer's real ~/.codewhale/secrets/
         // secrets.json (and trigger its legacy migration).
-        let prev_keyring_valve = std::env::var("PINVOU3_TEST_KEYRING_FILE_FALLBACK").ok();
-        let prev_codewhale_home = std::env::var("CODEWHALE_HOME").ok();
+        let _env = EnvVarGuard::capture(&[
+            "PINVOU3_HOME",
+            "CODEWHALE_HOME",
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+        ]);
         let prev_secrets = secrets::snapshot_secret_values();
         secrets::clear_secret_values_for_test();
         let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
@@ -3028,55 +3066,7 @@ mod tests {
         unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        // Panic-safe restore (round-11 P3): a failing assertion unwinds past
-        // this guard, so a leaked PINVOU3_HOME / secret env can no longer
-        // cascade unrelated failures into every later test in the binary.
-        struct RestoreEnv {
-            prev: Option<String>,
-            prev_keyring_valve: Option<String>,
-            prev_codewhale_home: Option<String>,
-            prev_secrets: std::collections::HashMap<String, String>,
-            dir: std::path::PathBuf,
-        }
-        impl Drop for RestoreEnv {
-            fn drop(&mut self) {
-                match &self.prev {
-                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
-                    // whole harness call; env writes are serialized.
-                    Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
-                    // whole harness call; env writes are serialized.
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-                match &self.prev_codewhale_home {
-                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
-                    // whole harness call; env writes are serialized.
-                    Some(v) => unsafe { std::env::set_var("CODEWHALE_HOME", v) },
-                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
-                    // whole harness call; env writes are serialized.
-                    None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
-                }
-                match &self.prev_keyring_valve {
-                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
-                    // whole harness call; env writes are serialized.
-                    Some(v) => unsafe {
-                        std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v)
-                    },
-                    // SAFETY: platform::paths::tests::ENV_LOCK held for the
-                    // whole harness call; env writes are serialized.
-                    None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
-                }
-                secrets::restore_secret_values(std::mem::take(&mut self.prev_secrets));
-                let _ = std::fs::remove_dir_all(&self.dir);
-            }
-        }
-        let _restore = RestoreEnv {
-            prev,
-            prev_keyring_valve,
-            prev_codewhale_home,
-            prev_secrets,
-            dir: dir.clone(),
-        };
+        let _restore = RestoreEnv { prev_secrets, dir };
         f();
     }
 
@@ -3133,10 +3123,7 @@ mod tests {
         with_temp_home(|| {
             let mcp_path = paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let c_path = std::ffi::CString::new(mcp_path.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: mkfifo on a fresh temp-home path; no other thread touches it.
-            let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-            assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
 
             let (tx, rx) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
@@ -4063,11 +4050,13 @@ mod tests {
         // Same as with_temp_home: install the foundation resolver to avoid
         // test order coupling.
         super::install_mcp_secret_resolver();
-        let prev = std::env::var("PINVOU3_HOME").ok();
         // Same hermeticity valve as with_temp_home (round-26 MAJOR 4: the
         // rewritten harness had dropped it — see the comment there).
-        let prev_keyring_valve = std::env::var("PINVOU3_TEST_KEYRING_FILE_FALLBACK").ok();
-        let prev_codewhale_home = std::env::var("CODEWHALE_HOME").ok();
+        let _env = EnvVarGuard::capture(&[
+            "PINVOU3_HOME",
+            "CODEWHALE_HOME",
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+        ]);
         let prev_secrets = secrets::snapshot_secret_values();
         secrets::clear_secret_values_for_test();
         let dir =
@@ -4080,27 +4069,8 @@ mod tests {
         unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
+        let _restore = RestoreEnv { prev_secrets, dir };
         f().await;
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        match prev_codewhale_home {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("CODEWHALE_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
-        }
-        match prev_keyring_valve {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
-        }
-        secrets::restore_secret_values(prev_secrets);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     struct MockMcpServer {
@@ -4995,13 +4965,13 @@ mod tests {
             std::fs::write(&path, b"").unwrap();
             quarantine_corrupt_state_file(&path, b"").unwrap();
             assert_eq!(
-                corrupt_copy_count(&path),
+                corrupt_sibling_count(&path),
                 1,
                 "the first quarantine writes one copy"
             );
             quarantine_corrupt_state_file(&path, b"").unwrap();
             assert_eq!(
-                corrupt_copy_count(&path),
+                corrupt_sibling_count(&path),
                 1,
                 "empty content must not accumulate zero-byte copies across reads"
             );
@@ -5020,24 +4990,11 @@ mod tests {
             std::fs::write(&planted, b"").unwrap();
             quarantine_corrupt_state_file(&nonempty_path, content).unwrap();
             assert_eq!(
-                corrupt_copy_count(&nonempty_path),
+                corrupt_sibling_count(&nonempty_path),
                 2,
                 "a planted empty file must not suppress the quarantine of real bytes (one planted + one fresh copy)"
             );
         });
-    }
-
-    fn corrupt_copy_count(path: &std::path::Path) -> usize {
-        let parent = path.parent().unwrap();
-        let prefix = format!("{}.corrupt.", path.file_name().unwrap().to_string_lossy());
-        std::fs::read_dir(parent)
-            .unwrap()
-            .flatten()
-            .filter(|entry| {
-                entry.file_name().to_string_lossy().starts_with(&prefix)
-                    && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-            })
-            .count()
     }
 
     /// Round-18 review (P2): the withdrawal's deletion failures must abort the
@@ -7783,10 +7740,7 @@ mod tests {
             let dir = crate::platform::paths::pinvou3_home().join("marketplace");
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("installed.json");
-            let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
-            let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-            assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+            crate::platform::paths::tests::plant_fifo(&path);
 
             let manager = MarketplaceManager::new();
             let (tx, rx) = std::sync::mpsc::channel();

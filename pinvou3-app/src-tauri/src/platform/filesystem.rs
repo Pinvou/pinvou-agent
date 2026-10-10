@@ -550,11 +550,18 @@ pub(crate) fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
 #[cfg(unix)]
 const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
 
-/// [`read_shared`] for the private-home data files whose bytes are consent
-/// state: same Windows full-share-mode semantics, plus the Unix
-/// symlink/FIFO/device hardening of [`open_private_data_file`] (round-18
-/// review — the lock file got this hardening with an explicit rationale; the
-/// data file a hot reader touches every turn is the same trust surface).
+/// Read one of the private-home data files whose bytes are consent state:
+/// the Unix symlink/FIFO/device hardening of [`open_private_data_file`]
+/// (round-18 review — the lock file got this hardening with an explicit
+/// rationale; the data file a hot reader touches every turn is the same
+/// trust surface), plus on Windows the full-share-mode open so a concurrent
+/// writer's atomic rename-replace (`MoveFileEx` persist) is never blocked by
+/// this reader — a missing `FILE_SHARE_DELETE` would turn a read in flight
+/// during a peer's locked persist into a sharing violation and a spurious
+/// refusal of that write after its retry budget. std's `OpenOptions` default
+/// share mode already includes all three flags; the `cfg(windows)` leg pins
+/// the requirement by name rather than relying on callers knowing the std
+/// default.
 pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
     #[cfg(unix)]
     {
@@ -564,9 +571,25 @@ pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
         file.read_to_string(&mut content)?;
         Ok(content)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        read_shared(path)
+        use std::io::Read as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        let mut file = options.open(path)?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
+        Ok(content)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::fs::read_to_string(path)
     }
 }
 
@@ -582,9 +605,25 @@ pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
         file.read_to_end(&mut bytes)?;
         Ok(bytes)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        read_shared_bytes(path)
+        use std::io::Read as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        let mut file = options.open(path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::fs::read(path)
     }
 }
 
@@ -630,65 +669,6 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
     }
     use std::io::Write as _;
     file.write_all(bytes)
-}
-
-/// Reads a file to a string. On Windows the handle is opened with full share
-/// mode so a concurrent writer's atomic rename-replace (`MoveFileEx` persist)
-/// is never blocked by this reader; a missing `FILE_SHARE_DELETE` would turn
-/// a read in flight during a peer's locked persist into a sharing violation
-/// and a spurious refusal of that write after its retry budget. std's
-/// `OpenOptions` default share mode already includes all three flags — this
-/// helper pins the requirement by name at the call sites that share files
-/// with concurrent writers, rather than relying on callers knowing the std
-/// default. POSIX rename semantics make this a no-op on Unix.
-pub(crate) fn read_shared(path: &Path) -> io::Result<String> {
-    #[cfg(windows)]
-    {
-        use std::io::Read as _;
-        use std::os::windows::fs::OpenOptionsExt as _;
-        const FILE_SHARE_READ: u32 = 0x0000_0001;
-        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
-        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
-        let mut options = std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-        let mut file = options.open(path)?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)?;
-        Ok(content)
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::read_to_string(path)
-    }
-}
-
-/// [`read_shared`] for raw bytes (the corrupt-store salvage reads): pins the
-/// same Windows full-share-mode requirement by name instead of relying on
-/// callers knowing the std default (round-20 review — the `String` sibling
-/// delegates for exactly this reason).
-pub(crate) fn read_shared_bytes(path: &Path) -> io::Result<Vec<u8>> {
-    #[cfg(windows)]
-    {
-        use std::io::Read as _;
-        use std::os::windows::fs::OpenOptionsExt as _;
-        const FILE_SHARE_READ: u32 = 0x0000_0001;
-        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
-        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
-        let mut options = std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-        let mut file = options.open(path)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::read(path)
-    }
 }
 
 #[derive(Clone)]
@@ -3591,10 +3571,7 @@ pub(crate) mod tests {
     fn private_data_read_refuses_a_fifo_without_hanging() {
         let temp = tempfile::tempdir().unwrap();
         let data_path = temp.path().join("disabled_bundles.json");
-        let c_path = std::ffi::CString::new(data_path.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
-        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+        crate::platform::paths::tests::plant_fifo(&data_path);
 
         // Bounded worker (round-26 review): a regression to an unhardened
         // read blocks `open()` forever — the repo convention fails the test

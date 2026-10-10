@@ -10,12 +10,15 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const productionOf = (src) => src.split('#[cfg(test)]')[0];
+
 // Round-37 F3 (review #455): the literal lives ONCE, in connector-ui-state.js
 // (mirroring scope::CONSENT_SYNC_FAILURE_MARKER); the three JS matchers import
 // the const. The pin asserts the single definition and that every matcher
 // site imports it — one-site drift cannot survive.
 const uiState = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../src/features/tools/connector-ui-state.js'),
+  join(root, 'src/features/tools/connector-ui-state.js'),
   'utf8',
 );
 const MARKER = 'persisting their default-off consent state failed';
@@ -25,7 +28,7 @@ assert.ok(
   'connector-ui-state.js must define the shared consent marker exactly once (update the Rust pin in the same commit if reworded)',
 );
 const store = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../src/features/tools/ToolStoreView.jsx'),
+  join(root, 'src/features/tools/ToolStoreView.jsx'),
   'utf8',
 );
 assert.ok(
@@ -42,7 +45,7 @@ assert.ok(
 // while ToolStoreView's includes() silently stopped matching. Cross-compare:
 // extract the Rust constant's VALUE from scope.rs and require it to equal the
 // JS literal — a reword now fails one side or the other until both move.
-const rustDir = join(dirname(fileURLToPath(import.meta.url)), '../src-tauri/src/features');
+const rustDir = join(root, 'src-tauri/src/features');
 const scopeSrc = readFileSync(join(rustDir, 'marketplace/scope.rs'), 'utf8');
 // Round-20 review: anchor the extraction to a top-level declaration — an
 // unanchored first match would silently validate a hypothetical
@@ -68,10 +71,10 @@ assert.strictEqual(
 // deleting the emit sites outright fails here instead of silently degrading
 // the alert copy; legitimate reshapes update this leg knowingly.
 const marketplaceSrc = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../src-tauri/src/app/commands/marketplace.rs'),
+  join(root, 'src-tauri/src/app/commands/marketplace.rs'),
   'utf8',
 );
-const marketplaceProduction = marketplaceSrc.split('#[cfg(test)]')[0];
+const marketplaceProduction = productionOf(marketplaceSrc);
 const shapeCount = marketplaceProduction.split('but {}: new sessions will enable it by default')
   .length - 1;
 // Round-26 review: exact equality, not a lower bound — a NEW sixth emit
@@ -134,7 +137,7 @@ for (const [file, emitSite, valueTest] of [
     // module) — the test module carries its own hand-built copy of the
     // template for the Rust-side message pin, so a whole-file grep would
     // keep passing after the production emit site drifted.
-    const production = src.split('#[cfg(test)]')[0];
+    const production = productionOf(src);
     assert.ok(
       production.includes(emitSite),
       `${file} production emit site drifted — re-check the marker interpolation`,

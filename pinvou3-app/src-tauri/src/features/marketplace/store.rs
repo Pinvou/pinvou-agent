@@ -2005,10 +2005,7 @@ mod tests {
     fn load_locked_refuses_a_planted_fifo() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("bundles.json");
-        let c_path = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
-        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
-        assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+        crate::platform::paths::tests::plant_fifo(&file);
 
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

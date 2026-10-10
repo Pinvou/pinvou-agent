@@ -922,9 +922,7 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     // lookup as the install's own validation, and the error below is
     // byte-identical to `SkillMarketplaceManager::install`'s (keep them in
     // lockstep).
-    if !crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-        .preset_skill_exists(skill_id)
-    {
+    if !crate::features::marketplace::skill_marketplace::is_preset_market_id(skill_id) {
         return Err(format!("未知预置技能 '{skill_id}'"));
     }
     // Same divergence refusal as the tool gate above: a preset skill id is
@@ -1166,6 +1164,27 @@ pub(super) fn import_skill_md_content_gated(
     import_skill_md_content(md, filename, &deny_all_pre_land)
 }
 
+/// Upload safe default after an import lands (same contract as
+/// `install_marketplace_tool`): join the new id into the DenyAll scopes so
+/// new sessions do not enable it by default. Fail-visible persist (review
+/// #455 R13-B3). Off the executor: the sync waits on the cross-process
+/// scope flock, which a frozen peer holds indefinitely.
+async fn persist_upload_consent_default(what: &str, id: &str) -> Result<(), String> {
+    let owned = id.to_string();
+    tokio::task::spawn_blocking(move || {
+        crate::features::marketplace::sync_deny_all_scopes_after_install(&owned)
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {e}"))?
+    .map_err(|e| {
+        format!(
+            "{what} '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
+            id,
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        )
+    })
+}
+
 /// 弹文件选择框选插件包并导入（plugin-protocol 统一上传：mcp/skill/组合包），
 /// 或选单个 `.md`/`.markdown` 技能文件（包装成裸 skill 包）。返回 `Some(新包 id)`=
 /// 已导入（前端据此打开展示信息编辑弹窗），`None`=用户取消。
@@ -1214,22 +1233,7 @@ pub async fn import_plugin_package_cmd(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // 上传安全默认：插件包导入后加入 DenyAll 禁用集，需用户在前端开关显式开启。
-    // Same contract as install_marketplace_tool. Fail-visible persist (review #455 R13-B3).
-    // Off the executor: the sync waits on the cross-process scope flock,
-    // which a frozen peer holds indefinitely.
-    let imported_id = report.id.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&imported_id)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))?
-    .map_err(|e| {
-        format!(
-            "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            report.id,
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-        )
-    })?;
+    persist_upload_consent_default("plugin", &report.id).await?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
@@ -1292,22 +1296,7 @@ pub async fn import_plugin_package_bytes_cmd(
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     let report = report?;
     // 上传安全默认：拖放导入插件包后加入 DenyAll 禁用集，需用户开关显式开启。
-    // Fail-visible persist (review #455 R13-B3). Off the executor: the sync
-    // waits on the cross-process scope flock, which a frozen peer holds
-    // indefinitely.
-    let imported_id = report.id.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&imported_id)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))?
-    .map_err(|e| {
-        format!(
-            "plugin '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            report.id,
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-        )
-    })?;
+    persist_upload_consent_default("plugin", &report.id).await?;
     // 新装包进入供给：mcp/spanner 热刷工具白名单 + skills 热刷会话组合目录。
     // 导入包含本地 MCP 时 mcp.json 已变，同样要递增修订号触发在线引擎下轮
     // 重建（与 install_marketplace_tool 同口径，mark_mcp_config_updated 契约）。
@@ -1350,22 +1339,7 @@ pub async fn import_skill_md_bytes(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
     // Upload safe default: same as plugin import, joins the DenyAll scopes.
-    // Fail-visible persist (review #455 R13-B3). Off the executor: the sync
-    // waits on the cross-process scope flock, which a frozen peer holds
-    // indefinitely.
-    let imported_id = report.id.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&imported_id)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))?
-    .map_err(|e| {
-        format!(
-            "skill '{}' installed, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-            report.id,
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-        )
-    })?;
+    persist_upload_consent_default("skill", &report.id).await?;
     // An imported id can collide with a package owning a native tool
     // (NATIVE_PACKAGE_TOOLS keys on package ids), so the deny snapshot must
     // follow the same install postcondition as the marketplace paths.
@@ -1820,6 +1794,31 @@ mod tests {
         std::fs::create_dir_all(&lock).unwrap();
     }
 
+    /// Shared zip-fixture builder for the import-channel tests: writes
+    /// `entries` (archive path → bytes, in order) into a uniquely named temp
+    /// zip (`{prefix}-{pid}-{suffix}.zip`) and returns its path. Zip bytes
+    /// and temp names match the per-test inline builders this replaces.
+    fn write_test_zip(prefix: &str, entries: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
+        let mut zip_buf = std::io::Cursor::new(Vec::new());
+        {
+            use std::io::Write;
+            let mut zw = zip::ZipWriter::new(&mut zip_buf);
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, bytes) in entries {
+                zw.start_file((*name).to_string(), opts).unwrap();
+                zw.write_all(bytes).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        let tmp = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}.zip",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+        tmp
+    }
+
     /// Transaction boundary (#517 review, deny-first): a preset skill install
     /// whose DenyAll consent-gate registration is refused must abort BEFORE
     /// the skill lands — it must not stay installed outside the deny lists of
@@ -2133,25 +2132,16 @@ mod tests {
             init_code_scope_then_break_lock();
 
             let plugin_json = r#"{"manifest_version":1,"id":"gate-fresh-plugin","name":"p","components":{"skills":[{"id":"gate-fresh-skill","dir":"skills/gate-fresh-skill"}]}}"#;
-            let mut zip_buf = std::io::Cursor::new(Vec::new());
-            {
-                use std::io::Write;
-                let mut zw = zip::ZipWriter::new(&mut zip_buf);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("plugin.json", opts).unwrap();
-                zw.write_all(plugin_json.as_bytes()).unwrap();
-                zw.start_file("skills/gate-fresh-skill/SKILL.md", opts)
-                    .unwrap();
-                zw.write_all(b"---\nname: gate-fresh-skill\ndescription: fresh\n---\nbody")
-                    .unwrap();
-                zw.finish().unwrap();
-            }
-            let tmp = std::env::temp_dir().join(format!(
-                "gate-fresh-plugin-{}-{}.zip",
-                std::process::id(),
-                crate::platform::paths::tests::unique_suffix()
-            ));
-            std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+            let tmp = write_test_zip(
+                "gate-fresh-plugin",
+                &[
+                    ("plugin.json", plugin_json.as_bytes().to_vec()),
+                    (
+                        "skills/gate-fresh-skill/SKILL.md",
+                        b"---\nname: gate-fresh-skill\ndescription: fresh\n---\nbody".to_vec(),
+                    ),
+                ],
+            );
 
             let error = import_plugin_package_sync(&tmp.to_string_lossy(), "gate-fresh-plugin.zip")
                 .unwrap_err();
@@ -2189,31 +2179,24 @@ mod tests {
     fn import_rejects_preset_market_id_collisions() {
         with_temp_home(|| {
             let build_zip = |id: &str, skill_id: &str| {
-                let plugin_json = format!(
-                    r#"{{"manifest_version":1,"id":"{id}","name":"p","components":{{"skills":[{{"id":"{skill_id}","dir":"skills/{skill_id}"}}]}}}}"#
-                );
-                let mut zip_buf = std::io::Cursor::new(Vec::new());
-                {
-                    use std::io::Write;
-                    let mut zw = zip::ZipWriter::new(&mut zip_buf);
-                    let opts = zip::write::SimpleFileOptions::default();
-                    zw.start_file("plugin.json", opts).unwrap();
-                    zw.write_all(plugin_json.as_bytes()).unwrap();
-                    zw.start_file(format!("skills/{skill_id}/SKILL.md"), opts)
-                        .unwrap();
-                    zw.write_all(
-                        format!("---\nname: {skill_id}\ndescription: c\n---\nbody").as_bytes(),
-                    )
-                    .unwrap();
-                    zw.finish().unwrap();
-                }
-                let tmp = std::env::temp_dir().join(format!(
-                    "preset-id-collide-{}-{}.zip",
-                    std::process::id(),
-                    crate::platform::paths::tests::unique_suffix()
-                ));
-                std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
-                tmp
+                let skill_entry = format!("skills/{skill_id}/SKILL.md");
+                write_test_zip(
+                    "preset-id-collide",
+                    &[
+                        (
+                            "plugin.json",
+                            format!(
+                                r#"{{"manifest_version":1,"id":"{id}","name":"p","components":{{"skills":[{{"id":"{skill_id}","dir":"skills/{skill_id}"}}]}}}}"#
+                            )
+                            .into_bytes(),
+                        ),
+                        (
+                            skill_entry.as_str(),
+                            format!("---\nname: {skill_id}\ndescription: c\n---\nbody")
+                                .into_bytes(),
+                        ),
+                    ],
+                )
             };
 
             // The package id itself is the aliased preset's market id
@@ -2292,23 +2275,13 @@ mod tests {
             .expect("code scope must initialize");
 
             let manifest = r#"{"id":"government-writing","name":"Government Writing Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["draft_doc"],"command":"python","args":["server.py"]}"#;
-            let mut zip_buf = std::io::Cursor::new(Vec::new());
-            {
-                use std::io::Write;
-                let mut zw = zip::ZipWriter::new(&mut zip_buf);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(manifest.as_bytes()).unwrap();
-                zw.start_file("mcp/server.py", opts).unwrap();
-                zw.write_all(b"print('attacker')").unwrap();
-                zw.finish().unwrap();
-            }
-            let tmp = std::env::temp_dir().join(format!(
-                "owner-claim-id-{}-{}.zip",
-                std::process::id(),
-                crate::platform::paths::tests::unique_suffix()
-            ));
-            std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+            let tmp = write_test_zip(
+                "owner-claim-id",
+                &[
+                    ("mcp/manifest.json", manifest.as_bytes().to_vec()),
+                    ("mcp/server.py", b"print('attacker')".to_vec()),
+                ],
+            );
 
             let error =
                 import_plugin_package_sync(&tmp.to_string_lossy(), "government-writing.zip")
@@ -2379,23 +2352,13 @@ mod tests {
             .expect("code scope must initialize");
 
             let manifest = r#"{"id":"Dingtalk","name":"Dingtalk Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["send_message"],"command":"python","args":["server.py"]}"#;
-            let mut zip_buf = std::io::Cursor::new(Vec::new());
-            {
-                use std::io::Write;
-                let mut zw = zip::ZipWriter::new(&mut zip_buf);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(manifest.as_bytes()).unwrap();
-                zw.start_file("mcp/server.py", opts).unwrap();
-                zw.write_all(b"print('attacker')").unwrap();
-                zw.finish().unwrap();
-            }
-            let tmp = std::env::temp_dir().join(format!(
-                "case-variant-cli-{}-{}.zip",
-                std::process::id(),
-                crate::platform::paths::tests::unique_suffix()
-            ));
-            std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+            let tmp = write_test_zip(
+                "case-variant-cli",
+                &[
+                    ("mcp/manifest.json", manifest.as_bytes().to_vec()),
+                    ("mcp/server.py", b"print('attacker')".to_vec()),
+                ],
+            );
 
             let error =
                 import_plugin_package_sync(&tmp.to_string_lossy(), "Dingtalk.zip").unwrap_err();
@@ -2446,42 +2409,29 @@ mod tests {
             .unwrap();
 
             let build_zip = |id: &str, skill_id: &str, with_manifest: bool| {
-                let plugin_json = format!(
-                    r#"{{"manifest_version":1,"id":"{id}","name":"p","components":{{"skills":[{{"id":"{skill_id}","dir":"skills/{skill_id}"}}]}}}}"#
-                );
-                let mut zip_buf = std::io::Cursor::new(Vec::new());
-                {
-                    use std::io::Write;
-                    let mut zw = zip::ZipWriter::new(&mut zip_buf);
-                    let opts = zip::write::SimpleFileOptions::default();
-                    zw.start_file("plugin.json", opts).unwrap();
-                    zw.write_all(plugin_json.as_bytes()).unwrap();
-                    zw.start_file(format!("skills/{skill_id}/SKILL.md"), opts)
-                        .unwrap();
-                    zw.write_all(
-                        format!("---\nname: {skill_id}\ndescription: c\n---\nbody").as_bytes(),
+                let skill_entry = format!("skills/{skill_id}/SKILL.md");
+                let mut entries = vec![(
+                    "plugin.json",
+                    format!(
+                        r#"{{"manifest_version":1,"id":"{id}","name":"p","components":{{"skills":[{{"id":"{skill_id}","dir":"skills/{skill_id}"}}]}}}}"#
                     )
-                    .unwrap();
-                    if with_manifest {
-                        // The MCP manifest declares the component as a
-                        // companion: after the record lands, read-time
-                        // normalization folds the component onto the
-                        // package id.
-                        let manifest = format!(
-                            r#"{{"id":"{id}","name":"{id}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["{skill_id}"]}}"#
-                        );
-                        zw.start_file("mcp/manifest.json", opts).unwrap();
-                        zw.write_all(manifest.as_bytes()).unwrap();
-                    }
-                    zw.finish().unwrap();
-                }
-                let tmp = std::env::temp_dir().join(format!(
-                    "standalone-component-{}-{}.zip",
-                    std::process::id(),
-                    crate::platform::paths::tests::unique_suffix()
+                    .into_bytes(),
+                )];
+                entries.push((
+                    skill_entry.as_str(),
+                    format!("---\nname: {skill_id}\ndescription: c\n---\nbody").into_bytes(),
                 ));
-                std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
-                tmp
+                if with_manifest {
+                    // The MCP manifest declares the component as a
+                    // companion: after the record lands, read-time
+                    // normalization folds the component onto the
+                    // package id.
+                    let manifest = format!(
+                        r#"{{"id":"{id}","name":"{id}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["{skill_id}"]}}"#
+                    );
+                    entries.push(("mcp/manifest.json", manifest.into_bytes()));
+                }
+                write_test_zip("standalone-component", &entries)
             };
             let deny_list = || {
                 crate::features::marketplace::load_disabled_bundles_for(
@@ -2658,25 +2608,16 @@ mod tests {
         with_temp_home(|| {
             let plugin_json = r#"{"manifest_version":1,"id":"gate-rb-plugin","name":"p","components":{"skills":[{"id":"gate-rb-skill2","dir":"skills/gate-rb-skill2"}]}}"#;
             let zip_for = |skill_body: &str| {
-                let mut zip_buf = std::io::Cursor::new(Vec::new());
-                {
-                    use std::io::Write;
-                    let mut zw = zip::ZipWriter::new(&mut zip_buf);
-                    let opts = zip::write::SimpleFileOptions::default();
-                    zw.start_file("plugin.json", opts).unwrap();
-                    zw.write_all(plugin_json.as_bytes()).unwrap();
-                    zw.start_file("skills/gate-rb-skill2/SKILL.md", opts)
-                        .unwrap();
-                    zw.write_all(skill_body.as_bytes()).unwrap();
-                    zw.finish().unwrap();
-                }
-                let tmp = std::env::temp_dir().join(format!(
-                    "gate-rb-plugin-{}-{}.zip",
-                    std::process::id(),
-                    crate::platform::paths::tests::unique_suffix()
-                ));
-                std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
-                tmp
+                write_test_zip(
+                    "gate-rb-plugin",
+                    &[
+                        ("plugin.json", plugin_json.as_bytes().to_vec()),
+                        (
+                            "skills/gate-rb-skill2/SKILL.md",
+                            skill_body.as_bytes().to_vec(),
+                        ),
+                    ],
+                )
             };
             let v1 = zip_for("---\nname: gate-rb-skill2\ndescription: v1\n---\nbody v1");
             let v2 = zip_for("---\nname: gate-rb-skill2\ndescription: v2\n---\nbody v2");

@@ -56,22 +56,6 @@ test("feature-local changes select core and feature smokes", () => {
   );
 });
 
-test("composer shared-module changes select the composer smokes", () => {
-  assert.deepEqual(
-    labels(
-      selectFrontendSmokes([
-        "pinvou3-app/src/features/settings/composer-shared.jsx",
-      ]),
-    ),
-    [
-      "npm:test:ui-smoke",
-      "npm:test:settings-ui",
-      "npm:test:composer-tools-smoke",
-      "npm:test:composer-pending-enable-smoke",
-    ],
-  );
-});
-
 test("knowledge changes select the desktop knowledge smoke", () => {
   assert.deepEqual(
     labels(

@@ -250,10 +250,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    fn gate_probe_ready() -> bool {
-        true
-    }
-
     /// Marker "materialization": the closure cannot capture, so it touches the
     /// (env-isolated) PINVOU3_HOME — exactly what the real apply fns do.
     fn gate_apply_marker(visible: bool) -> std::io::Result<()> {
@@ -299,7 +295,7 @@ mod tests {
                 id: "gatetest",
                 disabled_filename: "gatetest_disabled",
                 display_name: "GateTest",
-                ready_probe: gate_probe_ready,
+                ready_probe: || true,
                 apply_bundle_skills: gate_apply_marker,
             }));
             let rt = tokio::runtime::Builder::new_current_thread()

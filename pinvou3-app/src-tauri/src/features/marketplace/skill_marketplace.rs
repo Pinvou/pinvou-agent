@@ -537,14 +537,6 @@ impl SkillMarketplaceManager {
         preset_manifests().iter().find(|m| m.id == id)
     }
 
-    /// Whether `id` names an embedded preset skill (round-16 review): the
-    /// install command's deny-first gate runs an existence probe through this
-    /// so a garbage direct-IPC id cannot seed phantom deny rows for a package
-    /// that cannot exist. Same lookup discipline as `install`'s validation.
-    pub fn preset_skill_exists(&self, id: &str) -> bool {
-        preset_manifests().iter().any(|m| m.id == id)
-    }
-
     /// 安装预置技能:从嵌入资源复制到 `bundles/<owner>/skills/<name>/`
     /// （原子:.tmp → rename；owner 由 `bundle::skill_owner_package` 推导）。
     /// `.installed-from` 标记已退役——来源与内容指纹写入 BundleStore 记录。
@@ -1134,32 +1126,6 @@ impl SkillMarketplaceManager {
         zip_path: &str,
         display_name: &str,
     ) -> Result<String, String> {
-        self.import_package_named_gated(zip_path, display_name, &|_| Ok(()))
-    }
-
-    /// Same pipeline with a pre-land gate hook: `pre_land` runs once the skill
-    /// name (= package id) is derived and fully validated but BEFORE any
-    /// content lands on disk or replaces an existing installation. A refusal
-    /// aborts the import with nothing touched — the DenyAll consent gate uses
-    /// this to register the deny entry before the skill is exposed (#515/#517
-    /// review round 4): uninstalling an already-landed re-import would destroy
-    /// the user's pre-existing copy (import overwrites in place), while a
-    /// deny-first refusal loses nothing. Runs before the same-id import lock
-    /// on purpose: the gate then takes no import lock at all, so the import
-    /// lock is never held ACROSS a wait on another importer (the scope RMW
-    /// lock itself may be nested inside transaction/import/recycle locks
-    /// one-directionally — see `scope::with_scope_file_lock`'s lock-order
-    /// note; the reverse nesting never happens).
-    /// Test-only scaffolding (like `import_package_named`, its only caller):
-    /// the production skill-zip channel is the unified plugin-package pipeline
-    /// with its own pre-land gate (`plugin_import::import_plugin_package_gated`).
-    #[cfg(test)]
-    pub fn import_package_named_gated(
-        &self,
-        zip_path: &str,
-        display_name: &str,
-        pre_land: &dyn Fn(&str) -> Result<(), String>,
-    ) -> Result<String, String> {
         let file = std::fs::File::open(zip_path).map_err(|e| format!("打开 zip: {e}"))?;
         let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("读取 zip: {e}"))?;
 
@@ -1246,12 +1212,6 @@ impl SkillMarketplaceManager {
                 "技能 '{name}' 已存在于包 '{other}'，请先卸载该包或改名后重试"
             ));
         }
-
-        // Pre-land gate hook: the name is final and validated here, nothing
-        // has been written yet. A refusal aborts the whole import before any
-        // content lands or an existing installation is replaced (deny-first
-        // consent gate, #517 review round 4).
-        pre_land(&name)?;
 
         // 自此持同 id import_lock 至函数尾：staged 暂存目录就位于共享路径
         // `bundles/<name>/skills/` 之下，锁外 staging 会与统一导入的 rename、

@@ -509,6 +509,24 @@ mod tests {
         crate::platform::test_support::with_temp_home("pinvou3-ima-connect", f);
     }
 
+    /// Initialize the code scope with the given deny ids while the scope lock
+    /// still works (the DenyAll sync then requires a real write).
+    fn init_code_scope(ids: &[&str]) {
+        let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        crate::features::marketplace::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+            &ids,
+        )
+        .expect("code scope must initialize while the lock works");
+    }
+
+    /// Replace the scope lock FILE with a directory so every lock open fails.
+    fn break_scope_lock() {
+        let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir_all(&lock).unwrap();
+    }
+
     #[test]
     fn status_requires_both_credentials() {
         let store = MemoryCredentialStore::default();
@@ -530,14 +548,8 @@ mod tests {
 
             // Initialize the code scope (makes the DenyAll sync a required
             // write), then make the lock file unopenable so the sync refuses.
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
-            let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
-            std::fs::remove_file(&lock).unwrap();
-            std::fs::create_dir_all(&lock).unwrap();
+            init_code_scope(&["seed-bundle"]);
+            break_scope_lock();
 
             let error =
                 ima_connect_sync_with_store("client-v2".to_string(), "key-v2".to_string(), &store)
@@ -587,14 +599,8 @@ mod tests {
 
             // Initialize the code scope (ima stays absent = enabled), then
             // break the lock to prove the reconnect needs no scope write.
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
-            let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
-            std::fs::remove_file(&lock).unwrap();
-            std::fs::create_dir_all(&lock).unwrap();
+            init_code_scope(&["seed-bundle"]);
+            break_scope_lock();
 
             ima_connect_sync_with_store("client-v2".to_string(), "key-v2".to_string(), &store)
                 .expect("a known bundle's reconnect must not need the consent-gate write");
@@ -692,11 +698,7 @@ mod tests {
     #[test]
     fn ima_logout_vacuous_uninstall_keeps_deny_entries() {
         with_temp_home(|| {
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &[IMA_SKILL_ID.to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
+            init_code_scope(&[IMA_SKILL_ID]);
 
             let store = MemoryCredentialStore::default();
             ima_logout_sync_with_store(&store).expect("a vacuous logout must succeed");
@@ -722,11 +724,7 @@ mod tests {
     #[test]
     fn ima_logout_failed_uninstall_keeps_deny_entries() {
         with_temp_home(|| {
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &[IMA_SKILL_ID.to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
+            init_code_scope(&[IMA_SKILL_ID]);
             // Make the bundle store unreadable: bundles.json becomes a
             // directory, so the uninstall's fail-closed read refuses.
             let bundles_json = crate::features::marketplace::store::BundleStore::new().file_path();
@@ -797,11 +795,7 @@ mod tests {
     #[test]
     fn connect_touches_credentials_only_after_the_deny_entry_lands() {
         with_temp_home(|| {
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
+            init_code_scope(&["seed-bundle"]);
 
             let probe = GateOrderProbe {
                 inner: MemoryCredentialStore::default(),
