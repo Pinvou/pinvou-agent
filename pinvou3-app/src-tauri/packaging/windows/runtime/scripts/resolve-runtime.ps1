@@ -77,7 +77,17 @@ function Write-Utf8Atomically {
   $temporaryPath = Join-Path $parent ("." + [System.IO.Path]::GetFileName($Path) + ".tmp-" + [System.Guid]::NewGuid().ToString("N"))
   try {
     Write-Utf8WithoutBom -Path $temporaryPath -Content $Content
-    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+      # ReplaceFile() swaps the destination in one atomic operation, so the
+      # unlocked descriptor readers (describeWindowsRuntime and the ONNX dev
+      # reader in scripts/tauri/windows-runtime.js) never observe the file
+      # missing. Move-Item -Force deletes the destination before renaming the
+      # replacement into place, which re-opens exactly that window on every
+      # re-stage.
+      [System.IO.File]::Replace($temporaryPath, $Path, $null)
+    } else {
+      [System.IO.File]::Move($temporaryPath, $Path)
+    }
   } finally {
     Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
   }

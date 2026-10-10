@@ -144,6 +144,52 @@ try {
   Assert-Throws -Name "schema2 after payload cleanup" -MessagePattern "staged file is missing" -Action {
     Assert-WindowsRuntimeStagedFilesExact -Manifest $schema2Manifest -StageRoot $schema2Root
   }
+
+  # Write-Utf8Atomically keeps shared-visibility descriptors continuously
+  # present for the unlocked readers in scripts/tauri/windows-runtime.js:
+  # replacement must swap the file in atomically, a failed replacement must
+  # preserve the previous generation and leave no temp litter behind.
+  . (Join-Path $PSScriptRoot "resolve-runtime.ps1") -ImportFunctionsOnly
+  $atomicRoot = Join-Path $fixtureRoot "atomic"
+  New-Item -ItemType Directory -Path $atomicRoot | Out-Null
+  $atomicPath = Join-Path $atomicRoot "descriptor.json"
+  Write-Utf8Atomically -Path $atomicPath -Content "first"
+  if ([System.IO.File]::ReadAllText($atomicPath) -ne "first") {
+    throw "atomic write must create the destination with the requested content"
+  }
+  foreach ($generation in @("second", "third")) {
+    Write-Utf8Atomically -Path $atomicPath -Content $generation
+    if ([System.IO.File]::ReadAllText($atomicPath) -ne $generation) {
+      throw "atomic replacement must swap in the new content in one operation"
+    }
+  }
+  # A plain .NET reader opens the descriptor without FILE_SHARE_DELETE, which
+  # blocks ReplaceFile: the writer must fail loudly instead of deleting the
+  # destination first (Move-Item -Force semantics).
+  $sharingReader = [System.IO.File]::Open(
+    $atomicPath,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::Read
+  )
+  try {
+    Assert-Throws -Name "atomic replace under a sharing reader" -Action {
+      Write-Utf8Atomically -Path $atomicPath -Content "interrupted"
+    }
+  } finally {
+    $sharingReader.Dispose()
+  }
+  if ([System.IO.File]::ReadAllText($atomicPath) -ne "third") {
+    throw "a failed atomic replacement must preserve the previous descriptor"
+  }
+  $tempLitter = @(Get-ChildItem -LiteralPath $atomicRoot -Filter ".descriptor.json.tmp-*" -Force)
+  if ($tempLitter.Count -ne 0) {
+    throw "atomic replacement left temp files behind: $($tempLitter.Count)"
+  }
+  Write-Utf8Atomically -Path $atomicPath -Content "fourth"
+  if ([System.IO.File]::ReadAllText($atomicPath) -ne "fourth") {
+    throw "atomic replacement must succeed again once the reader is gone"
+  }
 } finally {
   Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

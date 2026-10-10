@@ -73,6 +73,14 @@ const onnxRuntimeSmoke = readApp(
   "scripts",
   "test-onnx-runtime.ps1",
 );
+const runtimeManifestHarness = readApp(
+  "src-tauri",
+  "packaging",
+  "windows",
+  "runtime",
+  "scripts",
+  "test-runtime-manifest-contract.ps1",
+);
 const installerHook = readApp(
   "src-tauri",
   "packaging",
@@ -335,6 +343,49 @@ assert.match(
   runtimeScript,
   /Write-Utf8Atomically -Path \$onnxDevDescriptorPath/u,
   "the ONNX dev descriptor is shared-visibility state and must be written atomically",
+);
+const atomicFnStart = runtimeScript.indexOf("function Write-Utf8Atomically");
+const atomicFnEnd = runtimeScript.indexOf("\nfunction ", atomicFnStart);
+assert.ok(atomicFnStart !== -1 && atomicFnEnd > atomicFnStart);
+const atomicFnBody = runtimeScript.slice(atomicFnStart, atomicFnEnd);
+assert.match(
+  atomicFnBody,
+  /^\s*if \(Test-Path -LiteralPath \$Path -PathType Leaf\) \{$/mu,
+  "the atomic writer must branch on an existing destination",
+);
+assert.match(
+  atomicFnBody,
+  /^\s*\[System\.IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null\)$/mu,
+  "an existing destination must be swapped in via File.Replace (atomic ReplaceFile), because Move-Item -Force deletes the destination before the rename and the unlocked descriptor readers in scripts/tauri/windows-runtime.js would observe the file missing",
+);
+assert.match(
+  atomicFnBody,
+  /^\s*\[System\.IO\.File\]::Move\(\$temporaryPath, \$Path\)$/mu,
+  "a fresh destination must still take the plain move path (File.Replace requires an existing destination)",
+);
+const atomicFnCode = atomicFnBody
+  .split("\n")
+  .filter((line) => !line.trimStart().startsWith("#"))
+  .join("\n");
+assert.doesNotMatch(
+  atomicFnCode,
+  /Move-Item/,
+  "no delete-before-move primitive may re-enter the atomic writer",
+);
+assert.match(
+  runtimeManifestHarness,
+  /\. \(Join-Path \$PSScriptRoot "resolve-runtime\.ps1"\) -ImportFunctionsOnly/u,
+  "the manifest harness must import the resolver functions to exercise Write-Utf8Atomically behaviorally",
+);
+assert.match(
+  runtimeManifestHarness,
+  /foreach \(\$generation in @\("second", "third"\)\)/u,
+  "the manifest harness must exercise repeated atomic replacement (the re-stage path), not only first creation",
+);
+assert.match(
+  runtimeManifestHarness,
+  /Assert-Throws -Name "atomic replace under a sharing reader"/u,
+  "the manifest harness must prove a failed atomic replacement preserves the previous descriptor",
 );
 assert.match(initScript, /\$previousErrorActionPreference = \$ErrorActionPreference/);
 assert.match(initScript, /\$ErrorActionPreference = "Continue"/);
