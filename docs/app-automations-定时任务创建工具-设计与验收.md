@@ -253,5 +253,6 @@
 | I4 | update 校验 | 缺 task_id / 零字段 / CRON rrule 均拒绝 | ◇python + ◇Rust `update_request_validation_requires_target_and_a_field` | P0 |
 | I5 | delete 校验 | 缺 task_id、带多余字段均拒绝 | ◇python + ◇Rust `delete_request_validation_rejects_extra_fields` | P1 |
 | I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
+| I7 | 排水加固（#680 拆分波） | pending 文件数超过 256 时排序尾部被隔离且不落库；预算耗尽（标记+隔离双双失败）时停止重复应用且审计/标记每轮次只写一次；标记读取带 stat+常规文件+容量门控；Done 仅移除 digest 仍匹配的记录 | ◇Rust `pending_ceiling_quarantines_tail_without_applying` / `exhausted_budget_gates_across_polls_when_rename_fails` / `oversize_ceiling_tail_gets_the_real_reason` / `ceiling_tail_with_landed_receipt_writes_no_failure_marker` / `marker_tmp_path_refuses_non_regular_files` | P1 |
 
 §6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析。
