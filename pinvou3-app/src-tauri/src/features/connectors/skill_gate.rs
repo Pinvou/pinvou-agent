@@ -79,6 +79,37 @@ impl ConnectorGate {
                 log::warn!("[{}] apply skills failed: {e}", self.id);
                 return Err(e);
             }
+            if show {
+                // Fail-visible belt-and-braces (review #455 R13-B3, preserved
+                // through the round-19 merge): deny-first above already
+                // registered the pair, and once the companion dirs are
+                // materialized the sync's known-clause skips it — this leg
+                // only acts (and its marker copy only surfaces) in the corner
+                // where the known-clause cannot vouch for a just-applied
+                // connector. Swallowing the error would let the connector go
+                // live with zero consent in that corner. It runs inside THIS
+                // spawn_blocking closure (the second hop it used to own was a
+                // pure wrapper with nothing between the two hops): still off
+                // the executor like the deny-first gate above, because the
+                // sync write can block on the cross-process flock (#515), and
+                // a frozen peer must not hang a Tokio worker. The fold merges
+                // the old hop's join-error branch into the single
+                // "apply skills task failed" log below (a JoinError no longer
+                // identifies its phase); the user-visible
+                // "spawn_blocking: {e}" copy is unchanged.
+                crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
+                    |e| {
+                        log::warn!(
+                            "[{}] persisting the default-off consent state failed: {e}",
+                            self.id
+                        );
+                        crate::features::marketplace::scope::consent_sync_failure_message(
+                            &format!("{} connected", self.id),
+                            &e,
+                        )
+                    },
+                )?;
+            }
             Ok(show)
         })
         .await
@@ -89,35 +120,6 @@ impl ConnectorGate {
             log::warn!("[{}] apply skills task failed: {e}", self.id);
             format!("spawn_blocking: {e}")
         })??;
-        if show {
-            // Fail-visible belt-and-braces (review #455 R13-B3, preserved
-            // through the round-19 merge): deny-first above already
-            // registered the pair, and once the companion dirs are
-            // materialized the sync's known-clause skips it — this leg only
-            // acts (and its marker copy only surfaces) in the corner where
-            // the known-clause cannot vouch for a just-applied connector.
-            // Swallowing the error would let the connector go live with zero
-            // consent in that corner. Off the executor like the deny-first
-            // gate above: the sync write can block on the cross-process
-            // flock (#515), and a frozen peer must not hang a Tokio worker.
-            let gate_id = self.id;
-            tokio::task::spawn_blocking(move || {
-                crate::features::marketplace::sync_deny_all_scopes_after_install(gate_id)
-            })
-            .await
-            .map_err(|e| {
-                log::warn!("[{}] consent sync task failed: {e}", self.id);
-                format!("spawn_blocking: {e}")
-            })?
-            .map_err(|e| {
-                log::warn!("[{}] persisting the default-off consent state failed: {e}", self.id);
-                format!(
-                    "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-                    self.id,
-                    crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-                )
-            })?;
-        }
         Ok(json!({ "visible": show }))
     }
 

@@ -1071,6 +1071,17 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 pub(crate) const CONSENT_SYNC_FAILURE_MARKER: &str =
     "persisting their default-off consent state failed";
 
+/// Single source of the post-landing consent-failure copy shared by the
+/// command layer and the connector gate (the frontend pin
+/// `tests/consent_marker_frontend.test.mjs` counts these call sites), so a
+/// rewording cannot desynchronize the emitters from the marker the frontend's
+/// actionable-guidance template keys on.
+pub(crate) fn consent_sync_failure_message(subject: &str, error: &str) -> String {
+    format!(
+        "{subject}, but {CONSENT_SYNC_FAILURE_MARKER}: new sessions will enable it by default — turn it off in the tools list: {error}"
+    )
+}
+
 pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
