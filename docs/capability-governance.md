@@ -342,9 +342,7 @@ and keeps the user's recorded authorization state — including every startup's
 auth-gated refresh; hide and re-show: the CLI connector hide/logout path does
 no teardown and the sync-ledger entry survives, so re-show is a no-op — the
 recorded authorization rows are kept verbatim, re-materialization stays
-governed by them, and they are never re-denied (round-17 review: the earlier
-"re-show after disconnect→reconnect re-registers" described a teardown path
-this connector class does not have). Re-registration happens only after a
+governed by them, and they are never re-denied (round-17 review erratum). Re-registration happens only after a
 ledger-clearing teardown: the ima logout (`uninstall_and_strip_scope`), or a
 pack uninstall — the latter removes the materialized companion directories
 along with the pack and aborts the whole uninstall if that removal fails
@@ -398,9 +396,9 @@ normalization could be hijacked by a foreign claim) and clears rows exactly,
 after the `Ok(false)` no-op exemption — the strip runs after the uninstall
 returns and outside the import lock (the round-12 B2 window is still open
 here, a disclosed residue; the ima channel is unaffected). The preset skill
-install channel (`SkillMarketplaceManager::install`) likewise holds the
-per-id import lock across the whole landing (staged unpack → delete-and-swap
-→ backup sweep → mirror registration) (round-20), so a same-id install and an
+install channel (`SkillMarketplaceManager::install`) holds the same per-id
+import lock across its whole landing (the round-20 fix, stated in full with
+its residual window below), so a same-id install and an
 uninstall/disconnect teardown can no longer interleave — the residue
 collapses to one hop between the install channel's gate check / pre-steps
 (which read the store outside the lock; an ima reconnect includes credential
@@ -457,8 +455,9 @@ import lock is in-process and the skill channel holds no cross-process
 lease), and between the probe points and the strip bodies of the strips that
 run outside locks (the install-rollback leg, the skill command channel) — all
 same-id, narrow, bounded; the reverse outcome — leaving a disabled entry
-behind for an uninstalled id — is fail-closed and converges. Round-21 fix:
-the preset skill install/update pipeline (unpack, fingerprint,
+behind for an uninstalled id — is fail-closed and converges. Round-20 fix
+(P2; the round-21 review pinned the lock tenancy behaviorally): the preset
+skill install/update pipeline (unpack, fingerprint,
 replace-on-disk, registration — the whole span) now holds the same per-id
 in-process import lock as uninstall/show-edit/unified import — previously
 that channel held no lock, and the in-process interleave "install passes the
@@ -496,10 +495,7 @@ inside an initialized scope); an uninitialized DenyAll scope is not a gap:
 its default set is also derived, as a union, through the physical-owner
 mapping (`skill_gating_owner_with`) over a `bundles/*/skills/` disk
 enumeration, so a landed independent component resolves to its owning pack id
-and falls inside the default-all-off (round-17 review: the earlier residual
-description "the default set is derived only from preset + upload
-registrations, so components stay uncovered by the default-all-off backstop"
-did not match the code and is hereby corrected).
+and falls inside the default-all-off (round-17 review erratum).
 
 **Import landing journal (introduced round-18/19, disclosed round-20)**: the
 unified import pipeline writes a landing marker
