@@ -99,7 +99,9 @@ impl std::fmt::Display for RebindRootsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RebindRootsError::Overlap(error) => {
-                write!(f, "rebind produced overlapping project roots: {error}")
+                // The classification context already carries the sentence;
+                // printing it again would duplicate it in {error:#} chains.
+                write!(f, "{error}")
             }
             RebindRootsError::Persist(error) | RebindRootsError::Other(error) => {
                 write!(f, "{error}")
@@ -317,9 +319,11 @@ pub(crate) fn paths_are_alias_equal(a: &Path, b: &Path) -> bool {
 ///   project overlap makes assignment ambiguous.
 /// Root-cause prefixes of the overlap-family errors `validate_roots`
 /// produces (round-24 minor 7): single-sourced here and consumed by both the
-/// bail! sites below and the command layer's preflight REBIND_ROOTS_CONFLICT
-/// partition, so a wording change cannot silently degrade the conflict copy
-/// — the wording pin drives every class through the real validator.
+/// bail! sites below and the store-side classification inside
+/// `plan_rebind_roots`/`rebind_roots` (which variant wears the command
+/// layer's REBIND_ROOTS_CONFLICT copy), so a wording change cannot silently
+/// degrade the conflict classification — the wording pin drives every class
+/// through the real validator.
 pub const ROOTS_NEST_CONFLICT: &str = "project roots must not nest";
 pub const ROOTS_OVERLAP_CONFLICT: &str = "project root overlaps";
 pub const ROOTS_DUPLICATE_CONFLICT: &str = "duplicate project root";
@@ -797,6 +801,31 @@ impl ProjectStore {
     /// returns the project ids it would affect; nothing is written or
     /// persisted. `rebind_roots` revalidates under its write lock, so a
     /// concurrent project mutation cannot slip past the invariant.
+    /// Classification shared by the plan and commit paths (round-9 minor
+    /// 10; round-12 P2-3 / round-13 M1): only the nest / overlap /
+    /// duplicate families — the single-sourced, test-pinned
+    /// [`REBIND_ROOTS_CONFLICT_PREFIXES`] — wear the localized re-pick
+    /// copy; any other `validate_roots` bail (e.g. a corrupt store holding
+    /// a relative root, the absolute-path class) is an infrastructure
+    /// shape re-picking a destination cannot fix and stays an ordinary
+    /// error (base's partition, #463 round-19 SF-6; a bail-wording change
+    /// fails the wording pin instead of silently degrading this
+    /// classification, so laundering a non-conflict failure into the
+    /// conflict copy cannot silently return).
+    fn classify_rebind_validation_error(error: anyhow::Error) -> RebindRootsError {
+        let conflict_class = REBIND_ROOTS_CONFLICT_PREFIXES
+            .iter()
+            .any(|prefix| error.root_cause().to_string().starts_with(prefix));
+        if conflict_class {
+            RebindRootsError::Overlap(error.context("rebind produced overlapping project roots"))
+        } else {
+            // Round-14 MINOR 2: the non-conflict class keeps the raw chain
+            // verbatim — stamping the overlap sentence on it would claim a
+            // conflict for exactly the class this classifier carved out.
+            RebindRootsError::Other(error)
+        }
+    }
+
     /// Scoped revalidation (review #463 round-10 minor 5): only the projects
     /// this rebind actually touches are validated against the whole
     /// candidate — a pre-existing overlap between two untouched legacy
@@ -870,7 +899,11 @@ impl ProjectStore {
         pairs
     }
 
-    pub fn plan_rebind_roots(&self, from: &Path, to: &Path) -> Result<Vec<String>> {
+    pub fn plan_rebind_roots(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<Vec<String>, RebindRootsError> {
         if paths_are_alias_equal(from, to) {
             return Ok(Vec::new());
         }
@@ -883,8 +916,11 @@ impl ProjectStore {
         if affected_projects.is_empty() {
             return Ok(Vec::new());
         }
+        // Typed like `rebind_roots` (round-9 review minor 10): only a genuine
+        // conflict carries the conflict classification (see
+        // [`Self::classify_rebind_validation_error`]).
         Self::validate_rebind_candidates(&candidate, &original, &affected_projects)
-            .context("rebind produced overlapping project roots")?;
+            .map_err(Self::classify_rebind_validation_error)?;
         Ok(affected_projects)
     }
 
@@ -901,11 +937,13 @@ impl ProjectStore {
     /// case the whole rebind fails and rolls back (memory untouched, nothing
     /// persisted). Returns the affected project ids.
     ///
-    /// Layering note (review #463 round-20 minor 12): the nesting guard and
-    /// the empty-`from` hazard live at the COMMAND layer — this store fn
-    /// performs no nesting validation, and a raw empty `from` would match
-    /// every absolute root via the empty-base rule. Only the command calls
-    /// it today; the guard is deliberately not duplicated here.
+    /// Layering note (review #463 round-20 minor 12; updated round-13):
+    /// the nesting guard lives at the COMMAND layer — this store fn
+    /// performs no nesting validation, and only the command calls it
+    /// today, so the guard is deliberately not duplicated here. The
+    /// empty-`from` hazard is refused one layer below as well: the shared
+    /// `path_relative_suffix_under` returns `None` for an empty base, so a
+    /// raw empty `from` translates no root even without the command guard.
     ///
     /// Idempotent: no matching root is an empty Ok, not an error. The retry
     /// contract depends on this — a rerun after a partially failed run finds
@@ -929,11 +967,7 @@ impl ProjectStore {
             Self::rebind_root_candidates(&state.projects, from, to);
         if !affected_projects.is_empty() {
             Self::validate_rebind_candidates(&candidate, &state.projects, &affected_projects)
-                .map_err(|error| {
-                    RebindRootsError::Overlap(
-                        error.context("rebind produced overlapping project roots"),
-                    )
-                })?;
+                .map_err(Self::classify_rebind_validation_error)?;
             // Persist FIRST, commit the in-memory candidate only on success
             // (round-8 review M2, mirroring the codex lane): committing
             // before the write let a persist failure leave memory at `to`

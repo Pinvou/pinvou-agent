@@ -15,7 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, '..');
-const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8');
+// Core.autocrlf=true gives a CRLF working tree on Windows while the repo holds
+// LF; normalizing here keeps every pattern below platform-deterministic
+// (multi-line anchors would otherwise silently match nothing on one platform).
+const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8').replace(/\r\n/g, '\n');
 
 const DIALOG = read('src', 'features', 'projects', 'MoveToProjectDialog.jsx');
 const MAIN = read('src', 'app', 'main.jsx');
@@ -142,5 +145,23 @@ test('move menu item hands focus to the always-rendered label button', () => {
     NAV,
     /hidden group-hover:flex group-focus-within:flex max-sm:flex/,
     'action container must reveal on focus-within so keyboard users can reach it',
+  );
+});
+
+test('project group header actions stay desktop-only on the web lane', () => {
+  // The rename/delete menu actions route through bridge.projects, which
+  // exists only on the Tauri lane: without the guard the web lane renders
+  // dead entries whose clicks do nothing (violating the explicit
+  // unsupported-capability convention). onDropSession/onRebind already
+  // carry the guard; rename/delete must not drift out of formation.
+  assert.match(
+    MAIN,
+    /onRename=\{bridge\.projects && group\.kind === 'project'/,
+    'onRename must be gated on bridge.projects availability',
+  );
+  assert.match(
+    MAIN,
+    /onDelete=\{bridge\.projects && group\.kind === 'project'/,
+    'onDelete must be gated on bridge.projects availability',
   );
 });

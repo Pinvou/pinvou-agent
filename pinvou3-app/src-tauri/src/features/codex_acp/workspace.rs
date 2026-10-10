@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- the round-12 baseline-gate symlink-convergence pin is cfg(unix)-gated: std::os::unix::fs::symlink has no portable equivalent and the inner-symlink shape it pins is a POSIX alias; the gate itself is portable and no platform behavior leaks into shared code.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -286,6 +287,29 @@ pub fn resolve_workspace_resource(root: &Path, resource_path: &str) -> Result<Pa
         bail!("工作区资源不是文件: {resource_path}");
     }
     Ok(canonical)
+}
+
+/// Whether the session's stored baseline is already current for `root`.
+/// Wraps the private `load_baseline`, which self-invalidates when the stored
+/// `workspace_path` no longer matches `root` (a workspace moved by a rebind
+/// whose recapture failed or never ran): such a baseline reads as absent.
+/// `root` is canonicalized first, matching `capture_baseline`'s stored
+/// spelling — the rebind drain passes the LEXICAL translation
+/// (`to.join(suffix)`), and an inner symlink component (not just the macOS
+/// `/var` prefix alias, where both sides already sit canonical) would make
+/// the raw-string compare read not-current on every run, so the gate would
+/// keep resetting a healthy baseline instead of converging (round-12 P2-1).
+/// A root that cannot be canonicalized (vanished mid-run) reads as not
+/// current; the best-effort recapture then fails honestly and is logged.
+/// The rebind's baseline-recapture drain gates on this (round-11 review M1)
+/// so a healthy session with a fresh baseline is never reset — resetting it
+/// would wipe the "changes since session start" view (non-git) or flip
+/// every currently-dirty file to preexisting (git).
+pub fn baseline_is_current(session_id: &str, root: &Path) -> bool {
+    let Ok(root) = canonical_workspace(root) else {
+        return false;
+    };
+    matches!(load_baseline(session_id, &root), Ok(Some(_)))
 }
 
 pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
@@ -1883,6 +1907,85 @@ mod tests {
                 && change.origin == "session"
         }));
         let _ = fs::remove_file(baseline_path(&session_id));
+    }
+
+    #[test]
+    fn baseline_is_current_distinguishes_stale_from_current_roots() {
+        // round-12 P2-1 companion: the rebind recapture drain gates on this
+        // predicate, so the absent / corrupt / stale / current classification
+        // is pinned directly — an absent or corrupt baseline reads
+        // not-current (recapture rewrites it), a fresh one at the SAME root
+        // reads current, and a different root reads stale.
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let session_id = format!("baseline-gate-{}-{nonce}", std::process::id());
+        let a = TestDir::new("baseline-gate-a");
+        let b = TestDir::new("baseline-gate-b");
+        fs::write(a.path().join("file.txt"), "a").unwrap();
+        fs::write(b.path().join("file.txt"), "b").unwrap();
+        assert!(
+            !baseline_is_current(&session_id, a.path()),
+            "no baseline yet: not current, recapture runs"
+        );
+        capture_baseline(&session_id, a.path()).unwrap();
+        assert!(
+            baseline_is_current(&session_id, a.path()),
+            "fresh baseline at the same root: current, drain skips"
+        );
+        assert!(
+            !baseline_is_current(&session_id, b.path()),
+            "a moved workspace (different root) reads stale"
+        );
+        fs::write(baseline_path(&session_id), b"not json").unwrap();
+        assert!(
+            !baseline_is_current(&session_id, a.path()),
+            "a corrupt baseline reads not-current (the drain's recapture then rewrites it)"
+        );
+        let _ = fs::remove_file(baseline_path(&session_id));
+        let _ = fs::remove_dir_all(a.path());
+        let _ = fs::remove_dir_all(b.path());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn baseline_is_current_converges_across_a_path_alias_symlink() {
+        // round-12 P2-1: capture stores the CANONICALIZED root while the
+        // rebind drain passes the LEXICAL to.join(suffix) translation — a
+        // symlink anywhere in that spelling (this pin uses a whole-path
+        // alias, the same shape; an inner component alias resolves the same
+        // way) must not make the gate read stale on every run (it would
+        // keep resetting a healthy baseline instead of converging after
+        // one idempotent recapture).
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let session_id = format!("baseline-gate-link-{}-{nonce}", std::process::id());
+        let real = TestDir::new("baseline-gate-real");
+        let alias = std::env::temp_dir().join(format!(
+            "pinvou3-baseline-gate-alias-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::write(real.path().join("file.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(real.path(), &alias).expect("symlink");
+        // Bind through the alias: the stored baseline holds the canonical
+        // (real) spelling, as every capture does.
+        capture_baseline(&session_id, real.path()).unwrap();
+        assert!(
+            baseline_is_current(&session_id, &alias),
+            "the lexical alias spelling must resolve to the canonical stored root"
+        );
+        let _ = fs::remove_file(baseline_path(&session_id));
+        let _ = fs::remove_dir_all(real.path());
+        let _ = fs::remove_file(&alias);
     }
 
     /// 初始化一个含 main + feature 两个分支的 git 仓库；git 不可用时返回 None 跳过。
