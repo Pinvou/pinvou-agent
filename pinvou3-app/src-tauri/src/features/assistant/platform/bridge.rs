@@ -2978,7 +2978,13 @@ impl Pinvou3Bridge {
                     },
                 ],
             }),
-            timeout_secs: 5,
+            // Windows PowerShell startup can exceed 5s even for `exit 0` —
+            // the same reproduction that raised the connector firewall's
+            // budget. This guard stays strict on purpose (a missing verdict
+            // fails closed), so a too-tight budget here denied legitimate
+            // agent/workflow calls before they ran; only these two gated
+            // tool names ever pay this budget.
+            timeout_secs: 30,
             background: false,
             continue_on_error: false,
             name: Some("pinvou3-multiagent-depth-guard".into()),
@@ -10694,6 +10700,73 @@ mod tests {
             !multi_content.contains(crate::features::assistant::swarm::SWARM_CONTRACT),
             "契约正文只在 spawn 级 instructions，不得逐轮重复:\n{multi_content}"
         );
+    }
+
+    /// 深度护栏预算契约（回归锚）：Windows 上 PowerShell 冷启动本身可能超过
+    /// 5s（与连接器防火墙同一复现），而本护栏是**有意 strict** 的真实门——
+    /// 无 verdict 即 fail closed——预算过紧会在工具执行前拒绝合法的
+    /// agent/workflow 调用。30s 只覆盖解释器启动；门槛仍然只匹配两个精确
+    /// 工具名，且 strict 语义不得被顺手改成 advisory。
+    #[test]
+    fn multi_agent_depth_guard_keeps_strict_gate_with_startup_budget() {
+        let bridge = fixture_bridge();
+        let executor = bridge.build_multi_agent_hook_executor(&std::env::temp_dir());
+        let guard = executor
+            .config()
+            .hooks
+            .iter()
+            .find(|hook| hook.name.as_deref() == Some("pinvou3-multiagent-depth-guard"))
+            .expect("multi-agent executor must mount the depth guard");
+        assert_eq!(guard.event, HookEvent::ToolCallBefore);
+        assert_eq!(
+            guard.timeout_secs, 30,
+            "depth-guard budget must cover interpreter startup, not deny at 5s"
+        );
+        assert!(
+            !guard.continue_on_error,
+            "depth-guard is a real gate: a missing verdict must fail closed"
+        );
+        assert!(
+            !guard.background,
+            "the guard must be awaited, not fire-and-forget"
+        );
+        let names = match &guard.condition {
+            Some(HookCondition::Any { conditions }) => conditions
+                .iter()
+                .map(|condition| match condition {
+                    HookCondition::ToolName { name } => name.as_str(),
+                    other => panic!("unexpected guard condition: {other:?}"),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("depth-guard must stay gated on tool names, got {other:?}"),
+        };
+        assert_eq!(names, ["agent", "workflow"]);
+        // 条件匹配语义与执行器一致（精确、大小写敏感）：只有两个升级入口
+        // 命中 strict 门；近邻名称不得被波及。多智能体执行器里还挂着其他
+        // strict 门（如主分支上的防火墙），因此按护栏名过滤后再断言。
+        let hits_guard = |tool: &str| {
+            let context = deepseek_tui::hooks::HookContext::new().with_tool_name(tool);
+            executor
+                .matched_strict_gate_labels(HookEvent::ToolCallBefore, &context)
+                .iter()
+                .any(|label| label == "pinvou3-multiagent-depth-guard")
+        };
+        for tool in ["agent", "workflow"] {
+            assert!(hits_guard(tool), "{tool} must hit the strict depth guard");
+        }
+        for tool in [
+            "read",
+            "write",
+            "bash",
+            "Agent",
+            "mcp__x__agent",
+            "agent_pro",
+        ] {
+            assert!(
+                !hits_guard(tool),
+                "unrelated tool {tool} must not dispatch the depth guard"
+            );
+        }
     }
 
     /// 多智能体轮没有匹配候选时，信封兜底一句名册提示（零候选轮对模型可见，
