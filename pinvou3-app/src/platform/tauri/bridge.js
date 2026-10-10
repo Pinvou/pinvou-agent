@@ -437,8 +437,12 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       sessionModelStale: id => `The model selected for this conversation is no longer available (missing saved model: ${id}). Please pick a model again in this conversation.`,
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       steerDropped: "Queued message was not delivered (turn interrupted), cancelled",
+      steerDroppedQueued: "Queued message was not delivered (turn interrupted); it stayed queued and will be sent in order",
       steerFailed: "Interrupt failed (session unavailable or engine not running); your text was restored to the input",
       steerFailedLost: "Interrupt failed (turn interrupted); the message was not delivered and could not be restored — send it again",
+      steerFailedQueued: "Interrupt failed (session unavailable or engine not running); the message stayed queued and will be sent in order",
+      steerDroppedDuringEdit: "The queued copy was not delivered (turn interrupted) while the edit was being applied; it stayed queued and will be sent in order",
+      steerFailedUnconfirmed: "Interrupt failed (delivery could not be confirmed); the referenced message was not re-queued — check the transcript before sending it again",
       interruptQueuedFailed: "Interrupt & send failed; the message was restored to the queue",
       interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
@@ -538,8 +542,12 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       steerDropped: "キューしたメッセージが未達（ターン中断）のため取り消しました",
+      steerDroppedQueued: "キューしたメッセージが未達（ターン中断）のため、キューに残り順に送信されます",
       steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
       steerFailedLost: "割り込みに失敗しました（ターン中断）。メッセージは未達のまま復元できません。もう一度送信してください",
+      steerFailedQueued: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容はキューに残り、順に送信されます",
+      steerDroppedDuringEdit: "編集の適用中にキューしたメッセージが未達（ターン中断）になりました。キューに残り順に送信されます",
+      steerFailedUnconfirmed: "割り込みに失敗しました（配信結果を確認できません）。参照メッセージはキューに戻していません。履歴を確認してから再送を判断してください",
       interruptQueuedFailed: "割り込み送信に失敗しました。メッセージはキューに復元しました",
       interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
@@ -639,8 +647,12 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       sessionModelStale: id => `当前会话选择的模型配置已失效（缺失配置：${id}），请在对话中重新选择模型。`,
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       steerDropped: "排队消息未送达（回合中断），已取消",
+      steerDroppedQueued: "排队消息未送达（回合中断），已保留在队列中，将按顺序发送",
       steerFailed: "插队失败（会话不可用或引擎未运行），内容已恢复到输入框",
       steerFailedLost: "插队失败（回合中断），消息未送达且无法恢复；请重新发送",
+      steerFailedQueued: "插队失败（会话不可用或引擎未运行），内容保留在队列中，将按顺序发送",
+      steerDroppedDuringEdit: "编辑应用期间排队消息未送达（回合中断），已保留在队列中，将按顺序发送",
+      steerFailedUnconfirmed: "插队失败（送达结果未能确认），引用消息未重新排队；请查看会话记录后再决定是否重发",
       interruptQueuedFailed: "插队发送失败，消息已恢复到排队区",
       interruptBusy: "已有打断正在进行，消息保留在排队区，请稍后重试",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
@@ -1221,7 +1233,21 @@ function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduled
         // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
         // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
         // 块，避免 XML 痕迹进 sidebar 标题。
-        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        // The session-mention injection block (the ## Referenced chats contract
+        // at the head of a message) is not user body text and never feeds
+        // auto-titling; the single source of the contract parsing is
+        // features/chat/session-mention.js (published via the window global —
+        // classic-script bridges do not import features back).
+        // The received cross-session message block (features/messaging
+        // delivery of send_message_to_session) is stripped OUTERMOST first —
+        // the sender block wraps the body and the body may itself start with
+        // a mention block; the order matches chat.rs's
+        // first_send_title_source and UserBubble's parse order.
+        const splitMessage = window.__PINVOU_SESSION_MESSAGE__ && window.__PINVOU_SESSION_MESSAGE__.splitSessionMessageBlock;
+        if (splitMessage) titleText = splitMessage(titleText).text.trim();
+        const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+        if (splitMention) titleText = splitMention(titleText).text.trim();
         if (titleText) {
           const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });

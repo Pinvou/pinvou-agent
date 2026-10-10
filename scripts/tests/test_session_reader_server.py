@@ -809,6 +809,7 @@ class FeatureGateTests(unittest.TestCase):
     TOOL_FEATURES = {
         "mcp_session-reader_read_session": ["session-mention", "long-memory"],
         "mcp_session-reader_list_sessions": ["session-mention", "long-memory"],
+        "mcp_session-reader_send_message_to_session": ["session-messaging"],
     }
 
     def setUp(self):
@@ -950,7 +951,7 @@ class StdioContractTests(unittest.TestCase):
 
             tools = self._rpc(proc, "tools/list")
             names = [tool["name"] for tool in tools["result"]["tools"]]
-            self.assertEqual(names, ["read_session", "list_sessions"])
+            self.assertEqual(names, ["read_session", "list_sessions", "send_message_to_session"])
 
             call = self._rpc(proc, "tools/call", {
                 "name": "read_session",
@@ -1204,6 +1205,218 @@ class FeatureGateStdioTests(unittest.TestCase):
         finally:
             proc.kill()
             proc.communicate()
+
+
+class SendMessageTests(unittest.TestCase):
+    """send_message_to_session: validation + spool write (contract §5 L1 / §6)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-send-test-")
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        self.messaging = Path(self.tmp) / "messaging"
+        _write_session(self.sessions, "src0001", [], title="源会话")
+        _write_session(self.sessions, "tgt0001", [], title="目标会话")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _send(self, **overrides):
+        args = {
+            "sessions_dir": str(self.sessions),
+            "messaging_dir": str(self.messaging),
+            "to_session": "tgt0001",
+            "text": "跨会话交接",
+        }
+        args.update(overrides)
+        return server.send_message_to_session(**args)
+
+    def _spooled(self):
+        return sorted(Path(self.messaging, "spool").glob("*.json"))
+
+    def test_valid_send_spools_with_titles_and_text(self):
+        payload, error = self._send(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "pending")
+        self.assertFalse(payload["duplicate"])
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["schema_version"], 1)
+        self.assertEqual(record["to_session"], "tgt0001")
+        self.assertEqual(record["to_title"], "目标会话")
+        self.assertEqual(record["from_session"], "src0001")
+        self.assertEqual(record["from_title"], "源会话")
+        self.assertEqual(record["text"], "跨会话交接")
+        self.assertEqual(record["idempotency_key"], "k1")
+        # Cross-language contract: the file name is the sender+target-scoped
+        # sha256 of "<from_session>|<to_session>|<key>" — the Rust watcher
+        # keys its done-marker on this stem, so the naming scheme must not
+        # drift.
+        import hashlib as _hashlib
+
+        self.assertEqual(
+            files[0].stem,
+            _hashlib.sha256(b"src0001|tgt0001|k1").hexdigest(),
+        )
+
+    def test_same_idempotency_key_overwrites_one_spool_file(self):
+        first, _ = self._send(from_session="src0001", idempotency_key="k1")
+        second, _ = self._send(from_session="src0001", idempotency_key="k1")
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(len(self._spooled()), 1)
+
+    def test_same_key_from_different_senders_gets_two_files(self):
+        _write_session(self.sessions, "src0002", [], title="第二源会话")
+        first, first_error = self._send(from_session="src0001", idempotency_key="shared")
+        second, second_error = self._send(from_session="src0002", idempotency_key="shared")
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertFalse(first["duplicate"])
+        self.assertFalse(second["duplicate"])
+        self.assertEqual(len(self._spooled()), 2)
+
+    def test_idempotency_key_without_from_session_is_rejected(self):
+        payload, error = self._send(idempotency_key="anon-key")
+        self.assertIsNone(payload)
+        self.assertIn("from_session", error)
+        self.assertEqual(len(self._spooled()), 0)
+
+    def test_missing_key_uses_unique_file_names(self):
+        self._send()
+        self._send()
+        self.assertEqual(len(self._spooled()), 2)
+
+    def test_isolated_and_unknown_targets_are_rejected(self):
+        for target in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1"):
+            payload, error = self._send(to_session=target)
+            self.assertIsNone(payload)
+            self.assertIn("not readable", error, target)
+        payload, error = self._send(to_session="no-such")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
+        payload, error = self._send(to_session="../escape")
+        self.assertIsNone(payload)
+        self.assertIn("invalid", error)
+
+    def test_isolated_sender_and_self_send_are_rejected(self):
+        payload, error = self._send(from_session="sched-run1")
+        self.assertIsNone(payload)
+        payload, error = self._send(from_session="TGT0001")
+        self.assertIsNone(payload)
+        self.assertIn("itself", error)
+
+    def test_text_and_key_caps_are_enforced(self):
+        payload, error = self._send(text="   ")
+        self.assertIsNone(payload)
+        payload, error = self._send(text="x" * (server.MAX_MESSAGE_TEXT_CHARS + 1))
+        self.assertIsNone(payload)
+        payload, error = self._send(idempotency_key="k" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1))
+        self.assertIsNone(payload)
+
+    def test_spool_errors_do_not_leak_host_paths(self):
+        blocker = Path(self.tmp) / "blocked-file"
+        blocker.write_bytes(b"x")  # a plain file where the spool dir must be
+        payload, error = self._send(messaging_dir=str(blocker))
+        self.assertIsNone(payload)
+        self.assertTrue(str(self.tmp) not in error, error)
+
+    def test_spool_write_is_atomic_json(self):
+        self._send()
+        record_file = self._spooled()[0]
+        # A torn/partial write would fail json parsing; the atomic tmp+rename
+        # guarantees the watcher only ever observes complete records.
+        json.loads(record_file.read_text(encoding="utf-8"))
+
+
+    def test_byte_budget_rejects_wide_text_under_the_char_cap(self):
+        """B1: 32k CJK chars pass the char cap but must fail the serialized
+        byte budget (a legal-looking send must never be accepted here and
+        silently quarantined by the watcher's 64 KiB file cap)."""
+        payload, error = self._send(text="汉" * server.MAX_MESSAGE_TEXT_CHARS)
+        self.assertIsNone(payload)
+        self.assertIn("KiB", error)
+        self.assertEqual(len(self._spooled()), 0)
+
+    def test_over_long_titles_are_clipped_not_rejected(self):
+        """B1: a >200-char session title clips at spool time instead of making
+        the session undeliverable as sender or target."""
+        _write_session(self.sessions, "long1", [], title="长" * 250)
+        payload, error = self._send(to_session="long1", from_session="src0001")
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(record["to_title"]), server.MAX_TITLE_CHARS)
+
+    def test_over_long_sender_title_is_clipped_too(self):
+        """Round-4 B4': the SENDER-side title clips at spool time as well — a
+        long-titled sender must not become permanently undeliverable (the
+        watcher rejects >200-char from_title outright)."""
+        _write_session(self.sessions, "longsrc", [], title="发" * 250)
+        payload, error = self._send(to_session="tgt0001", from_session="longsrc")
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(len(record["from_title"]), server.MAX_TITLE_CHARS)
+
+    def test_done_marker_answers_delivered_not_fresh_pending(self):
+        """M5: a retried idempotent send after delivery must say delivered,
+        not a fresh pending duplicate."""
+        self._send(from_session="src0001", idempotency_key="k9")
+        spool = self._spooled()[0]
+        before = len(self._spooled())
+        first_stat = spool.stat()
+        done = self.messaging / "spool" / ".done"
+        done.mkdir(parents=True, exist_ok=True)
+        (done / (spool.stem + ".json")).write_bytes(b"")
+        payload, error = self._send(from_session="src0001", idempotency_key="k9")
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "delivered")
+        self.assertTrue(payload["duplicate"])
+        # Round-7 Q3: assert STATE, not count — a same-name os.replace
+        # rewrite leaves the count unchanged (the round-6 count-only pin
+        # passed against the buggy code). The first send's file must be
+        # byte-identically untouched: same inode, same mtime.
+        self.assertEqual(len(self._spooled()), before)
+        after_stat = self._spooled()[0].stat()
+        self.assertEqual(after_stat.st_ino, first_stat.st_ino)
+        self.assertEqual(after_stat.st_mtime_ns, first_stat.st_mtime_ns)
+
+
+class SendMessageFeatureGateTests(unittest.TestCase):
+    """send_message_to_session obeys the §3.3 feature gate via its own feature (session-messaging, union semantics)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-send-gate-test-")
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        _write_session(self.sessions, "tgt0001", [], title="目标会话")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _gate(self, disabled):
+        state = Path(self.tmp) / "marketplace" / "builtin_features.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"schema_version": 1, "disabled_features": disabled}), encoding="utf-8")
+        features = server.load_tool_features(
+            str(SERVER_PATH.parent / "manifest.json")
+        )
+        return server.feature_gate_error("send_message_to_session", str(self.sessions), features)
+
+    def test_send_tool_gated_by_its_own_feature_only(self):
+        gate = self._gate(["session-messaging"])
+        self.assertIsNotNone(gate)
+        self.assertEqual(gate["code"], "feature_disabled")
+        self.assertIn("session-messaging", gate["error"])
+
+    def test_send_tool_stays_available_under_read_feature_off(self):
+        # Union semantics: the read features' state must not gate the send tool.
+        self.assertIsNone(self._gate(["session-mention", "long-memory"]))
+
+    def test_missing_state_file_leaves_send_available(self):
+        features = server.load_tool_features(str(SERVER_PATH.parent / "manifest.json"))
+        self.assertIsNone(
+            server.feature_gate_error("send_message_to_session", str(self.sessions), features)
+        )
 
 
 class SessionsDirResolutionTests(unittest.TestCase):

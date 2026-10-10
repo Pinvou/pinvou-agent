@@ -435,6 +435,7 @@ const jaBase = {
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
         uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveToUngrouped:'未分類へ移動', alreadyUngrouped:'未分類です', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました' , rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindUpToDate:'再バインドが必要な会話はありませんでした', rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindCarryoverPending:n=>`${n} 件の会話は移行されましたが、ランタイムをまだ切り替えられていません。アイドル後に再試行してください`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください` , rebindRetryRemaining:'残りを再試行', rebindFailedSessions:'失敗した会話', rebindInProgress:'別のフォルダー再バインドが実行中です' , rebindBusyHint:'これらのセッションはターン実行中です。アイドルになってから再試行してください', rebindToRoot:'ファイルシステムのルートは指定できません。通常のフォルダーを選択してください', rebindToNested:'2 つのフォルダーを互いに入れ子にすることはできません', rebindToUnusable:'選択したフォルダーは使用できません。別のフォルダーを選択してください', rebindRootsConflict:'そのフォルダーは他のプロジェクトのフォルダーと重なっています。他のプロジェクトのフォルダー外を選択してください', rebindRootsPersist:'再バインド結果をディスクに保存できませんでした。空き容量と権限を確認して再試行してください', rebindRuntimeStarting:'エージェントのプロセスが起動中のため、セッションの状態を確認できませんでした。しばらくしてから再試行してください', rebindLegacyTableUnsynced:'何も移動されていません：セッション記録の同期に失敗しました。フォルダーを書き込み可能にしてから再試行してください', rebindLegacyTableCorrupt:'何も移動されていません：従来のセッションテーブルが壊れています。修復または削除してから再試行してください', rebindRootsExpand:'すべての失効フォルダーを表示', rebindRootsCollapse:'最初の失効フォルダーのみ表示' },
+
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加', back:'ワークスペース一覧に戻る', copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません',  unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。',   title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです', updateCheckFailed: '確認に失敗しました', updateInstallFailed: '更新に失敗しました',
@@ -645,7 +646,7 @@ dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準�
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
-  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴への読み取り専用アクセス', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを引用すると、AI が必要に応じて内容を取得します（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもありません）。内蔵プラグインはアンインストールできません。セッション読み取りは内蔵機能スイッチでオフにできます。', welcomeQueries:['引用したセッションを要約して','前回のセッションはどこまで進んだ？'] },
+  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴の読み取りと、他セッションへのメッセージ送信', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを参照すると、AI が必要に応じて内容を取得します。また、別のセッションへメッセージを送信者カードとして届けられます（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもなく、配信は監査ログに記録されます）。内蔵プラグインはアンインストールできません。セッション読み取りは内蔵機能スイッチでオフにできます。', welcomeQueries:['参照したセッションを要約して','前回のセッションはどこまで進んだ？'] },
   weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
   iwencai:{ title:'iWenCai（問財）', subtitle:'A 株相場、財務、銘柄スクリーニング、マクロ、ニュース', desc:'同花順問財（iWenCai）公式 API をベースに 12 の金融照会ツールを提供します。自分の問財 API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'問財 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'問財 SkillHub を開く', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'公式 Skill の「インストール方法」からコピーしてください。', placeholder:'IWENCAI_API_KEY を貼り付け'}], welcomeQueries:['茅台の最新株価','今日の市況は？','PER 10 倍未満の銀行株','最近の利下げニュース'] },
   card3:{ title:'QQ メール API', subtitle:'スマートなメール送受信とスレッド要約', desc:'メールの送受信、検索、整理のための標準インターフェースを提供します。大規模モデルと組み合わせて、自然言語でのメール閲覧、長いスレッドの要約、フォルダーの自動アーカイブ管理が可能です。' },
@@ -681,12 +682,14 @@ dictJa.uiBuiltinPlugins = {
   versionNote:'アプリと共に更新',
   dataAccessLabel:'データアクセス範囲',
   levels:{ L0:'読み取り専用：状態を変更せず、内容は信頼できないものとして扱う', L1:'書き込み：ユーザーに見える副作用を伴う（メッセージ送信、タスク作成など）', L2:'破壊的：削除・上書きなど不可逆な操作。明示的な認可が必要' },
-  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）' },
+  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）', 'sessions.write':'この端末の他セッションへのメッセージ送信（書き込み）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
 // §3.3 hook): reused by future per-feature settings pages for the "feature
 // disabled" degradation of existing entry points.
+
+dictJa.uiBuiltinFeatures = { disabledNotice:'この内蔵機能はオフになっています。関連する入口と機能は無効です。' };
 
 Object.assign(dictJa.uiCodexWorkspace, { showRawErrors:false, operationFailed:'ワークスペースの操作に失敗しました。再試行してください' });
 
@@ -890,6 +893,8 @@ dictJa.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 
+dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ', disabledNotice:'セッション参照機能がオフのため、参照はメッセージに送信されません' };
+dictJa.uiSessionMessage = { from:name=>`セッションから：${name}`, fromUnknown:'別のセッションから', jump:name=>`セッションを開く：${name}`, unavailable:'セッションが削除されました' };
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`,  deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {

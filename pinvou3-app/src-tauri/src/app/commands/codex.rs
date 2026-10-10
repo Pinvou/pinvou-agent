@@ -227,15 +227,20 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
     if !acp_pool.is_acp(&session_id) {
         return Err("当前会话不是 ACP 会话".to_string());
     }
-    let title_source = if message.is_empty() {
-        attachments
-            .first()
-            .map(|attachment| attachment.basename.as_str())
-            .or_else(|| workspace_references.first().map(String::as_str))
-            .unwrap_or("附件")
-    } else {
-        message.as_str()
-    };
+    // The ACP composer and web remote control can carry a pasted
+    // session-mention block; first_send_title_source strips it before the
+    // fallback branch (round-5 minor 5 + round-9): a refs-only + attachment
+    // first send still titles after the attachment.
+    let title_source = super::sessions::first_send_title_source(
+        &message,
+        Some(
+            attachments
+                .first()
+                .map(|attachment| attachment.basename.as_str())
+                .or_else(|| workspace_references.first().map(String::as_str))
+                .unwrap_or("附件"),
+        ),
+    );
     super::sessions::apply_default_session_title(store, &session_id, title_source)?;
     // Timing registration lives inside `AcpPool::send_message`, after busy
     // admission succeeds but before the prompt task is spawned: the spawned

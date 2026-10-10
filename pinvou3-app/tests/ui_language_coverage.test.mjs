@@ -73,11 +73,26 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiArtifacts',
     'uiToolDetails',
     'uiBuiltinPlugins',
-    // uiBuiltinFeatures lands with #586's switch UI (its only key was an
-    // orphan before that).
     'uiAuxChat',
+    'uiBuiltinFeatures',
+    'uiSessionMention',
+    'uiSessionMessage',
+    'uiToolDetails',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
+  }
+  // Round-8 minor 15: key-pins for the two messaging-critical builtin keys
+  // that previously could be deleted from all three locales with the suite
+  // green — the switch-off notice and the plugin-card write capability line.
+  for (const language of ['en', 'zh', 'ja']) {
+    assert.ok(
+      dict[language].uiBuiltinFeatures.disabledNotice,
+      `${language}.uiBuiltinFeatures.disabledNotice must exist`,
+    );
+    assert.ok(
+      dict[language].uiBuiltinPlugins.dataAccess['sessions.write'],
+      `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
+    );
   }
   // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
@@ -190,6 +205,24 @@ for (const language of ['zh', 'en', 'ja']) {
   // the ledger's lowercase cancelled token (case-insensitive match); the key
   // must exist in all three locales.
   assert.ok(dict[language].uiConversation.cancelled, `${language}.uiConversation.cancelled must exist`);
+  // Session mention (PR #586): every key consumed by SessionMentionControls /
+  // ChatView must exist in all three locales (function keys typed as such).
+  for (const key of ['menuTitle', 'menuEmpty', 'dropHint', 'cardUnavailable', 'cardDisabled', 'disabledNotice']) {
+    assert.ok(dict[language].uiSessionMention[key], `${language}.uiSessionMention.${key} must exist`);
+  }
+  for (const fnKey of ['chipRemove', 'cardJump']) {
+    assert.equal(typeof dict[language].uiSessionMention[fnKey], 'function', `${language}.uiSessionMention.${fnKey} must be a function`);
+    // uiSessionMessage (delivered-message sender card copy): every key must
+    // exist and the fn-shaped entries must be functions — a drifted key
+    // crashes UserBubble's copy.from call for every delivered message
+    // (round-4 C1).
+    for (const key of ['fromUnknown', 'jump', 'unavailable']) {
+      assert.ok(dict[language].uiSessionMessage[key], `${language}.uiSessionMessage.${key} must exist`);
+    }
+    for (const fnKey of ['from']) {
+      assert.equal(typeof dict[language].uiSessionMessage[fnKey], 'function', `${language}.uiSessionMessage.${fnKey} must be a function`);
+    }
+  }
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
