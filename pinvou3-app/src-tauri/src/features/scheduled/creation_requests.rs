@@ -734,6 +734,15 @@ fn audit_failure(
     let Some(from) = request.from_session.as_deref() else {
         return;
     };
+    // Round-13 MAJOR-2: the per-session failure line is gated on the sender
+    // EXACTLY like the success path's validate() — `session_roots`
+    // charset-validates only, so a planted record claiming an isolated
+    // prefix (or any sender validate() already rejected) must not land a
+    // failure line in that session's execution root; such records stay
+    // covered by the shadow trail alone.
+    if check_sender_session_id(request.from_session.as_ref()).is_err() {
+        return;
+    }
     let Ok(roots) = sessions.session_roots(from) else {
         return;
     };
@@ -747,6 +756,10 @@ fn audit_failure(
         "tool": tool,
         "task_id": request.task_id.as_deref().unwrap_or_default(),
         "outcome": "failed",
+        // Round-13 MAJOR-2: same stamp as audit_request / the shadow audit
+        // — planted evidence must be distinguishable from verified
+        // provenance.
+        "claimed_from_session_verified": false,
         "error": error_text.chars().take(500).collect::<String>(),
     });
     crate::features::assistant::audit::append(
@@ -2468,6 +2481,74 @@ mod tests {
             !line["detail"]["error"].as_str().unwrap().contains("/home/"),
             "failure markers never leak absolute host paths"
         );
+        // Round-13 MAJOR-2: the failure line is STAMPED as unverified
+        // provenance (planted evidence must be distinguishable).
+        assert_eq!(
+            line["detail"]["claimed_from_session_verified"], false,
+            "the failure line carries the unverified stamp"
+        );
+    }
+
+    /// Round-13 MAJOR-2: a planted record claiming an ISOLATED sender
+    /// poisons, but its failure disposition writes NO per-session line
+    /// (the sender gate mirrors the success path; the automation-store
+    /// shadow trail alone covers such records).
+    #[tokio::test]
+    async fn isolated_sender_failure_writes_no_session_line() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(
+            crate::platform::paths::sessions_root()
+                .join("sched-run9")
+                .join("workspace"),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("bad.json"),
+            spool_record_json(&[
+                (
+                    "prompt",
+                    serde_json::json!("x".repeat(MAX_PROMPT_CHARS + 1)),
+                ),
+                ("from_session", serde_json::json!("sched-run9")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("bad.json").exists(),
+            "the isolated-sender record still poisons"
+        );
+        let content = std::fs::read_to_string(
+            crate::platform::paths::sessions_root()
+                .join("sched-run9")
+                .join("workspace")
+                .join("workflow_audit.jsonl"),
+        )
+        .unwrap_or_default();
+        assert!(
+            !content.contains("scheduled_task_failed"),
+            "no failure line may land in an isolated sender's session: {content}"
+        );
+        // The caller-visible trace for a validate-poison record is the
+        // failure marker (the poison arm carries no shadow line — the
+        // contract's honest carve-out); what matters here is that the
+        // per-session audit channel stays closed to planted isolated
+        // senders.
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("bad.json")).expect("failure marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], false);
     }
 
     #[test]
