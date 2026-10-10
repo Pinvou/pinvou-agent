@@ -989,6 +989,39 @@ mod tests {
         }
     }
 
+    /// Bins one pure-skill package through the exact uninstall shape the
+    /// marketplace commands run: create `bundles/<id>/skills/<skill>/SKILL.md`,
+    /// register it (`upload_record`), drop the registration, recycle the
+    /// package into the bin. `skill` is passed separately because two pins
+    /// carry an inner skill whose dir name differs from the pack id and is
+    /// pinned verbatim in their path assertions. `keep_record = true` skips
+    /// the `store.remove`, pinning the round-9 mid-uninstall shape where the
+    /// mirror delete fails log-only, so a binned package keeps a stale
+    /// `installed = true` record. Returns the pre-recycle package path
+    /// (`bundles/<id>/`) — what a refused restore must NOT land at and a
+    /// successful restore must land back at. File-local per the module
+    /// convention (scope.rs / mod.rs keep their own same-named test helpers;
+    /// no cross-module sharing).
+    fn bin_package(id: &str, skill: &str, keep_record: bool) -> PathBuf {
+        let pkg = paths::bundles_root().join(id);
+        std::fs::create_dir_all(pkg.join("skills").join(skill)).unwrap();
+        std::fs::write(
+            pkg.join("skills").join(skill).join("SKILL.md"),
+            format!("---\nname: {skill}\n---\n"),
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record(id)).unwrap();
+        let record = store.get(id).unwrap().unwrap();
+        if !keep_record {
+            store.remove(id).unwrap();
+        }
+        RecycleBin::new()
+            .recycle_package(id, KIND_SKILL, &format!("{id}.zip"), record)
+            .unwrap();
+        pkg
+    }
+
     /// 回收 → list → 取回的完整往返：目录搬动、清单条目、记录快照逐字段保留。
     #[test]
     fn recycle_list_take_back_roundtrip() {
@@ -1402,20 +1435,7 @@ mod tests {
         // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
+        let pkg = bin_package("my-skill", "my-skill", false);
 
         // Initialized DenyAll scope: the restore registration has a writable target.
         crate::features::marketplace::scope::save_disabled_bundles_for(
@@ -1475,22 +1495,11 @@ mod tests {
         // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
         // Simulate the failed mirror delete (store.remove errs, log-only) and
         // the recycle that proceeds anyway: record stays installed, package
         // is binned, deny entries were cleared at the command layer.
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
+        let pkg = bin_package("my-skill", "my-skill", true);
         assert!(store.get("my-skill").unwrap().unwrap().installed);
 
         // Initialized DenyAll scope with the lock WORKING: the skip would be
@@ -1572,20 +1581,7 @@ mod tests {
         // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("gone-skill");
-        std::fs::create_dir_all(pkg.join("skills/gone-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/gone-skill/SKILL.md"),
-            "---\nname: gone-skill\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("gone-skill")).unwrap();
-        let record = store.get("gone-skill").unwrap().unwrap();
-        store.remove("gone-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("gone-skill", KIND_SKILL, "gone-skill.zip", record)
-            .unwrap();
+        bin_package("gone-skill", "gone-skill", false);
         // The external-deletion scenario: the manifest keeps the entry while
         // the package directory is gone.
         std::fs::remove_dir_all(RecycleBin::new().root.join("gone-skill")).unwrap();
@@ -1641,20 +1637,7 @@ mod tests {
         // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
+        bin_package("my-skill", "my-skill", false);
 
         // Simulate the reinstall/re-import since: the destination exists
         // again (an empty dir is the same bar take_back's dst.exists() applies).
@@ -2826,75 +2809,62 @@ mod tests {
     /// state), and the healed retry succeeds.
     #[test]
     fn recycle_manifest_load_failure_compensates_and_stays_retryable() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = fresh_dir("recycle-load-compensate");
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-load-compensate", || {
+            // The managed temp home: `tmp` keeps the body's path
+            // expressions (including the ones inside assertions)
+            // verbatim under the with_temp_home harness.
+            let tmp = crate::platform::paths::pinvou3_home();
+            // Leg 1 stages the store legs inline (no helper): the bin
+            // manifest is corrupted BEFORE the recycle below, which must
+            // fail loud — the helper's recycle asserts success instead.
+            let pkg = paths::bundles_root().join("load-comp");
+            std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
+            std::fs::write(
+                pkg.join("skills/member/SKILL.md"),
+                "---\nname: member\n---\n",
+            )
+            .unwrap();
+            let store = BundleStore::new();
+            store.upsert(upload_record("load-comp")).unwrap();
+            let record = store.get("load-comp").unwrap().unwrap();
+            store.remove("load-comp").unwrap();
 
-        let pkg = paths::bundles_root().join("load-comp");
-        std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
-        std::fs::write(
-            pkg.join("skills/member/SKILL.md"),
-            "---\nname: member\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("load-comp")).unwrap();
-        let record = store.get("load-comp").unwrap().unwrap();
-        store.remove("load-comp").unwrap();
+            // Corrupt the manifest: the post-rename load must fail loud AND roll
+            // the directory back (the save leg's compensation).
+            std::fs::create_dir_all(tmp.join("marketplace")).unwrap();
+            std::fs::write(tmp.join("marketplace/recycle-bin.json"), "{not json").unwrap();
 
-        // Corrupt the manifest: the post-rename load must fail loud AND roll
-        // the directory back (the save leg's compensation).
-        std::fs::create_dir_all(tmp.join("marketplace")).unwrap();
-        std::fs::write(tmp.join("marketplace/recycle-bin.json"), "{not json").unwrap();
+            let bin = RecycleBin::new();
+            let err = bin
+                .recycle_package("load-comp", KIND_SKILL, "load-comp.zip", record)
+                .unwrap_err();
+            assert!(
+                err.contains("读取回收站清单失败（已回滚目录）"),
+                "the compensation must report the rollback: {err}"
+            );
+            assert!(
+                pkg.join("skills/member/SKILL.md").is_file(),
+                "the user's only copy must be back at bundles_root"
+            );
+            assert!(
+                !tmp.join("marketplace/recycle-bin/load-comp").exists(),
+                "no entryless dir may stay behind in the bin root"
+            );
+            assert!(
+                std::fs::read_to_string(tmp.join("marketplace/recycle-bin.json")).unwrap()
+                    == "{not json",
+                "the corrupt manifest must stay untouched (fail loud, no overwrite)"
+            );
 
-        let bin = RecycleBin::new();
-        let err = bin
-            .recycle_package("load-comp", KIND_SKILL, "load-comp.zip", record)
-            .unwrap_err();
-        assert!(
-            err.contains("读取回收站清单失败（已回滚目录）"),
-            "the compensation must report the rollback: {err}"
-        );
-        assert!(
-            pkg.join("skills/member/SKILL.md").is_file(),
-            "the user's only copy must be back at bundles_root"
-        );
-        assert!(
-            !tmp.join("marketplace/recycle-bin/load-comp").exists(),
-            "no entryless dir may stay behind in the bin root"
-        );
-        assert!(
-            std::fs::read_to_string(tmp.join("marketplace/recycle-bin.json")).unwrap()
-                == "{not json",
-            "the corrupt manifest must stay untouched (fail loud, no overwrite)"
-        );
-
-        // Healed manifest: the retry succeeds end to end.
-        std::fs::remove_file(tmp.join("marketplace/recycle-bin.json")).unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("load-comp")).unwrap();
-        let record = store.get("load-comp").unwrap().unwrap();
-        store.remove("load-comp").unwrap();
-        RecycleBin::new()
-            .recycle_package("load-comp", KIND_SKILL, "load-comp.zip", record)
-            .expect("the retry after healing must succeed");
-        assert!(
-            !pkg.exists(),
-            "the retried recycle moved the dir into the bin"
-        );
-        assert_eq!(RecycleBin::new().list().unwrap().len(), 1);
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+            // Healed manifest: the retry succeeds end to end.
+            std::fs::remove_file(tmp.join("marketplace/recycle-bin.json")).unwrap();
+            bin_package("load-comp", "member", false);
+            assert!(
+                !pkg.exists(),
+                "the retried recycle moved the dir into the bin"
+            );
+            assert_eq!(RecycleBin::new().list().unwrap().len(), 1);
+        });
     }
 
     /// round-21 review (P3): restore must hold the cross-process landing
@@ -2907,69 +2877,42 @@ mod tests {
     /// assertion can panic so the env restore cannot race a parked restore.
     #[test]
     fn restore_waits_for_the_cross_process_landing_lease() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = fresh_dir("restore-lease");
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-restore-lease", || {
+            // Bin the package (bin entry + dir in place, bundles_root clear).
+            let pkg = bin_package("leased-re", "member", false);
+            assert!(!pkg.exists(), "fixture: the pack is binned");
 
-        // Bin the package (bin entry + dir in place, bundles_root clear).
-        let pkg = paths::bundles_root().join("leased-re");
-        std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
-        std::fs::write(
-            pkg.join("skills/member/SKILL.md"),
-            "---\nname: member\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("leased-re")).unwrap();
-        let record = store.get("leased-re").unwrap().unwrap();
-        store.remove("leased-re").unwrap();
-        RecycleBin::new()
-            .recycle_package("leased-re", KIND_SKILL, "leased-re.zip", record)
-            .unwrap();
-        assert!(!pkg.exists(), "fixture: the pack is binned");
+            // The peer shape: hold the landing lease on a second fd.
+            let mut lease =
+                crate::features::marketplace::plugin_import::open_landing_lease("leased-re")
+                    .expect("fixture: the landing lease opens");
+            let guard = lease.write().expect("fixture: the landing lease acquires");
 
-        // The peer shape: hold the landing lease on a second fd.
-        let mut lease =
-            crate::features::marketplace::plugin_import::open_landing_lease("leased-re")
-                .expect("fixture: the landing lease opens");
-        let guard = lease.write().expect("fixture: the landing lease acquires");
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = restore_plugin("leased-re");
-            tx.send(result).expect("worker should send its result");
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = restore_plugin("leased-re");
+                tx.send(result).expect("worker should send its result");
+            });
+            // Bounded: a regressed restore that skips the lease completes here
+            // and fails the assertion; a correct one stays parked on the lease.
+            let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
+            drop(guard);
+            // Receiving the result also proves restore_plugin has returned, so
+            // the (detached) worker holds nothing past this point.
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("restore completes once the lease is released");
+            assert!(
+                parked,
+                "restore must wait while a peer holds the same-id landing lease"
+            );
+            let result = result.expect("restore succeeds after waiting out the peer");
+            assert!(!result.credentials_required);
+            assert!(
+                pkg.join("skills/member/SKILL.md").is_file(),
+                "the restore landed after the lease released"
+            );
         });
-        // Bounded: a regressed restore that skips the lease completes here
-        // and fails the assertion; a correct one stays parked on the lease.
-        let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
-        drop(guard);
-        // Receiving the result also proves restore_plugin has returned, so
-        // the (detached) worker holds nothing past this point.
-        let result = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("restore completes once the lease is released");
-        assert!(
-            parked,
-            "restore must wait while a peer holds the same-id landing lease"
-        );
-        let result = result.expect("restore succeeds after waiting out the peer");
-        assert!(!result.credentials_required);
-        assert!(
-            pkg.join("skills/member/SKILL.md").is_file(),
-            "the restore landed after the lease released"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Round-24 MAJOR 1 (review #455): a recycled pack id that a FOREIGN

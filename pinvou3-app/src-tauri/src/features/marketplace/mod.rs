@@ -3050,6 +3050,61 @@ pub(crate) mod tests {
         });
     }
 
+    /// Shared body of the two temp-home harnesses (`with_temp_home` /
+    /// `with_temp_home_async`): everything between their lock + verdict +
+    /// resolver setup and the test body. Extracted so the two copies cannot
+    /// drift again (they had: the async copy silently missed the sync copy's
+    /// verdict-memo clear).
+    ///
+    /// The caller must, in this order: hold `platform::paths::tests::ENV_LOCK`
+    /// (the SAFETY argument for the `set_var` calls below), clear the
+    /// UNPERSISTED_VERDICT memo, and install the secret resolver.
+    ///
+    /// Round-26 MAJOR 4 (review): restore main's hermeticity valve. The
+    /// rewritten harness had dropped the capture of
+    /// PINVOU3_TEST_KEYRING_FILE_FALLBACK + CODEWHALE_HOME, so every
+    /// `MarketplaceManager::new()` in a test body probed the real OS
+    /// keyring (on macOS a real-keyring read from an ad-hoc-signed test
+    /// binary can block indefinitely on the ACL consent dialog — see the
+    /// valve comment in platform::credential_store). The file fallback
+    /// resolves through CODEWHALE_HOME rather than PINVOU3_HOME, so it
+    /// must be pointed at the same temp dir — otherwise valved reads and
+    /// writes land in the developer's real ~/.codewhale/secrets/
+    /// secrets.json (and trigger its legacy migration).
+    ///
+    /// Drop order is load-bearing: bind the result as
+    /// `let (_env, _restore) = capture_hermetic_test_env(..)` so the
+    /// bindings are declared `_env` then `_restore`. `_restore` then drops
+    /// first — secret registry restored and the temp dir removed while
+    /// PINVOU3_HOME/CODEWHALE_HOME still point into it — then `_env`
+    /// restores the real env, and only afterwards does the caller release
+    /// ENV_LOCK (its guard is still held at the call site). Do not return
+    /// the ENV_LOCK guard from here; it must outlive both.
+    ///
+    /// `dir_prefix` keeps each harness's on-disk name exactly as before:
+    /// `pinvou3-mkt-test-{pid}` (sync) vs `pinvou3-mkt-test-async-{pid}`
+    /// (async).
+    fn capture_hermetic_test_env(dir_prefix: &str) -> (EnvVarGuard, RestoreEnv) {
+        let env = EnvVarGuard::capture(&[
+            "PINVOU3_HOME",
+            "CODEWHALE_HOME",
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+        ]);
+        let prev_secrets = secrets::snapshot_secret_values();
+        secrets::clear_secret_values_for_test();
+        let dir = std::env::temp_dir().join(format!("{dir_prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
+        let restore = RestoreEnv { prev_secrets, dir };
+        (env, restore)
+    }
+
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // The verdict memo is keyed by home directory, but temp dirs reuse
@@ -3062,34 +3117,10 @@ pub(crate) mod tests {
         // placeholders, and the test outcome would depend on whether the
         // bridge boot tests have already run (order coupling).
         super::install_mcp_secret_resolver();
-        // Round-26 MAJOR 4 (review): restore main's hermeticity valve. The
-        // rewritten harness had dropped the capture of
-        // PINVOU3_TEST_KEYRING_FILE_FALLBACK + CODEWHALE_HOME, so every
-        // `MarketplaceManager::new()` in a test body probed the real OS
-        // keyring (on macOS a real-keyring read from an ad-hoc-signed test
-        // binary can block indefinitely on the ACL consent dialog — see the
-        // valve comment in platform::credential_store). The file fallback
-        // resolves through CODEWHALE_HOME rather than PINVOU3_HOME, so it
-        // must be pointed at the same temp dir — otherwise valved reads and
-        // writes land in the developer's real ~/.codewhale/secrets/
-        // secrets.json (and trigger its legacy migration).
-        let _env = EnvVarGuard::capture(&[
-            "PINVOU3_HOME",
-            "CODEWHALE_HOME",
-            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
-        ]);
-        let prev_secrets = secrets::snapshot_secret_values();
-        secrets::clear_secret_values_for_test();
-        let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        let _restore = RestoreEnv { prev_secrets, dir };
+        // Round-26 MAJOR 4 hermeticity valve: full story on
+        // capture_hermetic_test_env. Binding order (`_env` before
+        // `_restore`) is load-bearing — see there.
+        let (_env, _restore) = capture_hermetic_test_env("pinvou3-mkt-test");
         f();
     }
 
@@ -4070,29 +4101,21 @@ pub(crate) mod tests {
         Fut: Future<Output = ()>,
     {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Hermeticity unification with with_temp_home (the one deliberate
+        // delta of the extraction): this async copy had skipped the verdict
+        // clear, so an async test could inherit a stale UNPERSISTED_VERDICT
+        // from a prior sync test — temp dirs reuse the same pid prefix and
+        // the memo keys on the home path. Same order-coupling class as the
+        // round-26 MAJOR 4 valve regression (full story on
+        // capture_hermetic_test_env).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         // Same as with_temp_home: install the foundation resolver to avoid
         // test order coupling.
         super::install_mcp_secret_resolver();
-        // Same hermeticity valve as with_temp_home (round-26 MAJOR 4: the
-        // rewritten harness had dropped it — see the comment there).
-        let _env = EnvVarGuard::capture(&[
-            "PINVOU3_HOME",
-            "CODEWHALE_HOME",
-            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
-        ]);
-        let prev_secrets = secrets::snapshot_secret_values();
-        secrets::clear_secret_values_for_test();
-        let dir =
-            std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        let _restore = RestoreEnv { prev_secrets, dir };
+        // Same hermeticity valve as with_temp_home (round-26 MAJOR 4 — full
+        // story on capture_hermetic_test_env). Binding order (`_env` before
+        // `_restore`) is load-bearing — see there.
+        let (_env, _restore) = capture_hermetic_test_env("pinvou3-mkt-test-async");
         f().await;
     }
 

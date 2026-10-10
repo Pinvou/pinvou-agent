@@ -193,8 +193,7 @@ fn marketplace_oauth_login_coordinator() -> &'static MarketplaceOAuthLoginCoordi
 /// not-installed id. Sync and free of tauri types so the deny-first wiring
 /// itself is directly testable —
 /// `install_tool_sync_refused_before_anything_lands` drives this function
-/// end-to-end, not the extracted gate helper in isolation (that one is
-/// pinned by `install_tool_gates_refuse_before_anything_lands`).
+/// end-to-end, not the extracted gate helper in isolation.
 fn install_marketplace_tool_sync(
     tool_id: &str,
     user_config: &std::collections::HashMap<String, String>,
@@ -1780,18 +1779,26 @@ mod tests {
     }
 
     /// Initialize the code scope while the cross-process lock still works
-    /// (initialized is what makes the DenyAll sync a required write), then
-    /// make the lock file unopenable (a directory at its path) so every
-    /// consent-gate sync is refused.
-    fn init_code_scope_then_break_lock() {
+    /// (initialized is what makes the DenyAll sync a required write).
+    fn init_code_scope() {
         crate::features::marketplace::save_disabled_bundles_for(
             crate::features::marketplace::ConnectorScope::Code,
             &["seed-bundle".to_string()],
         )
         .expect("code scope must initialize while the lock works");
+    }
+
+    /// Make the lock file unopenable (a directory at its path) so every
+    /// consent-gate sync is refused.
+    fn break_scope_lock() {
         let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
         std::fs::remove_file(&lock).unwrap();
         std::fs::create_dir_all(&lock).unwrap();
+    }
+
+    fn init_code_scope_then_break_lock() {
+        init_code_scope();
+        break_scope_lock();
     }
 
     /// Shared zip-fixture builder for the import-channel tests: writes
@@ -1909,47 +1916,12 @@ mod tests {
         });
     }
 
-    /// Same transaction boundary for the MCP tool path: the gate registration
-    /// runs before the install, so a refusal must leave no package dir and no
-    /// store record. Helper-granularity pin — the end-to-end command wiring
-    /// (gate before `MarketplaceManager::install`) is pinned by
-    /// `install_tool_sync_refused_before_anything_lands`.
-    #[test]
-    fn install_tool_gates_refuse_before_anything_lands() {
-        with_temp_home(|| {
-            init_code_scope_then_break_lock();
-
-            let error = install_marketplace_tool_gates("weather").unwrap_err();
-            assert!(
-                error.contains("disabled_bundles.lock"),
-                "refusal must name the lock failure: {error}"
-            );
-            assert!(
-                error.contains("before anything was installed"),
-                "refusal must state the deny-first boundary: {error}"
-            );
-            assert!(
-                !crate::platform::paths::bundles_root()
-                    .join("weather")
-                    .exists(),
-                "the gate alone must not create the package dir"
-            );
-            assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("weather")
-                    .unwrap()
-                    .is_none(),
-                "the gate alone must not write an install record"
-            );
-        });
-    }
-
     /// The deny-first ORDERING of the tool install path, end-to-end: the
     /// command's sync core must run the consent gate BEFORE
     /// `MarketplaceManager::install`, so a refused registration lands nothing
-    /// at all. Driving the gate helper in isolation
-    /// (`install_tool_gates_refuse_before_anything_lands`) would stay green
-    /// if the command were reverted to install-first-then-gate. The id is a
+    /// at all. Driving the extracted gate helper in isolation would stay
+    /// green if the command were reverted to install-first-then-gate. The id
+    /// is a
     /// REAL catalog package ("weather"): the round-16 existence probe passes,
     /// the fixed world refuses at the gate (the error names the lock), and
     /// the dir/record asserts below are what catch a reverted ordering — an
@@ -1968,6 +1940,10 @@ mod tests {
                 error.contains("disabled_bundles.lock"),
                 "the refusal must come from the consent gate and name the lock \
                  failure, not from a post-gate step: {error}"
+            );
+            assert!(
+                error.contains("before anything was installed"),
+                "refusal must state the deny-first boundary: {error}"
             );
             assert!(
                 !crate::platform::paths::bundles_root()
@@ -2017,11 +1993,7 @@ mod tests {
                     ),
                 )
                 .unwrap();
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
+            init_code_scope();
 
             let tool_error = install_marketplace_tool_gates("weather").unwrap_err();
             assert!(
@@ -2268,11 +2240,7 @@ mod tests {
                     extra: serde_json::Map::new(),
                 })
                 .expect("seed gongwen install record");
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize");
+            init_code_scope();
 
             let manifest = r#"{"id":"government-writing","name":"Government Writing Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["draft_doc"],"command":"python","args":["server.py"]}"#;
             let tmp = write_test_zip(
@@ -2345,11 +2313,7 @@ mod tests {
     #[test]
     fn import_rejects_case_variant_connector_ids() {
         with_temp_home(|| {
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize");
+            init_code_scope();
 
             let manifest = r#"{"id":"Dingtalk","name":"Dingtalk Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["send_message"],"command":"python","args":["server.py"]}"#;
             let tmp = write_test_zip(
@@ -2629,11 +2593,7 @@ mod tests {
             // Half (1): working lock. Initialize the Code scope, then drive a
             // same-content re-import through the gate — the known-clause must
             // skip the consent write entirely.
-            crate::features::marketplace::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .expect("code scope must initialize while the lock works");
+            init_code_scope();
             let report_again =
                 import_plugin_package_sync(&v1.to_string_lossy(), "gate-rb-plugin.zip")
                     .expect("a same-content reimport must succeed while the lock works");

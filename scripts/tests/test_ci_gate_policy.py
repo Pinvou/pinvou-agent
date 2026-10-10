@@ -222,14 +222,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # only run inside frontend-test, so their config files must be in the
         # frontend path filter; otherwise a config-only PR skips every gate
         # that consumes the file it changed.
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
-        frontend_paths = changes.split(
-            "            frontend:", maxsplit=1
-        )[1].split("            relay:", maxsplit=1)[0]
+        frontend_entries = _frontend_filter_entries(self.pr_workflow)
         for path in (
             "pinvou3-app/.oxlintrc.json",
             "pinvou3-app/biome.jsonc",
@@ -239,8 +232,8 @@ class CiGatePolicyTests(unittest.TestCase):
             "pinvou3-app/scripts/audit-compat.mjs",
         ):
             self.assertIn(
-                f"- '{path}'",
-                frontend_paths,
+                path,
+                frontend_entries,
                 f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
             )
 

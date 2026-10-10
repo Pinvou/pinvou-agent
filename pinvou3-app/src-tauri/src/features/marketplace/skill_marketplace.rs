@@ -3273,6 +3273,32 @@ mod tests {
         });
     }
 
+    /// Body-slice scaffold shared by the structural pins below: locate the
+    /// fn whose source text starts at `signature_needle`, slice from there
+    /// to the next item (a 4-space-indented doc comment or a sibling
+    /// `pub fn`), and return the body with whole-line `//` comments
+    /// filtered out.
+    fn code_body_of_fn(source: &str, signature_needle: &str) -> String {
+        let start = source
+            .find(signature_needle)
+            .unwrap_or_else(|| panic!("{signature_needle:?} must exist"));
+        let rest = &source[start..];
+        let end = rest
+            .find("\n    /// ")
+            .or_else(|| rest.find("\n    pub fn "))
+            .expect("next item");
+        // Round-16 (review): match CODE, not comments — whole-line `//`
+        // comments are filtered before the assertions so a doc/comment
+        // mention of the lock or the strip can no longer satisfy the pin.
+        // (Only whole-line comments are filtered: stripping intra-line `//`
+        // would corrupt string literals such as URLs.)
+        rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// The skill lane's consent strip must run while the per-id import lock
     /// is still held (round-12 review B2): a post-return strip can delete a
     /// deny-first registration a concurrent same-id install just made. The
@@ -3283,28 +3309,14 @@ mod tests {
     /// drop at its return).
     #[test]
     fn uninstall_and_strip_scope_strips_under_import_lock() {
-        let source = include_str!("skill_marketplace.rs");
-        let start = source
-            .find("pub fn uninstall_and_strip_scope")
-            .expect("helper must exist");
-        let rest = &source[start..];
-        // The helper is followed by the `/// Test-only scaffolding:` doc
-        // comment of the test-only zip import, so a 4-space-indented doc
-        // comment (or a sibling `pub fn`) ends the body slice exactly.
-        let end = rest
-            .find("\n    /// ")
-            .or_else(|| rest.find("\n    pub fn "))
-            .expect("next item");
-        // Round-16 (review): match CODE, not comments — whole-line `//`
-        // comments are filtered before the assertions so a doc/comment
-        // mention of the lock or the strip can no longer satisfy the pin.
-        // (Only whole-line comments are filtered: stripping intra-line `//`
-        // would corrupt string literals such as URLs.)
-        let body = rest[..end]
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // `uninstall_and_strip_scope` is followed by the
+        // `/// Test-only scaffolding:` doc comment of the test-only zip
+        // import, so a 4-space-indented doc comment (or a sibling `pub fn`)
+        // ends the body slice exactly.
+        let body = code_body_of_fn(
+            include_str!("skill_marketplace.rs"),
+            "pub fn uninstall_and_strip_scope",
+        );
         assert!(
             body.contains("import_lock_for") && body.contains(".lock()"),
             "the helper must hold the per-id import lock itself"
@@ -3346,19 +3358,7 @@ mod tests {
     /// outlives the body.
     #[test]
     fn install_lands_under_the_per_id_import_lock() {
-        let source = include_str!("skill_marketplace.rs");
-        let start = source.find("pub fn install(").expect("install must exist");
-        let rest = &source[start..];
-        let end = rest
-            .find("\n    /// ")
-            .or_else(|| rest.find("\n    pub fn "))
-            .expect("next item");
-        // Match CODE, not comments (same discipline as the strip pin above).
-        let body = rest[..end]
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let body = code_body_of_fn(include_str!("skill_marketplace.rs"), "pub fn install(");
         assert!(
             body.contains("import_lock_for") && body.contains(".lock()"),
             "install must hold the per-id import lock across the landing"

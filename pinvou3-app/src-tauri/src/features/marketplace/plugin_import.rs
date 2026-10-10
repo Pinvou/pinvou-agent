@@ -1759,78 +1759,53 @@ mod tests {
     /// mark.
     #[test]
     fn reconcile_quarantines_landed_dir_without_registry_record() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou-import-journal-crash-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home("pinvou-import-journal-crash", || {
+            let pkg = crate::platform::paths::bundles_root().join("crash-pkg");
+            std::fs::create_dir_all(pkg.join("skills/crash-pkg")).unwrap();
+            std::fs::write(
+                pkg.join("skills/crash-pkg/SKILL.md"),
+                "---\nname: crash-pkg\n---\n",
+            )
+            .unwrap();
+            mark_landing("crash-pkg");
+            assert!(
+                landing_mark_path("crash-pkg").exists(),
+                "fixture: mark present"
+            );
 
-        let pkg = crate::platform::paths::bundles_root().join("crash-pkg");
-        std::fs::create_dir_all(pkg.join("skills/crash-pkg")).unwrap();
-        std::fs::write(
-            pkg.join("skills/crash-pkg/SKILL.md"),
-            "---\nname: crash-pkg\n---\n",
-        )
-        .unwrap();
-        mark_landing("crash-pkg");
-        assert!(
-            landing_mark_path("crash-pkg").exists(),
-            "fixture: mark present"
-        );
+            reconcile_import_journal().unwrap();
 
-        reconcile_import_journal().unwrap();
-
-        assert!(
-            !pkg.exists(),
-            "crash residue must not stay live-by-absence in bundles_root"
-        );
-        let moved: Vec<String> = std::fs::read_dir(landing_journal_dir())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with("crash-pkg.crash-"))
-            .collect();
-        assert_eq!(
-            moved.len(),
-            1,
-            "the landed dir moves to exactly one recoverable holding dir: {moved:?}"
-        );
-        assert!(
-            landing_journal_dir()
-                .join(&moved[0])
-                .join("plugin.json")
-                .is_file()
-                || landing_journal_dir()
+            assert!(
+                !pkg.exists(),
+                "crash residue must not stay live-by-absence in bundles_root"
+            );
+            let moved: Vec<String> = std::fs::read_dir(landing_journal_dir())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("crash-pkg.crash-"))
+                .collect();
+            assert_eq!(
+                moved.len(),
+                1,
+                "the landed dir moves to exactly one recoverable holding dir: {moved:?}"
+            );
+            assert!(
+                landing_journal_dir()
                     .join(&moved[0])
-                    .join("skills")
-                    .is_dir(),
-            "the holding dir keeps the pack contents for manual recovery"
-        );
-        assert!(
-            !landing_mark_path("crash-pkg").exists(),
-            "the resolved entry is cleared"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+                    .join("plugin.json")
+                    .is_file()
+                    || landing_journal_dir()
+                        .join(&moved[0])
+                        .join("skills")
+                        .is_dir(),
+                "the holding dir keeps the pack contents for manual recovery"
+            );
+            assert!(
+                !landing_mark_path("crash-pkg").exists(),
+                "the resolved entry is cleared"
+            );
+        });
     }
 
     /// round-21 review (P3): the record-present reconcile arm must also sweep
@@ -1840,88 +1815,65 @@ mod tests {
     /// silently stranding the residue; the retry leg then sweeps and clears.
     #[test]
     fn record_present_arm_sweeps_orphaned_staging_and_keeps_mark_on_failure() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou-arm-a-tmp-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        // Fixture: installed pack (dir + record) + landing mark + a
-        // crash-orphaned staged `.tmp`. Planted as a regular FILE so
-        // remove_dir_all fails deterministically on every platform (ENOTDIR)
-        // for the failure phase.
-        let pkg_dir = crate::platform::paths::bundles_root().join("re-tmp");
-        std::fs::create_dir_all(pkg_dir.join("skills/re-tmp")).unwrap();
-        std::fs::write(
-            pkg_dir.join("skills/re-tmp/SKILL.md"),
-            "---\nname: re-tmp\n---\n",
-        )
-        .unwrap();
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    "re-tmp",
-                    crate::features::marketplace::store::BundleSource::Upload(
-                        "re-tmp.zip".to_string(),
-                    ),
-                ),
+        crate::platform::test_support::with_temp_home("pinvou-import-arm-a", || {
+            // Fixture: installed pack (dir + record) + landing mark + a
+            // crash-orphaned staged `.tmp`. Planted as a regular FILE so
+            // remove_dir_all fails deterministically on every platform (ENOTDIR)
+            // for the failure phase.
+            let pkg_dir = crate::platform::paths::bundles_root().join("re-tmp");
+            std::fs::create_dir_all(pkg_dir.join("skills/re-tmp")).unwrap();
+            std::fs::write(
+                pkg_dir.join("skills/re-tmp/SKILL.md"),
+                "---\nname: re-tmp\n---\n",
             )
             .unwrap();
-        mark_landing("re-tmp");
-        let staged = pkg_dir.with_extension("tmp");
-        std::fs::write(&staged, b"stale staging").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "re-tmp",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "re-tmp.zip".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+            mark_landing("re-tmp");
+            let staged = pkg_dir.with_extension("tmp");
+            std::fs::write(&staged, b"stale staging").unwrap();
 
-        reconcile_import_journal().unwrap();
+            reconcile_import_journal().unwrap();
 
-        assert!(
-            staged.is_file(),
-            "a failing sweep must not destroy what it could not remove"
-        );
-        assert!(
-            landing_in_progress("re-tmp"),
-            "a failed sweep must keep the mark so the next boot retries"
-        );
-        assert!(
-            pkg_dir.join("skills/re-tmp/SKILL.md").is_file(),
-            "the installed pack is untouched"
-        );
+            assert!(
+                staged.is_file(),
+                "a failing sweep must not destroy what it could not remove"
+            );
+            assert!(
+                landing_in_progress("re-tmp"),
+                "a failed sweep must keep the mark so the next boot retries"
+            );
+            assert!(
+                pkg_dir.join("skills/re-tmp/SKILL.md").is_file(),
+                "the installed pack is untouched"
+            );
 
-        // Retry leg: make the sweep succeed (remove the blocking file) and
-        // reconcile again — the staging path is swept and the mark cleared.
-        std::fs::remove_file(&staged).unwrap();
-        std::fs::create_dir(&staged).unwrap();
-        reconcile_import_journal().unwrap();
-        assert!(
-            !staged.exists(),
-            "the retry leg must sweep the orphaned staging dir"
-        );
-        assert!(
-            !landing_in_progress("re-tmp"),
-            "the resolved entry is cleared"
-        );
-        assert!(
-            pkg_dir.join("skills/re-tmp/SKILL.md").is_file(),
-            "the installed pack survives the sweep"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+            // Retry leg: make the sweep succeed (remove the blocking file) and
+            // reconcile again — the staging path is swept and the mark cleared.
+            std::fs::remove_file(&staged).unwrap();
+            std::fs::create_dir(&staged).unwrap();
+            reconcile_import_journal().unwrap();
+            assert!(
+                !staged.exists(),
+                "the retry leg must sweep the orphaned staging dir"
+            );
+            assert!(
+                !landing_in_progress("re-tmp"),
+                "the resolved entry is cleared"
+            );
+            assert!(
+                pkg_dir.join("skills/re-tmp/SKILL.md").is_file(),
+                "the installed pack survives the sweep"
+            );
+        });
     }
 
     /// Round-24 minor: the no-pkg-dir reconcile arm (the import never
@@ -1933,68 +1885,45 @@ mod tests {
     /// the retry leg then sweeps and clears.
     #[test]
     fn no_pkg_dir_arm_sweeps_orphaned_staging_and_keeps_mark_on_failure() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou-arm-a2-tmp-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home("pinvou-import-arm-a2", || {
+            // Fixture: NO package dir (the import never landed), no store
+            // record, landing mark, and a crash-orphaned staged `.tmp` planted
+            // as a regular FILE so remove_dir_all fails with ENOTDIR.
+            std::fs::create_dir_all(crate::platform::paths::bundles_root()).unwrap();
+            let pkg_dir = crate::platform::paths::bundles_root().join("never-tmp");
+            mark_landing("never-tmp");
+            let staged = pkg_dir.with_extension("tmp");
+            std::fs::write(&staged, b"stale staging").unwrap();
 
-        // Fixture: NO package dir (the import never landed), no store
-        // record, landing mark, and a crash-orphaned staged `.tmp` planted
-        // as a regular FILE so remove_dir_all fails with ENOTDIR.
-        std::fs::create_dir_all(crate::platform::paths::bundles_root()).unwrap();
-        let pkg_dir = crate::platform::paths::bundles_root().join("never-tmp");
-        mark_landing("never-tmp");
-        let staged = pkg_dir.with_extension("tmp");
-        std::fs::write(&staged, b"stale staging").unwrap();
+            reconcile_import_journal().unwrap();
 
-        reconcile_import_journal().unwrap();
+            assert!(
+                staged.is_file(),
+                "a failing sweep must not destroy what it could not remove"
+            );
+            assert!(
+                landing_in_progress("never-tmp"),
+                "a failed sweep must keep the mark so the next boot retries"
+            );
+            assert!(
+                !pkg_dir.exists(),
+                "the no-pkg-dir precondition must hold throughout"
+            );
 
-        assert!(
-            staged.is_file(),
-            "a failing sweep must not destroy what it could not remove"
-        );
-        assert!(
-            landing_in_progress("never-tmp"),
-            "a failed sweep must keep the mark so the next boot retries"
-        );
-        assert!(
-            !pkg_dir.exists(),
-            "the no-pkg-dir precondition must hold throughout"
-        );
-
-        // Retry leg: make the sweep succeed and reconcile again — the
-        // staging path is swept and the mark cleared.
-        std::fs::remove_file(&staged).unwrap();
-        std::fs::create_dir(&staged).unwrap();
-        reconcile_import_journal().unwrap();
-        assert!(
-            !staged.exists(),
-            "the retry leg must sweep the orphaned staging dir"
-        );
-        assert!(
-            !landing_in_progress("never-tmp"),
-            "the resolved entry is cleared"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+            // Retry leg: make the sweep succeed and reconcile again — the
+            // staging path is swept and the mark cleared.
+            std::fs::remove_file(&staged).unwrap();
+            std::fs::create_dir(&staged).unwrap();
+            reconcile_import_journal().unwrap();
+            assert!(
+                !staged.exists(),
+                "the retry leg must sweep the orphaned staging dir"
+            );
+            assert!(
+                !landing_in_progress("never-tmp"),
+                "the resolved entry is cleared"
+            );
+        });
     }
 
     /// Round-26 MAJOR 1: a crash between the re-import's two renames (pack
@@ -2246,88 +2175,70 @@ mod tests {
     /// proceed only after release.
     #[test]
     fn import_parks_while_a_peer_holds_the_landing_lease() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-import-lease-park-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-import-lease-park", || {
+            use std::io::Write;
+            // The helper's temp home: both the fixture zip and the landed
+            // layout are addressed relative to it.
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("combo.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/server.py", opts).unwrap();
-            zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
+            let zip_path = dir.join("combo.zip");
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("plugin.json", opts).unwrap();
+                zw.write_all(
+                    r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                        .as_bytes(),
+                )
                 .unwrap();
-            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(
+                    r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                        .as_bytes(),
+                )
+                .unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
+                    .unwrap();
+                zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+                zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+                zw.finish().unwrap();
+            }
 
-        // The peer-import shape: hold the landing lease on a second fd.
-        let mut lease = open_landing_lease("demo").expect("fixture: the landing lease opens");
-        let guard = lease.write().expect("fixture: the landing lease acquires");
+            // The peer-import shape: hold the landing lease on a second fd.
+            let mut lease = open_landing_lease("demo").expect("fixture: the landing lease opens");
+            let guard = lease.write().expect("fixture: the landing lease acquires");
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let worker_zip = zip_path.clone();
-        let worker = std::thread::spawn(move || {
-            let result = import_plugin_package(&worker_zip.to_string_lossy(), "combo.zip");
-            tx.send(result).expect("worker should send its result");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker_zip = zip_path.clone();
+            let worker = std::thread::spawn(move || {
+                let result = import_plugin_package(&worker_zip.to_string_lossy(), "combo.zip");
+                tx.send(result).expect("worker should send its result");
+            });
+            // Bounded: a regressed pipeline that ignores the lease completes
+            // here and fails this assertion with a diagnosable receive; a
+            // correct one stays parked on the lease.
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+                "the import must park while a peer import holds the landing lease"
+            );
+            drop(guard);
+            let report = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the import completes once the lease is released")
+                .expect("the import succeeds after waiting out the peer import");
+            worker.join().expect("worker should finish");
+            assert_eq!(report.id, "demo", "the released import landed its own pack");
+            assert!(
+                dir.join("bundles")
+                    .join("demo")
+                    .join("mcp")
+                    .join("manifest.json")
+                    .is_file(),
+                "the released import landed the package content"
+            );
         });
-        // Bounded: a regressed pipeline that ignores the lease completes
-        // here and fails this assertion with a diagnosable receive; a
-        // correct one stays parked on the lease.
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
-            "the import must park while a peer import holds the landing lease"
-        );
-        drop(guard);
-        let report = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the import completes once the lease is released")
-            .expect("the import succeeds after waiting out the peer import");
-        worker.join().expect("worker should finish");
-        assert_eq!(report.id, "demo", "the released import landed its own pack");
-        assert!(
-            dir.join("bundles")
-                .join("demo")
-                .join("mcp")
-                .join("manifest.json")
-                .is_file(),
-            "the released import landed the package content"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Round-20 review (P1): the boot reconcile must treat a held landing
@@ -2339,67 +2250,42 @@ mod tests {
     /// entry is genuine residue and the reconcile resolves it.
     #[test]
     fn reconcile_spares_a_live_import_and_sweeps_after_release() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou-import-lease-live-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home("pinvou-import-lease-live", || {
+            // "mark + no pack dir + a staged dir": to a mark-only reconcile this
+            // is exactly the crash shape arm A sweeps.
+            let id = "lease-pkg";
+            std::fs::create_dir_all(landing_journal_dir()).unwrap();
+            std::fs::write(landing_mark_path(id), "pending\n").unwrap();
+            let staged = crate::platform::paths::bundles_root().join(format!("{id}.tmp"));
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join("marker.txt"), b"staging").unwrap();
 
-        // "mark + no pack dir + a staged dir": to a mark-only reconcile this
-        // is exactly the crash shape arm A sweeps.
-        let id = "lease-pkg";
-        std::fs::create_dir_all(landing_journal_dir()).unwrap();
-        std::fs::write(landing_mark_path(id), "pending\n").unwrap();
-        let staged = crate::platform::paths::bundles_root().join(format!("{id}.tmp"));
-        std::fs::create_dir_all(&staged).unwrap();
-        std::fs::write(staged.join("marker.txt"), b"staging").unwrap();
+            // Hold the lease the way the pipeline does and run the reconcile.
+            let mut lease = open_landing_lease(id).expect("fixture: lease opens");
+            let guard = lease.write().expect("fixture: lease acquires");
 
-        // Hold the lease the way the pipeline does and run the reconcile.
-        let mut lease = open_landing_lease(id).expect("fixture: lease opens");
-        let guard = lease.write().expect("fixture: lease acquires");
+            reconcile_import_journal().unwrap();
+            assert!(
+                staged.exists(),
+                "a live import's staged dir must not be swept while it holds the landing lease"
+            );
+            assert!(
+                landing_mark_path(id).exists(),
+                "a live import's mark must not be cleared while it holds the landing lease"
+            );
 
-        reconcile_import_journal().unwrap();
-        assert!(
-            staged.exists(),
-            "a live import's staged dir must not be swept while it holds the landing lease"
-        );
-        assert!(
-            landing_mark_path(id).exists(),
-            "a live import's mark must not be cleared while it holds the landing lease"
-        );
-
-        // Release (the importer exited): the entry is now genuine residue.
-        drop(guard);
-        reconcile_import_journal().unwrap();
-        assert!(
-            !staged.exists(),
-            "the orphaned staged dir is swept once the lease is free"
-        );
-        assert!(
-            !landing_mark_path(id).exists(),
-            "the residue mark is cleared once the lease is free"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+            // Release (the importer exited): the entry is now genuine residue.
+            drop(guard);
+            reconcile_import_journal().unwrap();
+            assert!(
+                !staged.exists(),
+                "the orphaned staged dir is swept once the lease is free"
+            );
+            assert!(
+                !landing_mark_path(id).exists(),
+                "the residue mark is cleared once the lease is free"
+            );
+        });
     }
 
     /// Round-32 minor 6 (review #455): a leftover mark over a COMPLETED import
@@ -2988,58 +2874,41 @@ mod tests {
     /// a cross-process sweep free to strip the just-registered rows.
     #[test]
     fn pre_land_gate_runs_under_the_landing_mark() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-mark-before-gate-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-import-mark-before-gate", || {
+            use std::io::Write;
+            // The helper's temp home; the fixture zip lives under it.
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("single.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
+            let zip_path = dir.join("single.zip");
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("SKILL.md", opts).unwrap();
+                zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
+                zw.finish().unwrap();
+            }
 
-        let report = import_plugin_package_gated(
-            &zip_path.to_string_lossy(),
-            "single.zip",
-            &|id, _skills| {
-                assert!(
-                    landing_in_progress(id),
-                    "the landing mark must already be visible to the pre-land gate"
-                );
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(report.id, "greet");
-        // A completed import clears its mark: the sweep must not defer on a
-        // finished import.
-        assert!(
-            !landing_in_progress("greet"),
-            "the landing mark must be cleared when the import exits"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let report = import_plugin_package_gated(
+                &zip_path.to_string_lossy(),
+                "single.zip",
+                &|id, _skills| {
+                    assert!(
+                        landing_in_progress(id),
+                        "the landing mark must already be visible to the pre-land gate"
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(report.id, "greet");
+            // A completed import clears its mark: the sweep must not defer on a
+            // finished import.
+            assert!(
+                !landing_in_progress("greet"),
+                "the landing mark must be cleared when the import exits"
+            );
+        });
     }
 
     /// round-21 review: `mark_landing` writes under the cross-process landing
