@@ -503,13 +503,21 @@ fn rederive_sender_title(
 /// oversize problems are permanent (retrying cannot succeed); delivery
 /// failures are treated as transient (rewind gates, engine spawn errors) and
 /// retried with backoff.
+///
+/// Every disposition carries the record's FIRST-read bytes (round-10 M1):
+/// the loop's terminal arms re-verify the on-disk file against them before
+/// any marker/remove/quarantine action, so a keyed retry that replaces the
+/// file mid-processing is re-queued with a fresh budget instead of being
+/// destroyed under the old body's verdict. `Poison` carries `None` only for
+/// dispositions that fired before any read succeeded (stat/size caps) —
+/// those have no reference to re-verify against.
 enum Processed {
     /// Delivered (or already-delivered skip); the file can be removed.
-    Done,
+    Done(std::sync::Arc<Vec<u8>>),
     /// Permanent rejection: quarantine now.
-    Poison(anyhow::Error),
+    Poison(Option<std::sync::Arc<Vec<u8>>>, anyhow::Error),
     /// Transient delivery failure: retry with backoff.
-    Retry(anyhow::Error),
+    Retry(std::sync::Arc<Vec<u8>>, anyhow::Error),
 }
 
 /// Process one spool file: read → validate → deliver. The spool identity is
@@ -522,8 +530,11 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
     gates: &G,
     store: &crate::features::sessions::SessionStore,
     skip_audited: &mut std::collections::HashSet<String>,
+    first_read: &mut Option<std::sync::Arc<Vec<u8>>>,
 ) -> Processed {
-    let poisoned = |error: anyhow::Error| Processed::Poison(error);
+    // Pre-read dispositions (stat/size caps) carry no first-read reference:
+    // there is nothing to re-verify against at the terminal arm.
+    let poisoned = |error: anyhow::Error| Processed::Poison(None, error);
     let size = match std::fs::metadata(path).map(|meta| meta.len()) {
         Ok(size) => size,
         Err(error) => return poisoned(anyhow::Error::new(error).context("stat spool file")),
@@ -547,26 +558,37 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
         }
     };
     // These bytes double as the mid-delivery replace guard's reference
-    // (Round-8 REQUIRED-3): comparing the post-delivery re-read against
-    // THIS snapshot closes the window from first read to marker write.
-    // stat→read race re-check: the file can grow between the two calls.
+    // (Round-8 REQUIRED-3) and as the terminal arms' disposition guard
+    // (round-10 M1): comparing the on-disk file against THIS snapshot before
+    // any marker/remove/quarantine closes the window from first read to the
+    // last destructive action. stat→read race re-check: the file can grow
+    // between the two calls.
     if bytes.len() as u64 > MAX_SPOOL_FILE_BYTES {
         return poisoned(anyhow::anyhow!(
             "spool file exceeds the {} byte cap (grew between stat and read)",
             MAX_SPOOL_FILE_BYTES
         ));
     }
-    let message: SpooledMessage = match serde_json::from_slice(&bytes) {
+    let original = std::sync::Arc::new(bytes);
+    // Published to the caller BEFORE any fallible step: a panicking file's
+    // terminal arm re-verifies against this snapshot too.
+    *first_read = Some(std::sync::Arc::clone(&original));
+    let message: SpooledMessage = match serde_json::from_slice(original.as_slice()) {
         Ok(message) => message,
-        Err(error) => return poisoned(anyhow::Error::new(error).context("parse spool file")),
+        Err(error) => {
+            return Processed::Poison(
+                Some(std::sync::Arc::clone(&original)),
+                anyhow::Error::new(error).context("parse spool file"),
+            );
+        }
     };
     if let Err(error) = message.validate() {
-        return poisoned(error);
+        return Processed::Poison(Some(std::sync::Arc::clone(&original)), error);
     }
     // Live-state gate (ACP/code target) before any delivery attempt —
     // failing it is permanent for this record.
     if let Err(error) = gates.target_allowed(&message.to_session) {
-        return poisoned(error);
+        return Processed::Poison(Some(std::sync::Arc::clone(&original)), error);
     }
     let message = rederive_sender_title(store, message);
     let stem = path
@@ -601,7 +623,7 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
             }
             skip_audited.insert(stem);
         }
-        return Processed::Done;
+        return Processed::Done(std::sync::Arc::clone(&original));
     }
     // (Round-8 REQUIRED-3: the reference for the mid-delivery re-verify is
     // the FIRST read's bytes — a second snapshot captured here leaves the
@@ -610,25 +632,28 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
     match delivery.deliver(&message).await {
         Ok(outcome) => {
             let unchanged = read_bounded(path)
-                .map(|current| spool_records_equal(&current, &bytes))
+                .map(|current| spool_records_equal(&current, &original))
                 .unwrap_or(false);
             if !unchanged {
                 // The record was replaced mid-delivery: re-queue the NEW
                 // bytes (the delivery that just landed was the old body —
                 // audited below so the trail shows both).
                 audit_delivery(store, &message, outcome);
-                return Processed::Retry(anyhow::anyhow!(
-                    "spool record replaced mid-delivery; re-queuing the newest body"
-                ));
+                return Processed::Retry(
+                    std::sync::Arc::clone(&original),
+                    anyhow::anyhow!(
+                        "spool record replaced mid-delivery; re-queuing the newest body"
+                    ),
+                );
             }
             audit_delivery(store, &message, outcome);
             if message.idempotency_key.is_some() {
                 let _ = std::fs::create_dir_all(done_dir());
                 let _ = std::fs::write(&done_marker, b"");
             }
-            Processed::Done
+            Processed::Done(std::sync::Arc::clone(&original))
         }
-        Err(error) => Processed::Retry(error),
+        Err(error) => Processed::Retry(std::sync::Arc::clone(&original), error),
     }
 }
 
@@ -672,6 +697,28 @@ fn spool_records_equal(a: &[u8], b: &[u8]) -> bool {
         b.insert("created_at".into(), serde_json::Value::Null);
     }
     a == b
+}
+
+/// Round-10 M1: the terminal arms' replace guard. A disposition must only
+/// destroy or mark the file it actually judged, so the on-disk bytes are
+/// compared against the FIRST-read snapshot: byte-equal is certainly the
+/// same file; semantic-equal ([`spool_records_equal`]) admits a keyed retry
+/// that re-spooled the same logical message with a fresh `created_at`; an
+/// unparseable original can only ever compare byte-equal. Anything else —
+/// including an unreadable or over-cap current state — counts as replaced,
+/// and the arm re-queues instead of destroying a file it cannot vouch for.
+/// `None` (a disposition that fired before any read succeeded) has no
+/// reference to compare against and never counts as replaced.
+fn replaced_since_first_read(path: &Path, original: Option<&std::sync::Arc<Vec<u8>>>) -> bool {
+    let Some(original) = original else {
+        return false;
+    };
+    match read_bounded(path) {
+        Some(current) => {
+            current.as_slice() != original.as_slice() && !spool_records_equal(&current, original)
+        }
+        None => true,
+    }
 }
 
 /// Retry bookkeeping per file: attempt count + last attempt time (for
@@ -882,12 +929,14 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         // forever (silent, restart-surviving). A panicking file now burns
         // its own budget and is quarantined after MAX attempts, like any
         // other persistent failure.
+        let mut first_read: Option<std::sync::Arc<Vec<u8>>> = None;
         let outcome = std::panic::AssertUnwindSafe(process_spool_file(
             &path,
             delivery,
             gates,
             store,
             skip_audited,
+            &mut first_read,
         ))
         .catch_unwind()
         .await;
@@ -897,6 +946,17 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 log::error!("[messaging] delivery of {name} panicked: {panic:?}");
                 let count = retries.record(&name);
                 if count >= MAX_DELIVERY_ATTEMPTS {
+                    // Round-10 M1: the file may have been replaced while it
+                    // was panicking — do not quarantine an untried newest
+                    // body under the old body's verdict.
+                    if replaced_since_first_read(&path, first_read.as_ref()) {
+                        log::warn!(
+                            "[messaging] {name} was replaced during its panicking attempts; \
+                             re-queuing the newest body"
+                        );
+                        retries.clear(&name);
+                        continue;
+                    }
                     log::warn!("[messaging] quarantining {name} after {count} panicking attempts");
                     retries.clear(&name);
                     let record = read_record_for_audit(&path);
@@ -911,7 +971,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
             }
         };
         match outcome {
-            Processed::Done => {
+            Processed::Done(original) => {
                 // Round-9 M-A: clear the bookkeeping ONLY on a successful
                 // removal — the round-8 shape cleared before the attempt,
                 // wiping removal_failures back to 0 every poll, so the
@@ -920,6 +980,26 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 // (the unkeyed re-delivery-every-second loop it claimed to
                 // stop was live). The reorder is the reviewer's
                 // experiment-proven minimal fix.
+                // Round-10 M1: a keyed retry can land in the window between
+                // the in-function re-verify and this removal — removing then
+                // destroys the newest body untried, and the marker this poll
+                // may have written for the old body would suppress it as
+                // already-delivered forever. Re-verify: on replacement drop
+                // the stale marker, keep the file, and let the next poll
+                // deliver the newest body.
+                if replaced_since_first_read(&path, Some(&original)) {
+                    log::warn!(
+                        "[messaging] {name} was replaced after delivery; leaving the newest \
+                         body for the next poll"
+                    );
+                    let stem = Path::new(&name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&name);
+                    let _ = std::fs::remove_file(done_dir().join(format!("{stem}.json")));
+                    retries.clear(&name);
+                    continue;
+                }
                 match std::fs::remove_file(&path) {
                     Ok(()) => {
                         retries.clear(&name);
@@ -934,6 +1014,17 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                             "[messaging] processed {name} but could not remove it (attempt {fails}): {error}"
                         );
                         if fails >= MAX_DELIVERY_ATTEMPTS {
+                            // Round-10 M1: same guard as above — only
+                            // quarantine the file that was actually
+                            // delivered-and-stuck, not a replacement.
+                            if replaced_since_first_read(&path, Some(&original)) {
+                                log::warn!(
+                                    "[messaging] {name} was replaced while removals kept \
+                                     failing; re-queuing the newest body"
+                                );
+                                retries.clear(&name);
+                                continue;
+                            }
                             log::warn!(
                                 "[messaging] quarantining {name} after {fails} failed removals"
                             );
@@ -951,16 +1042,38 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     }
                 }
             }
-            Processed::Poison(error) => {
+            Processed::Poison(original, error) => {
                 retries.clear(&name);
+                // Round-10 M1: the record may have been replaced while it
+                // was being judged — quarantine only the file that was
+                // actually read and rejected.
+                if replaced_since_first_read(&path, original.as_ref()) {
+                    log::warn!(
+                        "[messaging] {name} was replaced during processing; re-queuing the \
+                         newest body instead of quarantining: {error:#}"
+                    );
+                    continue;
+                }
                 log::warn!("[messaging] quarantining {name}: {error:#}");
                 let record = read_record_for_audit(&path);
                 audit_quarantine(store, record.as_ref(), &format!("{error:#}"));
                 quarantine(&path);
             }
-            Processed::Retry(error) => {
+            Processed::Retry(original, error) => {
                 let count = retries.record(&name);
                 if count >= MAX_DELIVERY_ATTEMPTS {
+                    // Round-10 M1: a keyed retry that landed during the
+                    // failing window must not be quarantined under the old
+                    // body's "failed 10 times" verdict — reset the budget so
+                    // the newest body gets its own full attempt series.
+                    if replaced_since_first_read(&path, Some(&original)) {
+                        log::warn!(
+                            "[messaging] {name} was replaced during its {count} failed \
+                             attempts; resetting the budget for the newest body: {error:#}"
+                        );
+                        retries.clear(&name);
+                        continue;
+                    }
                     log::warn!(
                         "[messaging] quarantining {name} after {count} delivery attempts: {error:#}"
                     );
@@ -1179,10 +1292,11 @@ mod spool_pipeline_tests {
             &AllowAllGates,
             &store,
             &mut skip_audited,
+            &mut None,
         )
         .await;
         assert!(
-            matches!(outcome, Processed::Retry(_)),
+            matches!(outcome, Processed::Retry(..)),
             "a divergent replacement re-queues"
         );
         assert!(
@@ -1197,9 +1311,10 @@ mod spool_pipeline_tests {
             &AllowAllGates,
             &store,
             &mut skip_audited,
+            &mut None,
         )
         .await;
-        assert!(matches!(outcome, Processed::Done));
+        assert!(matches!(outcome, Processed::Done(..)));
         assert_eq!(*delivery.calls.borrow(), 2);
     }
 
@@ -1235,14 +1350,137 @@ mod spool_pipeline_tests {
             &AllowAllGates,
             &store,
             &mut skip_audited,
+            &mut None,
         )
         .await;
         assert!(
-            matches!(outcome, Processed::Done),
+            matches!(outcome, Processed::Done(..)),
             "same message modulo the volatile timestamp"
         );
         assert_eq!(*delivery.calls.borrow(), 1, "delivered exactly once");
         assert!(done_dir().join("mid.json").exists());
+    }
+
+    /// Round-10 M1: a delivery that FAILS while the server's keyed retry
+    /// replaces the file mid-attempt — the exhaustion arm's exact scenario
+    /// (9 transient failures, the corrected body lands during the 10th).
+    struct FailingSwappingDelivery {
+        replacement: String,
+        calls: Rc<RefCell<usize>>,
+    }
+
+    impl SpoolDelivery for FailingSwappingDelivery {
+        async fn deliver(&self, _message: &SpooledMessage) -> Result<DeliveryOutcome> {
+            *self.calls.borrow_mut() += 1;
+            std::fs::write(spool_root().join("die.json"), &self.replacement).unwrap();
+            bail!("rewind gate")
+        }
+    }
+
+    /// Round-10 M1: the newest body that lands during the LAST failing
+    /// attempt must not be quarantined under the old body's verdict — the
+    /// terminal arms re-verify against the first-read bytes, reset the
+    /// budget, and the next poll delivers the newest body (new-body-wins).
+    #[tokio::test]
+    async fn exhaustion_arm_requeues_a_body_that_landed_mid_attempt() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("die.json"), record_json("die", Some("k9"))).unwrap();
+        // Same key, corrected text: the model resent while the old body's
+        // last attempt was in flight.
+        let replacement = record_json("die", Some("k9")).replace("正文", "更正后的正文");
+        let exec_root = store.session_roots("tgt0001").expect("roots").execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let delivery = FailingSwappingDelivery {
+            replacement,
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        // Pre-seed so THIS poll is the 10th (MAX_DELIVERY_ATTEMPTS) attempt.
+        retries.attempts.insert(
+            "die.json".into(),
+            (
+                MAX_DELIVERY_ATTEMPTS - 1,
+                Instant::now() - Duration::from_secs(60),
+            ),
+        );
+        process_pending_spool(
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(*delivery.calls.borrow(), 1, "the 10th attempt ran");
+        assert!(
+            !failed_dir().join("die.json").exists(),
+            "an untried newest body must not be quarantined with the old body's verdict"
+        );
+        assert!(
+            spool.join("die.json").exists(),
+            "the newest body stays queued"
+        );
+        assert!(
+            retries.attempts.is_empty(),
+            "the budget resets for the newest body"
+        );
+        let audit =
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl")).unwrap_or_default();
+        assert!(
+            !audit.contains("delivery failed after"),
+            "the newest body was never attempted; the audit must not claim it failed \
+             {MAX_DELIVERY_ATTEMPTS} times: {audit}"
+        );
+        // The lifecycle completes: the next poll delivers the newest body.
+        let ok = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        process_pending_spool(
+            &ok,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(*ok.calls.borrow(), 1, "the newest body delivers");
+        assert!(done_dir().join("die.json").exists(), "keyed marker written");
+        assert!(!spool.join("die.json").exists(), "then removed");
+    }
+
+    /// Round-10 M1 guard for the guard itself: a STABLE unparseable file
+    /// (byte-equal at disposition time) must still quarantine — only a
+    /// diverged file is re-queued, so a poisoned file cannot poll forever.
+    #[tokio::test]
+    async fn stable_unparseable_file_still_quarantines() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("junk.json"), b"not json at all").unwrap();
+        let delivery = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Dispatched),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &delivery,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(*delivery.calls.borrow(), 0, "never delivered");
+        assert!(
+            failed_dir().join("junk.json").exists(),
+            "an unchanged poison file quarantines as before"
+        );
+        assert!(!spool.join("junk.json").exists());
     }
 
     /// Round-8 M3(c): the gate is honored BEHAVIORALLY in the pipeline — a
