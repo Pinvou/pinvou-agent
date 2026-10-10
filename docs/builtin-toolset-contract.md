@@ -159,9 +159,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - **Isolation precedent**: `sched-` (owned by the Scheduled Tasks panel), `eval_`
   (benchmark-private) and `aux-` (auxiliary side-chat) prefixed sessions are rejected
   by default, case-insensitively; write tools touching these classes need an explicit
-  ownership design. Scoped-read exception (planned; decided in ADR-0024, lands with
-  its implementation PR): the auxiliary side chat will read its parent task's session
-  record through exactly one session-reader instance pinned at spawn time via
+  ownership design. Scoped-read exception (landed; ADR-0024): the auxiliary side chat
+  reads its parent task's session record through exactly one session-reader instance
+  pinned at spawn time via
   `--only-session <parent_id>` — an app-anchored scope (the id is derived from the
   aux id by the host, never claimed by the model). This widens no read surface the
   session-reader tool has: the tool keeps rejecting `aux-`/`sched-`/`eval_` ids, and

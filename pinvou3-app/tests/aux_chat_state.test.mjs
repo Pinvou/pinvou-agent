@@ -128,6 +128,40 @@ test('projectAuxChatTurns returns empty turns for an empty snapshot', () => {
   assert.deepEqual(projectAuxChatTurns({ chatItems: [] }, null), []);
 });
 
+// A5 (ADR-0024): the scoped-read era is the first time an aux transcript can
+// contain tool items — the aux projection rides the SHARED conversation
+// projector, so a read_session tool call must project into the generic tool
+// item (rendered by the same generic tool card as the main timeline) with no
+// aux-specific breakage: no throw, no dropped turn, answer still present.
+test('projectAuxChatTurns projects a read_session tool call into the generic tool item (A5)', () => {
+  const snapshot = {
+    chatItems: [
+      { id: 1, type: 'user', text: '这个任务进行到哪了？' },
+      {
+        id: 2,
+        type: 'tool',
+        name: 'mcp_session-reader_read_session',
+        state: 'done',
+        args: { session_id: 'l5cz0m8xq2k1b' },
+        output: '{"ok":true,"totalTurns":3}',
+      },
+      { id: 3, type: 'assistant', text: '主任务目前已完成三轮对话。' },
+    ],
+    busy: false,
+    queued: [],
+  };
+  const turns = projectAuxChatTurns(snapshot, 'aux-l5cz0m8xq2k1b');
+  assert.equal(turns.length, 1, 'one turn containing the tool call must project');
+  const toolItem = turns[0].items.find((item) => item.type === 'tool');
+  assert.ok(toolItem, 'the scoped read_session call must project to the generic tool item');
+  assert.equal(toolItem.tool.name, 'mcp_session-reader_read_session');
+  assert.equal(toolItem.status, 'completed');
+  assert.equal(toolItem.tool.rawInput.session_id, 'l5cz0m8xq2k1b');
+  const assistant = turns[0].items.find((item) => item.type === 'agent_message');
+  assert.ok(assistant, 'the answer after the tool call still projects');
+  assert.equal(assistant.text, '主任务目前已完成三轮对话。');
+});
+
 test('auxSnapshotsEqual judges re-pulled snapshots with identical content as equal', () => {
   const item = { id: 1, type: 'user', text: 'q' };
   const prev = normalizeAuxSnapshot({ chatItems: [{ ...item }], busy: false, queued: [] });

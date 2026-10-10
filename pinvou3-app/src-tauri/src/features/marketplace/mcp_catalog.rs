@@ -194,6 +194,37 @@ pub fn package_mcp_dir(id: &str) -> PathBuf {
     paths::bundles_root().join(id).join("mcp")
 }
 
+/// Resolve a local manifest's launch args against a released package dir:
+/// the `server.py` placeholder becomes the released script's absolute path,
+/// every other argument passes through verbatim. Shared by the install
+/// writer (`add_to_mcp_json` local branch), the startup rebuild validator,
+/// and the per-aux scoped session-reader config writer (ADR-0024) so every
+/// mcp.json producer judges the same launch target.
+pub fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
+    manifest
+        .args
+        .iter()
+        .map(|a| {
+            if a == "server.py" || a.ends_with("/server.py") {
+                server_dir.join("server.py").to_string_lossy().to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
+/// The command a local mcp.json entry launches: the bare python family resolves to
+/// the current runtime, anything else is the manifest value verbatim. Shared by
+/// the same three producers as [`local_server_args`].
+pub fn local_server_command(manifest: &ToolManifest) -> String {
+    if manifest.command == "python" || manifest.command == "python3" {
+        paths::python_command()
+    } else {
+        manifest.command.clone()
+    }
+}
+
 /// 释放包内容到 `bundles/<id>/mcp/`（staged + 原子 rename，与技能 install 同范式）。
 /// 返回包内容指纹（写 BundleStore 记录用）；不在内嵌目录 → Ok(None)（调用方回退
 /// 旧布局）。内容指纹跳过旧布局残留标记，与技能指纹同一口径。

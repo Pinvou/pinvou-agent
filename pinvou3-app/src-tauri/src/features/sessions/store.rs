@@ -949,7 +949,7 @@ impl SessionStore {
     /// exists. Parent ids are 13-char lowercase base36 and
     /// [`validate_session_id`] accepts `[A-Za-z0-9_-]`, so the derived id is
     /// always a valid session id and always carries the `aux-` prefix the
-    /// zero-tools gates and list filters key on.
+    /// aux tool-surface gates and list filters key on.
     pub(crate) fn aux_session_id_for(parent_id: &str) -> String {
         format!("aux-{parent_id}")
     }

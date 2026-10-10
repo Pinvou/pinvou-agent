@@ -527,32 +527,6 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         Ok(entry)
     }
 
-    pub(super) fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
-        manifest
-            .args
-            .iter()
-            .map(|a| {
-                if a == "server.py" || a.ends_with("/server.py") {
-                    server_dir.join("server.py").to_string_lossy().to_string()
-                } else {
-                    a.clone()
-                }
-            })
-            .collect()
-    }
-
-    /// The command a local mcp.json entry launches: the bare python family resolves to
-    /// the current runtime, anything else is the manifest value verbatim. Shared by the
-    /// install writer (`add_to_mcp_json` local branch) and the startup rebuild validator so
-    /// both judge the same launch target.
-    pub(super) fn local_server_command(manifest: &ToolManifest) -> String {
-        if manifest.command == "python" || manifest.command == "python3" {
-            paths::python_command()
-        } else {
-            manifest.command.clone()
-        }
-    }
-
     fn managed_python_runtime_fields(
         manifest: &ToolManifest,
         server_dir: &Path,
@@ -564,7 +538,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 manifest.id
             ));
         }
-        let args = Self::local_server_args(manifest, server_dir);
+        let args = super::mcp_catalog::local_server_args(manifest, server_dir);
         let Some(server_script) = args.first().cloned() else {
             return Err(format!(
                 "tool '{}' has no Python server argument",
@@ -653,8 +627,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             Self::managed_python_runtime_fields(manifest, server_dir, environment)?
         } else {
             (
-                Self::local_server_command(manifest),
-                Self::local_server_args(manifest, server_dir),
+                super::mcp_catalog::local_server_command(manifest),
+                super::mcp_catalog::local_server_args(manifest, server_dir),
             )
         };
 

@@ -27,6 +27,7 @@ const stripComments = text => text
 const auxChatPanel = stripComments(source('features/aux-chat/AuxChatPanel.jsx'));
 const auxChatPanelRaw = source('features/aux-chat/AuxChatPanel.jsx');
 const controller = stripComments(source('features/aux-chat/aux-chat-controller.mjs'));
+const auxChatState = stripComments(source('features/aux-chat/aux-chat-state.mjs'));
 const chat = stripComments(source('features/chat/ChatView.jsx'));
 const conversation = stripComments(source('features/conversation/ConversationTimeline.jsx'));
 const codex = stripComments(source('features/codex/CodexAcpView.jsx'));
@@ -139,6 +140,25 @@ test('New Topic goes through the two-step confirm and stays disabled while resta
 });
 
 // ── View-state rendering ──
+
+test('A5: tool calls ride the shared conversation projection and timeline (ADR-0024)', () => {
+  // The scoped-read era puts the first tool items into aux transcripts. The
+  // zero-tool era had none, so nothing here was ever aux-specific: the state
+  // module projects through the MAIN conversation projector (the executing
+  // leg lives in aux_chat_state.test.mjs) and the panel renders the shared
+  // ConversationTimeline — a read_session tool call therefore renders with
+  // the generic tool card, no aux branch required. If either seam is ever
+  // "simplified" into an aux-local projection, this pin goes red before the
+  // first tool card silently breaks.
+  assert.match(
+    auxChatState,
+    /from '\.\.\/conversation\/deepseek-conversation\.js'/,
+    'the aux projection must keep riding the shared conversation projector',
+  );
+  assert.match(auxChatState, /projectDeepSeekConversation\(\{/);
+  assert.match(auxChatPanel, /panelId="aux-chat"/);
+  assert.match(auxChatPanel, /copy=\{conversationCopy\}/);
+});
 
 test('the binding-pending hint drives the timeline copy (round-12 UX)', () => {
   assert.match(auxChatPanel, /view\.bindingPending \? copy\.bindingHint : copy\.emptyState/);

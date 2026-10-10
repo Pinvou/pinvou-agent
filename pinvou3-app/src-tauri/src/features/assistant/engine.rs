@@ -1852,7 +1852,7 @@ impl AppEngine {
         // this wrapper against the pre-token signature; the rebase union
         // adapted it). Minting here keeps the wrapper's public `bool`
         // signature for the external harnesses while the last-mile policy —
-        // and the aux zero-tool reminder merge, a no-op for headless ids —
+        // and the aux scoped-tool reminder merge, a no-op for headless ids —
         // stays in the one place it is enforced.
         super::engine_pool::forward_forced_turn_restrict(
             &self.session_id,
