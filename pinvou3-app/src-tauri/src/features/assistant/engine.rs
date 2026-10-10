@@ -1601,6 +1601,40 @@ async fn finish_reclaimed_lifecycle_turn(
     Some(transition.terminal)
 }
 
+/// Tools denied on an unattended scheduled-run turn (evals never receive
+/// this list — they are bounded by the EvalTurnPolicy allowlist instead).
+/// One automation run owns exactly one engine turn; goal tools can
+/// enqueue autonomous continuation turns after TurnComplete, and the
+/// scheduled-task write tools would let the run mutate the task family
+/// recursively (review R4-M1). This channel — not the typed Ask rules — is
+/// the deterministic recursion shield: the engine consults ask rules for
+/// `exec_shell` and the file tools only, and mutating MCP tools resolve to
+/// silent Allow under the current full-auto approval (contract §9). Applied
+/// only to the unattended turn; a later interactive continuation gets a
+/// fresh engine with the ordinary catalog.
+pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> {
+    let mut list = disallowed.to_vec();
+    for tool in [
+        "create_goal",
+        "update_goal",
+        crate::features::assistant::platform::bridge::SCHEDULED_TASK_CREATE_TOOL,
+        crate::features::assistant::platform::bridge::SCHEDULED_TASK_UPDATE_TOOL,
+        crate::features::assistant::platform::bridge::SCHEDULED_TASK_DELETE_TOOL,
+        // Round-9 M2(a) (#628): the send tool is the messaging-indirection
+        // bypass — an unattended run injecting a turn into ANY plain session
+        // gives that turn the ordinary catalog (the shield does not cross
+        // sessions), and its from_session is optional/unauthenticated, so
+        // the target-side layers never see an unattended sender. An
+        // unattended run has no business starting turns elsewhere.
+        crate::features::assistant::platform::bridge::MESSAGING_SEND_TOOL,
+    ] {
+        if !list.iter().any(|blocked| blocked == tool) {
+            list.push(tool.to_string());
+        }
+    }
+    list
+}
+
 impl AppEngine {
     /// 为指定 session spawn 一个**独立** engine:绑定该 session 专属的 workspace +
     /// instructions(spawn 时由 [`build_engine_config_for_session`] 固化进 config,
@@ -1703,19 +1737,10 @@ impl AppEngine {
         //
         // 该列表来自 compute_disallowed_tools；多智能体会话不改写它，
         // 工具面与普通会话保持一致。
-        let mut scheduled_disallowed_tools = disallowed.clone();
-        // One automation run owns exactly one engine turn. Goal tools can
-        // enqueue autonomous continuation turns after TurnComplete. Apply this
-        // list only to the unattended turn; a later interactive continuation
-        // gets a fresh engine with the ordinary catalog.
-        for tool in ["create_goal", "update_goal"] {
-            if !scheduled_disallowed_tools
-                .iter()
-                .any(|blocked| blocked == tool)
-            {
-                scheduled_disallowed_tools.push(tool.to_string());
-            }
-        }
+        // One automation run owns exactly one engine turn. Apply the
+        // unattended deny list only to that turn; a later interactive
+        // continuation gets a fresh engine with the ordinary catalog.
+        let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);
         engine_config.disallowed_tools = if disallowed.is_empty() {
             None
         } else {
@@ -4100,6 +4125,91 @@ mod expert_turn_invariant_tests {
         assert!(
             both.to_string().contains("expert snapshot"),
             "快照守卫必须先于候选行守卫（与生产装配顺序一致）: {both}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod unattended_shield_tests {
+    use super::unattended_disallowed_tools;
+
+    /// The recursion shield (review R4-M1): an unattended automation turn
+    /// must deny the scheduled-task write family deterministically — the
+    /// engine-level tool list, not an Ask rule (which mutating MCP tools
+    /// never consult under the current full-auto approval).
+    #[test]
+    fn unattended_turn_denies_scheduled_task_write_family() {
+        let list = unattended_disallowed_tools(&[]);
+        for tool in [
+            "create_goal",
+            "update_goal",
+            "mcp_app-automations_create_scheduled_task",
+            "mcp_app-automations_update_scheduled_task",
+            "mcp_app-automations_delete_scheduled_task",
+        ] {
+            assert!(
+                list.iter().any(|blocked| blocked == tool),
+                "{tool} must be denied"
+            );
+        }
+    }
+
+    /// Connector-disabled tools ride along (the unattended deny is additive),
+    /// and pre-existing entries are not duplicated.
+    /// R5 strongly-recommended pin: the shield's only runtime channel is the
+    /// `Op::SetDisallowedTools` send ahead of every scheduled turn op — the
+    /// Ask rules are documented latent. Deleting the send (or detaching it
+    /// from the shield list) turns this red.
+    /// Round-6 MAJOR 3: the pin is scoped to the PRODUCTION span — slice the
+    /// source between `fn send_scheduled_message` and the next `fn `, so the
+    /// test module's own literals cannot satisfy it — and asserts BOTH the
+    /// composition in the spawn path (`unattended_disallowed_tools(&disallowed)`,
+    /// the wiring a bare `disallowed.clone()` revert would delete) and the
+    /// `Op::SetDisallowedTools` send carrying the shield list before the
+    /// turn op inside the send function. Deleting either turns this red.
+    /// Round-9 M2(a) (#628): the send tool is IN the unattended deny list —
+    /// the messaging-indirection route (unattended run → send_message_to_
+    /// session → ordinary-catalog turn elsewhere → create_scheduled_task)
+    /// closes with one entry. Removing the entry turns this red.
+    #[test]
+    fn unattended_deny_list_covers_the_messaging_send_route() {
+        let list = unattended_disallowed_tools(&[]);
+        assert!(
+            list.iter()
+                .any(|tool| tool == "mcp_session-reader_send_message_to_session"),
+            "the send tool must be denied on unattended turns: {list:?}"
+        );
+    }
+
+    #[test]
+    fn scheduled_sends_carry_the_shield_via_set_disallowed_tools() {
+        let source = include_str!("engine.rs");
+        let send_start = source
+            .find("fn send_scheduled_message")
+            .expect("production send must exist");
+        let send_end = source[send_start..]
+            .find("\n    fn ")
+            .map(|offset| send_start + offset)
+            .unwrap_or(source.len());
+        let send_body = &source[send_start..send_end];
+        let op = send_body
+            .find("Op::SetDisallowedTools {")
+            .expect("the shield send must exist in the production span");
+        let carries = send_body[op..]
+            .find("self.scheduled_disallowed_tools.clone()")
+            .expect("the send must carry the shield list");
+        let turn_op = send_body[op..]
+            .find("self.send_turn_op(op).await")
+            .expect("the disallowed-tools send must precede the turn op");
+        assert!(carries < turn_op, "shield list carried before the turn op");
+        // The wiring: the field is composed through the unattended shield
+        // (a revert to `disallowed.clone()` deletes this line).
+        let spawn_body = &source[..send_start];
+        assert!(
+            spawn_body.contains(
+                "let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);"
+            ),
+            "the engine's shield field must be composed through unattended_disallowed_tools"
         );
     }
 }
