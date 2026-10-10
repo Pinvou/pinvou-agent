@@ -168,11 +168,12 @@ The final storage package was rerun after the permission repairs and passed;
 module verification, full vet, build, pinned artifact and diff checks passed.
 These checks do not certify production custody or acknowledged-state RPO=0.
 
-These batches do not complete T07. The next Root publication owner must compose
-T05 current MFA and exact dual approvals, T06 durable recovery, complete T08
-public/private metadata and current Root-role deny. Purpose-scoped issuers and
-provider lifecycle recovery also remain. Storage functions are not application
-publication endpoints; no missing-owner fallback or production signing is wired.
+These batches do not complete T07. The Root publication owner composes T05
+current MFA and exact dual approvals with T06 durable recovery and requires a
+registered authoritative T08 source for complete public/private metadata and
+current Root-role deny. Purpose-scoped issuers, provider lifecycle recovery and
+actual T08 composition remain. Storage functions are not application publication
+endpoints; no missing-owner fallback or production signing is wired.
 On 2026-10-10 the product owner deferred deployment work. Production hosting,
 seal, independent custodians and protected backup/restore acceptance remain
 deferred without blocking code development. Local provider experiments do not
@@ -189,3 +190,38 @@ the current strict requirement. Ordinary OS clocks or powered-on TPM clocks
 alone do not demonstrate elapsed shutdown duration. OS/data scope and concrete
 budget approvals, and time-implementation evidence, remain pending. No support
 restriction or retention-policy change is assumed approved.
+
+
+T07 authorized Root publication owner (2026-10-10): implementation and both
+independent deep reviews passed. It is committed and pushed as
+`46cf03a814226c28686bd792a72544559f33c28a` on `feat/t07-signing-root`.
+The owner binds exact actor, current head, initial anchor and public successor
+bytes to protected T05 dual approvals, compares the complete current component
+inventory and issuer obligations, and commits original Root/result/audit/outbox
+through T06. Owner replay preserves the original result beyond the standard
+24-hour response window while rechecking current authority and Root-role deny.
+
+The primary role repaired the missing Package role, fresh-MFA evidence loss after
+re-entry and crash, and SQL NULL authorization-window bypass. Separate protected
+latest authentication facts retain the original verified actor and times; current
+T05 permissions, exact approvals, session expiry and five-minute MFA are checked
+on every recovery. They cannot rewrite the immutable business receipt or prolong
+MFA. Eight actual PostgreSQL owner regressions passed (195.032s), including
+natural original-MFA expiry, fresh re-entry, a second cancellation, natural lease
+expiry and recovery through a new command/engine without caller context. The
+SQL NULL cases passed in the final complete signing PostgreSQL rerun (197.360s).
+
+All Go packages passed across the full real PostgreSQL/Chrome/OpenBao regression
+and the affected-package rerun. The first full run found an existing column-grant
+test's synthetic migration-version collision with real migration two; the primary
+role replaced its fixed synthetic version with the next unused version and both
+independent reviewers confirmed the original permission test remained intact.
+The final database package and real PostgreSQL authority/readonly health probe
+passed. Full vet, module verification, build, pinned contract checks and diff
+checks passed. The client architecture guard passed. No race detector, actual
+Keycloak OTP realm or production deployment/custody acceptance is claimed.
+
+The production T08 source is required and absent until its own implementation;
+integration fixtures do not replace it. This batch adds no generic transport
+signing/SQL dispatcher and does not complete T07. Deployment work remains deferred
+and downloads have no total or cumulative time limit.
