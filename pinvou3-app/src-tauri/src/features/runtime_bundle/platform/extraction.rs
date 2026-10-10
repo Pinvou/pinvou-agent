@@ -540,21 +540,29 @@ impl Pinvou3Bundle {
                     };
                 let _landing_lease_guard = match landing_lease.try_write() {
                     Ok(guard) => guard,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        log::warn!(
-                            "[cleanup] retired tool '{tool_id}': an import for the same id \
-                             holds the landing lease; deferring the residue sweep to the next \
-                             startup"
-                        );
-                        defer("landing lease contended");
-                        return Ok(());
-                    }
+                    // One arm for both refusals: contended (WouldBlock — an
+                    // import holds the lease) and un-lockable keep their own
+                    // wordings and defer details, and both defer fail-closed
+                    // per the WHY above.
                     Err(error) => {
-                        log::warn!(
-                            "[cleanup] retired tool '{tool_id}': the landing lease is \
-                             un-lockable, deferring the residue sweep to the next startup: {error}"
-                        );
-                        defer("landing lease un-lockable");
+                        let contended = error.kind() == std::io::ErrorKind::WouldBlock;
+                        if contended {
+                            log::warn!(
+                                "[cleanup] retired tool '{tool_id}': an import for the same id \
+                                 holds the landing lease; deferring the residue sweep to the next \
+                                 startup"
+                            );
+                        } else {
+                            log::warn!(
+                                "[cleanup] retired tool '{tool_id}': the landing lease is \
+                                 un-lockable, deferring the residue sweep to the next startup: {error}"
+                            );
+                        }
+                        defer(if contended {
+                            "landing lease contended"
+                        } else {
+                            "landing lease un-lockable"
+                        });
                         return Ok(());
                     }
                 };
@@ -595,7 +603,7 @@ impl Pinvou3Bundle {
                     .err();
                 // Disabled/hidden residue goes through the scope module's
                 // single-critical-section RMW helper: one
-                // DISABLED_BUNDLES_FILE_LOCK load→retain→conditional save
+                // cross-process-locked load→retain→conditional save
                 // (#455 convergence shape) covering the disabled and hidden
                 // sets of every plain+code scope. (Previously plain used two
                 // independently locked phases whose in-between window let a

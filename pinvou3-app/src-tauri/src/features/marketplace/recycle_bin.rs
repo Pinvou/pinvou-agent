@@ -246,7 +246,7 @@ impl RecycleBin {
             let mut file = match load_locked(&self.file) {
                 Ok(file) => file,
                 Err(e) => {
-                    return Err(self.rollback_recycled_dir(
+                    return Err(Self::rollback_recycled_dir(
                         pkg_id,
                         &src,
                         &dst,
@@ -265,7 +265,13 @@ impl RecycleBin {
                 extra: serde_json::Map::new(),
             });
             if let Err(e) = save_locked(&self.file, &file) {
-                return Err(self.rollback_recycled_dir(pkg_id, &src, &dst, &e, "写入回收站清单"));
+                return Err(Self::rollback_recycled_dir(
+                    pkg_id,
+                    &src,
+                    &dst,
+                    &e,
+                    "写入回收站清单",
+                ));
             }
             log::info!(
                 "[recycle-bin] 已回收包 {pkg_id}（kind={kind}）→ {}",
@@ -282,7 +288,6 @@ impl RecycleBin {
     /// report honestly — orphaned but with no data lost, needing a manual
     /// move back, never claiming a rollback that did not happen.
     fn rollback_recycled_dir(
-        &self,
         pkg_id: &str,
         src: &Path,
         dst: &Path,

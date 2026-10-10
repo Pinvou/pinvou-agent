@@ -147,8 +147,9 @@ impl From<crate::features::marketplace::scope::EnablePackagesOutcome> for Enable
 
 /// Batch package enabling for user actions such as scene opt-in (review #455
 /// R7-M3): the backend performs "read the currently effective disabled set →
-/// remove package_ids → persist" inside the `DISABLED_BUNDLES_FILE_LOCK`
-/// single critical section; the frontend no longer does a whole-table
+/// remove package_ids → persist" inside a single
+/// cross-process critical section (`file_lock::with_file_lock` on the scope
+/// file); the frontend no longer does a whole-table
 /// read-modify-write (a cross-IPC compound operation would overwrite a
 /// concurrent composer toggle with a stale snapshot, and fail-open would
 /// resurrect a package the user explicitly turned off). After persisting, it

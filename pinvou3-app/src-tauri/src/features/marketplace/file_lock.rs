@@ -118,8 +118,10 @@ pub(crate) fn process_mutex_for(lock_path: &Path) -> Arc<Mutex<()>> {
 }
 
 /// Opens (creating if missing) the cross-process lock file. Shared by the
-/// blocking write path and the try-lock read path.
-fn open_lock_file(lock_path: &Path) -> Result<std::fs::File, String> {
+/// blocking write path and the try-lock read path, and consumed directly by
+/// the scope module's hot and startup reads of `disabled_bundles.lock`
+/// (sibling-visible so the scope file carries no copy of this open logic).
+pub(super) fn open_lock_file(lock_path: &Path) -> Result<std::fs::File, String> {
     let open = || crate::platform::filesystem::open_private_lock_file(lock_path);
     // Open first: once the home exists — the steady state, and reads are the
     // common case — this skips the per-read create_dir_all probe; only a
@@ -192,11 +194,14 @@ where
     f()
 }
 
-/// Bounded retry for transient OS-lock acquisition errors in
-/// `with_file_lock` (the Windows blocking LockFileEx ERROR_LOCK_VIOLATION
-/// race); a persistent failure still refuses fail-closed after the bound.
-const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
-const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
+/// Bounded retry for transient OS-lock acquisition errors while taking a
+/// blocking write lock (the Windows blocking-LockFileEx ERROR_LOCK_VIOLATION
+/// race, which hits the scope module's startup read just as it hits a
+/// writer); a persistent failure still refuses fail-closed (writer) or
+/// degrades fail-closed (startup read) after the bound. Shared with the
+/// scope module's startup read so both locks use the same bound.
+pub(super) const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
+pub(super) const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Once-per-mode logging for lock-read failures. Reads must stay bounded even
 /// when the lock is persistently unavailable (a broken home must not print a

@@ -1045,7 +1045,7 @@ pub fn import_plugin_package(
 /// rolling an already-landed import back via uninstall would destroy a
 /// pre-existing installation (re-import overwrites), while a deny-first
 /// refusal loses nothing.
-pub fn import_plugin_package_gated(
+pub(crate) fn import_plugin_package_gated(
     zip_path: &str,
     display_name: &str,
     pre_land: &dyn Fn(&str, &[String]) -> Result<(), String>,
@@ -1225,9 +1225,11 @@ pub fn import_plugin_package_gated(
             }
         }
     }
-    if !crate::features::marketplace::bundle::cli_bundle_skill_dirs(&id).is_empty()
-        || crate::features::marketplace::bundle::builtin_cli_bundle_ids()
-            .any(|cid| cid.eq_ignore_ascii_case(&id))
+    // `cli_bundle_skill_dirs` matches bundle ids with exact equality, so a
+    // non-empty result already implies the case-folded id match below — the
+    // case-folded check alone covers both exact and case-variant collisions.
+    if crate::features::marketplace::bundle::builtin_cli_bundle_ids()
+        .any(|cid| cid.eq_ignore_ascii_case(&id))
     {
         return Err(format!("包 id '{id}' 与内置 CLI 连接器冲突，请改用其它 id"));
     }
@@ -1420,7 +1422,8 @@ pub fn import_plugin_package_gated(
     // the gate then takes no import lock at all, so the import lock is never
     // held ACROSS a wait on another importer (the scope RMW lock itself may
     // be nested inside transaction/import/recycle locks one-directionally —
-    // see `scope::with_scope_file_lock`'s lock-order note; the reverse
+    // see `scope::load_disabled_bundles_file_locked`'s lock-order note; the
+    // reverse
     // nesting never happens). The landing lease acquired above is the
     // load-bearing cross-process exclusion (round-20 review); the mark is
     // what a concurrent sweep keys on as the belt-and-braces signal — the
@@ -2194,7 +2197,7 @@ mod tests {
     fn import_pipeline_acquires_the_landing_lease_in_code() {
         let source = include_str!("plugin_import.rs");
         let start = source
-            .find("pub fn import_plugin_package_gated")
+            .find("pub(crate) fn import_plugin_package_gated")
             .expect("the gated pipeline must exist");
         let rest = &source[start..];
         // The pipeline is followed by the tests module; the next top-level
