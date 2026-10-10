@@ -1620,15 +1620,15 @@ const NAV_PREFETCH = {
         setSidebarWidth(w);
       };
       const beginSidebarResize = useCallback((event) => {
-        // Primary button only, mirroring ResizableSidePanel's splitter: without
-        // the guard a middle-press on the strip starts a resize (and the
-        // browser's autoscroll puck) instead of being ignored.
+        // Primary button only, mirroring ResizableSidePanel's splitter: a middle
+        // press falls through to the browser's middle-click autoscroll instead
+        // of starting a resize session.
         if (event.button != null && event.button !== 0) return;
         // Cancel the compatibility mousedown: left uncanceled it moves focus to
         // the strip, blurring the composer mid-IME and letting later arrow keys
-        // run keyboardSidebarResize instead of moving the caret — the same
-        // reason ResizableSidePanel cancels it. Canceling pointerdown does not
-        // affect click/dblclick synthesis, so double-click reset is unaffected.
+        // run keyboardSidebarResize instead of moving the caret — as
+        // ResizableSidePanel does. Canceling pointerdown does not affect
+        // click/dblclick synthesis, so double-click reset is unaffected.
         event.preventDefault();
         const handle = event.currentTarget;
         const startX = event.clientX;
