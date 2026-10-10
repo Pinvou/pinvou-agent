@@ -1620,6 +1620,15 @@ const NAV_PREFETCH = {
         setSidebarWidth(w);
       };
       const beginSidebarResize = useCallback((event) => {
+        // Primary button only, mirroring ResizableSidePanel's splitter: a middle
+        // press falls through to the browser's middle-click autoscroll instead
+        // of starting a resize session.
+        if (event.button != null && event.button !== 0) return;
+        // Cancel the compatibility mousedown: left uncanceled it moves focus to
+        // the strip, blurring the composer mid-IME and letting later arrow keys
+        // run keyboardSidebarResize instead of moving the caret — as
+        // ResizableSidePanel does. Canceling pointerdown does not affect
+        // click/dblclick synthesis, so double-click reset is unaffected.
         event.preventDefault();
         const handle = event.currentTarget;
         const startX = event.clientX;
@@ -3735,7 +3744,11 @@ const NAV_PREFETCH = {
                 onPointerDown={beginSidebarResize}
                 onDoubleClick={resetSidebarWidth}
                 onKeyDown={keyboardSidebarResize}
-                className={`absolute top-0 bottom-0 right-0 w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0B57D0] ${
+                // h-full must stay: Tailwind preflight pins every <hr> to
+                // height:0, which would turn the 6px strip into a zero-area
+                // element that pointer hit-testing can never reach (the
+                // top-0/bottom-0 stretch only applies when height is auto).
+                className={`absolute top-0 bottom-0 right-0 h-full w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0B57D0] ${
                   sidebarResizing
                     ? 'bg-[#0B57D0]/40'
                     : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
