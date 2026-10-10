@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(here, '..');
-const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8');
+// Same CRLF normalization as move_dialog_contract: core.autocrlf=true gives a
+// CRLF working tree on Windows while the repo holds LF, so every pattern
+// below stays platform-deterministic.
+const read = (...parts) => fs.readFileSync(path.join(appRoot, ...parts), 'utf8').replace(/\r\n/g, '\n');
 
 const DIALOG = read('src', 'features', 'projects', 'RebindFolderDialog.jsx');
 const MAIN = read('src', 'app', 'main.jsx');
@@ -65,7 +68,7 @@ test('close-time focus restore targets a node that survives the refresh', () => 
   // The badge is the only caller, and it must hand the header element over.
   assert.match(
     read('src', 'features', 'projects', 'ProjectGroupHeader.jsx'),
-    /onRebind\(rootPath, e\.currentTarget\.parentElement\)/,
+    /onRebind\(unavailableRoot, e\.currentTarget\.parentElement\)/,
     'the badge must pass its header row to onRebind',
   );
 });
