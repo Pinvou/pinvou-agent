@@ -89,6 +89,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import re
 import sys
 import tempfile
@@ -774,14 +775,26 @@ def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
     }
 
 
+MAX_RESULT_MARKER_BYTES = 64 * 1024
+
+
 def _read_result_marker(path):
     """Reads one .done result marker; returns (marker, error). A corrupt or
     unreadable marker is reported as an error so the caller keeps waiting
     instead of surfacing garbage (a torn marker cannot happen — the watcher
-    writes atomically — but a hostile one must not crash the server)."""
+    writes atomically — but a hostile one must not crash the server).
+
+    Round-12 MAJOR-3 (mirrors the Rust read_regular_bounded): lstat without
+    following the final component — a planted FIFO must not block open()
+    forever and a /dev/zero symlink must not read unbounded — and a byte
+    cap so a sparse oversize marker is refused instead of slurped whole
+    every poll."""
     try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_MARKER_BYTES:
+            return None, "creation result marker is unreadable"
         with open(path, "r", encoding="utf-8") as handle:
-            marker = json.load(handle)
+            marker = json.loads(handle.read(MAX_RESULT_MARKER_BYTES + 1))
     except (OSError, ValueError, RecursionError):
         return None, "creation result marker is unreadable"
     if not isinstance(marker, dict):
@@ -1028,9 +1041,11 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         # publish ok:true, and the unguarded unlink deleted the SUCCESS
         # receipt (this call degrades to pending and a retry duplicates).
         try:
+            # Round-12 MAJOR-3: the stale-marker re-read goes through the
+            # gated reader (regular-file + cap) like every other marker
+            # read; the mtime-unchanged unlink guard is unchanged.
             entry_seen_at = os.stat(done_marker).st_mtime_ns
-            with open(done_marker, "r", encoding="utf-8") as handle:
-                stale = json.load(handle)
+            stale, _stale_err = _read_result_marker(done_marker)
             if (
                 isinstance(stale, dict)
                 and stale.get("ok") is False
