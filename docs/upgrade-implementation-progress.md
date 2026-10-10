@@ -225,3 +225,24 @@ The production T08 source is required and absent until its own implementation;
 integration fixtures do not replace it. This batch adds no generic transport
 signing/SQL dispatcher and does not complete T07. Deployment work remains deferred
 and downloads have no total or cumulative time limit.
+
+T07 intrinsic signed-claim validation (2026-10-10) is committed and pushed as
+`6f2e4ae25cf07c319aa45f133b1c690eb746a035` on `feat/t07-signing-root`.
+The Go validator implements the frozen client reference semantics for all six
+metadata and fourteen credential roles, including current windows, precise
+reference scope, update dual chains, authorization preparation/backup/staged
+bindings and original event/task anchors. It grants no signing, qualification,
+client trust or execution rights; historical expiry remains a separate path.
+
+Both independent reviewers passed the original batch and the expanded coverage.
+All twenty frozen vectors, no-update, all four baseline/candidate by
+ordinary/bridge combinations, required irreversible backup, Windows/macOS native
+identities and original event-anchor boundary mutations agree with the actual
+Node reference module. The final expanded scoped run passed (2.326s).
+The complete serial Go regression passed with real PostgreSQL, Chrome E2E,
+OpenBao and the Node comparison; signing PostgreSQL passed (149.051s), operations
+PostgreSQL (163.202s), management browser/database (26.765s) and OpenBao (5.442s).
+Full vet, module verification, build, pinned artifact and diff checks passed.
+Production code was unchanged by the later test-only coverage additions.
+Purpose-scoped issuance, provider lifecycle and actual T08/T17 composition remain
+required; this batch does not complete T07. Deployment acceptance remains deferred.
