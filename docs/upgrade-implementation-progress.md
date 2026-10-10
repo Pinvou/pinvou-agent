@@ -462,3 +462,73 @@ current metadata, first activation, actual immediate deny plus pending/job gener
 and durable reconciliation are still required. T07 controlled enablement/issuance
 and the pending specific-client trust decision remain separate. Development
 continues without deployment work; downloads have no hard total/cumulative limit.
+
+T07 scoped online issuer epochs (2026-10-10) is committed and pushed as
+`7c65b30676cc9ccead3b304bf0c21ccc3517d543` on `feat/t07-online-issuer-epochs`.
+This internal batch completes non-Root scoped signer-set enablement and ordinary
+domain stop, with actual current-registry and immutable-retention read ports.
+Enable approval binds the full role/product/component/channel/target scope,
+original registered material, threshold, Root/deny/control revisions and actual
+actor. Stop approval binds the actual actor, complete original group scope and
+threshold, current control, immutable epoch and active KeyUse; its Root/deny
+references are absent and its material list is empty.
+Both commands require current scoped authority, two distinct non-author reviews
+and fresh MFA. No public V1 endpoint or frozen contract is changed.
+
+Enable uses actual published unexpired Root, typed role deny and the actual T08
+genesis inventory. Each material undergoes an outside-SQL private-capability
+probe with a separate internal domain, original fixed provider name/version,
+exact key/capture/result binding and fresh server nonce. Real Transit GET alone
+does not qualify. Probe signatures are discarded; no credential or fabricated
+last-issued/object/upload/recovery fact is stored. Final T06/SQL rechecks complete
+current dependencies and time before atomic epoch/control/active-use/index,
+original result/outbox, audit and executor completion.
+
+Ordinary stop works without provider configuration, current Root validity or
+current key eligibility. It fences only the exact current epoch and preserves
+all existing threshold, keys, immutable references and retention deadlines.
+A stopped epoch never resumes; a new independent approval allocates a new epoch.
+Actual same-transaction retention verifies the original protected epoch/receipt
+and every original material source. Current registry reads require actual current
+Root/deny/control/use/materials; a historical epoch or earlier read grants no
+new signing permission. Immutable ACK recovery rechecks original actor/approval
+and current T05 authority/MFA without probes or mutable qualification.
+
+Both independent line-by-line reviewers passed the frozen code, SQL, tests and
+documentation. The main role repaired empty-provider Stop construction, complete
+command capacity prechecks, final SQL Root-expiry checks and nondeterministic
+dependency ordering. Canonical byte/type and actual SQL material-association
+errors found by initial positive controls were fixed before acceptance. Both
+prospective Root and complete command count/byte budgets are checked before
+approval and repeated in SQL; duplicate read identities fail closed. Existing
+signing migrations one through five and V1 artifacts retain their original bytes.
+
+All 22 actual isolated PostgreSQL/OpenBao top-level tests passed (308.044s): eleven
+new issuer tests plus all eleven existing metadata regressions. Cases include
+legal 4096-reference enable and 4097-reference approval/SQL refusal, retained Root
+rotation, concurrent enable, final Root/permission/deny changes, rollback,
+canonical SQL, runtime ACL/schema/digest refusal, four successive epochs with
+all historical uses retained, provider-free stop/replay and fresh-worker natural
+lease recovery (37.50s). The real Transit pipeline passed (9.86s), including
+GET-only failure, actual fixed-version Sign success, forbidden runtime rotation
+and current-registry refusal after domain stop. Nonzero retention and deny test
+fixtures do not claim implemented issuance or emergency-deny reconciliation.
+
+The strengthened final-SQL expiry counterexample separately passed (25.480s
+package, 18.77s case). Its nontransactional sequence proves execution reached the
+owner's isolated delay trigger inside final SQL; only Root expiry changes and
+all epoch/control/outbox/use writes roll back. The affected actual T05 PostgreSQL
+regression passed (4.087s). Default full Go tests, full vet, module verification,
+three command builds, pinned-contract and diff checks passed. Independent pure
+tests and scoped vet also passed. Default external opt-ins were skipped; no new
+browser, live Keycloak OTP, production custody, HA or physical-client acceptance
+is inferred. The additive issuer schema uses owner initialization and restricted
+runtime SELECT/typed mutations only.
+
+T07 remains in progress. Final credential/metadata issuing owners and actual
+atomic last-use updates, the pending specific-client trust-confirmation decision,
+durable physical stop and complete immediate deny remain required. T08 remains
+in progress: the actual adapter supports genesis only and rejects published heads
+until complete publication/current-private/activation/pending-job reconciliation
+owners exist. Development continues with deployment deferred; downloads still
+have no hard total or cumulative elapsed limit.
