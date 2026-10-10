@@ -549,6 +549,30 @@ class CiGatePolicyTests(unittest.TestCase):
             "silence",
         )
 
+    def assert_run_filtered_filter(self, steps, package, filter, msg=None):
+        """Round-50 review: pin a run_filtered invocation's filter token
+        EXACTLY. The old substring assertIn stayed green under a renamed
+        filter (the old text remained a substring of the mutated line);
+        this asserts a run_filtered line naming `-p <package>` exists AND
+        ends with `--locked <filter>` as its final token, so a rename —
+        or a deletion — fails the policy suite."""
+        lines = [
+            line.strip()
+            for line in steps.splitlines()
+            if line.strip().startswith("run_filtered test") and f"-p {package} " in line
+        ]
+        matches = [line for line in lines if line.endswith(f"--locked {filter}")]
+        self.assertTrue(
+            matches,
+            msg or f"no run_filtered line pins -p {package} --locked {filter}",
+        )
+        self.assertEqual(
+            matches[0].rsplit("--locked ", 1)[1],
+            filter,
+            "the filter token must be exactly "
+            f"{filter!r}; a renamed filter must fail this pin",
+        )
+
     def test_cli_crate_has_its_own_required_gate(self):
         changes = _without_yaml_comments(
             self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
@@ -927,17 +951,25 @@ class CiGatePolicyTests(unittest.TestCase):
             "- name: pinvou-cli Windows-gated unit tests",
             windows_rust_steps,
         )
-        self.assertIn(
-            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked windows_batch_tests",
+        # Round-50 review: the filter pins below assert the run_filtered
+        # line's FILTER TOKEN exactly (line-anchored, not substring): the
+        # old bare assertIn stayed green when the yml-side filter was
+        # RENAMED (the old text remained a substring of the mutated line),
+        # so a renamed test orphaned the pin silently. The workflow's
+        # runtime zero-match guard is the tripwire that fails the leg; this
+        # pin holds the line itself.
+        self.assert_run_filtered_filter(windows_rust_steps, "pinvou-cli", "windows_batch_tests")
+        self.assert_run_filtered_filter(
             windows_rust_steps,
+            "adapter-gaia",
+            "dataset_windows",
+            "the dataset Windows symlink/reparse rejections must stay gated "
+            "to this leg",
         )
-        self.assertIn(
-            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked dataset_windows",
+        self.assert_run_filtered_filter(
             windows_rust_steps,
-        )
-        self.assertIn(
-            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked fetch_windows_acl",
-            windows_rust_steps,
+            "adapter-gaia",
+            "fetch_windows_acl",
             "the Windows ACL privacy round-trip test must stay gated to this "
             "leg — it is the crate's only cfg(windows) ACL pin and ran on no "
             "leg before this filter existed",
@@ -946,9 +978,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # run_filtered line the suite did NOT pin (all five siblings above
         # were pinned) — deleting the whole line passed the policy suite,
         # the exact silent-orphan failure mode this suite exists to catch.
-        self.assertIn(
-            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked rebind_nesting_rejection_folds_case_where_the_os_folds",
+        self.assert_run_filtered_filter(
             windows_rust_steps,
+            "pinvou-cli",
+            "rebind_nesting_rejection_folds_case_where_the_os_folds",
             "the rebind case-fold half executes only on this leg; deleting "
             "the filter must fail the suite like its siblings' pins",
         )
@@ -958,13 +991,23 @@ class CiGatePolicyTests(unittest.TestCase):
         # same orphan class the ACL filter's absence created. Pin both
         # module filters: deleting the step or one filter must fail the
         # policy suite instead of silently orphaning the pins again.
-        self.assertIn(
-            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p benchmark-core --lib --locked private_prediction::tests::windows_",
+        self.assert_run_filtered_filter(
             windows_rust_steps,
+            "benchmark-core",
+            "private_prediction::tests::windows_",
         )
-        self.assertIn(
-            "run_filtered test --manifest-path pinvou-cli/Cargo.toml -p benchmark-core --lib --locked windows_private_acl::tests::",
+        self.assert_run_filtered_filter(
             windows_rust_steps,
+            "benchmark-core",
+            "windows_private_acl::tests::",
+        )
+        # The zero-match guard bodies are load-bearing — a renamed test must
+        # FAIL the step, not pass silently — so pin them alongside the
+        # filters they protect (round-44 review).
+        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", windows_rust_steps)
+        self.assertIn('grep -q "^test result: ok"', windows_rust_steps)
+        self.assertIn(
+            "a renamed test must not become a silent pass", windows_rust_steps
         )
         # The zero-match guard bodies are load-bearing — a renamed test must
         # FAIL the step, not pass silently — so pin them alongside the
