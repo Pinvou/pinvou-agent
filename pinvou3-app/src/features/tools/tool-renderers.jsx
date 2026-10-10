@@ -219,7 +219,12 @@ export const ScheduledTaskToolCard = ({ op, parsed, args, t }) => {
           idempotency_key" tail) stays in the raw transcript, not the
           timeline. */}
       {parsed.payloadMismatch ? <div className="mt-0.5 text-[#C5221F] dark:text-[#F28B82]" data-testid="scheduled-task-mismatch-note">{copy.mismatchNote}</div> : null}
-      {parsed.taskName && parsed.kind === 'updated' ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]"><span data-testid="scheduled-task-updated-name">{copy.updatedName}</span> {parsed.taskName}</div> : null}
+      {/* Round-10 M2: the watcher writes task_name into the marker on EVERY
+          successful update, so gating on parsed.taskName claimed "Renamed
+          to X" for paused/rrule-only updates too. The row fires only when
+          the REQUEST actually carried a name; the shown value stays the
+          applied outcome (parsed.taskName). */}
+      {typeof args?.name === 'string' && args.name.trim() !== '' && parsed.kind === 'updated' ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]"><span data-testid="scheduled-task-updated-name">{copy.updatedName}</span> {parsed.taskName}</div> : null}
       {rrule ? <div className="mt-0.5 break-all font-mono text-[11px] text-[#757575] dark:text-[#8E8E8E]">{rrule}</div> : null}
       {excerpt ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.promptLabel}: {excerpt}</div> : null}
       {op === 'deleted' && parsed.kind !== 'pending'

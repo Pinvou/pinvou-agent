@@ -1238,7 +1238,15 @@ impl ScheduledTaskState {
         // pass completion (the JoinHandle is dropped detached either way).
         tauri::async_runtime::spawn(async move {
             let mut retries = RetryState::default();
-            let mut last_prune = tokio::time::Instant::now() - PRUNE_INTERVAL;
+            // Round-10 M1: seed the clock at now() — the previous
+            // `now() - PRUNE_INTERVAL` is a checked subtraction on the
+            // CLOCK_MONOTONIC boot clock, so an app start within 60 s of
+            // boot (desktop autostart on a fast machine) panicked on the
+            // first loop pass BEFORE the catch_unwind below, and the
+            // detached watcher died silently for the session. First prune
+            // one interval in; with a 14-day retention the delay is
+            // harmless (the messaging sibling seeds the same plain now()).
+            let mut last_prune = tokio::time::Instant::now();
             loop {
                 tokio::select! {
                     _ = token.cancelled() => break,

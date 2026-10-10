@@ -87,3 +87,22 @@ test('the pending and duplicate rows render', () => {
   }));
   assert.ok(html.includes('Pending'), 'the pending row renders');
 });
+
+test('a name-less update does not claim "Renamed" (round-10 MAJOR-2)', () => {
+  // The watcher writes task_name into the marker on EVERY successful update,
+  // so the row must key on the REQUEST actually carrying a name — otherwise
+  // a paused/rrule-only update renders a rename that never happened.
+  const parsed = parseScheduledTaskToolOutput(unwrapMcpTextEnvelope(envelope({
+    ok: true, kind: 'update', taskId: 't-1', taskName: '早报', duplicate: false,
+  })));
+  const html = renderToStaticMarkup(React.createElement(ScheduledTaskToolCard, {
+    op: 'update', parsed, args: { paused: true }, t,
+  }));
+  assert.ok(!html.includes('data-testid="scheduled-task-updated-name"'), 'no rename claim without a name in the request');
+  assert.ok(html.includes('t-1'), 'the updated row still names the task id');
+  // A blank/whitespace name is equally name-less.
+  const blank = renderToStaticMarkup(React.createElement(ScheduledTaskToolCard, {
+    op: 'update', parsed, args: { name: '   ' }, t,
+  }));
+  assert.ok(!blank.includes('data-testid="scheduled-task-updated-name"'), 'a blank name is not a rename');
+});
