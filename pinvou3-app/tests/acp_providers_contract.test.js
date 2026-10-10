@@ -702,8 +702,8 @@ assert.match(
 );
 assert.match(
   MOD,
-  /probe_agent_model_options[\s\S]*?self\.agents\.remove\(&probe_id\)/,
-  '模型探针必须删除 store 记录（防残留）'
+  /probe_agent_model_options[\s\S]*?let probe_owned = probe_id\.clone\(\);[\s\S]*?agents\.remove\(&probe_owned\)/,
+  '模型探针必须删除 store 记录（防残留；round-49 起删除在 blocking worker 上执行，钉住 id 的所有权转移链）'
 );
 assert.match(
   CODEX_VIEW,
