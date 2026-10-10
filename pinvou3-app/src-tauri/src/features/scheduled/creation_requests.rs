@@ -558,8 +558,12 @@ impl PanelNotifier for EventNotifier<'_> {
 /// [`MAX_CREATE_ATTEMPTS`].
 enum Processed {
     /// Created (or an already-created skip): the marker exists, the spool
-    /// file can be removed.
-    Done,
+    /// file can be removed. Carries the APPLIED request's digest — the
+    /// loop's unlink guard re-digests whatever sits at the path and removes
+    /// it only when it still matches (round-11 MAJOR-4: a keyed retry whose
+    /// corrected payload landed during the apply window must survive to the
+    /// next poll, not be destroyed untried under the old body's receipt).
+    Done(String),
     /// Permanent rejection: quarantine now.
     Poison(anyhow::Error),
     /// Transient creation failure: retry.
@@ -719,7 +723,8 @@ fn audit_failure(
     path: &Path,
     error: &anyhow::Error,
 ) {
-    let Ok(bytes) = std::fs::read(path) else {
+    // Round-11 minor 7: the evidence re-read is gated+bounded too.
+    let Some(bytes) = read_regular_bounded(path, MAX_SPOOL_FILE_BYTES as usize) else {
         return;
     };
     let Ok(request) = serde_json::from_slice::<SpooledCreationRequest>(&bytes) else {
@@ -793,7 +798,7 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
     // poison arm whose failure-marker write would overwrite the ok:true
     // receipt and re-apply an already-succeeded key.
     if result_marker_suppresses(&done_marker, &expected_digest) {
-        return Processed::Done;
+        return Processed::Done(expected_digest);
     }
     if let Err(error) = request.validate() {
         return poisoned(error);
@@ -804,7 +809,7 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // A failure marker does NOT suppress: the retry re-applies so one
         // terminal failure cannot poison the key forever (the fixed cause
         // can succeed; success overwrites the marker).
-        return Processed::Done;
+        return Processed::Done(expected_digest);
     }
     // Drop the stale failure marker BEFORE applying: the server's first poll
     // must not replay the previous attempt's error while this fresh apply is
@@ -849,7 +854,7 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
             }
             audit_request(sessions, &request, &dto.id, &dto.name);
             notifier.notify();
-            Processed::Done
+            Processed::Done(expected_digest)
         }
         Err(error) => {
             audit_request_shadow(
@@ -896,6 +901,28 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Round-11 MAJOR-2/3: stat + regular-file gate BEFORE any read, then a
+/// capped read. `symlink_metadata` never follows the final component, so a
+/// planted FIFO is refused by `is_file()` instead of opened blocking (the
+/// single drain task would wedge forever), a symlink to /dev/zero cannot
+/// spin an infinite read, and a sparse oversize file hits the cap instead
+/// of being slurped whole at 1 Hz. `None` = missing/not a regular file/
+/// oversize/unreadable — callers treat that as "no usable bytes".
+fn read_regular_bounded(path: &Path, cap: usize) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > cap as u64 {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    file.take(cap as u64 + 1).read_to_end(&mut buf).ok()?;
+    if buf.len() > cap {
+        return None;
+    }
+    Some(buf)
+}
+
 fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -923,18 +950,23 @@ fn result_marker_suppresses(path: &Path, expected_digest: &str) -> bool {
     // must not silently swallow a queued request), and make every
     // non-NotFound outcome observable — suppression now says WHY via
     // the log.
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
-        Err(_) => {
-            log::warn!("[scheduled-creation] result marker unreadable: {:?}", path);
+    // Round-11 MAJOR-2/3: the gate+cap read replaced read-then-check —
+    // the old shape read a planted sparse/oversize marker WHOLE before the
+    // length check, and a FIFO or /dev/zero symlink opened blocking and
+    // wedged the drain. NotFound stays silent (the normal no-marker case);
+    // every other refusal is observable.
+    let bytes = match read_regular_bounded(path, MAX_RESULT_MARKER_BYTES) {
+        Some(bytes) => bytes,
+        None => {
+            if path.exists() {
+                log::warn!(
+                    "[scheduled-creation] result marker refused (not a regular file, oversize, or unreadable): {:?}",
+                    path
+                );
+            }
             return false;
         }
     };
-    if bytes.len() > MAX_RESULT_MARKER_BYTES {
-        log::warn!("[scheduled-creation] result marker oversize: {:?}", path);
-        return false;
-    }
     match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(value) => {
             if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
@@ -1040,7 +1072,9 @@ fn write_failure_marker(stem: &str, error: &anyhow::Error) {
     // probe entirely, so a stuck spool file whose bytes later corrupt
     // would otherwise have its success receipt replaced with ok:false,
     // and the model's next retry re-applies a succeeded operation.
-    if let Ok(existing) = std::fs::read(&marker) {
+    // Round-11 MAJOR-2 (folded minor): the receipt probe is gated+bounded
+    // like every other marker read.
+    if let Some(existing) = read_regular_bounded(&marker, MAX_RESULT_MARKER_BYTES) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&existing) {
             if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
                 log::warn!(
@@ -1169,8 +1203,27 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             continue;
         };
         match process_spool_file(path.as_path(), creator, sessions, notifier).await {
-            Processed::Done => {
+            Processed::Done(applied_digest) => {
                 retries.attempts.remove(&name);
+                // Round-11 MAJOR-4: unlink only what was APPLIED. The
+                // marker's digest binding answers a divergent retry
+                // truthfully (payload_mismatch) only while the record is
+                // alive; destroying whatever sits at the path untried left
+                // the retrying call on a false "pending/queued" for its
+                // whole wait window. An unreadable/diverged file stays for
+                // the next poll (it fails the marker's digest gate and
+                // applies afresh).
+                let still_applied = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
+                    .map(|request| spool_request_digest(&request) == applied_digest)
+                    .unwrap_or(false);
+                if !still_applied {
+                    log::warn!(
+                        "[scheduled-creation] {name} was replaced while its request was being applied; leaving the newest payload for the next poll"
+                    );
+                    continue;
+                }
                 if let Err(error) = std::fs::remove_file(&path) {
                     // The marker exists, so the operation stays deduped, but
                     // a stuck file would loop Done/remove every poll — say
@@ -1725,7 +1778,7 @@ mod tests {
         let mut retries = RetryState::default();
         let sessions = crate::features::sessions::SessionStore::boot_for_process_startup()
             .expect("sessions store");
-        for _ in 0..MAX_CREATE_ATTEMPTS {
+        for poll in 1..=MAX_CREATE_ATTEMPTS {
             process_pending_spool(
                 &FailingCreator,
                 &sessions,
@@ -1733,6 +1786,26 @@ mod tests {
                 &mut retries,
             )
             .await;
+            // Round-11 MAJOR-7: the mid-poll shape is pinned, not just the
+            // terminal one — quarantining on the FIRST attempt (the
+            // at-most-once mutation of the threshold) turned this green
+            // before. Polls 1..N-1 must leave the record queued in the
+            // spool with the budget reflected; only poll N quarantines.
+            if poll < MAX_CREATE_ATTEMPTS {
+                assert!(
+                    spool.join("stuck.json").exists(),
+                    "poll {poll}: a transient failure must stay queued (at-least-once)"
+                );
+                assert!(
+                    !failed_dir().join("stuck.json").exists(),
+                    "poll {poll}: nothing quarantines before the budget is spent"
+                );
+                assert_eq!(
+                    retries.attempts.get("stuck.json").copied(),
+                    Some(poll),
+                    "poll {poll}: the attempt budget counts the failure"
+                );
+            }
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(retries.attempts.len(), 0, "terminal path clears state");
