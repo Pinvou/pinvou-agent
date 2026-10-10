@@ -1075,6 +1075,13 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         and isinstance(requested_digest, str)
                         and polled_digest == requested_digest
                     ):
+                        # Round-11 MAJOR-5: a non-matching ok:true marker
+                        # keeps polling at the poll CADENCE — a bare
+                        # continue here skipped the sleep and busy-spun the
+                        # marker re-read for the whole result-wait window
+                        # (measured ~10^5 reads/s vs 25 on the sleeping
+                        # path).
+                        time.sleep(RESULT_POLL_INTERVAL_SECONDS)
                         continue
                 result = {
                     "ok": True,
