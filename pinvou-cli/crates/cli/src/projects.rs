@@ -963,23 +963,19 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     store
         .plan_rebind_roots(&from_display, &to_display)
         .map_err(|error| {
-            // Only the overlap family wears the conflict copy (the GUI's
-            // same partition): a corrupt store holding a relative root
-            // would otherwise tell scripts to re-pick a destination that
-            // cannot fix the problem. The prefixes are single-sourced with
-            // the validator's bail! texts, so a wording change fails the
-            // app-side pin instead of silently degrading this copy.
-            let cause = error.root_cause().to_string();
-            if pinvou3_lib::features::projects::REBIND_ROOTS_CONFLICT_PREFIXES
-                .iter()
-                .any(|prefix| cause.starts_with(prefix))
-            {
-                CliError::failed(format!(
+            // Only the overlap family wears the conflict copy — the same
+            // typed partition the GUI's command layer consumes: the
+            // classifier owns the prefix match, so a bail-wording change
+            // fails the app-side pin instead of silently degrading this
+            // copy. The pre-flight validates only and never persists, so
+            // `Persist` keeps out of the conflict copy here like the GUI's
+            // plan arm (the commit path owns REBIND_ROOTS_PERSIST).
+            match error {
+                RebindRootsError::Overlap(context) => CliError::failed(format!(
                     "projects rebind: rebinding would produce overlapping project roots \
-                     (REBIND_ROOTS_CONFLICT): {error:#}"
-                ))
-            } else {
-                project_error("rebind", error)
+                     (REBIND_ROOTS_CONFLICT): {context:#}"
+                )),
+                error => project_error("rebind", error),
             }
         })?;
     // Plain-chat lane, PLAN phase first (the #463 plan/apply split): the
