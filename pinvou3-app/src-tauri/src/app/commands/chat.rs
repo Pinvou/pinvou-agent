@@ -372,7 +372,14 @@ pub(crate) async fn chat_with_reservation(
                 }
             }
             if memory_enabled {
-                crate::features::memory::record_turn_user(&sid, &raw_message);
+                // Long-memory records user prose, not the machine contract:
+                // strip the injection block like every other user-text
+                // surface (round-15 m6 — the fixed English contract words
+                // must not enter the memory index as domain terms).
+                crate::features::memory::record_turn_user(
+                    &sid,
+                    super::sessions::strip_session_mention_block(&raw_message),
+                );
             }
             log::info!(
                 "[pinvou3][chat] engine send ok sid={} send_elapsed_ms={} total_elapsed_ms={}",

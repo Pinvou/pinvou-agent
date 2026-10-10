@@ -278,6 +278,31 @@ export function restoreSessionMentionDraft(key) {
   return dedupeSessionRefs(mentionDrafts.get(key) || []);
 }
 
+/**
+ * Draft→session materialization ledger (round-15 B1). A first send from a
+ * draft materializes the session inside the bridge BEFORE the engine
+ * dispatch, and the composer's scope effect then moves the draft key to the
+ * session key mid-await — the dispatch already cleared the chips, so the
+ * switch cleanup stashes an empty list (deleting the draft entry) before any
+ * restore can carry it. The effect therefore records the supersession here
+ * (even when there is nothing to migrate), and the send lanes resolve their
+ * stash key through the ledger: a failure snapshot taken under draft:N lands
+ * under the materialized session key instead of a dead epoch key. Entries
+ * are tiny and bounded like the drafts store itself.
+ */
+const materializedDraftKeys = new Map();
+export function recordDraftMaterialization(draftKey, sessionKey) {
+  if (!draftKey || !sessionKey || !draftKey.startsWith('draft:') || !sessionKey.startsWith('session:')) return;
+  if (!materializedDraftKeys.has(draftKey) && materializedDraftKeys.size >= MENTION_DRAFT_CACHE_LIMIT) {
+    materializedDraftKeys.delete(materializedDraftKeys.keys().next().value);
+  }
+  materializedDraftKeys.set(draftKey, sessionKey);
+}
+/** Resolve a stash key through the materialization ledger (identity for unmapped keys). */
+export function resolveMaterializedDraftKey(key) {
+  return materializedDraftKeys.get(key) || key;
+}
+
 // Classic-script bridges (platform/{tauri,web}) reuse the same contract parsing
 // for auto-titling via the window global — bridges cannot import features back,
 // so the global publication keeps a single source of truth for the block format.

@@ -197,6 +197,19 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const fnKey of ['chipRemove', 'cardJump']) {
     assert.equal(typeof dict[language].uiSessionMention[fnKey], 'function', `${language}.uiSessionMention.${fnKey} must be a function`);
   }
+  // Count guard (round-15 m4): ja replaces the whole section object, so a
+  // ja-missing key renders undefined rather than falling back — pin the
+  // exact parity surface (8 keys, same set in all three locales).
+  assert.equal(
+    Object.keys(dict[language].uiSessionMention).length,
+    8,
+    `${language}.uiSessionMention must hold exactly the 8 pinned keys`,
+  );
+  assert.deepEqual(
+    [...Object.keys(dict[language].uiSessionMention)].sort((a, b) => a.localeCompare(b)),
+    ['cardDisabled', 'cardJump', 'cardUnavailable', 'chipRemove', 'disabledNotice', 'dropHint', 'menuEmpty', 'menuTitle'],
+    `${language}.uiSessionMention must be the same key set in every locale`,
+  );
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }

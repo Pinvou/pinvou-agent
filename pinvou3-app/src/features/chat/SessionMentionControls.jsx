@@ -22,7 +22,7 @@ const CHIP_DISABLED_CLS =
 export function SessionMentionChips({ refs, onRemove, copy, disabled = false, disabledNotice = '' }) {
   if (!refs || refs.length === 0) return null;
   return (
-    <div data-testid="session-mention-chips" className="flex flex-wrap gap-1.5 mb-2 px-2">
+    <div data-testid="session-mention-chips" tabIndex={-1} className="flex flex-wrap gap-1.5 mb-2 px-2 focus:outline-none">
       {refs.map((ref) => (
         // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the chip is a labelled pill (not a widget role); aria-disabled communicates the feature-off state to assistive tech
         <span
@@ -43,7 +43,15 @@ export function SessionMentionChips({ refs, onRemove, copy, disabled = false, di
             data-testid={'session-mention-chip-remove-' + ref.sessionId}
             aria-label={copy.chipRemove(ref.title || ref.sessionId)}
             title={copy.chipRemove(ref.title || ref.sessionId)}
-            onClick={() => onRemove(ref.sessionId)}
+            onClick={(event) => {
+              onRemove(ref.sessionId);
+              // Removing a chip unmounts its button: hand focus to the
+              // remaining strip instead of dropping it to <body> (round-15
+              // m9) — the next Tab starts from the composer area, not the
+              // page root.
+              const strip = event.currentTarget.closest('[data-testid="session-mention-chips"]');
+              if (strip) strip.focus();
+            }}
             className="w-5 h-5 shrink-0 rounded-full flex items-center justify-center hover:bg-black/10 dark:hover:bg-white/15"
           >
             <X size={12} />
