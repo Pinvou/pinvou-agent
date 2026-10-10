@@ -230,7 +230,8 @@ impl ImportJobStore {
             // branch for a bad item id on a perfectly resumable job. The
             // CLI maps this marker to `knowledge_index_item_not_found`.
             return Err(rusqlite::Error::InvalidParameterName(format!(
-                "knowledge index item {item_id} is not a failed item of job {job_id}"
+                "knowledge index item {item_id}{}{job_id}",
+                super::INDEX_ITEM_NOT_FAILED_MARKER
             )));
         }
         tx.commit()
@@ -795,7 +796,9 @@ mod tests {
 
         let error = jobs.retry_item(&job_id, 999_999).unwrap_err();
         assert!(
-            error.to_string().contains("is not a failed item"),
+            error
+                .to_string()
+                .contains(crate::features::knowledge::INDEX_ITEM_NOT_FAILED_MARKER.trim()),
             "item miss must carry the item-level marker, got: {error}"
         );
         // The failed item update rolled back: the job stays resumable.

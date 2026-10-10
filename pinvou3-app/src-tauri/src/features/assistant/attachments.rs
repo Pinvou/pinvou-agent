@@ -186,8 +186,12 @@ where
 /// caller-owned source can be swapped or grown between the size check and
 /// this copy (TOCTOU), and the oversized content must not land in the
 /// workspace.
-// The equality only has to hold where both caps exist together: the staged
-// attachment cap lives under the headless pipeline's cfg.
+// The pin's cfg is the narrowest that compiles: `headless_bridge` itself
+// is `#[cfg(feature = "benchmark-hooks")]`, so the assert cannot
+// type-check anywhere the feature is off (a default `cargo test` does not
+// build the module at all). Scope verified against the module gates at
+// `assistant::mod` and `product_runtime::mod` (round-50 review); drift is
+// caught in the benchmark-hooks builds CI's eval legs run.
 #[cfg(feature = "benchmark-hooks")]
 const _: () = assert!(
     crate::features::files::file_ingest::MAX_FILE_BYTES

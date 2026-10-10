@@ -561,8 +561,8 @@ impl KnowledgeService {
             // the item-level miss marker (round-45) so the CLI's
             // `knowledge_index_item_not_found` line reads cleanly.
             let text = error.to_string();
-            if text.contains("is not a failed item") {
-                format!("knowledge index item {item_id} is not a failed item of job {job_id}")
+            if text.contains(INDEX_ITEM_NOT_FAILED_MARKER) {
+                format!("knowledge index item {item_id}{INDEX_ITEM_NOT_FAILED_MARKER}{job_id}")
             } else {
                 text
             }
@@ -1056,6 +1056,16 @@ const IMPORT_HEARTBEAT_ALIVE_SECS: i64 = 600;
 /// zh-CN-only, codeless error class reachable through the CLI's
 /// resume/retry race path.
 pub const FOREIGN_IMPORT_RUNNING_MARKER: &str = "已有知识集导入任务正在运行";
+
+/// Round-50 review: single-sourced like `FOREIGN_IMPORT_RUNNING_MARKER` —
+/// the item-level retry miss is recognized by this phrase on all three
+/// surfaces (the producer's `InvalidParameterName` payload in
+/// `import_jobs.rs`, the strip-and-reformat in `KnowledgeService::retry_index_item`
+/// below, and the CLI's `knowledge_index_item_not_found` mapper); a wording
+/// change now fails the compile-time references instead of silently
+/// downgrading the CLI's stable code to the generic `knowledge index:`
+/// prefix.
+pub const INDEX_ITEM_NOT_FAILED_MARKER: &str = " is not a failed item of job ";
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {

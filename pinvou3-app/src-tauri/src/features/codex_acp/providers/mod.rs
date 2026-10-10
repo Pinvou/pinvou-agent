@@ -1071,6 +1071,26 @@ impl ProviderManager {
         })
     }
 
+    /// Round-50 review: single home for the persist-failure take-back both
+    /// save arms share (round-49 introduced it on the current arm; the
+    /// non-current arm used to propagate with `?` and orphan the just-written
+    /// key under a reference no record names — a retry generates a new id, so
+    /// the orphan is never reclaimed). Narrowed read-compare-delete: the entry
+    /// is deleted only while it still equals what THIS call wrote — a peer
+    /// rotation landing in the window replaced that value and owns the entry
+    /// now, so it is left alone.
+    fn take_back_untouched_key(
+        &self,
+        wrote: Option<&CredentialReference>,
+        wrote_value: Option<&str>,
+    ) {
+        if let (Some(wrote), Some(wrote_value)) = (wrote, wrote_value) {
+            if self.credentials.get(wrote).ok().flatten().as_deref() == Some(wrote_value) {
+                self.credentials.delete(wrote).ok();
+            }
+        }
+    }
+
     pub fn save(
         &self,
         agent: &str,
@@ -1312,12 +1332,10 @@ impl ProviderManager {
                 // reference and delete only while it still equals what THIS
                 // call wrote — a peer rotation landing in the window replaced
                 // that value and owns the entry now, so it is left alone.
-                if let (Some(wrote), Some(wrote_value)) = (&written_credential, &written_key_value)
-                {
-                    if self.credentials.get(wrote).ok().flatten().as_deref() == Some(wrote_value) {
-                        self.credentials.delete(wrote).ok();
-                    }
-                }
+                self.take_back_untouched_key(
+                    written_credential.as_ref(),
+                    written_key_value.as_deref(),
+                );
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
                 let mut context = "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试".to_string();
@@ -1343,7 +1361,20 @@ impl ProviderManager {
                 return Err(error.context(context));
             }
         } else {
-            self.store.upsert_locked(agent, record.clone())?;
+            if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
+                // Round-50 review: the round-49 take-back covered only the
+                // current-provider arm; this arm propagated with `?` and
+                // left the just-written key behind under a reference no
+                // record names (a retry generates a new id, so the orphan
+                // is never reclaimed). Same narrowed read-compare-delete:
+                // a peer rotation landing in the window replaced that
+                // value and owns the entry now, so it is left alone.
+                self.take_back_untouched_key(
+                    written_credential.as_ref(),
+                    written_key_value.as_deref(),
+                );
+                return Err(error);
+            }
         }
         Ok(record)
     }
@@ -2631,6 +2662,75 @@ mod tests {
     /// is held) makes the save fail honestly AND take back the key this
     /// call wrote, instead of upserting a `has_credential: true` whose
     /// keychain entry the peer already deleted.
+    /// Round-50 review: the shared take-back helper's narrowed semantics,
+    /// pinned directly — it deletes only while the entry still equals what
+    /// THIS call wrote, so a peer rotation in the window survives, and the
+    /// `None` arms are honest no-ops. (The arm wiring — that both save arms
+    /// call it on persist failure — rides the compile-time call graph; a
+    /// hermetic persist-failure seam for the full save path does not exist,
+    /// since `atomic_write`'s staging token is pid+nanotime.)
+    #[test]
+    fn take_back_untouched_key_deletes_only_its_own_value() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-take-back-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let reference = CredentialReference::for_acp_provider("codex", "unit-take-back");
+
+        // Matching value: the entry this call wrote is taken back.
+        manager.credentials.set(&reference, "sk-mine").expect("set");
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        assert_eq!(
+            SystemCredentialStore::new().get(&reference).expect("get"),
+            None,
+            "the matching entry must be taken back"
+        );
+
+        // A peer rotation replaced the value first: the peer's entry survives.
+        manager.credentials.set(&reference, "sk-peer").expect("set");
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("get")
+                .as_deref(),
+            Some("sk-peer"),
+            "a peer's rotated value must be left alone"
+        );
+
+        // The `None` arms (nothing written / no recorded value) are no-ops.
+        manager.take_back_untouched_key(None, Some("sk-peer"));
+        manager.take_back_untouched_key(Some(&reference), None);
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("get")
+                .as_deref(),
+            Some("sk-peer"),
+        );
+        manager.credentials.delete(&reference).ok();
+        let _ = fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn save_takes_back_the_written_key_when_a_peer_clears_the_pointer() {
         let (_lock, _env) = crate::platform::test_support::locked_env(&[
