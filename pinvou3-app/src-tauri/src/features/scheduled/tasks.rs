@@ -98,9 +98,16 @@ impl ScheduledConversationDeleter for EnginePool {
 /// Clone: the creation-request watcher (features/scheduled/creation_requests)
 /// runs on a clone of the state while the panel-facing managed state stays the
 /// original. All heavy handles are Arc-shared; the two scheduler JoinHandles
-/// live in `Arc<SyncMutex<Option<_>>>` slots (EnginePool idle-reaper pattern)
-/// so Drop still owns the single abort, and the watcher guard sits in its own
-/// slot (`creation_watch`).
+/// live in `Arc<SyncMutex<Option<_>>>` slots (EnginePool idle-reaper pattern),
+/// and the watcher guard sits in its own slot (`creation_watch`).
+///
+/// Drop semantics, stated precisely (round-11 MAJOR-1 note): Drop runs on
+/// EVERY dropped clone — it cancels the shared scheduler token and aborts
+/// the scheduler/retention handles — which is safe ONLY while the clone
+/// inventory stays exactly {the managed state, the watcher task}, whose
+/// drops coincide. A third clone would let its drop tear down the
+/// scheduler for everyone (the engine_pool idle-reaper rule: a clone whose
+/// dropping would stop the sweep must not exist).
 #[derive(Clone)]
 pub struct ScheduledTaskState {
     automations: SharedAutomationManager,
