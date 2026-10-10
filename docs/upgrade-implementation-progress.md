@@ -246,3 +246,28 @@ Full vet, module verification, build, pinned artifact and diff checks passed.
 Production code was unchanged by the later test-only coverage additions.
 Purpose-scoped issuance, provider lifecycle and actual T08/T17 composition remain
 required; this batch does not complete T07. Deployment acceptance remains deferred.
+
+T07 purpose-bound pre-signing (2026-10-10) is committed and pushed as
+`b9e99eaffc16d9ea4d5ca26ba052d377b43b0966` on `feat/t07-signing-root`.
+The component fixes complete role/product/component/scope and protected provider
+mapping, refuses online Root signing, checks intrinsic claims and exact current
+Root role policy/deny/threshold/designated key before provider calls, and verifies
+every provider response locally. Immutable candidates retain their original bytes;
+final revalidation refuses changed Root, deny, expiry and another signer instance.
+
+Both independent line-by-line reviewers passed this batch. Pure tests cover all
+nineteen online roles, two-signature thresholds, wrong purpose/context, current
+fences, provider substitution/mutation, cancellation and copy isolation. Real
+OpenBao 2.7.1 exercised all nineteen roles with an isolated nonexportable key and
+restricted identity. The complete serial regression passed: management
+browser/database (21.452s), operations PostgreSQL (213.994s), signing PostgreSQL
+(139.718s), OpenBao (6.331s), pre-signing (5.693s) and Node semantics comparison.
+Full vet, module verification, build, pinned artifact and diff checks passed.
+
+This batch does not issue credentials, add a transport endpoint or implement the
+future owners' business/client trust guards. Atomic issuance facts/last-use and
+provider lifecycle remain required. Two independent contract checks confirmed
+that frozen V1 does not yet define a trustworthy confirmation of a specific
+client's accepted new Root; this protocol-extension decision was returned to the
+product owner. No caller-declared trust, device authentication or hardware proof
+is substituted. T07 remains incomplete; independent code development continues.
