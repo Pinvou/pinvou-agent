@@ -451,6 +451,58 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         self.assertTrue(payload["payload_mismatch"], payload)
         self.assertIn("DIFFERENT payload", payload["mismatch_note"])
 
+    def test_digest_mismatch_poll_path_sleeps(self):
+        """Round-12 MAJOR-5: the keyed poll's digest-mismatch arm sleeps
+        between reads at the poll cadence — the bare `continue` used to
+        busy-spin the marker re-read for the whole wait window. Counting
+        time.sleep during the mismatch window pins the cadence; deleting
+        the sleep turns this red (count 0)."""
+        import hashlib
+
+        digest = server.spool_request_digest(
+            "create", name="旧名字", prompt="汇总新闻",
+            rrule="FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+        )
+        spool_id = hashlib.sha256(b"reqsrc01|create||k-spin").hexdigest()
+        marker = Path(self.requests, "spool", ".done", "%s.json" % spool_id)
+        # The marker lands MID-POLL (the watcher applying a stale-key apply,
+        # say) with a non-matching digest — the entry check saw nothing, so
+        # the poll loop is what meets the mismatch and must take the
+        # sleeping continue, not a bare one.
+        def late_marker():
+            time.sleep(0.15)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({
+                "ok": True, "task_id": "task-1", "task_name": "旧名字",
+                "request_digest": digest,
+            }), encoding="utf-8")
+
+        threading.Thread(target=late_marker, daemon=True).start()
+        sleep_calls = []
+        real_sleep = server.time.sleep
+
+        def counting_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        server.time.sleep = counting_sleep
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.4
+        try:
+            payload, error = server.create_scheduled_task(
+                **self._create_kwargs(
+                    name="新名字", from_session="reqsrc01", idempotency_key="k-spin"
+                )
+            )
+        finally:
+            server.time.sleep = real_sleep
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        self.assertEqual(payload.get("delivery"), "pending", payload)
+        self.assertGreaterEqual(
+            len(sleep_calls), 1,
+            "the mismatch arm must sleep between marker reads (no busy-spin)"
+        )
+
     def test_diverging_replay_against_completed_key_does_not_respool(self):
         """Round-7 follow-up: a completed key is terminal — the divergent
         body must NOT be re-spooled. The prior shape os.replace'd it into the
