@@ -735,9 +735,9 @@ fn run_cli_bounded(
     // reading returns EOF to the drainer while the child keeps writing, so
     // the pipe fills (64 KiB), the child blocks in write(2), the deadline
     // below expires, and a healthy child is misreported as "timed out" and
-    // group-SIGKILLed. Same read-and-discard-to-EOF discipline as voice.rs's
-    // `drain_capped` (engine capture) and code.rs's `read_capped_to_eof`
-    // (git output). Normal output is far below the cap, so behavior for it
+    // group-SIGKILLed. Same read-and-discard-to-EOF discipline as the shared
+    // `support::drain_capped_to_eof` (voice.rs's engine capture and code.rs's
+    // git output). Normal output is far below the cap, so behavior for it
     // is unchanged.
     std::thread::spawn(move || {
         let _ = stdout_tx.send(drain_vendor_output(stdout_pipe));
@@ -805,8 +805,10 @@ fn run_cli_bounded(
 /// [`MAX_VENDOR_OUTPUT_BYTES`] and decode lossily (the non-UTF-8 hazards the
 /// caller documents), but keep reading — and DISCARDING — until true EOF, so
 /// a child that outproduces the cap can still finish instead of blocking on
-/// a full pipe. Same loop as voice.rs's `drain_capped` and code.rs's
-/// `read_capped_to_eof`.
+/// a full pipe. Same contract as the shared
+/// [`drain_capped_to_eof`](crate::support::drain_capped_to_eof) (which
+/// voice.rs and code.rs call); this lane keeps its own exact-cap copy —
+/// no `cap + 1` keep window and no total to report.
 fn drain_vendor_output<R: std::io::Read>(pipe: Option<R>) -> String {
     let mut kept: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 64 * 1024];
@@ -1659,9 +1661,17 @@ fn set_enabled(
     // switch just turned the connector off, and the hide direction exists
     // precisely so the engine stops offering its commands — the probe
     // verdict is irrelevant to that decision.
+    // Round-50 review: the verdict is also REPORTED exactly as learned. A
+    // probe error knows NOTHING about connectivity, so folding it into a
+    // clean-looking `connected: false` was indistinguishable from a real
+    // verdict — the exact "unknown rendered as a clean-looking row" outcome
+    // the status family's degraded rows refuse (absent/null there). The
+    // JSON key stays present but null (the ima degrade row's "null is not
+    // false") and the human row says "unknown"; the gating above is
+    // untouched.
     let probe = cli_connected(spec);
-    let connected = probe.as_ref().copied().unwrap_or(false);
-    let enable_probe_errored = enabled && probe.is_err();
+    let connected = probe.as_ref().ok().copied();
+    let enable_probe_errored = enabled && connected.is_none();
     // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
     // the connection state + the legacy `<id>_disabled` marker
     // (`skill_gate.rs::ConnectorGate::skills_should_show`); the plain-scope
@@ -1672,7 +1682,7 @@ fn set_enabled(
     // able to restore it (the show direction needs the app's embedded
     // bundle). A probe error counts as not-connected here exactly like the
     // GUI's ready probes fold `run_probe` errors to false.
-    let skills_should_show = gui_skill_gate_shows_with(kind, connected);
+    let skills_should_show = gui_skill_gate_shows_with(kind, connected.unwrap_or(false));
     // The hide direction is the CLI's to perform (see `hide_connector_skills`)
     // — a `disable` that left the skill tree on disk would keep the engine
     // offering commands the switch just turned off, until the desktop app
@@ -1709,10 +1719,15 @@ fn set_enabled(
         "skills refresh: deferred to the desktop app (embedded bundle unpack is app-only)"
             .to_owned()
     };
+    // Round-50 review: the unknown verdict gets its own cell instead of a
+    // fabricated no — the row must not read like a real verdict.
+    let connected_line = match connected {
+        Some(connected) => format!("connected: {}", yes_no(connected)),
+        None => "connected: unknown (probe failed)".to_owned(),
+    };
     let human = format!(
-        "{action} {}\nconnected: {}\nskills should show: {}\n{refresh_line}",
+        "{action} {}\n{connected_line}\nskills should show: {}\n{refresh_line}",
         spec.id,
-        yes_no(connected),
         yes_no(skills_should_show),
     );
     let value = json!({
@@ -1720,7 +1735,11 @@ fn set_enabled(
         "id": spec.id,
         "action": action,
         "enabled": enabled,
-        "connected": connected,
+        // Unknown is not false (round-50 review): a probe error keeps the
+        // key present but null — the status family's ima degrade row shape
+        // ("null is not false") — so a script can tell "the probe never
+        // answered" from a real not-connected verdict.
+        "connected": connected.map(|connected| json!(connected)).unwrap_or(Value::Null),
         "skills_should_show": skills_should_show,
         "skills_removed": skills_removed,
         "skills_refresh": skills_refresh,
@@ -1744,9 +1763,20 @@ fn set_enabled(
 fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
     // Mirror the GUI: a vendor CLI that cannot even be probed counts as
-    // "not connected" (the visible outcome is the same: skills stay hidden),
-    // instead of failing the whole command on a missing binary.
-    let connected = cli_connected(spec).unwrap_or(false);
+    // "not connected" for the GATE (the visible outcome is the same: skills
+    // stay hidden), instead of failing the whole command on a missing
+    // binary. Round-50 review: the GATE folds the unknown into false (the
+    // GUI's `skills_should_show()` semantics), but the RECEIPT no longer
+    // does — a probe that ERRORED knows nothing, so `connected` reports
+    // null / "unknown (probe failed)" instead of a clean-looking false, the
+    // same doctrine `set_enabled` applies since this round. One carve-out
+    // keeps the uninstalled degrade a clean verdict: a vendor CLI that does
+    // not RESOLVE at all cannot be connected (the knowable state this
+    // command's degrade contract is written against), so only a probe that
+    // ran and failed (wedge, wait error, timeout) is unknown.
+    let probe = cli_connected(spec);
+    let probe_errored = probe.is_err() && resolve_vendor_cli(spec).is_some();
+    let connected = probe.unwrap_or(false);
     let visible = gui_skill_gate_shows_with(kind, connected);
     if visible {
         // The GUI's `apply_skills` (skill_gate) fails the command with the
@@ -1771,17 +1801,21 @@ turn it off in the tools list: {error}",
     } else {
         "skill removal: done (companion skill files removed)"
     };
+    let connected_cell = if probe_errored {
+        "unknown (probe failed)".to_owned()
+    } else {
+        yes_no(connected).to_owned()
+    };
     let human = format!(
-        "{} skills should show: {}\nconnected: {}\n{applied_line}\nruleset refresh: requires the GUI engine pool",
+        "{} skills should show: {}\nconnected: {connected_cell}\n{applied_line}\nruleset refresh: requires the GUI engine pool",
         spec.id,
         yes_no(visible),
-        yes_no(connected),
     );
     let value = json!({
         "ok": true,
         "id": spec.id,
         "visible": visible,
-        "connected": connected,
+        "connected": if probe_errored { None } else { Some(connected) },
         // The show direction remains app-only; the hide direction ran here.
         "skills_unpack": "app-only",
         "skills_removed": !visible,
@@ -1912,21 +1946,61 @@ fn wecom_config_dir() -> Result<PathBuf, CliError> {
     Ok(Path::new(&home).join(".config").join("wecom"))
 }
 
+/// Pure precedence table behind the Windows arm below, taking the env
+/// values as parameters so the whole table is unit-tested on every platform
+/// (the CLI primarily targets macOS/Linux; only the caller is `cfg(windows)`).
+/// Tier order is the GUI's Windows `user_home_dir` (windows_path.rs):
+/// `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH` — joined like the GUI's
+/// `format!("{drive}{path}")` and only when BOTH are set — then `HOME`.
+/// A set-but-blank value never qualifies as a tier (the GUI's trim check);
+/// `None` means no tier answered, which the caller renders as an error.
+#[cfg(any(windows, test))]
+fn wecom_windows_home(
+    userprofile: Option<&str>,
+    home: Option<&str>,
+    homedrive: Option<&str>,
+    homepath: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(profile) = userprofile.filter(|value| !value.trim().is_empty()) {
+        return Some(PathBuf::from(profile));
+    }
+    if let (Some(drive), Some(path)) = (homedrive, homepath) {
+        // `HOMEDRIVE` carries the colon, `HOMEPATH` the leading separator,
+        // so the GUI concatenates rather than joins; the emptiness check
+        // runs on the JOIN, so a set-but-blank half does not disqualify
+        // the tier by itself.
+        let joined = format!("{drive}{path}");
+        if !joined.trim().is_empty() {
+            return Some(PathBuf::from(joined));
+        }
+    }
+    home.filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
 /// Windows half of the split above (see the unix doc for the home-policy
-/// rationale): `USERPROFILE` first, falling back to `HOME`, matching the
-/// precedence the GUI's Windows `user_home_dir` leads with.
+/// rationale): the exact tier order of the GUI's Windows `user_home_dir` —
+/// `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH` (both set), then `HOME`. One
+/// deviation from the GUI is kept: an unset home is an error here, not
+/// `temp_dir()` — the directory feeds a destructive `remove_dir_all` (the
+/// unix doc above).
 #[cfg(windows)]
 fn wecom_config_dir() -> Result<PathBuf, CliError> {
-    let home = std::env::var("USERPROFILE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var("HOME").ok())
-        .unwrap_or_default();
-    if home.trim().is_empty() {
+    let userprofile = std::env::var("USERPROFILE").ok();
+    let home = std::env::var("HOME").ok();
+    let homedrive = std::env::var("HOMEDRIVE").ok();
+    let homepath = std::env::var("HOMEPATH").ok();
+    let Some(home) = wecom_windows_home(
+        userprofile.as_deref(),
+        home.as_deref(),
+        homedrive.as_deref(),
+        homepath.as_deref(),
+    ) else {
         return Err(CliError::failed(
-            "connectors: cannot locate the wecom credential directory: neither USERPROFILE nor HOME is set",
+            "connectors: cannot locate the wecom credential directory: none of \
+             USERPROFILE, HOMEDRIVE+HOMEPATH or HOME is set",
         ));
-    }
+    };
     Ok(Path::new(&home).join(".config").join("wecom"))
 }
 
@@ -2351,21 +2425,28 @@ fn run_npm_attempt(
 /// cli-install.log chmod-on-every-append doctrine), so a lock file left at
 /// the umask default by an older build heals instead of staying readable by
 /// every local account that could then hold LOCK_EX and wedge `ensure-cli`
-/// behind this command's documented blocking wait. The code.rs session/root
-/// lock sites converted in the same wave; the sibling lock files in
-/// memory/personas/scheduled/voice adopt the helper in a later wave.
+/// behind this command's documented blocking wait. (Round-50 review: the
+/// stale "later wave" sentence is gone — memory/personas/scheduled/voice
+/// all call `open_family_lock_file` in this very tree.)
+///
+/// Round-50 review: all three failure arms — directory-create, open and
+/// the flock acquire below — carry the same `connectors_install_lock_unavailable`
+/// code docs/pinvou-cli.md lists for the lock lane. A script matching the
+/// code must not depend on WHICH lock step failed; the human explanation
+/// behind the code still names it.
 fn open_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     let lock_file = crate::support::open_family_lock_file("connector-install.lock");
     let install_lock_file = match lock_file {
         Ok(file) => file,
         Err(crate::support::FamilyLockError::CreateDir { error, .. }) => {
             return Err(CliError::failed(format!(
-                "cannot create the connector lock directory: {error}"
+                "connectors_install_lock_unavailable: cannot create the connector lock \
+                 directory: {error}"
             )));
         }
         Err(crate::support::FamilyLockError::Open { error, .. }) => {
             return Err(CliError::failed(format!(
-                "cannot open the install lock: {error}"
+                "connectors_install_lock_unavailable: cannot open the install lock: {error}"
             )));
         }
     };
@@ -5000,6 +5081,161 @@ mod tests {
                               unavailable"
             ),
             "the human explanation must survive behind the code: {message}"
+        );
+    }
+
+    // ── install-lock open failures carry the code (round-50 review) ─────
+    // The directory-create and open arms of `open_install_lock` are drivable
+    // without any privilege games: `open_family_lock_file` resolves the home
+    // through `PINVOU3_HOME`, so a FILE standing in for `locks/` forces the
+    // create arm and a DIRECTORY at the lock path forces the open arm (a
+    // directory cannot be opened for writing on any platform). Both must
+    // lead with the same `connectors_install_lock_unavailable` code the
+    // acquire arm pins above — a script matching the documented code must
+    // not depend on WHICH lock step failed.
+
+    /// Points `PINVOU3_HOME` at a fresh throwaway root for the duration of
+    /// the test (ENV_LOCK held for the guard's whole lifetime, like every
+    /// env-touching unit test in this binary) and restores the previous
+    /// value on drop.
+    struct LockHomeGuard {
+        previous: Option<OsString>,
+        root: PathBuf,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl LockHomeGuard {
+        fn stage(label: &str) -> Self {
+            let lock = crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let root = std::env::temp_dir().join(format!(
+                "pinvou-connectors-lock-home-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let previous = std::env::var_os("PINVOU3_HOME");
+            // SAFETY: ENV_LOCK serializes every env access in this binary.
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            Self {
+                previous,
+                root,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for LockHomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: ENV_LOCK is held for the guard's whole lifetime.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("PINVOU3_HOME", value),
+                    None => std::env::remove_var("PINVOU3_HOME"),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn install_lock_dir_create_failure_carries_the_code_prefix() {
+        let guard = LockHomeGuard::stage("dir-arm");
+        // A FILE at the locks path: create_dir_all cannot create the
+        // directory, which is the CreateDir arm.
+        std::fs::write(guard.root.join("locks"), b"not a directory").unwrap();
+        let error = match open_install_lock() {
+            Ok(_) => panic!("a file standing in for locks/ must fail the create arm"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.starts_with("connectors_install_lock_unavailable:"),
+            "the create arm must lead with the family error code: {message}"
+        );
+        assert!(
+            message.contains("cannot create the connector lock directory"),
+            "the human explanation must survive behind the code: {message}"
+        );
+    }
+
+    #[test]
+    fn install_lock_file_open_failure_carries_the_code_prefix() {
+        let guard = LockHomeGuard::stage("open-arm");
+        // A DIRECTORY at the lock path: create_dir_all succeeds, the open
+        // cannot — the Open arm, deterministically and on every platform.
+        std::fs::create_dir_all(guard.root.join("locks").join("connector-install.lock")).unwrap();
+        let error = match open_install_lock() {
+            Ok(_) => panic!("a directory at the lock path must fail the open arm"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.starts_with("connectors_install_lock_unavailable:"),
+            "the open arm must lead with the family error code: {message}"
+        );
+        assert!(
+            message.contains("cannot open the install lock"),
+            "the human explanation must survive behind the code: {message}"
+        );
+    }
+
+    // ── wecom Windows home precedence (round-50 review) ──────────────────
+    // The Windows arm used to resolve USERPROFILE → HOME only, skipping the
+    // GUI's `user_home_dir` middle tier (HOMEDRIVE+HOMEPATH) its own comment
+    // claimed parity with. The helper is pure, so the whole precedence
+    // table is pinned on every platform the tests build on.
+
+    #[test]
+    fn wecom_windows_home_follows_the_gui_tier_order() {
+        // All four set: USERPROFILE wins outright.
+        assert_eq!(
+            wecom_windows_home(
+                Some(r"C:\Users\profile"),
+                Some(r"C:\Users\home"),
+                Some("C:"),
+                Some(r"\Users\drivepath"),
+            ),
+            Some(PathBuf::from(r"C:\Users\profile"))
+        );
+        // USERPROFILE unset: the HOMEDRIVE+HOMEPATH join outranks HOME —
+        // the middle tier the old two-tier fallback skipped.
+        assert_eq!(
+            wecom_windows_home(
+                None,
+                Some(r"C:\Users\home"),
+                Some("C:"),
+                Some(r"\Users\drivepath"),
+            ),
+            Some(PathBuf::from(r"C:\Users\drivepath"))
+        );
+        // HOMEPATH missing: the join needs BOTH halves, so HOME answers.
+        assert_eq!(
+            wecom_windows_home(None, Some(r"C:\Users\home"), Some("C:"), None),
+            Some(PathBuf::from(r"C:\Users\home"))
+        );
+        // Nothing set: None — the caller renders the error (no temp-dir
+        // fallback: the directory feeds a destructive remove_dir_all).
+        assert_eq!(wecom_windows_home(None, None, None, None), None);
+    }
+
+    #[test]
+    fn wecom_windows_home_blank_values_do_not_qualify_as_a_tier() {
+        // The GUI's trim check: a set-but-blank USERPROFILE falls through
+        // to the next tier instead of winning with an empty path.
+        assert_eq!(
+            wecom_windows_home(Some("   "), None, Some("C:"), Some(r"\Users\drivepath")),
+            Some(PathBuf::from(r"C:\Users\drivepath"))
+        );
+        // Both halves set but the JOIN trims empty: the tier does not
+        // answer either.
+        assert_eq!(
+            wecom_windows_home(None, Some(r"C:\Users\home"), Some(""), Some("  ")),
+            Some(PathBuf::from(r"C:\Users\home"))
         );
     }
 

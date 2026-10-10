@@ -497,7 +497,18 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
             by_path
                 .entry(path_string)
                 .and_modify(|current| {
-                    if row.mtime >= current.mtime {
+                    // Round-50 review: the equal-mtime tie breaks on the
+                    // session id so `--session` filtering is deterministic —
+                    // `read_dir` order is unspecified, and with a bare `>=`
+                    // which row survived an equal-mtime collision flipped
+                    // between runs, turning the CLI-only retain below into a
+                    // present/absent flip for the same store. (The GUI twin
+                    // keeps its `>=`; it has no session filter to amplify
+                    // the flip.) The id compare matches the row sort's
+                    // secondary key (name, then id via the struct order).
+                    if row.mtime > current.mtime
+                        || (row.mtime == current.mtime && row.session_id >= current.session_id)
+                    {
                         *current = row.clone();
                     }
                 })

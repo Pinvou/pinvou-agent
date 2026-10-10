@@ -594,6 +594,37 @@ fn usage_failures_exit_two_through_the_real_binary() {
     }
 }
 
+/// Round-50 review: a panic escaping `execute` must not bypass the
+/// supervisor on the way out — `main` catches the unwind, still lets the
+/// interrupt-cleanup park run, and keeps the exit contract (101, outside
+/// 0/1/2, with the hook's one-line internal-error report). The
+/// `PINVOU_CLI_TEST_FORCE_PANIC` seam in main.rs makes the panic path
+/// hermetically reachable; a regression to plain unwinding or to an early
+/// `std::process::exit` ahead of the park changes this contract's shape.
+/// The panic path touches no store, so no `PINVOU3_HOME` fixture is needed.
+#[test]
+fn a_panicking_run_still_parks_and_exits_101_through_the_real_binary() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .env("PINVOU_CLI_TEST_FORCE_PANIC", "1")
+        .output()
+        .expect("spawn the pinvou binary");
+    assert_eq!(
+        output.status.code(),
+        Some(101),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("internal error (panic"),
+        "the hook's one-line report must stay the only panic output: {stderr}"
+    );
+    assert!(
+        stderr.contains("this is a bug"),
+        "the report must name the failure as an internal bug: {stderr}"
+    );
+}
+
 #[test]
 fn unrecognized_output_value_falls_through_to_usage_error() {
     // Outside `benchmark submission gaia` (which consumes `--output <file>` as

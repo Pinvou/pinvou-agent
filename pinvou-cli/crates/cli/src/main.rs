@@ -58,18 +58,38 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let result = pinvou_cli::parse_args(arguments).and_then(pinvou_cli::execute);
-    let code = match result {
-        Ok(outcome) => pinvou_cli::support::emit_report(std::io::stdout(), &outcome),
-        Err(error) => {
-            let _ = writeln!(std::io::stderr(), "pinvou: {error}");
-            error.exit_code().as_i32()
+    // Round-50 review: an internal bug must not bypass the supervisor on its
+    // way out. A plain unwinding panic would kill the interrupt watcher at
+    // whatever phase it is in — a vendor child parked in its own process
+    // group (a minutes-long `connectors connect` login) would keep running
+    // with no one left to TERM it, and a cleanup already past its SIGTERM
+    // grace would never reach the phase-3 re-raise. `catch_unwind` keeps the
+    // exit contract (the hook above already printed the one-line internal
+    // error; the code stays 101, unmistakably outside 0/1/2) while the park
+    // below still runs on the panic path exactly as it does on every other
+    // exit. `AssertUnwindSafe` is sound here: nothing observed after the
+    // catch reads CLI state — the process exits.
+    if std::env::var_os("PINVOU_CLI_TEST_FORCE_PANIC").is_some() {
+        // Test seam (contract-pinned through the real binary): forces the
+        // panic path so the pin can hold the catch + park + 101 wiring
+        // together. No CLI behavior reads this variable.
+        panic!("forced by PINVOU_CLI_TEST_FORCE_PANIC");
+    }
+    let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> i32 {
+        match pinvou_cli::parse_args(arguments).and_then(pinvou_cli::execute) {
+            Ok(outcome) => pinvou_cli::support::emit_report(std::io::stdout(), &outcome),
+            Err(error) => {
+                let _ = writeln!(std::io::stderr(), "pinvou: {error}");
+                error.exit_code().as_i32()
+            }
         }
-    };
+    }))
+    .unwrap_or(101);
     // A started interrupt cleanup owns the exit status: the watcher's phase-3
     // re-raise gives scripts the conventional 128+N, and main must not win
     // the race to `exit` with the family's own code. No-op unless cleanup
-    // started (returns immediately on the normal path).
+    // started (returns immediately on the normal path) — and on the panic
+    // path it is the one chance to let a started cleanup conclude.
     pinvou_cli::support::supervise::park_while_interrupt_cleanup_concludes();
     std::process::exit(code);
 }

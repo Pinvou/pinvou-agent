@@ -1144,29 +1144,54 @@ fn registry_shape_valid(value: &serde_json::Value, keys: &[&str]) -> bool {
 /// stamp stats the file when the read starts and is re-checked before the
 /// rename; any observed change (including created↔deleted) refuses with a
 /// retry hint, so the caller's rerun merges against the fresh registry
-/// instead of clobbering it. Same-resolution caveat as the app's Windows
-/// arm: a same-length, same-millisecond clobber aliases the stamp — the
-/// disclosed residual of a metadata-shaped guard.
-#[derive(Clone, Copy)]
-struct SidecarStamp(Option<(u64, u128)>);
+/// instead of clobbering it.
+/// Round-50 review: the stamp carries the platform file-identity half
+/// (`dev`, `ino`) its app-side twin holds (`FileStamp.identity`) — an
+/// atomic rename always replaces the inode, so equal length+mtime on a
+/// different inode is still a foreign write, and without the identity a
+/// same-length GUI persist landing inside the read→recheck window on a
+/// coarse-mtime filesystem aliased the stamp. The `cfg(unix)` matches the
+/// app's split (`platform::filesystem::metadata_file_identity`); on
+/// platforms without a portable identity the guard degrades to the
+/// length+mtime pair and that residual is the disclosed one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SidecarStamp {
+    size_and_mtime: Option<(u64, u128)>,
+    identity: Option<(u64, u64)>,
+}
+
+#[cfg(unix)]
+fn sidecar_file_identity(metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt as _;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn sidecar_file_identity(_metadata: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
+}
 
 impl SidecarStamp {
     fn capture(path: &Path) -> Self {
-        Self(std::fs::metadata(path).ok().map(|metadata| {
-            (
-                metadata.len(),
-                metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_nanos())
-                    .unwrap_or(0),
-            )
-        }))
+        let metadata = std::fs::metadata(path).ok();
+        Self {
+            size_and_mtime: metadata.as_ref().map(|metadata| {
+                (
+                    metadata.len(),
+                    metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0),
+                )
+            }),
+            identity: metadata.as_ref().and_then(sidecar_file_identity),
+        }
     }
 
     fn changed(&self, path: &Path) -> bool {
-        Self::capture(path).0 != self.0
+        Self::capture(path) != *self
     }
 }
 
@@ -2036,6 +2061,33 @@ fn current_allow_shell() -> bool {
     UserPrefs::load().advanced.allow_shell.unwrap_or(true)
 }
 
+/// Roll a half-created task back (definition file + workspace directory),
+/// disclosing every failed step on stderr — the file-head policy bans
+/// silent failures, and the primary error propagates to the caller either
+/// way. Round-50 review: the four create-failure arms used to paste this
+/// block verbatim, so a future arm could forget the workspace half; the
+/// kind arm additionally clears the model binding through its own
+/// disclosed step at its call site. `workspace_may_be_absent` marks the
+/// arm whose failure can precede the workspace leaf, where a NotFound
+/// means "nothing to remove", not a failed rollback step.
+fn rollback_created_task(store_holder: &TaskStore, id: &str, workspace_may_be_absent: bool) {
+    if let Ok(path) = store_holder.def_path(id)
+        && let Err(remove_error) = std::fs::remove_file(&path)
+    {
+        note!(
+            "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
+        );
+    }
+    let workspace = store_holder.workspace_dir(id);
+    if let Err(remove_error) = std::fs::remove_dir_all(&workspace)
+        && !(workspace_may_be_absent && remove_error.kind() == std::io::ErrorKind::NotFound)
+    {
+        note!(
+            "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
+        );
+    }
+}
+
 fn create(
     name: &str,
     prompt_file: &Path,
@@ -2144,25 +2196,10 @@ enabled in settings",
         // `next_run_at` — so a bare `?` here left a committed, schedulable
         // task on disk while the command exited 1 (the next app tick would
         // fire a task whose command reported failure). Roll back exactly
-        // like the sibling arms below (definition + any workspace
-        // remnants), with the same disclose-on-failed-rollback-step policy.
-        if let Ok(path) = store_holder.def_path(&id)
-            && let Err(remove_error) = std::fs::remove_file(&path)
-        {
-            note!(
-                "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
-            );
-        }
-        // The failure can precede the workspace leaf (a refused parent), so
-        // a NotFound here means there is nothing to remove, not a failed
-        // rollback step.
-        if let Err(remove_error) = std::fs::remove_dir_all(&workspace)
-            && remove_error.kind() != std::io::ErrorKind::NotFound
-        {
-            note!(
-                "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
-            );
-        }
+        // like the sibling arms below. The failure can precede the
+        // workspace leaf (a refused parent), so a NotFound there means
+        // there is nothing to remove, not a failed rollback step.
+        rollback_created_task(&store_holder, &id, true);
         return Err(CliError::failed(format!(
             "scheduled_workspace_unavailable: cannot create {}: {error}",
             workspace.display()
@@ -2178,20 +2215,8 @@ enabled in settings",
             // back on sidecar-write failure; this arm's failure left a
             // committed, schedulable ACTIVE task on disk while the command
             // exited 1 — the caller believes the create failed. Roll back
-            // exactly like the siblings (definition + workspace), with the
-            // same disclose-on-failed-rollback-step policy.
-            if let Ok(path) = store_holder.def_path(&id)
-                && let Err(remove_error) = std::fs::remove_file(&path)
-            {
-                note!(
-                    "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
-                );
-            }
-            if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
-                note!(
-                    "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
-                );
-            }
+            // exactly like the siblings.
+            rollback_created_task(&store_holder, &id, false);
             return Err(error);
         }
         def
@@ -2205,38 +2230,14 @@ enabled in settings",
     if validated_model_id.as_deref().is_some() {
         if let Err(error) = write_model_binding(&store_holder, &id, validated_model_id.as_deref()) {
             // Roll back the just-created task so no kind-less/binding-less task
-            // lingers, mirroring the GUI create rollback. The file-head policy
-            // bans silent failures, so a failed rollback step is disclosed on
-            // stderr even though the primary error propagates either way.
-            if let Ok(path) = store_holder.def_path(&id) {
-                if let Err(remove_error) = std::fs::remove_file(&path) {
-                    note!(
-                        "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
-                    );
-                }
-            }
-            if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
-                note!(
-                    "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
-                );
-            }
+            // lingers, mirroring the GUI create rollback.
+            rollback_created_task(&store_holder, &id, false);
             return Err(error);
         }
     }
     if let Some(stored_kind) = kind.stored_kind() {
         if let Err(error) = persist_task_kind(&store_holder, &id, Some(stored_kind)) {
-            if let Ok(path) = store_holder.def_path(&id) {
-                if let Err(remove_error) = std::fs::remove_file(&path) {
-                    note!(
-                        "pinvou: warning: scheduled create: rollback could not remove the task definition {path:?}: {remove_error}"
-                    );
-                }
-            }
-            if let Err(remove_error) = std::fs::remove_dir_all(store_holder.workspace_dir(&id)) {
-                note!(
-                    "pinvou: warning: scheduled create: rollback could not remove the task workspace: {remove_error}"
-                );
-            }
+            rollback_created_task(&store_holder, &id, false);
             // A binding written above must not outlive the rolled-back task:
             // clear it so no binding for a nonexistent id lingers in the
             // shared registry.
@@ -3053,12 +3054,15 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     }
     // Enrichment is best-effort: the delete is committed above, so a
     // sessions store boot failure must not report the delete as failed.
-    let mut value = receipt;
-    value["deletedSessionIds"] = serde_json::json!([]);
+    // Round-50 review: the receipt no longer fabricates a
+    // `deletedSessionIds: []` field — nothing on either surface populates
+    // or consumes it (the GUI delete returns the mapped task DTO; neither
+    // surface deletes sessions here), so a fact-shaped key asserting an
+    // event nobody performed was worse than its absence.
     Ok(success(render(
         output,
         format!("Deleted scheduled task: {id}"),
-        &value,
+        &receipt,
     )))
 }
 
@@ -3705,6 +3709,69 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["v"], 2, "a fresh stamp must allow the write");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round-50 review: the identity arm. An atomic-rename foreign write
+    /// with IDENTICAL bytes and an identical mtime (the coarse-clock alias
+    /// the metadata pair cannot distinguish) replaces the inode, so only
+    /// the (dev, ino) half can call it a foreign write — the exact
+    /// GUI-persist-inside-the-read-window shape the app's `FileStamp`
+    /// identity field exists for. Unix-only: on platforms without a
+    /// portable identity the guard is the disclosed length+mtime residual.
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_stamp_notices_a_same_bytes_same_mtime_rename_over_the_file() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-stamp-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("registry.json");
+        std::fs::write(&path, br#"{"v":1}"#).unwrap();
+
+        let stamp = SidecarStamp::capture(&path);
+        assert!(!stamp.changed(&path), "untouched must read unchanged");
+
+        // Build a byte-identical twin and give it the original's exact
+        // mtime, so both metadata halves alias; only the inode differs.
+        let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let twin = root.join("registry.json.twin");
+        std::fs::write(&twin, br#"{"v":1}"#).unwrap();
+        {
+            let file = std::fs::OpenOptions::new().write(true).open(&twin).unwrap();
+            file.set_modified(original_mtime).unwrap();
+        }
+        let twin_identity = SidecarStamp::capture(&twin);
+        assert_eq!(
+            twin_identity.size_and_mtime, stamp.size_and_mtime,
+            "fixture sanity: the twin must alias both metadata halves"
+        );
+
+        // Atomic rename-over: the shape `write_json_atomic` itself uses.
+        std::fs::rename(&twin, &path).unwrap();
+        assert!(
+            stamp.changed(&path),
+            "a same-length same-mtime write on a new inode must be detected by the identity half"
+        );
+
+        // The refusal still carries the stable marker and leaves the file.
+        let error = write_json_atomic_checked(&path, &serde_json::json!({"v": 999}), &stamp)
+            .expect_err("the aliased foreign write must refuse");
+        assert!(
+            error.to_string().contains("scheduled_store_busy"),
+            "the refusal carries the stable marker: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"v":1}"#,
+            "the refused write must not have touched the file"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

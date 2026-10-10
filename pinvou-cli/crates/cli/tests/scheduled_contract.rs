@@ -773,9 +773,13 @@ fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
     assert_usage(&["scheduled", "delete", &task_id]);
     let deleted = run_json(&["scheduled", "delete", &task_id, "--yes"]);
     assert_eq!(deleted["id"].as_str(), Some(task_id.as_str()));
-    assert_eq!(
-        deleted["deletedSessionIds"].as_array().map(Vec::len),
-        Some(0)
+    // Round-50 review: the receipt no longer carries a fabricated
+    // `deletedSessionIds: []` — nothing on either surface populates or
+    // consumes it, and a fact-shaped key asserting an event nobody
+    // performed invited scripts to branch on it.
+    assert!(
+        deleted.get("deletedSessionIds").is_none(),
+        "the fabricated field must stay absent: {deleted}"
     );
     assert!(!home.def_path(&task_id).exists());
     let listed = run_json(&["scheduled", "list"]);
@@ -1188,6 +1192,15 @@ fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
     let scheduled_root = home.path().join("scheduled");
     std::fs::create_dir_all(&scheduled_root).unwrap();
     std::fs::set_permissions(&scheduled_root, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Round-50 review: the same skip guard its siblings in code_contract.rs
+    // and knowledge_contract.rs carry — running as root (or on a filesystem
+    // ignoring mode bits) defeats the 0o500 refusal, and the test would
+    // fail spuriously instead of skipping.
+    let writable_as_root = std::fs::write(scheduled_root.join(".probe"), b"").is_ok();
+    if writable_as_root {
+        eprintln!("skipping: the process can write a 0o500 directory (running as root?)");
+        return;
+    }
     let _restore = RestorePerms(scheduled_root);
 
     let prompt = write_prompt_file(&home, "rollback.md", "Summarize the reports.");

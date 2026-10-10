@@ -1078,6 +1078,81 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
     );
 }
 
+/// `workspace_path` in `code sessions list` and `code sessions info` is
+/// user-controlled store data: the session-agents record names the bound
+/// project directory, and a POSIX filename may legally carry `\t`, `\n`, or
+/// ESC — a tab would invent a seventh table column and ESC must not reach
+/// the terminal. So the HUMAN renderings collapse the cell through the same
+/// row sanitizer as the module's other store-fed cells (providers'
+/// id/name/base_url, workspace changes' `relative_path`), while the JSON
+/// output keeps the verbatim path for scripts.
+#[test]
+fn code_sessions_human_output_collapses_control_characters_in_workspace_path() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("code-ws-path-controls");
+
+    // A hostile (but POSIX-legal) project directory name; the fixture binds
+    // it verbatim into the session-agents record, exactly where the
+    // `workspace_path` cell is read from.
+    let project = home.root.join("project\tpoison\x1bdir").join("nested");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_acp_session_fixture(&project);
+    // The CLI resolves bound paths through canonicalize on read paths
+    // elsewhere; the record itself keeps what the bind call wrote. Expect
+    // the recorded form and pin it so a later canonicalization change fails
+    // here loudly instead of silently changing the contract.
+    let recorded = project.display().to_string();
+    let collapsed = recorded.replace(['\t', '\x1b'], " ");
+
+    // info: the human block collapses; JSON keeps the verbatim path.
+    let outcome = run(&["pinvou", "code", "sessions", "info", &id]).expect("human info");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        !outcome.stdout.contains('\t') && !outcome.stdout.contains('\x1b'),
+        "info human block must carry no raw tab/ESC: {:?}",
+        outcome.stdout
+    );
+    assert!(
+        outcome
+            .stdout
+            .lines()
+            .any(|line| line == format!("workspace: {collapsed}")),
+        "the workspace line must render the collapsed path: {:?}",
+        outcome.stdout
+    );
+    let value = run_json(&["pinvou", "code", "sessions", "info", &id]);
+    assert_eq!(value["workspace_path"], serde_json::json!(recorded));
+
+    // list: the row stays one six-column TSV line with the collapsed path
+    // in the last cell; JSON keeps the verbatim path.
+    let outcome = run(&["pinvou", "code", "sessions", "list"]).expect("human list");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert_eq!(
+        outcome.stdout.lines().count(),
+        1,
+        "one session must render as exactly one row: {:?}",
+        outcome.stdout
+    );
+    let columns: Vec<&str> = outcome.stdout.split('\t').collect();
+    assert_eq!(
+        columns.len(),
+        6,
+        "the list row layout changed: {:?}",
+        outcome.stdout
+    );
+    assert_eq!(columns[5], collapsed, "{:?}", outcome.stdout);
+    assert!(
+        !outcome.stdout.contains('\x1b'),
+        "ESC must not reach the terminal: {:?}",
+        outcome.stdout
+    );
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    assert_eq!(
+        value["sessions"][0]["workspace_path"],
+        serde_json::json!(recorded)
+    );
+}
+
 /// The 32 MiB journal cap must be enforced at the boundary: at exactly
 /// MAX_TIMELINE_BYTES the journal still reads, one byte more is the explicit
 /// "too large" failure. The read is bounded (`File::take`), so the second

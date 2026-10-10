@@ -38,7 +38,13 @@
 //!                                                  // window; bounded wait, on
 //!                                                  // timeout
 //!                                                  // support::kill_process_tree
-//! support::supervise::forget_child_group(child.id());
+//! let group = support::supervise::GroupGuard::arm(child.id()); // RAII pair:
+//!                                                  // covers the ordinary
+//!                                                  // exits AND every panic
+//!                                                  // in between; a manual
+//!                                                  // forget_child_group()
+//!                                                  // answers the ordinary
+//!                                                  // exits only
 //! ```
 //!
 //! The CLI targets macOS/Linux, so the implementation is UNIX-only; every

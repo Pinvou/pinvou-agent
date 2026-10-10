@@ -467,6 +467,77 @@ fn sessions_delete_removes_the_session_agent_index_record() {
     );
 }
 
+/// Round-50 review: the delete gate probed existence with a full `load`, so
+/// a corrupt record JSON exited 1 exactly when deletion is most needed —
+/// while the GUI deletes the file without parsing it (the store cascade
+/// removes `<id>.json` and `<id>/` and never reads the record). The gate now
+/// probes the record file's presence
+/// (`durable_session_record_is_absent`, the same fail-closed probe the
+/// projects rebind orphan classification uses), so a corrupt record is
+/// deletable while an unknown id still exits 1 with the load gate's message.
+/// `show` and the other `require_existing` callers keep the strict load: a
+/// corrupt record must keep refusing everything that needs to read it.
+#[test]
+fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("delete-corrupt-record");
+    let id = create_session_fixture();
+
+    // Corrupt the record the way a crashed writer or a restored backup
+    // would, and plant a session directory with the code-session sidecar so
+    // the delete cascade has durable state to sweep.
+    let record = home.sessions_root().join(format!("{id}.json"));
+    std::fs::write(&record, "not-json-at-all").unwrap();
+    let session_dir = home.sessions_root().join(&id);
+    std::fs::create_dir_all(session_dir.join("workspace")).unwrap();
+    std::fs::write(session_dir.join("code-session.json"), "{}").unwrap();
+
+    // show keeps the strict load: the parse error surfaces (exit 1) through
+    // the same load_session context as before, and the record is untouched.
+    let error = run(&["pinvou", "sessions", "show", &id])
+        .expect_err("a corrupt record must still refuse show");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!("sessions show({id})"))
+            && message.contains(&format!("load_session({id})")),
+        "show must fail on the record load, not a lookup shortcut: {message}"
+    );
+    assert!(
+        std::fs::read_to_string(&record).unwrap() == "not-json-at-all",
+        "a refused show must not rewrite the corrupt record"
+    );
+
+    // delete --yes reaches the corrupt record: exit 0, and the record plus
+    // the session directory (sidecars included) are swept.
+    let value = run_json(&["pinvou", "sessions", "delete", &id, "--yes"]);
+    assert_eq!(value["action"], "deleted");
+    assert!(
+        !record.exists(),
+        "the corrupt record must be removed by the delete"
+    );
+    assert!(
+        !session_dir.exists(),
+        "the session directory cascade must still run for a corrupt record"
+    );
+
+    // Unknown ids keep the existing gate: exit 1 with the load-based
+    // message, never a "deleted" answer.
+    let error = run(&["pinvou", "sessions", "delete", "missing-session", "--yes"])
+        .expect_err("an unknown id must still refuse the delete");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error
+            .to_string()
+            .contains("sessions delete(missing-session)"),
+        "the unknown-id refusal must carry the usual store_error shape: {error}"
+    );
+    assert!(
+        !home.sessions_root().join("missing-session.json").exists(),
+        "the refused delete must not have created anything"
+    );
+}
+
 #[test]
 fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -993,6 +1064,45 @@ fn sessions_subagents_lists_read_only_and_folder_prints_session_path() {
     assert_eq!(value["path"], expected.display().to_string());
     let outcome = run(&["pinvou", "sessions", "folder", &id]).expect("human folder");
     assert_eq!(outcome.stdout, expected.display().to_string());
+}
+
+/// `sessions folder` prints a path assembled from the sandbox home and the
+/// session id, and the home comes from `PINVOU3_HOME` — a hostile-but-POSIX-
+/// legal directory name (a tab is enough) would otherwise reach the terminal
+/// raw through the human line. The path goes through the same column
+/// collapse as every other user-controlled cell in this family (list's
+/// id/title, export's destination); JSON keeps the verbatim path.
+#[test]
+fn sessions_folder_human_path_collapses_control_characters_from_the_home_name() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The label lands in the sandbox root's directory name, so the tab here
+    // puts a real control byte into the resolved session path.
+    let home = HomeGuard::new("folder\tpoison");
+    let id = create_session_fixture();
+
+    let expected = home.sessions_root().join(&id);
+    assert!(
+        expected.display().to_string().contains('\t'),
+        "fixture must have planted a tab in the resolved path: {:?}",
+        expected
+    );
+
+    let outcome = run(&["pinvou", "sessions", "folder", &id]).expect("human folder");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        !outcome.stdout.contains('\t'),
+        "the human path must be collapsed: {:?}",
+        outcome.stdout
+    );
+    assert_eq!(
+        outcome.stdout,
+        expected.display().to_string().replace('\t', " "),
+        "the collapse substitutes a space, like every sibling cell"
+    );
+
+    // JSON keeps the verbatim path: the collapse is a rendering choice.
+    let value = run_json(&["pinvou", "sessions", "folder", &id]);
+    assert_eq!(value["path"], expected.display().to_string());
 }
 
 #[test]

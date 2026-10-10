@@ -456,6 +456,15 @@ fn run_agent(
         // New optional parity fields default to the historical behavior when
         // the flags are absent; the app-side request treats None exactly as
         // before the fields were introduced.
+        // Round-50 review, disclosed asymmetry: a typo'd `--session` id is
+        // rejected only engine-side (`agent_session_not_found`), AFTER the
+        // full windowless-host boot — unlike the attachment/prompt gates
+        // above, which exist to prevent exactly that wasted-boot shape. No
+        // pre-boot probe is added on purpose: the store's existence
+        // semantics (registry vs on-disk record, aux/scheduled id families,
+        // the just-deleted window) are engine-authoritative, and a CLI-side
+        // approximation that ever disagreed would REFUSE a legitimate
+        // `--attach` target — a worse failure than one wasted boot.
         session_id: session.map(str::to_owned),
         mode,
         model_id: model,

@@ -1482,13 +1482,21 @@ fn collections_add_sources(
     let mut resolved_paths: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {
         let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
-        if resolved != path {
-            crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
-                CliError::failed(format!(
-                    "knowledge collections add-sources: refusing source path: {reason}"
-                ))
-            })?;
-        }
+        // Round-50 review: the re-run is UNCONDITIONAL — the old
+        // `resolved != path` comparison gated on the STRING moving, but an
+        // argv spelling that is already canonical can still resolve
+        // DIFFERENTLY than it did at the gate (a symlink component swapped
+        // inside the gate→enqueue window changes what the same string
+        // names), and that spelling was exactly the enqueue-without-checking
+        // hole. The gate is cheap and the whole point is that the ingested
+        // path is the policy-checked one. A vanishing path keeps the
+        // documented fallback (verbatim name; the import's own walk
+        // reports it).
+        crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
+            CliError::failed(format!(
+                "knowledge collections add-sources: refusing source path: {reason}"
+            ))
+        })?;
         resolved_paths.push(resolved);
     }
     let paths = resolved_paths;
@@ -1854,7 +1862,12 @@ fn index_retry(job_id: &str, item_id: i64, output: OutputMode) -> Result<CliOutc
 /// to its own code, not the job-not-found one.
 fn index_state_result(result: Result<IndexState, String>) -> Result<IndexState, CliError> {
     result.map_err(|error| {
-        if error.contains("is not a failed item") {
+        // Round-50 review: single-sourced app-side as
+        // `INDEX_ITEM_NOT_FAILED_MARKER` (the producer, the strip-and-reformat
+        // and this mapper all reference the same const) — a wording change on
+        // either side now fails at compile time instead of silently
+        // downgrading this stable code to the generic prefix.
+        if error.contains(pinvou3_lib::features::knowledge::INDEX_ITEM_NOT_FAILED_MARKER) {
             CliError::failed(format!("knowledge_index_item_not_found: {error}"))
         } else if error.contains("Query returned no rows") {
             CliError::failed(
