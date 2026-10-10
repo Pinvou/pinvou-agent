@@ -153,12 +153,30 @@ without a code change. Build, full Go vet, module verification, pinned contract
 checks and diff checks passed. The client architecture guard passed. No race
 detector or production custody acceptance is claimed.
 
-These batches do not complete T07. Protected Root publication, full issuer
-retention and immutable historical archive storage remain to be implemented and
-verified. The product owner still needs to select a controlled Root signing
-ceremony or independently authorized online gateways; production signing is not
-connected while that mutually exclusive custody decision is pending. Local
-provider experiments do not establish three independent production custodians.
+The protected storage batch is committed as
+`92bafad645056b805df775222fdc88a059a26544` on `feat/t07-signing-root`.
+It implements independently provisioned anchors, authenticated consecutive Root
+history, monotonic online key-use obligations and exact Release/Package archives.
+Historical verification survives expiry and normal key retirement without
+creating current qualification. Failed archive writes roll back together.
+Both independent reviewers passed after the primary role repaired column-level
+writes, reachable SET-role permissions, installed triggers after grant revocation
+and masked login identities. Actual PostgreSQL regressions cover these paths.
+
+The full Go regression passed with real PostgreSQL, Chrome E2E and OpenBao.
+The final storage package was rerun after the permission repairs and passed;
+module verification, full vet, build, pinned artifact and diff checks passed.
+These checks do not certify production custody or acknowledged-state RPO=0.
+
+These batches do not complete T07. The next Root publication owner must compose
+T05 current MFA and exact dual approvals, T06 durable recovery, complete T08
+public/private metadata and current Root-role deny. Purpose-scoped issuers and
+provider lifecycle recovery also remain. Storage functions are not application
+publication endpoints; no missing-owner fallback or production signing is wired.
+On 2026-10-10 the product owner deferred deployment work. Production hosting,
+seal, independent custodians and protected backup/restore acceptance remain
+deferred without blocking code development. Local provider experiments do not
+establish three independent production custodians.
 
 T03 still requires approved OS certification coverage, all-user/service data
 scope and finite preparation budgets. The product owner approved local health
