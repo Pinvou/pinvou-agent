@@ -375,3 +375,46 @@ final transactions/key-use writes and immediate-deny/T08 integration remain.
 Specific-client trust confirmation still awaits the pending protocol decision;
 dependent issuance stays closed. Deployment remains deferred by the owner's
 instruction and downloads have no hard total/cumulative elapsed limit.
+
+T07 inactive role-key material registration (2026-10-10) is committed and pushed
+as `d103754972aa9e497875ad8391627cbb81130229` on `feat/t07-signing-root`.
+The actual internal owner requires a new exact actor/source/scope-bound T05
+approval, two distinct reviewers, fresh MFA and current permissions. Its source
+comes from the accepted original provisioning receipt/outbox and immutable ready
+record, including canonical descriptor, permanent provider/name/version, epoch
+and original completion time. The T06 final transaction rechecks the source and
+complete authorization read set, then atomically stores the registered material,
+immutable result/outbox, audit and operation completion. No provider RPC occurs.
+
+Unique intent, key identity and physical provider tuple enforce one permanent
+binding. Failed pending reservations do not grant perpetual ownership: another
+authorized actor can obtain a new exact approval if no binding committed.
+Fresh composition replays the original result independently of T06 retention;
+protected same-actor authentication also enables durable worker recovery.
+Registration publishes no Root, enables no signer and creates no issuance/key-use.
+Migration five preserves the bytes and digests of migrations one through four.
+
+Both independent line-by-line reviewers passed production code and documentation
+after the main role repaired canonical source/result/receipt byte checks, strict
+integer/string and safe revision checks, the actual approval `changeId` field,
+and exact original intent-to-scope association. Restricted-runtime SQL rejection
+tests include successful canonical writes followed by rollback, so malformed
+bytes/types or scope cannot be masked by an unrelated failed prerequisite.
+
+The final affected real PostgreSQL/OpenBao suite passed (66.981s), including fresh
+worker recovery after the natural lease (33.85s) and actual Transit generation to
+registration (5.15s). The frozen serial integration run passed signing PostgreSQL
+(531.506s), operations PostgreSQL (152.494s), OpenBao (7.473s), reference semantics
+(3.622s) and all other packages except the unchanged management browser timing
+test. That run remains recorded as failed: `route.fetch/route.abort` reported an
+already-handled route. Its unchanged isolated real browser rerun passed (13.594s);
+this is neither a repair nor evidence of test stability. The subsequent default
+`go test ./...`, full vet, module verification, build, pinned-contract and diff
+checks passed; skipped default opt-ins are not claimed as physical evidence.
+
+T07 remains in progress. Actual published Root membership and immediate deny must
+precede controlled enablement; final issuance/key-use composition and the pending
+specific-client trust-confirmation decision remain required. Next development
+addresses the real T08 protected inventory/genesis/deny source needed by Root
+publication, without treating empty fixtures as owner state or marking T08
+complete. Deployment remains deferred and downloads retain no hard elapsed limit.
