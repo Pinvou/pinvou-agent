@@ -330,3 +330,48 @@ configuration ownership, OpenBao invocation/reconciliation, enabled key registry
 atomic issuance/key-use and T08 stop/deny integration remain required. Permanent
 ledger fixtures do not complete those owners or T07. Main development continues;
 production deployment remains deferred and downloads retain no cumulative limit.
+
+T07 approved role-key provisioning (2026-10-10) is committed and pushed as
+`ea9fd560a52403309a16471b950a6e5d1e3ed50c` on `feat/t07-signing-root`.
+The actual internal T05/T06 owner generates the permanent identity before exact
+actor/role/scope/provider approval, requires current permissions, two distinct
+reviewers and fresh MFA, and atomically commits the durable intent, immutable
+queued result/outbox, authorization audit and T06 state. Compute has no external
+provider effect. The authenticated controller commits its independent SQL claim
+before RPC and checks fresh current T05 authority and SQL time at claim, just
+before RPC and at completion; no SQL transaction spans the external call.
+
+Latest verified same-actor authentication remains separate from the immutable
+receipt and can be renewed after queue commitment without moving backwards.
+Unknown create ACKs retain the same physical name/version and original job fence;
+fresh instances recover the actual existing key. Provider references bind trusted
+connection configuration and exclude renewable tokens; this is association, not
+remote namespace attestation. Ready replay performs no RPC and preserves public
+material/time. The permanent T06 result stays queued after readiness and without
+response retention. None of this publishes Root, enables a key or issues a token.
+
+Both independent line-by-line reviewers passed the complete 25-file batch after
+the main role repaired one ineffective completion-window test. Its final negative
+cases use a valid running claim, epoch and descriptor, with successful rollback
+controls, so only the invalid authorization window causes refusal. Actual
+PostgreSQL also covers final rollback, unaccepted storage intents, actor/body/scope
+substitution, permission revocation before/during RPC, natural MFA expiry,
+monotonic fresh authentication, immutable replay and additive migration/ACL checks.
+Migration four leaves the first three SQL migrations and frozen contracts intact.
+
+The full serial Go suite passed with all configured PostgreSQL, Chrome, OpenBao
+and reference-semantics opt-ins. Actual management/browser passed (18.853s),
+operations PostgreSQL (154.516s), signing PostgreSQL (576.442s), OpenBao (6.846s),
+claims/reference semantics (2.052s), and purpose-bound pre-signing (10.229s).
+The integrated PostgreSQL/OpenBao test deliberately loses a successful create ACK,
+waits for the original two-minute SQL fence, and recovers the same public key with
+fresh repository, command, executor and provider instances. Earlier affected
+integration passed (136.853s); the final repaired PostgreSQL guard tests passed
+(26.392s). Full vet, module verification, build, pinned-artifact and diff checks
+passed. No production Keycloak OTP, custody, deployment or HA acceptance is claimed.
+
+T07 remains in progress. Protected key registration/enablement, actual issuer
+final transactions/key-use writes and immediate-deny/T08 integration remain.
+Specific-client trust confirmation still awaits the pending protocol decision;
+dependent issuance stays closed. Deployment remains deferred by the owner's
+instruction and downloads have no hard total/cumulative elapsed limit.
