@@ -8,15 +8,7 @@
 // is injected via `copy`.
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-
-// Button styling is a verbatim mirror of cardBtnCls in
-// features/tools/tool-renderers.jsx: the shared layer must not depend back on
-// features, so keep both sides in sync when changing either.
-function cardBtnCls(variant) {
-  const base = 'px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
-  if (variant === 'danger') return `${base} bg-[#C5221F] text-white hover:bg-[#A50E0E]`;
-  return `${base} bg-white text-[#1F1F1F] hover:bg-[#E1E5EA] border border-black/10 dark:border-transparent dark:bg-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#444746]`;
-}
+import { cardBtnCls } from './card-buttons.mjs';
 
 // copy = { title, body, hint, ok, cancel } (the i18n keys differ per side; the caller maps them).
 export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel }) {

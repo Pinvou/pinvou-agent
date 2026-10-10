@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
@@ -6,6 +6,7 @@ import { dict } from '../../shared/i18n.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { useThrottledValue } from './useThrottledValue.js';
+import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -82,22 +83,8 @@ const DEFAULT_CONVERSATION_ROW_GAP_PX = 16;
 // the component showing elapsed time owns the tick. On mount/activation it first syncs a baseline,
 // then starts the interval (same semantics as the old ChatView/CodexAcpView top-level ticker); no
 // timer is created while inactive, and it is cleaned up on unmount.
-// Exported for reuse by the ChatView composer activity indicator wrapper.
-/**
- * @param {boolean} active - whether the displayed duration is currently advancing
- * @returns {number} a timestamp that advances once per second while active
- */
-export function useConversationSecondClock(active) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the clock baseline once on activation so elapsed time is correct immediately, before the first interval tick
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return now;
-}
+// (Hook body lives in hooks/useConversationSecondClock.js, shared with the artifacts/monitor/
+// scheduled/chat tickers.)
 
 function localizedSemanticLabel(value, copy) {
   return {
