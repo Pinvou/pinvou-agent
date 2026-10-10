@@ -532,3 +532,79 @@ in progress: the actual adapter supports genesis only and rejects published head
 until complete publication/current-private/activation/pending-job reconciliation
 owners exist. Development continues with deployment deferred; downloads still
 have no hard total or cumulative elapsed limit.
+
+T07 scoped durable ordinary material retirement (2026-10-10) is committed and
+pushed as `36e7f223df7593b114dd8ec328f325b40b3e7e55` on
+`feat/t07-material-retirement`. This internal batch completes permanent non-Root
+physical retirement under an actor-bound `StopRoleKeyMaterial` approval, with
+current scoped authority, two distinct non-author reviews and fresh MFA.
+The approval binds original accepted provisioning/registration, fixed provider
+name/version one, full material identity, expected permanent-fence absence and
+complete actual global Root/anchor and affected-group inventories.
+
+Final T06/SQL acceptance atomically fences the material permanently, stops each
+affected current whole group/control/use and stores the original result, task,
+audit and outbox. All keys, thresholds, historical epochs and original object/
+upload/recovery windows remain intact. The accepted result is explicitly
+`fenced-and-queued`, not physical completion. Missing provider configuration or
+failed RPC leaves the durable task and permanent fence. Current Enabled reads
+and new Enable preparation/final SQL reject retired material; no new approval,
+epoch or registration restores it. This ordinary retirement preserves valid old
+objects; it does not substitute for emergency key deny and T08 reconciliation.
+
+Root exclusion checks actual public identity and Root-role membership in every
+product, including a different product's anchor/current Root. Every legal Root
+publication, independent anchor ingress and retirement acceptance shares one
+protected MVCC gate after its own product/anchor lock, without locking other
+products afterward. Real row writes reject stale SERIALIZABLE snapshots even
+after multiple token flips. Root ingresses reject permanently fenced material,
+closing promotion races throughout the outside-SQL provider call.
+
+Durable provider work commits its independent two-minute SQL lease and owner
+epoch before fixed-version RPC. Current original authority/approval/MFA is checked
+at claim, immediately before RPC and completion. Actual SQL time fences completion
+again after mutation. Unknown RPC/completion acknowledgements retain the original
+identity; natural lease expiry permits a fresh worker's higher epoch while old
+owners cannot complete. Verified replay can refresh pending authentication
+without changing the original result or lease. Fair rotating durable scans avoid
+starvation by an expired first task. Actual Transit retirement requires retained
+version-one public identity and an observed minimum signing floor above one;
+network errors, failed Sign and ACK alone are not completion evidence. No public
+verification trim/delete or raw successor protocol registration is introduced.
+
+Both independent roles passed line-by-line review of frozen code, SQL, eight new
+test files, related fixture and three server documents. The primary role repaired
+global Root membership races, final lease expiry, byte-budget consistency,
+composed schema/ACL readiness and worker fairness before final PASS. Additive
+signing guard six and issuer guard two retain original signing migrations one
+through five, issuer/metadata schema one and all frozen V1 bytes.
+
+The complete actual serial metadata PostgreSQL/OpenBao package passed 39 top-level
+cases in 566.982s: 17 retirement, 11 issuer and 11 metadata regressions. These
+include competing cross-product Root/retirement commit orders, stale snapshots,
+unchanged two-member thresholds/history, final authority/group changes, natural
+lease recovery (126.12s), lost completion ACK, fair worker/authentication refresh
+(44.18s), runtime inherited/SET-role refusal, additive upgrades and actual Transit
+fixed-version Sign denial with historical local signature verification. The common
+capacity reserve permits 1740 valid owner fixtures (3487 reads, 1,048,148 bytes)
+and rejects 1741 before approval and in final SQL; bulk fixtures certify bounds,
+not thousands of deployed catalog approvals.
+
+The preceding full signing PostgreSQL invocation remains recorded as FAIL
+(589.755s): four old migration fixtures were compiled before their dependency-order
+repair; all other cases passed. After removing the additive guard before migration
+five, all four affected actual upgrade cases passed separately (15.675s package).
+The affected actual T05 approval/audit regression also passed (8.610s package,
+1.54s case). Full default Go tests/vet, module verification, three command builds,
+pinned-contract and diff checks passed; repaired-fixture default scoped tests and
+the client architecture guard passed. Default external opt-ins were skipped and
+are distinguished from explicit PostgreSQL/OpenBao runs. No new browser, live
+Keycloak OTP, production custody, HA or physical-client certification is claimed.
+
+T07 remains in progress: actual final issuing owners/atomic last-use updates,
+specific-client trust confirmation and complete emergency deny are still required.
+Public lifecycle transport/management workflows remain separate from these
+internal owner components. T08 still requires complete publication/current private
+metadata, first activation and pending/job generation/reconciliation owners.
+Development continues with deployment deferred. Downloads have no hard total
+or cumulative elapsed limit.
