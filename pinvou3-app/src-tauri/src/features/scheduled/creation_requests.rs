@@ -1,3 +1,4 @@
+// architecture-guard: allow-target-cfg -- the devzero-symlink gate test needs std::os::unix::fs::symlink (unix-only) to plant a hostile non-regular spool entry; the attribute form is the only compiling gate for that import.
 //! Scheduled-task request watcher — the app-side consumer of the
 //! app-automations MCP family's create/update/delete spool
 //! (docs/app-automations-定时任务创建工具-设计与验收.md + its CRUD addendum;
