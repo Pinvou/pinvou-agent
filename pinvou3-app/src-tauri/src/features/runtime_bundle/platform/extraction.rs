@@ -132,12 +132,10 @@ impl Pinvou3Bundle {
     {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
-        // Round-26 MAJOR 3: through the hardened private-data read like the
-        // marker reads below. The raw `read_to_string` sat on the boot path:
-        // a planted FIFO at the version file blocked `open()` forever and
-        // wedged boot. Any refusal (or absence) degrades to the empty string,
-        // so the bundle re-extracts — the same fail-safe direction the
-        // `unwrap_or_default` had.
+        // Through the hardened private-data read like the marker reads
+        // below: a planted FIFO at the version file must not block
+        // `open()` forever and wedge boot. Any refusal (or absence)
+        // degrades to the empty string, so the bundle re-extracts.
         let current =
             crate::platform::filesystem::read_private_data_file(&version_file).unwrap_or_default();
         let bundle_changed = current.trim() != BUNDLE_VERSION;
@@ -485,10 +483,10 @@ impl Pinvou3Bundle {
             if !dir.exists() {
                 continue;
             }
-            // Hardened open (round-22 review): boot-path read; a planted
-            // FIFO at the marker would otherwise block the cleanup. Refused
-            // (non-regular) reads empty → the same unmarked treatment as an
-            // absent marker.
+            // Hardened open: boot-path read; a planted FIFO at the marker
+            // would otherwise block the cleanup. Refused (non-regular)
+            // reads empty → the same unmarked treatment as an absent
+            // marker.
             let marker =
                 crate::platform::filesystem::read_private_data_file(&dir.join(".installed-from"))
                     .unwrap_or_default();
@@ -526,7 +524,7 @@ impl Pinvou3Bundle {
                 // re-probe + delete pair, so an Upload import completing
                 // between the top probe and the uninstall still got its
                 // just-landed pack recycled wholesale by that uninstall).
-                // Round-20 review (P2): take the cross-process landing lease
+                // Take the cross-process landing lease
                 // for the whole sweep span, before the import mutex (the
                 // pipeline's own order). The import mutex and the
                 // transaction lock are process-local, so without this a
@@ -617,8 +615,8 @@ impl Pinvou3Bundle {
                 // refusing the reset and rolling back) must be logged:
                 // the old `let _ =` swallowed it silently, so within a
                 // corruption window every boot would silently recur.
-                // `uninstall_leased` (round-20 review): this sweep already
-                // holds the landing lease above.
+                // `uninstall_leased`: this sweep already holds the landing
+                // lease above.
                 let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
                     .uninstall_leased(tool_id)
                     .err();
@@ -637,19 +635,17 @@ impl Pinvou3Bundle {
                 // mirror delete failed inside `uninstall` (log-only, the
                 // record survives): the in-transaction cleanup is gated off
                 // on that leg, so this strip is the only one and the rows it
-                // scrubs are the stale residue of the half-uninstalled card
-                // (round-18 review: the old comment claimed a redundant
-                // defense that does not exist there). On a vacuous `Ok` (the
-                // previous boot uninstalled but its cleanup persist failed)
-                // it is the retry leg that scrubs the stale rows (#522). On
-                // a FAILED uninstall the transaction rolled back — record,
-                // dirs and stores are all restored, so the pack is still
-                // installed and live and its rows are the user's current
-                // consent, not residue; stripping them here would silently
-                // re-enable the still-installed pack (round-17 review). The
-                // residue probe keeps firing (record and dirs are probe
-                // surfaces), so the next startup retries the whole sweep and
-                // converges.
+                // scrubs are the stale residue of the half-uninstalled card.
+                // On a vacuous `Ok` (the previous boot uninstalled but its
+                // cleanup persist failed) it is the retry leg that scrubs
+                // the stale rows (#522). On a FAILED uninstall the
+                // transaction rolled back — record, dirs and stores are all
+                // restored, so the pack is still installed and live and its
+                // rows are the user's current consent, not residue;
+                // stripping them here would silently re-enable the
+                // still-installed pack. The residue probe keeps firing
+                // (record and dirs are probe surfaces), so the next startup
+                // retries the whole sweep and converges.
                 //
                 // Fail-visible (round-17 minor 1): the helper propagates persist
                 // failures (#571) — a stale entry would resurrect the retired
@@ -664,21 +660,20 @@ impl Pinvou3Bundle {
                 // onto a foreign pack's claim and erase THAT pack's consent
                 // rows. Exact removal targets only the retired pack's rows.
                 if uninstall_error.is_none() {
-                    // Round-18 review (P2): a same-id import in ANOTHER
-                    // process registers its deny-first rows before landing
-                    // (the pre-land gate), and the per-id import lock is
-                    // process-local — a vacuous uninstall here would see no
-                    // record and strip those fresh rows as "residue",
-                    // re-enabling the pack as it lands. The landing journal
-                    // mark is written before that registration and is
-                    // cross-process visible, so defer while it is present;
-                    // the next startup retries the whole sweep. (Round-20
-                    // review P2: the mark is backed by the landing lease the
-                    // import holds across its whole span, and this defer
-                    // covers the DELETION legs below too — falling through
-                    // used to delete a just-landed pack dir behind the
-                    // record-only re-probe, in the import's landing→
-                    // registration gap.)
+                    // A same-id import in ANOTHER process registers its
+                    // deny-first rows before landing (the pre-land gate),
+                    // and the per-id import lock is process-local — a
+                    // vacuous uninstall here would see no record and strip
+                    // those fresh rows as "residue", re-enabling the pack as
+                    // it lands. The landing journal mark is written before
+                    // that registration and is cross-process visible, so
+                    // defer while it is present; the next startup retries
+                    // the whole sweep. The mark is backed by the landing
+                    // lease the import holds across its whole span, and
+                    // this defer covers the DELETION legs below too —
+                    // falling through would delete a just-landed pack dir
+                    // behind the record-only re-probe, in the import's
+                    // landing→registration gap.
                     if crate::features::marketplace::plugin_import::landing_in_progress(tool_id) {
                         log::warn!(
                             "[cleanup] retired tool '{tool_id}': an import for the same id is mid-landing; deferring the rest of the cleanup to the next startup"
@@ -798,13 +793,10 @@ impl Pinvou3Bundle {
             if !path.exists() {
                 continue; // 文件不存在 = 该清理面本就干净,不算误报
             }
-            // read_private_data_file keeps the Windows shared-read semantics
-            // (a plain shared read off unix) and adds the Unix
-            // symlink/FIFO/device hardening of the scope readers: these are
-            // the same private-home consent surfaces scope.rs reads hardened
-            // every turn, so a planted FIFO at the data path must not hang
-            // this boot probe's open either — a rejected read errs toward
-            // "residue present", the conservative direction (round-19 review).
+            // Hardened read — the same private-home consent surfaces scope.rs
+            // reads hardened every turn, so a planted FIFO must not hang
+            // this boot probe's open either; a rejected read errs toward
+            // "residue present", the conservative direction.
             match crate::platform::filesystem::read_private_data_file(&path) {
                 Ok(content) => {
                     if content.contains(tool_id) {
@@ -821,8 +813,7 @@ impl Pinvou3Bundle {
         // read_private_data_file (not a bare std::fs::read) so this probe
         // shares the same hardened convention as the two probe surfaces above
         // and a future edit cannot change only one of them: identical Windows
-        // share semantics, plus the Unix planted-path hardening (round-18
-        // review consistency fix, hardened in round-19).
+        // share semantics, plus the Unix planted-path hardening.
         if !paths::mcp_config_path().is_file() {
             return false;
         }
@@ -909,8 +900,8 @@ impl Pinvou3Bundle {
         state_fn: impl Fn() -> bool,
     ) -> bool {
         state_fn()
-            // Shares the consent gate's exact-name bar (round-12 B3) so the
-            // cache and the gate cannot diverge on case-variant states.
+            // Shares the consent gate's exact-name bar so the cache and the
+            // gate cannot diverge on case-variant states.
             && crate::features::marketplace::bundle::cli_connector_skill_dirs_present(
                 connector_id,
                 skill_dirs,
@@ -1132,9 +1123,9 @@ impl Pinvou3Bundle {
         // 原子落盘复用 marketplace 的共享写方(write_json_pretty → write_atomic,
         // tmp+rename):裸写被崩溃打断会制造出启动维护防御的损坏文件本身。
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
-        // Hardened read (round-24 minor): this in-lock compare must not hang
-        // on a planted FIFO — a refusal reads as "differs" and the locked
-        // atomic writer below takes over.
+        // Hardened read: this in-lock compare must not hang on a planted
+        // FIFO — a refusal reads as "differs" and the locked atomic writer
+        // below takes over.
         if crate::platform::filesystem::read_private_data_file(&self.mcp_json)
             .is_ok_and(|existing| existing == json)
         {
@@ -1322,9 +1313,9 @@ impl Pinvou3Bundle {
         }
         // Report the most recent dynamic startup failure (for example, native-host or CDP
         // readiness) only while it remains fresh for 24 hours.
-        // Hardened read (round-24 minor): the last-error file is private-home
-        // state; a planted FIFO must refuse fail-loud (read as "no report")
-        // instead of hanging the caller.
+        // Hardened read: the last-error file is private-home state; a
+        // planted FIFO must refuse fail-loud (read as "no report") instead
+        // of hanging the caller.
         let Ok(raw) =
             crate::platform::filesystem::read_private_data_file(&paths::browser_last_error_json())
         else {
@@ -1367,9 +1358,9 @@ impl Pinvou3Bundle {
         // `[]`). Fabricating an empty object would silently remove all marketplace tools
         // from this session and leave only Browser MCP; continuing with a non-object would
         // panic at `as_object_mut().unwrap()`. The fallback loses only browser tools and
-        // preserves the global behavior. The read itself is the hardened private-data read
-        // (round-24 minor): every spawned session reaches this path, so a planted FIFO at
-        // the global mcp.json must refuse fail-loud instead of hanging the spawn.
+        // preserves the global behavior. The read itself is the hardened private-data read:
+        // every spawned session reaches this path, so a planted FIFO at the global mcp.json
+        // must refuse fail-loud instead of hanging the spawn.
         let mcp: serde_json::Value =
             match crate::platform::filesystem::read_private_data_file(&base)
                 .ok()
@@ -1427,9 +1418,9 @@ impl Pinvou3Bundle {
                 // Skip an unchanged file. Every spawned session reaches this path, including
                 // Code-mode sessions that later fall back to the global configuration, so
                 // atomically replacing identical content would be needless disk I/O. The
-                // compare is the hardened read (round-24 minor): a planted FIFO at the work
-                // copy must refuse fail-loud instead of hanging the spawn; the atomic
-                // private write below then replaces it.
+                // compare is the hardened read: a planted FIFO at the work copy must refuse
+                // fail-loud instead of hanging the spawn; the atomic private write below
+                // then replaces it.
                 if crate::platform::filesystem::read_private_data_file(&work_path)
                     .map(|existing| existing == json)
                     .unwrap_or(false)
@@ -1642,12 +1633,12 @@ impl Pinvou3Bundle {
     /// 调用方据此决定是否还要 chmod / 后续动作——避免每次启动无条件重写
     /// 上百 KB 的 immutable bundle 资源。
     ///
-    /// Round-26 MAJOR 3: both legs go through the hardened private-data
-    /// primitives. The raw `fs::read` hung on a planted FIFO at the target,
-    /// and the raw `fs::write` FOLLOWED a planted symlink, clobbering the
-    /// link's victim with bundle content — the exact class the hardened
-    /// primitives refuse. An abnormal target now fails the extraction
-    /// loudly (absent stays "write").
+    /// Both legs go through the hardened private-data primitives: a raw
+    /// `fs::read` hangs on a planted FIFO at the target, and a raw
+    /// `fs::write` FOLLOWS a planted symlink, clobbering the link's victim
+    /// with bundle content — the exact class the hardened primitives
+    /// refuse. An abnormal target fails the extraction loudly (absent
+    /// stays "write").
     pub(super) fn write_if_changed(
         &self,
         path: &std::path::Path,
@@ -2213,7 +2204,7 @@ mod tests {
         });
     }
 
-    /// Round-17 review: when the uninstall rolls back wholesale because
+    /// When the uninstall rolls back wholesale because
     /// mcp.json refuses the reset (byte-preservation contract see
     /// ensure_extracted_preserves_corrupt_mcp_json_bytes), the transaction
     /// rollback restores the record/dirs/stores wholesale — the pack is still
@@ -2298,7 +2289,7 @@ mod tests {
         });
     }
 
-    /// Round-18 review (P2): a same-id import in ANOTHER process registers
+    /// A same-id import in ANOTHER process registers
     /// its deny-first rows BEFORE landing (the pre-land gate), and the
     /// per-id import lock is process-local — the sweep's vacuous-uninstall
     /// retry leg would strip those fresh rows as "residue", re-enabling the
@@ -2329,7 +2320,7 @@ mod tests {
                 crate::features::marketplace::plugin_import::landing_mark_path("data_analysis");
             std::fs::create_dir_all(mark.parent().unwrap()).unwrap();
             std::fs::write(&mark, "pending\n").unwrap();
-            // Round-20 review (P2): the defer must cover the deletion legs
+            // The defer must cover the deletion legs
             // too — a same-id import in its landing→registration gap has no
             // record yet, so the record-only re-probes below the strip would
             // delete its just-landed dir. Plant both deletion targets.
@@ -2449,13 +2440,12 @@ mod tests {
         });
     }
 
-    /// Round-26 MAJOR 3: both legs of the compare-write go through the
-    /// hardened private-data primitives — a planted symlink at the target
-    /// must be refused (the raw `fs::write` used to follow the link and
-    /// clobber its victim with bundle content), and a planted FIFO must be
-    /// refused without hanging the boot thread. The FIFO leg runs in a
-    /// bounded worker so a regression to the raw read fails the test instead
-    /// of hanging the suite.
+    /// Both legs of the compare-write go through the hardened private-data
+    /// primitives — a planted symlink at the target must be refused (the
+    /// raw `fs::write` follows the link and clobbers its victim with bundle
+    /// content), and a planted FIFO must be refused without hanging the
+    /// boot thread. The FIFO leg runs in a bounded worker so a regression
+    /// to the raw read fails the test instead of hanging the suite.
     #[test]
     #[cfg(unix)]
     fn write_if_changed_refuses_planted_symlink_and_fifo_targets() {
