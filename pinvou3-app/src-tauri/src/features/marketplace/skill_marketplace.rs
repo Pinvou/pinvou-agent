@@ -579,8 +579,11 @@ impl SkillMarketplaceManager {
         // (closing it needs a held-lease variant so the nested MCP companion
         // cleanup cannot self-deadlock — see the pipeline comment in
         // plugin_import), so a cross-process skill-install-vs-import of the
-        // same id can still interleave; the consent gate re-registers
-        // deny-first on the next touch, and §3.2 registers the window.
+        // same id can still interleave. Round-27 review correction: this
+        // does NOT self-heal — the landed record+content satisfy the
+        // known-check, so the next gate run SKIPS and the pack sits with
+        // zero consent rows until its next teardown; §3.2 registers the
+        // window with the exact direction.
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
@@ -1821,8 +1824,21 @@ fn legacy_companion_owners() -> std::collections::HashMap<String, String> {
     };
     for entry in rd.flatten() {
         let manifest_path = entry.path().join("manifest.json");
-        let Ok(content) = std::fs::read_to_string(&manifest_path) else {
-            continue;
+        // Round-27 review (minor): this runs on the boot migration thread;
+        // a planted FIFO at a manifest path must refuse through the hardened
+        // primitive (skip the dir, same as corrupt/missing) instead of
+        // blocking `open()` — the hardened marker read twenty lines below
+        // made the sweep's own read safe, this twin stayed raw.
+        let content = match crate::platform::filesystem::read_private_data_file(&manifest_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] legacy companion manifest read refused ({}): {e}",
+                    manifest_path.display()
+                );
+                continue;
+            }
         };
         let Ok(manifest) = serde_json::from_str::<super::types::ToolManifest>(&content) else {
             continue;
@@ -1906,7 +1922,13 @@ fn collect_disk_files_under(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        out.push((rel, std::fs::read(&path)?));
+        // Round-27 review (minor): the fingerprint walk feeds the update
+        // probe and the display-edit path; a FIFO planted as a non-SKILL.md
+        // file in an installed tree must refuse through the hardened
+        // primitive (surfaces as a fingerprint/read error like any other IO
+        // failure) instead of blocking `read()` forever.
+        let bytes = crate::platform::filesystem::read_private_data_file_bytes(&path)?;
+        out.push((rel, bytes));
     }
     Ok(())
 }
