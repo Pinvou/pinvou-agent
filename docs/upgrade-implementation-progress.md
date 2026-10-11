@@ -608,3 +608,44 @@ internal owner components. T08 still requires complete publication/current priva
 metadata, first activation and pending/job generation/reconciliation owners.
 Development continues with deployment deferred. Downloads have no hard total
 or cumulative elapsed limit.
+
+T07 scoped finite current-metadata presigning (2026-10-11) is committed as
+`5fe6ca5144078081d68366d4caedd732a53a7e76` on
+`feat/t07-issuance-write-set` in the separate server repository. The owner approved
+a 32MiB (33,554,432-byte) aggregate cap for complete signed metadata envelopes in
+one internal atomic issuance transaction. Each envelope remains limited to 1MiB.
+This new parameter does not restrict installer size, download volume or duration.
+
+The preparation component checks all exact contexts, intrinsic claims, current
+Root/role deny, unique role/full scope and exact signature overhead before any
+provider callback. It keeps private claim/Root/deny snapshots, locally verifies
+each fixed-context signature and returns no partial batch on failure. Final
+revalidation repeats size, Root, role deny and original time fences without a
+provider call; returned copies cannot change candidates. The actual publisher
+still owns metadata reference graphs and current publication/business eligibility.
+
+Frozen V1 offers at most fourteen unique current slots in one component: twelve
+Target scopes, one Snapshot and one Timestamp. Its natural envelope bound is
+therefore at most 14MiB, below the approved ceiling. The 32MiB/4096-count boundary
+tests are explicitly synthetic arithmetic evidence, not legal publication cases.
+Actual schema/semantics-valid synthetic Target claims exercise exact 1MiB signed
+envelopes and one-byte signature-overhead refusal with zero provider calls.
+
+Both independent roles passed line-by-line code, test and documentation review.
+All six new pure batch cases and existing presign regressions passed (37.046s);
+independent package runs also passed (57.282s and 70.350s). The explicit isolated
+Transit all-online-role case passed (40.96s; package 49.000s), including the new
+three-role batch, duplicate preflight, copy/deny/no-resign guards and revoked
+provider failure without partial material. Full default Go tests/vet, module
+verification, three command builds, pinned-contract and diff checks passed, as
+did the client architecture guard. Default database/browser/external opt-ins are
+distinguished from the explicit Transit run. No new actual PostgreSQL issuance,
+browser, Keycloak OTP, production custody, HA or physical-client acceptance is
+inferred; no database mutation was changed in this preparation batch.
+
+T07/T08 remain in progress. The actual atomic SQL issuance ledger, original
+last-use window updates, durable response recovery, publication/authority guards
+and issuer/material/read-set final composition remain unfinished. Local
+owner/window helpers and the future write-set plan are not committed as completed
+functionality. Deployment remains deferred; downloads have no hard total or
+cumulative elapsed limit.

@@ -20,8 +20,19 @@ with self-hosted Keycloak available for community deployment, and separate signi
 and file-storage ports. The product owner selected the separate `UpdateServer`
 repository. Its private hosting address stays in local Git configuration, not in
 committed artifacts. No server project is created in this client repository.
-Previously approved Ed25519 thresholds, input limits and absence of a cumulative
-download deadline remain unchanged.
+Previously approved Ed25519 thresholds, per-object input limits and absence of a
+cumulative download deadline remain unchanged.
+
+The owner approved a 32MiB (33,554,432-byte) aggregate cap on 2026-10-11 for the
+exact signed metadata envelopes in one internal atomic current-metadata issuance
+transaction. Count the complete envelopes, including signatures, rather than only
+the signed claims. Each envelope still has its independent 1MiB limit; the batch
+and its complete read set remain limited to 4096 items, with the read set also
+bounded to 1MiB. This is a server transaction resource bound, not an installer-file,
+download-volume or download-duration limit. An over-cap atomic write set is
+rejected in full; it must not be silently truncated or split across commits.
+The approval establishes this capacity parameter only, not completion of T07/T08
+or a production peak-memory/concurrent-load certification.
 
 T05 management decisions are also approved (2026-10-09): explicitly initialize
 the intended immutable OIDC identity through a separately authenticated
