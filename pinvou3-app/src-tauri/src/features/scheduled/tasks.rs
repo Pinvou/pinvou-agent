@@ -617,9 +617,19 @@ impl ScheduledTaskState {
         // discipline as the model-binding rollback): a failed target
         // persist must not leave the automation updated with a stale
         // target — the half-applied state a retried update would stack on.
-        let previous_for_rollback = retarget
-            .as_ref()
-            .and_then(|_| manager.get_automation(&id).ok());
+        let previous_for_rollback = retarget.as_ref().and_then(|_| match manager.get_automation(&id) {
+            Ok(previous) => Some(previous),
+            Err(error) => {
+                // Round-13 minor 6: a failed snapshot read silently skips
+                // the rollback — say so loudly instead of degrading to None
+                // (the failed update then proceeds with no rollback
+                // possible on sidecar-persist failure).
+                log::warn!(
+                    "Failed to snapshot scheduled task {id} before its retarget (rollback unavailable if the target persist fails): {error:#}"
+                );
+                None
+            }
+        });
         let updated = manager
             .update_automation(&id, build_update_request(input)?)
             .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
@@ -671,7 +681,11 @@ impl ScheduledTaskState {
                     // The binding store restores its own in-memory snapshot
                     // on persist failure. Do not write an older binding again:
                     // that redundant rollback could clobber a concurrent CLI
-                    // rebind. Automation fields remain applied and retriable.
+                    // rebind. The state that IS half-applied on this path —
+                    // the already persisted name/prompt/rrule AND, when the
+                    // update carried one, the retargeted target_session —
+                    // remains applied and retriable as a whole (round-13
+                    // minor 9: the retarget is named in the caller's error).
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));
