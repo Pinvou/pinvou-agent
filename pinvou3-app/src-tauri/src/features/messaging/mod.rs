@@ -115,6 +115,9 @@ const MAX_PENDING_FILES: usize = 256;
 /// many attempts (each attempt waits `[MIN_BACKOFF, MAX_BACKOFF]` since the
 /// previous one, so worst case is minutes, not the poll interval).
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
+/// Round-11 minor 11: cap for the already-delivered-skip audit dedupe (see
+/// `skip_audited`).
+const SKIP_AUDITED_CAP: usize = 4096;
 const MIN_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// Upper bound for one delivery attempt: a wedged engine's steer channel can
@@ -375,22 +378,38 @@ pub async fn deliver_spooled_message(
     message: &SpooledMessage,
 ) -> Result<DeliveryOutcome> {
     let text = message.delivered_text();
-    let steered = tokio::time::timeout(
-        DELIVERY_TIMEOUT,
-        pool.steer(&message.to_session, text.clone()),
+    let to_session = message.to_session.clone();
+    steer_then_dispatch(
+        || pool.steer(&to_session, text.clone()),
+        || pool.deliver_messaging_turn(&to_session, text.clone()),
     )
-    .await;
+    .await
+}
+
+/// Round-11 M-A: the steer→dispatch decision seam, extracted so the FULL
+/// decision matrix (steer success / steer failure → dispatch fallback /
+/// both timeouts, each bounded by [`DELIVERY_TIMEOUT`]) is behaviorally
+/// pinnable without a live `EnginePool` — swapping the outcomes, deleting
+/// the fallback leg or the timeout wrappers previously shipped the whole
+/// matrix green.
+async fn steer_then_dispatch<SteerF, DispatchF, SteerFut, DispatchFut, S>(
+    steer: SteerF,
+    dispatch: DispatchF,
+) -> Result<DeliveryOutcome>
+where
+    SteerF: FnOnce() -> SteerFut,
+    SteerFut: std::future::Future<Output = Result<S>>,
+    DispatchF: FnOnce() -> DispatchFut,
+    DispatchFut: std::future::Future<Output = Result<()>>,
+{
+    let steered = tokio::time::timeout(DELIVERY_TIMEOUT, steer()).await;
     match steered {
         Ok(Ok(_)) => Ok(DeliveryOutcome::Steered),
         Ok(Err(steer_error)) => {
             // The dispatch path re-checks deletion/lifecycle gates itself
             // (send_reserved_user_message loads the store under the turn
             // lock); a genuinely gone session fails loudly here.
-            let dispatched = tokio::time::timeout(
-                DELIVERY_TIMEOUT,
-                pool.deliver_messaging_turn(&message.to_session, text),
-            )
-            .await;
+            let dispatched = tokio::time::timeout(DELIVERY_TIMEOUT, dispatch()).await;
             match dispatched {
                 Ok(Ok(())) => Ok(DeliveryOutcome::Dispatched),
                 Ok(Err(error)) => Err(error)
@@ -621,6 +640,13 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
                     detail,
                 );
             }
+            // Round-11 minor 11: the set is process-lifetime — a sustained
+            // hostile listing would grow it without bound. Cap + wholesale
+            // reset re-audits at most once per cap cycle (audit volume is
+            // bounded; the memory is too).
+            if skip_audited.len() >= SKIP_AUDITED_CAP {
+                skip_audited.clear();
+            }
             skip_audited.insert(stem);
         }
         return Processed::Done(std::sync::Arc::clone(&original));
@@ -649,7 +675,15 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
             audit_delivery(store, &message, outcome);
             if message.idempotency_key.is_some() {
                 let _ = std::fs::create_dir_all(done_dir());
-                let _ = std::fs::write(&done_marker, b"");
+                // Round-11 minor 2: a silent marker-write failure means the
+                // keyed retry re-delivers the whole message with zero trace
+                // — at least say so.
+                if let Err(error) = std::fs::write(&done_marker, b"") {
+                    log::warn!(
+                        "[messaging] done marker write failed for {:?} (a keyed retry will re-deliver): {error}",
+                        done_marker
+                    );
+                }
             }
             Processed::Done(std::sync::Arc::clone(&original))
         }
@@ -695,6 +729,18 @@ fn spool_records_equal(a: &[u8], b: &[u8]) -> bool {
     }
     if let Some(b) = b.as_object_mut() {
         b.insert("created_at".into(), serde_json::Value::Null);
+    }
+    // Round-11 minor 7: the titles are volatile too — from_title is
+    // re-derived from the live store at delivery, to_title is unused by
+    // delivery, and a session rename inside the wide (≤30s) window made a
+    // same keyed re-spool compare UNEQUAL (a duplicate delivery).
+    if let Some(a) = a.as_object_mut() {
+        a.insert("from_title".into(), serde_json::Value::Null);
+        a.insert("to_title".into(), serde_json::Value::Null);
+    }
+    if let Some(b) = b.as_object_mut() {
+        b.insert("from_title".into(), serde_json::Value::Null);
+        b.insert("to_title".into(), serde_json::Value::Null);
     }
     a == b
 }
@@ -863,17 +909,15 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     files.sort();
-    // Round-2 SF2 + round-9 minor 16a: the switch gate sits AFTER the
-    // spool-dir existence check and the listing — with no pending files
-    // the poll must not pay a settings.json read+parse every second (the
-    // round-8 order consulted it before even the ENOENT check).
-    if !files.is_empty() && !messaging_switched_on() {
-        return;
-    }
     // Pending cap: the sorted tail beyond the ceiling is hostile growth —
     // quarantine it with an audit record instead of delivering unbounded
     // unattended turns (the cap is on *pending* files, not on deliveries:
     // a normal sender's backlog drains every poll and never approaches it).
+    // Round-11 minor 3: the cap sits BEFORE the switch gate — a
+    // switched-off spool previously accumulated without bound (the gate
+    // returned first) and the reopen poll quarantined an arbitrary
+    // dictionary-order tail; hostile growth is now bounded in every
+    // switch state.
     if files.len() > MAX_PENDING_FILES {
         for path in files.split_off(MAX_PENDING_FILES) {
             let name = path
@@ -899,6 +943,13 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 retries.attempts.remove(name);
             }
         }
+    }
+    // Round-2 SF2 + round-9 minor 16a: the switch gate sits after the
+    // spool-dir existence check and the listing (with no pending files the
+    // poll pays no settings.json read); round-11 minor 3: and after the
+    // pending cap, so a switched-off spool stays bounded.
+    if !messaging_switched_on() {
+        return;
     }
     for path in files {
         // A non-UTF-8 file name can never be processed or keyed — it would
@@ -992,11 +1043,20 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         "[messaging] {name} was replaced after delivery; leaving the newest \
                          body for the next poll"
                     );
+                    // Round-11 minor 8: dropping the stale marker MUST NOT
+                    // be silent — an unlink failure here would suppress the
+                    // newest body as already-delivered forever.
                     let stem = Path::new(&name)
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or(&name);
-                    let _ = std::fs::remove_file(done_dir().join(format!("{stem}.json")));
+                    if let Err(unlink_error) =
+                        std::fs::remove_file(done_dir().join(format!("{stem}.json")))
+                    {
+                        log::warn!(
+                            "[messaging] failed to drop the stale done marker for {name}: {unlink_error}"
+                        );
+                    }
                     retries.clear(&name);
                     continue;
                 }
@@ -1025,19 +1085,28 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                                 retries.clear(&name);
                                 continue;
                             }
-                            log::warn!(
-                                "[messaging] quarantining {name} after {fails} failed removals"
-                            );
-                            // Round-9 minor 17: the removal-quarantine is a
-                            // disposition of an ACCEPTED message — audit it
-                            // like the other terminal arms.
+                            // Round-11 minor 1: the record is read BEFORE
+                            // the move, and the audit + budget clear fire
+                            // only when the quarantine actually landed —
+                            // the old shape appended a "quarantined" line
+                            // every poll while the rename kept failing (a
+                            // claim that was never true), and the attempts
+                            // entry survived the terminal move (a leaked
+                            // entry re-armed a same-name re-spool's
+                            // quarantine after one failure).
                             let record = read_record_for_audit(&path);
-                            audit_quarantine(
-                                store,
-                                record.as_ref(),
-                                &format!("removal failed {fails} times: {error}"),
-                            );
                             quarantine(&path);
+                            if !path.exists() {
+                                log::warn!(
+                                    "[messaging] quarantining {name} after {fails} failed removals"
+                                );
+                                audit_quarantine(
+                                    store,
+                                    record.as_ref(),
+                                    &format!("removal failed {fails} times: {error}"),
+                                );
+                                retries.clear(&name);
+                            }
                         }
                     }
                 }
@@ -1099,7 +1168,12 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
 /// leftover `spool/*.tmp` (the server's mkstemp writes) older than
 /// [`RETENTION`] — at watcher start and then every [`PRUNE_INTERVAL`].
 fn prune_stale_state() {
-    let cutoff = std::time::SystemTime::now() - RETENTION;
+    prune_stale_state_at(std::time::SystemTime::now() - RETENTION);
+}
+
+/// Round-11 M-A: the clock is injected so the pending-file survival pin
+/// can age fixtures without sleeping.
+fn prune_stale_state_at(cutoff: std::time::SystemTime) {
     let mut dirs = vec![done_dir(), failed_dir(), spool_root()];
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1455,6 +1529,169 @@ mod spool_pipeline_tests {
     /// Round-10 M1 guard for the guard itself: a STABLE unparseable file
     /// (byte-equal at disposition time) must still quarantine — only a
     /// diverged file is re-queued, so a poisoned file cannot poll forever.
+    /// Round-11 M-A: the steer→dispatch decision matrix pinned at the seam —
+    /// steer success → Steered; steer failure → dispatch → Dispatched;
+    /// dispatch failure → Err naming BOTH legs. Swapping the outcomes or
+    /// deleting the fallback leg ships these red.
+    #[tokio::test]
+    async fn steer_success_steers_without_dispatch() {
+        let steered = steer_then_dispatch(
+            || async { Ok(()) },
+            || async { Err(anyhow::anyhow!("dispatch must not run")) },
+        )
+        .await
+        .expect("steer success delivers");
+        assert!(matches!(steered, DeliveryOutcome::Steered));
+    }
+
+    #[tokio::test]
+    async fn steer_failure_falls_back_to_dispatch() {
+        let steered = steer_then_dispatch(
+            || async { Err::<(), _>(anyhow::anyhow!("idle: no live engine")) },
+            || async { Ok(()) },
+        )
+        .await
+        .expect("the dispatch fallback delivers");
+        assert!(matches!(steered, DeliveryOutcome::Dispatched));
+    }
+
+    #[tokio::test]
+    async fn dispatch_failure_surfaces_both_legs() {
+        let error = steer_then_dispatch(
+            || async { Err::<(), _>(anyhow::anyhow!("idle: no live engine")) },
+            || async { Err(anyhow::anyhow!("target session is gone")) },
+        )
+        .await
+        .expect_err("both legs failing is an error");
+        let text = format!("{error:#}");
+        assert!(text.contains("idle: no live engine"), "{text}");
+        assert!(text.contains("target session is gone"), "{text}");
+        assert!(text.contains("dispatch after steer failure"), "{text}");
+    }
+
+    /// The timeout wrappers are load-bearing: a wedged leg (never-resolving
+    /// future) must surface the timeout error, not hang the watcher. With
+    /// paused time the budget elapses instantly; a mutant that deletes the
+    /// wrapper hangs this test.
+    #[tokio::test(start_paused = true)]
+    async fn wedged_legs_time_out() {
+        let error = steer_then_dispatch(
+            || std::future::pending::<Result<()>>(),
+            || std::future::pending::<Result<()>>(),
+        )
+        .await
+        .expect_err("a wedged steer times out");
+        assert!(error.to_string().contains("steer timed out"), "{error:#}");
+        let error = steer_then_dispatch(
+            || async { Err::<(), _>(anyhow::anyhow!("idle")) },
+            || std::future::pending::<Result<()>>(),
+        )
+        .await
+        .expect_err("a wedged dispatch times out");
+        assert!(
+            error.to_string().contains("dispatch timed out"),
+            "{error:#}"
+        );
+    }
+
+    /// Round-11 M-A: the PANIC terminal arm re-verifies before quarantining
+    /// — a keyed retry that replaces the record during the panicking
+    /// attempt must NOT be quarantined untried when the panic budget
+    /// exhausts (deleting the replaced_since_first_read consult ships this
+    /// red; the round-10 REQUIRED bug's regression channel).
+    #[tokio::test]
+    async fn panic_arm_requeues_a_body_that_landed_mid_panic() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("die.json"), record_json("die", Some("k-panic"))).unwrap();
+        // The replacement lands while deliver is panicking.
+        struct PanickingSwappingDelivery {
+            replacement: String,
+            calls: Rc<RefCell<usize>>,
+        }
+        impl SpoolDelivery for PanickingSwappingDelivery {
+            async fn deliver(&self, _message: &SpooledMessage) -> Result<DeliveryOutcome> {
+                *self.calls.borrow_mut() += 1;
+                std::fs::write(spool_root().join("die.json"), &self.replacement).unwrap();
+                panic!("simulated panic inside deliver");
+            }
+        }
+        let replacement = record_json("die", Some("k-panic")).replace("正文", "更正后的正文");
+        let delivery = PanickingSwappingDelivery {
+            replacement,
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        retries.attempts.insert(
+            "die.json".to_string(),
+            (
+                MAX_DELIVERY_ATTEMPTS - 1,
+                std::time::Instant::now() - Duration::from_secs(60),
+            ),
+        );
+        process_pending_spool(
+            &delivery,
+            &AllowAllGates,
+            &sessions_store(),
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert_eq!(*delivery.calls.borrow(), 1, "the panicking attempt ran");
+        assert!(
+            !failed_dir().join("die.json").exists(),
+            "the untried newest body must not be quarantined under the old body's panic"
+        );
+        assert!(
+            spool.join("die.json").exists(),
+            "the newest body stays queued"
+        );
+        assert!(
+            retries.attempts.is_empty(),
+            "the budget resets for the newest body"
+        );
+    }
+
+    /// Round-11 M-A: prune's pending-file survival is pinned — reversing
+    /// the extension filter would silently delete queued messages as
+    /// "garbage" (a message-destroying regression that shipped green).
+    #[test]
+    fn prune_never_touches_pending_spool_records() {
+        let _home = TempHome::new();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::create_dir_all(failed_dir()).unwrap();
+        std::fs::write(spool.join("pending.json"), record_json("pending", None)).unwrap();
+        std::fs::write(spool.join("stray.tmp"), b"crash leftover").unwrap();
+        let stale = std::time::SystemTime::now() - RETENTION - std::time::Duration::from_secs(60);
+        for path in [
+            done_dir().join("stale.json"),
+            failed_dir().join("stale.json"),
+            spool.join("stray.tmp"),
+        ] {
+            std::fs::write(&path, b"x").unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_times(std::fs::FileTimes::new().set_modified(stale))
+                .unwrap();
+        }
+        prune_stale_state_at(stale + std::time::Duration::from_secs(30));
+        assert!(
+            spool.join("pending.json").exists(),
+            "a queued message is never prune garbage"
+        );
+        assert!(
+            !done_dir().join("stale.json").exists(),
+            "stale marker pruned"
+        );
+        assert!(
+            !failed_dir().join("stale.json").exists(),
+            "stale evidence pruned"
+        );
+        assert!(!spool.join("stray.tmp").exists(), "crash tmp pruned");
+    }
+
     #[tokio::test]
     async fn stable_unparseable_file_still_quarantines() {
         let _home = TempHome::new();
@@ -1659,6 +1896,11 @@ mod spool_pipeline_tests {
             p
         })
         .unwrap();
+        // Round-11 minor 1: the read-only dir fails the quarantine RENAME
+        // too, so the record never leaves — the streak therefore keeps
+        // GROWING (no audit line claims a quarantine that never happened,
+        // and no budget clear re-arms the loop); it would clear only when a
+        // terminal move actually lands.
         let streak = *retries.removal_failures.get("locked.json").unwrap_or(&0);
         assert!(
             streak >= MAX_DELIVERY_ATTEMPTS,
@@ -2217,6 +2459,29 @@ mod spool_pipeline_tests {
         assert!(
             spool.join("r.json").exists(),
             "file stays for the next poll"
+        );
+    }
+
+    /// Round-11 M-A: the watcher-side validate() checks are pinned beyond
+    /// the 32k text cap — schema drift, self-send, and a hostile charset
+    /// target each reject here (contract §9's "rejected … by the server
+    /// AND the watcher" needs the watcher half evidenced).
+    #[test]
+    fn validate_rejects_schema_drift_self_send_and_hostile_charset() {
+        // Schema drift.
+        let mut request: SpooledMessage = serde_json::from_str(&record_json("v2", None)).unwrap();
+        request.schema_version = 2;
+        assert!(request.validate().is_err(), "schema drift is rejected");
+        // Self-send: from == to.
+        let mut request: SpooledMessage = serde_json::from_str(&record_json("self", None)).unwrap();
+        request.to_session = request.from_session.clone().unwrap();
+        assert!(request.validate().is_err(), "self-send is rejected");
+        // Hostile charset on the target.
+        let mut request: SpooledMessage = serde_json::from_str(&record_json("evil", None)).unwrap();
+        request.to_session = "../escape".to_string();
+        assert!(
+            request.validate().is_err(),
+            "a hostile charset target is rejected"
         );
     }
 

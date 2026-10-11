@@ -221,9 +221,15 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   confirmation under the current full-auto approval (the registered typed
   Ask rule is the latent pin awaiting the approval-mode split, not the
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
-  next boot); a steer accepted against a mid-turn target can still be dropped
-  by the foundation when that turn is cancelled (the `chat:steer_dropped`
-  window is not yet correlated); a mid-delivery keyed retry with a DIFFERENT body re-queues the
+  next boot; the done-marker window itself is the keyed-dedup horizon —
+  pruned after the 14-day retention, so a retried call older than that
+  re-delivers); a steer accepted against a mid-turn target can still be
+  dropped by the foundation — when that turn is cancelled (the
+  `chat:steer_dropped` window is not yet correlated) or when the idle
+  engine is evicted/rebuilt before the steer lands; a keyed retry against
+  an ACP/code target answers "pending" and the record is quarantined by
+  the watcher with no failure feedback to the sender (the per-delivery
+  ACP/code gate lives below the poll layer); a mid-delivery keyed retry with a DIFFERENT body re-queues the
   newest body (the round-8 semantic compare — created_at nulled — treats
   the same logical message as unchanged); (round-9 minor 2: this list previously disclosed a "slow-spawn
   double-deliver window" — an impossible event: submission is
