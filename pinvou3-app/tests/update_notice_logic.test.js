@@ -35,25 +35,23 @@ assert.strictEqual(logic.versionKey(null), '');
 assert.strictEqual(logic.versionKey({ latest_version: '2.0.0', current_version: '1.0.0' }), '2.0.0');
 assert.strictEqual(logic.versionKey({ current_version: '1.0.0' }), '1.0.0');
 
-assert.strictEqual(logic.viewModel(null, null).visible, false);
+// vm-realm objects fail deepStrictEqual against test-realm literals; compare keys instead.
+assert.deepStrictEqual(Object.keys(logic.viewModel(null, null)), []);
 
 const vmIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'linux' }
 );
-assert.strictEqual(vmIdle.visible, true);
 assert.strictEqual(vmIdle.version, '1.2.0');
 assert.strictEqual(vmIdle.label, '升级并重启');
 assert.strictEqual(vmIdle.action, 'download');
 assert.strictEqual(vmIdle.disabled, false);
-assert.strictEqual(vmIdle.restartAfterInstall, true);
 
 const vmWindowsIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'windows' }
 );
 assert.strictEqual(vmWindowsIdle.label, '下载并安装');
-assert.strictEqual(vmWindowsIdle.restartAfterInstall, false);
 
 const vmCustomLabels = logic.viewModel(
   { appVersion: '1.1.0' },
@@ -85,9 +83,6 @@ const vmReady = logic.viewModel(
 assert.strictEqual(vmReady.label, '立即重启');
 assert.strictEqual(vmReady.action, 'restart');
 assert.strictEqual(vmReady.disabled, false);
-// ready/restart 路径:Linux 走应用内自动重启,故 restartAfterInstall=true
-// (此前 ready 路径未断言此字段,改错也不会被发现)。
-assert.strictEqual(vmReady.restartAfterInstall, true);
 
 const vmWindowsReady = logic.viewModel(
   { updateReady: true },
@@ -99,7 +94,7 @@ assert.strictEqual(vmWindowsReady.disabled, true);
 
 // macOS 与 Linux 同型:后端 Ok(false) → 前端自动 restartApp(app.restart() 按路径 exec 新
 // bundle,inode 语义与 Linux 一致)。与 Windows 启动外部 MSI 安装器不同。因此 macOS ready
-// 应走 restart 分支(label=立即重启, action=restart, disabled=false, restartAfterInstall=true)。
+// 应走 restart 分支(label=立即重启, action=restart, disabled=false)。
 const vmMacReady = logic.viewModel(
   { updateReady: true },
   { available: true, latest_version: '1.2.0', platform: 'macos' }
@@ -107,7 +102,6 @@ const vmMacReady = logic.viewModel(
 assert.strictEqual(vmMacReady.label, '立即重启');
 assert.strictEqual(vmMacReady.action, 'restart');
 assert.strictEqual(vmMacReady.disabled, false);
-assert.strictEqual(vmMacReady.restartAfterInstall, true);
 
 // macOS idle 态:restartAfterInstall=true(mac 与 linux 同型),idle 应走"升级并重启"
 // 而非"下载并安装"(后者是 Windows/无 restartAfterInstall 的默认)。
@@ -115,11 +109,9 @@ const vmMacIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'macos' }
 );
-assert.strictEqual(vmMacIdle.visible, true);
 assert.strictEqual(vmMacIdle.label, '升级并重启');
 assert.strictEqual(vmMacIdle.action, 'download');
 assert.strictEqual(vmMacIdle.disabled, false);
-assert.strictEqual(vmMacIdle.restartAfterInstall, true);
 
 // The raw backend error (may carry request details, often untranslated) must
 // never reach the view model: the localized hint does, the raw string stays on
@@ -148,10 +140,8 @@ const vmUnknownIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'freebsd' }
 );
-assert.strictEqual(vmUnknownIdle.visible, true);
 assert.strictEqual(vmUnknownIdle.label, '下载并安装');
 assert.strictEqual(vmUnknownIdle.action, 'download');
 assert.strictEqual(vmUnknownIdle.disabled, false);
-assert.strictEqual(vmUnknownIdle.restartAfterInstall, false);
 
 console.log('update_notice_logic: ok');

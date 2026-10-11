@@ -7,6 +7,8 @@ import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
 import { dict } from '../../shared/i18n.js';
 import { personaOverlayFor } from '../../shared/persona-overlay.js';
+    // iOS 风字体栈统一常量:Personas/persona-shared/SavedPersonaConfirmDialog 共六处复用
+export const IOS_FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
     // 部门标签按当前 UI 语言取词(t.depts),中文词典(dict.zh.depts)兜底
 export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (dict.zh.depts && dict.zh.depts[k]) || k; }
     // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
@@ -52,7 +54,7 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
       if (!persona) return null;
       const cd = personaText(persona, t);
       return (
-        <div className="absolute top-0 left-6 z-[15]" style={{ width:150, fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+        <div className="absolute top-0 left-6 z-[15]" style={{ width:150, fontFamily: IOS_FONT_STACK }}>
           <div className="flex flex-col items-center">
             {/* 挂绳 + 扣环 */}
             {/* isDark dynamic-value: 保留 (linear-gradient 无法纯 className 化) */}

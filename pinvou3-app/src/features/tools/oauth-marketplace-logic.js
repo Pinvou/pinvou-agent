@@ -1,16 +1,5 @@
-// 默认中文文案：UI 边界（ToolStoreView）会按当前语言传入 storeCopy.oauthOutcome；
-// 缺省保持中文以兼容既有调用与测试。
-const DEFAULT_OUTCOME_COPY = {
-  connectedTitle: (name) => `已连接「${name}」`,
-  timeoutTitle: (name) => `${name}授权超时`,
-  cancelledTitle: (name) => `${name}授权已取消`,
-  serviceErrorTitle: (name) => `${name}授权服务错误`,
-  failedTitle: (name) => `${name}授权失败`,
-  tokenMissing: '授权流程返回成功，但本地未检测到 OAuth token，当前不会启用该工具。请重新授权。',
-  incomplete: '授权未完成，请重新连接。',
-};
-
-export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, copy = DEFAULT_OUTCOME_COPY) {
+// copy 文案由 UI 边界(ToolStoreView)按当前语言传入 storeCopy.oauthOutcome,必填。
+export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, copy) {
   const connected = !!authStatus?.oauth_token_present;
   if (connected) {
     return {
