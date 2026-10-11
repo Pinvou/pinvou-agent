@@ -15,7 +15,7 @@
 
 mod common;
 
-use pinvou_cli::{CliCommand, ExitCode, execute, parse_args};
+use pinvou_cli::{CliCommand, ExitCode, parse_args};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -62,8 +62,7 @@ fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
     let guard = lock.write().expect("hold the store write lock");
 
     let prompt = write_prompt_file(&home, "busy.md", "Summarize the reports.");
-    let owned: Vec<String> = [
-        "pinvou",
+    let message = expect_failed(&[
         "scheduled",
         "create",
         "--name",
@@ -72,19 +71,10 @@ fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
         prompt.to_str().unwrap(),
         "--rrule",
         VALID_RRULE,
-        "--output",
-        "json",
-    ]
-    .iter()
-    .map(|value| value.to_string())
-    .collect();
-    let parsed = parse_args(owned).expect("valid scheduled create");
-    let error =
-        execute(parsed).expect_err("a held store lock must fail the mutation fast, not block");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(
-        error.to_string().contains("scheduled_store_busy"),
-        "the busy refusal must carry the documented error code: {error}"
+        message.contains("scheduled_store_busy"),
+        "the busy refusal must carry the documented error code: {message}"
     );
 
     // Releasing the lock lets the same mutation through end to end.
@@ -190,6 +180,36 @@ fn create_task(home: &HomeGuard, name: &str) -> serde_json::Value {
         "--rrule",
         VALID_RRULE,
     ])
+}
+
+/// The memory-organize fixture the run-path tests share: memory is enabled
+/// through the same prefs the create-guard reads (the GUI refuses the kind
+/// while memory is disabled), the prompt file is written, and the task is
+/// created through the json lane. The language is pinned to zh-Hans because
+/// the memory gate is locale-gated: a settings file without a language
+/// defaults to a non-memory locale, which silently turns the fixture's
+/// `memory_enabled` off and fails the run before it ever renders a report.
+/// Returns the created task's id.
+fn create_memory_organize_task(home: &HomeGuard) -> String {
+    std::fs::write(
+        home.path().join("settings.json"),
+        serde_json::json!({ "language": "zh-Hans", "memory_enabled": true }).to_string(),
+    )
+    .unwrap();
+    let prompt = write_prompt_file(home, "prompt.md", "Organize the memory stores.");
+    let created = run_json(&[
+        "scheduled",
+        "create",
+        "--name",
+        "Nightly organize",
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        "FREQ=HOURLY;INTERVAL=12",
+        "--kind",
+        "memory-organize",
+    ]);
+    created["id"].as_str().unwrap().to_owned()
 }
 
 /// A completed scheduled run with its own conversation, the way the GUI
@@ -1705,27 +1725,7 @@ memory enabled; opt in by creating a memory-organize task and running pinvou sch
 fn run_executes_a_memory_organize_task_through_the_product_host() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-organize", Isolation::ProductHome);
-    // The GUI refuses memory-organize tasks while memory is disabled; enable
-    // it through the same prefs the feature reads.
-    std::fs::write(
-        home.path().join("settings.json"),
-        serde_json::json!({ "language": "zh-Hans", "memory_enabled": true }).to_string(),
-    )
-    .unwrap();
-    let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Nightly organize",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        "FREQ=HOURLY;INTERVAL=12",
-        "--kind",
-        "memory-organize",
-    ]);
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_memory_organize_task(&home);
     let value = run_json(&["scheduled", "run", &task_id]);
     let run_id = value["id"].as_str().unwrap().to_owned();
     // Memory organize runs own no conversation session.
@@ -1776,17 +1776,10 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
         serde_json::json!({ "schema_version": 2, "viewed_runs": [] }).to_string(),
     )
     .unwrap();
-    let owned: Vec<String> = ["pinvou", "scheduled", "mark-viewed", &task_id, "done-1"]
-        .iter()
-        .map(|value| value.to_string())
-        .chain(["--output".to_owned(), "json".to_owned()])
-        .collect();
-    let error = execute(parse_args(owned).expect("valid mark-viewed"))
-        .expect_err("a wrong-shaped registry must refuse the mutation's rewrite");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = expect_failed(&["scheduled", "mark-viewed", &task_id, "done-1"]);
     assert!(
-        error.to_string().contains("scheduled_store_unreadable"),
-        "the refusal must carry the documented error code: {error}"
+        message.contains("scheduled_store_unreadable"),
+        "the refusal must carry the documented error code: {message}"
     );
     assert!(
         !quarantine_copies(read_state.parent().unwrap(), "read-state.json").is_empty(),
@@ -1967,13 +1960,10 @@ fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
     def["id"] = serde_json::json!("hand-renamed-id");
     std::fs::write(&def_path, def.to_string()).unwrap();
 
-    let parsed = parse_args(["pinvou", "scheduled", "delete", &task_id, "--yes"])
-        .expect("the delete line parses");
-    let error = execute(parsed).expect_err("a mismatched definition must be refused, not archived");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     assert!(
-        error.to_string().contains("scheduled_id_mismatch"),
-        "the refusal must carry the documented error code: {error}"
+        message.contains("scheduled_id_mismatch"),
+        "the refusal must carry the documented error code: {message}"
     );
     // Nothing was mutated: the definition survives and no archive snapshot
     // swallowed the history.
@@ -2005,30 +1995,19 @@ fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
         "FREQ=ONCE;AT=2025-02-29T08:30:00Z",
         "FREQ=ONCE;AT=2026-04-31T08:30:00+08:00",
     ] {
-        let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
-            .chain(
-                [
-                    "scheduled",
-                    "create",
-                    "--name",
-                    "Overflow",
-                    "--prompt-file",
-                    prompt.to_str().unwrap(),
-                    "--rrule",
-                    bad_at,
-                ]
-                .iter()
-                .map(|value| value.to_string()),
-            )
-            .collect();
-        let error = match parse_args(owned.drain(..)) {
-            Err(error) => error,
-            Ok(parsed) => execute(parsed).expect_err("calendar overflow must be rejected"),
-        };
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{bad_at}: {error}");
+        let message = assert_usage(&[
+            "scheduled",
+            "create",
+            "--name",
+            "Overflow",
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+            "--rrule",
+            bad_at,
+        ]);
         assert!(
-            error.to_string().contains("invalid rrule"),
-            "the refusal must come from the foundation grammar: {bad_at}: {error}"
+            message.contains("invalid rrule"),
+            "the refusal must come from the foundation grammar: {bad_at}: {message}"
         );
     }
     // A real RFC3339 stamp on the same channels is still accepted (it must
@@ -2644,24 +2623,10 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
         // A mutating command reading the registry must quarantine the
         // wrong-shaped file next to the original before degrading to the
         // default, so the only on-disk copy survives the write-back.
-        let owned: Vec<String> = [
-            "pinvou",
-            "scheduled",
-            "update",
-            &task_id,
-            "--model-id",
-            &model_id,
-        ]
-        .iter()
-        .map(|value| value.to_string())
-        .chain(["--output".to_owned(), "json".to_owned()])
-        .collect();
-        let error = execute(parse_args(owned).expect("valid update"))
-            .expect_err("a quarantined registry must refuse the mutation's default-based write");
-        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let message = expect_failed(&["scheduled", "update", &task_id, "--model-id", &model_id]);
         assert!(
-            error.to_string().contains("scheduled_store_unreadable"),
-            "the refusal must carry the documented error code: {error}"
+            message.contains("scheduled_store_unreadable"),
+            "the refusal must carry the documented error code: {message}"
         );
         let quarantine_copies =
             quarantine_copies(bindings.parent().unwrap(), "model-bindings.json");
@@ -2704,43 +2669,17 @@ fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
     std::fs::write(&bindings, "{not json").unwrap();
 
     // First command: quarantines and refuses.
-    let first: Vec<String> = [
-        "pinvou",
-        "scheduled",
-        "update",
-        &task_id,
-        "--model-id",
-        &model_id,
-    ]
-    .iter()
-    .map(|value| value.to_string())
-    .chain(["--output".to_owned(), "json".to_owned()])
-    .collect();
-    let error = execute(parse_args(first).expect("valid update"))
-        .expect_err("the quarantined registry refuses the first mutation");
-    assert!(error.to_string().contains("scheduled_store_unreadable"));
+    let message = expect_failed(&["scheduled", "update", &task_id, "--model-id", &model_id]);
+    assert!(message.contains("scheduled_store_unreadable"));
 
     // Second command, fresh process state: the bindings path is absent now,
     // but its quarantine copies exist — still refused (no silent bootstrap).
     // The SAME registry must be touched again, so this is another
     // `update --model-id`, not a different sidecar's mutation.
-    let second: Vec<String> = [
-        "pinvou",
-        "scheduled",
-        "update",
-        &task_id,
-        "--model-id",
-        &model_id,
-    ]
-    .iter()
-    .map(|value| value.to_string())
-    .chain(["--output".to_owned(), "json".to_owned()])
-    .collect();
-    let error = execute(parse_args(second).expect("valid update"))
-        .expect_err("absent-after-quarantine must keep refusing mutations");
+    let message = expect_failed(&["scheduled", "update", &task_id, "--model-id", &model_id]);
     assert!(
-        error.to_string().contains("scheduled_store_unreadable"),
-        "the bootstrap guard must carry the same error code: {error}"
+        message.contains("scheduled_store_unreadable"),
+        "the bootstrap guard must carry the same error code: {message}"
     );
     assert!(!bindings.exists(), "still no default-based rewrite");
 
@@ -2797,23 +2736,10 @@ fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
     )
     .unwrap();
 
-    let owned: Vec<String> = [
-        "pinvou",
-        "scheduled",
-        "update",
-        &task_id,
-        "--model-id",
-        &model_id,
-    ]
-    .iter()
-    .map(|value| value.to_string())
-    .chain(["--output".to_owned(), "json".to_owned()])
-    .collect();
-    let error = execute(parse_args(owned).expect("valid update"))
-        .expect_err("the newer-schema binding registry must refuse the binding write");
+    let message = expect_failed(&["scheduled", "update", &task_id, "--model-id", &model_id]);
     assert!(
-        error.to_string().contains("newer than supported"),
-        "the binding write must fail on the newer schema: {error}"
+        message.contains("newer than supported"),
+        "the binding write must fail on the newer schema: {message}"
     );
 
     // The rolled-back definition must NOT carry the raw past-due slot: the
@@ -3099,27 +3025,7 @@ fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
 fn run_reports_a_failed_memory_organize_pass_as_a_failed_command() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-exit-contract", Isolation::ProductHome);
-    // The gate needs a memory-organize task; memory must be enabled to get
-    // past the create-guard, and the run then fails at the host lane.
-    std::fs::write(
-        home.path().join("settings.json"),
-        serde_json::json!({ "language": "zh-Hans", "memory_enabled": true }).to_string(),
-    )
-    .unwrap();
-    let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Nightly organize",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        "FREQ=HOURLY;INTERVAL=12",
-        "--kind",
-        "memory-organize",
-    ]);
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_memory_organize_task(&home);
     let error = expect_failed(&["scheduled", "run", &task_id]);
     assert!(
         error.starts_with("scheduled_run_failed"),
@@ -3417,29 +3323,7 @@ fn run_reports_a_failed_run_through_a_nonzero_exit() {
     // looked like a success to scripts.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-failed-exit", Isolation::ProductHome);
-    // zh-Hans as in the sibling run-exit test (line ~706): the memory gate is
-    // locale-gated and a settings file without a language defaults to a
-    // non-memory locale, which silently turns the fixture's memory_enabled
-    // off and fails the child before it ever renders a report.
-    std::fs::write(
-        home.path().join("settings.json"),
-        serde_json::json!({ "language": "zh-Hans", "memory_enabled": true }).to_string(),
-    )
-    .unwrap();
-    let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Nightly organize",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        "FREQ=HOURLY;INTERVAL=12",
-        "--kind",
-        "memory-organize",
-    ]);
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_memory_organize_task(&home);
     // Deterministic failed run: a corrupted pending store makes the organize
     // pass fail inside the host (the snapshot load checks every jsonl line;
     // `_pending.jsonl` with junk lines has no valid `.bak`/`.tmp-` recovery

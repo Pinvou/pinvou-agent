@@ -16,18 +16,15 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 
-use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json};
+use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, unique_root};
 
-/// `~/.pinvou3/user/personas` — where user cards persist.
-trait PersonasHome {
-    fn user_personas_dir(&self) -> PathBuf;
-}
-
-impl PersonasHome for HomeGuard {
+/// `~/.pinvou3/user/personas` — where user cards persist. An inherent method
+/// on the shared harness's `HomeGuard` (the `common` module is compiled into
+/// this same test binary), so call sites keep plain method syntax.
+impl HomeGuard {
     fn user_personas_dir(&self) -> PathBuf {
         self.path().join("user").join("personas")
     }
@@ -88,14 +85,7 @@ fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
 }
 
 fn write_body_file(label: &str, body: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "pinvou-cli-personas-body-{label}-{}-{nonce}.md",
-        std::process::id()
-    ));
+    let path = unique_root(&format!("pinvou-cli-personas-body-{label}")).with_extension("md");
     std::fs::write(&path, body).unwrap();
     path
 }
@@ -995,11 +985,7 @@ fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
     // One byte past the cap, so the refusal is exactly the over-cap case and
     // an off-by-one in the cap cannot pass.
     let body = "a".repeat(4 * 1024 * 1024 + 1);
-    let body_path = std::env::temp_dir().join(format!(
-        "pinvou-cli-personas-stdin-over-cap-{}.txt",
-        std::process::id()
-    ));
-    std::fs::write(&body_path, &body).unwrap();
+    let body_path = write_body_file("stdin-over-cap", &body);
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
         .args(["personas", "create", "--name", "Too Big", "--stdin"])

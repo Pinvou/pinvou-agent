@@ -75,6 +75,23 @@ fn row_of(list: &serde_json::Value, key: &str, id_field: &str, id: &str) -> serd
         .clone()
 }
 
+/// Reads `marketplace/bundles.json` under the sandbox home and returns the
+/// record whose `id` equals `id` — the lookup the import/meta assertions
+/// share.
+fn bundle_record(home: &Path, id: &str) -> serde_json::Value {
+    let bundles: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join("marketplace/bundles.json")).unwrap(),
+    )
+    .unwrap();
+    bundles["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == id)
+        .unwrap_or_else(|| panic!("no bundle record for {id}"))
+        .clone()
+}
+
 // ---------------------------------------------------------------------------
 // fixture helpers
 // ---------------------------------------------------------------------------
@@ -333,18 +350,17 @@ fn plugins_usage_errors_exit_two() {
         ])
         .contains("non-empty KEY")
     );
-    assert!(
-        !usage_error(&[
-            "pinvou",
-            "plugins",
-            "tools",
-            "install",
-            "w",
-            "--secret",
-            "api_key=9LEADING_DIGIT"
-        ])
-        .is_empty()
-    );
+    // Refusal-only pin: `usage_error` already panics unless this argv is
+    // rejected, and the rendered refusal is never empty.
+    usage_error(&[
+        "pinvou",
+        "plugins",
+        "tools",
+        "install",
+        "w",
+        "--secret",
+        "api_key=9LEADING_DIGIT",
+    ]);
     assert!(
         usage_error(&[
             "pinvou",
@@ -847,16 +863,7 @@ fn meta_updates_upload_package_and_rejects_preset() {
         "meta output should confirm the display meta update"
     );
 
-    let bundles: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
-    )
-    .unwrap();
-    let record = bundles["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|record| record["id"] == FIXTURE_DIR_SKILL)
-        .expect("bundle record for imported skill");
+    let record = bundle_record(home.path(), FIXTURE_DIR_SKILL);
     // extra is serde-flattened into the record JSON.
     assert_eq!(record["display_name"], serde_json::json!("Renamed Fixture"));
     assert_eq!(
@@ -991,7 +998,7 @@ fn project_skills_round_trip() {
     let _env = env_lock();
     let home = HomeGuard::new("plugins", "project-skills", Isolation::ProductHome);
 
-    assert!(!disabled_bundles_json_exists(home.path()));
+    assert!(!home.path().join("disabled_bundles.json").exists());
     let stdout = run_ok(&["pinvou", "plugins", "project-skills", "on"]);
     assert!(
         stdout.contains("enabled"),
@@ -1007,10 +1014,6 @@ fn project_skills_round_trip() {
         disabled_bundles_json(home.path())["project_skills_enabled"],
         serde_json::json!(false)
     );
-}
-
-fn disabled_bundles_json_exists(home: &Path) -> bool {
-    home.join("disabled_bundles.json").exists()
 }
 
 // ---------------------------------------------------------------------------
@@ -1961,11 +1964,7 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
     // Credentials present, companion skill NOT installed: the GUI's
     // skill_not_installed, not the registry branch's missing_credentials.
     let value = run_json(&["pinvou", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let ima = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "ima")
-        .expect("ima row");
+    let ima = row_of(&value, "bundles", "bundle_id", "ima");
     assert_eq!(
         ima["installed"],
         serde_json::json!(true),
@@ -1978,10 +1977,7 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
         "credentials are present, only the companion skill is missing"
     );
     assert_eq!(ima["probe"], serde_json::json!("registry"));
-    let weather = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "weather")
-        .expect("weather row");
+    let weather = row_of(&value, "bundles", "bundle_id", "weather");
     assert_eq!(weather["ready"], serde_json::json!(false));
     assert_eq!(weather["reason"], serde_json::json!("missing_credentials"));
     assert_eq!(weather["probe"], serde_json::json!("registry"));
@@ -1989,11 +1985,7 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
     // Credentials + companion skill: ima_status's connected, the GUI's ready.
     run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
     let value = run_json(&["pinvou", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let ima = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "ima")
-        .expect("ima row");
+    let ima = row_of(&value, "bundles", "bundle_id", "ima");
     assert_eq!(
         ima["ready"],
         serde_json::json!(true),
@@ -2002,10 +1994,7 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
     assert_eq!(ima["reason"], serde_json::Value::Null);
     assert_eq!(ima["installed"], serde_json::json!(true));
     assert_eq!(ima["probe"], serde_json::json!("registry"));
-    let weather = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "weather")
-        .expect("weather row");
+    let weather = row_of(&value, "bundles", "bundle_id", "weather");
     assert_eq!(weather["ready"], serde_json::json!(false));
     assert_eq!(
         weather["reason"],
@@ -2114,16 +2103,7 @@ fn import_display_name_matches_the_gui_sanitizer() {
     std::fs::write(&file, "---\nname: long-name-skill\n---\nbody").unwrap();
     run_ok(&["pinvou", "plugins", "import", file.to_str().unwrap()]);
 
-    let bundles: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
-    )
-    .unwrap();
-    let record = bundles["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|record| record["id"] == "long-name-skill")
-        .expect("bundle record for the imported skill");
+    let record = bundle_record(home.path(), "long-name-skill");
     let expected = format!("upload:{}{}", "a".repeat(60), "b".repeat(68));
     assert_eq!(
         record["source"],
@@ -2140,16 +2120,7 @@ fn import_display_name_matches_the_gui_sanitizer() {
     let spaced = home.path().join("  spaced name.md");
     std::fs::write(&spaced, "---\nname: spaced-name-skill\n---\nbody").unwrap();
     run_ok(&["pinvou", "plugins", "import", spaced.to_str().unwrap()]);
-    let bundles: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.path().join("marketplace/bundles.json")).unwrap(),
-    )
-    .unwrap();
-    let record = bundles["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|record| record["id"] == "spaced-name-skill")
-        .expect("bundle record for the spaced import");
+    let record = bundle_record(home.path(), "spaced-name-skill");
     assert_eq!(
         record["source"],
         serde_json::json!("upload:  spaced name.md"),

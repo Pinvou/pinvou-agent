@@ -529,7 +529,7 @@ fn models_list_reports_fresh_default_model() {
     let models = value["models"].as_array().expect("models array");
     assert_eq!(models.len(), 1, "fresh home migrates one default model");
     assert_eq!(models[0]["id"], "default");
-    assert_eq!(models[0]["preset"], default_preset_str());
+    assert_eq!(models[0]["preset"], ModelPreset::default().as_str());
     assert_eq!(models[0]["active"], true);
     assert_eq!(models[0]["has_secret"], false);
     // The GUI list DTO's credential_state: a keyless default model is
@@ -567,10 +567,6 @@ fn models_list_reports_fresh_default_model() {
         human.contains("credential_state=env_override"),
         "models list human output must carry the env_override state"
     );
-}
-
-fn default_preset_str() -> String {
-    ModelPreset::default().as_str().to_owned()
 }
 
 #[test]
@@ -1017,11 +1013,7 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
         "--set-active",
     ]);
     assert!(stdout.starts_with("id: "), "{stdout}");
-    let broken_id = stdout
-        .strip_prefix("id: ")
-        .expect("prints the new id")
-        .trim()
-        .to_owned();
+    let broken_id = added_model_id(&stdout);
     let (message, code) = run_err(&["pinvou", "models", "probe-local"]);
     assert_eq!(
         code,
@@ -1454,9 +1446,11 @@ fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
 /// wipes provider P's stored credential — the search-family sibling of
 /// `models edit --clear-api-key` — and ran without `--yes`. Same contract:
 /// without `--yes` refuse with the family's confirmation-refusal shape and
-/// write nothing; with `--yes` proceed (and still not switch the active
-/// provider). Drives the real store under a sandboxed `PINVOU3_HOME`; the
-/// provider is never configured, so no keyring entry is ever touched.
+/// write nothing. Drives the real store under a sandboxed `PINVOU3_HOME`;
+/// the provider is never configured, so no keyring entry is ever touched.
+/// The with-`--yes` proceed side — the round-41 `unchanged` receipt and the
+/// pin that clearing must not switch the active provider — is covered by
+/// settings_search_set_clear_does_not_switch_the_active_provider.
 #[test]
 fn settings_search_set_clear_requires_yes() {
     let _env = env_lock();
@@ -1485,28 +1479,6 @@ fn settings_search_set_clear_requires_yes() {
         read_settings(),
         before,
         "a refused clear must not write settings.json"
-    );
-
-    // With --yes the clear proceeds. That it still must not switch the
-    // active provider (the active_provider payload and the persisted prefs)
-    // is pinned by settings_search_set_clear_does_not_switch_the_active_provider;
-    // the unique fact here is the round-41 `unchanged` receipt.
-    let stdout = run_ok(&[
-        "pinvou",
-        "--output",
-        "json",
-        "settings",
-        "search",
-        "set",
-        "--provider",
-        "tavily",
-        "--clear",
-        "--yes",
-    ]);
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
-    assert_eq!(
-        value["credential"], "unchanged",
-        "a never-configured provider has no credential to clear (round-41 review): {stdout}"
     );
 }
 
@@ -1999,45 +1971,18 @@ fn models_reject_plaintext_secret_flags_instead_of_ingesting_them() {
     let _env = env_lock();
     let _home = sandbox_home("argv-secret");
     let secret = "sk-argv-secret-value-1234567890";
-    for lane in [
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-            "--api-key",
-            secret,
-        ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-            "--token",
-            secret,
-        ],
-        vec!["pinvou", "models", "edit", "m_someid", "--api-key", secret],
-    ] {
-        let message = usage_error(&lane);
+    for flag in ["--api-key", "--token"] {
+        let message = usage_error(&add_args(&[flag, secret]));
         assert!(
             !message.contains(secret),
             "the usage error must not echo the rejected secret: {message}"
         );
     }
+    let message = usage_error(&["pinvou", "models", "edit", "m_someid", "--api-key", secret]);
+    assert!(
+        !message.contains(secret),
+        "the usage error must not echo the rejected secret: {message}"
+    );
     // The rejection is parse-time, so the execute layer is never reached and
     // nothing could have been configured. A before/after count comparison
     // cannot observe that (both reads would trivially match — round-48

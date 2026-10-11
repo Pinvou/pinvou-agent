@@ -49,6 +49,22 @@ fn seeded_preference_id() -> String {
         .clone()
 }
 
+/// A refused add must leave the pending queue untouched: the queue file is
+/// absent, or present but empty/whitespace. The queue resolves under the
+/// `user/` component of the home (round-44 review: missing that component
+/// made `.exists()` always false and the pin vacuous).
+fn assert_pending_queue_untouched(home: &HomeGuard) {
+    let pending = home
+        .path()
+        .join("user")
+        .join("memory")
+        .join("_pending.jsonl");
+    assert!(
+        !pending.exists() || std::fs::read_to_string(&pending).unwrap().trim().is_empty(),
+        "the refused add must not enqueue a memory item"
+    );
+}
+
 // ---- parse-level coverage ----
 
 #[test]
@@ -2307,19 +2323,8 @@ fn memory_add_refuses_a_credential_location_file() {
         "{error}"
     );
 
-    // And nothing was stored. The pending queue resolves under the `user/`
-    // component of the home (round-44 review: the previous assertion missed
-    // that component, so `.exists()` was always false and the pin was
-    // vacuous).
-    let pending = home
-        .path()
-        .join("user")
-        .join("memory")
-        .join("_pending.jsonl");
-    assert!(
-        !pending.exists() || std::fs::read_to_string(&pending).unwrap().trim().is_empty(),
-        "the refused file must not enqueue a memory item"
-    );
+    // And nothing was stored.
+    assert_pending_queue_untouched(&home);
 }
 
 /// Round-45 review: the per-store human header counts ITEMS, not items plus
@@ -2452,19 +2457,7 @@ fn memory_add_refuses_block_marker_content_and_stores_nothing() {
             .unwrap()
             .is_empty()
     );
-    let pending_file = home
-        .path()
-        .join("user")
-        .join("memory")
-        .join("_pending.jsonl");
-    assert!(
-        !pending_file.exists()
-            || std::fs::read_to_string(&pending_file)
-                .unwrap()
-                .trim()
-                .is_empty(),
-        "the refused content must not enqueue a memory item"
-    );
+    assert_pending_queue_untouched(&home);
 }
 
 /// Round-46 review: the marker gate is ASCII-case-insensitive — models

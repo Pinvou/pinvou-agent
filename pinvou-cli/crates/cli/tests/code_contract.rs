@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::{EnvGuard, HomeGuard, Isolation, command_error, env_lock, run, run_json, usage_error};
-use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{ExitCode, OutputMode, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace as app_workspace;
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
@@ -1689,21 +1689,17 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
     let secret = home.path().join("home").join("secret.txt");
     std::fs::write(&secret, "TOP SECRET\n").unwrap();
     symlink(&secret, project.join("leak.md")).unwrap();
-    let parsed = parse_args(
-        [
-            "pinvou",
-            "code",
-            "workspace",
-            "diff",
-            &id,
-            "leak.md",
-            "--output",
-            "json",
-        ]
-        .to_vec(),
-    )
-    .expect("diff parses");
-    let error = execute(parsed).expect_err("an escaping symlink must be refused");
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "diff",
+        &id,
+        "leak.md",
+        "--output",
+        "json",
+    ])
+    .expect_err("an escaping symlink must be refused");
     assert_eq!(error.exit_code(), ExitCode::Failed);
     let message = error.to_string();
     assert!(
@@ -1740,32 +1736,25 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     let id = create_code_session_fixture(Some(&project));
     // A tracked commit so the repo has a HEAD (the tracked-unmodified arm).
     std::fs::write(project.join("tracked.txt"), "hello\n").unwrap();
-    let ok = std::process::Command::new("git")
-        .current_dir(&project)
-        .args(["add", "tracked.txt"])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-    assert!(ok, "fixture add failed");
-    let ok = std::process::Command::new("git")
-        .current_dir(&project)
-        .args([
-            "-c",
-            "user.name=test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-m",
-            "init",
-        ])
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-    assert!(ok, "fixture commit failed");
+    assert!(
+        fixture_git_ok(&project, &["add", "tracked.txt"]),
+        "fixture add failed"
+    );
+    assert!(
+        fixture_git_ok(
+            &project,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ]
+        ),
+        "fixture commit failed"
+    );
 
     // Control: a plain untracked file inside the workspace still diffs.
     std::fs::write(project.join("inside.txt"), "plain\n").unwrap();
@@ -1799,21 +1788,17 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     ));
     std::fs::write(&secret, "TOP SECRET\n").unwrap();
     symlink(&secret, project.join("leak.md")).unwrap();
-    let parsed = parse_args(
-        [
-            "pinvou",
-            "code",
-            "workspace",
-            "diff",
-            &id,
-            "leak.md",
-            "--output",
-            "json",
-        ]
-        .to_vec(),
-    )
-    .expect("diff parses");
-    let error = execute(parsed).expect_err("an escaping symlink must be refused");
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "diff",
+        &id,
+        "leak.md",
+        "--output",
+        "json",
+    ])
+    .expect_err("an escaping symlink must be refused");
     let message = error.to_string();
     assert!(
         message.contains("symlink") && message.contains("escapes the workspace"),
@@ -3435,7 +3420,6 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
 #[test]
 #[cfg(unix)]
 fn login_echo_strips_the_authorization_code_the_heuristic_would_miss() {
-    let bin = env!("CARGO_BIN_EXE_pinvou");
     let root = scratch_root("login-echo");
     std::fs::create_dir_all(root.join("home")).unwrap();
     let _root = ScratchDir(root.clone());
@@ -3452,16 +3436,14 @@ fn login_echo_strips_the_authorization_code_the_heuristic_would_miss() {
     // A short, plain code: un-shaped for the secret heuristic (the echoed
     // copy under the strip must read [REDACTED] instead).
     const CODE: &str = "SRCRT-SHORT-99";
-    let output = std::process::Command::new(bin)
-        .args(["code", "login", "claude", "--code", CODE])
-        .env("PINVOU3_HOME", &root)
-        .env("CODEWHALE_HOME", root.join("codewhale"))
-        .env("HOME", root.join("home"))
-        .env("PINVOU3_CLAUDE_CLI_PATH", &script)
-        .env("PINVOU_NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("the pinvou binary must run");
+    let output = spawn_pinvou(
+        &root,
+        &["code", "login", "claude", "--code", CODE],
+        &[("PINVOU3_CLAUDE_CLI_PATH", &script)],
+        false,
+    )
+    .wait_with_output()
+    .expect("the pinvou binary must run");
     let stderr_text = String::from_utf8_lossy(&output.stderr);
     let stdout_text = String::from_utf8_lossy(&output.stdout);
     assert!(

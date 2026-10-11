@@ -123,12 +123,7 @@ fn strand_running_job(home: &HomeGuard, id: i64, sources: &[PathBuf]) -> String 
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let job_id = loop {
-        let polled = std::process::Command::new(bin)
-            .args(["knowledge", "index", "status", "--output", "json"])
-            .env("PINVOU3_HOME", home.path())
-            .env("PINVOU_NO_COLOR", "1")
-            .output()
-            .expect("index status child runs");
+        let polled = run_child(home, &["knowledge", "index", "status", "--output", "json"]);
         assert!(
             polled.status.success(),
             "index status must succeed while the import runs"

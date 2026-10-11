@@ -75,6 +75,18 @@ fn report_ids(value: &serde_json::Value, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Seeds the `acp-state.json` the GUI's spawn path writes for `session_id`,
+/// with its `workspace.path` pointing at `workspace` — the file the rebind's
+/// storage-half translate must carry over.
+fn seed_acp_state(home: &HomeGuard, session_id: &str, workspace: &Path) {
+    std::fs::create_dir_all(home.sessions_root().join(session_id)).unwrap();
+    std::fs::write(
+        home.sessions_root().join(session_id).join("acp-state.json"),
+        serde_json::json!({ "workspace": { "path": workspace.to_string_lossy() } }).to_string(),
+    )
+    .unwrap();
+}
+
 /// An owning project-root fixture: `Drop` removes the directory tree, so a
 /// failing assertion can no longer leak it (the manual `remove_dir_all`
 /// epilogues this replaces were exactly the cleanup a panic skipped).
@@ -88,21 +100,20 @@ impl std::ops::Deref for TempRoot {
     }
 }
 
-impl AsRef<Path> for TempRoot {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
 impl Drop for TempRoot {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-/// Creates an absolute, existing directory to use as a project root.
+/// Creates an absolute, existing directory to use as a project root,
+/// canonicalized: the rebind lanes compare — and every test here seeds and
+/// asserts — the resolved display domain, which on macOS differs from
+/// `scratch_dir`'s spelling because the temp root sits behind
+/// /var → /private/var.
 fn make_root_dir(label: &str) -> TempRoot {
-    TempRoot(scratch_dir(&format!("pinvou-cli-projects-root-{label}")))
+    let path = scratch_dir(&format!("pinvou-cli-projects-root-{label}"));
+    TempRoot(std::fs::canonicalize(path).unwrap())
 }
 
 // ── parse-level coverage ────────────────────────────────────────────────────
@@ -659,13 +670,8 @@ fn projects_rebind_parses_two_positionals_and_the_yes_flag() {
 fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-from");
-    let to_dir = make_root_dir("rebind-to");
-    // Everything the lanes compare runs in the resolved display domain, so
-    // the fixtures seed and assert the canonical spelling (on macOS the temp
-    // root sits behind /var → /private/var).
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-from");
+    let to = make_root_dir("rebind-to");
 
     // A project whose root sits under `from`.
     let value = run_json(&[
@@ -690,12 +696,7 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     // state file resurrects the vanished root if the agent index is later
     // lost). A regression deleting the rebind's storage-half translate call
     // strands this at the old path.
-    std::fs::create_dir_all(home.sessions_root().join(&code_id)).unwrap();
-    std::fs::write(
-        home.sessions_root().join(&code_id).join("acp-state.json"),
-        serde_json::json!({ "workspace": { "path": from.to_string_lossy() } }).to_string(),
-    )
-    .unwrap();
+    seed_acp_state(&home, &code_id, &from);
 
     let value = run_json(&[
         "pinvou",
@@ -826,10 +827,8 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
     // the GUI's `admit_rebind_retry_candidate` scan — is what converges it.
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-retry", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-retry-from");
-    let to_dir = make_root_dir("rebind-retry-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-retry-from");
+    let to = make_root_dir("rebind-retry-to");
 
     // Seed the exact state a failed run-1 leaves behind: the SavedSession
     // metadata still names `from` (the write that failed), while both
@@ -933,12 +932,9 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
     // both persist nothing, and the run would claim Rebound over dead paths.
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-behind-binding", Isolation::ProductHome);
-    let origin_dir = make_root_dir("rebind-behind-origin");
-    let mid_dir = make_root_dir("rebind-behind-mid");
-    let to_dir = make_root_dir("rebind-behind-to");
-    let origin = std::fs::canonicalize(&origin_dir).unwrap();
-    let mid = std::fs::canonicalize(&mid_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let origin = make_root_dir("rebind-behind-origin");
+    let mid = make_root_dir("rebind-behind-mid");
+    let to = make_root_dir("rebind-behind-to");
 
     // Seed the exact state a failed run 1 (origin→mid) leaves behind: the
     // binding lane moved to `mid`, but the metadata, the artifact storage
@@ -958,14 +954,7 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
         .bind_session_workspace(&stranded_id, mid.clone())
         .expect("move the binding lane to mid");
     drop(sessions);
-    std::fs::create_dir_all(home.sessions_root().join(&stranded_id)).unwrap();
-    std::fs::write(
-        home.sessions_root()
-            .join(&stranded_id)
-            .join("acp-state.json"),
-        serde_json::json!({ "workspace": { "path": origin.to_string_lossy() } }).to_string(),
-    )
-    .unwrap();
+    seed_acp_state(&home, &stranded_id, &origin);
 
     // Run 2 (mid→to): nothing is left under `mid` except this binding, so
     // only the per-session pre-sync geometry can reach the `origin` paths.
@@ -1036,10 +1025,8 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
     // only holds when it runs against the PRE-translation binding.
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-subpath", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-subpath-from");
-    let to_dir = make_root_dir("rebind-subpath-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-subpath-from");
+    let to = make_root_dir("rebind-subpath-to");
     let from_sub = from.join("sub");
     let to_sub = to.join("sub");
     std::fs::create_dir_all(&from_sub).unwrap();
@@ -1061,14 +1048,7 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
         )
         .expect("seed the artifact storage path");
     drop(sessions);
-    std::fs::create_dir_all(home.sessions_root().join(&session_id)).unwrap();
-    std::fs::write(
-        home.sessions_root()
-            .join(&session_id)
-            .join("acp-state.json"),
-        serde_json::json!({ "workspace": { "path": from_sub.to_string_lossy() } }).to_string(),
-    )
-    .unwrap();
+    seed_acp_state(&home, &session_id, &from_sub);
 
     let value = run_json(&[
         "pinvou",
@@ -1129,10 +1109,8 @@ fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
     // healthy, and reporting it would be a fabricated "rebound" entry.
     let _env_guard = env_lock();
     let _home = HomeGuard::new("projects", "rebind-healthy", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-healthy-from");
-    let to_dir = make_root_dir("rebind-healthy-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-healthy-from");
+    let to = make_root_dir("rebind-healthy-to");
 
     let healthy_id = bind_plain_session(&to);
 
@@ -1254,8 +1232,7 @@ fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
 fn projects_rebind_from_equal_to_is_a_reported_noop() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-same", Isolation::ProductHome);
-    let dir = make_root_dir("rebind-same");
-    let same = std::fs::canonicalize(&dir).unwrap();
+    let same = make_root_dir("rebind-same");
 
     // Seed state that WOULD match a real rebind: if the short-circuit were
     // missing, the run would rewrite (or at least touch) all of it.
@@ -1314,8 +1291,7 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
 #[test]
 fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
     let _env_guard = env_lock();
-    let dir = make_root_dir("rebind-mirror-nested");
-    let outer = std::fs::canonicalize(&dir).unwrap();
+    let outer = make_root_dir("rebind-mirror-nested");
     let inner = outer.join("B");
     std::fs::create_dir_all(&inner).unwrap();
     let to_inner = outer.join("new");
@@ -1399,10 +1375,8 @@ fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
 fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-legacy-broken", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-legacy-broken-from");
-    let to_dir = make_root_dir("rebind-legacy-broken-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-legacy-broken-from");
+    let to = make_root_dir("rebind-legacy-broken-to");
 
     // A real binding sidecar under `from`: the gate must refuse BEFORE this
     // sidecar moves — that is the fail-closed contract under test.
@@ -1482,12 +1456,9 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     // survival of both the rebound entry and an unrelated one.
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-legacy", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-legacy-from");
-    let to_dir = make_root_dir("rebind-legacy-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
-    let elsewhere_dir = make_root_dir("rebind-legacy-elsewhere");
-    let elsewhere = std::fs::canonicalize(&elsewhere_dir).unwrap();
+    let from = make_root_dir("rebind-legacy-from");
+    let to = make_root_dir("rebind-legacy-to");
+    let elsewhere = make_root_dir("rebind-legacy-elsewhere");
 
     // A live session whose ONLY binding is a legacy-table entry: any
     // sidecar the creation seeded is stripped, so nothing but the
@@ -1632,12 +1603,7 @@ fn update_clear_roots_expresses_the_gui_empty_roots_form() {
 fn projects_move_refuses_aux_session_ids_like_the_gui() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("projects", "move-aux-refusal", Isolation::ProductHome);
-    let store = SessionStore::boot().expect("boot session store");
-    let aux = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
-    let aux_id = format!("aux-{}", aux.metadata.id);
-    drop(store);
+    let aux_id = format!("aux-{}", create_session_fixture());
 
     let parsed =
         parse_args(["pinvou", "projects", "move", &aux_id, "--yes"]).expect("the move line parses");
@@ -1659,8 +1625,7 @@ fn projects_move_refuses_aux_session_ids_like_the_gui() {
 fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-to-unusable", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-unusable-from");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
+    let from = make_root_dir("rebind-unusable-from");
     let to = from
         .parent()
         .unwrap()
@@ -1712,10 +1677,8 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
 fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("projects", "rebind-roots-conflict", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-conflict-from");
-    let to_dir = make_root_dir("rebind-conflict-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-conflict-from");
+    let to = make_root_dir("rebind-conflict-to");
 
     run_json(&[
         "pinvou",
@@ -1783,8 +1746,7 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
 fn projects_move_ungroups_a_tier2_auto_grouped_session() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-tier2-ungroup", Isolation::ProductHome);
-    let root_dir = make_root_dir("rebind-tier2-root");
-    let root = std::fs::canonicalize(&root_dir).unwrap();
+    let root = make_root_dir("rebind-tier2-root");
 
     let value = run_json(&[
         "pinvou",
@@ -1829,8 +1791,7 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
 fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_line() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "move-corrupt-index", Isolation::ProductHome);
-    let root_dir = make_root_dir("move-corrupt-index-root");
-    let root = std::fs::canonicalize(&root_dir).unwrap();
+    let root = make_root_dir("move-corrupt-index-root");
 
     let value = run_json(&[
         "pinvou",
@@ -1902,10 +1863,8 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
 fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_chain() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("projects", "rebind-corrupt-index", Isolation::ProductHome);
-    let from_dir = make_root_dir("rebind-corrupt-from");
-    let to_dir = make_root_dir("rebind-corrupt-to");
-    let from = std::fs::canonicalize(&from_dir).unwrap();
-    let to = std::fs::canonicalize(&to_dir).unwrap();
+    let from = make_root_dir("rebind-corrupt-from");
+    let to = make_root_dir("rebind-corrupt-to");
 
     // A healthy codex-lane binding first: its authoritative sidecar is what
     // "nothing was moved" is asserted against.

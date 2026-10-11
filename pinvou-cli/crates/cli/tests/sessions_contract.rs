@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::sessions::SessionStore;
 
-use common::{EnvGuard, HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json};
+use common::{
+    EnvGuard, HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, unique_root,
+};
 
 /// Rewrites the persisted `SavedSession` JSON in place (the CLI reads
 /// transcripts from the same store file).
@@ -598,14 +600,7 @@ fn sessions_show_limits_and_exports_transcript() {
     assert_eq!(saved["messages"][0]["role"], "user");
 
     // --output writes the export to a file instead of stdout
-    let destination = std::env::temp_dir().join(format!(
-        "pinvou-cli-export-{}-{}.md",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let destination = unique_root("pinvou-cli-export").with_extension("md");
     let value = run_json(&[
         "pinvou",
         "sessions",
@@ -829,14 +824,7 @@ fn sessions_export_output_file_is_owner_readable_only() {
     let id = create_session_fixture();
     seed_transcript(&id, "hello", "hi there");
 
-    let destination = std::env::temp_dir().join(format!(
-        "pinvou-cli-export-mode-{}-{}.md",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let destination = unique_root("pinvou-cli-export-mode").with_extension("md");
     run_json(&[
         "pinvou",
         "sessions",
@@ -1096,14 +1084,7 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     assert_eq!(outcome.stdout, "# Report\n\nfirst version\n");
 
     // write --file overwrites the markdown artifact in place
-    let source = std::env::temp_dir().join(format!(
-        "pinvou-cli-artifact-source-{}-{}.md",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let source = unique_root("pinvou-cli-artifact-source").with_extension("md");
     std::fs::write(&source, "# Report\n\nsecond version\n").unwrap();
     let value = run_json(&[
         "pinvou",
@@ -1240,11 +1221,9 @@ fn artifacts_list_collapses_a_hostile_metadata_id() {
         .expect("track artifact");
     drop(store);
 
-    let record_path = home.sessions_root().join(format!("{id}.json"));
-    let mut value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
-    value["metadata"]["id"] = serde_json::json!("poison\tid\nnewrow\x1b[2J");
-    std::fs::write(&record_path, serde_json::to_vec(&value).unwrap()).unwrap();
+    mutate_session_record(&id, |value| {
+        value["metadata"]["id"] = serde_json::json!("poison\tid\nnewrow\x1b[2J");
+    });
 
     // JSON mode reports /metadata/id verbatim.
     let json = run_json(&["pinvou", "artifacts", "list"]);
@@ -1512,12 +1491,7 @@ fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
 fn metadata_lanes_refuse_aux_session_ids_like_the_gui() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("sessions", "aux-refusal", Isolation::ProductHome);
-    let store = SessionStore::boot().expect("boot session store");
-    let aux = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
-    let aux_id = format!("aux-{}", aux.metadata.id);
-    drop(store);
+    let aux_id = format!("aux-{}", create_session_fixture());
 
     for arguments in [
         vec!["pinvou", "sessions", "pin", &aux_id],

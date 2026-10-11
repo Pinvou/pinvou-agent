@@ -10,7 +10,7 @@ fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
     // `pinvou --output json sessions list` misplaces a GLOBAL flag; the
     // refusal must say so (round-27 review: the bare usage line gives no
     // hint which token is wrong).
-    let error = parse_args(vec_string(&["pinvou", "--instal", "sessions", "list"]))
+    let error = parse_args(["pinvou", "--instal", "sessions", "list"])
         .expect_err("an unknown flag in the family position must be refused");
     assert_eq!(error.exit_code(), ExitCode::Usage);
     let message = error.to_string();
@@ -49,7 +49,7 @@ fn a_bare_trailing_output_names_the_missing_value() {
     // family parser's "unknown benchmark command", which names nothing the
     // user can fix; the trailing position is unambiguously an incomplete
     // global pair, so it answers with the missing-value error.
-    let error = parse_args(vec_string(&["pinvou", "benchmark", "list", "--output"]))
+    let error = parse_args(["pinvou", "benchmark", "list", "--output"])
         .expect_err("a valueless trailing --output must be refused");
     assert_eq!(error.exit_code(), ExitCode::Usage);
     let message = error.to_string();
@@ -57,10 +57,6 @@ fn a_bare_trailing_output_names_the_missing_value() {
         message.contains("--output requires human or json"),
         "the missing mode value must be named: {message}"
     );
-}
-
-fn vec_string(arguments: &[&str]) -> Vec<String> {
-    arguments.iter().map(|a| (*a).to_owned()).collect()
 }
 
 /// The discriminator the exact-match test below asserts on. Exhaustive over

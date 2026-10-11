@@ -18,7 +18,6 @@
 mod common;
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // PermissionsExt imports live inside the #[cfg(unix)] tests that need them
 // (755, 1289, 1345, 1503): a module-level import compiles on unix even when
@@ -1687,6 +1686,23 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
 
 // ── connect post-connection side effects ────────────────────────────────────
 
+/// Seeds an initialized, empty code scope into `disabled_bundles.json` — the
+/// shape the post-connect DenyAll sync writes into (a no-op on an
+/// uninitialized scope) — and returns the file path for the post-connect
+/// reads.
+fn seed_initialized_code_scope(home: &HomeGuard) -> PathBuf {
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{"code":[]},"hidden_scopes":{},"initialized":["code"]}"#,
+    )
+    .unwrap();
+    disabled
+}
+
 /// The GUI's connect does not stop at `bundle_store_on_connected`: its
 /// frontend invokes `*_apply_skills` the moment the login lands
 /// (`ToolStoreView.jsx`'s connect-completion handler), whose `show` branch
@@ -1719,15 +1735,7 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     // Seed an initialized code scope: the sync targets every initialized
     // DenyAll scope (`PackDefaultPolicy::DenyAll` ⇒ the code mode), and
     // writes the connector's package id into its persisted list.
-    let disabled = home.disabled_bundles_file();
-    if let Some(parent) = disabled.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(
-        &disabled,
-        r#"{"scopes":{"code":[]},"hidden_scopes":{},"initialized":["code"]}"#,
-    )
-    .unwrap();
+    let disabled = seed_initialized_code_scope(&home);
 
     let value = run_json(&[
         "pinvou",
@@ -1822,15 +1830,7 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
 
     // Seed an initialized code scope so the post-connect DenyAll sync has
     // something to write into (the connect must reach its side effects).
-    let disabled = home.disabled_bundles_file();
-    if let Some(parent) = disabled.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(
-        &disabled,
-        r#"{"scopes":{"code":[]},"hidden_scopes":{},"initialized":["code"]}"#,
-    )
-    .unwrap();
+    let disabled = seed_initialized_code_scope(&home);
 
     let value = run_json(&[
         "pinvou",
@@ -1916,15 +1916,7 @@ fn ensure_cli_never_reports_success_for_a_binary_that_cannot_execute() {
     use std::os::unix::fs::PermissionsExt as _;
     let _env = common::env_lock();
     let _home = HomeGuard::new("ensure-cli-unexecutable");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("ensure-cli-unexecutable");
     // A lark-cli that exists but is not executable: resolution finds it on
     // PATH (existence checks only), every spawn fails with EACCES, so
     // `cli_installed` reports Missing. Whatever the install lanes do next,
@@ -1976,15 +1968,7 @@ fn connect_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
 
     let _env = common::env_lock();
     let _home = HomeGuard::new("interrupt-guard");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-interrupt-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = common::scratch_dir("pinvou-cli-connectors-interrupt-bin");
 
     // A `dws` stand-in. The status arm answers not-authenticated (so the
     // probe chain that may run before/around the login stays honest); the
