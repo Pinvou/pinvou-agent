@@ -868,6 +868,15 @@ pub fn success(stdout: String) -> crate::CliOutcome {
     }
 }
 
+/// The featureless-build refusal for engine-backed command families; the
+/// message literal is contract-pinned verbatim by `tests/cli_contract.rs`,
+/// so every site goes through this constructor instead of hand-copying the
+/// string. All callers compile only without the feature, hence the gate.
+#[cfg_attr(feature = "product-backend", allow(dead_code))]
+pub fn product_backend_not_enabled() -> CliError {
+    CliError::failed("product_backend_not_enabled")
+}
+
 /// Platform binary-name candidates for a bare CLI name: Windows installs are
 /// `.exe` real binaries or npm `.cmd` shims, and PATH scanning must try both
 /// because bare names never match there.

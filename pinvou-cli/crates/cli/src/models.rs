@@ -987,44 +987,17 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
     }
 }
 
+/// The production entry point for `ModelsCommand`; testability lives on the
+/// private generic command fns (`list`, `add`, `edit`, ...), which take the
+/// credential store as a parameter, not on this entry point.
 pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = SystemCredentialStore::new();
-    let outcome = execute_with_store(command, output, &store);
-    // Round-47 review: the store's keyring-failure fallback reports through
-    // the `log` facade, which no CLI binary installs — so on a headless box
-    // an API key could land in the plaintext file fallback with no terminal
-    // notice at all. Surface it once per process, after the command (the
-    // note writes stderr; stdout JSON stays parseable).
-    let fallbacks = store.os_keyring_fallback_services();
-    if !fallbacks.is_empty() {
-        crate::note!(
-            "pinvou: warning: the OS keyring was unreachable for {}; credential \
-             storage used the plaintext file fallback on disk",
-            fallbacks.join(", ")
-        );
-    }
-    outcome
-}
-
-/// `execute` with an injectable credential backend — the CLI's spelling of
-/// what the app buys by passing `&dyn CredentialStore` into
-/// `save_model_inner`/`delete_model_inner` (`app/commands/settings.rs`
-/// exists as `*_inner` functions for exactly this reason). The production
-/// entry point ([`execute`]) supplies `SystemCredentialStore`; tests supply a
-/// recording store so the credential lane (store/roll back/reveal/delete)
-/// has behavioural coverage instead of only the OS keyring, which no test in
-/// this crate is allowed to touch.
-pub fn execute_with_store<S: CredentialStore>(
-    command: ModelsCommand,
-    output: OutputMode,
-    store: &S,
-) -> Result<CliOutcome, CliError> {
     // Every subcommand reads or writes the settings store / credential store
     // under the product data root; a relative PINVOU3_HOME would silently
     // resolve against the cwd.
     crate::support::sandbox_home()?;
-    match command {
-        ModelsCommand::List => list(store, output),
+    let outcome = match command {
+        ModelsCommand::List => list(&store, output),
         ModelsCommand::Add {
             preset,
             name,
@@ -1038,7 +1011,7 @@ pub fn execute_with_store<S: CredentialStore>(
             metadata,
             set_active,
         } => add(
-            store,
+            &store,
             preset,
             &name,
             &model,
@@ -1061,7 +1034,7 @@ pub fn execute_with_store<S: CredentialStore>(
             yes,
             set_active,
         } => edit(
-            store,
+            &store,
             &id,
             &changes,
             &api_key_env,
@@ -1071,32 +1044,46 @@ pub fn execute_with_store<S: CredentialStore>(
             set_active,
             output,
         ),
-        ModelsCommand::Remove { id, yes } => remove(store, &id, yes, output),
+        ModelsCommand::Remove { id, yes } => remove(&store, &id, yes, output),
         ModelsCommand::Use { id } => use_model(&id, output),
-        ModelsCommand::Show { id, reveal_key } => show(store, &id, reveal_key, output),
-        ModelsCommand::Test { id } => test_connection(store, &id, output),
+        ModelsCommand::Show { id, reveal_key } => show(&store, &id, reveal_key, output),
+        ModelsCommand::Test { id } => test_connection(&store, &id, output),
         ModelsCommand::ProbeLocal {
             url,
             api_key_env,
             model_id,
         } => probe_local(
-            store,
+            &store,
             url.as_deref(),
             api_key_env.as_deref(),
             model_id.as_deref(),
             output,
         ),
-        ModelsCommand::SettingsGet { key } => settings_get(store, key, output),
+        ModelsCommand::SettingsGet { key } => settings_get(&store, key, output),
         ModelsCommand::SettingsSet { key, value } => settings_set(key, value, output),
-        ModelsCommand::SearchList => search_list(store, output),
+        ModelsCommand::SearchList => search_list(&store, output),
         ModelsCommand::SearchSet {
             provider,
             api_key_env,
             clear,
             yes,
-        } => search_set(store, provider, &api_key_env, clear, yes, output),
-        ModelsCommand::SearchTest { provider } => search_test(store, provider, output),
+        } => search_set(&store, provider, &api_key_env, clear, yes, output),
+        ModelsCommand::SearchTest { provider } => search_test(&store, provider, output),
+    };
+    // Round-47 review: the store's keyring-failure fallback reports through
+    // the `log` facade, which no CLI binary installs — so on a headless box
+    // an API key could land in the plaintext file fallback with no terminal
+    // notice at all. Surface it once per process, after the command (the
+    // note writes stderr; stdout JSON stays parseable).
+    let fallbacks = store.os_keyring_fallback_services();
+    if !fallbacks.is_empty() {
+        crate::note!(
+            "pinvou: warning: the OS keyring was unreachable for {}; credential \
+             storage used the plaintext file fallback on disk",
+            fallbacks.join(", ")
+        );
     }
+    outcome
 }
 
 /// Read-latest-prefs the same way the GUI's `refresh_safe_prefs` does:
@@ -4811,8 +4798,9 @@ mod tests {
     // CredentialStore` into `save_model_inner`/`delete_model_inner` so the
     // lane is testable against something other than the OS keyring
     // (`RecordingCredentialStore` in the app's credential_store tests is the
-    // same idea); `execute_with_store` is this module's spelling of that
-    // seam. These tests exercise it with a recording store so the whole
+    // same idea); the private generic command fns (`list`, `add`, `show`,
+    // ...) are this module's spelling of that seam. These tests exercise
+    // them with a recording store so the whole
     // credential lane (store, roll back, reveal, clear, delete) finally has
     // behavioural coverage — previously every call site inlined
     // `SystemCredentialStore`, so nothing could observe any of it without

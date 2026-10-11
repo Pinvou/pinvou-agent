@@ -496,9 +496,7 @@ fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
     }
     if let Some(bin_dir) = pinvou3_lib::platform::paths::managed_connector_bin_dir() {
         let candidate = if cfg!(windows) {
-            bin_dir.join(pinvou3_lib::platform::connector_lock::executable_name(
-                spec.cli_bin,
-            ))
+            bin_dir.join(executable_name(spec.cli_bin))
         } else {
             bin_dir.join(spec.cli_bin)
         };
@@ -902,21 +900,36 @@ fn semver_from_stream(spec: &VendorSpec, source: &str) -> Option<(u64, u64, u64)
     }
 }
 
-/// `(semver if parseable, first non-empty version line)` from one
-/// `--version` invocation. Presence is judged by the exit status only (the
-/// GUI's `*_cli_present`); a version line without a parseable number means
+/// Installation gate per connector, mirroring `*_cli_present` plus the
+/// minimum-version replacement gate (status / ensure-cli / the connect-time
+/// presence checks; `logout` judges through `logout_probe` instead, whose
+/// not-installed claim must survive the stricter verdict):
+/// - dingtalk counts any working `--version` (an unparseable version line
+///   must not turn an installed CLI into a reinstall loop);
+/// - feishu/wecom/tmeet also require the minimum version (older or
+///   unparseable installs must be replaced, not used) — feishu joined the
+///   pair in round-49, mirroring the GUI's `LARK_MIN_VERSION` per feishu.rs.
+///
+/// Presence is judged by the `--version` exit status only (the GUI's
+/// `*_cli_present`); a version line without a parseable number means
 /// "installed, version unknown" for the connectors that do not gate on one.
-type ProbedVersion = (Option<(u64, u64, u64)>, String);
+enum VersionGate {
+    Missing,
+    Upgrade { raw: String },
+    Usable { raw: String },
+}
 
-fn probe_cli_version(spec: &VendorSpec) -> Option<ProbedVersion> {
-    let (ok, stdout, stderr) = run_cli_bounded(
+fn version_gate(spec: &VendorSpec) -> VersionGate {
+    let Some((ok, stdout, stderr)) = run_cli_bounded(
         spec,
         &["--version"],
         Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
     )
-    .ok()?;
+    .ok() else {
+        return VersionGate::Missing;
+    };
     if !ok {
-        return None;
+        return VersionGate::Missing;
     }
     let semver = cli_semver(spec, &stdout, &stderr);
     let raw = if stdout.trim().is_empty() {
@@ -930,32 +943,10 @@ fn probe_cli_version(spec: &VendorSpec) -> Option<ProbedVersion> {
         .unwrap_or("")
         .trim()
         .to_owned();
-    Some((semver, raw))
-}
-
-/// Installation gate per connector, mirroring `*_cli_present` plus the
-/// minimum-version replacement gate (status / ensure-cli / the connect-time
-/// presence checks; `logout` judges through `logout_probe` instead, whose
-/// not-installed claim must survive the stricter verdict):
-/// - dingtalk counts any working `--version` (an unparseable version line
-///   must not turn an installed CLI into a reinstall loop);
-/// - feishu/wecom/tmeet also require the minimum version (older or
-///   unparseable installs must be replaced, not used) — feishu joined the
-///   pair in round-49, mirroring the GUI's `LARK_MIN_VERSION` per feishu.rs.
-enum VersionGate {
-    Missing,
-    Upgrade { raw: String },
-    Usable { raw: String },
-}
-
-fn version_gate(spec: &VendorSpec) -> VersionGate {
-    match probe_cli_version(spec) {
-        None => VersionGate::Missing,
-        Some((semver, raw)) => match (spec.min_version, semver) {
-            (Some(min), Some(found)) if found < min => VersionGate::Upgrade { raw },
-            (Some(_), None) => VersionGate::Missing,
-            _ => VersionGate::Usable { raw },
-        },
+    match (spec.min_version, semver) {
+        (Some(min), Some(found)) if found < min => VersionGate::Upgrade { raw },
+        (Some(_), None) => VersionGate::Missing,
+        _ => VersionGate::Usable { raw },
     }
 }
 
@@ -1011,16 +1002,6 @@ fn logout_probe(spec: &VendorSpec, deadline: Instant) -> LogoutGate {
     LogoutGate::Installed
 }
 
-/// Runs the connector's status subcommand and returns `(exit_ok, stdout,
-/// stderr)` — one spawn shared by the `ok` DTO field and the connected
-/// predicate.
-fn run_status_probe(spec: &VendorSpec) -> Result<(bool, String, String), CliError> {
-    run_status_probe_bounded(
-        spec,
-        Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
-    )
-}
-
 /// The status probe under a caller's deadline: the connect poll loops reuse
 /// it so their final tick cannot add a fresh `PROBE_TIMEOUT_SECS` on top of
 /// the connect budget a wrapper scripted (`connect --timeout 30` used to be
@@ -1053,7 +1034,10 @@ fn cli_connected_bounded(spec: &VendorSpec, deadline: Instant) -> bool {
 /// - dingtalk: JSON `authenticated: true`;
 /// - tmeet: output contains `Logged in`.
 fn cli_connected(spec: &VendorSpec) -> Result<bool, CliError> {
-    let (ok, stdout, stderr) = run_status_probe(spec)?;
+    let (ok, stdout, stderr) = run_status_probe_bounded(
+        spec,
+        Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
+    )?;
     Ok(connected_from_probe(spec, ok, &stdout, &stderr))
 }
 
@@ -1549,7 +1533,10 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             entry["installed"] = json!(true);
             entry["upgrade_required"] = json!(upgrade_required);
             entry["version"] = json!(raw);
-            let (ok, stdout, stderr) = match run_status_probe(spec) {
+            let (ok, stdout, stderr) = match run_status_probe_bounded(
+                spec,
+                Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
+            ) {
                 Ok(result) => result,
                 Err(error) => {
                     degrade_probe_failure(spec, &mut entry, &error);
@@ -3531,9 +3518,8 @@ fn spawn_and_capture_url(
     // vendor CLI and its node/shell descendants running unreaped in their
     // own process group.
     // `spawn_supervised` registers the group with the interrupt signals
-    // blocked across the spawn (the guard's own register below is then the
-    // idempotent no-op), so an interrupt cannot land in the gap between a
-    // bare spawn and the bracket taking effect.
+    // blocked across the spawn, so an interrupt cannot land in the gap
+    // between a bare spawn and the bracket taking effect.
     let mut guard = LoginChildGuard::new(
         crate::support::supervise::spawn_supervised(&mut cmd).map_err(|error| {
             CliError::failed(format!(
@@ -3772,14 +3758,15 @@ const VENDOR_LOG_TAIL_LINES: usize = 32;
 ///
 /// Scope, stated plainly: Drop covers the RETURN and UNWIND paths only. A
 /// bare terminal SIGINT terminates the process without unwinding, so no
-/// Drop runs there — which is why the constructor registers the child's
-/// group with `crate::support::supervise` and the settled-fate paths forget
-/// it: the supervisor's watcher is what takes the group down on a terminal
-/// interrupt (the hole the old comment claimed needed a dependency the CLI
-/// does not carry; it carries `libc` and installs the handler in `main`,
-/// and `code login`/`voice` have bracketed their children this way since
-/// round 18). The GUI's equivalent is
-/// `ConnectorConn::kill_all_pids()` on `RunEvent::Exit`, a different
+/// Drop runs there — which is why the child's group stays registered with
+/// `crate::support::supervise` for the guard's whole lifetime
+/// (`spawn_supervised`, which produced the child, registered it in-window)
+/// and the settled-fate paths forget it: the supervisor's watcher is what
+/// takes the group down on a terminal interrupt (the hole the old comment
+/// claimed needed a dependency the CLI does not carry; it carries `libc`
+/// and installs the handler in `main`, and `code login`/`voice` have
+/// bracketed their children this way since round 18). The GUI's equivalent
+/// is `ConnectorConn::kill_all_pids()` on `RunEvent::Exit`, a different
 /// mechanism for a process that owns a runtime; a one-shot CLI takes the
 /// signal-handler route.
 struct LoginChildGuard {
@@ -3794,11 +3781,11 @@ impl LoginChildGuard {
         // bracketed with (`code login`, `voice`): this login child can sit
         // in its wait for the whole `--timeout` budget (default 300 s, up
         // to 604800 s) while a human scans, and a terminal SIGINT must take
-        // it down with the CLI. Paired with the forget in `disarm` /
-        // `kill_and_disarm` / Drop, the settled-fate paths, so the pgid
-        // never stays registered for the OS to recycle onto an unrelated
-        // process.
-        crate::support::supervise::register_child_group(child.id());
+        // it down with the CLI. The child always comes from
+        // `spawn_supervised`, whose in-window registration this guard's
+        // paired forgets release (`disarm` / `kill_and_disarm` / Drop, the
+        // settled-fate paths), so the pgid never stays registered for the
+        // OS to recycle onto an unrelated process.
         Self {
             child,
             disarmed: false,

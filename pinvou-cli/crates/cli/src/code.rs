@@ -1352,14 +1352,16 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
         CodeCommand::SessionsList => code_sessions_list(output),
         CodeCommand::SessionsInfo { id } => code_sessions_info(&id, output),
         CodeCommand::SessionsTimeline { id } => code_sessions_timeline(&id, output),
-        CodeCommand::WorkspaceList { session, path } => with_workspace(&session, |root| {
-            workspace_list(root, path.as_deref(), output)
-        }),
+        CodeCommand::WorkspaceList { session, path } => {
+            with_workspace_session(&session, |_, root| {
+                workspace_list(root, path.as_deref(), output)
+            })
+        }
         CodeCommand::WorkspaceSearch { session, query } => {
-            with_workspace(&session, |root| workspace_search(root, &query, output))
+            with_workspace_session(&session, |_, root| workspace_search(root, &query, output))
         }
         CodeCommand::WorkspacePreview { session, file } => {
-            with_workspace(&session, |root| workspace_preview(root, &file, output))
+            with_workspace_session(&session, |_, root| workspace_preview(root, &file, output))
         }
         CodeCommand::WorkspaceChanges { session } => {
             with_workspace_session(&session, |session_id, root| {
@@ -1372,7 +1374,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             })
         }
         CodeCommand::WorkspaceBranches { session } => {
-            with_workspace(&session, |root| workspace_branches(root, output))
+            with_workspace_session(&session, |_, root| workspace_branches(root, output))
         }
         CodeCommand::WorkspaceCheckout {
             session,
@@ -1390,7 +1392,7 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             let mut mutation_lock = session_mutation_lock(&session, "checkout")?;
             let _mutation_guard =
                 lock_session_for_mutation(&mut mutation_lock, &session, "checkout")?;
-            with_workspace(&session, |root| {
+            with_workspace_session(&session, |_, root| {
                 workspace_checkout(&session, root, &branch, mode, message.as_deref(), output)
             })
         }
@@ -1444,23 +1446,23 @@ fn open_store() -> Result<SessionStore, CliError> {
     // project-bound native code sessions resolve their execution root through
     // the persisted SessionAgentStore; without this every root would fall back
     // to the session's private directory.
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     store.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
         agents.code_project_workspace(session_id)
     }));
     Ok(store)
 }
 
-fn open_agent_store() -> Result<SessionAgentStore, CliError> {
-    Ok(SessionAgentStore::load_or_empty())
-}
-
 fn store_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliError {
     CliError::failed(format!("code {action}({id}): {error:#}"))
 }
 
+fn provider_not_found(agent: &str, id: &str) -> CliError {
+    CliError::failed(format!("provider_not_found: no provider '{id}' for agent {agent}"))
+}
+
 /// Restored by the round-52 rebase: `require_native_code_session` joined
-/// `resolve_session_workspace` as a second caller, so the shared two-liner
+/// `with_workspace_session` as a second caller, so the shared two-liner
 /// is back (its not-found message is the sibling-lane contract the
 /// checkpoints gate's doc cites).
 fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), CliError> {
@@ -3152,14 +3154,7 @@ fn providers_list(agent: Option<&str>, output: OutputMode) -> Result<CliOutcome,
         // The list lane is the one provider command whose agent is not
         // validated at parse, so the same codex|claude|kimi admission the
         // parse-time `require_agent` applies elsewhere lives here.
-        Some(agent) => match agent {
-            "codex" | "claude" | "kimi" => vec![agent.to_owned()],
-            other => {
-                return Err(CliError::usage(format!(
-                    "unknown agent '{other}'; valid agents are codex|claude|kimi"
-                )));
-            }
-        },
+        Some(agent) => vec![require_agent(Some(agent), &providers_usage())?],
         None => vec!["codex".to_owned(), "claude".to_owned(), "kimi".to_owned()],
     };
     let mut views = Vec::new();
@@ -3375,9 +3370,7 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
     // provider id must not consume it (or echo a prompt) before failing.
     let existing = provider_id.and_then(|id| manager.store().get(agent, id));
     if let (Some(id), None) = (provider_id, existing.as_ref()) {
-        return Err(CliError::failed(format!(
-            "provider_not_found: no provider '{id}' for agent {agent}"
-        )));
+        return Err(provider_not_found(agent, id));
     }
     let secret = resolve_secret(&api_key_env, api_key_stdin)?;
     // Round-42 review: re-read the record AFTER the secret resolution — the
@@ -3399,9 +3392,7 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
     // wording: this is a narrowing, not a closure).
     let existing = provider_id.and_then(|id| manager.store().record_after_reload(agent, id));
     if let (Some(id), None) = (provider_id, existing.as_ref()) {
-        return Err(CliError::failed(format!(
-            "provider_not_found: no provider '{id}' for agent {agent}"
-        )));
+        return Err(provider_not_found(agent, id));
     }
     let name = name.or_else(|| existing.as_ref().map(|record| record.name.clone()));
     let base_url = base_url.or_else(|| existing.as_ref().map(|record| record.base_url.clone()));
@@ -3522,9 +3513,7 @@ fn providers_remove(
         .record_after_reload(agent, provider_id)
         .is_none()
     {
-        return Err(CliError::failed(format!(
-            "provider_not_found: no provider '{provider_id}' for agent {agent}"
-        )));
+        return Err(provider_not_found(agent, provider_id));
     }
     let removed = manager
         .delete(agent, provider_id)
@@ -3568,9 +3557,7 @@ fn providers_switch(
         .record_after_reload(agent, provider_id)
         .is_none()
     {
-        return Err(CliError::failed(format!(
-            "provider_not_found: no provider '{provider_id}' for agent {agent}"
-        )));
+        return Err(provider_not_found(agent, provider_id));
     }
     // Round-41 review M4: pre-check credential presence the same way —
     // keyless providers are a first-class import product, so `import →
@@ -3974,7 +3961,7 @@ fn code_workspace_info(
 
 fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     let mut rows = store
         .list()
         .map_err(|error| store_error("sessions list", "-", error))?;
@@ -4050,7 +4037,7 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
 
 fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     // Fetch the session (and its model name) first: the gate below must
     // accept exactly the sessions `code sessions list` accepts, including
     // ACP sessions whose session-agents sidecar record was lost (detected
@@ -4104,7 +4091,7 @@ fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliErr
 /// error instead of reporting an empty journal.
 fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     // Same gate (and same error) as `code sessions info`, including the
     // model-name fallback for sessions whose sidecar record was lost.
     let metadata = store
@@ -5706,9 +5693,12 @@ fn git_ls_files_tracked(root: &Path, relative: &str) -> bool {
 /// `codex_workspace_root`: the session must be an ACP or native code session
 /// and the resolved workspace must exist. The stores this gate opens stay
 /// private to it; every caller only needs the root.
-fn resolve_session_workspace(session: &str) -> Result<PathBuf, CliError> {
+fn with_workspace_session(
+    session: &str,
+    handler: impl FnOnce(String, &Path) -> Result<CliOutcome, CliError>,
+) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     require_existing(&store, session, "workspace")?;
     // Workspace *operations* stay record-gated (empty model): a sidecar-lost
     // ACP session has no reliable workspace record, so resolving one would
@@ -5720,21 +5710,6 @@ fn resolve_session_workspace(session: &str) -> Result<PathBuf, CliError> {
             root.display()
         )));
     }
-    Ok(root)
-}
-
-fn with_workspace(
-    session: &str,
-    handler: impl FnOnce(&Path) -> Result<CliOutcome, CliError>,
-) -> Result<CliOutcome, CliError> {
-    with_workspace_session(session, |_, root| handler(root))
-}
-
-fn with_workspace_session(
-    session: &str,
-    handler: impl FnOnce(String, &Path) -> Result<CliOutcome, CliError>,
-) -> Result<CliOutcome, CliError> {
-    let root = resolve_session_workspace(session)?;
     handler(session.to_owned(), &root)
 }
 
@@ -5782,7 +5757,7 @@ fn require_native_code_session(
 
 fn checkpoints_list(session: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     let (ledger, _) = require_native_code_session(&store, &agents, session)?;
     let entries = checkpoints::list_checkpoints(&ledger)
         .map_err(|error| store_error("checkpoints list", session, error))?;
@@ -5836,7 +5811,7 @@ fn checkpoints_diff(
     let mut mutation_lock = session_mutation_lock(session, "diff")?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "diff")?;
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root, "diff")?;
@@ -5946,7 +5921,7 @@ fn checkpoints_rewind(
     let mut mutation_lock = session_mutation_lock(session, "rewind")?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "rewind")?;
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
     // Second lock keyed by the (canonical) execution root: two CLI processes
     // rewinding *different* sessions bound to the same project directory must
@@ -6160,7 +6135,7 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let mut mutation_lock = session_mutation_lock(session, "undo")?;
     let _mutation_guard = lock_session_for_mutation(&mut mutation_lock, session, "undo")?;
     let store = open_store()?;
-    let agents = open_agent_store()?;
+    let agents = SessionAgentStore::load_or_empty();
     let (ledger, execution) = require_native_code_session(&store, &agents, session)?;
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root, "undo")?;

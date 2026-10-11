@@ -721,15 +721,15 @@ fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
 
 pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     match command {
-        KnowledgeCommand::Mounts { session_id } => mounts(&session_id, output),
+        KnowledgeCommand::Mounts { session_id } => mount_refusal("mounts", &session_id, output),
         KnowledgeCommand::Mount {
             session_id,
-            collection_id,
-        } => mount(&session_id, collection_id, output),
+            collection_id: _,
+        } => mount_refusal("mount", &session_id, output),
         KnowledgeCommand::Unmount {
             session_id,
-            collection_id,
-        } => unmount(&session_id, collection_id, output),
+            collection_id: _,
+        } => mount_refusal("unmount", &session_id, output),
         KnowledgeCommand::CollectionsDelete { id, yes } => {
             require_yes(yes)?;
             collections_delete(id, output)
@@ -2807,17 +2807,17 @@ fn host_error(operation: &str, error: anyhow::Error) -> CliError {
 // it nor `anyhow`.
 #[cfg(not(feature = "product-backend"))]
 fn remote_connections(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(not(feature = "product-backend"))]
 fn remote_probe(_url: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(not(feature = "product-backend"))]
 fn remote_collections(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(not(feature = "product-backend"))]
@@ -2826,12 +2826,12 @@ fn remote_search(
     _query: &str,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(not(feature = "product-backend"))]
 fn host_status(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 /// The mount surface refuses honestly, same pattern as `model download`:
@@ -2848,41 +2848,26 @@ fn mount_requires_product_host(action: &str, session_id: &str) -> CliError {
     ))
 }
 
-/// GUI `session_mounted_collections_snapshot`: the revisioned source of truth
-/// for one session's mounts. Every invocation is refused honestly — mounts
-/// live in the desktop app's process memory and are deliberately not
-/// persisted, so the CLI can neither read nor change them.
+/// GUI `session_mounted_collections_snapshot` and its `mount`/`unmount`
+/// siblings: every invocation is refused honestly — mounts live in the
+/// desktop app's process memory and are deliberately not persisted, so the
+/// CLI can neither read nor change them.
 ///
 /// The refusal is returned BEFORE any store is opened. It does not depend on
 /// the session at all, and `SessionStore::boot()` is not a read: it enforces
 /// the 50-sessions-per-kind retention policy, which irreversibly deletes the
 /// user's oldest non-pinned sessions. Booting it to decorate an unavoidable
 /// refusal with "session not found" would destroy chat history as a side
-/// effect of a command that cannot succeed. The session-id charset gate still
+/// effect of a command that cannot succeed — and that holds for the
+/// mutating arms too: a mutation the CLI cannot perform must not evict
+/// sessions on its way to saying so. The session-id charset gate still
 /// runs first, in [`require_session_id`] at parse time (exit 2), so a
 /// traversal-shaped id never reaches here.
-fn mounts(session_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
-    sandbox_home()?;
-    Err(mount_requires_product_host("mounts", session_id))
-}
-
-/// Same pre-boot refusal as [`mounts`]: a mutation the CLI cannot perform
-/// must not evict sessions on its way to saying so.
-fn mount(
+fn mount_refusal(
+    action: &str,
     session_id: &str,
-    _collection_id: i64,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
-    Err(mount_requires_product_host("mount", session_id))
-}
-
-/// Same pre-boot refusal as [`mounts`].
-fn unmount(
-    session_id: &str,
-    _collection_id: i64,
-    _output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    sandbox_home()?;
-    Err(mount_requires_product_host("unmount", session_id))
+    Err(mount_requires_product_host(action, session_id))
 }

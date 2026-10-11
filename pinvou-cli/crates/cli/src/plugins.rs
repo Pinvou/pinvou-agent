@@ -1385,6 +1385,18 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
     )
 }
 
+/// Shared tail of `skills_install` / `skills_update` / `skills_uninstall`:
+/// the id/action outcome JSON and the human note (hot refresh disclosed as
+/// not broadcast).
+fn action_outcome(id: &str, action: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let value = serde_json::json!({ "id": id, "action": action, "hot_refresh": "not_broadcast" });
+    Ok(success(render(
+        output,
+        format!("{action} {id}{HOT_REFRESH_NOTE}"),
+        &value,
+    )))
+}
+
 fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     // `install_marketplace_skill_sync`: install, then default the skill into
     // every initialized DenyAll scope's disabled set (explicit opt-in).
@@ -1392,13 +1404,7 @@ fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
         .install(id)
         .map_err(|error| feature_error("skills install", id, error))?;
     sync_after_install_or_fail("skills install", id)?;
-    let value =
-        serde_json::json!({ "id": id, "action": "installed", "hot_refresh": "not_broadcast" });
-    Ok(success(render(
-        output,
-        format!("installed {id}{HOT_REFRESH_NOTE}"),
-        &value,
-    )))
+    return action_outcome(id, "installed", output);
 }
 
 fn skills_update(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1416,13 +1422,7 @@ fn skills_update(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     mgr.install(id)
         .map_err(|error| feature_error("skills update", id, error))?;
-    let value =
-        serde_json::json!({ "id": id, "action": "updated", "hot_refresh": "not_broadcast" });
-    Ok(success(render(
-        output,
-        format!("updated {id}{HOT_REFRESH_NOTE}"),
-        &value,
-    )))
+    return action_outcome(id, "updated", output);
 }
 
 fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1435,13 +1435,7 @@ fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcom
         .uninstall(id)
         .map_err(|error| feature_error("skills uninstall", id, error))?;
     remove_scope_rows_or_fail("skills uninstall", &owner)?;
-    let value =
-        serde_json::json!({ "id": id, "action": "uninstalled", "hot_refresh": "not_broadcast" });
-    Ok(success(render(
-        output,
-        format!("uninstalled {id}{HOT_REFRESH_NOTE}"),
-        &value,
-    )))
+    return action_outcome(id, "uninstalled", output);
 }
 
 // ---------------------------------------------------------------------------
@@ -1538,15 +1532,23 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             // name) still get distinct `skill-<hash>` ids (GUI FNV collision
             // defense) instead of collapsing onto one constant id.
             let wrapped = wrap_markdown_skill(&skill_md, &raw_name).into_bytes();
-            charge_wrapped_skill_md(&mut cumulative, skill_md.len(), &wrapped, &display, path)?;
+            // Wrapped-SKILL.md recharge: give the raw charge back, take the
+            // wrapped length (see `charge_import_budget`).
+            cumulative = cumulative.saturating_sub(skill_md.len() as u64);
+            charge_import_budget(&mut cumulative, wrapped.len() as u64, &display, path)?;
             entries.retain(|(name, _)| name != "SKILL.md");
             entries.push(("SKILL.md".to_owned(), wrapped));
         }
         // The wrapper zip is the package the pipeline (and any file-size
         // consumer downstream) actually sees, so its structural bytes are
         // charged in this pre-flight, not discovered as a "bomb" later (see
-        // the helper's doc comment).
-        charge_wrapper_structure_overhead(&mut cumulative, &entries, &display, path)?;
+        // `charge_import_budget`).
+        charge_import_budget(
+            &mut cumulative,
+            wrapper_zip_structure_overhead(&entries),
+            &display,
+            path,
+        )?;
         Some((
             temp_zip_path("pinvou-cli-import-dir"),
             build_stored_zip(&entries)?,
@@ -1561,12 +1563,20 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
             ))
         })?;
         let wrapped = wrap_markdown_skill(&content, &raw_name).into_bytes();
-        charge_wrapped_skill_md(&mut cumulative, content.len(), &wrapped, &display, path)?;
+        // Wrapped-SKILL.md recharge: give the raw charge back, take the
+        // wrapped length (see `charge_import_budget`).
+        cumulative = cumulative.saturating_sub(content.len() as u64);
+        charge_import_budget(&mut cumulative, wrapped.len() as u64, &display, path)?;
         let entries = [("SKILL.md".to_owned(), wrapped)];
         // Same structural charge as the directory channel: the single-entry
         // wrapper is still a zip with a header, a central directory entry,
         // and an EOCD on top of the charged content.
-        charge_wrapper_structure_overhead(&mut cumulative, &entries, &display, path)?;
+        charge_import_budget(
+            &mut cumulative,
+            wrapper_zip_structure_overhead(&entries),
+            &display,
+            path,
+        )?;
         Some((
             temp_zip_path("pinvou-cli-import-md"),
             build_stored_zip(&entries)?,
@@ -2553,23 +2563,33 @@ fn read_import_file_capped(
     Ok(bytes)
 }
 
-/// Re-charges the import budget when a SKILL.md is replaced by its wrapped
-/// form: `wrap_markdown_skill` PREPENDS a frontmatter block, so the bytes that
-/// actually go into the package are larger than the ones
-/// [`read_import_file_capped`] charged. The raw length is given back and the
-/// wrapped one taken, then the budget is re-checked — pushing the wrapper in
-/// without any charge let an import sitting just under
-/// `MAX_PLUGIN_SIZE_BYTES` ship a package over it by the frontmatter's size.
-fn charge_wrapped_skill_md(
+/// Adds one recharge to the running import budget and re-checks the total
+/// against `MAX_PLUGIN_SIZE_BYTES`, so the boundary fails HERE, with the
+/// honest over-limit message users can act on, before the package is built
+/// or handed to the unified pipeline. The two lanes that share it:
+///
+/// - Wrapped-SKILL.md recharge: `wrap_markdown_skill` PREPENDS a frontmatter
+///   block, so the bytes that actually go into the package are larger than
+///   the raw ones an earlier read charged. The call site gives the raw
+///   length back (`saturating_sub`: the raw read is always part of
+///   `cumulative`, but a future caller that charges differently must not
+///   wrap around into a huge budget) and passes the wrapped length here —
+///   pushing the wrapper in without any charge let an import sitting just
+///   under the limit ship a package over it by the frontmatter's size.
+/// - Wrapper-zip structural pre-flight: the wrapper zip is the package the
+///   pipeline (and any file-size consumer downstream) actually sees, so its
+///   structural bytes ([`wrapper_zip_structure_overhead`]) are charged in
+///   the pre-flight — a directory exactly at the cap would otherwise clear
+///   every `>` comparison here (content == limit is legal in the walk) and
+///   the package would then die at the pipeline stage with the
+///   decompression-bomb message, a legitimate package accused of an attack.
+fn charge_import_budget(
     cumulative: &mut u64,
-    raw_len: usize,
-    wrapped: &[u8],
+    delta: u64,
     display: &str,
     path: &Path,
 ) -> Result<(), CliError> {
-    // saturating: the raw read is always part of `cumulative`, but a future
-    // caller that charges differently must not wrap around into a huge budget.
-    *cumulative = cumulative.saturating_sub(raw_len as u64) + wrapped.len() as u64;
+    *cumulative = cumulative.saturating_add(delta);
     if *cumulative > plugin_import::MAX_PLUGIN_SIZE_BYTES {
         return Err(import_over_limit(display, path));
     }
@@ -2596,29 +2616,6 @@ fn wrapper_zip_structure_overhead(entries: &[(String, Vec<u8>)]) -> u64 {
             (LOCAL_FILE_HEADER + CENTRAL_DIRECTORY_ENTRY).saturating_add(2 * name.len() as u64)
         })
         .fold(END_OF_CENTRAL_DIRECTORY, u64::saturating_add)
-}
-
-/// Re-charges the import budget for the wrapper zip's STRUCTURAL overhead,
-/// in the pre-flight, before the zip is built and handed to the unified
-/// pipeline. Without it a directory sitting exactly at the cap cleared every
-/// `>` comparison here (content == limit is legal in the walk), and the
-/// package then died at the pipeline stage with the decompression-bomb
-/// message — a legitimate package accused of an attack. Charging the
-/// overhead makes the boundary fail HERE, with the honest "exceeds the
-/// import limit" message users can act on, before any zip is built or the
-/// pipeline is invoked. Same charge shape as [`charge_wrapped_skill_md`]:
-/// additive, checked against the same `MAX_PLUGIN_SIZE_BYTES`.
-fn charge_wrapper_structure_overhead(
-    cumulative: &mut u64,
-    entries: &[(String, Vec<u8>)],
-    display: &str,
-    path: &Path,
-) -> Result<(), CliError> {
-    *cumulative = cumulative.saturating_add(wrapper_zip_structure_overhead(entries));
-    if *cumulative > plugin_import::MAX_PLUGIN_SIZE_BYTES {
-        return Err(import_over_limit(display, path));
-    }
-    Ok(())
 }
 
 /// The one entry cap the zip format itself imposes: the central directory

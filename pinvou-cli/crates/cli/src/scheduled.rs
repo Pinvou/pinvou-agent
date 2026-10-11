@@ -1324,9 +1324,7 @@ fn registry_map_mut<'a>(
     // A registry written by a newer app version must be refused, never
     // merged and written back (the GUI's VersionedJsonStore quarantines the
     // same situation); the version check only gates objects that carry one.
-    if registry.is_object() {
-        ensure_sidecar_schema(registry, schema_version as u64, what)?;
-    }
+    ensure_sidecar_schema(registry, schema_version as u64, what)?;
     if !registry.is_object() {
         *registry = serde_json::json!({ "schema_version": schema_version });
         registry[key] = serde_json::Value::Object(serde_json::Map::new());
@@ -1406,12 +1404,6 @@ fn registry_tasks_view(
         .get("tasks")
         .and_then(|value| value.as_object())
         .unwrap_or_else(|| EMPTY.get_or_init(serde_json::Map::new))
-}
-
-/// Random task/run id — the same UUIDv4 generator as the foundation's
-/// automation manager (hex, hyphens, safe as a single path component).
-fn new_storage_id() -> String {
-    uuid::Uuid::new_v4().to_string()
 }
 
 // ---- DTO mapping (mirrors ScheduledTaskDto / ScheduledRunDto, camelCase) ----
@@ -2158,18 +2150,8 @@ fn create(
     // Shared prompt-file lane: the cap, the credential-path gate and the
     // empty-file refusal live in `read_prompt_file` (with their rationale).
     let prompt = read_prompt_file("create", prompt_file)?;
-    // The model wire name and the saved-model pin are resolved as ONE pair,
-    // exactly like the GUI's create (`model: selected.model, modelId:
-    // selected.id`): the executor's `resolve_scheduled_model` rejects a task
-    // whose binding's wire name does not match the id's current wire name,
-    // so pinning X while persisting the ACTIVE model's wire name (the old
-    // CLI behavior) produced a task that fails on every run. With
-    // `--model-id` the definition carries the named model's own wire name;
-    // without it, the active model's (the GUI's `current_automation_model`).
-    // An unknown `--model-id` is refused before anything is persisted: it
-    // names a saved model that does not exist, the same state-dependent
-    // refusal class the family's conventions dictate (exit 1, like `models
-    // ... model not found:`).
+    // Same pair-resolution rule as `resolve_model_pair` (see there); create
+    // adds the active-model fallback for a missing --model-id.
     let (model, validated_model_id) = match resolve_model_pair("create", model_id.as_deref())? {
         Some((model, saved_model_id)) => (model, Some(saved_model_id)),
         // No pin requested: the active model's wire name (the GUI's
@@ -2874,6 +2856,13 @@ fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         rolled["tasks"] = serde_json::Value::Object(existing_snapshot);
         rolled
     };
+    // Best-effort archive rollback, shared by the two removal-failure arms
+    // below (the disclosure rationale is per-arm).
+    let undo_archive = |rolled: &serde_json::Value| {
+        if let Err(rollback) = write_json_atomic(&store_holder.history_archive_path(), rolled) {
+            note!("scheduled delete: archive rollback failed: {rollback}");
+        }
+    };
     let def_path = match store_holder.def_path(id) {
         Ok(path) => path,
         Err(error) => {
@@ -2881,11 +2870,7 @@ fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             // like every sibling rollback lane this failure is disclosed — a
             // silently kept stale snapshot is exactly the "live + archived"
             // mixed state the rollback exists to prevent (round-39 review).
-            if let Err(rollback) =
-                write_json_atomic(&store_holder.history_archive_path(), &archive_rollback)
-            {
-                note!("scheduled delete: archive rollback failed: {rollback}");
-            }
+            undo_archive(&archive_rollback);
             restore_status(&previous_status);
             return Err(error);
         }
@@ -2895,11 +2880,7 @@ fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             // Same rollback-failure disclosure as the def-path arm above.
-            if let Err(rollback) =
-                write_json_atomic(&store_holder.history_archive_path(), &archive_rollback)
-            {
-                note!("scheduled delete: archive rollback failed: {rollback}");
-            }
+            undo_archive(&archive_rollback);
             restore_status(&previous_status);
             return Err(CliError::failed(format!(
                 "scheduled_delete_failed: cannot remove {}: {error}",
@@ -3092,7 +3073,7 @@ enabled in settings",
     // same reason the foundation persists runs only after the enqueue. A
     // killed CLI therefore leaves no record; the reconcile above remains for
     // records written by earlier builds.
-    let run_id = new_storage_id();
+    let run_id = uuid::Uuid::new_v4().to_string(); // same UUIDv4 shape as the foundation manager's ids
     let now = now_string();
     let organize = organize_headless();
     // The failed verdict derives once from the organize pass and drives both

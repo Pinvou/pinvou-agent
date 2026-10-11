@@ -153,17 +153,13 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
     }
 }
 
-pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
-    run_agent(command, output)
-}
-
 #[cfg(not(feature = "product-backend"))]
-fn run_agent(_command: AgentCommand, _output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+pub(crate) fn execute(_command: AgentCommand, _output: OutputMode) -> Result<CliOutcome, CliError> {
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(feature = "product-backend")]
-fn run_agent(command: AgentCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     let AgentCommand::Run {
         prompt_file,
         workspace,
@@ -503,7 +499,7 @@ fn run_agent(command: AgentCommand, output: OutputMode) -> Result<CliOutcome, Cl
 /// persona (the only case before this wiring) must behave identically.
 ///
 /// Pure on purpose: the composition is the testable part of the wiring. The
-/// full `run_agent` path needs a real engine (deliberately out of scope for
+/// full `execute` path needs a real engine (deliberately out of scope for
 /// the hermetic contract tests), so this helper is what the unit tests pin —
 /// including the separator, so the headless lane cannot drift from the GUI's
 /// injection point.

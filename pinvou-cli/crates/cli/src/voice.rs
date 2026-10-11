@@ -1161,13 +1161,15 @@ fn download_to(
             response.status()
         )));
     }
-    let result = (|| -> Result<(), CliError> {
+    let result = (|| -> Result<u64, CliError> {
         use std::io::Read as _;
         let mut file = open_staged_part(&part).map_err(|error| {
             CliError::failed(format!("voice asr-install: {}: {error}", part.display()))
         })?;
         let mut reader = response.take(max_bytes + 1);
-        std::io::copy(&mut reader, &mut file)
+        // `io::copy`'s return is the freshly created part's byte count, so
+        // the size gate reuses it directly instead of re-statting the file.
+        let copied = std::io::copy(&mut reader, &mut file)
             .map_err(|error| CliError::failed(format!("voice asr-install: write: {error}")))?;
         // Same pre-verify `sync_all` as the app's `download_to_part_with_verify`
         // ("下载流完成（sync_all 后）…"): without it a crash between the rename
@@ -1177,20 +1179,9 @@ fn download_to(
         // true.
         file.sync_all()
             .map_err(|error| CliError::failed(format!("voice asr-install: sync: {error}")))?;
-        Ok(())
+        Ok(copied)
     })();
-    result?;
-    let size = match std::fs::metadata(&part).map(|meta| meta.len()) {
-        Ok(size) => size,
-        Err(error) => {
-            // Same cleanup guarantee as every other failure path: the stat
-            // of a file this code just wrote should not fail, but if it
-            // does the staged part must not leak.
-            return Err(CliError::failed(format!(
-                "voice asr-install: stat: {error}"
-            )));
-        }
-    };
+    let size = result?;
     if size > max_bytes {
         return Err(CliError::failed(
             "voice asr-install: model exceeds the size cap",
@@ -1610,7 +1601,13 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // with it instead of orphaning them (same contract as `connectors`'s
     // vendor CLI spawns).
     crate::support::set_process_group(&mut engine_command);
-    let mut child = spawn_asr_engine(&mut engine_command, &normalized)?;
+    // `spawn_supervised` closes the spawn→register window (see
+    // `support/supervise.rs`); the `GroupGuard::arm` bracket below is then
+    // the idempotent belt.
+    let mut child = crate::support::supervise::spawn_supervised(&mut engine_command)
+        .map_err(|error| {
+            CliError::failed(format!("voice transcribe: cannot start ASR engine: {error}"))
+        })?;
     // The recognized-pid rule the wait loop below documents (no group kill
     // once `try_wait` has reaped the child) is about signaling, not
     // registration: the supervised bracket forgets the group on EVERY exit
@@ -1662,25 +1659,6 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     }
     extract_transcript(&stdout, &stderr).ok_or_else(|| {
         CliError::failed("asr_parse_failed: recognition returned no usable text; please retry")
-    })
-}
-
-/// Spawns the local ASR engine. The normalized staging file is private
-/// audio; a failed spawn must not leak it in the shared temp dir (the app
-/// removes it unconditionally after the engine attempt, half-written ffmpeg
-/// output included).
-fn spawn_asr_engine(
-    command: &mut std::process::Command,
-    normalized: &Path,
-) -> Result<std::process::Child, CliError> {
-    // `spawn_supervised` closes the spawn→register window (see
-    // `support/supervise.rs`); the caller's `GroupGuard::arm` bracket
-    // is then the idempotent belt.
-    crate::support::supervise::spawn_supervised(command).map_err(|error| {
-        let _ = std::fs::remove_file(normalized);
-        CliError::failed(format!(
-            "voice transcribe: cannot start ASR engine: {error}"
-        ))
     })
 }
 
@@ -2282,17 +2260,14 @@ struct PostprocessOutcome {
 fn postprocess_retry_result(
     retry: Result<(String, bool), CliError>,
 ) -> Result<PostprocessOutcome, CliError> {
-    match retry {
-        Ok((text, truncated)) if !text.trim().is_empty() => {
-            Ok(PostprocessOutcome { text, truncated })
-        }
-        // Empty output for pure-filler input is the correct answer,
-        // not an error (same contract as the GUI).
-        Ok(_) => Ok(PostprocessOutcome {
+    let (text, truncated) = retry?;
+    if text.trim().is_empty() {
+        Ok(PostprocessOutcome {
             text: String::new(),
             truncated: false,
-        }),
-        Err(error) => Err(error),
+        })
+    } else {
+        Ok(PostprocessOutcome { text, truncated })
     }
 }
 
@@ -3153,50 +3128,6 @@ mod review_fix_tests {
         let endpoint = summarize_postprocess_error(&error);
         assert!(endpoint.starts_with("model endpoint "), "got: {endpoint}");
         assert!(!endpoint.contains("127.0.0.1"), "URL leaked: {endpoint}");
-    }
-
-    /// The normalized staging file is private audio; when the engine binary
-    /// cannot be spawned at all, the spawn-error path must remove it instead
-    /// of leaking it in the shared temp dir.
-    #[cfg(unix)]
-    #[test]
-    fn engine_spawn_failure_removes_the_normalized_staging_file() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-cli-voice-spawn-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let normalized = dir.join("normalized.wav");
-        std::fs::write(&normalized, vec![0u8; 44]).unwrap();
-        // An engine file that exists but cannot be exec'd: spawn must fail
-        // with a permission error, exercising the cleanup path.
-        let engine = dir.join(engine_binary_name());
-        std::fs::write(&engine, b"not an executable").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o644)).unwrap();
-        }
-        let mut command = std::process::Command::new(&engine);
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        let error =
-            spawn_asr_engine(&mut command, &normalized).expect_err("the engine cannot be spawned");
-        assert!(
-            error.to_string().contains("cannot start ASR engine"),
-            "expected the spawn error, got: {error}"
-        );
-        assert!(
-            !normalized.exists(),
-            "the failed spawn must not leak the normalized staging file"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The staged private audio (the 0600 wav from `write_temp_wav`, the

@@ -178,6 +178,11 @@ impl ExitCode {
 /// dispatch contract's rule: the error must name what IS dispatchable).
 const BENCHMARK_USAGE: &str = "usage: pinvou benchmark <list|run <id>|status <run>|resume <run>|report <run>|fetch <gaia-token-env>|verify|score <run>|submission <run>>";
 
+/// The error for a global `--output` pair missing its mode value; shared by
+/// the leading and trailing scans so the two refuse the line identically.
+const GLOBAL_OUTPUT_USAGE: &str = "--output requires human or json (subcommands that export \
+     to a file take `--output PATH` instead — see their usage line)";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BenchmarkCommand {
     List,
@@ -317,38 +322,25 @@ where
     // (A file literally named "json"/"human" at the end of the line still
     // needs a ./ prefix; see the note in `parse_gaia_submission`.)
     while values.first().is_some_and(|token| token == "--output") {
-        let value = values.get(1).ok_or_else(|| {
-            CliError::usage(
-                "--output requires human or json (subcommands that export to a file take \
-                 `--output PATH` instead — see their usage line)",
-            )
-        })?;
-        match value.as_str() {
-            "json" | "human" => {
-                record_global_output_mode(
-                    &mut output,
-                    &mut global_output_seen,
-                    if value == "json" {
-                        OutputMode::Json
-                    } else {
-                        OutputMode::Human
-                    },
-                )?;
+        let value = values
+            .get(1)
+            .ok_or_else(|| CliError::usage(GLOBAL_OUTPUT_USAGE))?;
+        match global_output_mode(value) {
+            Some(mode) => {
+                record_global_output_mode(&mut output, &mut global_output_seen, mode)?;
                 values.drain(0..=1);
             }
             // Not a global-mode value: end the leading run and leave the
             // pair for the subcommand.
-            _ => break,
+            None => break,
         }
     }
     while values.len() >= 2 && values[values.len() - 2] == "--output" {
-        let mode = match values[values.len() - 1].as_str() {
-            "json" => OutputMode::Json,
-            "human" => OutputMode::Human,
+        let Some(mode) = global_output_mode(&values[values.len() - 1]) else {
             // Not a global-mode value: the pair at the end of the line
             // belongs to the subcommand (`files ingest … --output PATH`,
             // `sessions export … --output PATH`).
-            _ => break,
+            break;
         };
         record_global_output_mode(&mut output, &mut global_output_seen, mode)?;
         // The trailing pair was claimed as the global mode, so a family
@@ -360,11 +352,7 @@ where
         crate::note!(
             "note: claimed the trailing `--output {}` as the global output mode (families \
              exporting to a file take `--output PATH` instead)",
-            if matches!(mode, OutputMode::Json) {
-                "json"
-            } else {
-                "human"
-            }
+            values[values.len() - 1]
         );
         let end = values.len() - 2;
         values.drain(end..=end + 1);
@@ -376,10 +364,7 @@ where
     // family flag value can never legally be `--output` (values may not
     // start with `--`), so this only fires on genuinely incomplete lines.
     if values.last().map(String::as_str) == Some("--output") {
-        return Err(CliError::usage(
-            "--output requires human or json (subcommands that export to a file take \
-             `--output PATH` instead — see their usage line)",
-        ));
+        return Err(CliError::usage(GLOBAL_OUTPUT_USAGE));
     }
     if values.first().map(String::as_str) == Some("agent") {
         let command = agent_task::parse(&values)?;
@@ -487,6 +472,16 @@ fn record_global_output_mode(
     *seen = true;
     *output = mode;
     Ok(())
+}
+
+/// The output mode a global `--output <MODE>` value claims; `None` for any
+/// other token, which belongs to the subcommand instead.
+fn global_output_mode(token: &str) -> Option<OutputMode> {
+    match token {
+        "json" => Some(OutputMode::Json),
+        "human" => Some(OutputMode::Human),
+        _ => None,
+    }
 }
 
 fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
@@ -1616,17 +1611,17 @@ fn json_escape(value: &str) -> String {
 
 #[cfg(not(feature = "product-backend"))]
 fn run_smoke(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(not(feature = "product-backend"))]
 fn resume_run(_run_id: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(not(feature = "product-backend"))]
 fn run_gaia(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed("product_backend_not_enabled"))
+    Err(crate::support::product_backend_not_enabled())
 }
 
 #[cfg(feature = "product-backend")]

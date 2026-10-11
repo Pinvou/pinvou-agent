@@ -67,23 +67,24 @@ pub fn install_signal_cleanup() {
 
 /// Spawns `command` and registers the child's process group in one step,
 /// with the interrupt-family signals blocked on this thread for the
-/// spawn→register window. A raw `spawn()` followed by
-/// [`register_child_group`] leaves a window in which an interrupt forwards
-/// to nothing and re-raises with the fresh group child absent from the
-/// registry — the exact orphan this module exists to prevent. With the
-/// signals blocked, a pending interrupt stays pending until the unblock
-/// below and is delivered once, with the child already registered.
+/// spawn→register window. A raw `spawn()` whose group is registered only
+/// afterwards leaves a window in which an interrupt forwards to nothing and
+/// re-raises with the fresh group child absent from the registry — the
+/// exact orphan this module exists to prevent. With the signals blocked, a
+/// pending interrupt stays pending until the unblock below and is delivered
+/// once, with the child already registered.
 ///
 /// THREAD REQUIREMENT: this is the only form a non-main thread may use. The
 /// spawn→register window below is excluded from the interrupt snapshot via
 /// `imp::spawn_window`, so a signal arriving while any thread is inside the
 /// window is answered by a watcher snapshot that either already contains the
 /// fresh group or waits for the window to close first — the orphan window a
-/// raw `spawn()` + [`register_child_group`] pair would leave on a worker
-/// thread (where the block/unblock here is per-thread and defers nothing) is
-/// closed by that mutual exclusion on EVERY thread. On the main thread the
-/// sigmask block additionally keeps the pending signal parked until the
-/// unblock, so it is delivered once, with the child already registered.
+/// raw `spawn()` whose register lands only after the fact would leave on a
+/// worker thread (where the block/unblock here is per-thread and defers
+/// nothing) is closed by that mutual exclusion on EVERY thread. On the main
+/// thread the sigmask block additionally keeps the pending signal parked
+/// until the unblock, so it is delivered once, with the child already
+/// registered.
 ///
 /// The spawn→register window blocks the interrupt family on the spawning
 /// thread, and the child would inherit that mask across fork. Std does NOT
@@ -205,24 +206,6 @@ pub fn spawn_supervised(
     #[cfg(not(unix))]
     {
         command.spawn()
-    }
-}
-
-/// Registers a live child process group so an interrupt later forwards to it.
-/// Call right after a successful `spawn` of a `set_process_group` child — the
-/// pgid is the child's pid — and pair every exit from the lifetime (normal
-/// completion, timeout kill) with [`forget_child_group`]. Main-thread only:
-/// the spawn→register exclusion lives inside [`spawn_supervised`], so a
-/// split spawn + register pair is safe only where the sigmask window defers
-/// the interrupt (see `spawn_supervised`'s thread requirement).
-pub fn register_child_group(pgid: u32) {
-    #[cfg(unix)]
-    {
-        imp::register(pgid);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pgid;
     }
 }
 
