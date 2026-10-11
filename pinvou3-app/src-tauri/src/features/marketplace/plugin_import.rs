@@ -788,7 +788,19 @@ fn mark_landing(id: &str) {
 }
 
 fn clear_landing(id: &str) {
-    let _ = std::fs::remove_file(landing_mark_path(id));
+    if let Err(e) = std::fs::remove_file(landing_mark_path(id)) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            // Round-27 review (minor): a failed mark clear used to be a bare
+            // `let _` — the one journal operation without the loud-failure
+            // treatment. The next startup reconcile resolves a leftover mark
+            // idempotently (the completed-import arm), but a persistently
+            // failing home should not defer in silence.
+            log::warn!(
+                "[plugin-import] import journal: clearing the landing mark for '{id}' failed, \
+                 deferring to the next startup reconcile: {e}"
+            );
+        }
+    }
 }
 
 /// Test-only failpoint for the lease hold-span pin (round-27 review MAJOR
@@ -839,20 +851,41 @@ impl Drop for LandingJournalGuard {
 /// startup — the round-24 minor / round-21 P3 contract (the unconditional
 /// clear stranded the ghost `.tmp` forever — nothing reschedules a swept
 /// mark — while the log claimed success).
+///
+/// The `.old` leg (round-27 review, minor): a crash between the reimport's
+/// landing rename and the post-supply backup delete strands the full
+/// pre-import copy beside the live pack — scan-invisible duplicate up to
+/// the zip budget, and until this leg nothing revisited it (a future
+/// same-id import's rotation delete was the only cleaner). Reaching the
+/// record arms means the restore arm already converted any "only copy"
+/// `.old` into the pack dir, so a remaining `.old` is always the superseded
+/// copy; the failed in-process rollback strand (§3.2) carries no mark, so
+/// this arm never guesses at it.
 fn sweep_crash_orphaned_staging(id: &str, pkg_dir: &Path, why: &str) -> bool {
     let staged = pkg_dir.with_extension("tmp");
-    if !staged.exists() {
-        return true;
-    }
-    if let Err(e) = std::fs::remove_dir_all(&staged) {
+    if staged.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&staged) {
+            log::warn!(
+                "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
+            );
+            return false;
+        }
         log::warn!(
-            "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
+            "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}'{why}"
         );
-        return false;
     }
-    log::warn!(
-        "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}'{why}"
-    );
+    let backup = pkg_dir.with_extension("old");
+    if backup.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&backup) {
+            log::warn!(
+                "[plugin-import] import journal: sweeping the crash-stranded reimport backup for '{id}' failed, keeping the mark for the next startup: {e}"
+            );
+            return false;
+        }
+        log::warn!(
+            "[plugin-import] import journal: swept the crash-stranded reimport backup for '{id}'{why}"
+        );
+    }
     true
 }
 
@@ -2476,6 +2509,57 @@ mod tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-27 review (minor): a crash between the reimport's landing
+    /// rename and the post-supply backup delete strands the full pre-import
+    /// copy at `bundles/<id>.old` beside the landed pack — the record-present
+    /// arm's `.tmp` sweep used to leave it forever (up to the zip budget of
+    /// scan-invisible duplicate). The reconcile must sweep the stranded
+    /// backup as superseded residue while keeping the landed pack and its
+    /// record (the restore arm has already converted any "only copy" `.old`
+    /// into the pack dir before the record arms run, so this shape is always
+    /// the superseded copy).
+    #[test]
+    fn reconcile_sweeps_the_crash_stranded_reimport_backup() {
+        crate::platform::test_support::with_temp_home("pinvou-import-stranded-old", || {
+            let id = "old-pkg";
+            let pkg = crate::platform::paths::bundles_root().join(id);
+            std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+            std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+            std::fs::write(pkg.join("mcp").join("manifest.json"), "{}").unwrap();
+            // The stranded pre-import backup: distinct content so the assert
+            // below proves the LANDED pack survived, not the backup.
+            let backup = pkg.with_extension("old");
+            std::fs::create_dir_all(&backup).unwrap();
+            std::fs::write(backup.join("pre-import-marker"), b"old").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        id,
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "old.zip".to_string(),
+                        ),
+                    ),
+                )
+                .unwrap();
+            mark_landing(id);
+
+            reconcile_import_journal().unwrap();
+
+            assert!(
+                !backup.exists(),
+                "the crash-stranded reimport backup must be swept by the record-present arm"
+            );
+            assert!(
+                pkg.join("plugin.json").is_file(),
+                "the landed pack itself must survive the sweep"
+            );
+            assert!(
+                !landing_mark_path(id).exists(),
+                "the stale mark is cleared after a converged reconcile"
+            );
+        });
     }
 
     /// Round-32 minor 6 (review #455): a mark with no landed dir (crash before
