@@ -5,10 +5,7 @@
 // The platform split is this single boolean; sinking it into the platform
 // adapter layer costs more than it saves; the retry path is covered by
 // reimport_same_plugin_package_is_allowed and the concurrent mutual exclusion
-// by concurrent_same_id_import_is_serialized. Since round-21 there are
-// additionally test-only cfg(unix) planted FIFO/symlink regressions (the
-// mark_landing hardening pins), under the same precedent as the identical
-// exemptions in scope.rs / store.rs.
+// by concurrent_same_id_import_is_serialized.
 //! 插件包统一导入：mcp / skill / 组合包 + 图标落盘（plugin-protocol.md）。
 //!
 //! 统一上传路径：用户上传一个 zip，无论内容是哪种能力类型（MCP server、skill、
@@ -697,11 +694,11 @@ fn synthesized_manifest(det: &ComponentDetection) -> PluginManifest {
 }
 
 // ---------------------------------------------------------------------------
-// Round-32 minor 6 (review #455): import landing journal.
+// The import landing journal.
 //
 // A crash between the landing rename and the registry upsert leaves
 // `bundles/<id>/` live with no record — "live-by-absence" in initialized
-// scopes, zero consent, invisible to the round-24 in-process rollback. The
+// scopes, zero consent, invisible to the in-process rollback. The
 // journal closes it precisely: the import marks its id before the landing and
 // clears the mark on any in-process exit (guard drop), so a leftover mark is
 // proof of a crash in that exact window. The startup reconciliation acts ONLY
@@ -723,8 +720,8 @@ pub(crate) fn landing_mark_path(id: &str) -> std::path::PathBuf {
 /// The mark is a file in the shared home, so this is cross-process visible:
 /// the startup sweep probes it before stripping a retired id's consent rows,
 /// deferring when a concurrent import has marked its landing but not yet
-/// finished (round-18 review — the mark now precedes the deny-first gate, so
-/// mark-presence covers an import whose rows are already registered).
+/// finished. The mark precedes the deny-first gate, so mark-presence also
+/// covers an import whose rows are already registered.
 pub(crate) fn landing_in_progress(id: &str) -> bool {
     landing_mark_path(id).exists()
 }
@@ -737,9 +734,9 @@ pub(crate) fn landing_in_progress(id: &str) -> bool {
 /// cannot distinguish a live import from a crashed one, but a live import
 /// holds this lease (flock / LockFileEx via `fd-lock`) from before the mark
 /// is written until the landing guard drops. Callers:
-/// - the import pipeline blocks on `write()` — a peer's same-id import now
+/// - the import pipeline blocks on `write()` — a peer's same-id import
 ///   waits out here instead of racing the shared staged `.tmp` / `.old`
-///   paths that only the in-process mutex used to serialize;
+///   paths, a cross-process exclusion the in-process mutex never provided;
 /// - `reconcile_import_journal` probes `try_write()` non-blockingly —
 ///   contention means a live import, so the entry is skipped untouched and
 ///   crash recovery retries next boot;
@@ -780,14 +777,13 @@ fn mark_landing(id: &str) {
             return;
         }
     }
-    // Round-33 minor 3 (review #455): a failed mark write degrades crash
-    // recovery exactly like the create_dir_all failure above — it must be
-    // just as loud instead of silently re-opening the live-by-absence window
-    // the journal exists to close.
-    // round-21 review: the write goes through the hardened private-write
-    // primitive — it runs under the cross-process landing lease, so a
-    // planted FIFO/symlink at the mark path must refuse, not block the
-    // lock holder (same discipline as the scope lock's hardened reads).
+    // A failed mark write degrades crash recovery exactly like the
+    // create_dir_all failure above — it must be just as loud instead of
+    // silently re-opening the live-by-absence window the journal exists to
+    // close. The write goes through the hardened private-write primitive:
+    // it runs under the cross-process landing lease, so a planted
+    // FIFO/symlink at the mark path must refuse, not block the lock holder
+    // (same discipline as the scope lock's hardened reads).
     if let Err(e) = crate::platform::filesystem::write_private_data_file(&path, b"pending\n") {
         log::warn!(
             "[plugin-import] writing the landing journal mark failed (crash recovery for {id} degraded to live-by-absence): {e}"
@@ -798,9 +794,8 @@ fn mark_landing(id: &str) {
 fn clear_landing(id: &str) {
     if let Err(e) = std::fs::remove_file(landing_mark_path(id)) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            // Round-27 review (minor): a failed mark clear used to be a bare
-            // `let _` — the one journal operation without the loud-failure
-            // treatment. The next startup reconcile resolves a leftover mark
+            // A failed mark clear must be loud, like every other journal
+            // operation. The next startup reconcile resolves a leftover mark
             // idempotently (the completed-import arm), but a persistently
             // failing home should not defer in silence.
             log::warn!(
@@ -811,52 +806,21 @@ fn clear_landing(id: &str) {
     }
 }
 
-/// Test-only failpoint for the lease hold-span pin (round-27 review MAJOR
-/// 2): when armed, `import_plugin_package_gated` signals right after the
-/// landing mark is written and parks until released, so a test can observe
-/// that a peer cannot acquire the landing lease while the pipeline is
-/// mid-flight. The park pin cannot make that observation (a scoped-block
-/// release parks identically at acquire) and the source-text pin's own doc
-/// concedes that shape survives its greps.
+/// Test-only failpoint for the tail half of the lease hold span
+/// (round-28 review): parked immediately before the bundles.json
+/// registration, so a pin can observe that the lease is still HELD at the
+/// END of the span. The mid-span `pre_land` probe above cannot make that
+/// observation — a scoped-block refactor releasing the lease anywhere in
+/// the supply → registration tail stays green against it while leaving the
+/// registration window cross-process-unguarded.
 #[cfg(test)]
-static LANDING_SPAN_PARK: std::sync::Mutex<
+static LANDING_REGISTRATION_PARK: std::sync::Mutex<
     Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 > = std::sync::Mutex::new(None);
 
 /// No-op outside tests: the call site in the gated pipeline is unconditional
 /// on purpose, so the pin drives exactly the production body (no cfg-split
 /// for a future edit to desync).
-fn test_park_after_landing_mark() {
-    #[cfg(test)]
-    {
-        let park = LANDING_SPAN_PARK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        if let Some((reached, release)) = park {
-            let _ = reached.send(());
-            // Park until the test releases; a dropped sender means the test
-            // died waiting — resume so the worker can finish and report its
-            // own result instead of leaking a parked thread.
-            let _ = release.recv();
-        }
-    }
-}
-
-/// Second test-only failpoint for the tail half of the lease hold span
-/// (round-28 review): parked immediately before the bundles.json
-/// registration, so a pin can observe that the lease is still HELD at the
-/// END of the span. The post-mark park above cannot make that observation —
-/// a scoped-block refactor releasing the lease anywhere in the supply →
-/// registration tail stays green against it while leaving the registration
-/// window cross-process-unguarded.
-#[cfg(test)]
-static LANDING_REGISTRATION_PARK: std::sync::Mutex<
-    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
-> = std::sync::Mutex::new(None);
-
-/// No-op outside tests (same unconditional-call-site discipline as
-/// [`test_park_after_landing_mark`]).
 fn test_park_before_registration() {
     #[cfg(test)]
     {
@@ -881,59 +845,56 @@ impl Drop for LandingJournalGuard {
     }
 }
 
-/// Sweeps a crash-orphaned staged `bundles/<id>.tmp` from the reconcile arms
-/// below (`why` only distinguishes the arm in the success log). A failed sweep
-/// returns `false`: the caller keeps the landing mark and retries next
-/// startup — the round-24 minor / round-21 P3 contract (the unconditional
-/// clear stranded the ghost `.tmp` forever — nothing reschedules a swept
-/// mark — while the log claimed success).
+/// Sweeps a crash-orphaned staged `bundles/<id>.tmp` and a crash-stranded
+/// reimport backup `bundles/<id>.old` out of the reconcile arms below, then
+/// clears the landing mark. The mark is cleared ONLY when both legs swept
+/// clean: a failed leg keeps the mark so the next startup retries — an
+/// unconditional clear would strand the residue forever (nothing reschedules
+/// a swept mark) while the log claimed success. `why` only distinguishes the
+/// arm in the success log.
 ///
-/// The `.old` leg (round-27 review, minor): a crash between the reimport's
-/// landing rename and the post-supply backup delete strands the full
-/// pre-import copy beside the live pack — scan-invisible duplicate up to
-/// the zip budget, and until this leg nothing revisited it (a future
-/// same-id import's rotation delete was the only cleaner). Reaching the
+/// The `.old` leg: a crash between the reimport's landing rename and the
+/// post-supply backup delete strands the full pre-import copy beside the
+/// live pack — scan-invisible duplicate up to the zip budget, with no other
+/// cleaner (a future same-id import's rotation delete aside). Reaching the
 /// record arms means the restore arm already converted any "only copy"
 /// `.old` into the pack dir, so a remaining `.old` is always the superseded
 /// copy; the failed in-process rollback strand (§3.2) carries no mark, so
-/// this arm never guesses at it.
-fn sweep_crash_orphaned_staging(id: &str, pkg_dir: &Path, why: &str) -> bool {
-    let staged = pkg_dir.with_extension("tmp");
-    if staged.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&staged) {
-            log::warn!(
-                "[plugin-import] import journal: sweeping the crash-orphaned staging dir for '{id}' failed, keeping the mark for the next startup: {e}"
-            );
-            return false;
+/// this sweep never guesses at it.
+fn sweep_and_clear_crash_orphaned_staging(id: &str, pkg_dir: &Path, why: &str) {
+    for (path, what) in [
+        (
+            pkg_dir.with_extension("tmp"),
+            "the crash-orphaned staging dir",
+        ),
+        (
+            pkg_dir.with_extension("old"),
+            "the crash-stranded reimport backup",
+        ),
+    ] {
+        if !path.exists() {
+            continue;
         }
-        log::warn!(
-            "[plugin-import] import journal: swept the crash-orphaned staging dir for '{id}'{why}"
-        );
-    }
-    let backup = pkg_dir.with_extension("old");
-    if backup.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&backup) {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
             log::warn!(
-                "[plugin-import] import journal: sweeping the crash-stranded reimport backup for '{id}' failed, keeping the mark for the next startup: {e}"
+                "[plugin-import] import journal: sweeping {what} for '{id}' failed, keeping the mark for the next startup: {e}"
             );
-            return false;
+            return;
         }
-        log::warn!(
-            "[plugin-import] import journal: swept the crash-stranded reimport backup for '{id}'{why}"
-        );
+        log::warn!("[plugin-import] import journal: swept {what} for '{id}'{why}");
     }
-    true
+    clear_landing(id);
 }
 
-/// Round-32 minor 6 (review #455): resolve leftover landing marks from crashed
-/// imports. For each journaled id: missing pack dir → the import never landed
+/// Resolves leftover landing marks from crashed imports. For each journaled
+/// id: missing pack dir → the import never landed
 /// or rolled back (clear); registry record present → the import completed and
 /// only the mark-clear crashed (clear); landed dir with no record → crash
 /// residue: move it out of `bundles_root` into a recoverable holding dir so no
 /// scan admits it live-by-absence. Store-read failures keep the entry (retry
 /// next boot, fail-closed). Actively holds the id's import lock per entry so
-/// a same-process import cannot interleave with the inspection/move, and —
-/// round-20 review — probes the id's landing lease non-blockingly before
+/// a same-process import cannot interleave with the inspection/move, and
+/// probes the id's landing lease non-blockingly before
 /// treating anything as residue: the mark alone cannot distinguish a live
 /// import from a crashed one, and a peer booting mid-import (the shared-home
 /// GUI + headless premise) must not sweep a live import's staged `.tmp` dir
@@ -959,18 +920,15 @@ pub fn reconcile_import_journal() -> Result<(), String> {
         };
         if !super::skill_marketplace::is_safe_skill_name(&id) {
             // A journaled id must always be safe — the import validated the
-            // fallback id with `is_safe_skill_name` (round-26 MAJOR 2: the
-            // reader used to gate on the stricter `is_safe_component_id`, so
-            // a legitimate mixed-case bare-skill id — frontmatter
-            // `name: MySkill` arriving through the wrapped-`.md` channel —
-            // wrote a mark this reconcile silently skipped forever, leaving
-            // its crash windows unrecovered). An unsafe name means the file
+            // fallback id with `is_safe_skill_name` (mixed case allowed: a
+            // bare-skill id comes from the SKILL.md frontmatter `name`).
+            // An unsafe name means the file
             // is not a journal mark. Leave it.
             continue;
         }
         let lock = import_lock_for(id);
         let _guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-        // Round-20 review (P1): the mark is only a hint — the lease proves
+        // The mark is only a hint — the lease proves
         // liveness. A live import (this process's pipeline thread or a peer
         // process sharing the home) holds the lease across its whole
         // mark→land→register span; a contended try means the entry is not
@@ -1001,14 +959,14 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             }
         };
         let pkg_dir = crate::platform::paths::bundles_root().join(id);
-        // Round-26 MAJOR 1: a crash between the re-import's two renames (the
+        // A crash between the re-import's two renames (the
         // pack dir already moved to `<id>.old`, the staged copy not yet
         // renamed in) leaves exactly the shape the next arm handles — no pack
         // dir, a staged `.tmp`, the pre-import copy in `<id>.old`, and the
-        // record still `installed`. Sweeping the `.tmp` and clearing the mark
-        // there used to converge that crash to "record installed, content
+        // record still `installed`. Sweeping the `.tmp` alone there would
+        // converge that crash to "record installed, content
         // gone, the only copy stranded in the scan-invisible `.old`, nothing
-        // ever revisits it, no log". Restore the backup in place first (the
+        // ever revisits it". Restore the backup in place first (the
         // pipeline's own rollback arm does exactly this rename), then let the
         // record arms below converge the rest: record present → the staged
         // `.tmp` sweep + mark clear; record gone → the quarantine arm. A
@@ -1034,16 +992,13 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             // pre-land gate, renamed into place at landing) has no owner
             // then: left alone it surfaces as a ghost uninstalled MCP card
             // through the available_tools walk, which — unlike every other
-            // lens — has no `.tmp` exclusion. Sweep it (round-19 review);
-            // the pipeline's own error paths remove exactly this dir. With
+            // lens — has no `.tmp` exclusion. Sweep it; the pipeline's own
+            // error paths remove exactly this dir. With
             // the backup restore above, a `<id>.old` found here has already
             // been moved back into place; a strand left by a FAILED
             // in-process rollback (whose mark the guard cleared) is the
             // disclosed residual in §3.2 — this arm must not guess at it.
-            if !sweep_crash_orphaned_staging(id, &pkg_dir, "") {
-                continue;
-            }
-            clear_landing(id);
+            sweep_and_clear_crash_orphaned_staging(id, &pkg_dir, "");
             continue;
         }
         let record = super::store::BundleStore::new().get(id);
@@ -1066,12 +1021,12 @@ pub fn reconcile_import_journal() -> Result<(), String> {
                 // delete it — up to 200MiB of permanent duplicate. Sweep it
                 // like the no-pkg-dir arm; a failed sweep keeps the mark so
                 // the next boot retries instead of silently stranding the
-                // residue (round-21 review P3).
-                if !sweep_crash_orphaned_staging(id, &pkg_dir, " (a reimport crashed mid-staging)")
-                {
-                    continue;
-                }
-                clear_landing(id);
+                // residue.
+                sweep_and_clear_crash_orphaned_staging(
+                    id,
+                    &pkg_dir,
+                    " (a reimport crashed mid-staging)",
+                );
             }
             Ok(None) => {
                 // Landed live-by-absence: quarantine out of bundles_root so
@@ -1093,7 +1048,7 @@ pub fn reconcile_import_journal() -> Result<(), String> {
                             "import_journal:crash_residue_quarantined",
                             id,
                         );
-                        // Round-26 MAJOR 1 tail: with the backup restored
+                        // With the backup restored
                         // above, a re-import's staged `.tmp` can still sit
                         // here (the record disappeared between the crash and
                         // this reconcile — e.g. a concurrent uninstall).
@@ -1101,14 +1056,11 @@ pub fn reconcile_import_journal() -> Result<(), String> {
                         // `available_tools` has no `.tmp` exclusion, so sweep
                         // it like the other arms; a failed sweep keeps the
                         // mark for the retry.
-                        if !sweep_crash_orphaned_staging(
+                        sweep_and_clear_crash_orphaned_staging(
                             id,
                             &pkg_dir,
                             " (a re-import crashed mid-renames)",
-                        ) {
-                            continue;
-                        }
-                        clear_landing(id);
+                        );
                     }
                     Err(e) => {
                         log::warn!(
@@ -1139,8 +1091,8 @@ pub fn import_plugin_package(
 }
 
 /// Refuses an id that an installed claimant's companion vocabulary folds
-/// onto (round-12 B1). Called once before the pre-land gate and once under
-/// the import lock (round-14 P2 TOCTOU re-check).
+/// onto. Called once before the pre-land gate and once under
+/// the import lock (a TOCTOU re-check).
 fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
     let folded = crate::features::marketplace::scope::to_package_id(id);
     if folded == id {
@@ -1156,7 +1108,7 @@ fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
 /// id is fixed and fully validated but BEFORE any content lands on disk or
 /// replaces an existing installation. A `pre_land` refusal aborts the import
 /// with nothing touched — the DenyAll consent gate uses this to register the
-/// deny entry before the package is exposed (#515/#517 review round 4):
+/// deny entry before the package is exposed:
 /// rolling an already-landed import back via uninstall would destroy a
 /// pre-existing installation (re-import overwrites), while a deny-first
 /// refusal loses nothing.
@@ -1308,7 +1260,7 @@ pub(crate) fn import_plugin_package_gated(
             "包 id '{id}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
         ));
     }
-    // Component ids must not impersonate builtins either (review round-5 M1):
+    // Component ids must not impersonate builtins either:
     // the package-id collision check cannot see them — a `my-tool` package
     // carrying an mcp component with id `session-reader` would have
     // add_to_mcp_json key the server entry by manifest.id and overwrite the
@@ -1365,8 +1317,8 @@ pub(crate) fn import_plugin_package_gated(
             ));
         }
     }
-    // Preset skill-market id rejection covers only the "alias-split" shape
-    // (round-11 P2-2): an id unlike every preset skill name (e.g.
+    // Preset skill-market id rejection covers only the "alias-split" shape:
+    // an id unlike every preset skill name (e.g.
     // tencent-docs-skill) is an independent entry in the deny-list vocabulary,
     // so an upload claiming it would make the consent gate treat the real
     // preset as already known and skip its registration (fail-open), and
@@ -1386,13 +1338,13 @@ pub(crate) fn import_plugin_package_gated(
             "包 id '{id}' 与市场预置技能 id 冲突，请改用其它 id 或从市场安装"
         ));
     }
-    // Owner-claim divergence (round-12 review B1): `to_package_id` folds an
+    // Owner-claim divergence: `to_package_id` folds an
     // id onto an installed claimant's consent vocabulary — an installed
     // package's declared companion skill name, a CLI companion dir, or
     // `ima-skills`. Importing a PACKAGE under such an id would make the
     // consent gate register (or skip on) the claimant's id while this
     // package lands keyed by its own id, ungoverned in initialized DenyAll
-    // scopes (live-reproduced: gongwen installed + import id
+    // scopes (e.g. gongwen installed + import id
     // `government-writing`). The check is state-dependent on purpose: with
     // no claimant installed the id self-maps and stays importable, which
     // keeps the export → re-import round-trip contract
@@ -1472,48 +1424,35 @@ pub(crate) fn import_plugin_package_gated(
         }
     }
 
-    // Round-32 minor 6 (review #455), re-placed by the round-18 review: mark
-    // the landing in the import journal BEFORE the pre-land consent gate —
-    // i.e. before anything this import will write, including its deny-first
-    // registration — and clear it when this call exits (any in-process
-    // outcome — gate refusal, supply-failure rollback, or rename failure).
-    // Only a process death between the mark and the exit leaves the mark
-    // behind, which is exactly the window the round-24 rollback cannot
-    // cover: the pack dir is live on disk with no registry record, admitted
-    // live-by-absence in initialized scopes with zero consent. The startup
-    // reconciliation ([`reconcile_import_journal`]) resolves the leftover.
-    // The earlier placement is what makes the mark usable as a cross-process
-    // in-flight signal: the startup sweep's pre-strip probe
-    // ([`landing_in_progress`]) must be able to see an import that has
-    // already registered its deny-first rows but not yet landed, or the
-    // sweep's vacuous-uninstall retry leg would strip those fresh rows.
-    // Round-20 review (P1): acquire the cross-process landing lease BEFORE
-    // the mark. The mark alone cannot distinguish a live import from a
-    // crashed one, so the boot reconcile treated "mark + no pack dir" as
-    // crash residue and could sweep a live peer's staged dir mid-extraction
-    // and clear its mark (the import's own crash protection) — and the
-    // retired-tool sweep later in that boot could then strip the rows this
-    // import had just registered. The lease is the liveness signal the
-    // reconcile probes (and the uninstall / retired sweep hold): held from
-    // here until the end of this call, it makes the whole mark→gate→land→
-    // register span mutually exclusive against every LEASE-HOLDING same-id
-    // peer — the MCP uninstall and restore take it blocking, the boot
-    // reconcile and retired sweep probe it with try-and-defer. NOT covered
-    // (round-26 review, disclosed in §3.2): the skill lane's install /
+    // Journal the landing BEFORE the pre-land consent gate — before anything
+    // this import writes, deny-first registration included — clearing the
+    // mark on any in-process exit (gate refusal, supply-failure rollback, or
+    // rename failure); only a process death in between leaves the mark
+    // behind, the exact window the in-process rollback cannot cover (the
+    // pack dir live on disk with no registry record, admitted
+    // live-by-absence in initialized scopes with zero consent). The early
+    // placement also makes the mark the cross-process in-flight signal the
+    // startup sweep's pre-strip probe ([`landing_in_progress`]) keys on: it
+    // must see an import that already registered its deny-first rows but
+    // has not landed yet.
+    // The cross-process landing lease is acquired BEFORE the mark and held
+    // to the end of this call: the liveness signal the boot reconcile
+    // probes try-and-defer (the mark alone cannot distinguish a live import
+    // from a crashed one), and the mutual exclusion of the whole
+    // mark→gate→land→register span against every LEASE-HOLDING same-id
+    // peer. NOT covered (disclosed in §3.2): the skill lane's install /
     // uninstall serialize in-process on the per-id import mutex only, and
     // the boot python-repair downgrade runs under the transaction lock only
     // — a cross-process skill-uninstall-vs-import of the same id can still
-    // interleave; closing that needs the same lease in those lanes (with an
-    // uninstall_leased-style held-lease variant for the nested companion
-    // cleanup), registered as follow-up.
-    // Declared
-    // before the landing guard on purpose: locals drop in reverse order, so
-    // the guard clears the mark while this process still holds the lease.
-    // Blocking `write()`: a peer's same-id import waits out here instead of
-    // racing the shared staged `.tmp` / `.old` paths that only the
-    // in-process mutex below used to serialize (that mutex never excluded
-    // other processes); the OS releases the lease if the peer dies, and a
-    // frozen peer blocks the import (spawn_blocking), the same accepted
+    // interleave; closing that needs the same lease in those lanes
+    // (registered as follow-up).
+    // Locals drop in reverse order, so the lease guard is declared before
+    // the landing guard on purpose: the landing guard clears the mark while
+    // the lease is still held. Blocking `write()`: a peer's same-id import
+    // waits out here instead of racing the shared staged `.tmp` / `.old`
+    // paths (a cross-process exclusion the in-process mutex below never
+    // provided); the OS releases the lease if the peer dies, and a frozen
+    // peer blocks the import (spawn_blocking) — the same accepted
     // fail-stop tradeoff as the scope lock.
     let mut landing_lease = open_landing_lease(&id)
         .map_err(|error| format!("open the landing lease for {id}: {error}"))?;
@@ -1524,21 +1463,19 @@ pub(crate) fn import_plugin_package_gated(
             .map_err(|error| format!("lock the landing lease for {id}: {error}"))?;
     mark_landing(&id);
     let _landing_guard = LandingJournalGuard(id.clone());
-    test_park_after_landing_mark();
 
     // Pre-land gate hook: the id is final and validated here, nothing has
     // been written yet. A refusal aborts the whole import before any content
-    // lands or an existing installation is replaced (deny-first consent gate,
-    // #517 review round 4). The identified skill components ride along so
-    // the gate can also register standalone components deny-first
-    // (round-11 P2-3). Runs before the same-id import lock on purpose:
+    // lands or an existing installation is replaced (deny-first consent
+    // gate). The identified skill components ride along so
+    // the gate can also register standalone components deny-first.
+    // Runs before the same-id import lock on purpose:
     // the gate then takes no import lock at all, so the import lock is never
     // held ACROSS a wait on another importer (the scope RMW lock itself may
     // be nested inside transaction/import/recycle locks one-directionally —
     // see `scope::load_disabled_bundles_file_locked`'s lock-order note; the
-    // reverse
-    // nesting never happens). The landing lease acquired above is the
-    // load-bearing cross-process exclusion (round-20 review); the mark is
+    // reverse nesting never happens). The landing lease acquired above is the
+    // load-bearing cross-process exclusion; the mark is
     // what a concurrent sweep keys on as the belt-and-braces signal — the
     // gate's registration is invisible to the sweep's record probe until
     // the import lands, but the mark and the lease are already in place.
@@ -1552,7 +1489,7 @@ pub(crate) fn import_plugin_package_gated(
     // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
     let import_lock = import_lock_for(&id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-    // Re-check the fold divergence under the import lock (round-14 P2): the
+    // Re-check the fold divergence under the import lock: the
     // first check ran before the consent gate, and a claimant (preset skill
     // install, CLI companion, ima connect) completing in between would fold
     // this id onto the claimant — the gate registers (or skips on) the
@@ -1682,8 +1619,8 @@ pub(crate) fn import_plugin_package_gated(
 
     // 安装时 smoke test：旧 spanner 自检已删除。当前只保留纯 MCP / 纯 skill 落盘。
 
-    // The landing mark was written before the pre-land gate above (round-18
-    // re-placement): the journal now covers the whole gate + staging + landing
+    // The landing mark was written before the pre-land gate above: the
+    // journal covers the whole gate + staging + landing
     // span, so both a crash mid-gate and a crash mid-landing leave the
     // recoverable trace, and the sweep's pre-strip probe sees every state in
     // which this import's deny-first rows may already exist.
@@ -1701,8 +1638,8 @@ pub(crate) fn import_plugin_package_gated(
     }
     if let Err(e) = rename_dir_with_retry(&staged, &pkg_dir) {
         // rename 失败：尝试把旧目录复原，让已安装版本继续可用。
-        // Round-24 minor: the restore must not be silent — `rename_dir_with_retry`
-        // never logs, so a failed restore stranded the pre-import content at
+        // The restore must not be silent — `rename_dir_with_retry`
+        // never logs, so a failed restore would strand the pre-import content at
         // `<id>.old` with no trace (§3.2 promises every rollback arm logs
         // loudly). Name the strand in the log and in the caller's error,
         // mirroring the supply-failure arm below.
@@ -1720,7 +1657,7 @@ pub(crate) fn import_plugin_package_gated(
         let _ = std::fs::remove_dir_all(&staged);
         return Err(format!("落盘: {e}"));
     }
-    // Round-24 MAJOR 2: the backup is retained until supply resolves. A
+    // The backup is retained until supply resolves. A
     // supply failure after landing must not leave the new dir behind — its
     // skills materialize into every initialized scope with zero consent (the
     // consent sync never runs on this error path) and self_heal_skills skips
@@ -1732,12 +1669,6 @@ pub(crate) fn import_plugin_package_gated(
     // 把**旧包**的原描述写进新包（口径同 skill_marketplace::import_package_named）。
     // 三条 UI 上传通道（选文件/拖 zip/拖 .md）都汇聚在这条统一导入路径上；首装
     // 无备份时不写，避免无谓 churn。
-    // Round-29 m5 (review #455): the old placement contract that lived here
-    // ("rebaseline immediately after the rename, BEFORE any supply step") is
-    // superseded by the round-27 m5 reorder — the consume point now sits
-    // AFTER supply (below): a moved_old supply-failure rollback restores the
-    // old files, so the backup must survive until supply resolves. Do not
-    // move the call back up on the old contract's authority.
     // 锁边界（MINOR 1 口径）：统一导入全程持有 import_lock（guard 至函数尾）；
     // 展示说明的回写/恢复（update_display_meta → sync_display_description）
     // 在 SKILL.md 读改写段**同样持有同 id 的 import_lock**（锁序一致：
@@ -1758,7 +1689,7 @@ pub(crate) fn import_plugin_package_gated(
             &id,
             super::store::BundleSource::Upload(display_name.to_string()),
         ) {
-            // Round-24 MAJOR 2: mirror the restore path's supply-failure
+            // Mirror the restore path's supply-failure
             // rollback — restore the previous version (or remove the
             // first-install landing) instead of leaving the recordless dir
             // live. Rollback failure is logged loudly; the caller's error
@@ -1774,13 +1705,12 @@ pub(crate) fn import_plugin_package_gated(
                     "[plugin-import] 供给失败且目录回滚失败（{id}）: 残留目录的技能将以零同意进入已初始化 scope，请检查 {pkg_dir:?}"
                 );
             }
-            // Round-26 minor 5 (review #455): when the rollback itself failed,
-            // the landed dir stayed live with zero consent — the user-facing
-            // error must carry that, not just the log line. Round-31 m7
-            // (review #455): the suffix is diff-authored user-visible copy —
-            // English sibling-form (like the surrounding English-language
-            // skill_gate/ima errors), not CJK that would surface raw to
-            // en/ja users.
+            // When the rollback itself failed,
+            // the landed dir stays live with zero consent — the user-facing
+            // error must carry that, not just the log line. The suffix is
+            // user-visible copy — English sibling-form (like the surrounding
+            // English-language skill_gate/ima errors), not CJK that would
+            // surface raw to en/ja users.
             let suffix = if rolled_back {
                 String::new()
             } else {
@@ -1791,14 +1721,13 @@ pub(crate) fn import_plugin_package_gated(
             return Err(format!("MCP 供给失败（{id}）: {e}{suffix}"));
         }
     }
-    // Round-27 m5 (review #455): rebaseline (consume) the description backup
-    // only after supply succeeded — on a moved_old rollback the old files are
-    // restored, so the restore point must survive for the next attempt; the
-    // ordering comment's justification now matches the failure path.
+    // Rebaseline (consume) the description backup only after supply
+    // succeeded: on a moved_old rollback the old files are
+    // restored, so the restore point must survive for the next attempt.
     super::skill_marketplace::rebaseline_skill_desc_backup(&store, &id, "统一导入");
     if moved_old {
-        // Round-24 minor: the post-supply backup delete is the same
-        // silent-strand family — a failure leaves the pre-import content in
+        // The post-supply backup delete is in the same silent-strand family
+        // — a failure leaves the pre-import content in
         // `bundles/<id>.old` with no mark and no log (the reconcile scans
         // marks only). Harmless to the import itself (the new content landed
         // and registered), but the strand is invisible residue; log it.
@@ -1832,7 +1761,7 @@ pub(crate) fn import_plugin_package_gated(
     // end of the span (round-28 review). No-op outside tests.
     test_park_before_registration();
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
-        // Round-20 P2: fail visible. The dir is live and supply succeeded, so
+        // Fail visible. The dir is live and supply succeeded, so
         // this is not rollback territory — but swallowing the failure into a
         // success report left a recordless-live pack (no Upload-source
         // protection, no recycle-on-uninstall, no display metadata) with the
@@ -1847,11 +1776,8 @@ pub(crate) fn import_plugin_package_gated(
             "{id} landed on disk, but the registration write failed ({e}): the pack is usable; retry the import to complete the registration, or uninstall and reinstall"
         ));
     }
-    // （导入即重基线：包内容整体替换后旧包的说明备份随之失效。Round-29 m5
-    // (review #455): the consume point's ordering contract now lives at the
-    // rebaseline call above (round-27 m5: only AFTER supply succeeds — a
-    // moved_old rollback restores the old files and the backup must survive
-    // for the next attempt); this upsert site is not the rebaseline point.)
+    // （导入即重基线：消费点在上方 rebaseline 调用处——仅供给成功后消费；
+    // 本 upsert 位点不是重基线点。）
 
     Ok(PluginImportReport {
         id,
@@ -1864,7 +1790,7 @@ pub(crate) fn import_plugin_package_gated(
 mod tests {
     use super::*;
 
-    /// Round-32 minor 6 (review #455): a leftover landing mark with a landed
+    /// A leftover landing mark with a landed
     /// dir but no registry record is crash residue — the reconcile moves it
     /// out of `bundles_root` into a recoverable holding dir and clears the
     /// mark.
@@ -1919,7 +1845,7 @@ mod tests {
         });
     }
 
-    /// round-21 review (P3): the record-present reconcile arm must also sweep
+    /// The record-present reconcile arm must also sweep
     /// a crash-orphaned reimport staging dir — with the mark cleared nothing
     /// else would ever delete it (a permanent duplicate of the installed
     /// pack). A FAILED sweep keeps the mark for the next boot instead of
@@ -1987,10 +1913,10 @@ mod tests {
         });
     }
 
-    /// Round-24 minor: the no-pkg-dir reconcile arm (the import never
+    /// The no-pkg-dir reconcile arm (the import never
     /// landed) gets the same keep-mark-on-failure treatment as the
-    /// record-present arm above — its unconditional clear stranded the
-    /// ghost `.tmp` forever on EACCES/AV-hold (nothing reschedules a swept
+    /// record-present arm above — without it the ghost `.tmp` would strand
+    /// forever on EACCES/AV-hold (nothing reschedules a swept
     /// mark) while the log claimed success. Same planted-regular-file trick
     /// makes `remove_dir_all` fail deterministically on every platform;
     /// the retry leg then sweeps and clears.
@@ -2016,10 +1942,6 @@ mod tests {
                 landing_in_progress("never-tmp"),
                 "a failed sweep must keep the mark so the next boot retries"
             );
-            assert!(
-                !pkg_dir.exists(),
-                "the no-pkg-dir precondition must hold throughout"
-            );
 
             // Retry leg: make the sweep succeed and reconcile again — the
             // staging path is swept and the mark cleared.
@@ -2037,13 +1959,13 @@ mod tests {
         });
     }
 
-    /// Round-26 MAJOR 1: a crash between the re-import's two renames (pack
+    /// A crash between the re-import's two renames (pack
     /// dir already in `<id>.old`, staged copy not yet renamed in, mark still
     /// on file, record still installed) must converge: the reconcile restores
     /// the pre-import backup in place, and the record-present arm then sweeps
-    /// the staged `.tmp` and clears the mark. Previously this converged to
-    /// "record installed, content gone, the only copy stranded in the
-    /// scan-invisible `.old`" with no log and no retry.
+    /// the staged `.tmp` and clears the mark — otherwise the crash would
+    /// converge to "record installed, content gone, the only copy stranded
+    /// in the scan-invisible `.old`" with no retry.
     #[test]
     fn reconcile_restores_the_reimport_backup_after_a_crash_between_the_renames() {
         crate::platform::test_support::with_temp_home("pinvou-import-reold", || {
@@ -2088,7 +2010,7 @@ mod tests {
         });
     }
 
-    /// Round-26 MAJOR 1 tail: same fixture with the record gone (e.g. a
+    /// Same fixture with the record gone (e.g. a
     /// concurrent uninstall between the crash and this reconcile) — the
     /// restored backup must still not stay live-by-absence: the record-absent
     /// arm quarantines it, and the staged `.tmp` is swept with it.
@@ -2140,7 +2062,7 @@ mod tests {
         });
     }
 
-    /// Round-26 MAJOR 1: a failed backup restore keeps the mark so the next
+    /// A failed backup restore keeps the mark so the next
     /// boot retries, instead of consuming the strand silently.
     #[test]
     #[cfg(unix)]
@@ -2186,12 +2108,10 @@ mod tests {
         });
     }
 
-    /// Round-26 MAJOR 2: the journal writer validates the fallback id with
+    /// The journal writer validates the fallback id with
     /// `is_safe_skill_name` (mixed case allowed — frontmatter
     /// `name: MySkill` arrives through the wrapped-`.md` channel), so the
-    /// reconcile reader must accept the same set. The stricter
-    /// `is_safe_component_id` gate used to strand these marks forever, with
-    /// the live-by-absence and ghost-`.tmp` windows unrecovered.
+    /// reconcile reader must accept the same set.
     #[test]
     fn reconcile_processes_mixed_case_journal_marks() {
         crate::platform::test_support::with_temp_home("pinvou-import-mixed", || {
@@ -2252,7 +2172,7 @@ mod tests {
         zw.finish().unwrap();
     }
 
-    /// Round-24 MAJOR 6: the import pipeline must PARK while a peer holds
+    /// The import pipeline must PARK while a peer holds
     /// the landing lease and proceed only after release. Tenancy is not
     /// observable by any structural pin — a scoped-block release
     /// (`let _g = { let mut l = open_landing_lease(&id)?; l.write()? };`)
@@ -2305,14 +2225,15 @@ mod tests {
         });
     }
 
-    /// Round-27 review MAJOR 2: the lease HOLD-SPAN — the landing lease must
-    /// stay held from acquisition through landing and registration, not
-    /// merely be acquired before the mark. The park pin above cannot
-    /// distinguish a scoped-block release (the worker parks identically at
-    /// acquire and lands after the peer releases), so this test drives
-    /// the production pipeline to the post-mark failpoint and asserts a
-    /// peer's try-acquire FAILS mid-flight and only SUCCEEDS after the
-    /// import completed.
+    /// The lease HOLD-SPAN: the landing lease must stay held from acquisition
+    /// through landing and registration, not merely be acquired before the
+    /// mark. The park test above cannot distinguish a scoped-block release
+    /// (the worker parks identically at acquire and lands after the peer
+    /// releases), so this test drives the production pipeline with a
+    /// `pre_land` closure — which runs after the lease + mark, before
+    /// anything lands — and asserts a peer's try-acquire FAILS mid-flight,
+    /// then that it SUCCEEDS once the import completed and dropped its
+    /// guards.
     #[test]
     fn import_holds_the_landing_lease_across_the_whole_span() {
         crate::platform::test_support::with_temp_home("pinvou-import-lease-span", || {
@@ -2321,45 +2242,23 @@ mod tests {
             let zip_path = dir.join("span.zip");
             write_demo_combo_zip(&zip_path);
 
-            // Arm the post-mark failpoint. The reset guard restores the
-            // static however the test exits, so the serial lane can never
-            // inherit an armed park.
-            struct ResetArmedPark;
-            impl Drop for ResetArmedPark {
-                fn drop(&mut self) {
-                    *LANDING_SPAN_PARK.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                }
-            }
-            let (reached_tx, reached_rx) = std::sync::mpsc::channel::<()>();
-            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-            *LANDING_SPAN_PARK.lock().unwrap_or_else(|p| p.into_inner()) =
-                Some((reached_tx, release_rx));
-            let _reset = ResetArmedPark;
-
-            let worker_zip = zip_path.clone();
-            let worker = std::thread::spawn(move || {
-                import_plugin_package(&worker_zip.to_string_lossy(), "combo.zip")
-            });
-            reached_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("the import must reach the post-mark failpoint (mark + lease held)");
-
-            // Mid-pipeline (mark written, nothing landed): a peer's
-            // try-acquire must FAIL — the observation the park pin
-            // cannot make.
-            let mut peer = open_landing_lease("demo").expect("the peer lease opens");
-            assert!(
-                peer.try_write().is_err(),
-                "the landing lease must stay HELD while the import is mid-flight"
-            );
-
-            release_tx
-                .send(())
-                .expect("the failpoint release channel is live");
-            let report = worker
-                .join()
-                .expect("the import worker should not panic")
-                .expect("the import completes after the failpoint releases");
+            let report = import_plugin_package_gated(
+                &zip_path.to_string_lossy(),
+                "combo.zip",
+                &|id, _skills| {
+                    // Mid-flight (lease + mark held, nothing landed): a
+                    // peer's try-acquire must FAIL. The second open is a
+                    // distinct file handle, so a contended try means the
+                    // pipeline really holds the lease.
+                    let mut peer = open_landing_lease(id).expect("the peer lease opens");
+                    assert!(
+                        peer.try_write().is_err(),
+                        "the landing lease must stay HELD while the import is mid-flight"
+                    );
+                    Ok(())
+                },
+            )
+            .expect("the import completes under its own lease");
             assert_eq!(report.id, "demo");
             assert!(
                 dir.join("bundles")
@@ -2367,7 +2266,7 @@ mod tests {
                     .join("mcp")
                     .join("manifest.json")
                     .is_file(),
-                "the released import landed its package content"
+                "the import landed its package content"
             );
 
             // After completion (mark cleared, guards dropped) the lease is
@@ -2383,7 +2282,7 @@ mod tests {
         });
     }
 
-    /// Round-28 review: the post-mark park above cannot distinguish "the
+    /// Round-28 review: the mid-span probe above cannot distinguish "the
     /// lease is released at function end" from "released right after the
     /// landing rename" — a scoped-block refactor in the supply →
     /// registration tail would leave that window cross-process-unguarded
@@ -2446,7 +2345,7 @@ mod tests {
         });
     }
 
-    /// Round-20 review (P1): the boot reconcile must treat a held landing
+    /// The boot reconcile must treat a held landing
     /// lease as a LIVE import and defer, not as crash residue — the mark
     /// alone cannot distinguish the two, and sweeping a live import's staged
     /// dir (or clearing its mark, which the retired-tool sweep keys on)
@@ -2493,69 +2392,44 @@ mod tests {
         });
     }
 
-    /// Round-32 minor 6 (review #455): a leftover mark over a COMPLETED import
+    /// A leftover mark over a COMPLETED import
     /// (registry record present — crash hit after the upsert, before the
     /// guard drop) keeps the pack and just clears the stale mark.
     #[test]
     fn reconcile_keeps_completed_import_and_clears_stale_mark() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou-import-journal-done-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let pkg = crate::platform::paths::bundles_root().join("done-pkg");
-        std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    "done-pkg",
-                    crate::features::marketplace::store::BundleSource::Upload(
-                        "done.zip".to_string(),
+        crate::platform::test_support::with_temp_home("pinvou-import-journal-done", || {
+            let pkg = crate::platform::paths::bundles_root().join("done-pkg");
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .upsert(
+                    crate::features::marketplace::store::BundleRecord::installed_now(
+                        "done-pkg",
+                        crate::features::marketplace::store::BundleSource::Upload(
+                            "done.zip".to_string(),
+                        ),
                     ),
-                ),
-            )
-            .unwrap();
-        mark_landing("done-pkg");
+                )
+                .unwrap();
+            mark_landing("done-pkg");
 
-        reconcile_import_journal().unwrap();
+            reconcile_import_journal().unwrap();
 
-        assert!(
-            pkg.join("plugin.json").is_file(),
-            "a registered pack is never quarantined"
-        );
-        assert!(
-            !landing_mark_path("done-pkg").exists(),
-            "the stale mark is cleared"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+            assert!(
+                pkg.join("plugin.json").is_file(),
+                "a registered pack is never quarantined"
+            );
+            assert!(
+                !landing_mark_path("done-pkg").exists(),
+                "the stale mark is cleared"
+            );
+        });
     }
 
-    /// Round-27 review (minor): a crash between the reimport's landing
+    /// A crash between the reimport's landing
     /// rename and the post-supply backup delete strands the full pre-import
     /// copy at `bundles/<id>.old` beside the landed pack — the record-present
-    /// arm's `.tmp` sweep used to leave it forever (up to the zip budget of
+    /// arm's `.tmp` sweep alone would leave it forever (up to the zip budget of
     /// scan-invisible duplicate). The reconcile must sweep the stranded
     /// backup as superseded residue while keeping the landed pack and its
     /// record (the restore arm has already converted any "only copy" `.old`
@@ -2603,50 +2477,25 @@ mod tests {
         });
     }
 
-    /// Round-32 minor 6 (review #455): a mark with no landed dir (crash before
+    /// A mark with no landed dir (crash before
     /// the landing rename, or after an in-process rollback that had already
     /// cleared the dir) resolves to a cleared mark and zero side effects.
     #[test]
     fn reconcile_clears_mark_without_landed_dir() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou-import-journal-none-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        mark_landing("ghost-pkg");
-        reconcile_import_journal().unwrap();
-        assert!(
-            !landing_mark_path("ghost-pkg").exists(),
-            "a mark without a landed dir clears"
-        );
-        assert!(
-            !crate::platform::paths::bundles_root()
-                .join("ghost-pkg")
-                .exists(),
-            "nothing may be materialized by the reconcile"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+        crate::platform::test_support::with_temp_home("pinvou-import-journal-none", || {
+            mark_landing("ghost-pkg");
+            reconcile_import_journal().unwrap();
+            assert!(
+                !landing_mark_path("ghost-pkg").exists(),
+                "a mark without a landed dir clears"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("ghost-pkg")
+                    .exists(),
+                "nothing may be materialized by the reconcile"
+            );
+        });
     }
 
     #[test]
@@ -3122,7 +2971,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Round-18 review (P2): the landing journal mark must be written BEFORE
+    /// The landing journal mark must be written BEFORE
     /// the pre-land consent gate runs. The gate registers the import's
     /// deny-first rows before anything lands, and the startup sweep's
     /// pre-strip probe ([`landing_in_progress`]) can only see this import
@@ -3167,7 +3016,7 @@ mod tests {
         });
     }
 
-    /// round-21 review: `mark_landing` writes under the cross-process landing
+    /// `mark_landing` writes under the cross-process landing
     /// lease, so a planted FIFO or symlink at the mark path must refuse fast
     /// (the hardened private-write primitive's regular-file gate /
     /// O_NOFOLLOW), not block the lease holder's open — the lease wedges
@@ -3176,8 +3025,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mark_landing_refuses_a_planted_fifo_and_symlink() {
-        // Round-27 review (minor): the hand-rolled env dance moves onto the
-        // shared RAII harness — a failing assertion unwinds past a
+        // RAII containment: a failing assertion unwinds past a
         // straight-line restore and would leave PINVOU3_HOME pointed at a
         // deleted temp dir for every later test in the process.
         crate::platform::test_support::with_temp_home("pinvou-mark-hardening", || {
@@ -3194,7 +3042,7 @@ mod tests {
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or_else(|_| {
-                    // Round-27 review (minor): uniform abort containment with the
+                    // Uniform abort containment with the
                     // other FIFO pins — a future edit that takes a lock around
                     // mark_landing must not turn one regression into a
                     // lane-wide cascade hang.
@@ -3320,10 +3168,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 说明备份与供给失败的顺序契约（round-27 m5 语义，review #455）：重基线
+    /// 说明备份与供给失败的顺序契约：重基线
     /// 只在新内容**留存**时发生——moved_old 回滚把旧版文件还原后，旧包的说明
-    /// 备份必须幸存（它正是旧内容的有效还原点；round-24 版本曾把重基线放在
-    /// 供给之前，回滚会把还原点提前丢掉）。v2 附 mcp/manifest.json 触发供给，
+    /// 备份必须幸存（它正是旧内容的有效还原点）。v2 附 mcp/manifest.json 触发供给，
     /// 并预置形状损坏的 mcp.json（合法 JSON 但 servers 非对象）令
     /// add_to_mcp_json 确定性失败——导入返回 Err、旧版还原后，备份必须仍是
     /// 旧值；随后成功导入新版本时重基线照常消费备份。
@@ -3392,7 +3239,7 @@ mod tests {
             .expect_err("MCP 供给必须失败");
         assert!(err.contains("MCP 供给失败"), "失败须来自供给步骤: {err}");
 
-        // Round-27 m5 回归点：moved_old 回滚还原了旧版文件——说明备份必须
+        // 回归点：moved_old 回滚还原了旧版文件——说明备份必须
         // 幸存（还原点与还原后的旧内容一致；若在此处丢弃，重试导入前的一次
         // 清覆盖恢复将没有还原点可用）。
         assert_eq!(
@@ -3400,7 +3247,7 @@ mod tests {
             Some("orig1"),
             "供给失败回滚后备份必须幸存（旧内容仍以还原点保护）"
         );
-        // Round-24 MAJOR 2：供给失败不得残留已落地的无登记目录——其技能会以
+        // 供给失败不得残留已落地的无登记目录——其技能会以
         // 零同意进入每个已初始化 scope（本次为首次安装路径，无旧版本可还原，
         // 回滚 = 移除落盘目录）。
         assert!(
@@ -3408,7 +3255,7 @@ mod tests {
             "供给失败后落盘目录必须回滚移除"
         );
 
-        // Round-24 MAJOR 2 换版路径（moved_old=true）：旧版本在盘时同一包重导、
+        // 换版路径（moved_old=true）：旧版本在盘时同一包重导、
         // 供给失败（同一 zip 过碰撞检查→落盘→供给必败）→ 回滚 = 还原旧版本目录
         // （旧包继续可用，新包不入），备份清理。
         std::fs::write(&mcp_path, r#"{"servers": {}}"#).unwrap();
@@ -4079,7 +3926,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Component-id impersonation (review round-5 M1): the package id is
+    /// Component-id impersonation: the package id is
     /// collision-free, but the inner MCP component id is a builtin's id —
     /// add_to_mcp_json keys servers by manifest.id, so importing would
     /// overwrite the builtin's engine registration. Must be refused.
@@ -4149,7 +3996,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Package-id collision against non-builtin presets (review round-6 M4):
+    /// Package-id collision against non-builtin presets:
     /// the id maps to a catalog package but not a builtin, so the builtin
     /// probe alone does not refuse it — the import must still reject an id
     /// that would overwrite an installed preset (`gongwen` / `weather`).
@@ -4246,11 +4093,10 @@ mod tests {
             zw.finish().unwrap();
         }
         let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
-        // Merged-world note: the round-12-B1 owner-claim vocabulary check
-        // (7a96f2a3) now fires before the skill-name collision check for this
-        // fixture — the id "foo" folds onto the physically present
-        // other-pkg's vocabulary. Either rejection is the pin: the import is
-        // refused naming other-pkg.
+        // The owner-claim vocabulary check fires before the skill-name
+        // collision check for this fixture — the id "foo" folds onto the
+        // physically present other-pkg's vocabulary. Either rejection is
+        // the pin: the import is refused naming other-pkg.
         assert!(
             err.contains("other-pkg"),
             "a cross-pack name collision must be refused, got: {err}"
