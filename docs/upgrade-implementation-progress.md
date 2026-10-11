@@ -1110,3 +1110,30 @@ This batch opens no production configuration or client-credential owner. T40
 shared-machine settings and affected scopes, actual T20/T45 preparation release,
 legacy T17 configuration and recorded owner/deployment decisions remain separate.
 Full T44 stays in progress; continue other unblocked tasks.
+
+### T47 first batch: protected draft and frozen policy (2026-10-12)
+
+An isolated service worktree now implements original-schema plan conversion,
+protected full-scope draft revisions, exact T05 ownerBound plan approval and a
+fixed T06 freeze/replay owner interface. Twelve normal/forced/silent vectors
+match original reference canonical bytes. Draft edits invalidate old approval;
+frozen policy is immutable. Stable keeps actual dual review and fresh MFA.
+
+Private SQL captures actual T06 identity/epoch at insert/claim, verifies original
+lookup/request digests and canonical receipt/proof bytes, and repeats actual
+owner/time/CAS/source/approval guards before committing plan/result/audit/outbox.
+Fresh same-actor evidenced reentry can update protected authentication for crash
+recovery. Runtime receives no private mutator rights; isolated fixed publishers
+exercise the real kernel and do not certify production composition.
+
+Non-null SN references remain closed until their actual approved group source
+exists; null is the independently supported path. Lifecycle/StageFacts and actual
+T14/T15/T08 selection-changing composition remain subsequent T47 work. No
+download deadline or caller-supplied qualification flag is introduced. Both
+independent roles passed the frozen complete batch after repairs. Actual
+PostgreSQL regression passed (62.200s), strengthened post-write clock controls
+passed (30.678s) and exact original-request digest controls passed (3.532s).
+All default tests/vet, module verification, command builds, pinned contracts,
+formatting, diff and client architecture checks passed.
+Full T47 remains in progress; continue other unblocked tasks and skip recorded
+owner/deployment decisions.
