@@ -84,8 +84,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         path: &std::path::Path,
         spec: &LegacyMcpSecretSpec,
     ) -> Result<(), String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+        // Round-28 review: 同一族裸读——本读可达时调用方持有
+        // MARKETPLACE_TRANSACTION_LOCK(install_inner),probe→open 的 swap 窗口
+        // 内被换成 FIFO 的 manifest 会楔死该进程的安装道。与 mcp.json 段同一
+        // 加固原语;NotFound(被并发删走)按缺失条目无操作处理。
+        let content = match crate::platform::filesystem::read_private_data_file(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("读取 {} 失败: {e}", path.display())),
+        };
         let mut json: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
         let Some(value) = json
@@ -150,7 +157,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 if let Some(value) = env
                     .get(spec.key)
                     .and_then(|v| v.as_str())
-                    .filter(|v| !v.trim().is_empty())
+                    // 已迁移的条目值就是占位符本身:跳过(round-28 review)——
+                    // 否则占位符非空、每次启动都在 mcp.lock 内重写同一份
+                    // mcp.json,且凭据库被清空时会把占位符文本当明文重新写回。
+                    .filter(|v| {
+                        !v.trim().is_empty() && v.trim() != mcp_secret_placeholder(spec.key)
+                    })
                     .map(ToOwned::to_owned)
                 {
                     self.store_migrated_secret(spec, &value)?;
@@ -249,6 +261,39 @@ mod tests {
                 spec.target,
             );
         }
+    }
+
+    /// Round-28 review: an already-migrated entry holds the placeholder
+    /// itself. The migration must converge to a no-write — no mcp.json
+    /// rewrite under mcp.lock on every boot, and no placeholder-text
+    /// round-trip into the credential store (a wiped store used to re-store
+    /// the literal placeholder as if it were the secret).
+    #[test]
+    fn migration_of_placeholder_entries_converges_to_a_no_write() {
+        crate::platform::test_support::with_temp_home("pinvou3-mcp-migration-converge", || {
+            use crate::features::marketplace::{MarketplaceManager, secrets};
+            use crate::platform::credential_store::{CredentialStore as _, MemoryCredentialStore};
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            let placeholder = secrets::mcp_secret_placeholder("AMAP_KEY");
+            let original =
+                format!(r#"{{"servers":{{"weather":{{"env":{{"AMAP_KEY":"{placeholder}"}}}}}}}}"#);
+            std::fs::write(&mcp_path, &original).unwrap();
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            mgr.migrate_mcp_json_file(&mcp_path).unwrap();
+
+            let after = std::fs::read_to_string(&mcp_path).unwrap();
+            assert_eq!(
+                after, original,
+                "an already-migrated entry must not be rewritten"
+            );
+            let reference = secrets::mcp_secret_reference("weather", "env", "AMAP_KEY");
+            assert!(
+                mgr.credential_store.get(&reference).unwrap().is_none(),
+                "the placeholder text must not be stored as the secret"
+            );
+        });
     }
 
     /// Round-27 review MAJOR 1: the read INSIDE the mcp.lock critical
