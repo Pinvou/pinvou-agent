@@ -1516,14 +1516,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Uninstalls a marketplace tool: removes the mcp.json entry, the
     /// installed.json id, the bundles.json mirror, and disposes the package
     /// dir by source. Returns whether THIS call actually removed the install
-    /// record: a vacuous uninstall (no record — e.g. racing a same-id install
-    /// whose deny-first gate just registered the entries but whose record has
-    /// not landed yet) returns `Ok(false)` and must leave every scope entry
-    /// alone, or it would re-enable the package as it lands. Callers must
-    /// key every scope-strip decision on this outcome — never on their own
-    /// pre-uninstall probe, and never after this function returns (the
-    /// transaction lock is released; the in-transaction strip in
-    /// `cleanup_uninstalled_tool_state` is the only race-free one).
+    /// record; a vacuous uninstall (`Ok(false)`) must leave every scope
+    /// entry alone, and callers must key every scope-strip decision on this
+    /// outcome — see `strip_uninstalled_scope_state` (the post-commit strip,
+    /// still under MARKETPLACE_TRANSACTION_LOCK) for the full doctrine.
     pub fn uninstall(&self, tool_id: &str) -> Result<bool, String> {
         // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
         // §3.1 server-side defense in depth): even if the frontend never
@@ -1795,9 +1791,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // Upload 组合包的 companion 目录已随整包搬离（false 分支的清理自然空转）；
         // 预置 companion 物理删除沿用既有语义（可重获得）。
         self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
-        // The gate mirrors `strip_uninstalled_scope_state`'s doctrine: with no
-        // record removed this uninstall is vacuous and the consent entries
-        // must survive untouched.
+        // The gate follows `strip_uninstalled_scope_state`'s vacuous-uninstall doctrine.
         if removed_install_record {
             self.strip_uninstalled_scope_state(tool_id, false, &companion_owners, recycles_upload);
         }
@@ -1926,9 +1920,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     /// Scope-strip tail of the uninstall teardown: this pack's own consent
-    /// rows plus the companion-skill consent/physical handling. Split from
-    /// [`Self::cleanup_uninstalled_tool_state`] so no caller threads a
-    /// long positional argument list.
+    /// rows plus the companion-skill consent/physical handling.
     ///
     /// Scope entries are consent state: strip them only when this call
     /// actually removed the install record. A vacuous uninstall (no record
@@ -3017,7 +3009,6 @@ pub(crate) mod tests {
                 .join("bundles.json");
             std::fs::create_dir_all(&store_path).unwrap();
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            mgr.cleanup_uninstalled_tool_state("tencent-docs", &[]);
             mgr.strip_uninstalled_scope_state(
                 "tencent-docs",
                 false,
@@ -3033,7 +3024,6 @@ pub(crate) mod tests {
             // Phase 2: store readable again -> teardown succeeds -> the entry
             // is removed with the skill actually gone.
             std::fs::remove_dir_all(&store_path).unwrap();
-            mgr.cleanup_uninstalled_tool_state("tencent-docs", &[]);
             mgr.strip_uninstalled_scope_state(
                 "tencent-docs",
                 false,
