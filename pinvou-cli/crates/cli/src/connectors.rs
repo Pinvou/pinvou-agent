@@ -649,17 +649,6 @@ fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
 /// the command forever.
 const PROBE_TIMEOUT_SECS: u64 = 60;
 
-/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — mirror of
-/// `connector_cli::run` (adds the connector envs from the spec), bounded so
-/// every blocking vendor-CLI phase honors a timeout.
-fn run_cli(spec: &VendorSpec, args: &[&str]) -> Result<(bool, String, String), CliError> {
-    run_cli_bounded(
-        spec,
-        args,
-        Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
-    )
-}
-
 /// Best-effort argv redaction for timeout errors: exact-value strip of the
 /// values of pairing flags the vendor CLIs pass (`--device-code`), before
 /// the heuristic `redact_secret` pass — a short device code survives the
@@ -713,10 +702,10 @@ fn spawn_vendor_command(
     Ok(cmd)
 }
 
-/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — like
-/// [`run_cli`], with a hard kill at `deadline`: the GUI cancels through its
-/// host, so the CLI must enforce the `--timeout` budget itself on every
-/// blocking phase.
+/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — mirror of
+/// `connector_cli::run` (adds the connector envs from the spec), with a hard
+/// kill at `deadline`: the GUI cancels through its host, so the CLI must
+/// enforce the `--timeout` budget itself on every blocking phase.
 fn run_cli_bounded(
     spec: &VendorSpec,
     args: &[&str],
@@ -908,16 +897,19 @@ fn semver_from_stream(spec: &VendorSpec, source: &str) -> Option<(u64, u64, u64)
     }
 }
 
-/// One `--version` probe: `(parsed semver if any, first non-empty version
-/// line)`.
-type VersionProbe = (Option<(u64, u64, u64)>, String);
-
 /// `(semver if parseable, first non-empty version line)` from one
 /// `--version` invocation. Presence is judged by the exit status only (the
 /// GUI's `*_cli_present`); a version line without a parseable number means
 /// "installed, version unknown" for the connectors that do not gate on one.
-fn probe_cli_version(spec: &VendorSpec) -> Option<VersionProbe> {
-    let (ok, stdout, stderr) = run_cli(spec, &["--version"]).ok()?;
+type ProbedVersion = (Option<(u64, u64, u64)>, String);
+
+fn probe_cli_version(spec: &VendorSpec) -> Option<ProbedVersion> {
+    let (ok, stdout, stderr) = run_cli_bounded(
+        spec,
+        &["--version"],
+        Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
+    )
+    .ok()?;
     if !ok {
         return None;
     }
@@ -1756,6 +1748,23 @@ fn set_enabled(
     Ok(success(render(output, human, &value)))
 }
 
+/// The consent-failure wrapping shared by the two vendor consent syncs
+/// (`apply_skills`' show branch and `finish_connect_side_effects`): the GUI
+/// fails the command with the shared consent-failure marker instead of
+/// letting the connector go live with zero consent; the CLI mirrors that
+/// contract. The scope layer logs nothing on write failure, so the error
+/// carries the reason. `verb` is the outcome already reported for the
+/// connector ("applied" / "connected").
+fn sync_consent_after_install(id: &str, verb: &str) -> Result<(), CliError> {
+    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(id).map_err(|error| {
+        CliError::failed(format!(
+            "{id} {verb}, but {}: new sessions will enable it by default — \
+turn it off in the tools list: {error}",
+            pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        ))
+    })
+}
+
 /// Mirror of `<connector>_apply_skills` (`ConnectorGate::apply_skills_command`
 /// → `skills_should_show()` = marker read + `ready_probe()`), unchanged from
 /// the GUI: recompute `should_show`, then apply it. The gate deliberately
@@ -1788,20 +1797,7 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = probe.unwrap_or(false);
     let visible = gui_skill_gate_shows_with(kind, connected);
     if visible {
-        // The GUI's `apply_skills` (skill_gate) fails the command with the
-        // shared consent-failure marker instead of letting the connector go
-        // live with zero consent; the CLI mirrors that contract. The scope
-        // layer logs nothing on write failure, so the error carries it.
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
-            |error| {
-                CliError::failed(format!(
-                    "{} applied, but {}: new sessions will enable it by default — \
-turn it off in the tools list: {error}",
-                    spec.id,
-                    pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-                ))
-            },
-        )?;
+        sync_consent_after_install(spec.id, "applied")?;
     } else {
         hide_connector_skills(kind)?;
     }
@@ -2873,14 +2869,6 @@ fn find_file_by_name(dir: &Path, name: &str) -> Option<PathBuf> {
 /// HTTPS-only download capped at the app's archive limit, staged through a
 /// `.part` sibling so a crashed download never leaves a truncated file at the
 /// real path (rename is atomic on the same filesystem).
-/// Remove debris from a previous crashed download at the predictable `.part`
-/// path so the exclusive create below can proceed. Best-effort by design:
-/// a planted directory at the path fails `remove_file`, and the exclusive
-/// create then fails loudly with the path named — the safe direction.
-fn clear_stale_part(part: &Path) {
-    let _ = std::fs::remove_file(part);
-}
-
 fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| CliError::failed("connector download URL is invalid"))?;
@@ -2934,7 +2922,10 @@ fn download_https(url: &str, destination: &Path) -> Result<(), CliError> {
     // first is safe against the symlink plant the `create_new` below guards:
     // `remove_file` unlinks the link itself, never its target, and the
     // exclusive create still refuses any entry this call did not remove.
-    clear_stale_part(&part);
+    // Best-effort by design (`let _ =`): a planted directory at the path
+    // fails `remove_file`, and the exclusive create then fails loudly with
+    // the path named — the safe direction.
+    let _ = std::fs::remove_file(&part);
     // `create_new`, not `create`: `File::create` follows a symlink
     // pre-planted at the fully predictable `.part` name and would truncate
     // its target, then publish the renamed symlink — the exclusive
@@ -3247,16 +3238,7 @@ fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     // (skill_gate's marker contract); the CLI mirrors that instead of
     // reporting a connection whose consent never landed — the scope layer
     // logs nothing on write failure, so the error carries the reason.
-    pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(spec.id).map_err(
-        |error| {
-            CliError::failed(format!(
-                "{} connected, but {}: new sessions will enable it by default — \
-turn it off in the tools list: {error}",
-                spec.id,
-                pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-            ))
-        },
-    )?;
+    sync_consent_after_install(spec.id, "connected")?;
     Ok(())
 }
 
@@ -3888,17 +3870,6 @@ fn announce_wecom_qr(qr: &Path, notes: &mut Vec<String>) -> bool {
     true
 }
 
-/// Suffix for connect errors that carries the login material captured so far
-/// — after a timeout the notes are often all the user has (the vendor CLI is
-/// gone and its output was piped, not printed).
-fn captured_notes(notes: &[String]) -> String {
-    if notes.is_empty() {
-        String::new()
-    } else {
-        format!("; captured so far: {}", notes.join(" | "))
-    }
-}
-
 /// Suffix carrying the vendor CLI's own last words, already redacted by
 /// [`safe_auth_log_line`]. The vendor's stdout/stderr are piped so the
 /// drainer can find the login link, which means the terminal never shows
@@ -3922,15 +3893,21 @@ fn vendor_output_tail(spec: &VendorSpec, tail: &[String]) -> String {
 }
 
 /// The suffix pair every connect failure carries: the login material
-/// captured so far ([`captured_notes`]) followed by the vendor CLI's own
-/// redacted last words ([`vendor_output_tail`]). One copy of the pairing
-/// shared by the failure sites, so the two parts cannot drift apart or drop
-/// from one of them. (The bare wait-error arm in `spawn_and_capture_url`
-/// keeps its tail-only suffix; only the notes+tail pairs are unified here.)
+/// captured so far — after a timeout the notes are often all the user has
+/// (the vendor CLI is gone and its output was piped, not printed) —
+/// followed by the vendor CLI's own redacted last words
+/// ([`vendor_output_tail`]). One copy of the pairing shared by the failure
+/// sites, so the two parts cannot drift apart or drop from one of them.
+/// (The bare wait-error arm in `spawn_and_capture_url` keeps its tail-only
+/// suffix; only the notes+tail pairs are unified here.)
 fn connect_failure_suffix(spec: &VendorSpec, notes: &[String], tail: &[String]) -> String {
     format!(
         "{}{}",
-        captured_notes(notes),
+        if notes.is_empty() {
+            String::new()
+        } else {
+            format!("; captured so far: {}", notes.join(" | "))
+        },
         vendor_output_tail(spec, tail)
     )
 }
@@ -4667,14 +4644,19 @@ mod tests {
         outcome.expect("an executable binary must pass the verdict");
     }
 
+    /// `download_https`' stale-`.part` pre-clean is one best-effort stdlib
+    /// call (`let _ = std::fs::remove_file(&part);` — the crashed-debris
+    /// unlink of round-35 M2), so what is worth pinning here is exactly the
+    /// two std semantics the surrounding defence relies on: a planted
+    /// symlink is unlinked ITSELF, never followed (the symlink-plant defense
+    /// stays intact and the exclusive `create_new` below still refuses any
+    /// entry the pre-clean did not remove), and a planted directory is NOT
+    /// recursed into (the removal fails best-effort, and the exclusive
+    /// create then fails loudly with the path named — the safe direction).
     #[test]
-    fn clear_stale_part_removes_a_crashed_download_debris() {
-        // A SIGKILL/power-loss mid-download leaves the regular-file `.part`
-        // behind and none of download_https' handled error paths run; the
-        // pre-clean must unlink it so the next install's exclusive create is
-        // not wedged behind "File exists" forever (round-35 M2).
+    fn stale_part_preclean_unlinks_links_without_following_and_leaves_directories() {
         let workspace = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-stale-part-{}-{}",
+            "pinvou-cli-connectors-part-preclean-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -4682,63 +4664,30 @@ mod tests {
                 .unwrap_or(0),
         ));
         std::fs::create_dir_all(&workspace).expect("test workspace");
-        let part = workspace.join("tmeet-1.2.3.tar.gz.part");
-        std::fs::write(&part, b"half a download").expect("seed the stale .part");
-        clear_stale_part(&part);
-        assert!(!part.exists(), "the stale .part must be gone");
-        let _ = std::fs::remove_dir_all(&workspace);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn clear_stale_part_unlinks_a_planted_symlink_itself_not_its_target() {
-        // The symlink-plant defense stays intact: `remove_file` unlinks the
-        // LINK, never its target, and the exclusive create below still
-        // refuses any entry this call did not remove.
-        let workspace = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-part-symlink-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        std::fs::create_dir_all(&workspace).expect("test workspace");
-        let victim = workspace.join("victim.txt");
-        std::fs::write(&victim, b"keep").expect("seed the victim");
-        let part = workspace.join("tmeet-1.2.3.tar.gz.part");
-        std::os::unix::fs::symlink(&victim, &part).expect("plant the symlink");
-        clear_stale_part(&part);
-        assert!(!part.exists(), "the planted link must be unlinked");
-        assert!(
-            victim.exists(),
-            "the planted link's target must survive untouched"
-        );
-        assert_eq!(
-            std::fs::read(&victim).expect("the victim must stay readable"),
-            b"keep"
-        );
-        let _ = std::fs::remove_dir_all(&workspace);
-    }
-
-    #[test]
-    fn clear_stale_part_leaves_a_directory_for_the_exclusive_create_to_refuse() {
         // A directory at the path is not download debris; the best-effort
-        // removal must not recurse, and the exclusive create still fails
-        // loudly with the path named.
-        let workspace = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-part-dir-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        std::fs::create_dir_all(&workspace).expect("test workspace");
-        let part = workspace.join("tmeet-1.2.3.tar.gz.part");
-        std::fs::create_dir(&part).expect("plant the directory");
-        clear_stale_part(&part);
-        assert!(part.is_dir(), "the directory must be left for create_new");
+        // removal must not recurse.
+        let dir_part = workspace.join("tmeet-1.2.3.tar.gz.part");
+        std::fs::create_dir(&dir_part).expect("plant the directory");
+        let _ = std::fs::remove_file(&dir_part);
+        assert!(
+            dir_part.is_dir(),
+            "the directory must be left for create_new to refuse"
+        );
+        // `remove_file` unlinks the LINK, never its target.
+        #[cfg(unix)]
+        {
+            let victim = workspace.join("victim.txt");
+            std::fs::write(&victim, b"keep").expect("seed the victim");
+            let link_part = workspace.join("feishu-1.2.3.tar.gz.part");
+            std::os::unix::fs::symlink(&victim, &link_part).expect("plant the symlink");
+            let _ = std::fs::remove_file(&link_part);
+            assert!(!link_part.exists(), "the planted link must be unlinked");
+            assert_eq!(
+                std::fs::read(&victim).expect("the victim must stay readable"),
+                b"keep",
+                "the planted link's target must survive untouched"
+            );
+        }
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
@@ -4871,24 +4820,66 @@ mod tests {
     /// The listing feed skips (not merely unselects) traversal-shaped member
     /// lines — the wanted file name could otherwise be reached through a
     /// `..` chain on an archive that also carries a same-named nested file.
-    /// This is the selection loop's own filter, pinned independently of the
-    /// helper above so removing either refusal shows up as a failure here.
+    /// Drives the REAL `extract_member` (both production children) against a
+    /// hand-built archive carrying both shapes under one wanted file name,
+    /// traversal-shaped first — the exact list `find` would fall for without
+    /// the filter — and pins that the SAFE member's bytes are what land.
     #[test]
     fn listing_selection_prefers_a_safe_member_over_traversal_shaped_ones() {
-        let listing = "a/../../wecom-cli\n../../wecom-cli\nsafe/dir/wecom-cli\n";
-        // Same predicate chain as `extract_member`'s find: the safe line wins
-        // even though the traversal lines also end in the wanted file name.
-        let selected = listing
-            .lines()
-            .map(str::trim)
-            .filter(|entry| member_path_is_safe(entry))
-            .find(|entry| {
-                Path::new(entry)
-                    .file_name()
-                    .map(|name| name.to_string_lossy() == "wecom-cli")
-                    .unwrap_or(false)
-            });
-        assert_eq!(selected, Some("safe/dir/wecom-cli"));
+        // Round-48 review: soft-skip on a tar-less host like the sibling
+        // separator test does — the assertion needs a real tar.
+        if std::process::Command::new("tar")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping tar selection test: tar binary not available");
+            return;
+        }
+        let workspace = std::env::temp_dir().join(format!(
+            "pinvou-cli-connectors-safe-select-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ));
+        // The traversal bait lives two levels ABOVE the directory tar runs
+        // from, so the member name `../../wecom-cli` points back into the
+        // fixture while staying traversal-shaped in the archive listing.
+        let root = workspace.join("root");
+        let staging = root.join("l1").join("l2");
+        std::fs::create_dir_all(staging.join("safe").join("dir")).expect("test workspace");
+        let safe_contents = b"safe-binary";
+        std::fs::write(
+            staging.join("safe").join("dir").join("wecom-cli"),
+            safe_contents,
+        )
+        .expect("seed the safe member");
+        std::fs::write(root.join("wecom-cli"), b"traversal-bait").expect("seed the bait");
+        // Create from the nested directory so the listing carries BOTH
+        // same-named members, traversal-shaped first.
+        let archive = root.join("a.tar");
+        let create = Command::new("tar")
+            .arg("-cf")
+            .arg(&archive)
+            .arg("--")
+            .arg("../../wecom-cli")
+            .arg("safe/dir/wecom-cli")
+            .current_dir(&staging)
+            .output()
+            .expect("tar create must run");
+        assert!(create.status.success(), "tar create: {create:?}");
+        let target = workspace.join("out");
+        std::fs::create_dir_all(&target).expect("target dir");
+        extract_member(&archive, "wecom-cli", &target)
+            .expect("the safe member must extract past the traversal-shaped sibling");
+        assert_eq!(
+            std::fs::read(target.join("wecom-cli")).expect("extracted member lands under target"),
+            safe_contents,
+            "the SAFE member must be selected; the traversal-shaped bait must never win"
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 
     /// Both tar child constructions must carry the `--` operator separator

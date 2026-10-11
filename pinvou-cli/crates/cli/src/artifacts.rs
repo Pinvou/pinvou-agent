@@ -320,6 +320,20 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
     // transcript cannot dominate the listing (oversized files are skipped
     // with a note rather than read).
     const MAX_LIST_SCAN_BYTES: u64 = 32 * 1024 * 1024;
+    // The over-cap skip disclosure, stated once: both the pre-read stat
+    // probe below and the `RecordRead::TooLarge` arm (a record that grew
+    // past the cap between the probe and the read) disclose the exact same
+    // way.
+    let skip_oversized = |file: &Path, stem: String, skipped: &mut Vec<String>| {
+        note!(
+            "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
+            file.display()
+        );
+        // Also reported in the JSON payload: stderr is invisible to a
+        // `--output json` consumer, which would otherwise read a truncated
+        // index as "this session has no deliverables".
+        skipped.push(stem);
+    };
     for entry in entries.flatten() {
         let file = entry.path();
         if !file.is_file() || file.extension().and_then(|value| value.to_str()) != Some("json") {
@@ -348,14 +362,7 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
             .unwrap_or_default()
             > MAX_LIST_SCAN_BYTES
         {
-            note!(
-                "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
-                file.display()
-            );
-            // Also reported in the JSON payload: stderr is invisible to a
-            // `--output json` consumer, which would otherwise read a truncated
-            // index as "this session has no deliverables".
-            skipped.push(stem);
+            skip_oversized(&file, stem, &mut skipped);
             continue;
         }
         let raw = match read_record_capped(&file, MAX_LIST_SCAN_BYTES) {
@@ -364,11 +371,7 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
                 // The record passed the stat probe but grew past the cap
                 // before this read landed; identical skip contract to the
                 // probe above.
-                note!(
-                    "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
-                    file.display()
-                );
-                skipped.push(stem);
+                skip_oversized(&file, stem, &mut skipped);
                 continue;
             }
             RecordRead::Unreadable => {

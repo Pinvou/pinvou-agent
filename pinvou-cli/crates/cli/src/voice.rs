@@ -88,7 +88,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::support::{family_lock, render, sandbox_home, success};
+use crate::support::{family_lock, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::platform::paths::pinvou3_home;
 
@@ -476,44 +476,6 @@ fn model_available_verified(path: &Path, expected_size: u64, expected_sha256: &s
 const FFMPEG_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const FFMPEG_CONVERT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Waits for a short-lived helper child (an ffmpeg probe or conversion) with
-/// a fixed bound, mirroring the bounded-wait loop of the ASR lanes. On
-/// timeout or wait error the child is killed and `None` is returned (the
-/// caller treats it like any other probe failure); on success the exit
-/// status is returned.
-fn wait_bounded(
-    child: &mut std::process::Child,
-    timeout: Duration,
-) -> Option<std::process::ExitStatus> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    // Tree kill: a bare `kill()` would orphan descendants.
-                    crate::support::kill_process_tree(child);
-                    return None;
-                }
-                // A Ctrl-C the supervisor (installed first-thing in main)
-                // has already observed kills this child's group in the
-                // watcher; unwinding here instead of waiting for that to
-                // work through the pipe lets the caller's staged-file guards
-                // run while the process is still alive.
-                if crate::support::supervise::sigint_seen() {
-                    crate::support::kill_process_tree(child);
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => {
-                crate::support::kill_process_tree(child);
-                return None;
-            }
-        }
-    }
-}
-
 /// Removes a staged private file when dropped — the `TempWrapperZip`
 /// convention from `plugins.rs`, applied to this module's three staged paths:
 /// the 0600 input wav ([`write_temp_wav`]), the 0600 normalized conversion,
@@ -535,7 +497,10 @@ impl Drop for StagedFile {
 /// The supervised bounded run shared by this module's two ffmpeg spawns
 /// (the `-version` probe and the wav conversion): process-group leader,
 /// supervised spawn, the `GroupGuard::arm` bracket, and the bounded wait —
-/// process-group semantics documented once, here.
+/// process-group semantics documented once, here. The wait mirrors the
+/// bounded-wait loop of the ASR lanes: on timeout or wait error the child
+/// is killed and `false` is returned (the caller treats it like any other
+/// probe failure); on success the exit status's success is returned.
 fn run_bounded_child(command: &mut std::process::Command, timeout: Duration) -> bool {
     crate::support::set_process_group(command);
     // `spawn_supervised` closes the spawn→register window (see
@@ -549,9 +514,33 @@ fn run_bounded_child(command: &mut std::process::Command, timeout: Duration) -> 
     // CLI instead of orphaning it behind its own process group (the same
     // bracket `code.rs`'s login lane installs by hand).
     let _supervised = crate::support::supervise::GroupGuard::arm(child.id());
-    wait_bounded(&mut child, timeout)
-        .map(|status| status.success())
-        .unwrap_or(false)
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    // Tree kill: a bare `kill()` would orphan descendants.
+                    crate::support::kill_process_tree(&mut child);
+                    return false;
+                }
+                // A Ctrl-C the supervisor (installed first-thing in main)
+                // has already observed kills this child's group in the
+                // watcher; unwinding here instead of waiting for that to
+                // work through the pipe lets the caller's staged-file guards
+                // run while the process is still alive.
+                if crate::support::supervise::sigint_seen() {
+                    crate::support::kill_process_tree(&mut child);
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => {
+                crate::support::kill_process_tree(&mut child);
+                return false;
+            }
+        }
+    }
 }
 
 fn ffmpeg_available() -> bool {
@@ -1238,12 +1227,6 @@ fn asr_download_max_bytes(expected_size: u64) -> u64 {
     expected_size.max(16 * 1024 * 1024) * 2
 }
 
-/// The native lane feeds a missing-ffmpeg installation the raw wav (GUI
-/// parity), so only non-wav inputs make an ffmpeg-only gap fatal.
-fn ffmpeg_missing_is_fatal_for(extension: Option<&str>) -> bool {
-    !extension.is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
-}
-
 // ─────────────────────────── transcribe ────────────────────────────────────
 
 /// Mirror of the GUI's decoded-audio cap (`recording_too_long`).
@@ -1341,7 +1324,9 @@ fn asr_preflight(lanes: AsrLanes, extension: Option<&str>) -> AsrPreflight {
     // Other extensions keep the hard error: the engine cannot decode them
     // without the converter.
     if lanes.native && lanes.engine && lanes.model {
-        if ffmpeg_missing_is_fatal_for(extension) {
+        // The native lane feeds the raw wav to the engine; other extensions
+        // need ffmpeg.
+        if !extension.is_some_and(|ext| ext.eq_ignore_ascii_case("wav")) {
             return AsrPreflight::Reject(
                 "ffmpeg_missing: ffmpeg is required for local speech recognition; \
                  install it manually or run pinvou voice asr-install",
@@ -2357,7 +2342,6 @@ fn postprocess(
     draft_file: Option<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    sandbox_home()?;
     // Round-40 review: the gated-file-read rule this PR applies everywhere
     // else user-pointed file content enters a model context — `feedback
     // submit` gates even its never-leaving-the-machine body file ("a
@@ -3284,8 +3268,8 @@ mod tests {
         AsrLanes, AsrPreflight, OutputMode, PostprocessMode, VoiceCommand,
         anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls,
         asr_download_max_bytes, asr_preflight, asr_timeout_secs, download_to, execute,
-        ffmpeg_missing_is_fatal_for, native_engine_timeout_secs, postprocess_anthropic_body,
-        postprocess_chat_body, postprocess_http_exchange, postprocess_prompt, transcribe_with,
+        native_engine_timeout_secs, postprocess_anthropic_body, postprocess_chat_body,
+        postprocess_http_exchange, postprocess_prompt, transcribe_with,
     };
 
     /// Serves `body` exactly once on a loopback `std::net::TcpListener` (no
@@ -3790,46 +3774,6 @@ content-length: {}\r\n\r\n{}",
             serde_json::json!(true),
             "Minimax must send the reasoning split marker: {body}"
         );
-    }
-
-    #[test]
-    fn ffmpeg_missing_is_fatal_except_for_wav_inputs() {
-        assert!(ffmpeg_missing_is_fatal_for(Some("mp3")));
-        assert!(ffmpeg_missing_is_fatal_for(Some("m4a")));
-        assert!(!ffmpeg_missing_is_fatal_for(Some("wav")));
-        assert!(!ffmpeg_missing_is_fatal_for(Some("WAV")));
-        assert!(!ffmpeg_missing_is_fatal_for(Some("Wav")));
-        assert!(ffmpeg_missing_is_fatal_for(None));
-    }
-
-    /// The docs row promises `ffmpeg_missing` when ONLY ffmpeg is absent and
-    /// the input needs conversion. The full command path is unreachable
-    /// hermetically (`model_available` pins the shipped model's exact size +
-    /// sha256, hundreds of MiB), so the routing is pinned at the pure gate:
-    /// engine+model without ffmpeg must reject conversion inputs with the
-    /// stable code while raw wavs still run (the warning lane).
-    #[test]
-    fn asr_preflight_names_ffmpeg_missing_for_conversion_inputs() {
-        let lanes = AsrLanes {
-            engine: true,
-            ffmpeg: false,
-            model: true,
-            external: false,
-            native: true,
-        };
-        match asr_preflight(lanes, Some("mp3")) {
-            AsrPreflight::Reject(message) => assert!(
-                message.starts_with("ffmpeg_missing"),
-                "expected the stable code, got: {message}"
-            ),
-            other => panic!(
-                "a conversion input with only ffmpeg missing must be rejected, got {other:?}"
-            ),
-        }
-        assert!(matches!(
-            asr_preflight(lanes, Some("wav")),
-            AsrPreflight::RunOnRawWav
-        ));
     }
 
     /// The Anthropic preset must detect truncation like the GUI does

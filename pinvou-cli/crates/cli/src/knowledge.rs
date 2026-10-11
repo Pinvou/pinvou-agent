@@ -1662,7 +1662,11 @@ fn index_status(job_id: Option<&str>, output: OutputMode) -> Result<CliOutcome, 
         None => service.index_status(),
         Some(job_id) => named_job_state(&service, job_id, "status")?,
     };
-    index_out("index status", state, output)
+    Ok(success(render(
+        output,
+        format!("index status\n{}", render_index_state(&state)),
+        &index_payload(&state),
+    )))
 }
 
 /// The per-job store-error mapping the id-addressing index lanes share: an
@@ -1768,8 +1772,7 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
         None
     };
     let mut human = format!("{header}\n{}", render_index_state(&state));
-    let mut value = serde_json::to_value(&state).unwrap_or_default();
-    value["phase"] = serde_json::json!(display_phase(&state));
+    let mut value = index_payload(&state);
     if let Some(note) = note {
         human.push_str(&format!("\nnote: {note}"));
         value["note"] = serde_json::json!(note);
@@ -1905,6 +1908,52 @@ fn import_no_progress_timeout() -> Duration {
     stall_millis_override("PINVOU_KB_IMPORT_STALL_MILLIS", IMPORT_NO_PROGRESS_TIMEOUT)
 }
 
+/// One read-error tolerance burst, shared by [`wait_for_terminal_job`]'s two
+/// call sites (the first poll and the loop step): poll the job state until it
+/// answers, tolerating a short burst of failed polls (a sustained
+/// cross-process SQLite write burst can outrun the 5s busy_timeout) with a
+/// per-retry `backoff`, then give up through [`fail_unreadable_job`], whose
+/// interrupt-and-report tail is the same for both bursts. The two hand-copied
+/// bursts this replaces had already drifted (250 ms backoff plus a stderr
+/// line per retry versus 500 ms silent), so the drift is carried explicitly
+/// in the parameters instead of being re-copied.
+fn poll_tolerant(
+    service: &KnowledgeService,
+    job_id: &str,
+    operation: &str,
+    backoff: Duration,
+    announce: bool,
+) -> Result<IndexState, CliError> {
+    const READ_ERROR_TOLERANCE: u32 = 10;
+    let mut attempt = 0;
+    loop {
+        match named_job_state(service, job_id, "status") {
+            Ok(state) => return Ok(state),
+            Err(error) if attempt < READ_ERROR_TOLERANCE => {
+                attempt += 1;
+                if announce {
+                    eprintln!(
+                        "knowledge {operation}: status read failed ({error}); retry {attempt}/{READ_ERROR_TOLERANCE}"
+                    );
+                }
+                std::thread::sleep(backoff);
+            }
+            Err(error) => {
+                // Round-49 review: an exhausted burst must not propagate the
+                // raw read error with no remedy; both bursts share the
+                // interrupt-and-report tail.
+                return Err(fail_unreadable_job(
+                    service,
+                    job_id,
+                    operation,
+                    &error,
+                    READ_ERROR_TOLERANCE,
+                ));
+            }
+        }
+    }
+}
+
 /// Waits until the named job leaves the running phase, polling the per-job
 /// state surface ([`KnowledgeService::index_job_state`]) — the same read
 /// `index status <job-id>` uses. Returns the terminal state, or fails with a
@@ -1935,47 +1984,13 @@ fn wait_for_terminal_job(
     // Round-48 review: the FIRST poll sits inside the same read-error
     // tolerance as the loop below. It used to propagate immediately, so a
     // transient store-busy at the one poll this command makes before its
-    // own import thread starts (the comment at the tolerance below grants
-    // that a sustained cross-process SQLite write burst can outrun the 5s
-    // busy_timeout) killed the command — reaping the very thread that was
-    // about to run the import and stranding the job flagged `running`, the
-    // exact shape the round-41 tolerance exists to prevent.
-    let mut last = {
-        const READ_ERROR_TOLERANCE: u32 = 10;
-        const READ_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
-        let mut attempt = 0;
-        loop {
-            match named_job_state(service, job_id, "status") {
-                Ok(state) => break state,
-                Err(error) if attempt < READ_ERROR_TOLERANCE => {
-                    attempt += 1;
-                    eprintln!(
-                        "knowledge {operation}: status read failed ({error}); retry {attempt}/{READ_ERROR_TOLERANCE}"
-                    );
-                    std::thread::sleep(READ_ERROR_BACKOFF);
-                }
-                Err(error) => {
-                    // Round-49 review: the exhausted FIRST burst used to
-                    // propagate the raw read error with no remedy — exiting 1
-                    // while this same process's import thread dies at exit,
-                    // stranding an ownerless `running` job, the exact shape
-                    // this function exists to prevent. The loop's burst below
-                    // already attempted the interrupt and reported whether it
-                    // landed; both arms now share that tail.
-                    return Err(fail_unreadable_job(
-                        service,
-                        job_id,
-                        operation,
-                        &error,
-                        READ_ERROR_TOLERANCE,
-                    ));
-                }
-            }
-        }
-    };
-    // Consecutive failed status polls; reset on every good poll (round-41
-    // review, see the poll tail below).
-    let mut read_errors: u32 = 0;
+    // own import thread starts (the comment at the tolerance in
+    // [`poll_tolerant`] grants that a sustained cross-process SQLite write
+    // burst can outrun the 5s busy_timeout) killed the command — reaping
+    // the very thread that was about to run the import and stranding the
+    // job flagged `running`, the exact shape the round-41 tolerance exists
+    // to prevent.
+    let mut last = poll_tolerant(service, job_id, operation, Duration::from_millis(250), true)?;
     // Observable-progress signature: items completed, items total, the file
     // currently being parsed and its chunk counter. Any of them moving
     // resets the liveness clock.
@@ -2071,28 +2086,16 @@ fn wait_for_terminal_job(
         // cross-process SQLite write burst can outrun the 5s busy_timeout);
         // if the failures persist, interrupt the job — the stall arm's
         // route, landing it `interrupted` + resumable on disk — and only
-        // then fail.
-        const READ_ERROR_TOLERANCE: u32 = 10;
-        match named_job_state(service, job_id, "status") {
-            Ok(state) => {
-                read_errors = 0;
-                last = state;
-            }
-            Err(error) => {
-                read_errors += 1;
-                if read_errors < READ_ERROR_TOLERANCE {
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-                return Err(fail_unreadable_job(
-                    service,
-                    job_id,
-                    operation,
-                    &error,
-                    READ_ERROR_TOLERANCE,
-                ));
-            }
-        }
+        // then fail. Every good poll returns out of [`poll_tolerant`], so
+        // the next burst starts from zero: the reset-on-success semantics
+        // the hand-rolled counter implemented live in that fresh call.
+        last = poll_tolerant(
+            service,
+            job_id,
+            operation,
+            Duration::from_millis(500),
+            false,
+        )?;
     }
 }
 
@@ -2205,12 +2208,6 @@ fn index_payload(state: &IndexState) -> serde_json::Value {
     let mut value = serde_json::to_value(state).unwrap_or_default();
     value["phase"] = serde_json::json!(display_phase(state));
     value
-}
-
-fn index_out(header: &str, state: IndexState, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let human = format!("{header}\n{}", render_index_state(&state));
-    let value = index_payload(&state);
-    Ok(success(render(output, human, &value)))
 }
 
 /// The app's job state carries no phase string; derive the CLI's display

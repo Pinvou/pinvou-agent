@@ -493,13 +493,9 @@ fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError
     // "the pool is empty, seed it" cannot tell that apart from a genuinely
     // empty pool, and acts on a deck it was never shown.
     let value = serde_json::to_value(&summaries)
-        .map(|personas| json_entries(personas, source))
+        .map(|personas| serde_json::json!({ "source": source.as_str(), "personas": personas }))
         .map_err(|error| CliError::failed(format!("personas list: {error}")))?;
     Ok(success(render(output, human, &value)))
-}
-
-fn json_entries(personas: serde_json::Value, source: SourceFilter) -> serde_json::Value {
-    serde_json::json!({ "source": source.as_str(), "personas": personas })
 }
 
 /// Mirror of `read_persona_body`: the full card body for the detail view.
@@ -635,7 +631,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
 
 /// Delete-time sweep of the CLI's own equip persistence: scan
 /// `$PINVOU3_HOME/sessions/<id>/persona_equipped.json` (only ids that pass
-/// `valid_session_id`), and where the sidecar's `persona_id` matches the
+/// `crate::support::valid_session_id`), and where the sidecar's `persona_id` matches the
 /// deleted card, remove the file. Sidecars for other personas are left
 /// untouched. Reads are bounded and tolerant — a missing, unreadable, or
 /// corrupt sidecar is skipped, the same tolerance `active` applies — but the
@@ -695,7 +691,7 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
         let Some(session_id) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !valid_session_id(&session_id) {
+        if !crate::support::valid_session_id(&session_id) {
             continue;
         }
         let path = entry.path().join("persona_equipped.json");
@@ -801,17 +797,13 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
     Ok((cleared, sweep_errors))
 }
 
-/// Session ids join onto paths (the equip sidecar below), so apply the same
-/// `[A-Za-z0-9_-]` restriction the sessions family enforces before any path
-/// use; anything else is a usage error, never a traversal.
-fn valid_session_id(id: &str) -> bool {
-    crate::support::valid_session_id(id)
-}
-
 /// Per-session equip state file; see the module-level equip-state note for
 /// why the CLI needs a file where the GUI keeps the state in memory only.
 fn equip_state_path(session_id: &str) -> Result<PathBuf, CliError> {
-    if !valid_session_id(session_id) {
+    // Session ids join onto paths (the equip sidecar below), so apply the same
+    // `[A-Za-z0-9_-]` restriction the sessions family enforces before any path
+    // use; anything else is a usage error, never a traversal.
+    if !crate::support::valid_session_id(session_id) {
         return Err(CliError::usage(format!(
             "personas session id must use only letters, digits, '-' or '_': {session_id}"
         )));
@@ -1291,13 +1283,7 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     // exit-2 contract above depend on the store happening to boot cleanly;
     // `unequip` and `active` already validate before booting, and this lane
     // now matches them.
-    equip_state_path(session_id)?;
-    let store = open_store()?;
-    store.load(session_id).map_err(|error| {
-        CliError::failed(format!(
-            "personas equip: session {session_id} does not exist ({error})"
-        ))
-    })?;
+    let (store, _) = open_equipped_session("equip", session_id)?;
     let card = get(persona_id)
         .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
     require_equippable_body(&card)?;
@@ -1345,16 +1331,7 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
 /// failure must not be reported as success — the next `active` would still
 /// resolve the persona).
 fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let path = equip_state_path(session_id)?;
-    let store = open_store()?;
-    // Same session-existence gate as `equip`: a well-formed but unknown id
-    // must fail instead of reporting a successful unequip that cleared
-    // nothing.
-    store.load(session_id).map_err(|error| {
-        CliError::failed(format!(
-            "personas unequip: session {session_id} does not exist ({error})"
-        ))
-    })?;
+    let (store, path) = open_equipped_session("unequip", session_id)?;
     store.set_persona(session_id, None, None);
     // Round-39 review (M4): the remove is a sidecar mutator and runs under
     // the equip lock like the consume and the delete sweep. Lock-free, a
@@ -1397,17 +1374,7 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
 /// it without consulting the card pool, so the state is both visible and
 /// clearable from the CLI alone.
 fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // Same gates as equip/unequip: reject ids that cannot name a session
-    // directory before any path use, and fail an unknown but well-formed id
-    // instead of answering "none" for a typo (the commit that added the
-    // unequip gate claimed equip/active parity — this restores it).
-    equip_state_path(session_id)?;
-    let store = open_store()?;
-    store.load(session_id).map_err(|error| {
-        CliError::failed(format!(
-            "personas active: session {session_id} does not exist ({error})"
-        ))
-    })?;
+    let (store, _) = open_equipped_session("active", session_id)?;
     let equipped = equipped_persona_id(session_id).or_else(|| store.active_persona_id(session_id));
     let summary = equipped
         .as_deref()
@@ -1470,6 +1437,33 @@ fn open_store() -> Result<SessionStore, CliError> {
     crate::support::sandbox_home()?;
     SessionStore::boot()
         .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
+}
+
+/// The shared 3-step session gate behind `equip`/`unequip`/`active` (the
+/// three sites were byte-identical apart from the verb): reject ids that
+/// cannot name a session directory before any path use, boot the store, and
+/// fail an unknown but well-formed id (`personas {verb}: session {id} does
+/// not exist`) instead of proceeding — equip must not materialize a stray
+/// `sessions/<bogus-id>/` directory, unequip must not report a successful
+/// unequip that cleared nothing, and active must not answer "none" for a
+/// typo (the commit that added the unequip gate claimed equip/active parity
+/// — this restores it). Usage before Failed: the id check runs before
+/// `open_store`, whose `sandbox_home()`/`SessionStore::boot()` are
+/// Failed-class, so the exit-2 contract never depended on the store booting
+/// cleanly. Returns the sidecar path for the lane that removes it
+/// (`unequip`); the other two discard it.
+fn open_equipped_session(
+    verb: &str,
+    session_id: &str,
+) -> Result<(SessionStore, PathBuf), CliError> {
+    let path = equip_state_path(session_id)?;
+    let store = open_store()?;
+    store.load(session_id).map_err(|error| {
+        CliError::failed(format!(
+            "personas {verb}: session {session_id} does not exist ({error})"
+        ))
+    })?;
+    Ok((store, path))
 }
 
 /// The capped stdin slurp shared by this crate's two `--stdin` body lanes
@@ -1652,19 +1646,29 @@ mod tests {
         assert!(error.to_string().contains("embedded"), "{error}");
     }
 
-    fn summary_fixture(id: &str, name: &str, dept: &str, description: &str) -> PersonaSummary {
+    /// Test-local `PersonaCard` builder carrying the defaults every fixture
+    /// shares (dept "specialized", the card-default emoji/color, source
+    /// "user", `conversational_only` false, empty description); sites
+    /// override the fields they actually vary.
+    fn card(id: &str, name: &str, body: &str) -> PersonaCard {
         PersonaCard {
             id: id.to_owned(),
-            dept: dept.to_owned(),
+            dept: "specialized".to_owned(),
             name: name.to_owned(),
-            description: description.to_owned(),
+            description: String::new(),
             emoji: "🃏".to_owned(),
             color: "#7C3AED".to_owned(),
-            body: "body".to_owned(),
+            body: body.to_owned(),
             source: "user".to_owned(),
             conversational_only: false,
         }
-        .summary()
+    }
+
+    fn summary_fixture(id: &str, name: &str, dept: &str, description: &str) -> PersonaSummary {
+        let mut fixture = card(id, name, "body");
+        fixture.dept = dept.to_owned();
+        fixture.description = description.to_owned();
+        fixture.summary()
     }
 
     /// The human `personas list` row is a five-column tab-separated record and
@@ -1741,17 +1745,7 @@ mod tests {
     /// "4 MiB" means.
     #[test]
     fn a_body_at_exactly_the_documented_cap_is_still_equippable() {
-        let mut card = PersonaCard {
-            id: "user-cap".to_owned(),
-            dept: "specialized".to_owned(),
-            name: "Cap".to_owned(),
-            description: String::new(),
-            emoji: "🃏".to_owned(),
-            color: "#7C3AED".to_owned(),
-            body: "x".repeat(MAX_EQUIP_BODY_BYTES),
-            source: "user".to_owned(),
-            conversational_only: false,
-        };
+        let mut card = card("user-cap", "Cap", &"x".repeat(MAX_EQUIP_BODY_BYTES));
         // The wrapper really does push the injection past the raw cap — that
         // is the whole bug, so pin it rather than assuming it.
         assert!(
@@ -1774,17 +1768,8 @@ mod tests {
     /// without a compile error.
     #[test]
     fn summary_value_returns_the_real_object_rather_than_a_placeholder() {
-        let card = PersonaCard {
-            id: "user-test".to_owned(),
-            dept: "specialized".to_owned(),
-            name: "Test".to_owned(),
-            description: "d".to_owned(),
-            emoji: "🃏".to_owned(),
-            color: "#7C3AED".to_owned(),
-            body: "body".to_owned(),
-            source: "user".to_owned(),
-            conversational_only: false,
-        };
+        let mut card = card("user-test", "Test", "body");
+        card.description = "d".to_owned();
         let value = summary_value(&card.summary(), "create").expect("a summary must render");
         assert_eq!(value["id"], "user-test");
         assert!(
@@ -1827,17 +1812,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _home = TempHome::new("personas-unit-seam-verbatim");
-        let card = PersonaCard {
-            id: "user-seam".to_owned(),
-            dept: "specialized".to_owned(),
-            name: "Seam".to_owned(),
-            description: String::new(),
-            emoji: "🃏".to_owned(),
-            color: "#7C3AED".to_owned(),
-            body: "# Persona\n\nDoes things.".to_owned(),
-            source: "user".to_owned(),
-            conversational_only: false,
-        };
+        let card = card("user-seam", "Seam", "# Persona\n\nDoes things.");
         let injection = equip_body_injection(&card);
         let dir = std::env::temp_dir().join(format!(
             "pinvou-cli-personas-seam-{}-{}",
@@ -1958,17 +1933,7 @@ mod tests {
 
         // A card deleted through the GUI's own cascade leaves the sidecar
         // behind, and the turn must refuse to inject it.
-        let card = PersonaCard {
-            id: String::new(),
-            dept: "specialized".to_owned(),
-            name: "Turn Orphan".to_owned(),
-            description: String::new(),
-            emoji: "🃏".to_owned(),
-            color: "#7C3AED".to_owned(),
-            body: "# Ghost\n\nnever inject this".to_owned(),
-            source: "user".to_owned(),
-            conversational_only: false,
-        };
+        let card = card("", "Turn Orphan", "# Ghost\n\nnever inject this");
         let summary = create_user_persona(card).expect("fixture user card");
         let persona_id = summary.id.clone();
         persist_equipped_persona(session_id, &persona_id, "ghost body").unwrap();

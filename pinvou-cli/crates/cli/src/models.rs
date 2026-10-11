@@ -589,7 +589,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     match (family, subcommand.as_str()) {
         ("models", "list") => {
             let options = parse_options("models", "list", rest, &[], &[])?;
-            ensure_no_positionals(&options, "models list")?;
+            ensure_no_positionals(&options)?;
             Ok(ModelsCommand::List)
         }
         ("models", "add") => parse_add(rest),
@@ -628,7 +628,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
                 &["url", "api-key-env", "model"],
                 &[],
             )?;
-            ensure_no_positionals(&options, "models probe-local")?;
+            ensure_no_positionals(&options)?;
             let url = options.value("url").map(str::to_owned);
             let model_id = options.value("model").map(str::to_owned);
             if model_id.is_some() && options.value("api-key-env").is_some() {
@@ -681,11 +681,14 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     }
 }
 
-fn ensure_no_positionals(options: &Options, what: &str) -> Result<(), CliError> {
+fn ensure_no_positionals(options: &Options) -> Result<(), CliError> {
     if options.positionals.is_empty() {
         Ok(())
     } else {
-        Err(CliError::usage(format!("pinvou {what} takes no arguments")))
+        Err(CliError::usage(format!(
+            "{} takes no arguments",
+            options.label
+        )))
     }
 }
 
@@ -774,7 +777,7 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         &model_value_flags(),
         &["api-key-stdin", "set-active"],
     )?;
-    ensure_no_positionals(&options, "models add")?;
+    ensure_no_positionals(&options)?;
     if options.value("api-key-env").is_some() && options.has("api-key-stdin") {
         return Err(CliError::usage(
             "use only one of --api-key-env or --api-key-stdin",
@@ -957,7 +960,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
     match search_subcommand.as_str() {
         "list" => {
             let options = parse_options("settings", "search list", rest, &[], &[])?;
-            ensure_no_positionals(&options, "settings search list")?;
+            ensure_no_positionals(&options)?;
             Ok(ModelsCommand::SearchList)
         }
         "set" => {
@@ -1121,7 +1124,7 @@ fn safe_prefs<S: CredentialStore>(store: &S) -> UserPrefs {
 /// all-models keychain refresh `safe_prefs` performs (one `get` per stored
 /// credential) buys nothing here; the one key they need is resolved
 /// explicitly afterwards, exactly like the GUI twin's plain
-/// `UserPrefs::load()` in `resolve_saved_model_key` (round-39 review).
+/// `UserPrefs::load()` in `resolve_saved_model_key_honest` (round-39 review).
 fn plain_prefs() -> UserPrefs {
     let mut prefs = UserPrefs::load();
     prefs.normalize_saved_model_metadata();
@@ -1795,16 +1798,7 @@ fn find_model(prefs: &UserPrefs, id: &str) -> Result<SavedModel, CliError> {
 /// `resolve_saved_model_key`: read the reference out of the saved model and
 /// fetch it from the credential store. A model without `credential_ref` has
 /// no stored secret.
-fn resolve_saved_model_key<S: CredentialStore>(
-    store: &S,
-    model: &SavedModel,
-) -> Result<Option<String>, String> {
-    let Some(reference) = &model.credential_ref else {
-        return Ok(None);
-    };
-    store.get(reference).map_err(|error| error.user_message())
-}
-
+///
 /// Round-48 review: under the file-fallback valves, a `get` miss cannot
 /// distinguish "never stored" from "stored in the OS keyring this process
 /// cannot reach" — the `CredentialStore` trait doc prescribes that
@@ -1817,16 +1811,16 @@ fn resolve_saved_model_key_honest<S: CredentialStore>(
     store: &S,
     model: &SavedModel,
 ) -> Result<Option<String>, String> {
-    let resolved = resolve_saved_model_key(store, model)?;
-    match &model.credential_ref {
-        Some(reference) => honest_reference_get(store, reference, resolved, || {
-            format!(
-                "the OS keyring holding {} is unreachable from this process; the stored key cannot be revealed or verified here",
-                reference.account
-            )
-        }),
-        None => Ok(resolved),
-    }
+    let Some(reference) = &model.credential_ref else {
+        return Ok(None);
+    };
+    let resolved = store.get(reference).map_err(|error| error.user_message())?;
+    honest_reference_get(store, reference, resolved, || {
+        format!(
+            "the OS keyring holding {} is unreachable from this process; the stored key cannot be revealed or verified here",
+            reference.account
+        )
+    })
 }
 
 /// The honest-miss rule [`resolve_saved_model_key_honest`] owns and the
@@ -2895,27 +2889,16 @@ fn probe_local<S: CredentialStore>(
                  --model <id> or --api-key-env <var> so the probe can present a credential"
             }
         };
-        let text = match authenticated_fact {
-            Some(authenticated_fact) => render(
-                output,
-                format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
-                &serde_json::json!({
-                    "url": target,
-                    "kind": kind,
-                    "authenticated": authenticated_fact,
-                    "detail": detail,
-                }),
-            ),
-            None => render(
-                output,
-                format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
-                &serde_json::json!({
-                    "url": target,
-                    "kind": kind,
-                    "detail": detail,
-                }),
-            ),
-        };
+        let mut json = serde_json::json!({ "url": target, "kind": kind });
+        if let Some(authenticated_fact) = authenticated_fact {
+            json["authenticated"] = serde_json::Value::Bool(authenticated_fact);
+        }
+        json["detail"] = serde_json::Value::from(detail);
+        let text = render(
+            output,
+            format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
+            &json,
+        );
         return Ok(CliOutcome {
             exit_code: ExitCode::Failed,
             stdout: text,
@@ -4846,9 +4829,13 @@ mod tests {
 
     /// A `CredentialStore` that answers `get` from an in-memory map, accepts
     /// every write, and records each operation in a log a test can assert on.
+    /// The `fail_sets` / `keyring_unreachable` constructors below shape it
+    /// into the two failure doubles the credential-lane tests need.
     struct RecordingStore {
         state: std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
         log: std::sync::Mutex<Vec<String>>,
+        fail_sets: bool,
+        keyring_unreachable: bool,
     }
 
     impl RecordingStore {
@@ -4856,6 +4843,34 @@ mod tests {
             Self {
                 state: std::sync::Mutex::new(std::collections::HashMap::new()),
                 log: std::sync::Mutex::new(Vec::new()),
+                fail_sets: false,
+                keyring_unreachable: false,
+            }
+        }
+
+        /// A `RecordingStore` whose `set` fails from the first `set` on. Used to
+        /// pin the rollback arms for failures that happen AFTER the old secret
+        /// was destroyed by an overwrite — the only reachable "saved failed"
+        /// ordering in `add`/`edit`/`search_set`, since their in-closure
+        /// validations all run before any store write.
+        fn failing_sets() -> Self {
+            Self {
+                fail_sets: true,
+                ..RecordingStore::new()
+            }
+        }
+
+        /// A store in the state an unreachable OS keyring produces: reads MISS
+        /// (the file fallback answers "absent" — the secret itself sits in the
+        /// keyring this process cannot reach) while
+        /// [`CredentialStore::os_keyring_unreachable`] reports that ambiguity.
+        /// `SystemCredentialStore` reaches exactly this state after its keyring
+        /// probe fails; the double makes it hermetic for the honest-resolver
+        /// pins below.
+        fn unreachable_keyring() -> Self {
+            Self {
+                keyring_unreachable: true,
+                ..RecordingStore::new()
             }
         }
 
@@ -4884,6 +4899,9 @@ mod tests {
         }
 
         fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            if self.fail_sets {
+                return Err(CredentialError::new("keyring unavailable".to_owned()));
+            }
             self.log
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
@@ -4910,6 +4928,10 @@ mod tests {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             state.remove(&(reference.service.clone(), reference.account.clone()));
             Ok(())
+        }
+
+        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
+            self.keyring_unreachable
         }
     }
 
@@ -4998,93 +5020,25 @@ mod tests {
         }
     }
 
-    /// A `RecordingStore` whose `set` fails from the first `set` on. Used to
-    /// pin the rollback arms for failures that happen AFTER the old secret
-    /// was destroyed by an overwrite — the only reachable "saved failed"
-    /// ordering in `add`/`edit`/`search_set`, since their in-closure
-    /// validations all run before any store write.
-    struct FailingSetStore {
-        inner: RecordingStore,
-    }
-
-    impl FailingSetStore {
-        fn new() -> Self {
-            Self {
-                inner: RecordingStore::new(),
-            }
-        }
-    }
-
-    impl CredentialStore for FailingSetStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            self.inner.get(reference)
-        }
-
-        fn set(
-            &self,
-            _reference: &CredentialReference,
-            _value: &str,
-        ) -> Result<(), CredentialError> {
-            Err(CredentialError::new("keyring unavailable".to_owned()))
-        }
-
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-    }
-
-    /// A store in the state an unreachable OS keyring produces: reads MISS
-    /// (the file fallback answers "absent" — the secret itself sits in the
-    /// keyring this process cannot reach) while
-    /// [`CredentialStore::os_keyring_unreachable`] reports that ambiguity.
-    /// `SystemCredentialStore` reaches exactly this state after its keyring
-    /// probe fails; the double makes it hermetic for the honest-resolver
-    /// pins below.
-    struct UnreachableKeyringStore {
-        inner: RecordingStore,
-    }
-
-    impl UnreachableKeyringStore {
-        fn new() -> Self {
-            Self {
-                inner: RecordingStore::new(),
-            }
-        }
-    }
-
-    impl CredentialStore for UnreachableKeyringStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            self.inner.get(reference)
-        }
-
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            self.inner.set(reference, value)
-        }
-
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-
-        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
-            true
-        }
-    }
-    /// `add` stores the secret trimmed, `show --reveal-key` reads it back
-    /// through the same seam, `edit --clear-api-key` deletes it after the
-    /// commit, and the persisted model is marked missing, not configured.
-    #[test]
-    fn credential_lane_stores_reveals_and_clears_through_the_injected_store() {
-        let _home = TempHome::new("lane");
-        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-lane\n");
-        let store = RecordingStore::new();
-
+    /// Adds one model through the real `add` lane with these tests' common
+    /// defaults (`ModelPreset::Deepseek`, no sizing fields or metadata,
+    /// human output) and returns the new id printed on stdout. `model` stays
+    /// a parameter because two fixtures pin the wire model their site
+    /// actually passes.
+    fn add_model(
+        store: &RecordingStore,
+        name: &str,
+        model: &str,
+        base_url: &str,
+        key: Option<&str>,
+    ) -> String {
         let outcome = add(
-            &store,
+            store,
             ModelPreset::Deepseek,
-            "Lane",
-            "deepseek-v4-pro",
-            "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
+            name,
+            model,
+            base_url,
+            &key.map(str::to_owned),
             false,
             None,
             None,
@@ -5094,12 +5048,30 @@ mod tests {
             OutputMode::Human,
         )
         .expect("add succeeds");
-        let id = outcome
+        outcome
             .stdout
             .strip_prefix("id: ")
             .expect("prints the new id")
             .trim()
-            .to_owned();
+            .to_owned()
+    }
+
+    /// `add` stores the secret trimmed, `show --reveal-key` reads it back
+    /// through the same seam, `edit --clear-api-key` deletes it after the
+    /// commit, and the persisted model is marked missing, not configured.
+    #[test]
+    fn credential_lane_stores_reveals_and_clears_through_the_injected_store() {
+        let _home = TempHome::new("lane");
+        let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-lane\n");
+        let store = RecordingStore::new();
+
+        let id = add_model(
+            &store,
+            "Lane",
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
         // Stored trimmed (the trailing newline must not survive
         // `secret_for_storage`), exactly one entry.
         assert_eq!(store.entries(), vec!["sk-lane".to_owned()]);
@@ -5178,28 +5150,13 @@ mod tests {
         // A model added without a key: nothing is ever written, so
         // `credential_ref` stays None (`apply_new_model_credential` runs
         // `mark_missing` without touching the store).
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "NoKey",
             "deepseek-v4-pro",
             "https://api.deepseek.com",
-            &None,
-            false,
             None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+        );
         assert!(
             UserPrefs::load()
                 .model_by_id(&id)
@@ -5318,33 +5275,18 @@ mod tests {
         let _home = TempHome::new("edit-store-failure");
         let _old = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-old");
         let store = RecordingStore::new();
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "Fragile",
             "M",
             "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
         let _new = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-new");
 
         // The rotation's store write fails: the failure surfaces as a save
         // error, the prefs record is untouched, and the old secret survives.
-        let failing = FailingSetStore::new();
+        let failing = RecordingStore::failing_sets();
         let error = edit(
             &failing,
             &id,
@@ -5393,28 +5335,13 @@ mod tests {
         let _old = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-old");
         let store = RecordingStore::new();
 
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "Rot",
             "M",
             "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
         let _new = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-new");
         // The commit must fail while the load still succeeds: read-only on
         // the product data dir blocks the atomic write's staging (`create_new`
@@ -5456,28 +5383,13 @@ mod tests {
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-remove");
         let store = RecordingStore::new();
 
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "Bye",
             "M",
             "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
 
         let outcome = remove(&store, &id, true, OutputMode::Human).expect("remove succeeds");
         assert_eq!(outcome.exit_code, ExitCode::Success);
@@ -5522,45 +5434,21 @@ mod tests {
 
         // Two models: `remove`'s min-1 rule would reject a lone one before
         // the transaction could ever reach its save.
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "Keep",
             "M",
             "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
         let _second = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-bye");
-        add(
+        add_model(
             &store,
-            ModelPreset::Deepseek,
             "Bye",
             "M",
             "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("second add succeeds");
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
 
         // The commit must fail while the loads still succeed: read-only on
         // the product data dir blocks the atomic write's staging (`create_new`
@@ -5599,28 +5487,13 @@ mod tests {
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-clear");
         let store = RecordingStore::new();
 
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "Clear",
             "M",
             "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
 
         // Read-only on the product data dir blocks the commit's staging tmp
         // file while the transaction's load still succeeds (the same pattern
@@ -5773,32 +5646,17 @@ mod tests {
     fn probe_lanes_report_credential_unavailable_when_the_keyring_is_unreachable() {
         let _home = TempHome::new("probe-unreachable");
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-unreachable");
-        let store = UnreachableKeyringStore::new();
+        let store = RecordingStore::unreachable_keyring();
 
         // A loopback base_url so the probe-local lane's loopback gate passes
         // and the failure is attributable to the resolver alone.
-        let outcome = add(
+        let id = add_model(
             &store,
-            ModelPreset::Deepseek,
             "Unreachable",
             "M",
             "http://127.0.0.1:8000/v1",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
-            OutputMode::Human,
-        )
-        .expect("add succeeds");
-        let id = outcome
-            .stdout
-            .strip_prefix("id: ")
-            .expect("prints the new id")
-            .trim()
-            .to_owned();
+            Some("MODELS_UNIT_TEST_KEY"),
+        );
         assert!(
             UserPrefs::load()
                 .model_by_id(&id)
@@ -5811,7 +5669,6 @@ mod tests {
         // keyring the file fallback answers the miss, which is exactly the
         // "absent vs unreadable" ambiguity the honest resolver exists for.
         store
-            .inner
             .state
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -5881,7 +5738,6 @@ mod tests {
             outcome.stdout
         );
         store
-            .inner
             .state
             .lock()
             .unwrap_or_else(|p| p.into_inner())

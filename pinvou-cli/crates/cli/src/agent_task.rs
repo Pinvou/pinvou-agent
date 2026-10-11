@@ -5,7 +5,7 @@
 //! (`--session/--mode/--model/--attach`) layered on top of the engine's
 //! session persistence are new in this PR.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::{CliError, CliOutcome, OutputMode};
 
@@ -81,87 +81,72 @@ const RUN_OPTIONS: &[&str] = &[
 pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
     match values.get(1).map(String::as_str) {
         Some("run") => {
-            let mut prompt_file = None;
-            let mut workspace = None;
-            let mut timeout_secs: Option<u64> = None;
-            let mut session = None;
-            let mut mode = None;
-            let mut model = None;
-            let mut attachments = Vec::new();
-            let mut index = 2;
-            while index < values.len() {
-                let token = values[index].as_str();
-                if !RUN_OPTIONS.contains(&token) {
-                    return Err(CliError::usage(format!(
-                        "unsupported agent run option: {token}"
-                    )));
-                }
-                let duplicate = match token {
-                    "--prompt-file" => prompt_file.is_some(),
-                    "--workspace" => workspace.is_some(),
-                    "--timeout-secs" => timeout_secs.is_some(),
-                    "--session" => session.is_some(),
-                    "--mode" => mode.is_some(),
-                    "--model" => model.is_some(),
-                    _ => false,
-                };
-                if duplicate {
-                    return Err(CliError::usage(format!(
-                        "duplicate agent run option {token}"
-                    )));
-                }
-                let value = values.get(index + 1).ok_or_else(|| {
-                    CliError::usage(format!("agent run option {token} requires a value"))
-                })?;
-                if value.is_empty() || value.starts_with("--") {
-                    return Err(CliError::usage(format!(
-                        "agent run option {token} requires a value"
-                    )));
-                }
+            // Per-value semantics run at their token through the shared
+            // parser's validator hook, so the left-to-right error precedence
+            // of the former hand-rolled loop is preserved: an invalid
+            // `--mode` still wins over a later token's parse error.
+            let mut validate = |token: &str, value: &str| -> Result<(), CliError> {
                 match token {
-                    "--prompt-file" => prompt_file = Some(PathBuf::from(value)),
-                    "--workspace" => workspace = Some(PathBuf::from(value)),
                     "--timeout-secs" => {
-                        timeout_secs = Some(value.parse::<u64>().ok().filter(|seconds| {
-                            *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX
-                        }).ok_or_else(|| {
-                            CliError::usage(format!(
+                        if value
+                            .parse::<u64>()
+                            .ok()
+                            .filter(|seconds| *seconds > 0 && *seconds <= AGENT_TIMEOUT_SECS_MAX)
+                            .is_none()
+                        {
+                            return Err(CliError::usage(format!(
                                 "agent run requires --timeout-secs to be a positive integer \
                                  no greater than {AGENT_TIMEOUT_SECS_MAX}"
-                            ))
-                        })?);
+                            )));
+                        }
+                        Ok(())
                     }
                     "--session" => {
                         // Same charset gate as the sessions family: an id the
                         // store would reject is a usage error, not a
                         // not-found host failure after the fact.
-                        crate::support::require_valid_session_id(value, "agent run --session")?;
-                        session = Some(value.clone());
+                        crate::support::require_valid_session_id(value, "agent run --session")
                     }
-                    "--mode" => match value.as_str() {
-                        "plan" | "agent" => mode = Some(value.clone()),
-                        other => {
-                            return Err(CliError::usage(format!(
-                                "agent run --mode must be plan or agent (got {other})"
-                            )));
-                        }
+                    "--mode" => match value {
+                        "plan" | "agent" => Ok(()),
+                        other => Err(CliError::usage(format!(
+                            "agent run --mode must be plan or agent (got {other})"
+                        ))),
                     },
-                    "--model" => model = Some(value.clone()),
-                    _ => attachments.push(PathBuf::from(value)),
+                    _ => Ok(()),
                 }
-                index += 2;
-            }
-            let prompt_file = prompt_file.ok_or_else(|| {
-                CliError::usage(format!("agent run requires --prompt-file\n{RUN_USAGE}"))
-            })?;
+            };
+            let (options, _flags) = crate::support::parse_family_flags_extended(
+                &values[2..],
+                RUN_OPTIONS,
+                &[],
+                // `--attach` is intentionally repeatable; every other flag
+                // rejects duplicates.
+                &["--attach"],
+                "agent run",
+                &mut validate,
+            )?;
             Ok(AgentCommand::Run {
-                prompt_file,
-                workspace,
-                timeout_secs: timeout_secs.unwrap_or(600),
-                session,
-                mode,
-                model,
-                attachments,
+                prompt_file: crate::support::family_option(&options, "--prompt-file")
+                    .map(PathBuf::from)
+                    .ok_or_else(|| {
+                        CliError::usage(format!("agent run requires --prompt-file\n{RUN_USAGE}"))
+                    })?,
+                workspace: crate::support::family_option(&options, "--workspace")
+                    .map(PathBuf::from),
+                // The cap was validated at the flag's own token by the hook
+                // above, so this parse cannot fail; 600 is the historical
+                // default.
+                timeout_secs: crate::support::family_option(&options, "--timeout-secs")
+                    .map_or(600, |value| value.parse().unwrap_or_default()),
+                session: crate::support::family_option(&options, "--session").map(str::to_owned),
+                mode: crate::support::family_option(&options, "--mode").map(str::to_owned),
+                model: crate::support::family_option(&options, "--model").map(str::to_owned),
+                attachments: options
+                    .iter()
+                    .filter(|(name, _)| *name == "--attach")
+                    .map(|(_, value)| PathBuf::from(value))
+                    .collect(),
             })
         }
         _ => Err(CliError::usage(RUN_USAGE)),
@@ -169,55 +154,25 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
 }
 
 pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
-    match command {
-        AgentCommand::Run {
-            prompt_file,
-            workspace,
-            timeout_secs,
-            session,
-            mode,
-            model,
-            attachments,
-        } => run_agent(
-            &prompt_file,
-            workspace.as_deref(),
-            timeout_secs,
-            session.as_deref(),
-            mode.as_deref(),
-            model,
-            attachments,
-            output,
-        ),
-    }
+    run_agent(command, output)
 }
 
 #[cfg(not(feature = "product-backend"))]
-#[allow(clippy::too_many_arguments)]
-fn run_agent(
-    _prompt_file: &Path,
-    _workspace: Option<&Path>,
-    _timeout_secs: u64,
-    _session: Option<&str>,
-    _mode: Option<&str>,
-    _model: Option<String>,
-    _attachments: Vec<PathBuf>,
-    _output: OutputMode,
-) -> Result<CliOutcome, CliError> {
+fn run_agent(_command: AgentCommand, _output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(CliError::failed("product_backend_not_enabled"))
 }
 
 #[cfg(feature = "product-backend")]
-#[allow(clippy::too_many_arguments)]
-fn run_agent(
-    prompt_file: &Path,
-    workspace: Option<&Path>,
-    timeout_secs: u64,
-    session: Option<&str>,
-    mode: Option<&str>,
-    model: Option<String>,
-    attachments: Vec<PathBuf>,
-    output: OutputMode,
-) -> Result<CliOutcome, CliError> {
+fn run_agent(command: AgentCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let AgentCommand::Run {
+        prompt_file,
+        workspace,
+        timeout_secs,
+        session,
+        mode,
+        model,
+        attachments,
+    } = command;
     // Same absolute-path contract as every other family — and this one most
     // of all, since it spawns a real shell agent: a relative PINVOU3_HOME
     // would silently materialize the session store under the cwd.
@@ -244,7 +199,7 @@ fn run_agent(
     // path so a post-gate symlink swap cannot re-route the read (the
     // discipline artifacts/memory/voice already follow).
     let prompt_path = crate::support::gate_canonical_path(
-        prompt_file,
+        &prompt_file,
         "agent_prompt_file_unreadable",
         "",
         "agent run",
@@ -269,9 +224,10 @@ fn run_agent(
     // names what the post-run consume may clear, so an `equip` landing
     // mid-run is recognized as newer staging instead of being clobbered by
     // the consume — the body this run injected is spent, a body equipped
-    // during the run is not.
-    let staged_turn = session.and_then(|session_id| {
-        crate::personas::staged_persona_turn(session_id).map(|turn| (session_id, turn))
+    // during the run is not. (The id is cloned into the tuple so the staged
+    // pair stays valid after `session` moves into the request below.)
+    let staged_turn = session.as_deref().and_then(|session_id| {
+        crate::personas::staged_persona_turn(session_id).map(|turn| (session_id.to_owned(), turn))
     });
     // Round-37 review MAJOR: the staged one-shot body takes the turn; a
     // session that merely WEARS a card (body already consumed) gets the
@@ -289,14 +245,16 @@ fn run_agent(
         staged_turn
             .as_ref()
             .and_then(|(session_id, turn)| persona_turn_injection(session_id, turn)),
-        session.and_then(crate::personas::equipped_persona_anchor),
+        session
+            .as_deref()
+            .and_then(crate::personas::equipped_persona_anchor),
     );
     // Round-38 review: the fail-open deferral (staged body kept because the
     // persona pool was unreadable) used to be completely silent on the run
     // that skipped it.
     if injection.is_none()
         && !orphaned_staged
-        && let Some(session_id) = session
+        && let Some(session_id) = session.as_deref()
     {
         crate::personas::note_deferred_staged_injection(session_id);
     }
@@ -306,7 +264,7 @@ fn run_agent(
     // letting a typo'd path get silently created deeper in the stack.
     let workspace = match workspace {
         Some(path) => {
-            let resolved = std::fs::canonicalize(path).map_err(|error| {
+            let resolved = std::fs::canonicalize(&path).map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     CliError::failed(format!(
                         "agent run --workspace does not exist: {}",
@@ -458,7 +416,7 @@ fn run_agent(
         // the just-deleted window) are engine-authoritative, and a CLI-side
         // approximation that ever disagreed would REFUSE a legitimate
         // `--attach` target — a worse failure than one wasted boot.
-        session_id: session.map(str::to_owned),
+        session_id: session,
         mode,
         model_id: model,
         attachments,

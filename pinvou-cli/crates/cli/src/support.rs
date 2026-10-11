@@ -633,6 +633,35 @@ pub fn parse_family_flags<'a>(
     boolean_flags: &[&str],
     family: &str,
 ) -> Result<FamilyFlags<'a>, CliError> {
+    parse_family_flags_extended(
+        values,
+        value_flags,
+        boolean_flags,
+        &[],
+        family,
+        &mut |_, _| Ok(()),
+    )
+}
+
+/// The [`parse_family_flags`] extension the two families with per-value
+/// semantics need (`agent run`, `feedback`): `repeatable` names value flags
+/// that may be given more than once — each occurrence appends its pair in
+/// argv order (`--attach`), where every other flag still refuses a repeat —
+/// and `validate_value` runs for every value AT ITS TOKEN, between the
+/// flag-shaped-value rejection and the pair being stored, so a per-value
+/// refusal (an invalid `--mode`, a session id outside the shared alphabet)
+/// still precedes any later token's parse error. That is the strict
+/// left-to-right error precedence the hand-rolled loops this parser
+/// replaces gave; a post-parse validation pass would let a later token's
+/// unsupported/duplicate/missing-value error win instead.
+pub fn parse_family_flags_extended<'a>(
+    values: &'a [String],
+    value_flags: &[&str],
+    boolean_flags: &[&str],
+    repeatable: &[&str],
+    family: &str,
+    validate_value: &mut dyn FnMut(&str, &str) -> Result<(), CliError>,
+) -> Result<FamilyFlags<'a>, CliError> {
     let mut options = Vec::new();
     let mut flags = Vec::new();
     let mut index = 0;
@@ -653,7 +682,7 @@ pub fn parse_family_flags<'a>(
                 "unsupported {family} option: {token}"
             )));
         }
-        if options.iter().any(|(name, _)| *name == token) {
+        if !repeatable.contains(&token) && options.iter().any(|(name, _)| *name == token) {
             return Err(CliError::usage(format!(
                 "duplicate {family} option {token}"
             )));
@@ -666,6 +695,7 @@ pub fn parse_family_flags<'a>(
                 "{family} option {token} requires a value"
             )));
         }
+        validate_value(token, value)?;
         options.push((token, value.as_str()));
         index += 2;
     }

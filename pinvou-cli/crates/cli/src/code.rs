@@ -1413,12 +1413,28 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
              which are bound to the GUI session; use the desktop app to run turns and \
              `pinvou code sessions timeline` to read the persisted events",
         )),
-        CodeCommand::Permissions { session } => permissions(&session, output),
+        // Both refusals are unconditional and must fire before any store access, the
+        // same refuse-before-store rule as `code run` and `providers probe` in the
+        // dispatch: `open_store()` boots the session store, whose boot runs the
+        // destructive retention sweep, and a command that can never succeed must not
+        // be able to evict chat sessions. The refusal therefore does not depend on
+        // session existence (no require-existing store gate); the session-id
+        // shape is still enforced at parse time by `require_session_id`
+        // (usage error).
+        CodeCommand::Permissions { session } => Err(CliError::failed(format!(
+            "code_permissions_requires_product_host: pending permissions live in the running app's \
+             AcpPool memory for session {session}; no CLI process can observe them. Start the \
+             desktop app (or a product-host run) and answer the permission there"
+        ))),
         CodeCommand::Respond {
-            session,
+            session: _,
             request_id,
-            allow,
-        } => respond(&session, &request_id, allow, output),
+            allow: _,
+        } => Err(CliError::failed(format!(
+            "code_respond_requires_product_host: permission requests are answered inside the process \
+             that owns the ACP connection (the GUI host); the pending store is process-local, so \
+             request {request_id} cannot be answered from the CLI"
+        ))),
     }
 }
 
@@ -1447,6 +1463,10 @@ fn store_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliErro
     CliError::failed(format!("code {action}({id}): {error:#}"))
 }
 
+/// Restored by the round-52 rebase: `require_native_code_session` joined
+/// `resolve_session_workspace` as a second caller, so the shared two-liner
+/// is back (its not-found message is the sibling-lane contract the
+/// checkpoints gate's doc cites).
 fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), CliError> {
     store
         .load(id)
@@ -1656,14 +1676,32 @@ fn command_output_with_timeout(
     // forget), so a panic can no longer leave the group registered. The
     // reaped arm below releases the guard EARLY and explicitly.
     let group = crate::support::supervise::GroupGuard::arm(child.id());
-    let stdout = child.stdout.take();
+    let mut stdout = child.stdout.take();
     // The reader hands its buffer back through a channel so the wait stays
     // bounded: a vendor CLI's grandchild can inherit the pipe and outlive
     // the reaped child, and an unbounded `join()` there would hang this
     // probe well past its deadline.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(drain_stream(stdout));
+        // Drains the probe's stdout into a bounded tail: the buffer keeps
+        // the last 64 KiB so a chatty vendor CLI cannot grow it without
+        // limit. The bytes are decoded once at the end: converting per
+        // chunk mangles a multi-byte character split across a 2 KiB read
+        // boundary into U+FFFD.
+        let mut bytes: Vec<u8> = Vec::new();
+        if let Some(pipe) = stdout.as_mut() {
+            let mut chunk = [0u8; 2048];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        bytes.extend_from_slice(&chunk[..read]);
+                        evict_past_cap(&mut bytes, 65_536);
+                    }
+                }
+            }
+        }
+        let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
     });
     let deadline = Instant::now() + timeout;
     loop {
@@ -1705,10 +1743,10 @@ fn command_output_with_timeout(
 }
 
 /// UTF-8-safe byte-count eviction shared by the two transcript tails
-/// (`drain_stream` and the login drain): the cap can land inside a
-/// multi-byte character; advance to the next UTF-8 boundary (any
-/// non-continuation byte starts a character) so the buffer never starts
-/// mid-character.
+/// (the `--version` probe's reader thread and the login drain): the cap can
+/// land inside a multi-byte character; advance to the next UTF-8 boundary
+/// (any non-continuation byte starts a character) so the buffer never
+/// starts mid-character.
 fn evict_past_cap(bytes: &mut Vec<u8>, cap: usize) {
     if bytes.len() > cap {
         let mut cut = bytes.len() - cap;
@@ -1717,28 +1755,6 @@ fn evict_past_cap(bytes: &mut Vec<u8>, cap: usize) {
         }
         bytes.drain(..cut);
     }
-}
-
-/// Drains a byte stream into a string (bounded tail: the buffer keeps the
-/// last 64 KiB so a chatty vendor CLI cannot grow it without limit). The
-/// bytes are decoded once at the end: converting per chunk mangles a
-/// multi-byte character split across a 2 KiB read boundary into U+FFFD.
-fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
-    let mut bytes: Vec<u8> = Vec::new();
-    let Some(pipe) = pipe.as_mut() else {
-        return String::new();
-    };
-    let mut chunk = [0u8; 2048];
-    loop {
-        match pipe.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
-                bytes.extend_from_slice(&chunk[..read]);
-                evict_past_cap(&mut bytes, 65_536);
-            }
-        }
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Outcome of a `--version` probe: a parsed version, or the reason there is
@@ -2375,10 +2391,11 @@ enum LoginDrainEvent {
     Finished(LoginStream, String),
 }
 
-/// Incremental drain for the login pipes. It keeps everything `drain_stream`
-/// guarantees for the transcript — a bounded 64 KiB tail with UTF-8-safe
-/// eviction, decoded once at the end so no multi-byte character split across
-/// a read boundary becomes U+FFFD — and adds a scan of each newly completed
+/// Incremental drain for the login pipes. It keeps everything the
+/// `--version` probe's reader drain guarantees for the transcript — a
+/// bounded 64 KiB tail with UTF-8-safe eviction, decoded once at the end so
+/// no multi-byte character split across a read boundary becomes U+FFFD —
+/// and adds a scan of each newly completed
 /// line for the agent's login URL and device code, pushed onto `tx` at once.
 /// Without this the whole point of `code login` was unreachable: the vendor
 /// CLI holds the flow open until the user opens the link, but the link sat
@@ -3305,6 +3322,14 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
     } else {
         "update"
     };
+    // Shared scaffolding of the two claude required-slot gates below (add
+    // lane, merged-update lane): the valid-slot list is the same constant
+    // iteration in both messages.
+    let valid_slots = CLAUDE_MODEL_SLOTS
+        .iter()
+        .map(|(slot, _)| *slot)
+        .collect::<Vec<_>>()
+        .join(", ");
     if provider_id.is_none() && agent == "claude" {
         // The store does not merely reject an EMPTY slot set: it requires a
         // non-empty model for every slot in the imported `CLAUDE_MODEL_SLOTS`
@@ -3316,24 +3341,20 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
         // rejects `SLOT=`), but the trim mirrors the store's own filter so a
         // future caller of `providers_save` cannot slip one past. The slot
         // ids come from the store's own pair list (slot id → env variable),
-        // so a slot added app-side cannot drift out of this gate.
-        let slot_ids: Vec<&str> = CLAUDE_MODEL_SLOTS.iter().map(|(slot, _)| *slot).collect();
-        let missing: Vec<&str> = slot_ids
-            .iter()
-            .copied()
-            .filter(|slot| {
-                !model_slots
-                    .iter()
-                    .any(|(name, model)| name.as_str() == *slot && !model.trim().is_empty())
-            })
-            .collect();
+        // so a slot added app-side cannot drift out of this gate. Parse
+        // already refuses duplicate slot ids and empty models, so the map
+        // form is the same set the pairs spell — `claude_missing_slots` is
+        // the exact computation the update lane below runs on the merged
+        // map.
+        let provided: HashMap<String, String> = model_slots.iter().cloned().collect();
+        let missing = claude_missing_slots(Some(&provided));
         if !missing.is_empty() {
             return Err(CliError::usage(format!(
                 "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
                  model slot (a missing slot falls back to official traffic); missing: {} \
                  (valid slots: {})",
                 missing.join(", "),
-                slot_ids.join(", "),
+                valid_slots,
             )));
         }
     }
@@ -3431,11 +3452,7 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
                  model slot (a missing slot falls back to official traffic); missing: {} \
                  (valid slots: {})",
                 missing.join(", "),
-                CLAUDE_MODEL_SLOTS
-                    .iter()
-                    .map(|(slot, _)| *slot)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                valid_slots,
             )));
         }
     }
@@ -4663,7 +4680,7 @@ fn workspace_preview(
 /// is honest and documented in `docs/pinvou-cli.md`: commits made through
 /// this lane are unsigned even for a `commit.gpgsign=true` user, so a
 /// signature-based audit must not treat them as verified.
-fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliError> {
+fn commit_command_args(root: &Path, message: &str) -> Vec<String> {
     let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];
     match ambient_git_identity(root) {
         Some((name, email)) => {
@@ -4680,7 +4697,7 @@ fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliErr
     args.push("commit".to_owned());
     args.push("-m".to_owned());
     args.push(message.to_owned());
-    Ok(args)
+    args
 }
 
 /// The ambient `user.name`/`user.email` the GUI's workspace lane would commit
@@ -5246,7 +5263,7 @@ fn workspace_checkout(
                 ));
             }
             git_output(&root, &["add", "-A"])?;
-            let commit_args = commit_command_args(&root, message)?;
+            let commit_args = commit_command_args(&root, message);
             let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();
             if let Err(error) = git_commit_output(&root, &commit_refs) {
                 // Round-40 review: the stash arm restores its own state on
@@ -5317,22 +5334,12 @@ fn workspace_diff(
             // command's rendered JSON stdout; the error text stays the
             // command lane's.
             let changes = workspace::workspace_changes(session_id, &root)
-                .map_err(|error| CliError::failed(format!("code workspace changes: {error:#}")))
-                .and_then(|changes| {
-                    serde_json::to_value(&changes)
-                        .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))
-                })?;
+                .map_err(|error| CliError::failed(format!("code workspace changes: {error:#}")))?;
             let mut combined = String::new();
             let mut hit_diff_limit = false;
             let mut hit_file_cap = false;
             let mut failures: Vec<serde_json::Value> = Vec::new();
-            for (diffed_files, row) in changes["changes"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .enumerate()
-            {
+            for (diffed_files, row) in changes.changes.iter().enumerate() {
                 if diffed_files >= WORKSPACE_DIFF_FILE_CAP {
                     hit_file_cap = true;
                     break;
@@ -5359,8 +5366,8 @@ fn workspace_diff(
                 // (the only thing a human-mode caller sees), a `failures` array
                 // in the JSON envelope (machine-readable, keyed by path), and a
                 // stderr note.
-                let relative = row["relativePath"].as_str().unwrap_or_default().to_owned();
-                match workspace_diff_one(&root, at_git_root, &relative) {
+                let relative = row.relative_path.as_str();
+                match workspace_diff_one(&root, at_git_root, relative) {
                     Ok((_, text, _)) => {
                         if !combined.is_empty() {
                             combined.push('\n');
@@ -5430,7 +5437,7 @@ fn workspace_diff(
                 "relativePath": null,
                 "text": combined,
                 "truncated": truncated,
-                "changes": changes["changes"],
+                "changes": changes.changes,
                 // Always present (empty on the happy path) so a consumer can
                 // test `failures.length` without distinguishing "no failures"
                 // from "an older build that never reported them".
@@ -6038,6 +6045,32 @@ fn checkpoints_rewind(
     Ok(success(render(output, human, &value)))
 }
 
+/// The undoability probe's result as a typed value, so the caller reads
+/// `checkpoint_id` directly instead of re-parsing a `serde_json::Value`.
+/// Field types mirror the rewind sidecar record (`RewoundTurnsRecord`) the
+/// probe validates.
+struct UndoState {
+    checkpoint_id: Option<String>,
+    kept_turns: u32,
+    rewound_turns: u32,
+    rewound_at: String,
+}
+
+impl UndoState {
+    /// The `"info"` envelope object, in the exact shape the probe used to
+    /// hand-build (same camelCase keys, same field order). A
+    /// `#[derive(serde::Serialize)]` with `rename_all` would need a direct
+    /// `serde` dependency this crate does not carry.
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "checkpointId": self.checkpoint_id,
+            "keptTurns": self.kept_turns,
+            "rewoundTurns": self.rewound_turns,
+            "rewoundAt": self.rewound_at,
+        })
+    }
+}
+
 /// Undoability probe mirroring `resolve_rewind_undo_state`: latest sidecar
 /// record, current turn count equals the kept count, transcript revision
 /// matches, and the bound PreRestore checkpoint still exists.
@@ -6045,7 +6078,7 @@ fn resolve_undo_state(
     store: &SessionStore,
     ledger: &Path,
     session: &str,
-) -> Result<Option<serde_json::Value>, CliError> {
+) -> Result<Option<UndoState>, CliError> {
     let Some(record) = store
         .latest_rewound_turns_record(session)
         .map_err(|error| store_error("checkpoints undo", session, error))?
@@ -6083,12 +6116,12 @@ fn resolve_undo_state(
     };
     let removed = serde_json::to_value(&record.removed_messages)
         .map_err(|error| CliError::failed(format!("code checkpoints undo: {error}")))?;
-    Ok(Some(serde_json::json!({
-        "checkpointId": checkpoint_id,
-        "keptTurns": record.kept_turns,
-        "rewoundTurns": count_user_turns_exact(&removed)?,
-        "rewoundAt": record.rewound_at,
-    })))
+    Ok(Some(UndoState {
+        checkpoint_id,
+        kept_turns: record.kept_turns,
+        rewound_turns: count_user_turns_exact(&removed)?,
+        rewound_at: record.rewound_at,
+    }))
 }
 
 /// Failure report for the transcript-restore step of `checkpoints undo`, when
@@ -6149,7 +6182,7 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
              after it)",
         )
     })?;
-    let checkpoint_id = info["checkpointId"].as_str().map(str::to_owned);
+    let checkpoint_id = info.checkpoint_id.clone();
     if let Some(checkpoint_id) = checkpoint_id.as_deref() {
         checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id)
             .map_err(|error| store_error("checkpoints undo", checkpoint_id, error))?;
@@ -6182,7 +6215,7 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
         "session": session,
         "restoredMessages": restored_messages,
         "restoredCheckpoint": checkpoint_id,
-        "info": info,
+        "info": info.to_json(),
     });
     let human = format!(
         "undid rewind of {session}: restored {restored_messages} messages{}",
@@ -6192,37 +6225,6 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
             .unwrap_or_default(),
     );
     Ok(success(render(output, human, &value)))
-}
-
-// ── permissions / respond (process-local in the product host) ───────────────
-
-// Both refusals are unconditional and must fire before any store access, the
-// same refuse-before-store rule as `code run` and `providers probe` in the
-// dispatch: `open_store()` boots the session store, whose boot runs the
-// destructive retention sweep, and a command that can never succeed must not
-// be able to evict chat sessions. The refusal therefore does not depend on
-// session existence (no `require_existing`); the session-id shape is still
-// enforced at parse time by `require_session_id` (usage error).
-fn permissions(session: &str, _output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed(format!(
-        "code_permissions_requires_product_host: pending permissions live in the running app's \
-         AcpPool memory for session {session}; no CLI process can observe them. Start the \
-         desktop app (or a product-host run) and answer the permission there"
-    )))
-}
-
-fn respond(
-    _session: &str,
-    request_id: &str,
-    allow: bool,
-    _output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    let _ = allow;
-    Err(CliError::failed(format!(
-        "code_respond_requires_product_host: permission requests are answered inside the process \
-         that owns the ACP connection (the GUI host); the pending store is process-local, so \
-         request {request_id} cannot be answered from the CLI"
-    )))
 }
 
 #[cfg(test)]

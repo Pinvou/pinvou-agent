@@ -44,11 +44,6 @@ use crate::{CliError, CliOutcome, OutputMode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeedbackCommand {
-    submit: SubmitArgs,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SubmitArgs {
     feedback_type: FeedbackType,
     title: String,
     body_file: PathBuf,
@@ -66,84 +61,84 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
     if subcommand != "submit" {
         return Err(CliError::usage(USAGE));
     }
-    let mut feedback_type: Option<FeedbackType> = None;
-    let mut title: Option<String> = None;
-    let mut body_file: Option<PathBuf> = None;
-    let mut attachments = Vec::new();
-    let index = &values[2..];
-    let mut position = 0;
-    while position < index.len() {
-        let token = index[position].as_str();
-        let value = |position: usize, name: &str| -> Result<&str, CliError> {
-            index
-                .get(position + 1)
-                .map(String::as_str)
-                .filter(|value| !value.is_empty() && !value.starts_with("--"))
-                .ok_or_else(|| CliError::usage(format!("feedback option {name} requires a value")))
-        };
+    // Per-value semantics run at their token through the shared parser's
+    // validator hook, so the left-to-right error precedence of the former
+    // hand-rolled loop is preserved: an invalid `--type` still wins over a
+    // later token's parse error. `--attach` is the one repeatable flag.
+    let mut validate = |token: &str, value: &str| -> Result<(), CliError> {
         match token {
-            "--type" => {
-                if feedback_type.is_some() {
-                    return Err(CliError::usage("duplicate feedback option --type"));
-                }
-                feedback_type = Some(match value(position, "--type")? {
-                    "issue" => FeedbackType::Issue,
-                    "suggestion" => FeedbackType::Suggestion,
-                    other => {
-                        return Err(CliError::usage(format!(
-                            "feedback submit --type must be issue or suggestion (got {other})"
-                        )));
-                    }
-                });
-                position += 2;
-            }
-            "--title" => {
-                if title.is_some() {
-                    return Err(CliError::usage("duplicate feedback option --title"));
-                }
-                title = Some(value(position, "--title")?.to_owned());
-                position += 2;
-            }
-            "--body-file" => {
-                if body_file.is_some() {
-                    return Err(CliError::usage("duplicate feedback option --body-file"));
-                }
-                body_file = Some(PathBuf::from(value(position, "--body-file")?));
-                position += 2;
-            }
-            "--attach" => {
-                attachments.push(PathBuf::from(value(position, "--attach")?));
-                position += 2;
-            }
-            other => {
-                return Err(CliError::usage(format!(
-                    "unsupported feedback option: {other}"
-                )));
-            }
+            "--type" => match value {
+                "issue" | "suggestion" => Ok(()),
+                other => Err(CliError::usage(format!(
+                    "feedback submit --type must be issue or suggestion (got {other})"
+                ))),
+            },
+            _ => Ok(()),
         }
-    }
-    let submit = SubmitArgs {
-        feedback_type: feedback_type
-            .ok_or_else(|| CliError::usage("feedback submit requires --type issue|suggestion"))?,
-        title: title.ok_or_else(|| CliError::usage("feedback submit requires --title T"))?,
-        body_file: body_file
-            .ok_or_else(|| CliError::usage("feedback submit requires --body-file F"))?,
-        attachments,
     };
-    Ok(FeedbackCommand { submit })
+    let (options, _flags) = crate::support::parse_family_flags_extended(
+        &values[2..],
+        &["--type", "--title", "--body-file", "--attach"],
+        &[],
+        &["--attach"],
+        "feedback",
+        &mut validate,
+    )?;
+    Ok(FeedbackCommand {
+        // An invalid `--type` value cannot reach here — the hook above
+        // refused it at the flag's own token.
+        feedback_type: match crate::support::family_option(&options, "--type") {
+            Some("issue") => FeedbackType::Issue,
+            Some("suggestion") => FeedbackType::Suggestion,
+            _ => {
+                return Err(CliError::usage(
+                    "feedback submit requires --type issue|suggestion",
+                ));
+            }
+        },
+        title: crate::support::family_option(&options, "--title")
+            .ok_or_else(|| CliError::usage("feedback submit requires --title T"))?
+            .to_owned(),
+        body_file: crate::support::family_option(&options, "--body-file")
+            .ok_or_else(|| CliError::usage("feedback submit requires --body-file F"))?
+            .into(),
+        attachments: options
+            .iter()
+            .filter(|(name, _)| *name == "--attach")
+            .map(|(_, value)| PathBuf::from(value))
+            .collect(),
+    })
+}
+
+/// One registered `--attach` path with the facts the command derived from
+/// it: the single record the three outputs render from — the persisted
+/// request's attachment entry, the JSON echo row, and the human
+/// "Attachment: …" line — so the three renderings cannot drift apart (the
+/// human renderer used to re-read these facts out of the JSON rows through
+/// `unwrap_or_default`s that could never fire).
+struct AttachmentRecord {
+    path: String,
+    name: String,
+    media_type: String,
+    size_bytes: u64,
 }
 
 pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Validates the sandbox-home contract (absolute PINVOU3_HOME) before any
     // feedback paths are resolved.
     sandbox_home()?;
-    let submit = command.submit;
+    let FeedbackCommand {
+        feedback_type,
+        title,
+        body_file,
+        attachments,
+    } = command;
     // The body file gets the same credential-path policy as `--attach` (the
     // canonicalized gate below): its content is embedded in the same
     // permanent receipt, and a scripted `--body-file ~/.aws/credentials`
     // is the same footgun the attachment lane refuses.
     let body_canonical = crate::support::gate_canonical_path(
-        &submit.body_file,
+        &body_file,
         "feedback submit",
         "body file",
         "feedback submit",
@@ -157,75 +152,75 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // refusal.
     let description =
         crate::support::read_text_file_capped(&body_canonical, 64 * 1024, "feedback submit")?;
-    let mut attachments = Vec::new();
-    // Rendered back to the user below. The request itself is consumed by the
-    // feature call, so the summary is built here while the data is still
-    // owned locally.
-    let mut attachment_rows = Vec::new();
-    for path in &submit.attachments {
-        // Round-41 review: only regular files are registered. The GUI picker
-        // cannot produce a directory, `metadata().len()` on one reports the
-        // inode size, and the entry would land in a receipt that stays on
-        // disk forever — the same regular-file rule every sibling ingest
-        // lane enforces.
-        let attachment_meta = std::fs::metadata(path).map_err(|error| {
-            CliError::failed(format!(
-                "feedback submit: cannot read attachment {}: {error}",
-                path.display()
-            ))
-        })?;
-        if !attachment_meta.is_file() {
-            return Err(CliError::failed(format!(
-                "feedback_submit_not_a_file: attachment {} is not a regular file",
-                path.display()
-            )));
-        }
-        let size = attachment_meta.len();
-        // Nothing is read or uploaded here — only the path is recorded — but
-        // it is recorded into a receipt that stays on disk forever, and the
-        // GUI's attachment picker refuses these locations outright. A CLI that
-        // happily writes `/home/u/.ssh/id_rsa` into a persisted file is a way
-        // around a rule the other surface enforces, so the same path policy
-        // applies (`artifacts::check_sensitive_path`, the mirror of
-        // `platform::path_policy::check_sensitive_components`). The canonical
-        // form is what the policy is defined over, so resolve first.
-        // The canonical form is what the policy is defined over, so resolve
-        // first. Nothing downstream reads the canonical path here — only the
-        // gate runs on it (the request records the argv spelling).
-        crate::support::gate_canonical_path(
-            path,
-            "feedback submit",
-            "attachment",
-            "feedback submit",
-            "attachment",
-        )?;
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("attachment")
-            .to_owned();
-        let media_type = media_type(path).to_owned();
-        let display_path = path.display().to_string();
-        attachment_rows.push(serde_json::json!({
-            "path": display_path,
-            "name": name,
-            "media_type": media_type,
-            "size_bytes": size,
-        }));
-        attachments.push(FeedbackAttachmentRequest {
-            path: display_path,
-            name,
-            media_type,
-            size_bytes: Some(size),
-        });
-    }
+    // The facts are derived once per attachment here — the request itself is
+    // consumed by the feature call, so the request entries, the JSON echo
+    // and the human line are all rendered from these records.
+    let attachment_records = attachments
+        .iter()
+        .map(|path| -> Result<AttachmentRecord, CliError> {
+            // Round-41 review: only regular files are registered. The GUI picker
+            // cannot produce a directory, `metadata().len()` on one reports the
+            // inode size, and the entry would land in a receipt that stays on
+            // disk forever — the same regular-file rule every sibling ingest
+            // lane enforces.
+            let attachment_meta = std::fs::metadata(path).map_err(|error| {
+                CliError::failed(format!(
+                    "feedback submit: cannot read attachment {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if !attachment_meta.is_file() {
+                return Err(CliError::failed(format!(
+                    "feedback_submit_not_a_file: attachment {} is not a regular file",
+                    path.display()
+                )));
+            }
+            let size = attachment_meta.len();
+            // Nothing is read or uploaded here — only the path is recorded — but
+            // it is recorded into a receipt that stays on disk forever, and the
+            // GUI's attachment picker refuses these locations outright. A CLI that
+            // happily writes `/home/u/.ssh/id_rsa` into a persisted file is a way
+            // around a rule the other surface enforces, so the same path policy
+            // applies (`artifacts::check_sensitive_path`, the mirror of
+            // `platform::path_policy::check_sensitive_components`). The canonical
+            // form is what the policy is defined over, so resolve first.
+            // The canonical form is what the policy is defined over, so resolve
+            // first. Nothing downstream reads the canonical path here — only the
+            // gate runs on it (the request records the argv spelling).
+            crate::support::gate_canonical_path(
+                path,
+                "feedback submit",
+                "attachment",
+                "feedback submit",
+                "attachment",
+            )?;
+            Ok(AttachmentRecord {
+                path: path.display().to_string(),
+                name: path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("attachment")
+                    .to_owned(),
+                media_type: media_type(path).to_owned(),
+                size_bytes: size,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
     let request = FeedbackSubmitRequest {
-        feedback_type: submit.feedback_type,
-        title: Some(submit.title),
+        feedback_type,
+        title: Some(title),
         description,
         // See module docs: the CLI has no error-banner context.
         entry_point: "settings".to_owned(),
-        attachments,
+        attachments: attachment_records
+            .iter()
+            .map(|record| FeedbackAttachmentRequest {
+                path: record.path.clone(),
+                name: record.name.clone(),
+                media_type: record.media_type.clone(),
+                size_bytes: Some(record.size_bytes),
+            })
+            .collect::<Vec<_>>(),
         privacy_notice_version: "community-v1".to_owned(),
     };
     pinvou3_lib::features::feedback::validate_feedback_request(&request).map_err(|error| {
@@ -319,23 +314,18 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // caller actually has — did this leave the machine — and stays correct if
     // an edition ever does upload.
     let uploaded = receipt.status == FeedbackStatus::Submitted;
-    // Built before the payload takes ownership of the rows.
-    // Both cells come from argv (the `--attach` path and its file name), so
-    // the human lines go through the same cell sanitizer every other family
-    // row uses; JSON stays verbatim by contract.
-    let attachment_lines = attachment_rows
+    // The name and path cells come from argv (the `--attach` path and its
+    // file name), so the human lines go through the same cell sanitizer
+    // every other family row uses; JSON stays verbatim by contract.
+    let attachment_lines = attachment_records
         .iter()
-        .map(|row| {
+        .map(|record| {
             format!(
                 "\nAttachment: {} ({}, {} bytes) {}",
-                crate::support::collapse_control_characters(
-                    row["name"].as_str().unwrap_or_default(),
-                ),
-                row["media_type"].as_str().unwrap_or_default(),
-                row["size_bytes"].as_u64().unwrap_or_default(),
-                crate::support::collapse_control_characters(
-                    row["path"].as_str().unwrap_or_default(),
-                ),
+                crate::support::collapse_control_characters(&record.name),
+                record.media_type,
+                record.size_bytes,
+                crate::support::collapse_control_characters(&record.path),
             )
         })
         .collect::<String>();
@@ -351,7 +341,17 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
         // Registered attachments, echoed back: the command stats each one and
         // records it into the persisted request, and without this the user has
         // no evidence that `--attach` did anything at all.
-        "attachments": attachment_rows,
+        "attachments": attachment_records
+            .iter()
+            .map(|record| {
+                serde_json::json!({
+                    "path": record.path,
+                    "name": record.name,
+                    "media_type": record.media_type,
+                    "size_bytes": record.size_bytes,
+                })
+            })
+            .collect::<Vec<_>>(),
     });
     let mut human = format!(
         "Feedback: {feedback_id}\nStatus: {status}\nUploaded: {uploaded}\nReceipt: {}\nCommunity edition does not upload feedback. Submit at: {COMMUNITY_ISSUES_URL}",

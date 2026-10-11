@@ -52,18 +52,16 @@ pub fn parse(values: &[String]) -> Result<DepsCommand, CliError> {
                         yes = true;
                     }
                     other => {
-                        if other.starts_with("--") {
-                            return Err(CliError::usage(format!(
-                                "unsupported deps option: {other}"
-                            )));
-                        }
+                        // Round-48 review: an option-shaped token is an
+                        // argv-decidable mistake — the sibling families
+                        // (artifacts, files) refuse it here with the
+                        // usage class instead of letting `deps install
+                        // ffmpeg -y` die as an allowlist refusal
+                        // naming "-y" as a package (exit 1). One
+                        // `starts_with('-')` covers both the `--` flag
+                        // forms and the single-dash forms; both arms
+                        // used to return the same error.
                         if other.starts_with('-') {
-                            // Round-48 review: an option-shaped token is an
-                            // argv-decidable mistake — the sibling families
-                            // (artifacts, files) refuse it here with the
-                            // usage class instead of letting `deps install
-                            // ffmpeg -y` die as an allowlist refusal
-                            // naming "-y" as a package (exit 1).
                             return Err(CliError::usage(format!(
                                 "unsupported deps option: {other}"
                             )));

@@ -88,7 +88,7 @@ use crate::support::{
     collapse_control_characters, family_lock, family_option, gate_canonical_path, render,
     require_family_id, require_yes, sandbox_home, success,
 };
-use crate::{CliError, CliOutcome, ExitCode, OutputMode};
+use crate::{CliError, CliOutcome, OutputMode};
 
 const SCHEDULED_USAGE: &str = "usage: pinvou scheduled \
 <list|show|create|update|pause|resume|pin|unpin|delete|run|runs|runs-all|mark-viewed|chat-prompt>";
@@ -134,35 +134,27 @@ kind can only be set at create time"
 /// other accepted value into a silently discarded user choice — the caller
 /// asks for `plan` and is handed a full-YOLO task with `trust_mode` and
 /// `auto_approve` on. The app therefore refuses `agent`/`plan` outright in
-/// `canonical_scheduled_mode`, and this enum mirrors that decision by having
-/// no variant to represent them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TaskMode {
-    Yolo,
-}
+/// `canonical_scheduled_mode`, and this constant mirrors that decision by
+/// leaving no other value to represent them: the mode is validated, never
+/// carried, and the only persisted value is the constant itself.
+const SCHEDULED_PERSISTED_MODE: &str = "yolo";
 
-impl TaskMode {
-    /// Mirrors the app's `canonical_scheduled_mode`: absent, empty (the flag
-    /// carries no opinion) or an exact `yolo` passes; everything else is
-    /// refused by name. The refusal is a usage error (exit 2) because the
-    /// value is invalid at parse time — the same class `scheduled update`
-    /// already uses for its blanket `--mode` rejection, so both subcommands
-    /// classify the identical refusal identically.
-    fn parse_value(value: &str) -> Result<Self, CliError> {
-        match value.trim() {
-            "" | Self::PERSISTED => Ok(Self::Yolo),
-            other => Err(CliError::usage(format!(
-                "scheduled tasks always run in '{}' mode, got '{other}': a scheduled run \
+/// Mirrors the app's `canonical_scheduled_mode`: absent, empty (the flag
+/// carries no opinion) or an exact `yolo` passes; everything else is
+/// refused by name. The refusal is a usage error (exit 2) because the
+/// value is invalid at parse time — the same class `scheduled update`
+/// already uses for its blanket `--mode` rejection, so both subcommands
+/// classify the identical refusal identically.
+fn validate_scheduled_mode(value: &str) -> Result<(), CliError> {
+    match value.trim() {
+        "" | SCHEDULED_PERSISTED_MODE => Ok(()),
+        other => Err(CliError::usage(format!(
+            "scheduled tasks always run in '{}' mode, got '{other}': a scheduled run \
 cannot answer an approval prompt, so the mode is forced to yolo (trust mode and auto-approve \
 on) and an 'agent'/'plan' request would be discarded without notice",
-                Self::PERSISTED
-            ))),
-        }
+            SCHEDULED_PERSISTED_MODE
+        ))),
     }
-
-    /// The mode persisted for every scheduled task (there is only one, so
-    /// the persisted value is the constant itself — no per-variant method).
-    const PERSISTED: &'static str = "yolo";
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -396,12 +388,12 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     };
     let model_id = family_option(&options, "--model-id").map(str::to_owned);
     // `--mode` is validated, never carried: there is exactly one persisted
-    // mode (`TaskMode::PERSISTED`), which `create` writes directly, so the
-    // parsed value would have no field to land in — the parse-time refusal
-    // of anything but `yolo`/empty is the whole point of the flag (see
-    // `TaskMode::parse_value` and `mode_accepts_only_the_yolo_...`).
+    // mode (`SCHEDULED_PERSISTED_MODE`), which `create` writes directly, so
+    // the validated value would have no field to land in — the parse-time
+    // refusal of anything but `yolo`/empty is the whole point of the flag
+    // (see `validate_scheduled_mode` and `mode_accepts_only_the_yolo_...`).
     if let Some(value) = family_option(&options, "--mode") {
-        TaskMode::parse_value(value)?;
+        validate_scheduled_mode(value)?;
     }
     Ok(ScheduledCommand::Create {
         name,
@@ -1315,23 +1307,14 @@ fn quarantine_unreadable(path: &Path) -> bool {
     }
 }
 
-/// The `tasks`-keyed specialization of [`registry_map_mut`] used by every
-/// sidecar registry whose entries are keyed by task id.
-fn registry_tasks_mut(
-    registry: &mut serde_json::Value,
-    schema_version: u32,
-) -> Result<&mut serde_json::Map<String, serde_json::Value>, CliError> {
-    registry_map_mut(registry, schema_version, "tasks", "registry")
-}
-
-/// The registry read-modify normalize `registry_tasks_mut` and the archive /
-/// read-state lanes shared, keyed once: a newer-schema registry is refused,
-/// a non-object registry becomes the versioned default, a legacy file gets
-/// its `schema_version`, and a missing or wrong-shaped `key` value
-/// normalizes to an empty object so the caller's per-entry updates are
-/// never silently dropped. `what` names the registry in the newer-schema
-/// refusal ("registry" for the generic tasks registries, "history archive"
-/// / "read-state" where the message names the specific file).
+/// The registry read-modify normalize the sidecar write lanes share, keyed
+/// once: a newer-schema registry is refused, a non-object registry becomes
+/// the versioned default, a legacy file gets its `schema_version`, and a
+/// missing or wrong-shaped `key` value normalizes to an empty object so the
+/// caller's per-entry updates are never silently dropped. `what` names the
+/// registry in the newer-schema refusal ("registry" for the generic tasks
+/// registries, "history archive" / "read-state" where the message names the
+/// specific file).
 fn registry_map_mut<'a>(
     registry: &'a mut serde_json::Value,
     schema_version: u32,
@@ -2126,6 +2109,40 @@ fn resolve_model_pair(
     }
 }
 
+/// The prompt-file lane `scheduled create` and `scheduled update` share:
+/// the same 4 MiB cap as the agent prompt read (`--prompt-file /dev/zero`
+/// must fail cleanly instead of reading forever), the same credential-path
+/// gate every sibling lane applies (agent_task/memory/personas/feedback/
+/// voice/knowledge/artifacts — Round-51 review: the prompt is model context
+/// too, it becomes the unattended run's turn with auto-approve forced, so it
+/// canonicalizes first, gates the canonical form, and reads the CANONICAL
+/// path so a post-gate symlink swap cannot re-route the read), and the same
+/// refusal of an empty-after-trim file. The four message prefixes render
+/// byte-identically to the per-site literals this helper replaced.
+fn read_prompt_file(subcommand: &str, prompt_file: &Path) -> Result<String, CliError> {
+    let prompt_canonical = gate_canonical_path(
+        prompt_file,
+        // resolve: "scheduled {subcommand} --prompt-file: cannot resolve {path}: …"
+        &format!("scheduled {subcommand} --prompt-file"),
+        "",
+        // refuse: "scheduled {subcommand}: refusing prompt file: …"
+        &format!("scheduled {subcommand}"),
+        "prompt file",
+    )?;
+    let prompt = crate::support::read_text_file_capped(
+        &prompt_canonical,
+        4 * 1024 * 1024,
+        &format!("scheduled {subcommand} --prompt-file"),
+    )?;
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(CliError::usage(format!(
+            "scheduled {subcommand} requires a non-empty prompt file"
+        )));
+    }
+    Ok(prompt.to_owned())
+}
+
 fn create(
     name: &str,
     prompt_file: &Path,
@@ -2142,34 +2159,9 @@ fn create(
             "scheduled create requires a non-empty --name",
         ));
     }
-    // Same 4 MiB cap as the agent prompt read: `--prompt-file /dev/zero`
-    // must fail cleanly instead of reading forever. Round-51 review: this is
-    // model context too (it becomes the unattended run's turn, with
-    // auto-approve forced), so it joins the credential-path gate every
-    // sibling lane applies (agent_task/memory/personas/feedback/voice/
-    // knowledge/artifacts): canonicalize first, gate the canonical form, and
-    // read the CANONICAL path so a post-gate symlink swap cannot re-route
-    // the read.
-    let prompt_canonical = gate_canonical_path(
-        prompt_file,
-        // resolve: "scheduled create --prompt-file: cannot resolve {path}: …"
-        "scheduled create --prompt-file",
-        "",
-        // refuse: "scheduled create: refusing prompt file: …"
-        "scheduled create",
-        "prompt file",
-    )?;
-    let prompt = crate::support::read_text_file_capped(
-        &prompt_canonical,
-        4 * 1024 * 1024,
-        "scheduled create --prompt-file",
-    )?;
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
-        return Err(CliError::usage(
-            "scheduled create requires a non-empty prompt file",
-        ));
-    }
+    // Shared prompt-file lane: the cap, the credential-path gate and the
+    // empty-file refusal live in `read_prompt_file` (with their rationale).
+    let prompt = read_prompt_file("create", prompt_file)?;
     // The model wire name and the saved-model pin are resolved as ONE pair,
     // exactly like the GUI's create (`model: selected.model, modelId:
     // selected.id`): the executor's `resolve_scheduled_model` rejects a task
@@ -2207,7 +2199,7 @@ enabled in settings",
         .manager()?
         .create_automation(CreateAutomationRequest {
             name: name.to_owned(),
-            prompt: prompt.to_owned(),
+            prompt,
             rrule: rrule.to_owned(),
             cwds: Vec::new(),
             model: Some(model.clone()),
@@ -2218,8 +2210,9 @@ enabled in settings",
             model_provider: None,
             model_provider_id: None,
             // The app overwrites `mode` unconditionally and `yolo` is the
-            // only value a scheduled task can carry (`TaskMode::PERSISTED`).
-            mode: Some(TaskMode::PERSISTED.to_owned()),
+            // only value a scheduled task can carry
+            // (`SCHEDULED_PERSISTED_MODE`).
+            mode: Some(SCHEDULED_PERSISTED_MODE.to_owned()),
             allow_shell: Some(current_allow_shell()),
             trust_mode: Some(true),
             // 不可绕过的审批（rlm_eval/hook ask）仍由 force_prompt 拦截。
@@ -2307,15 +2300,7 @@ enabled in settings",
     // commands). Loading all four views (rather than the previous Null
     // read-state) is equivalent for a task whose id was just allocated:
     // viewed entries are keyed by task id, which cannot exist yet.
-    let sessions = open_sessions_for_enrichment();
-    let views = SidecarViews::load(&store_holder);
-    let value = map_task(
-        &def,
-        &[],
-        sessions.as_ref(),
-        &views,
-        &session_titles_for(sessions.as_ref()),
-    );
+    let value = enriched_task_view(&store_holder, &def, &[]);
     Ok(success(render(
         output,
         format!("Created scheduled task: {id}"),
@@ -2442,27 +2427,7 @@ fn update(
         // Round-51 review: same credential-path gate as create (model
         // context; canonicalize → gate → read canonical) through the shared
         // helper.
-        let prompt_canonical = gate_canonical_path(
-            &prompt_file,
-            // resolve: "scheduled update --prompt-file: cannot resolve {path}: …"
-            "scheduled update --prompt-file",
-            "",
-            // refuse: "scheduled update: refusing prompt file: …"
-            "scheduled update",
-            "prompt file",
-        )?;
-        let prompt = crate::support::read_text_file_capped(
-            &prompt_canonical,
-            4 * 1024 * 1024,
-            "scheduled update --prompt-file",
-        )?;
-        let prompt = prompt.trim();
-        if prompt.is_empty() {
-            return Err(CliError::usage(
-                "scheduled update requires a non-empty prompt file",
-            ));
-        }
-        request.prompt = Some(prompt.to_owned());
+        request.prompt = Some(read_prompt_file("update", &prompt_file)?);
     }
     if let Some(rrule) = rrule {
         request.rrule = Some(rrule.to_owned());
@@ -2524,16 +2489,8 @@ fn update(
     // sessions store boot failure must not report the update as failed —
     // the same applies to the run records, whose read failure must not
     // disown an already-committed mutation.
-    let sessions = open_sessions_for_enrichment();
     let runs = best_effort_history(&store_holder, id, "update");
-    let views = SidecarViews::load(&store_holder);
-    let value = map_task(
-        &def,
-        &runs,
-        sessions.as_ref(),
-        &views,
-        &session_titles_for(sessions.as_ref()),
-    );
+    let value = enriched_task_view(&store_holder, &def, &runs);
     Ok(success(render(
         output,
         format!("Updated scheduled task: {id}"),
@@ -2578,16 +2535,16 @@ fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Re
 
 /// The sidecar read-modify-write scaffold the per-task sidecar mutators
 /// shared: capture the foreign-write stamp, read the registry for write,
-/// normalize it through [`registry_tasks_mut`], apply the caller's update to
-/// the `tasks` map, and write atomically-checked (refusing instead of
-/// clobbering a concurrent desktop-app write).
+/// normalize it through [`registry_map_mut`] (the `tasks`-keyed lane),
+/// apply the caller's update to the `tasks` map, and write atomically-checked
+/// (refusing instead of clobbering a concurrent desktop-app write).
 fn mutate_sidecar_tasks(
     path: &Path,
     update: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
 ) -> Result<(), CliError> {
     let stamp = SidecarStamp::capture(path);
     let mut registry = read_registry_for_write(path, &["tasks"])?;
-    let tasks = registry_tasks_mut(&mut registry, 1)?;
+    let tasks = registry_map_mut(&mut registry, 1, "tasks", "registry")?;
     update(tasks);
     write_json_atomic_checked(path, &registry, &stamp)
 }
@@ -2704,16 +2661,8 @@ the resume itself is committed"
     // sessions store boot failure must not report the command as failed —
     // the same applies to the run records, whose read failure must not
     // disown an already-committed mutation.
-    let sessions = open_sessions_for_enrichment();
     let runs = best_effort_history(&store_holder, id, "status change");
-    let views = SidecarViews::load(&store_holder);
-    let value = map_task(
-        &def,
-        &runs,
-        sessions.as_ref(),
-        &views,
-        &session_titles_for(sessions.as_ref()),
-    );
+    let value = enriched_task_view(&store_holder, &def, &runs);
     Ok(success(render(
         output,
         format!("{action} scheduled task: {id}"),
@@ -3006,17 +2955,7 @@ fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     // marker"). Mapping after the cleanup passed Null registries, so the
     // same delete reported `kind: null` (plus absent modelId / pin /
     // read-state enrichment) from the CLI and a real kind from the app.
-    let receipt = {
-        let sessions = open_sessions_for_enrichment();
-        let views = SidecarViews::load(&store_holder);
-        map_task(
-            &def,
-            &runs,
-            sessions.as_ref(),
-            &views,
-            &session_titles_for(sessions.as_ref()),
-        )
-    };
+    let receipt = enriched_task_view(&store_holder, &def, &runs);
     for path in [
         store_holder.model_bindings_path(),
         store_holder.task_kinds_path(),
@@ -3169,9 +3108,12 @@ enabled in settings",
     let run_id = new_storage_id();
     let now = now_string();
     let organize = organize_headless();
-    let (status, error) = match &organize {
-        Ok(_) => ("completed", serde_json::Value::Null),
-        Err(error) => ("failed", serde_json::json!(error)),
+    // The failed verdict derives once from the organize pass and drives both
+    // the persisted record and the exit-code arm below.
+    let failed: Option<&str> = organize.as_ref().err().map(String::as_str);
+    let (status, error) = match failed {
+        Some(error) => ("failed", serde_json::json!(error)),
+        None => ("completed", serde_json::Value::Null),
     };
     let record = serde_json::json!({
         "schema_version": 1,
@@ -3239,8 +3181,7 @@ enabled in settings",
         str_field(&def, "name"),
         str_field(&def, "model"),
     );
-    if !matches!(error, serde_json::Value::Null) {
-        let error = error.as_str().unwrap_or("unknown failure");
+    if let Some(error) = failed {
         // Exit/reporting contract: a completed outcome (exit 0) asserts the
         // run succeeded. The organize pass FAILED here — the record says
         // `failed` — so exit 0 would report a successful command over a
@@ -3262,18 +3203,15 @@ enabled in settings",
         "Run: {}\nTask: {}\nSession: -\nStatus: {}",
         run_id, id, status
     );
-    let stdout = render(output, human, &value);
     // A completed command reporting a failed result exits 1, the convention
     // the `models` family set with `probe-local`: the output body (and the
     // persisted run record) stay exactly as before, but the exit code must
     // tell scripts the outcome was not a success.
-    // The Err arm above owns the failed verdict and returns before this
+    // The failed arm above owns the failed verdict and returns before this
     // point, so a failed run can never reach here: `status` is always
-    // "completed" at this line and plain Success is the whole contract.
-    Ok(CliOutcome {
-        exit_code: ExitCode::Success,
-        stdout,
-    })
+    // "completed" at this line and `success`'s plain Success is the whole
+    // contract.
+    Ok(success(render(output, human, &value)))
 }
 
 /// One memory-organize pass through the windowless product host, the same
@@ -3597,12 +3535,12 @@ viewed"
     let read_state_path = store_holder.read_state_path();
     let read_state_stamp = SidecarStamp::capture(&read_state_path);
     let mut read_state = read_registry_for_write(&read_state_path, &["viewed_runs"])?;
-    // Same newer-schema refusal and normalize sequence as registry_tasks_mut
-    // (`registry_map_mut`, keyed once): a read-state file written by a newer
-    // app version must not be merged and written back, and a wrong-shaped
-    // but valid payload (hand-edited or partially written file) normalizes
-    // to the default like the parse-failure path instead of panicking with
-    // an exit code outside the 0/1/2 contract.
+    // Same newer-schema refusal and normalize sequence as the tasks-keyed
+    // write lane (`registry_map_mut`, keyed once): a read-state file written
+    // by a newer app version must not be merged and written back, and a
+    // wrong-shaped but valid payload (hand-edited or partially written file)
+    // normalizes to the default like the parse-failure path instead of
+    // panicking with an exit code outside the 0/1/2 contract.
     let viewed = registry_map_mut(&mut read_state, 2, "viewed_runs", "read-state")?;
     let entry = viewed
         .entry(task_id.to_owned())
@@ -3714,9 +3652,51 @@ the {committed_what} itself is committed",
     }
 }
 
+/// The best-effort enrichment render the committed-mutation responses share
+/// (`create`/`update`/`pause`/`resume`/`delete`): boot the sessions store
+/// best-effort, load the four sidecar views, and map the definition into the
+/// GUI-shaped task DTO. The run records stay a caller argument — `create`
+/// passes none (a just-allocated id cannot have any), the others keep their
+/// own `best_effort_history` label — and so does the rendered heading. A
+/// sessions-store failure here degrades the response fields instead of
+/// disowning the already-committed mutation.
+fn enriched_task_view(
+    store_holder: &TaskStore,
+    def: &serde_json::Value,
+    runs: &[serde_json::Value],
+) -> serde_json::Value {
+    let sessions = open_sessions_for_enrichment();
+    let views = SidecarViews::load(store_holder);
+    map_task(
+        def,
+        runs,
+        sessions.as_ref(),
+        &views,
+        &session_titles_for(sessions.as_ref()),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh per-test scratch directory under the system temp dir: the
+    /// pid + nanos token keeps concurrent test binaries and reruns from
+    /// colliding, and any stale directory from a previous run is removed
+    /// first so every test starts from an empty fixture.
+    fn scratch_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-scheduled-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     /// Round-42 review: the sidecar stamp guard is the cross-surface
     /// headline fix (rounds 40/41) but had no test — deleting the
@@ -3725,12 +3705,7 @@ mod tests {
     /// refuse-instead-of-clobber behavior with its stable marker.
     #[test]
     fn sidecar_stamp_notices_a_foreign_write_and_the_write_refuses() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-scheduled-stamp-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let root = scratch_dir("stamp-test");
         let path = root.join("registry.json");
         std::fs::write(&path, br#"{"v":1}"#).unwrap();
 
@@ -3796,16 +3771,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sidecar_stamp_notices_a_same_bytes_same_mtime_rename_over_the_file() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-scheduled-stamp-identity-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let root = scratch_dir("stamp-identity");
         let path = root.join("registry.json");
         std::fs::write(&path, br#"{"v":1}"#).unwrap();
 
@@ -3986,15 +3952,18 @@ mod tests {
     /// `canonical_scheduled_mode` refuses anything but `yolo` because the
     /// downstream request overwrites the field unconditionally, so accepting
     /// `agent`/`plan` would hand the caller a full-YOLO task under another
-    /// name. The typed parse assertion lives here; the exit-code class is
+    /// name. The validator's refusal lives here; the exit-code class is
     /// pinned in the contract tests.
     #[test]
     fn mode_accepts_only_the_yolo_scheduled_execution_mode() {
         for accepted in ["yolo", " yolo ", ""] {
-            assert_eq!(TaskMode::parse_value(accepted).unwrap(), TaskMode::Yolo);
+            assert!(
+                validate_scheduled_mode(accepted).is_ok(),
+                "accepted: {accepted}"
+            );
         }
         for refused in ["agent", "plan", "bogus"] {
-            let error = TaskMode::parse_value(refused).expect_err(refused);
+            let error = validate_scheduled_mode(refused).expect_err(refused);
             assert_eq!(error.exit_code(), crate::ExitCode::Usage, "{refused}");
             assert!(error.to_string().contains(refused), "{refused}: {error}");
         }
@@ -4133,15 +4102,7 @@ mod tests {
     /// plain entry point, so this pins the stage lane directly.
     #[test]
     fn write_json_atomic_refuses_an_occupied_staging_path() {
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-scheduled-atomic-occupied-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("atomic-occupied");
         let target = dir.join("model-bindings.json");
         std::fs::write(&target, b"old").unwrap();
         let tmp = dir.join(".model-bindings.json.tmp-fixed");
@@ -4166,15 +4127,7 @@ mod tests {
     /// regressed rename/cleanup leaking a visible `.tmp` sibling.
     #[test]
     fn write_json_atomic_lands_the_payload_and_leaves_no_staging_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-scheduled-atomic-landed-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("atomic-landed");
         let target = dir.join("task-kinds.json");
         std::fs::write(&target, br#"{"old":true}"#).unwrap();
         write_json_atomic(&target, &serde_json::json!({ "tasks": {} })).unwrap();
@@ -4200,15 +4153,7 @@ mod tests {
     /// on every platform, so the old code propagated the error instead.
     #[test]
     fn save_run_succeeds_when_the_legacy_twin_cannot_be_removed() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-scheduled-twin-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = scratch_dir("twin");
         let store = TaskStore { home: root.clone() };
         let run_id = "run-twin-1";
         // The legacy twin (`<run_id>.json`) exists as a DIRECTORY, so

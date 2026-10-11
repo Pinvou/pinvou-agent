@@ -318,10 +318,10 @@ fn parse_list(values: &[String]) -> Result<MemoryCommand, CliError> {
     // and exit 0, so the command answered a question nobody asked instead of
     // naming the option.
     options.ensure_no_positionals("memory list")?;
-    let store = match options.value("--store") {
-        Some(value) => Some(MemoryStore::parse_value(value)?),
-        None => None,
-    };
+    let store = options
+        .value("--store")
+        .map(MemoryStore::parse_value)
+        .transpose()?;
     Ok(MemoryCommand::List { store })
 }
 
@@ -1069,25 +1069,22 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
 /// The preferences/work-context arms of [`load_store_items`] — 18-line
 /// near-copies, single-sourced here: the only two stores whose read carries a
 /// cleanup sweep, so their envelope gains one `memory_topic_cleanup_required`
-/// warning when the sweep reported one; item lines, the JSON DTO array and
-/// the envelope shape are the caller's (`load_store_items` folds both into
-/// the same `{items, cleanup_warnings}` envelope as the plain stores).
+/// `(topic, detail)` warning when the sweep reported one; the JSON DTO array
+/// and the envelope shape are the caller's (`load_store_items` folds both
+/// into the same `{items, cleanup_warnings}` envelope as the plain stores).
+/// `(rendered rows, JSON DTO array, cleanup warnings)` for one store arm.
+type TopicArmRender = (Vec<String>, serde_json::Value, Vec<(String, String)>);
+
 fn cleanup_topic_items<T>(
     topic: &str,
     read: std::io::Result<feature::TopicRead<T>>,
     render: impl Fn(&T) -> (Vec<String>, serde_json::Value),
-) -> Result<(Vec<String>, serde_json::Value, Vec<serde_json::Value>), CliError> {
+) -> Result<TopicArmRender, CliError> {
     let read = read.map_err(|error| feature_error("list", error))?;
     let (lines, value) = render(&read.value);
     let warnings = read
         .cleanup_warning
-        .map(|detail| {
-            vec![serde_json::json!({
-                "topic": topic,
-                "code": "memory_topic_cleanup_required",
-                "detail": detail,
-            })]
-        })
+        .map(|detail| vec![(topic.to_owned(), detail)])
         .unwrap_or_default();
     Ok((lines, value, warnings))
 }
@@ -1179,15 +1176,7 @@ fn load_store_items(
     // own vec so the caller's header counts items only.
     let warning_lines: Vec<String> = cleanup_warnings
         .iter()
-        .map(|warning| {
-            let topic = warning
-                .get("topic")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let detail = warning
-                .get("detail")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
+        .map(|(topic, detail)| {
             format!(
                 "warning: memory_topic_cleanup_required ({topic}): {}",
                 crate::support::collapse_control_characters(detail)
@@ -1197,7 +1186,17 @@ fn load_store_items(
     Ok((
         items,
         warning_lines,
-        serde_json::json!({ "items": value, "cleanup_warnings": cleanup_warnings }),
+        serde_json::json!({
+            "items": value,
+            "cleanup_warnings": cleanup_warnings
+                .iter()
+                .map(|(topic, detail)| serde_json::json!({
+                    "topic": topic,
+                    "code": "memory_topic_cleanup_required",
+                    "detail": detail,
+                }))
+                .collect::<Vec<_>>(),
+        }),
     ))
 }
 
@@ -2534,34 +2533,30 @@ fn append_warning_lines_to_stderr(warnings: &[serde_json::Value]) {
     }
 }
 
-/// Joins one sanitized tab-separated row per item — the shared scaffold
-/// behind the family's human listings. The caller owns the empty case (its
-/// own honest message) and any incremental `lines` vec; each row closure
-/// keeps its per-cell `collapse_control_characters` discipline at the site.
-fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
-    items.iter().map(row).collect::<Vec<_>>().join("\n")
-}
-
 fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     let history = feature::load_organize_history();
     let human = if history.is_empty() {
         "No organize history.".to_owned()
     } else {
-        join_rows(&history, |report| {
-            // Round-46 review: `started_at` is store-derived and was
-            // the one row cell taken raw — a forged/corrupt history
-            // file could forge rows or columns through it. Same
-            // collapse as the two cells beside it (`profile get`
-            // collapses its store-written `updated_at` for the same
-            // consistency).
-            format!(
-                "{}\t{}\t{}",
-                support::collapse_control_characters(&report.started_at),
-                support::collapse_control_characters(&report.model),
-                support::collapse_control_characters(&organize_summary(report))
-            )
-        })
+        history
+            .iter()
+            .map(|report| {
+                // Round-46 review: `started_at` is store-derived and was
+                // the one row cell taken raw — a forged/corrupt history
+                // file could forge rows or columns through it. Same
+                // collapse as the two cells beside it (`profile get`
+                // collapses its store-written `updated_at` for the same
+                // consistency).
+                format!(
+                    "{}\t{}\t{}",
+                    support::collapse_control_characters(&report.started_at),
+                    support::collapse_control_characters(&report.model),
+                    support::collapse_control_characters(&organize_summary(report))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let value = serde_json::to_value(&history).unwrap_or_default();
     Ok(success(render(output, human, &value)))

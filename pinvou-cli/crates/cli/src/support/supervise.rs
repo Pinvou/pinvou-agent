@@ -539,7 +539,7 @@ mod imp {
             if !inherited_signal_is_ignored(libc::SIGTERM) {
                 libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
             }
-            if inherited_sighup_is_ignored() {
+            if inherited_signal_is_ignored(libc::SIGHUP) {
                 // Leave SIGHUP ignored, exactly as the caller arranged it.
             } else {
                 libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
@@ -548,31 +548,19 @@ mod imp {
     }
 
     /// Whether `signal` arrived at this process with SIG_IGN installed (a
-    /// null sigaction probe reads the disposition without touching it).
-    fn inherited_signal_is_ignored(signal: libc::c_int) -> bool {
-        unsafe {
-            let mut action: libc::sigaction = std::mem::zeroed();
-            if libc::sigaction(signal, std::ptr::null(), &mut action) != 0 {
-                // A failing probe must not silently downgrade cleanup:
-                // install the handler as before.
-                return false;
-            }
-            action.sa_sigaction as usize == libc::SIG_IGN
-        }
-    }
-
-    /// Whether SIGHUP arrived at this process with SIG_IGN installed
-    /// (`nohup`, a daemonizing shell, `setsid`). Read via `sigaction` with a
-    /// null act — a pure probe, no disposition is changed. Split out so a
-    /// unit test can pin both answers without real terminal state.
-    pub(super) fn inherited_sighup_is_ignored() -> bool {
+    /// null sigaction probe reads the disposition without touching it). For
+    /// SIGHUP the ignored case is `nohup`, a daemonizing shell, `setsid`;
+    /// the probe is split out so a unit test can pin both answers without
+    /// real terminal state.
+    pub(super) fn inherited_signal_is_ignored(signal: libc::c_int) -> bool {
         // SAFETY: sigaction with a null act only WRITES the old disposition
         // into the out-param; no handler state is modified.
         unsafe {
             let mut old: libc::sigaction = std::mem::zeroed();
-            if libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) != 0 {
-                // The probe itself failed: install the handler (the
-                // conventional behaviour) rather than guess.
+            if libc::sigaction(signal, std::ptr::null(), &mut old) != 0 {
+                // A failing probe must not silently downgrade cleanup:
+                // install the handler (the conventional behaviour) rather
+                // than guess.
                 return false;
             }
             // SIG_IGN is 1 on every supported platform; compare the stored
@@ -846,9 +834,6 @@ mod imp {
         // exit — the race this park exists to close. (A signal landing after
         // this load still races main's exit; that window is the process
         // tearing down by definition and is not closable here.)
-        if !CLEANUP_STARTED.load(Ordering::Acquire) {
-            return;
-        }
         while CLEANUP_STARTED.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -1031,7 +1016,7 @@ mod tests {
     /// terminal state.
     #[test]
     fn sighup_probe_reads_the_inherited_disposition() {
-        use super::imp::inherited_sighup_is_ignored;
+        use super::imp::inherited_signal_is_ignored;
         // SAFETY: sigaction with a null act only reads the disposition;
         // the installs below are restored before returning.
         unsafe {
@@ -1047,13 +1032,13 @@ mod tests {
             let mut ign: libc::sigaction = std::mem::zeroed();
             ign.sa_sigaction = libc::SIG_IGN as *const () as libc::sighandler_t;
             assert_eq!(libc::sigaction(libc::SIGHUP, &ign, std::ptr::null_mut()), 0);
-            assert!(inherited_sighup_is_ignored());
+            assert!(inherited_signal_is_ignored(libc::SIGHUP));
 
             // Default disposition → install normally.
             let mut dfl: libc::sigaction = std::mem::zeroed();
             dfl.sa_sigaction = libc::SIG_DFL as *const () as libc::sighandler_t;
             assert_eq!(libc::sigaction(libc::SIGHUP, &dfl, std::ptr::null_mut()), 0);
-            assert!(!inherited_sighup_is_ignored());
+            assert!(!inherited_signal_is_ignored(libc::SIGHUP));
 
             // Restore exactly what the process had (an installed handler
             // from a previous test's real_install must survive this test).
