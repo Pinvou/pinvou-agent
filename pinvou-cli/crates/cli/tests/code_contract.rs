@@ -721,6 +721,33 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
             "--model-slot",
             "sonnet=s2",
         ],
+        // Round-51 review: the env-var-NAME parse gates — a pasted literal
+        // secret must be refused at parse (never ride argv), for the login
+        // --code-env lane and the providers --api-key-env lane alike (the
+        // resolve_secret belt re-gates at runtime; these pins hold the
+        // parse-time contract the gate comments claim).
+        vec![
+            "pinvou",
+            "code",
+            "login",
+            "claude",
+            "--code-env",
+            "sk-live-pasted-literal",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "add",
+            "--agent",
+            "codex",
+            "--name",
+            "n",
+            "--base-url",
+            "https://a.com",
+            "--api-key-env",
+            "1BAD-NAME",
+        ],
         // Round-51 review: the positive-integer gate on --context-window is
         // a parse refusal (0 would otherwise reach the store's own zh
         // validation through the store_error boundary this family pins
