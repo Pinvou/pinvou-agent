@@ -46,10 +46,7 @@ assert.ok(
 // move.
 const rustDir = join(root, 'src-tauri/src/features');
 const scopeSrc = readFileSync(join(rustDir, 'marketplace/scope.rs'), 'utf8');
-// Anchor the extraction to a top-level declaration — an
-// unanchored first match would silently validate a hypothetical
-// `SOMEPREFIX_CONSENT_SYNC_FAILURE_MARKER` defined earlier in the file
-// instead of the real constant.
+// Anchored to a top-level declaration so comment/string mentions cannot satisfy the extraction.
 const rustMarker = scopeSrc.match(
   /^pub(?:\(crate\))?\s+const CONSENT_SYNC_FAILURE_MARKER:\s*&str\s*=\s*"([^"]+)"/m,
 )?.[1];
@@ -140,10 +137,9 @@ assert.ok(
   'skill_gate.rs must keep the Rust-side value contract test this leg leans on (fn skill_gate_consent_failure_message_keeps_the_frontend_marker)',
 );
 // Grep the PRODUCTION region only (up to the test module) —
-// the test module carries its own hand-built copy of the template for the
-// Rust-side message pin, so a whole-file grep would keep passing after the
-// production emit site drifted. The production region must call the shared
-// helper and must not hand-roll the template at all.
+// cut there so the leg stays exact if a Rust-side test ever reintroduces a
+// hand-built template copy inside the test module. The production region
+// must call the shared helper and must not hand-roll the template at all.
 const skillGateProduction = productionOf(skillGateSrc);
 assert.ok(
   skillGateProduction.includes('consent_sync_failure_message('),
