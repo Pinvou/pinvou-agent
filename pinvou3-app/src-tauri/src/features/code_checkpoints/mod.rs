@@ -1496,26 +1496,7 @@ fn invalidate_entries_if(
 /// 精确删除，覆盖 turn 序号为 None（计数失败兜底）的情形；幂等，不存在即 false。
 pub fn drop_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> {
     validate_checkpoint_id(checkpoint_id)?;
-    let mut index = load_index(ledger_root)?;
-    let before = index.entries.len();
-    index.entries.retain(|entry| entry.id != checkpoint_id);
-    if index.entries.len() == before {
-        return Ok(false);
-    }
-    let repo = repo_dir(ledger_root);
-    if repo.join("HEAD").is_file() {
-        let _ = git_ref(
-            &repo,
-            &[
-                "update-ref",
-                "-d",
-                &format!("refs/checkpoints/{checkpoint_id}"),
-            ],
-        );
-        let _ = git_ref(&repo, &["gc", "--auto", "--quiet"]);
-    }
-    save_index(ledger_root, &index)?;
-    Ok(true)
+    Ok(invalidate_entries_if(ledger_root, |e| e.id == checkpoint_id)? > 0)
 }
 
 /// 测试专用 git 可用性探测，供本模块测试与命令层测试
