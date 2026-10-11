@@ -27,7 +27,8 @@
 //! - a delivered idempotency-keyed message leaves a marker under
 //!   `spool/.done/<file-stem>` (the stem is the sender+target-scoped key
 //!   hash), so a retried tool call cannot deliver twice across watcher
-//!   restarts;
+//!   restarts within the marker retention horizon (round-13 M1: [`RETENTION`]
+//!   is 7 days — an older retried call re-spools and delivers again);
 //! - poison files (schema drift, hostile content, oversize) are quarantined
 //!   under `spool/failed/` immediately; *transient* delivery failures (rewind
 //!   gates, engine spawn errors) retry with backoff and only quarantine after
@@ -38,6 +39,9 @@
 //! Known delivery guarantees (documented, accepted for v1):
 //! - **At-least-once, not exactly-once**: a crash between delivery and the
 //!   `.done` marker write replays the message on next boot.
+//! - **Dedup horizon is bounded**: `.done` markers are pruned after
+//!   [`RETENTION`] (7 days) — a retried keyed call older than that
+//!   re-delivers.
 //! - **Steer loss window**: an accepted steer can still be dropped by the
 //!   foundation when the target turn is cancelled or the engine evicted
 //!   (`chat:steer_dropped`); the messaging path treats steer-Ok as final and
