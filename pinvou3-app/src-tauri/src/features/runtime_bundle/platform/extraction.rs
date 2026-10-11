@@ -2295,9 +2295,12 @@ mod tests {
     /// retry leg would strip those fresh rows as "residue", re-enabling the
     /// pack as it lands. The landing journal mark is written before the
     /// registration and is cross-process visible: while it is present the
-    /// consent-row strip defers to the next startup. Residual: the
-    /// check-then-act instant between the probe and the strip (the
-    /// disclosed microsecond family, §3.2).
+    /// consent-row strip defers to the next startup. The sweep holds the
+    /// landing lease across the probe and the strip, so the §3.2
+    /// check-then-act family does not apply here; what the probe really
+    /// covers is a mark the same-boot reconcile could not yet resolve — a
+    /// crashed import or a failed mark clear — whose recovery may still
+    /// complete the landing, so deferring is load-bearing.
     #[test]
     fn cleanup_defers_consent_strip_while_a_same_id_import_is_mid_landing() {
         crate::platform::test_support::with_temp_home("pinvou3-residue-import-defer", || {
@@ -2415,28 +2418,15 @@ mod tests {
             crate::platform::paths::tests::plant_fifo(&mcp_path);
             let bundle = super::Pinvou3Bundle::paths();
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let value = bundle.load_mcp_json_for_repair();
-                let _ = tx.send(value);
-            });
-            let value = rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| {
-                    eprintln!(
-                        "FAIL: the in-lock mcp repair loader still blocks on a planted \
-                         FIFO — the raw read wedges every mcp.json user sharing the \
-                         home; aborting the test process to contain the leaked lock \
-                         holder"
-                    );
-                    std::process::abort();
-                });
+            let value = crate::platform::test_support::run_bounded_worker_or_abort(
+                "the in-lock mcp repair loader still blocks on a planted FIFO",
+                move || bundle.load_mcp_json_for_repair(),
+            );
             assert_eq!(
                 value,
                 serde_json::json!({"servers": {}}),
                 "a planted FIFO must fall back to the empty skeleton, not block"
             );
-            worker.join().unwrap();
         });
     }
 

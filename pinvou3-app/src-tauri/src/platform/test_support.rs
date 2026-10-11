@@ -293,3 +293,40 @@ pub(crate) fn assert_refused_without_hanging(
     worker.join().unwrap();
     assert!(refused, "{label} must be refused");
 }
+
+/// Bounded-run containment for a worker that may hold a cross-process lock
+/// (mcp.lock, a scope/transaction lock, the landing lease): spawns `worker`
+/// on its own thread and returns its value, but only if it finishes within
+/// 5 seconds. On a timeout or a channel disconnect (worker panic) the
+/// helper eprints the abort line and kills the process with
+/// `std::process::abort()`: a plain test panic would unwind the assertion
+/// thread while the abandoned worker stays blocked HOLDING the lock, and
+/// that leaked holder cascade-hangs every later test in the serial lane —
+/// the abort variant of [`assert_refused_without_hanging`], whose workers
+/// hold no lock and may safely be left to finish or die on their own. The
+/// abort line reads `FAIL: {label} — aborting the test process to contain
+/// the leaked lock holder`; `label` carries the per-site context (what
+/// still blocks, on what). Per-site refusal/value predicates stay at the
+/// call sites — this helper owns only the spawn/5s-bound/eprintln+abort/
+/// join discipline.
+#[cfg(test)]
+pub(crate) fn run_bounded_worker_or_abort<R: Send + 'static>(
+    label: &str,
+    worker: impl FnOnce() -> R + Send + 'static,
+) -> R {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let value = worker();
+        let _ = tx.send(value);
+    });
+    let value = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_else(|_| {
+            eprintln!(
+                "FAIL: {label} — aborting the test process to contain the leaked lock holder"
+            );
+            std::process::abort();
+        });
+    handle.join().unwrap();
+    value
+}

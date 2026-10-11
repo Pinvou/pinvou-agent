@@ -316,27 +316,16 @@ mod tests {
             crate::platform::paths::tests::plant_fifo(&mcp_path);
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let result = mgr.migrate_mcp_json_file(&mcp_path);
-                let _ = tx.send(result);
-            });
-            let result = rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| {
-                    eprintln!(
-                        "FAIL: the mcp secret migration still blocks on a planted mcp.json FIFO \
-                         while holding mcp.lock — the deadlock also wedges real users; \
-                         aborting the test process to contain the leaked lock holder"
-                    );
-                    std::process::abort();
-                });
+            let result = crate::platform::test_support::run_bounded_worker_or_abort(
+                "the mcp secret migration still blocks on a planted mcp.json FIFO \
+                 while holding mcp.lock — the deadlock also wedges real users",
+                move || mgr.migrate_mcp_json_file(&mcp_path),
+            );
             let error = result.expect_err("a planted FIFO must fail the locked migration read");
             assert!(
                 error.contains("mcp.json"),
                 "the refusal must name the target: {error}"
             );
-            worker.join().unwrap();
         });
     }
 }
