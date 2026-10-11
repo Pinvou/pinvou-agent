@@ -843,6 +843,34 @@ fn test_park_after_landing_mark() {
     }
 }
 
+/// Second test-only failpoint for the tail half of the lease hold span
+/// (round-28 review): parked immediately before the bundles.json
+/// registration, so a pin can observe that the lease is still HELD at the
+/// END of the span. The post-mark park above cannot make that observation —
+/// a scoped-block refactor releasing the lease anywhere in the supply →
+/// registration tail stays green against it while leaving the registration
+/// window cross-process-unguarded.
+#[cfg(test)]
+static LANDING_REGISTRATION_PARK: std::sync::Mutex<
+    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+/// No-op outside tests (same unconditional-call-site discipline as
+/// [`test_park_after_landing_mark`]).
+fn test_park_before_registration() {
+    #[cfg(test)]
+    {
+        let park = LANDING_REGISTRATION_PARK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some((reached, release)) = park {
+            let _ = reached.send(());
+            let _ = release.recv();
+        }
+    }
+}
+
 /// Clears the landing mark on any in-process exit; a crash skips the drop and
 /// leaves the mark for the startup reconciliation.
 struct LandingJournalGuard(String);
@@ -1800,6 +1828,9 @@ pub(crate) fn import_plugin_package_gated(
             None
         }
     };
+    // Tail failpoint: lets the hold-span pin observe the lease at the very
+    // end of the span (round-28 review). No-op outside tests.
+    test_park_before_registration();
     if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
         // Round-20 P2: fail visible. The dir is live and supply succeeded, so
         // this is not rollback territory — but swallowing the failure into a
@@ -2348,6 +2379,69 @@ mod tests {
                 after
                     .try_write()
                     .expect("the landing lease must be released once the import completes"),
+            );
+        });
+    }
+
+    /// Round-28 review: the post-mark park above cannot distinguish "the
+    /// lease is released at function end" from "released right after the
+    /// landing rename" — a scoped-block refactor in the supply →
+    /// registration tail would leave that window cross-process-unguarded
+    /// while every existing pin stays green. This pin parks immediately
+    /// before the bundles.json registration and requires the lease to still
+    /// be HELD there, closing the tail half of the hold span.
+    #[test]
+    fn import_holds_the_landing_lease_through_registration() {
+        crate::platform::test_support::with_temp_home("pinvou-import-lease-tail", || {
+            let dir = crate::platform::paths::pinvou3_home();
+
+            let zip_path = dir.join("span-tail.zip");
+            write_demo_combo_zip(&zip_path);
+
+            struct ResetTailPark;
+            impl Drop for ResetTailPark {
+                fn drop(&mut self) {
+                    *LANDING_REGISTRATION_PARK
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = None;
+                }
+            }
+            let (reached_tx, reached_rx) = std::sync::mpsc::channel::<()>();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            *LANDING_REGISTRATION_PARK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some((reached_tx, release_rx));
+            let _reset = ResetTailPark;
+
+            let worker_zip = zip_path.clone();
+            let worker = std::thread::spawn(move || {
+                import_plugin_package(&worker_zip.to_string_lossy(), "combo.zip")
+            });
+            reached_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the import must reach the pre-registration failpoint");
+
+            let mut peer = open_landing_lease("demo").expect("the peer lease opens");
+            assert!(
+                peer.try_write().is_err(),
+                "the landing lease must still be HELD immediately before registration"
+            );
+
+            release_tx
+                .send(())
+                .expect("the failpoint release channel is live");
+            let report = worker
+                .join()
+                .expect("the import worker should not panic")
+                .expect("the import completes after the failpoint releases");
+            assert_eq!(report.id, "demo");
+            assert!(
+                dir.join("bundles")
+                    .join("demo")
+                    .join("mcp")
+                    .join("manifest.json")
+                    .is_file(),
+                "the released import landed its package content"
             );
         });
     }

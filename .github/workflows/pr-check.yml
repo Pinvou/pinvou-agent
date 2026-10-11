@@ -1839,6 +1839,7 @@ jobs:
             'restored_backup_quarantines' \
             'mixed_case_journal_marks' \
             'holds_the_landing_lease_across' \
+            'holds_the_landing_lease_through' \
             'crash_stranded_reimport_backup' \
             'marker_directory_aborts' \
             'claimed_companion_name' \
