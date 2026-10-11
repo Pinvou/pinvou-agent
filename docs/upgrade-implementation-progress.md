@@ -1048,3 +1048,29 @@ delta. Full actual lifecycle PostgreSQL regression passed (659.411s); default
 Go tests/vet, module verification, all commands, pinned contract inventory,
 formatting/diff and client architecture guard passed. Detailed evidence remains
 in the service plan. This closes B11 only; full T44 stays in progress.
+
+### T44 batch 12: protected channel storage (2026-10-12)
+
+Private additive migration 12 initializes an explicit stable/beta/internal
+channel only with actual complete fresh scope absence and StandardReplay
+fencing. Existing empty/populated legacy scopes are refused; no old binding or
+default supplies current configuration. The channel participates in every full
+capture, hash/revision CAS and 4096-member/1 MiB refs/32 MiB aggregate bound.
+Actual PostgreSQL controls passed atomic rollback, fresh-scope competition,
+legacy-preserving migration, input/clock/owner/permission/digest refusals and
+exact channel-inclusive capacity with one-byte negative controls. Real T06
+restart replay returns the original encrypted result without another write.
+
+This storage batch opens no channel-change or qualification workflow. Existing
+historical private action ports have not yet adopted current-channel guards;
+the next fixed batch must compose all new-action guards and full invalidation
+before any production registration. Shared machine settings are T40's same
+final transaction; legacy migration requires real T17 configuration. Protected
+presence does not certify current qualification or deployment. Full regression
+and independent review evidence follow in the service plan. Full T44 remains
+open; continue other unblocked tasks and skip recorded owner decisions.
+
+Both independent roles passed the frozen complete B12 code/test/docs delta.
+Full actual lifecycle PostgreSQL regression passed (729.182s); default tests,
+vet, module verification, all commands, pinned contract and client architecture
+checks passed. This closes B12 storage only, leaving B13/full T44 open.
