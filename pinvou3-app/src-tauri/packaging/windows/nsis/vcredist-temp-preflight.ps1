@@ -7,6 +7,30 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
+# A Windows PowerShell 5.1 process spawned under a pwsh 7 parent (a CI step
+# shell or a pwsh terminal) inherits pwsh's PSModulePath and then cannot load
+# its own built-in modules: Get-FileHash raises CommandNotFound and Get-Acl
+# resolves the unloadable PowerShell 7 module. Rebuild the host default
+# module path whenever the process path is missing the system module
+# directory or carries pwsh entries; plain 5.1 consoles and the NSIS install
+# context already match and are left untouched.
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+  $systemModulePath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules"
+  $modulePathEntries = @(
+    [System.Environment]::GetEnvironmentVariable("PSModulePath", "Process") -split ";"
+  ) | Where-Object { $_ }
+  $pwshModuleEntries = $modulePathEntries | Where-Object {
+    $_ -like "*\PowerShell\7\Modules" -or $_ -like "*\PowerShell\Modules"
+  }
+  if (($modulePathEntries -notcontains $systemModulePath) -or $pwshModuleEntries) {
+    $env:PSModulePath = @(
+      (Join-Path $HOME "Documents\WindowsPowerShell\Modules"),
+      (Join-Path $env:ProgramFiles "WindowsPowerShell\Modules"),
+      $systemModulePath
+    ) -join ";"
+  }
+}
+
 $systemSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-18")
 $administratorsSid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544")
 $requiredSids = @($systemSid, $administratorsSid)

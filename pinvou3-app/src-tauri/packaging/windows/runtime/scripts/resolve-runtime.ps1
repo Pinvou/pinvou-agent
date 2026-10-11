@@ -9,8 +9,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Add-Type -AssemblyName System.IO.Compression.FileSystem
+# Dot-source the shared library before the first module-dependent cmdlet: it
+# restores the Windows PowerShell module path that a pwsh-parented 5.1
+# process loses, and Add-Type itself cannot autoload without it.
 . (Join-Path $PSScriptRoot "runtime-manifest-contract.ps1")
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $tauriRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $appRoot = (Resolve-Path (Join-Path $tauriRoot "..")).Path

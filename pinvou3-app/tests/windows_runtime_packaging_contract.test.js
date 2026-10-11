@@ -209,6 +209,34 @@ assert.match(runtimeManifestContract, /\$null -eq \$Manifest\.stagedFiles/u);
 assert.match(runtimeManifestContract, /Dictionary\[string, object\]/u);
 assert.match(runtimeManifestContract, /Windows runtime lifecycle contains an extra file/u);
 assert.match(runtimeManifestContract, /Windows runtime staged file failed verification/u);
+// Windows PowerShell 5.1 spawned under a pwsh 7 parent (CI step shells, pwsh
+// terminals) inherits pwsh's PSModulePath: Get-FileHash then raises
+// CommandNotFound and Get-Acl resolves the unloadable PowerShell 7 module,
+// so the native harnesses die before their assertions while the aggregate
+// CI step still reports green. Each direct 5.1 entry point must restore the
+// host default module path before its first module-dependent cmdlet.
+const modulePathGuard =
+  /PSVersionTable\.PSVersion\.Major -lt 6[\s\S]*?System32\\WindowsPowerShell\\v1\.0\\Modules/u;
+assert.match(
+  runtimeManifestContract,
+  modulePathGuard,
+  "the shared runtime manifest library must restore the 5.1 module path for every dot-sourcing entry point",
+);
+assert.match(
+  vcRedistTempPreflight,
+  modulePathGuard,
+  "the VC++ temp preflight must restore the 5.1 module path itself (no shared library runs before it)",
+);
+assert.match(
+  initScript,
+  modulePathGuard,
+  "the runtime init script must restore the 5.1 module path before its lock-file hashing",
+);
+assert.ok(
+  runtimeScript.indexOf('. (Join-Path $PSScriptRoot "runtime-manifest-contract.ps1")') <
+    runtimeScript.indexOf("Add-Type -AssemblyName"),
+  "the resolver must dot-source the shared library before Add-Type so the module path is restored first",
+);
 const stagedFilesCheck = runtimeScript.indexOf("Assert-WindowsRuntimeStagedFilesExact");
 const derivedVcStage = runtimeScript.indexOf("Preparing descriptor-owned VC++ runtime component");
 const payloadCleanup = runtimeScript.indexOf("Remove-Item -LiteralPath $stageContext.PayloadRoot");
