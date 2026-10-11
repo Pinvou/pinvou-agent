@@ -833,3 +833,31 @@ closed until staged/preparation composition exists. Continue session events,
 waiting slots/safe successors and channel invalidation without reopening deferred
 owner decisions. Downloads retain no hard total or cumulative elapsed limit;
 client trust proof, physical evidence/budgets and deployment remain deferred.
+
+
+### T44 batch 4: protected ordinary session events (2026-10-12)
+
+Additive migration 4 implements actual ordinary session-state composition with
+purpose, sequence, CAS, original occurrence/reception window and OwnerReplay
+fences. Verification requires the original object and verified result; preflight
+requires support and the exact scope; silent permission requires the existing
+helper. Freeze and backup bind exact owner/epochs/data scope; readiness binds the
+original preparation owner. Terminal events retain prior state and fence future
+actions. No download total or cumulative hard deadline is added.
+
+Both independent roles passed the repaired complete scoped delta. Review closed
+missing intrinsic evidence, readiness epoch and ordinary-cancellation defects.
+Actual restricted PostgreSQL cases verify all purpose/backup paths, Go/SQL parity,
+rollback and wrong/missing evidence with legal controls, safe numeric spellings,
+private rights and V3 upgrade preserving active validation, final 24-hour crossing,
+double-owner CAS race, terminal preservation, null/stale CAS and no-update.
+The final current-code entire lifecycle regression and baseline evidence are
+recorded in the service lifecycle plan.
+
+The ordinary event writer cannot bypass validation, authorization, workflow
+resume, staged verification or lifecycle cancellation. Actual T17/T20 owners
+still need credential, deny, workflow and atomic event-ledger/outbox composition.
+This is scoped kernel progress, not full T44 acceptance or physical certification.
+Continue pending lifecycle cancellation, staged/waiting composition and channel
+invalidation while deferred client trust/platform/budget/deployment decisions
+remain recorded and skipped.
