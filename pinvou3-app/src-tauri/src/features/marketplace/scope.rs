@@ -131,6 +131,9 @@ fn disabled_bundles_lock_path() -> PathBuf {
 /// (The lock-open/probe degradation of the hot read itself is latched by the
 /// shared funnel's own latch in `super::file_lock`; this one gates the
 /// recovery/freeze arms below.)
+///
+/// Bit 1 is intentionally empty, mirroring `file_lock.rs`'s `LOG_LOCK_PROBE`
+/// slot; scope-specific modes start at bit 2.
 static READ_FAILURE_LOGGED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Same latch; the level derives from the mode bit: the freeze-persist
@@ -300,13 +303,14 @@ fn fail_closed_recovered_file() -> DisabledBundlesFile {
     }
 }
 
-/// Arms the [`UNPERSISTED_VERDICT`] memo for `home`: the frozen verdict the
+/// Arms the [`UNPERSISTED_VERDICT`] memo for the current home: the frozen verdict the
 /// read just evaluated could not be persisted, so later reads in this
 /// process must reuse it instead of re-evaluating from first-boot traces.
-fn arm_unpersisted_verdict(home: PathBuf, file: &DisabledBundlesFile) {
+fn arm_unpersisted_verdict(file: &DisabledBundlesFile) {
     *UNPERSISTED_VERDICT
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((home, file.clone()));
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((paths::pinvou3_home(), file.clone()));
 }
 
 /// Shared freeze-persist tail of the NotFound-branch recovery arms (the
@@ -340,7 +344,7 @@ fn try_freeze_verdict(file: &DisabledBundlesFile, persist_repairs: bool, what: &
                 "[marketplace] CRITICAL: failed to persist the {what}: {freeze_error}; holding the in-process verdict until restart"
             ),
         );
-        arm_unpersisted_verdict(paths::pinvou3_home(), file);
+        arm_unpersisted_verdict(file);
     }
 }
 
@@ -540,7 +544,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 // misjudged fresh keeps the DenyAll fallback (fail-closed,
                 // the registered R11-M4 shape).
                 if !legacy_existed && !upgraded_install {
-                    arm_unpersisted_verdict(home.clone(), &file);
+                    arm_unpersisted_verdict(&file);
                 }
                 Ok(())
             };
@@ -552,7 +556,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                         file.initialized.contains(SessionMode::Plain.as_str())
                     ),
                 );
-                arm_unpersisted_verdict(home, &file);
+                arm_unpersisted_verdict(&file);
                 // The freeze persist failed: return before the clean-read tail
                 // so the LOG_FREEZE_PERSIST bit this arm just set survives —
                 // the other freeze arms return early for the same reason, and
@@ -675,7 +679,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     "[marketplace] CRITICAL: failed to persist the legacy migration verdict: {error}; holding the in-process verdict until a save succeeds"
                 ),
             );
-            arm_unpersisted_verdict(paths::pinvou3_home(), &file);
+            arm_unpersisted_verdict(&file);
         }
     }
     // A failed freeze means the persist path is broken right now; the
@@ -2320,18 +2324,10 @@ pub fn enable_packages_in_scope(
     scope: ConnectorScope,
     raw_ids: &[String],
 ) -> Result<EnablePackagesOutcome, String> {
-    // Round-23 MINOR 3 hoist: one manifest walk for the whole list.
-    let tools = MarketplaceManager::new().available_tools();
-    let mut ids: Vec<String> = raw_ids
-        .iter()
-        .map(|id| to_package_id_with(&tools, id))
-        .collect();
-    // Sort-then-dedup (round-20 minor 1): bare `dedup` removes consecutive
-    // duplicates only, so e.g. ["a","b","a"] leaked a duplicate into the
-    // blocked/not_applied reporting; sorting also makes the reported order
-    // deterministic.
+    let mut ids = fold_and_dedup_input_ids(raw_ids);
+    // The helper dedups but preserves input order; sort makes the
+    // blocked/not_applied reporting deterministic.
     ids.sort();
-    ids.dedup();
     if ids.is_empty() {
         return Ok(EnablePackagesOutcome::default());
     }
@@ -2916,8 +2912,7 @@ mod tests {
         });
     }
 
-    /// The startup read must report a freeze-persist
-    /// failure. Its CRITICAL log line fires at the top of the Tauri setup
+    /// Its CRITICAL log line fires at the top of the Tauri setup
     /// hook — before the log plugin attaches — so release builds never see
     /// it; the returned flag is what the host mirrors onto the startup
     /// timeline. Detector: the verdict memo (a first read in a process arms
@@ -3933,68 +3928,6 @@ mod tests {
         body()
     }
 
-    /// Runs `worker` on another thread while the test holds the OS-level
-    /// scope lock through a second fd (the peer-process shape), asserting the
-    /// data file stays untouched until the foreign lock is released.
-    fn assert_blocked_until_foreign_lock_release<F>(worker: F)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let handle = with_foreign_scope_write_lock(|| {
-            let handle = std::thread::spawn(worker);
-            // Blocks until the spawned worker holds the in-process scope
-            // mutex: with the foreign OS lock held by the test, a worker past
-            // the mutex is parked on (or just failed) the OS-lock acquisition.
-            // Without this handshake the absence assert below could pass
-            // before the worker even reached the lock.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&disabled_bundles_lock_path()).try_lock() {
-                    // Not held by the worker yet — retry shortly.
-                    Ok(guard) => drop(guard),
-                    // Held by the worker: with the foreign lock held, it is
-                    // now either blocked on the OS lock or its acquisition
-                    // failed.
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the scope lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            assert_data_file_absent_within();
-            handle
-        });
-        // Bound the post-release join — a funnel regression that
-        // blocks even after the foreign lock is released must fail the test
-        // in seconds, not hang the lane until the job timeout (the read-side
-        // twin already bounds its wait). On timeout the
-        // worker is leaked while HOLDING the scope mutex and the OS flock —
-        // letting the test panic would cascade-hang every later scope test
-        // in the serial lane on the unbounded mutex, so die loudly instead:
-        // the regression wedges real users too, and a hard process death
-        // keeps the red contained to this point with its message printed.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(handle.join());
-        });
-        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(joined) => joined.expect("worker thread should not panic"),
-            Err(_) => {
-                eprintln!(
-                    "FAIL: the funnel worker was still blocked 30s after the foreign lock was released — \
-                     the deadlock also wedges real users; aborting the test process to contain the leaked lock holder"
-                );
-                std::process::abort();
-            }
-        }
-    }
-
     /// A persistently failing quarantine (read-only
     /// home) reaches the recovery arm on every locked read: the warn must be
     /// latched, AND the unrecovered arm must return before the read tail
@@ -4235,10 +4168,62 @@ mod tests {
     #[test]
     fn cross_process_lock_blocks_save_write_until_release() {
         with_temp_home("pinvou3-scope-cross-process-save", || {
-            assert_blocked_until_foreign_lock_release(|| {
-                save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
-                    .expect("write should succeed once the foreign lock is released");
+            let handle = with_foreign_scope_write_lock(|| {
+                let handle = std::thread::spawn(|| {
+                    save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()])
+                        .expect("write should succeed once the foreign lock is released");
+                });
+                // Blocks until the spawned worker holds the in-process scope
+                // mutex: with the foreign OS lock held by the test, a worker past
+                // the mutex is parked on (or just failed) the OS-lock acquisition.
+                // Without this handshake the absence assert below could pass
+                // before the worker even reached the lock.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    match file_lock::process_mutex_for(&disabled_bundles_lock_path()).try_lock() {
+                        // Not held by the worker yet — retry shortly.
+                        Ok(guard) => drop(guard),
+                        // Held by the worker: with the foreign lock held, it is
+                        // now either blocked on the OS lock or its acquisition
+                        // failed.
+                        Err(std::sync::TryLockError::WouldBlock) => break,
+                        Err(std::sync::TryLockError::Poisoned(p)) => {
+                            drop(p.into_inner());
+                            break;
+                        }
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "worker never reached the scope lock acquisition point"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                assert_data_file_absent_within();
+                handle
             });
+            // Bound the post-release join — a funnel regression that
+            // blocks even after the foreign lock is released must fail the test
+            // in seconds, not hang the lane until the job timeout (the read-side
+            // twin already bounds its wait). On timeout the
+            // worker is leaked while HOLDING the scope mutex and the OS flock —
+            // letting the test panic would cascade-hang every later scope test
+            // in the serial lane on the unbounded mutex, so die loudly instead:
+            // the regression wedges real users too, and a hard process death
+            // keeps the red contained to this point with its message printed.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(handle.join());
+            });
+            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(joined) => joined.expect("worker thread should not panic"),
+                Err(_) => {
+                    eprintln!(
+                        "FAIL: the funnel worker was still blocked 30s after the foreign lock was released — \
+                         the deadlock also wedges real users; aborting the test process to contain the leaked lock holder"
+                    );
+                    std::process::abort();
+                }
+            }
             let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
             assert!(
                 content.contains("\"weather\""),
@@ -4257,7 +4242,6 @@ mod tests {
     fn degraded_read_leaves_a_corrupt_store_unquarantined() {
         with_temp_home("pinvou3-scope-degraded-corrupt", || {
             use std::sync::atomic::Ordering;
-            READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
             let data_path = disabled_bundles_path();
             std::fs::create_dir_all(data_path.parent().unwrap()).unwrap();
             let corrupt = b"{ this is not json";
@@ -4499,7 +4483,7 @@ mod tests {
             // consent gate runs (`bundle_store_on_connected` precedes the
             // connected event that triggers `*_apply_skills`); reproduce that
             // ordering so the fixture cannot false-pass on a known-skip that
-            // vouches for the connector (round 6 B1).
+            // vouches for the connector.
             crate::features::marketplace::store::BundleStore::new()
                 .upsert(
                     crate::features::marketplace::store::BundleRecord::installed_now(
