@@ -384,6 +384,14 @@ fn try_freeze_verdict(file: &DisabledBundlesFile, persist_repairs: bool, what: &
 /// when both are absent; do not widen beyond the criteria in this comment
 /// (review #455 R5-m1).
 ///
+/// Round-27 performance note: a fully-locked read holds the flock across the
+/// normalize tail (an O(P) manifest walk) and may persist a repair inline —
+/// peer writers and the startup freeze queue behind that section, and the
+/// freeze-retry arm repeats a failing write attempt per call while the home
+/// stays broken (the LOG is latched, the attempt is not). Fail-closed
+/// throughout; offloading the engine-side hot reader is registered follow-up
+/// material.
+///
 /// This wide upgrade signal is polluted by the app's own first-boot behavior
 /// (bridge boot's ensure_dirs self-writes sessions/default/artifacts/ and
 /// back-fills the default settings.json), so the first read is hoisted to the
