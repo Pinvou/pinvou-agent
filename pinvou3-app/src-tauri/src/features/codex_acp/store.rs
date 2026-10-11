@@ -1678,35 +1678,26 @@ impl AcpConfigDefaultsStore {
     }
 
     fn persist(&self) -> Result<()> {
+        // `atomic_write` stages inside the target's parent, so the directory
+        // must exist first (unchanged from the hand-rolled writer).
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        // Pid-carrying staging name, same cross-process rule as the
-        // providers store's `persist_locked`/`atomic_write`: the CLI's
-        // `code` family mutates this store from a second process, and a
-        // fixed `.tmp` name lets two surfaces rename each other's
-        // half-written file into place.
-        let tmp = self
-            .path
-            .with_extension(format!("json.tmp.{}", std::process::id()));
         let value = AcpConfigDefaultsFile {
             version: CONFIG_DEFAULTS_VERSION,
             agents: self.records.read().clone(),
         };
-        // Both arms clean the pid tmp (round-37 review minor): the rename
-        // arm alone left `acp-agent-defaults.json.tmp.<pid>` stranded
-        // forever after a failed write (ENOSPC, EACCES) in the long-lived
-        // GUI process.
-        let payload = serde_json::to_vec_pretty(&value)?;
-        if let Err(error) = fs::write(&tmp, payload) {
-            let _ = fs::remove_file(&tmp);
-            return Err(error.into());
-        }
-        if let Err(error) = fs::rename(&tmp, &self.path) {
-            let _ = fs::remove_file(&tmp);
-            return Err(error.into());
-        }
-        Ok(())
+        // Round-51 review: the hand-rolled pid-suffixed tmp+rename carried
+        // no fsync, so power loss could land a truncated/empty
+        // `acp-agent-defaults.json`. `atomic_write` provides the unique
+        // per-writer staging name this comment already demanded (pid +
+        // timestamp — the same cross-process rule: the CLI's `code` family
+        // mutates this store from a second process, and a fixed `.tmp` name
+        // would let two surfaces rename each other's half-written file into
+        // place), the fsync-before-rename the sibling stores migrated for,
+        // and the same two-arm tmp cleanup.
+        crate::platform::filesystem::atomic_write(&self.path, &serde_json::to_vec_pretty(&value)?)
+            .map_err(Into::into)
     }
 }
 

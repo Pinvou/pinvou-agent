@@ -102,17 +102,50 @@ struct SettingsFileLock {
 /// The `settings.json.lock` sibling file, opened read+write, created but
 /// never truncated (the lock file itself is never deleted — see
 /// [`SettingsFileLock`]). Shared by both lock acquirers below.
+///
+/// 0600 posture (mirrors the CLI's `open_family_lock_file`): the lock file
+/// is never deleted, so a file created at the umask default (0644) stays
+/// world-readable forever, and flock needs only READ permission — on a
+/// shared/group home any low-privilege account could then hold the settings
+/// write lock and wedge every GUI/CLI settings writer behind it. A FRESH
+/// create is therefore private from the first instant (`.mode(0o600)`; the
+/// umask can only strip bits owner-only mode does not have), and every open
+/// best-effort re-tightens to 0600 so a pre-existing 0644 file from an
+/// older build heals the next time a lock is taken.
 fn open_settings_lock_file() -> std::io::Result<std::fs::File> {
     let path = super::paths::settings_path().with_file_name("settings.json.lock");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::OpenOptions::new()
+    #[cfg(unix)]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&path)
+    };
+    #[cfg(not(unix))]
+    let opened = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&path)
+        .open(&path);
+    let file = opened?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // Best-effort: the open above already created a fresh file private
+        // and the lock stays usable either way (flock needs no write
+        // permission), so a failing tighten is not worth failing settings
+        // I/O over.
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
 }
 
 fn lock_settings_file() -> std::io::Result<SettingsFileLock> {
@@ -1567,6 +1600,56 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    /// The settings lock file must be owner-only (0600): the lock file is
+    /// never deleted, and flock needs only READ permission, so a 0644
+    /// leftover would let any local account hold the settings write lock on
+    /// a shared home. A pre-existing 0644 file (an older build's leftover)
+    /// must be re-tightened by BOTH acquirers on their next open.
+    #[cfg(unix)]
+    #[test]
+    fn settings_lock_file_tightens_a_preexisting_0644_file_to_0600() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _home = pinned_temp_prefs_home("prefs-settings-lock-mode", &[]);
+
+        let lock_path =
+            crate::platform::paths::settings_path().with_file_name("settings.json.lock");
+        std::fs::write(&lock_path, b"").expect("seed a pre-existing lock file");
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen the seeded lock file to 0644");
+
+        {
+            let _lock = lock_settings_file().expect("acquire the settings file lock");
+            assert_eq!(
+                std::fs::metadata(&lock_path)
+                    .expect("lock file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "the blocking acquirer must tighten a pre-existing 0644 lock file to 0600"
+            );
+        }
+
+        {
+            let _lock = try_lock_settings_file_bounded()
+                .expect("the bounded acquirer must not error")
+                .expect("an uncontended lock must be acquired within the bound");
+            assert_eq!(
+                std::fs::metadata(&lock_path)
+                    .expect("lock file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "the bounded acquirer must tighten a pre-existing 0644 lock file to 0600"
+            );
+        }
+    }
 
     #[test]
     fn saved_model_alias_is_backward_compatible_and_normalized() {
@@ -3861,6 +3944,71 @@ mod tests {
             prefs.advanced.saved_models[0].credential_state,
             CredentialState::Unavailable,
             "an unreachable-keyring miss must read as Unavailable"
+        );
+    }
+
+    /// The SEARCH loop's twin of the models-loop pin above: its identical
+    /// fallback-miss → Unavailable arm needs its own pin, so a regression
+    /// to `Missing` cannot sneak back into one loop while the other stays
+    /// honest.
+    #[test]
+    fn refresh_classifies_a_search_fallback_miss_as_unavailable_not_missing() {
+        struct SearchFallbackStore;
+        impl crate::platform::credential_store::CredentialStore for SearchFallbackStore {
+            fn get(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+            ) -> Result<Option<String>, crate::platform::credential_store::CredentialError>
+            {
+                Ok(None)
+            }
+            fn set(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+                _value: &str,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                Err(crate::platform::credential_store::CredentialError::new(
+                    "not used by the refresh",
+                ))
+            }
+            fn delete(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                Err(crate::platform::credential_store::CredentialError::new(
+                    "not used by the refresh",
+                ))
+            }
+            fn os_keyring_unreachable(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+            ) -> bool {
+                true
+            }
+        }
+
+        let mut prefs = UserPrefs {
+            search: SearchPrefs {
+                provider: SearchProvider::Tavily,
+                credentials: [(
+                    SearchProvider::Tavily,
+                    SearchCredential {
+                        credential_ref: Some(SearchProvider::Tavily.credential_reference()),
+                        credential_state: CredentialState::Missing,
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        prefs.refresh_credential_states_with_store(&SearchFallbackStore);
+        assert_eq!(
+            prefs.search.credentials[&SearchProvider::Tavily].credential_state,
+            CredentialState::Unavailable,
+            "an unreachable-keyring miss on the search lane must read as Unavailable"
         );
     }
 

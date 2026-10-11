@@ -1940,6 +1940,42 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A first-ever mutation on a fresh home: the store's parent directory
+    /// does not exist yet, and `persist_locked`'s own `create_dir_all` runs
+    /// INSIDE the section — so the lock open must not depend on the
+    /// directory existing. It used to: the ENOENT degraded to UNLOCKED with
+    /// only a warning, exactly at the write that creates the store. Both
+    /// sequential upserts must take the section (observable as the lock
+    /// file existing after the FIRST mutation — a degraded first upsert
+    /// would leave it absent until the second one).
+    #[test]
+    fn section_lock_is_taken_on_a_fresh_home_before_the_store_directory_exists() {
+        let dir = section_test_dir("acp-providers-test-");
+        let store_dir = dir.join("fresh-home");
+        let cli = AcpProvidersStore {
+            path: store_dir.join("acp-providers.json"),
+            agents: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        cli.upsert("codex", record("pv-1", "First")).unwrap();
+        assert!(
+            store_dir.join("acp-providers.json.lock").exists(),
+            "the first mutation on a fresh home must create the section lock file, not degrade to unlocked"
+        );
+
+        cli.upsert("codex", record("pv-2", "Second")).unwrap();
+        assert_eq!(
+            cli.state("codex")
+                .providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pv-1", "pv-2"],
+            "both sequential upserts must land under the section"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A file that turned corrupt after boot (holding writes this process
     /// never saw) must be preserved before this process's persist replaces
     /// it — `load_or_empty`'s boot-time `.pinvou3-bak` never saw it either.

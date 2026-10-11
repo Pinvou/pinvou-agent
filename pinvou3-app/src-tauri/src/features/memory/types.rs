@@ -406,8 +406,13 @@ pub(super) fn normalize_profile_label(value: &str, topic: &str) -> String {
 /// refuse this shape up front: `MemoryProfile::normalize` maps a rejected
 /// label to `""` and the update persists it, so without this check a
 /// misspelled or over-long call name destroyed the stored value with exit
-/// 0 and no note on any channel. `pub` for the CLI lane; the GUI save path
-/// shares the underlying gap and keeps its inline validation for now.
+/// 0 and no note on any channel. `pub` for the CLI lane. Round-51 review
+/// honesty: the GUI save path does NOT gate wipe-shaped labels today —
+/// SettingsView only trims and `update_memory_profile` applies the patch
+/// unguarded, so a whitespace/over-long GUI label is silently normalized
+/// (possibly to `""`). The guard itself also short-circuits on a
+/// trim-empty value, so a whitespace CLI value bypasses it too — that
+/// lane is closed CLI-side by parse refusal; this logic stays as-is.
 pub fn profile_label_would_be_wiped(value: &str, topic: &str) -> bool {
     !value.trim().is_empty() && normalize_profile_label(value, topic).is_empty()
 }

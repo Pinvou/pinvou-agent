@@ -1352,7 +1352,7 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         }
         let x = record[0] as char;
         let y = record[1] as char;
-        let path = String::from_utf8_lossy(&record[3..]).replace('\\', "/");
+        let path = porcelain_record_path(record);
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
             index += 1;
         }
@@ -1364,6 +1364,26 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         });
     }
     Ok(changes)
+}
+
+/// One `git status --porcelain=v1 -z` record's path field: `XY ` prefix
+/// stripped, bytes lossily decoded. The `\` → `/` separator rewrite is a
+/// WINDOWS-only `status` quirk (git reports Windows paths with backslash
+/// separators there). A literal backslash is a legal Unix filename byte —
+/// rewriting on unix forged a phantom `back/slash.txt` entry for a real
+/// `back\slash.txt` (missing baseline fingerprint, wrong dirty path), so
+/// the raw path is kept as-is (round-51 review; same doctrine as the CLI
+/// twin's round-37 note).
+fn porcelain_record_path(record: &[u8]) -> String {
+    let path = String::from_utf8_lossy(&record[3..]);
+    #[cfg(windows)]
+    {
+        path.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.into_owned()
+    }
 }
 
 fn git_status_label(x: char, y: char) -> &'static str {
@@ -1580,6 +1600,21 @@ mod tests {
         assert!(validate_workspace_relative_path(root.path(), "").is_ok());
         assert!(validate_workspace_relative_path(root.path(), "../secret.txt").is_err());
         assert!(validate_workspace_relative_path(root.path(), "/absolute/secret.txt").is_err());
+    }
+
+    /// A literal backslash is a legal Unix filename byte: the porcelain
+    /// record's path must survive verbatim. The unconditional `\` → `/`
+    /// rewrite used to forge a phantom `back/slash.txt` entry (and starve
+    /// the real file's baseline fingerprint) for it.
+    #[cfg(unix)]
+    #[test]
+    fn porcelain_record_path_keeps_a_unix_backslash_filename_raw() {
+        assert_eq!(
+            porcelain_record_path(b"?? back\\slash.txt"),
+            "back\\slash.txt"
+        );
+        // Ordinary records lose only the XY prefix, unrewritten.
+        assert_eq!(porcelain_record_path(b"M  src/main.py"), "src/main.py");
     }
 
     /// Round-51 review M1: a dirty symlink→regular-file used to pass the

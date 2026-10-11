@@ -160,6 +160,22 @@ pub(crate) const SECTION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// best-effort keychain delete keep their short reads/writes inside, with
 /// the residual named at those sites.
 pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Option<std::fs::File> {
+    // The lock file is a sibling of the store file, so on a first-ever
+    // mutation in a fresh home its parent does not exist yet — the open
+    // below would ENOENT and every mutator would silently degrade to
+    // unlocked exactly once, at the moment cross-process exclusion matters
+    // most (the write that creates the store). Create the parent first and
+    // degrade on a genuine failure the same way the open path does; the
+    // persist sites run the same `create_dir_all` afterwards.
+    if let Some(parent) = lock_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "[pinvou3-app] Unable to create the {label} section lock directory {}: {error}; proceeding without cross-process exclusion",
+                parent.display()
+            );
+            return None;
+        }
+    }
     let file = match std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
