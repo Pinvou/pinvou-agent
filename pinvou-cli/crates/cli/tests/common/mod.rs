@@ -20,6 +20,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_cli::{CliError, CliOutcome, ExitCode, execute, parse_args};
+use pinvou3_lib::features::sessions::SessionStore;
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
 /// variable, preventing data races when the parallel test runner executes them
@@ -212,6 +213,17 @@ impl Drop for HomeGuard {
     }
 }
 
+/// Creates one empty chat session through `SessionStore` (the same standalone
+/// boot constructor the CLI uses — `SessionStore::boot()` in most families,
+/// `open_store` in the artifacts family) and returns its id.
+pub fn create_session_fixture() -> String {
+    let store = SessionStore::boot().expect("boot session store");
+    let session = store
+        .create_new("test-model".to_owned(), None, std::env::temp_dir())
+        .expect("create session");
+    session.metadata.id
+}
+
 /// Runs one command through the in-process dispatch: parse (which must
 /// succeed), then execute. Returns the outcome for exit-code and stdout
 /// assertions. Takes the FULL argv including the leading `"pinvou"`.
@@ -260,14 +272,24 @@ pub fn usage_error(arguments: &[&str]) -> String {
     error.to_string()
 }
 
+/// Runs one command through the in-process dispatch and returns the error
+/// from either lane: a parse-time refusal straight from `parse_args`, or an
+/// execute-time failure from `execute` (which must not succeed). The exit
+/// class is the caller's assertion — usage-refusal pins may deliberately
+/// fire at parse, while other call sites expect exit-1 host failures — so
+/// the name says what it guarantees and nothing more.
+pub fn command_error(arguments: &[&str]) -> CliError {
+    match parse_args(arguments.to_vec()) {
+        Err(error) => error,
+        Ok(parsed) => execute(parsed).expect_err("expected a command error"),
+    }
+}
+
 /// Asserts the usage exit-code class (2) for a refused argv and returns the
 /// message. Usage errors may surface from `parse` or from `execute`; both
 /// must carry the exit-code 2 usage marker.
 pub fn assert_usage(arguments: &[&str]) -> String {
-    let error = match parse_args(arguments.to_vec()) {
-        Err(error) => error,
-        Ok(parsed) => execute(parsed).expect_err("expected usage error"),
-    };
+    let error = command_error(arguments);
     assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
     error.to_string()
 }
@@ -277,6 +299,13 @@ pub fn assert_usage(arguments: &[&str]) -> String {
 pub fn execute_error(arguments: &[&str]) -> CliError {
     let parsed = parse_args(arguments.to_vec()).expect("valid command");
     execute(parsed).expect_err("expected execute failure")
+}
+
+/// A command that fails at execute time; returns the rendered message and
+/// its exit class (not always `Failed`).
+pub fn run_err(args: &[&str]) -> (String, ExitCode) {
+    let error = execute_error(args);
+    (error.to_string(), error.exit_code())
 }
 
 /// The family command types are private to the crate, so parse-level

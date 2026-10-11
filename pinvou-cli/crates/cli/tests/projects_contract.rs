@@ -19,7 +19,7 @@ use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
-use common::{HomeGuard, Isolation, env_lock, run, run_json, scratch_dir};
+use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, scratch_dir};
 
 /// `~/.pinvou3/projects/projects.json` — the single projects store file.
 trait ProjectsHome {
@@ -30,16 +30,6 @@ impl ProjectsHome for HomeGuard {
     fn store_file(&self) -> PathBuf {
         self.path().join("projects").join("projects.json")
     }
-}
-
-/// Creates one empty chat session through `SessionStore` (the exact path the
-/// CLI's `SessionStore::boot()` uses) and returns its id.
-fn create_session_fixture() -> String {
-    let store = SessionStore::boot().expect("boot session store");
-    let session = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
-    session.metadata.id
 }
 
 /// Seeds a plain-lane session whose SavedSession metadata and

@@ -18,8 +18,8 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{EnvGuard, HomeGuard, Isolation, env_lock, run, run_json, usage_error};
-use pinvou_cli::{CliError, ExitCode, OutputMode, execute, parse_args};
+use common::{EnvGuard, HomeGuard, Isolation, command_error, env_lock, run, run_json, usage_error};
+use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace as app_workspace;
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
@@ -52,16 +52,6 @@ struct ScratchDir(PathBuf);
 impl Drop for ScratchDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// A command error from either the parse or the execute lane — for pins
-/// whose refusal deliberately fires at parse (the class is asserted per
-/// call site).
-fn command_error(arguments: &[&str]) -> CliError {
-    match parse_args(arguments.to_vec()) {
-        Err(error) => error,
-        Ok(parsed) => execute(parsed).expect_err("expected a command error"),
     }
 }
 

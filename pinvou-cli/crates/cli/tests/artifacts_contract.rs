@@ -44,7 +44,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pinvou_cli::ExitCode;
 use pinvou3_lib::features::sessions::SessionStore;
 
-use common::{HomeGuard, Isolation, env_lock, expect_failed, run, run_json};
+use common::{
+    HomeGuard, Isolation, create_session_fixture, env_lock, expect_failed, run, run_json,
+};
 
 /// The GUI artifact-editor save cap (`MAX_EDITABLE_MARKDOWN_BYTES`) that the
 /// write lane mirrors. Integration tests cannot import the crate-private
@@ -65,16 +67,6 @@ impl HomeExt for HomeGuard {
     fn workspace_of(&self, id: &str) -> PathBuf {
         self.sessions_root().join(id).join("workspace")
     }
-}
-
-/// Creates one empty chat session through `SessionStore` (the exact path the
-/// CLI's `open_store` boots) and returns its id.
-fn create_session_fixture() -> String {
-    let store = SessionStore::boot().expect("boot session store");
-    let session = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
-    session.metadata.id
 }
 
 /// Creates `<id>/workspace/report.md` under the sandbox home with `content`

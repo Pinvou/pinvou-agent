@@ -19,9 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
-use pinvou3_lib::features::sessions::SessionStore;
 
-use common::{HomeGuard, Isolation, env_lock, run, run_json};
+use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json};
 
 /// `~/.pinvou3/user/personas` — where user cards persist.
 trait PersonasHome {
@@ -32,16 +31,6 @@ impl PersonasHome for HomeGuard {
     fn user_personas_dir(&self) -> PathBuf {
         self.path().join("user").join("personas")
     }
-}
-
-/// Creates one empty chat session through `SessionStore` (the exact path the
-/// CLI's `SessionStore::boot()` uses) and returns its id.
-fn create_session_fixture() -> String {
-    let store = SessionStore::boot().expect("boot session store");
-    let session = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
-    session.metadata.id
 }
 
 /// Writes a persona body file and returns its path.

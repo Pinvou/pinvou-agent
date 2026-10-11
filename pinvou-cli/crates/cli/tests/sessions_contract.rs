@@ -14,17 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::sessions::SessionStore;
 
-use common::{EnvGuard, HomeGuard, Isolation, env_lock, run, run_json};
-
-/// Creates one empty chat session through `SessionStore` (the exact path the
-/// CLI's `SessionStore::boot()` uses) and returns its id.
-fn create_session_fixture() -> String {
-    let store = SessionStore::boot().expect("boot session store");
-    let session = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
-    session.metadata.id
-}
+use common::{EnvGuard, HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json};
 
 /// Rewrites the persisted `SavedSession` JSON in place (the CLI reads
 /// transcripts from the same store file).

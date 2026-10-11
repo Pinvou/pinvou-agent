@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{EnvGuard, HomeGuard, Isolation, env_lock, execute_error, run, run_ok, usage_error};
+use common::{EnvGuard, HomeGuard, Isolation, env_lock, run, run_err, run_ok, usage_error};
 use pinvou_cli::{ExitCode, parse_args};
 use pinvou3_lib::features::sessions::SerializableMode;
 use pinvou3_lib::platform::credential_store::CredentialState;
@@ -44,13 +44,6 @@ fn clear_ambient_deepseek_key() -> EnvGuard {
 /// the previous values on drop.
 fn clear_search_provider_keys() -> EnvGuard {
     EnvGuard::remove(&["METASO_API_KEY", "BAIDU_SEARCH_API_KEY"])
-}
-
-/// A command that fails at execute time; returns the rendered message and
-/// its exit class (not always `Failed`).
-fn run_err(args: &[&str]) -> (String, ExitCode) {
-    let error = execute_error(args);
-    (error.to_string(), error.exit_code())
 }
 
 /// A command that COMPLETES with a non-success exit code (the probe families:

@@ -24,7 +24,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    EnvGuard, HomeGuard, Isolation, env_lock, execute_error, run, run_json, run_ok, usage_error,
+    EnvGuard, HomeGuard, Isolation, env_lock, run, run_err, run_json, run_ok, usage_error,
 };
 use pinvou_cli::{ExitCode, parse_args};
 
@@ -53,13 +53,6 @@ fn isolate_credential_store(home: &Path) -> EnvGuard {
         "CODEWHALE_HOME",
         Some(home.join("codewhale").into_os_string()),
     )])
-}
-
-/// A command that fails at execute time; returns the rendered message and
-/// its exit class.
-fn run_err(args: &[&str]) -> (String, ExitCode) {
-    let error = execute_error(args);
-    (error.to_string(), error.exit_code())
 }
 
 fn disabled_bundles_json(home: &Path) -> serde_json::Value {
