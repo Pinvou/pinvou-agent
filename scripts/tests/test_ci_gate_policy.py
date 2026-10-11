@@ -178,8 +178,7 @@ JOB_HEADER = re.compile(r"^  (\S.*):\s*$")
 def _extract_job_block(text, job):
     """提取单个 job 的完整 YAML 块:从它的 2 空格缩进键到下一个 job 键。
 
-    与 test_gate_jobs_do_not_swallow_their_exit_status 的 job_header 同一
-    判据:本文件里 job 键只出现在 2 空格缩进,且每个 job 名只允许定义一次。
+    本文件里 job 键只出现在 2 空格缩进,且每个 job 名只允许定义一次。
     """
     lines = text.splitlines()
     starts = [
@@ -1369,9 +1368,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # (green-alone PRs can still combine into a macOS-only compile break),
         # and main push (cumulative); see
         # test_macos_cli_check_runs_on_main_push_and_merge_group.
-        macos_cli = self.pr_workflow.split(
-            "\n  macos-cli-check:", maxsplit=1
-        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
         # Round-46 review: the needs wire stays pinned here too, so a
         # bypass of the wiring test cannot silently drop it.
         self.assertIn("needs: changes", macos_cli)
@@ -1468,9 +1465,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # push(main) unconditionally (cumulative verification, independent of a
         # single push's paths-filter) and on the Merge Queue when the combined
         # diff touches cli_rust/rust_full.
-        macos_cli = self.pr_workflow.split(
-            "\n  macos-cli-check:", maxsplit=1
-        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
         # Round-46 review: the `needs: changes` wire is what feeds the MQ
         # branch's outputs — without it `needs.changes.outputs.*` evaluates
         # empty, the PR/MQ legs silently skip, and required-gate accepts
@@ -1517,9 +1512,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # warm-cache design). This leg must keep that restorable treatment:
         # it is the long pole of the serialized macOS runner queue and every
         # uncached run pays a cold compile of the whole workspace.
-        macos_cli = self.pr_workflow.split(
-            "\n  macos-cli-check:", maxsplit=1
-        )[1].split("\n  required-gate:", maxsplit=1)[0]
+        macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
         self.assertIn("runs-on: macos-15", macos_cli)
         cache_step = _without_yaml_comments(macos_cli).split(
             "- name: Cargo cache", maxsplit=1
@@ -1556,9 +1549,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # backfill, summary-loop entry); removing the job or unwiring it from
         # required-gate must turn this suite red.
         body = _without_yaml_comments(self.pr_workflow)
-        cli_lint = body.split("\n  cli-lint:", maxsplit=1)[1].split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[0]
+        cli_lint = _extract_job_block(body, "cli-lint")
         self.assertIn("needs: changes", cli_lint)
         self.assertIn("runs-on: ubuntu-22.04", cli_lint)
         # The trigger set must mirror cli-test exactly: main push (cumulative,
@@ -1828,29 +1819,8 @@ class CiGatePolicyTests(unittest.TestCase):
             "macos-cli-check",
             "knowledge-rust",
         )
-        lines = self.pr_workflow.splitlines()
-        job_header = re.compile(r"^  (\S.*):\s*$")
         for name in gate_jobs:
-            starts = [
-                number
-                for number, line in enumerate(lines)
-                if job_header.match(line) and job_header.match(line).group(1) == name
-            ]
-            self.assertEqual(
-                len(starts), 1, f"expected exactly one {name} job definition"
-            )
-            start = starts[0]
-            # The block runs to the next job header (2-space key), which is the
-            # only thing that can end a job in this file.
-            end = next(
-                (
-                    number
-                    for number in range(start + 1, len(lines))
-                    if job_header.match(lines[number])
-                ),
-                len(lines),
-            )
-            block = _without_yaml_comments("\n".join(lines[start:end]))
+            block = _without_yaml_comments(_extract_job_block(self.pr_workflow, name))
             # main's #642 lld probe prints its probe errors with
             # `cat ... >&2 || true` inside the branch that then exits 1, so
             # the idiom there cannot mask a gate command's status. Excise
@@ -2508,9 +2478,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # deleting one must fail the suite instead of silently orphaning the
         # pins again.
         windows_rust_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
-                "\n  macos-rust-check:", maxsplit=1
-            )[0]
+            _extract_job_block(self.pr_workflow, "windows-rust-test")
         )
         for needle in [
             "'failed_probe_never_deletes_an_existing_store_windows' \\",
