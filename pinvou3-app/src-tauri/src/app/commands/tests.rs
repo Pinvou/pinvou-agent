@@ -493,6 +493,52 @@ fn vacuous_uninstall_keeps_fresh_consent_entries() {
     }
 }
 
+/// Round-27 review (minor): the by-hand skill-uninstall lane must refuse a
+/// name that belongs to a live claimant pack (companion claim or physical
+/// nesting) — deleting it would remove the claimant's materialized dir and
+/// strip the claimant's own consent rows, re-enabling its still-installed
+/// MCP server in initialized scopes. Standalone names resolve to themselves
+/// and uninstall as before (positive control).
+#[test]
+fn uninstall_refuses_a_claimed_companion_name() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::save_disabled_bundles_for;
+    use crate::platform::paths;
+
+    crate::platform::test_support::with_temp_home("claimant-uninstall-refusal", || {
+        let nested = paths::bundles_root()
+            .join("claimant-pkg")
+            .join("skills")
+            .join("weather");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("SKILL.md"), "---\nname: weather\n---\n# w").unwrap();
+        // An initialized scope row for the CLAIMANT, so the assert below
+        // proves the refusal happened before any strip ran.
+        save_disabled_bundles_for(ConnectorScope::Code, &["claimant-pkg".to_string()]).unwrap();
+
+        let error = uninstall_marketplace_skill_sync("weather").unwrap_err();
+        assert!(
+            error.contains("claimant-pkg"),
+            "the refusal must name the live claimant pack: {error}"
+        );
+        assert!(
+            nested.join("SKILL.md").is_file(),
+            "the claimant's materialized dir must survive the refused uninstall"
+        );
+        assert!(
+            crate::features::marketplace::scope::load_disabled_bundles_for(ConnectorScope::Code)
+                .contains(&"claimant-pkg".to_string()),
+            "the claimant's consent row must be untouched"
+        );
+
+        // Positive control: with the physical claim gone the name resolves
+        // to itself and the by-hand lane proceeds (vacuous uninstall, no
+        // record → the entry-keeping Ok).
+        std::fs::remove_dir_all(nested).unwrap();
+        uninstall_marketplace_skill_sync("weather").unwrap();
+    });
+}
+
 #[test]
 fn standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir() {
     use crate::features::assistant::skill_materialization as sm;

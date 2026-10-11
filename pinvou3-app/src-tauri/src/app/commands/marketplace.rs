@@ -1381,6 +1381,26 @@ pub async fn uninstall_marketplace_skill(
 }
 
 pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
+    // Round-27 review (minor): the by-hand lane must not delete a live
+    // claimant's companion dir. `uninstall_locked`'s candidate scan finds
+    // `bundles/<pkg>/skills/<name>` and deletes it, and the strip below
+    // would remove the claimant pack's own consent rows — its still-
+    // installed MCP server re-enables in initialized DenyAll scopes
+    // (fail-open), the shape the tool lane refuses via its deny-row
+    // membership probe. The gating owner mirrors materialization's lens
+    // (conditional claim + physical nesting): a name owned by ANOTHER pack
+    // refuses here; standalone/upload/preset skills resolve to themselves
+    // and uninstall exactly as before. The teardown lanes
+    // (`uninstall_and_strip_scope` for the ima logout, the tool-uninstall
+    // eager companion strip) call the manager directly and keep their
+    // on-behalf-of-the-owner semantics.
+    let dir_name = skill_id.strip_prefix("skill:").unwrap_or(skill_id);
+    let gating_owner = crate::features::marketplace::bundle::skill_gating_owner(dir_name);
+    if gating_owner != dir_name {
+        return Err(format!(
+            "技能 '{skill_id}' 属于包 '{gating_owner}' 的配套/嵌套技能，请直接卸载包 '{gating_owner}'"
+        ));
+    }
     // Round-26 MAJOR 1 (review #455): snapshot the owner pack while the skill
     // dir is still on disk — after the deletion the normalized cleanup's
     // gating fallback could be hijacked by a foreign pack's claim/nesting and
