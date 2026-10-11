@@ -101,6 +101,24 @@ assert.ok(
   'the consent-failure template must exist exactly once in scope.rs production — inside the shared helper',
 );
 
+// (a2) Round-27 review: the helper-design comment's "a wording without the
+// marker is impossible by construction" overstates — every leg above
+// survives a helper-body reword that drops the interpolation (const defined,
+// tail present once, call counts intact) while ToolStoreView's includes()
+// silently stops matching and every consent failure degrades to the generic
+// skills_enable_failed code — exactly the degradation this file exists to
+// prevent. Pin the interpolation inside the helper's own slice (bounded by
+// the next fn item): a dropped interpolation fails here by construction.
+const helperStart = scopeProduction.indexOf('fn consent_sync_failure_message');
+assert.ok(helperStart > 0, 'the shared helper must exist in scope.rs production');
+const afterHelper = scopeProduction.slice(helperStart);
+const nextFnIdx = afterHelper.slice(1).search(/\n(?:pub(?:\(crate\))?\s+)?fn\s/);
+const helperBody = nextFnIdx === -1 ? afterHelper : afterHelper.slice(0, nextFnIdx + 1);
+assert.ok(
+  helperBody.includes('{CONSENT_SYNC_FAILURE_MARKER}'),
+  'consent_sync_failure_message must interpolate {CONSENT_SYNC_FAILURE_MARKER} — a wording without it degrades every consent failure to the generic error code',
+);
+
 // (b) Round-19 review: the marketplace command layer carries the post-landing
 // consent-failure channels (tool/skill/import). Round-26 review: exact
 // equality, not a lower bound — the shape and marker-interpolation counts
