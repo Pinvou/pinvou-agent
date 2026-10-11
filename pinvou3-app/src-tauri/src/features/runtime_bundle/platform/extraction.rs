@@ -2407,19 +2407,13 @@ mod tests {
         // FIFO leg.
         let fifo = temp.path().join("target.fifo");
         crate::platform::paths::tests::plant_fifo(&fifo);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let bundle_for_worker = super::Pinvou3Bundle::paths();
-        let worker = std::thread::spawn(move || {
-            let result = bundle_for_worker.write_if_changed(&fifo, "bundle content");
-            let _ = tx.send(result.is_err());
-        });
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| panic!(
-                    "write_if_changed must refuse a planted FIFO without hanging (5s bound)"
-                )),
-            "a planted FIFO target must be refused"
+        crate::platform::test_support::assert_refused_without_hanging(
+            "write_if_changed on a planted FIFO",
+            move || {
+                super::Pinvou3Bundle::paths()
+                    .write_if_changed(&fifo, "bundle content")
+                    .is_err()
+            },
         );
-        worker.join().unwrap();
     }
 }

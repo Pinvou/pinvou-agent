@@ -39,15 +39,10 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     // consent dialog. `PINVOU3_TEST_KEYRING_FILE_FALLBACK` exists only in
     // test builds (credential_store reads it before probing the OS
     // keyring); `CODEWHALE_HOME` rides to the temp dir so CodeWhale-side
-    // state stays hermetic too.
-    let prev_codewhale = std::env::var("CODEWHALE_HOME").ok();
-    let prev_valve = std::env::var("PINVOU3_TEST_KEYRING_FILE_FALLBACK").ok();
+    // state stays hermetic too. The pair is restored through the shared
+    // `EnvRestore` instead of hand-rolled arms on the struct below.
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
 
     // Restore through Drop, not straight-line code after `f()`. A failing
     // assertion inside the closure unwinds, and with the restore written
@@ -57,8 +52,6 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     // signal stops meaning anything. Same RAII contract as `EnvRestore` below.
     struct TempHomeRestore {
         previous: Option<OsString>,
-        previous_codewhale: Option<OsString>,
-        previous_valve: Option<OsString>,
         dir: std::path::PathBuf,
     }
     impl Drop for TempHomeRestore {
@@ -69,18 +62,6 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
                 // SAFETY: the caller still holds ENV_LOCK for this scope.
                 None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
-            match self.previous_codewhale.take() {
-                // SAFETY: the caller still holds ENV_LOCK for this scope.
-                Some(v) => unsafe { std::env::set_var("CODEWHALE_HOME", v) },
-                // SAFETY: the caller still holds ENV_LOCK for this scope.
-                None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
-            }
-            match self.previous_valve.take() {
-                // SAFETY: the caller still holds ENV_LOCK for this scope.
-                Some(v) => unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v) },
-                // SAFETY: the caller still holds ENV_LOCK for this scope.
-                None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
-            }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
@@ -88,10 +69,18 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     // test may observe the temporary value.
     let _restore = TempHomeRestore {
         previous: prev.map(OsString::from),
-        previous_codewhale: prev_codewhale.map(OsString::from),
-        previous_valve: prev_valve.map(OsString::from),
         dir: dir.clone(),
     };
+    // Declared after `_restore` so the keyring pair is restored BEFORE the
+    // temp dir is removed (env-then-dir, then the lock — matching the
+    // struct's own order for PINVOU3_HOME). Captured here, before the
+    // set_var calls below overwrite the pair with the temporary values.
+    let _keyring_env =
+        EnvRestore::capture(&["CODEWHALE_HOME", "PINVOU3_TEST_KEYRING_FILE_FALLBACK"]);
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+    unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+    unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
     f();
 }
 
@@ -281,4 +270,27 @@ pub(crate) fn loosen_to_world_readable_for_test(path: &std::path::Path) -> bool 
         let _ = path;
         false
     }
+}
+
+/// Bounded-refusal assertion for an operation that must fail fast on a
+/// planted non-regular target (FIFO/device) instead of hanging: runs `f` on
+/// a worker thread and requires it to report `true` within 5 seconds. On
+/// timeout the test panics while the abandoned worker (holding no lock) is
+/// left to finish or die on its own, so the red does not cascade; a `false`
+/// result within the bound is a plain refusal-assertion failure. The repo
+/// convention for the hardened private-data primitives (round-26 review).
+#[cfg(test)]
+pub(crate) fn assert_refused_without_hanging(
+    label: &str,
+    f: impl FnOnce() -> bool + Send + 'static,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    let refused = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_else(|_| panic!("{label} must refuse without hanging (5s bound)"));
+    worker.join().unwrap();
+    assert!(refused, "{label} must be refused");
 }
