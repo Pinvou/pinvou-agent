@@ -1036,11 +1036,16 @@ impl Pinvou3Bundle {
         // 本函数是 boot 链的 mcp.json 写方，与 GUI/headless 并发安装/卸载的写入器
         // 互斥（mcp.lock 是叶子锁，锁内不取其他市场锁）；boot 链此处无外层持锁，
         // 函数体内也无嵌套取锁。
-        crate::features::marketplace::with_mcp_json_lock(|| {
+        // 锁等待没有超时（对端冻结时本 boot 线程无限等待——round-28 review 记录的
+        // 既定取舍）：前后打点把「卡在 mcp.lock 等待」与维护链其余步骤区分开，
+        // startup.log 可直接定位这类挂起。
+        crate::platform::startup::mark("bundle_extract:mcp_upsert:lock_wait:start");
+        let result = crate::features::marketplace::with_mcp_json_lock(|| {
             self.ensure_builtin_mcp_servers_locked()
                 .map_err(|error| error.to_string())
-        })
-        .map_err(std::io::Error::other)
+        });
+        crate::platform::startup::mark("bundle_extract:mcp_upsert:lock_wait:done");
+        result.map_err(std::io::Error::other)
     }
 
     fn ensure_builtin_mcp_servers_locked(&self) -> std::io::Result<()> {
@@ -1123,12 +1128,19 @@ impl Pinvou3Bundle {
     /// (`run_mcp_startup_maintenance` 以 `mcp_json_unparseable` 把整个 upsert 挡在
     /// 备份过的坏文件之外),这条重建路径只覆盖直接调用方与防御兜底;数据保全
     /// (备份 + 整轮保持原样)优先于坏文件自动重置。
+    ///
+    /// Round-28 review MAJOR 1: 本加载器在 mcp.lock 临界区内、每次 boot 的内置
+    /// upsert 都会走到。原先 `is_file()` 探针后的裸 `read_to_string` 与 round-27
+    /// 为迁移读修掉的是同一类 swap-in FIFO 楔死:探针把窗口收窄成 swap 窗口,
+    /// 但一旦在 open 前被换成 FIFO,裸读会永远阻塞在持锁的 open() 上,楔死共享
+    /// home 的所有 mcp.json 读写方。加固原语对非普通文件直接拒绝;任何
+    /// 拒绝/缺失都与探针时代的空骨架回退语义一致。
     fn load_mcp_json_for_repair(&self) -> serde_json::Value {
-        if !self.mcp_json.is_file() {
-            return serde_json::json!({"servers": {}});
+        match crate::platform::filesystem::read_private_data_file(&self.mcp_json) {
+            Ok(existing) => serde_json::from_str(&existing)
+                .unwrap_or_else(|_| serde_json::json!({"servers": {}})),
+            Err(_) => serde_json::json!({"servers": {}}),
         }
-        let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
-        serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
     }
 
     /// Builds a unified `browser` MCP server entry on Windows, Linux, and macOS. The entry
@@ -2373,6 +2385,47 @@ mod tests {
             source.matches(&helper).count() >= 1,
             "退役清理必须调用 scope 模块的单临界区 RMW 助手清理所有 scope 残留"
         );
+    }
+
+    /// Round-28 review MAJOR 1: `load_mcp_json_for_repair` runs INSIDE the
+    /// mcp.lock critical section on the every-boot builtin upsert. A planted
+    /// FIFO at the mcp.json path must be refused by the hardened read
+    /// without blocking the lock holder (the raw `read_to_string` behind the
+    /// old `is_file()` probe wedged every mcp.json reader/writer sharing the
+    /// home). The bounded worker makes a regression to the raw read fail the
+    /// test instead of hanging the suite, mirroring the migration pin.
+    #[test]
+    #[cfg(unix)]
+    fn mcp_repair_loader_refuses_a_planted_fifo() {
+        crate::platform::test_support::with_temp_home("pinvou3-mcp-repair-fifo", || {
+            let mcp_path = crate::platform::paths::bundle_mcp_json();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
+            let bundle = super::Pinvou3Bundle::paths();
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let value = bundle.load_mcp_json_for_repair();
+                let _ = tx.send(value);
+            });
+            let value = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    eprintln!(
+                        "FAIL: the in-lock mcp repair loader still blocks on a planted \
+                         FIFO — the raw read wedges every mcp.json user sharing the \
+                         home; aborting the test process to contain the leaked lock \
+                         holder"
+                    );
+                    std::process::abort();
+                });
+            assert_eq!(
+                value,
+                serde_json::json!({"servers": {}}),
+                "a planted FIFO must fall back to the empty skeleton, not block"
+            );
+            worker.join().unwrap();
+        });
     }
 
     /// Round-26 MAJOR 3: both legs of the compare-write go through the
