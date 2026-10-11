@@ -60,12 +60,6 @@ pub(crate) struct EvalTurnPolicy {
     pub allowed_tools: &'static [&'static str],
 }
 
-impl EvalTurnPolicy {
-    pub(crate) fn allows(&self, tool: &str) -> bool {
-        self.allowed_tools.contains(&tool)
-    }
-}
-
 static GAIA_PUBLIC_WEB_V1: EvalTurnPolicy = EvalTurnPolicy {
     id: EvalToolPolicy::GaiaPublicWebV1,
     allowed_tools: GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS,
@@ -195,14 +189,14 @@ mod tests {
 
         let final_only = resolve_eval_policy("pinvou-gaia-final-answer-only/v1").unwrap();
         assert!(final_only.allowed_tools.is_empty());
-        assert!(!final_only.allows("read"));
-        assert!(product.allows("read"));
-        assert!(!product.allows("File"));
-        assert!(product.allows("Web"));
-        assert!(product.allows("image_analyze"));
-        assert!(public.allows("Web"));
-        assert!(!offline.allows("Web"));
-        assert!(!offline.allows("image_analyze"));
+        assert!(!final_only.id.allows("read"));
+        assert!(product.id.allows("read"));
+        assert!(!product.id.allows("File"));
+        assert!(product.id.allows("Web"));
+        assert!(product.id.allows("image_analyze"));
+        assert!(public.id.allows("Web"));
+        assert!(!offline.id.allows("Web"));
+        assert!(!offline.id.allows("image_analyze"));
         assert!(EvalToolPolicy::ProductV1.allows("Web"));
         assert!(!EvalToolPolicy::ProductV1.allows("web_search"));
         assert!(

@@ -121,7 +121,10 @@ impl ExpertRosterSnapshot {
                     // 对存储描述的子串匹配永远失配（字面 `<` 查询匹配不到
                     // `\u003c` 文本），还往 overlay 塞 `\u003c` 噪声。正文
                     // （instructions）是卡片的产品本体，不动。
-                    description: Some(bounded_with_ellipsis(
+                    // composed 的两个成分都已剥过不可见字符，这里的剥除是
+                    // 幂等空转，与纯截断限长同义；统一走 personas 的
+                    // bounded_visible 出口（同 mcp_inventory），不再本地另写。
+                    description: Some(crate::features::personas::bounded_visible(
                         &composed,
                         PROFILE_DESCRIPTION_CHAR_LIMIT,
                     )),
@@ -209,17 +212,6 @@ const MATCH_DESCRIPTION_CHAR_LIMIT: usize = 512;
 const EXPERT_QUERY_CHAR_LIMIT: usize = 4096;
 const EXPERT_QUERY_HEAD_CHARS: usize = 3072;
 const EXPERT_QUERY_TAIL_CHARS: usize = EXPERT_QUERY_CHAR_LIMIT - EXPERT_QUERY_HEAD_CHARS;
-
-/// 按 char 计数限长并如实标注：超出 `limit` 个字符截断并追加 `…`。
-fn bounded_with_ellipsis(value: &str, limit: usize) -> String {
-    let truncated = value.chars().count() > limit;
-    let text: String = value.chars().take(limit).collect();
-    if truncated {
-        format!("{text}…")
-    } else {
-        text
-    }
-}
 
 /// 名册投影文本（专家描述）的统一出口：剥不可见字符、限长并如实标注
 /// 截断。这条文本经底座名册 payload（数据通道）与 spawn 的 prompt

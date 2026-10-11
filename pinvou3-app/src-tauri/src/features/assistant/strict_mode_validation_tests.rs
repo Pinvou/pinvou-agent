@@ -9,47 +9,29 @@
 //! 真 vLLM 端到端 scenario 仍留在 `l1_dialog_harness.rs`（`#[ignore]`，需 vLLM
 //! 在线、按需手跑）；本模块只跑不依赖运行时与外部模型的确定性校验，CI 可常跑。
 //!
-//! 下面的纯辅助函数与 `l1_dialog_harness.rs` 中同名函数行为一致（那份同时被真模型
-//! scenario 使用，无法整体迁出）；此处保留副本，改动需两边同步。
-
-#![allow(dead_code)] // TurnSummary 部分字段由 summarize 填充、本目标测试不全部读取
-
-use std::collections::HashMap;
-use std::time::Duration;
+//! 下面的纯辅助函数源自 `l1_dialog_harness.rs` 中的同名函数（那份同时被真模型
+//! scenario 使用，无法整体迁出）；本模块的 `TurnSummary` / `summarize` 只裁剪出
+//! 这三个测试读取的字段，与那份同名结构不再逐字段一致，改动需两边评估。
 
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::error_taxonomy::ErrorEnvelope;
 
-/// scenario 跑完后聚合结果（与 `l1_dialog_harness.rs` 同名结构保持一致）。
+/// scenario 跑完后聚合结果（本副本只保留本模块三个测试读取的字段）。
 struct TurnSummary {
-    /// 所有 MessageDelta.content 串起来 (LLM 的纯文本输出)
-    full_text: String,
-    /// 工具名 → 成功完成的调用次数
-    tool_call_counts: HashMap<String, usize>,
     /// Engine 在 turn 内发出的错误；严格真模型验收中任意一条都必须失败。
     engine_errors: Vec<String>,
     /// TurnComplete 报告的权威终态；None 表示未收到完整终态。
     terminal_status: Option<TurnOutcomeStatus>,
     /// TurnComplete 携带的终态错误。
     terminal_error: Option<String>,
-    elapsed: Duration,
-    timed_out: bool,
 }
 
-fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> TurnSummary {
-    let mut full_text = String::new();
-    let mut tool_call_counts = HashMap::<String, usize>::new();
+fn summarize(timeline: &[(f64, Event)]) -> TurnSummary {
     let mut engine_errors = Vec::new();
     let mut terminal_status = None;
     let mut terminal_error = None;
     for (_t, e) in timeline {
         match e {
-            Event::MessageDelta { content, .. } => full_text.push_str(content),
-            Event::ToolCallComplete { name, result, .. } => {
-                if result.is_ok() {
-                    *tool_call_counts.entry(name.clone()).or_insert(0) += 1;
-                }
-            }
             Event::Error { envelope, .. } => {
                 engine_errors.push(format!("{}: {}", envelope.code, envelope.message));
             }
@@ -61,13 +43,9 @@ fn summarize(timeline: &[(f64, Event)], elapsed: Duration, timed_out: bool) -> T
         }
     }
     TurnSummary {
-        full_text,
-        tool_call_counts,
         engine_errors,
         terminal_status,
         terminal_error,
-        elapsed,
-        timed_out,
     }
 }
 
@@ -106,7 +84,7 @@ fn strict_mode_rejects_runtime_engine_error() {
             true,
         )),
     )];
-    let summary = summarize(&timeline, Duration::from_millis(100), false);
+    let summary = summarize(&timeline);
 
     assert_eq!(summary.engine_errors.len(), 1);
     assert!(summary.engine_errors[0].contains("stream read error"));
@@ -129,7 +107,7 @@ fn strict_mode_rejects_failed_turn_without_error_event() {
             base_url: None,
         },
     )];
-    let summary = summarize(&timeline, Duration::from_millis(100), false);
+    let summary = summarize(&timeline);
 
     assert!(summary.engine_errors.is_empty());
     assert_eq!(summary.terminal_status, Some(TurnOutcomeStatus::Failed));
