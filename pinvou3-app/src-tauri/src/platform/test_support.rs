@@ -30,17 +30,16 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let prev = std::env::var("PINVOU3_HOME").ok();
-    // Round-27 review (minor): keyring hermeticity rides along — the same
-    // trio the marketplace harness installs. A test reaching a real
-    // credential write through this harness otherwise lands in the
-    // developer's OS keychain (round-7 proved this class fires live:
-    // AMAP_KEY written to the real keychain), and on macOS the OS probe
-    // from an ad-hoc-signed test binary can block indefinitely on the ACL
-    // consent dialog. `PINVOU3_TEST_KEYRING_FILE_FALLBACK` exists only in
-    // test builds (credential_store reads it before probing the OS
-    // keyring); `CODEWHALE_HOME` rides to the temp dir so CodeWhale-side
-    // state stays hermetic too. The pair is restored through the shared
-    // `EnvRestore` instead of hand-rolled arms on the struct below.
+    // Keyring hermeticity rides along — the same trio the marketplace
+    // harness installs. A test reaching a real credential write through
+    // this harness otherwise lands in the developer's OS keychain, and on
+    // macOS the OS probe from an ad-hoc-signed test binary can block
+    // indefinitely on the ACL consent dialog. `PINVOU3_TEST_KEYRING_FILE_FALLBACK`
+    // exists only in test builds (credential_store reads it before probing
+    // the OS keyring); `CODEWHALE_HOME` rides to the temp dir so
+    // CodeWhale-side state stays hermetic too. The pair is restored through
+    // the shared `EnvRestore` instead of hand-rolled arms on the struct
+    // below.
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
@@ -278,7 +277,7 @@ pub(crate) fn loosen_to_world_readable_for_test(path: &std::path::Path) -> bool 
 /// timeout the test panics while the abandoned worker (holding no lock) is
 /// left to finish or die on its own, so the red does not cascade; a `false`
 /// result within the bound is a plain refusal-assertion failure. The repo
-/// convention for the hardened private-data primitives (round-26 review).
+/// convention for the hardened private-data primitives.
 #[cfg(test)]
 pub(crate) fn assert_refused_without_hanging(
     label: &str,
