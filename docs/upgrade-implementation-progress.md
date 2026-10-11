@@ -1074,3 +1074,39 @@ Both independent roles passed the frozen complete B12 code/test/docs delta.
 Full actual lifecycle PostgreSQL regression passed (729.182s); default tests,
 vet, module verification, all commands, pinned contract and client architecture
 checks passed. This closes B12 storage only, leaving B13/full T44 open.
+
+### T44 batch 13: current guards and atomic channel change (2026-10-12)
+
+Private additive migration 13 adds actual current-channel guards to every new
+Session/validate/consume/activation-restart/staging-complete/waiting-rebuild port.
+It fails closed on missing legacy configuration. StandardReplay bulk change
+compares actual Scope/channel CAS and complete mutable membership, atomically
+fences pending Sessions, aborts Validate epochs, ends available authorizations
+and original Outcomes, invalidates waiting, and only requests safe cancellation
+of consumed preinstall. Already-consumed install/activation and old original
+result/reporting paths retain frozen lineage and can safely converge. Returning
+to the same channel name never resets channelRevision.
+
+Protected initial/final SQL clocks, parent membership, original deadlines and
+full capacity preserve terminal/cleanup convergence. Every later write in an
+actually changed-channel scope retains those reserves; ACK/new Session growth
+cannot consume them, while actual terminal and cleanup release their respective
+obligations before the guard. Due inventory may be
+captured only for this invalidation operation; ordinary qualification/execution
+still refuse unsettled due state. No hard total/cumulative download deadline is
+introduced. Explicit current and legacy fixtures remain separate; only channels
+removed by declared reverse-schema simulation may be restored from an independent
+known test source after checking production migration did not backfill them.
+
+Targeted real PostgreSQL controls cover current-source guard failures/positive
+retry, atomic rollback, Validate/Outcome, three consumed purposes, ABA/races,
+clock boundaries, member/raw/ref and convergence reserves. Real T06 engine
+restart replays the original encrypted result without another channel mutation.
+Both independent roles passed the frozen B13 code/test/docs delta after repairs.
+Final full actual lifecycle PostgreSQL regression passed (826.957s); default
+tests/vet, module verification, all command builds, pinned contracts, formatting,
+diff and client architecture checks passed. This closes B13 only.
+This batch opens no production configuration or client-credential owner. T40
+shared-machine settings and affected scopes, actual T20/T45 preparation release,
+legacy T17 configuration and recorded owner/deployment decisions remain separate.
+Full T44 stays in progress; continue other unblocked tasks.
