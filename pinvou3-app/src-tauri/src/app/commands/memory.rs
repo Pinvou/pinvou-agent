@@ -50,10 +50,6 @@ pub struct MemoryOrganizeState {
     pub warnings: Vec<MemoryWarning>,
 }
 
-fn resolve_memory_session_id(session_id: Option<String>, store: &SessionStore) -> Option<String> {
-    session_id.or_else(|| store.active_id())
-}
-
 fn emit_memory_write_events(
     app: &AppHandle,
     session_id: &str,
@@ -80,7 +76,7 @@ fn refresh_memory_runtime_for_command(
     session_id: Option<String>,
     store: &SessionStore,
 ) -> Result<Option<crate::features::memory::RuntimeMemorySnapshot>, String> {
-    match resolve_memory_session_id(session_id, store) {
+    match resolve_session_id(session_id, store) {
         Some(sid) => {
             let snapshot = crate::features::memory::runtime_snapshot(&sid)
                 .map_err(|e| format!("render runtime memory: {e}"))?;
@@ -124,7 +120,7 @@ fn finish_memory_write<T>(
     persistence_warnings: Vec<MemoryWarning>,
 ) -> Result<MemoryWriteState<T>, String> {
     if let (Some(sid), Some(event)) = (
-        resolve_memory_session_id(session_id.clone(), store),
+        resolve_session_id(session_id.clone(), store),
         event.as_ref(),
     ) {
         emit_memory_write_events(app, &sid, std::slice::from_ref(event));
@@ -265,7 +261,7 @@ fn refresh_memory_snapshot_document(
         never,
     } = sources;
     let mut runtime_available = !runtime_render_failed;
-    let runtime = match (runtime, resolve_memory_session_id(session_id, store)) {
+    let runtime = match (runtime, resolve_session_id(session_id, store)) {
         (Some(snapshot), _) => Some(snapshot.clone()),
         (None, Some(sid)) if !runtime_render_failed => {
             match crate::features::memory::runtime_snapshot(&sid) {
@@ -410,7 +406,7 @@ pub async fn get_memory_overview(
         never,
     } = sources_loaded;
     let authoritative_sources_available = sources.values().all(|status| status.available);
-    let runtime = match resolve_memory_session_id(session_id, &store) {
+    let runtime = match resolve_session_id(session_id, &store) {
         Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
             Ok(snapshot) => {
                 sources.insert(
@@ -528,7 +524,7 @@ pub async fn organize_memory(
     // preparation). Without an active session yet (e.g. a brand-new draft),
     // degrade to the pool's shared bridge with global prefs loaded directly,
     // the same `get_image_input_capability` fallback.
-    let bridge = match resolve_memory_session_id(None, &store) {
+    let bridge = match resolve_session_id(None, &store) {
         Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
             // The `fresh_bridge_for` error chain can carry endpoint/credential
             // probing details; pass it through `redact_secret` before returning
