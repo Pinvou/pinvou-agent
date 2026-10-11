@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{EnvGuard, HomeGuard, Isolation, env_lock, run, run_err, run_ok, usage_error};
+use common::{
+    EnvGuard, HomeGuard, Isolation, env_lock, run, run_err, run_json, run_ok, usage_error,
+};
 use pinvou_cli::{ExitCode, parse_args};
 use pinvou3_lib::features::sessions::SerializableMode;
 use pinvou3_lib::platform::credential_store::CredentialState;
@@ -68,9 +70,8 @@ fn added_model_id(stdout: &str) -> String {
         .to_owned()
 }
 
-/// Parses a `models list` JSON dump and returns the entry whose `id` matches.
-fn listed_model(json: &str, id: &str) -> serde_json::Value {
-    let value: serde_json::Value = serde_json::from_str(json).expect("single-line json");
+/// Returns the entry of a parsed `models list` JSON dump whose `id` matches.
+fn listed_model(value: &serde_json::Value, id: &str) -> serde_json::Value {
     value["models"]
         .as_array()
         .expect("models array")
@@ -556,9 +557,8 @@ fn models_list_reports_fresh_default_model() {
     // list JSON without touching the OS keychain (the prefs layer's
     // refresh_credential_states_with_store short-circuits on it).
     unsafe { std::env::set_var("DEEPSEEK_API_KEY", "pinvou-cli-contract-override") };
-    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
+    let value = run_json(&["pinvou", "models", "list"]);
     let human = run_ok(&["pinvou", "models", "list"]);
-    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     assert_eq!(
         value["models"][0]["credential_state"], "env_override",
         "a set DEEPSEEK_API_KEY must mark models env_override in list json"
@@ -684,8 +684,8 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     );
 
     // list shows the entry with the requested limits.
-    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
-    let entry = listed_model(&json, &added_id);
+    let value = run_json(&["pinvou", "models", "list"]);
+    let entry = listed_model(&value, &added_id);
     assert_eq!(entry["preset"], "deepseek");
     assert_eq!(entry["model"], "deepseek-v4-pro");
     assert_eq!(entry["base_url"], "https://api.deepseek.com");
@@ -702,8 +702,8 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
         load_prefs().advanced.active_model_id.as_deref(),
         Some(added_id.as_str())
     );
-    let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
-    let active_entry = listed_model(&json, &added_id);
+    let value = run_json(&["pinvou", "models", "list"]);
+    let active_entry = listed_model(&value, &added_id);
     assert_eq!(
         active_entry["active"], true,
         "models list json should mark the model active"
@@ -1157,8 +1157,7 @@ fn settings_search_list_reports_defaults() {
         human.contains("provider: bing"),
         "search list should default to provider bing"
     );
-    let json = run_ok(&["pinvou", "--output", "json", "settings", "search", "list"]);
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let value = run_json(&["pinvou", "settings", "search", "list"]);
     assert_eq!(value["provider"], "bing");
     assert_eq!(value["enabled_providers"][0], "bing");
 }
@@ -1232,10 +1231,8 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
         "a fresh home starts on the default provider"
     );
 
-    let stdout = run_ok(&[
+    let value = run_json(&[
         "pinvou",
-        "--output",
-        "json",
         "settings",
         "search",
         "set",
@@ -1244,18 +1241,17 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
         "--clear",
         "--yes",
     ]);
-    let value: serde_json::Value = serde_json::from_str(&stdout).expect("single-line json");
     assert_eq!(
         value["provider"], "tavily",
         "the provider the clear targeted"
     );
     assert_eq!(
         value["credential"], "unchanged",
-        "a never-configured provider has no credential to clear: {stdout}"
+        "a never-configured provider has no credential to clear: {value}"
     );
     assert_eq!(
         value["active_provider"], "bing",
-        "clearing a key must not select its provider: {stdout}"
+        "clearing a key must not select its provider: {value}"
     );
     assert_eq!(
         load_prefs().search.provider,
@@ -1534,8 +1530,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
 
     // JSON output still carries the original untouched — the hygiene is a
     // rendering concern, not a storage one.
-    let json = run_ok(&["pinvou", "--output", "json", "models", "show", &id]);
-    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    let value = run_json(&["pinvou", "models", "show", &id]);
     assert_eq!(value["name"], hostile);
 }
 
@@ -1569,20 +1564,11 @@ fn models_show_reveal_key_names_the_credential_source() {
         human.contains("DEEPSEEK_API_KEY"),
         "the line must name the variable that supplies it: {human}"
     );
-    let json = run_ok(&[
-        "pinvou",
-        "--output",
-        "json",
-        "models",
-        "show",
-        "default",
-        "--reveal-key",
-    ]);
-    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
+    let value = run_json(&["pinvou", "models", "show", "default", "--reveal-key"]);
     assert_eq!(value["api_key_source"], "environment");
     assert!(
         value["api_key"].is_null(),
-        "the env-supplied value is still never echoed: {json}"
+        "the env-supplied value is still never echoed: {value}"
     );
 }
 
@@ -1619,8 +1605,7 @@ fn models_show_human_carries_the_writable_metadata_fields() {
     );
 
     // JSON parity is unchanged.
-    let json = run_ok(&["pinvou", "--output", "json", "models", "show", &id]);
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let value = run_json(&["pinvou", "models", "show", &id]);
     assert_eq!(value["vendor"], "glm");
 }
 
@@ -1733,10 +1718,8 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
     ]);
     let id = added_model_id(&stdout);
 
-    let json = run_ok(&[
+    let value = run_json(&[
         "pinvou",
-        "--output",
-        "json",
         "models",
         "edit",
         &id,
@@ -1752,7 +1735,6 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
         "--context-window",
         "none",
     ]);
-    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     assert_eq!(value["id"], id, "an edit must never mint a new id");
     assert_eq!(value["updated"], true);
     assert_eq!(

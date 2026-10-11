@@ -18,7 +18,10 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{EnvGuard, HomeGuard, Isolation, command_error, env_lock, run, run_json, usage_error};
+use common::{
+    EnvGuard, HomeGuard, Isolation, command_error, env_lock, execute_error, run, run_json,
+    usage_error,
+};
 use pinvou_cli::{ExitCode, OutputMode, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace as app_workspace;
@@ -138,15 +141,32 @@ fn seed_two_turn_transcript(id: &str) {
 /// repository must not be decided by the same configuration the CLI honours,
 /// otherwise a test that writes a global gitconfig could observe its own
 /// filters instead of the stored objects.
-fn fixture_git(root: &Path, arguments: &[&str]) -> String {
-    let output = std::process::Command::new("git")
+/// Builds the shared fixture-owned git invocation: run in `root`, pinned away
+/// from any ambient configuration with the same isolation as the production
+/// `git_command` (a developer's global/system config — aliases, hooks,
+/// credential helpers — must not decide what a fixture observes or whether
+/// the fixture repository builds). The callers keep their own error
+/// semantics on top of this spine.
+fn fixture_git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
         .current_dir(root)
         .args(arguments)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env(
             "GIT_CONFIG_GLOBAL",
             if cfg!(windows) { "NUL" } else { "/dev/null" },
-        )
+        );
+    command
+}
+
+/// Reads repository state back with a *fixture-owned* git invocation, pinned
+/// away from any ambient configuration. Assertions about what the CLI did to a
+/// repository must not be decided by the same configuration the CLI honours,
+/// otherwise a test that writes a global gitconfig could observe its own
+/// filters instead of the stored objects.
+fn fixture_git(root: &Path, arguments: &[&str]) -> String {
+    let output = fixture_git_command(root, arguments)
         .output()
         .unwrap_or_else(|error| panic!("fixture git {arguments:?}: {error}"));
     assert!(
@@ -163,16 +183,7 @@ fn fixture_git(root: &Path, arguments: &[&str]) -> String {
 /// present-but-failing git — a broken fixture, a shim that errors, or a
 /// regressed config isolation is a test failure, not an environment skip.
 fn fixture_git_ok(root: &Path, arguments: &[&str]) -> bool {
-    match std::process::Command::new("git")
-        .current_dir(root)
-        .args(arguments)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            if cfg!(windows) { "NUL" } else { "/dev/null" },
-        )
-        .output()
-    {
+    match fixture_git_command(root, arguments).output() {
         Ok(output) if output.status.success() => true,
         Ok(output) => panic!(
             "fixture git {arguments:?} failed (a present-but-failing git is a \
@@ -226,12 +237,28 @@ fn init_git_repo(label: &str) -> Option<PathBuf> {
 
 // ── parse-level coverage ────────────────────────────────────────────────────
 
-/// Builds one `pinvou code providers add` row for the parse tables: the
-/// command spine is spelled once and `extra` carries the case's own flags
-/// verbatim. Each row keeps its own vec entry so a regression names its
-/// exact case.
+/// Builds one `pinvou code providers add` argv: the command spine is spelled
+/// once and `extra` carries the case's own flags verbatim. Shared by the
+/// parse tables and the execute-level `run`/`run_json` lanes; every call
+/// site keeps its own assertions so a regression names its exact case.
 fn add(agent: &'static str, extra: &[&'static str]) -> Vec<&'static str> {
     let mut arguments = vec!["pinvou", "code", "providers", "add", "--agent", agent];
+    arguments.extend_from_slice(extra);
+    arguments
+}
+
+/// [`add`]'s update-lane twin: builds one `pinvou code providers update <id>`
+/// argv with the same spine-spelled-once discipline.
+fn update<'a>(id: &'a str, agent: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut arguments = vec![
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        id,
+        "--agent",
+        agent,
+    ];
     arguments.extend_from_slice(extra);
     arguments
 }
@@ -2305,26 +2332,23 @@ fn providers_round_trip_against_temp_home() {
     assert_eq!(value["agents"].as_array().unwrap().len(), 3);
 
     // add persists into acp-providers.json (GUI DTO: id, name, base_url...).
-    let value = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let value = run_json(&add(
         "codex",
-        "--name",
-        "Relay A",
-        "--base-url",
-        "https://api.example.com/v1/",
-        "--wire-api",
-        "openai",
-        "--model",
-        "gpt-test",
-        "--context-window",
-        "128000",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
-    ]);
+        &[
+            "--name",
+            "Relay A",
+            "--base-url",
+            "https://api.example.com/v1/",
+            "--wire-api",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--context-window",
+            "128000",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
+        ],
+    ));
     assert_eq!(value["action"], "added");
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
     let _keyring = KeyringCleanup {
@@ -2356,17 +2380,7 @@ fn providers_round_trip_against_temp_home() {
     );
 
     // update renames the entry (merge with existing fields).
-    let value = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
-        &added_id,
-        "--agent",
-        "codex",
-        "--name",
-        "Relay B",
-    ]);
+    let value = run_json(&update(&added_id, "codex", &["--name", "Relay B"]));
     assert_eq!(value["action"], "updated");
     assert_eq!(value["provider"]["name"], "Relay B");
     assert_eq!(
@@ -2935,24 +2949,21 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
         Some("sk-test-export-key-1234567890"),
     )]);
 
-    let added = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let added = run_json(&add(
         "codex",
-        "--name",
-        "Exported relay",
-        "--base-url",
-        "https://api.example.com/v1/",
-        "--wire-api",
-        "openai",
-        "--model",
-        "gpt-test",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_EXPORT_KEY",
-    ]);
+        &[
+            "--name",
+            "Exported relay",
+            "--base-url",
+            "https://api.example.com/v1/",
+            "--wire-api",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_EXPORT_KEY",
+        ],
+    ));
     assert_eq!(added["action"], "added");
     let _keyring = KeyringCleanup {
         agent: "codex",
@@ -3056,50 +3067,35 @@ fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
     // while sibling tests set_var under ENV_LOCK, so this test must hold the
     // same lock.
     let _env_guard = common::env_lock();
-    let error = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "code",
         "login",
         "claude",
         "--code-env",
         "PINVOU_CLI_TEST_UNSET_CODE_VAR",
-    ])
-    .expect("parse accepts --code-env");
-    let error = pinvou_cli::execute(error)
-        .expect_err("an unset env var must fail before spawning anything");
+    ]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("is not set"), "{error}");
 
-    let error = parse_args(["pinvou", "code", "login", "codex", "--code", "C"])
-        .expect("parse accepts --code for any agent");
-    let error = pinvou_cli::execute(error)
-        .expect_err("only the claude flow consumes an authorization code");
+    let error = execute_error(&["pinvou", "code", "login", "codex", "--code", "C"]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
 
     // Round-41 review: an env-var value with content problems (control
     // characters here, over-length in the sibling cap test) is a CONTENT
     // failure — exit 1 with the family's code, not usage. Only the argv
     // `--code` lane is usage-class.
-    // SAFETY: the test holds ENV_LOCK (established above), so env writes are
-    // serialized in-process.
-    unsafe {
-        std::env::set_var("PINVOU_CLI_TEST_BAD_CODE_VAR", "bad\u{7}code");
-    }
-    let error = parse_args([
+    // Panic-safe restore: the guard re-seats the previous state on every
+    // exit path, same ENV_LOCK discipline as the sibling lanes.
+    let _bad_code = EnvGuard::set(&[("PINVOU_CLI_TEST_BAD_CODE_VAR", Some("bad\u{7}code"))]);
+    let error = execute_error(&[
         "pinvou",
         "code",
         "login",
         "claude",
         "--code-env",
         "PINVOU_CLI_TEST_BAD_CODE_VAR",
-    ])
-    .expect("parse accepts --code-env");
-    let error = pinvou_cli::execute(error)
-        .expect_err("a control-character env code must fail before spawning anything");
-    // SAFETY: same ENV_LOCK discipline as the set above.
-    unsafe {
-        std::env::remove_var("PINVOU_CLI_TEST_BAD_CODE_VAR");
-    }
+    ]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("code_login_code_invalid"),
@@ -3554,22 +3550,19 @@ fn login_streams_the_link_and_device_code_before_the_child_exits() {
 fn providers_add_claude_rejects_a_partial_model_slot_set() {
     let _env_guard = common::env_lock();
     let _home = sandbox_home("claude-partial-slots");
-    let error = run(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let error = run(&add(
         "claude",
-        "--name",
-        "Relay",
-        "--base-url",
-        "https://api.example.com",
-        "--model-slot",
-        "sonnet=claude-sonnet-4",
-        "--api-key-env",
-        "PINVOU_TEST_KEY_THAT_IS_NEVER_SET",
-    ])
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--model-slot",
+            "sonnet=claude-sonnet-4",
+            "--api-key-env",
+            "PINVOU_TEST_KEY_THAT_IS_NEVER_SET",
+        ],
+    ))
     .expect_err("a partial claude slot set must be refused before the store is reached");
     let message = error.to_string();
     assert!(
@@ -3591,35 +3584,22 @@ fn providers_refuse_an_unknown_model_slot_naming_the_valid_set() {
     let _env_guard = env_lock();
     let _home = sandbox_home("claude-unknown-slot");
     for arguments in [
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+        add(
             "claude",
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com",
-            "--model-slot",
-            "sonnet=s1",
-            "--model-slot",
-            "bogus=x",
-            "--api-key-env",
-            "MY_KEY",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "update",
-            "pv-1234567890ab",
-            "--agent",
-            "claude",
-            "--model-slot",
-            "bogus=x",
-        ],
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "bogus=x",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        update("pv-1234567890ab", "claude", &["--model-slot", "bogus=x"]),
     ] {
         let error = command_error(&arguments);
         assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
@@ -3654,30 +3634,27 @@ fn providers_update_claude_rejects_a_legacy_record_without_slots() {
     let store_path = _home.path().join("acp-providers.json");
 
     // Seed a CURRENT-build claude record (all five slots).
-    let added = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let added = run_json(&add(
         "claude",
-        "--name",
-        "Relay",
-        "--base-url",
-        "https://api.example.com",
-        "--model-slot",
-        "opus=claude-opus-4",
-        "--model-slot",
-        "sonnet=claude-sonnet-4",
-        "--model-slot",
-        "haiku=claude-haiku-4",
-        "--model-slot",
-        "fable=claude-fable-4",
-        "--model-slot",
-        "subagent=claude-subagent-4",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_SLOTS_KEY",
-    ]);
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--model-slot",
+            "opus=claude-opus-4",
+            "--model-slot",
+            "sonnet=claude-sonnet-4",
+            "--model-slot",
+            "haiku=claude-haiku-4",
+            "--model-slot",
+            "fable=claude-fable-4",
+            "--model-slot",
+            "subagent=claude-subagent-4",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_SLOTS_KEY",
+        ],
+    ));
     assert_eq!(added["action"], "added");
     let provider_id = added["provider"]["id"].as_str().unwrap().to_owned();
     let _keyring = KeyringCleanup {
@@ -3697,18 +3674,8 @@ fn providers_update_claude_rejects_a_legacy_record_without_slots() {
 
     // Update with no --model-slot: the merged set is empty → the English
     // gate refuses before the store is reached.
-    let error = run(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
-        &provider_id,
-        "--agent",
-        "claude",
-        "--name",
-        "Renamed",
-    ])
-    .expect_err("a legacy claude record updated without slots must be refused");
+    let error = run(&update(&provider_id, "claude", &["--name", "Renamed"]))
+        .expect_err("a legacy claude record updated without slots must be refused");
     let message = error.to_string();
     assert!(
         message.contains("providers update: claude requires --model-slot"),
@@ -3724,27 +3691,24 @@ fn providers_update_claude_rejects_a_legacy_record_without_slots() {
     );
 
     // Positive control: the same update WITH the full merged set succeeds.
-    let updated = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
+    let updated = run_json(&update(
         &provider_id,
-        "--agent",
         "claude",
-        "--name",
-        "Renamed",
-        "--model-slot",
-        "opus=claude-opus-4",
-        "--model-slot",
-        "sonnet=claude-sonnet-4",
-        "--model-slot",
-        "haiku=claude-haiku-4",
-        "--model-slot",
-        "fable=claude-fable-4",
-        "--model-slot",
-        "subagent=claude-subagent-4",
-    ]);
+        &[
+            "--name",
+            "Renamed",
+            "--model-slot",
+            "opus=claude-opus-4",
+            "--model-slot",
+            "sonnet=claude-sonnet-4",
+            "--model-slot",
+            "haiku=claude-haiku-4",
+            "--model-slot",
+            "fable=claude-fable-4",
+            "--model-slot",
+            "subagent=claude-subagent-4",
+        ],
+    ));
     assert_eq!(updated["action"], "updated");
 }
 
@@ -3785,22 +3749,19 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
     )]);
 
     // Refined model slots are claude-only (`--model-slot` on codex/kimi).
-    let error = run(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let error = run(&add(
         "codex",
-        "--name",
-        "Relay",
-        "--base-url",
-        "https://api.example.com",
-        "--model-slot",
-        "sonnet=claude-sonnet-4",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_RULES_KEY",
-    ])
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--model-slot",
+            "sonnet=claude-sonnet-4",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_RULES_KEY",
+        ],
+    ))
     .expect_err("--model-slot must be refused for non-claude agents");
     let message = error.to_string();
     assert!(
@@ -3811,20 +3772,17 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
 
     // A blank --name on the update lane (the add lane rejects it at parse
     // time; the store trims it into an invalid empty name).
-    let value = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let value = run_json(&add(
         "codex",
-        "--name",
-        "Relay",
-        "--base-url",
-        "https://api.example.com",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_RULES_KEY",
-    ]);
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_RULES_KEY",
+        ],
+    ));
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
     // The add above SUCCEEDED, so the fixture key sits in the sandbox's
     // FILE-backed credential store (`HomeGuard` forces
@@ -3837,18 +3795,8 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
         agent: "codex",
         provider_id: added_id.clone(),
     };
-    let error = run(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
-        &added_id,
-        "--agent",
-        "codex",
-        "--name",
-        "   ",
-    ])
-    .expect_err("a blank --name must be refused in English");
+    let error = run(&update(&added_id, "codex", &["--name", "   "]))
+        .expect_err("a blank --name must be refused in English");
     let message = error.to_string();
     assert!(
         message.contains("--name must not be blank"),
@@ -3857,17 +3805,11 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
     assert!(message.is_ascii(), "must stay English: {message}");
 
     // A --base-url that is not a full http(s) address.
-    let error = run(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
+    let error = run(&update(
         &added_id,
-        "--agent",
         "codex",
-        "--base-url",
-        "ftp://relay.example.com",
-    ])
+        &["--base-url", "ftp://relay.example.com"],
+    ))
     .expect_err("a non-http(s) base URL must be refused in English");
     let message = error.to_string();
     assert!(
@@ -3944,7 +3886,7 @@ fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
 /// process group (`support::set_process_group`) and installed no kill guard,
 /// so a Ctrl-C that killed this CLI orphaned a kimi login that can
 /// legitimately run to 1800 s. The fix brackets the child's lifetime with
-/// `support::supervise::register_child_group` / `forget_child_group`.
+/// `support::supervise::spawn_supervised` (registration) / `forget_child_group`.
 ///
 /// Observed through the real binary, the same seam
 /// `login_streams_the_link_and_device_code_before_the_child_exits` uses —
@@ -4217,26 +4159,23 @@ fn providers_update_delete_key_requires_yes() {
     // as every other env-mutating lane in this file); no threads are racing,
     // and the variable is process-local to this test binary.
     unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
-    let value = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "add",
-        "--agent",
+    let value = run_json(&add(
         "codex",
-        "--name",
-        "Gate A",
-        "--base-url",
-        "https://api.example.com/v1/",
-        "--wire-api",
-        "openai",
-        "--model",
-        "gpt-test",
-        "--context-window",
-        "128000",
-        "--api-key-env",
-        "PINVOU_TEST_DELETE_KEY_SECRET",
-    ]);
+        &[
+            "--name",
+            "Gate A",
+            "--base-url",
+            "https://api.example.com/v1/",
+            "--wire-api",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--context-window",
+            "128000",
+            "--api-key-env",
+            "PINVOU_TEST_DELETE_KEY_SECRET",
+        ],
+    ));
     let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
     // The add succeeded, so the fixture key is in the real keychain on dev
     // machines; the test's own final `--delete-key --yes` normally cleans
@@ -4247,32 +4186,14 @@ fn providers_update_delete_key_requires_yes() {
     };
 
     // Refusal without --yes: exit 2-style usage error, store untouched.
-    yes_gate_error(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
-        added_id.as_str(),
-        "--agent",
-        "codex",
-        "--delete-key",
-    ]);
+    yes_gate_error(&update(added_id.as_str(), "codex", &["--delete-key"]));
 
     // Ordering control: with the secret source UNSET, the refusal must still
     // be the --yes gate and not a resolution failure — proving the gate runs
     // before any secret resolution, exactly as the comment above claims. The
     // variable is restored so the --yes lane below sees the seeded state.
     unsafe { std::env::remove_var("PINVOU_TEST_DELETE_KEY_SECRET") };
-    yes_gate_error(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
-        added_id.as_str(),
-        "--agent",
-        "codex",
-        "--delete-key",
-    ]);
+    yes_gate_error(&update(added_id.as_str(), "codex", &["--delete-key"]));
     unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
 
     // The refusal persisted nothing: the credential is still configured.
@@ -4288,17 +4209,11 @@ fn providers_update_delete_key_requires_yes() {
     );
 
     // With --yes the deletion proceeds.
-    let value = run_json(&[
-        "pinvou",
-        "code",
-        "providers",
-        "update",
+    let value = run_json(&update(
         added_id.as_str(),
-        "--agent",
         "codex",
-        "--delete-key",
-        "--yes",
-    ]);
+        &["--delete-key", "--yes"],
+    ));
     assert_eq!(value["action"], "updated");
 
     let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);

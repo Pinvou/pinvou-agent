@@ -15,20 +15,25 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
 use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, scratch_dir};
 
 /// `~/.pinvou3/projects/projects.json` — the single projects store file.
-trait ProjectsHome {
-    fn store_file(&self) -> PathBuf;
-}
-
-impl ProjectsHome for HomeGuard {
+impl HomeGuard {
     fn store_file(&self) -> PathBuf {
         self.path().join("projects").join("projects.json")
+    }
+
+    /// A sidecar file under one session's directory in the sandbox sessions
+    /// root: the `workspace-binding.json` / `code-session.json` /
+    /// `acp-state.json` / `codex-workspace-baseline.json` paths the rebind
+    /// lanes assert against (same inherent-method pattern as
+    /// `artifacts_contract.rs`'s `workspace_of`).
+    fn session_file(&self, id: &str, name: &str) -> PathBuf {
+        self.sessions_root().join(id).join(name)
     }
 }
 
@@ -85,6 +90,34 @@ fn seed_acp_state(home: &HomeGuard, session_id: &str, workspace: &Path) {
         serde_json::json!({ "workspace": { "path": workspace.to_string_lossy() } }).to_string(),
     )
     .unwrap();
+}
+
+/// Runs `projects rebind <from> <to> --yes` through the in-process dispatch:
+/// the exact argv every rebind report/lane test shares (the sites whose argv
+/// genuinely differs — the `--output json` variant and the no-`--yes`/
+/// shape-error refusals — keep their inline `run` calls).
+fn rebind(from: &Path, to: &Path) -> Result<CliOutcome, CliError> {
+    run(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ])
+}
+
+/// [`rebind`], asserting the success class and parsing the single-line JSON
+/// envelope (the same contract as the harness's `run_json`).
+fn rebind_json(from: &Path, to: &Path) -> serde_json::Value {
+    run_json(&[
+        "pinvou",
+        "projects",
+        "rebind",
+        from.to_str().unwrap(),
+        to.to_str().unwrap(),
+        "--yes",
+    ])
 }
 
 /// An owning project-root fixture: `Drop` removes the directory tree, so a
@@ -698,14 +731,7 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     // strands this at the old path.
     seed_acp_state(&home, &code_id, &from);
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
+    let value = rebind_json(&from, &to);
     let failed = value["failed_session_ids"].as_array().unwrap();
     assert!(
         failed.is_empty(),
@@ -738,12 +764,8 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         );
     }
     // Plain sidecar moved.
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&plain_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("plain binding sidecar still on disk");
+    let sidecar = std::fs::read_to_string(home.session_file(&plain_id, "workspace-binding.json"))
+        .expect("plain binding sidecar still on disk");
     assert!(
         sidecar.contains(to.to_str().unwrap()),
         "the workspace-binding sidecar must move: {sidecar}"
@@ -755,20 +777,15 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         Some(to.clone()),
         "the agent-index binding must move"
     );
-    let code_sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&code_id)
-            .join("code-session.json"),
-    )
-    .expect("code-session sidecar still on disk");
+    let code_sidecar = std::fs::read_to_string(home.session_file(&code_id, "code-session.json"))
+        .expect("code-session sidecar still on disk");
     assert!(
         code_sidecar.contains(to.to_str().unwrap()),
         "the authoritative sidecar must move: {code_sidecar}"
     );
     // ACP state translated (GUI parity, `translate_acp_state_workspace`).
-    let acp_state =
-        std::fs::read_to_string(home.sessions_root().join(&code_id).join("acp-state.json"))
-            .expect("acp-state file still on disk");
+    let acp_state = std::fs::read_to_string(home.session_file(&code_id, "acp-state.json"))
+        .expect("acp-state file still on disk");
     assert!(
         acp_state.contains(to.to_str().unwrap()),
         "the acp-state workspace.path must move: {acp_state}"
@@ -779,12 +796,9 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     // fallback. Deleting the `code_rebound_ids.contains` arm from the
     // recapture gate fails this assertion while the rest of the suite stays
     // green.
-    let baseline = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&code_id)
-            .join("codex-workspace-baseline.json"),
-    )
-    .expect("a from-lane moved code session must recapture its workspace baseline");
+    let baseline =
+        std::fs::read_to_string(home.session_file(&code_id, "codex-workspace-baseline.json"))
+            .expect("a from-lane moved code session must recapture its workspace baseline");
     assert!(
         baseline.contains(to.to_str().unwrap()),
         "the arm-1 recaptured baseline must name the new root: {baseline}"
@@ -796,15 +810,7 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
 
     // Idempotent rerun: nothing is left under `from`, so a rerun converges
     // to an honest empty report under exit 0.
-    let outcome = run(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ])
-    .expect("the idempotent rerun must succeed");
+    let outcome = rebind(&from, &to).expect("the idempotent rerun must succeed");
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome
@@ -958,14 +964,7 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
 
     // Run 2 (mid→to): nothing is left under `mid` except this binding, so
     // only the per-session pre-sync geometry can reach the `origin` paths.
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        mid.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
+    let value = rebind_json(&mid, &to);
     let failed = value["failed_session_ids"].as_array().unwrap();
     assert!(
         failed.is_empty(),
@@ -990,22 +989,15 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
         raw.contains(to.to_str().unwrap()),
         "the record must carry the new destination: {raw}"
     );
-    let acp_state = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&stranded_id)
-            .join("acp-state.json"),
-    )
-    .expect("acp-state file still on disk");
+    let acp_state = std::fs::read_to_string(home.session_file(&stranded_id, "acp-state.json"))
+        .expect("acp-state file still on disk");
     assert!(
         acp_state.contains(to.to_str().unwrap()) && !acp_state.contains(origin.to_str().unwrap()),
         "the acp-state workspace.path must translate off the origin: {acp_state}"
     );
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&stranded_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("plain binding sidecar still on disk");
+    let sidecar =
+        std::fs::read_to_string(home.session_file(&stranded_id, "workspace-binding.json"))
+            .expect("plain binding sidecar still on disk");
     assert!(
         sidecar.contains(to.to_str().unwrap()),
         "the binding sidecar must move: {sidecar}"
@@ -1050,14 +1042,7 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
     drop(sessions);
     seed_acp_state(&home, &session_id, &from_sub);
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
+    let value = rebind_json(&from, &to);
     let failed = value["failed_session_ids"].as_array().unwrap();
     assert!(
         failed.is_empty(),
@@ -1087,19 +1072,13 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
         !raw.contains(from_sub.to_str().unwrap()),
         "no record path may name the vanished subpath origin: {raw}"
     );
-    let acp_state = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&session_id)
-            .join("acp-state.json"),
-    )
-    .expect("acp-state file still on disk");
+    let acp_state = std::fs::read_to_string(home.session_file(&session_id, "acp-state.json"))
+        .expect("acp-state file still on disk");
     assert!(
         acp_state.contains(to_sub.to_str().unwrap())
             && !acp_state.contains(from_sub.to_str().unwrap()),
         "the acp-state workspace.path must translate onto the translated subpath: {acp_state}"
     );
-
-    let _ = home;
 }
 
 #[test]
@@ -1114,14 +1093,7 @@ fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
 
     let healthy_id = bind_plain_session(&to);
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
+    let value = rebind_json(&from, &to);
     let rebound = report_ids(&value, "rebound_session_ids");
     let failed = report_ids(&value, "failed_session_ids");
     assert!(
@@ -1248,14 +1220,7 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
     let project_id = value["id"].as_str().unwrap().to_owned();
     let session_id = bind_plain_session(&same);
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        same.to_str().unwrap(),
-        same.to_str().unwrap(),
-        "--yes",
-    ]);
+    let value = rebind_json(&same, &same);
     assert_eq!(value["rebound_session_ids"].as_array().unwrap().len(), 0);
     assert_eq!(value["failed_session_ids"].as_array().unwrap().len(), 0);
     assert_eq!(value["affected_project_ids"].as_array().unwrap().len(), 0);
@@ -1267,12 +1232,8 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
         list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
         same.to_str().unwrap()
     );
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&session_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("the sidecar must be untouched");
+    let sidecar = std::fs::read_to_string(home.session_file(&session_id, "workspace-binding.json"))
+        .expect("the sidecar must be untouched");
     assert!(
         sidecar.contains(same.to_str().unwrap()),
         "the no-op must leave the binding as-is: {sidecar}"
@@ -1327,15 +1288,7 @@ fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
         let project_id = value["id"].as_str().unwrap().to_owned();
         let session_id = bind_plain_session(&from);
 
-        let error = run(&[
-            "pinvou",
-            "projects",
-            "rebind",
-            from.to_str().unwrap(),
-            to.to_str().unwrap(),
-            "--yes",
-        ])
-        .expect_err("a rebind with nested roots must refuse");
+        let error = rebind(&from, &to).expect_err("a rebind with nested roots must refuse");
         assert_eq!(error.exit_code(), ExitCode::Failed, "{label}");
         assert!(
             error.to_string().contains("REBIND_TO_NESTED"),
@@ -1351,12 +1304,9 @@ fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
             project_root.to_str().unwrap(),
             "{label}"
         );
-        let sidecar = std::fs::read_to_string(
-            home.sessions_root()
-                .join(&session_id)
-                .join("workspace-binding.json"),
-        )
-        .expect("the sidecar must still exist");
+        let sidecar =
+            std::fs::read_to_string(home.session_file(&session_id, "workspace-binding.json"))
+                .expect("the sidecar must still exist");
         assert!(
             sidecar.contains(from.to_str().unwrap()),
             "{label}: the refusal must leave the binding as-is: {sidecar}"
@@ -1411,12 +1361,8 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     );
     // Fail-closed: nothing moved — the sidecar still names the source, so a
     // rerun after repairing the table converges from a coherent state.
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&session_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("the binding sidecar must exist");
+    let sidecar = std::fs::read_to_string(home.session_file(&session_id, "workspace-binding.json"))
+        .expect("the binding sidecar must exist");
     assert!(
         sidecar.contains(from.to_str().unwrap()),
         "the binding must still name the source (nothing may move): {sidecar}"
@@ -1474,18 +1420,11 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     let other_id = other_session.metadata.id;
     drop(sessions);
     for session_id in [&legacy_id, &other_id] {
-        std::fs::remove_file(
-            home.sessions_root()
-                .join(session_id)
-                .join("workspace-binding.json"),
-        )
-        .ok();
+        std::fs::remove_file(home.session_file(session_id, "workspace-binding.json")).ok();
     }
     assert!(
         !home
-            .sessions_root()
-            .join(&legacy_id)
-            .join("workspace-binding.json")
+            .session_file(&legacy_id, "workspace-binding.json")
             .exists(),
         "fixture requires a session without a binding sidecar"
     );
@@ -1502,14 +1441,7 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     )
     .expect("seed the legacy table");
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
+    let value = rebind_json(&from, &to);
     let failed = value["failed_session_ids"].as_array().unwrap();
     assert!(
         failed.is_empty(),
@@ -1522,12 +1454,8 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     );
 
     // The rebound entry landed on the destination…
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&legacy_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("the migrated sidecar must exist after the rebind");
+    let sidecar = std::fs::read_to_string(home.session_file(&legacy_id, "workspace-binding.json"))
+        .expect("the migrated sidecar must exist after the rebind");
     assert!(
         sidecar.contains(to.to_str().unwrap()),
         "the legacy binding must be translated to the destination: {sidecar}"
@@ -1536,12 +1464,9 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     // assertion the pre-fix wholesale rewrite failed: its cache ∪ plan
     // view dropped the entry, and with no other legacy entries left the
     // whole file was deleted).
-    let other_sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&other_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("the unrelated entry must be migrated, not dropped");
+    let other_sidecar =
+        std::fs::read_to_string(home.session_file(&other_id, "workspace-binding.json"))
+            .expect("the unrelated entry must be migrated, not dropped");
     assert!(
         other_sidecar.contains(elsewhere.to_str().unwrap()),
         "the unrelated legacy binding must survive the rebind: {other_sidecar}"
@@ -1642,27 +1567,15 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
     ]);
     let id = bind_plain_session(&from);
 
-    let outcome = run(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
-    let error = outcome.expect_err("rebind to a missing destination must refuse");
+    let error = rebind(&from, &to).expect_err("rebind to a missing destination must refuse");
     assert!(
         error.to_string().contains("REBIND_TO_UNUSABLE"),
         "the refusal must carry the typed marker: {error}"
     );
 
     // Nothing moved: the binding sidecar still names the old root.
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&id)
-            .join("workspace-binding.json"),
-    )
-    .expect("binding sidecar still on disk");
+    let sidecar = std::fs::read_to_string(home.session_file(&id, "workspace-binding.json"))
+        .expect("binding sidecar still on disk");
     assert!(
         sidecar.contains(from.to_str().unwrap()),
         "nothing may move on a refused rebind: {sidecar}"
@@ -1699,15 +1612,7 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
         to.to_str().unwrap(),
     ]);
 
-    let outcome = run(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
-    let error = outcome.expect_err("rebinding onto an occupied root must refuse");
+    let error = rebind(&from, &to).expect_err("rebinding onto an occupied root must refuse");
     assert!(
         error.to_string().contains("REBIND_ROOTS_CONFLICT"),
         "the refusal must carry the typed conflict marker: {error}"
@@ -1745,7 +1650,7 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
 #[test]
 fn projects_move_ungroups_a_tier2_auto_grouped_session() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("projects", "rebind-tier2-ungroup", Isolation::ProductHome);
+    let _home = HomeGuard::new("projects", "rebind-tier2-ungroup", Isolation::ProductHome);
     let root = make_root_dir("rebind-tier2-root");
 
     let value = run_json(&[
@@ -1776,7 +1681,6 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
     let outcome = run(&["pinvou", "projects", "move", &id, "--yes"]);
     let error = outcome.expect_err("the ungroup entry must pin the explicit opt-out");
     assert!(error.to_string().contains("not in a project"), "{error}");
-    let _ = home;
 }
 
 /// Round-49 review: tier 2's agent-index half is read directly (bounded read
@@ -1908,12 +1812,8 @@ fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_
         "the corrupt index must be left in place for repair"
     );
     // And nothing was moved: the authoritative sidecar still binds `from`.
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&code_id)
-            .join("code-session.json"),
-    )
-    .expect("the code-session sidecar must be untouched");
+    let sidecar = std::fs::read_to_string(home.session_file(&code_id, "code-session.json"))
+        .expect("the code-session sidecar must be untouched");
     assert!(
         sidecar.contains(from.to_str().unwrap()) && !sidecar.contains(to.to_str().unwrap()),
         "a refused rebind must not move the binding: {sidecar}"

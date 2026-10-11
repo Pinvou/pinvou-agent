@@ -52,7 +52,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::{
-    HomeGuard, Isolation, assert_usage, env_lock, execute_error, parsed_debug, run_json, run_ok,
+    HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, execute_error,
+    parsed_debug, run_json, run_ok,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -70,19 +71,6 @@ impl Drop for HoldEnvGuard {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
     }
-}
-
-/// Creates a real session in the sandboxed home so the mount surface (which
-/// requires an existing session, like the GUI's open-session commands) has a
-/// valid target.
-fn create_session(home: &HomeGuard) -> String {
-    let store = pinvou3_lib::features::sessions::SessionStore::boot().expect("boot session store");
-    let workspace = home.path().join("workspace");
-    std::fs::create_dir_all(&workspace).unwrap();
-    let session = store
-        .create_new("test-model".to_owned(), None, workspace)
-        .expect("create fixture session");
-    session.metadata.id
 }
 
 /// Writes `count` bulk text sources under `home` — large enough that the
@@ -149,6 +137,18 @@ fn strand_running_job(home: &HomeGuard, id: i64, sources: &[PathBuf]) -> String 
     job_id
 }
 
+/// The stranded-job fixture the execute-level import tests start from: a
+/// fresh collection, two bulk sources (the minimum for a mid-import kill
+/// window with one item done and another pending), and the SIGKILLed
+/// add-sources child's orphaned `running` job. Returns (collection id,
+/// stranded job id).
+fn stranded_two_source_job(home: &HomeGuard, name: &str) -> (i64, String) {
+    let id = create_collection(name);
+    let sources = write_bulk_sources(home, 2);
+    let job_id = strand_running_job(home, id, &sources);
+    (id, job_id)
+}
+
 /// Seeds a real import job through the feature service inside THIS process
 /// (its import thread runs here, exactly like an add-sources invocation's
 /// would) — the "some other owner" position a CLI lane must refuse to race.
@@ -207,6 +207,28 @@ fn hits_array(query: &[&str]) -> Vec<serde_json::Value> {
     arguments.extend_from_slice(query);
     let hits = run_json(&arguments);
     hits["hits"].as_array().expect("hits array").clone()
+}
+
+/// `scan start --root <root>`, asserted to have reached its terminal `done`
+/// phase inside the invocation (the scan lane's wait-and-report contract);
+/// returns the payload for the caller's further assertions.
+fn scan_start_done(root: &Path) -> serde_json::Value {
+    let started = run_json(&[
+        "pinvou",
+        "knowledge",
+        "scan",
+        "start",
+        "--root",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(started["phase"], serde_json::json!("done"));
+    started
+}
+
+/// The index population `knowledge stats` reports (`totalFiles`) — the
+/// assertion target of the scan-scope/sweep pins below.
+fn indexed_total_files() -> serde_json::Value {
+    run_json(&["pinvou", "knowledge", "stats"])["totalFiles"].clone()
 }
 
 /// Bounded state poll (no sleep budget): runs `command --output json` until
@@ -741,8 +763,8 @@ fn mount_surface_refuses_without_booting_the_session_store() {
 #[test]
 fn mount_family_refuses_honestly_as_product_host_bound() {
     let _env_guard = env_lock();
-    let home = temp_home("mount-gate");
-    let session_id = create_session(&home);
+    let _home = temp_home("mount-gate");
+    let session_id = create_session_fixture();
 
     // Mounted collections live in the desktop app's per-process memory and
     // are deliberately not persisted, so every CLI mount-surface command
@@ -784,8 +806,7 @@ fn stats_type_counts_and_search_answer_zero_state_offline() {
     let _env_guard = env_lock();
     let _home = temp_home("l0-zero");
 
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
-    assert_eq!(stats["totalFiles"], serde_json::json!(0));
+    assert_eq!(indexed_total_files(), serde_json::json!(0));
 
     let counts = run_json(&["pinvou", "knowledge", "type-counts"]);
     assert_eq!(counts["type_counts"], serde_json::json!([]));
@@ -1063,10 +1084,7 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
 fn add_sources_refuses_to_race_a_running_job() {
     let _env_guard = env_lock();
     let home = temp_home("index-resumable-guard");
-    let id = create_collection("guarded");
-
-    let sources = write_bulk_sources(&home, 2);
-    let job_id = strand_running_job(&home, id, &sources);
+    let (id, job_id) = stranded_two_source_job(&home, "guarded");
 
     // The second enqueue must refuse (exit 1) naming the stranded running
     // job, and must not turn it into anything else.
@@ -1341,13 +1359,11 @@ fn index_cancel_names_an_unknown_job() {
 fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     let _env_guard = env_lock();
     let home = temp_home("index-resume-roundtrip");
-    let id = create_collection("resumable");
 
     // Two bulk sources: the strand needs a window with one item completed
     // and another still pending, and the resume below then has genuine
     // remaining work to finish inside its wait.
-    let sources = write_bulk_sources(&home, 2);
-    let job_id = strand_running_job(&home, id, &sources);
+    let (id, job_id) = stranded_two_source_job(&home, "resumable");
 
     // While the job still reads `running`, resume must refuse honestly: the
     // CLI cannot distinguish a dead owner from a live desktop-app import
@@ -1699,9 +1715,7 @@ fn a_frozen_import_is_interrupted_and_resumable() {
 fn index_cancel_discloses_the_staged_progress_destruction() {
     let _env_guard = env_lock();
     let home = temp_home("cancel-disclosure");
-    let id = create_collection("cancel-disclosure");
-    let sources = write_bulk_sources(&home, 2);
-    let job_id = strand_running_job(&home, id, &sources);
+    let (_id, job_id) = stranded_two_source_job(&home, "cancel-disclosure");
 
     // Cancelling the running job drops its staged progress: the note rides
     // the human channel.
@@ -1857,15 +1871,7 @@ fn scan_start_persists_its_completion_marker() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
 
-    let started = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        root.to_str().unwrap(),
-    ]);
-    assert_eq!(started["phase"], serde_json::json!("done"));
+    let started = scan_start_done(&root);
     assert_eq!(started["running"], serde_json::json!(false));
     assert!(
         started["finishedAt"].as_i64().unwrap_or(0) > 0,
@@ -1901,15 +1907,7 @@ fn scan_start_refuses_a_missing_or_non_directory_root_before_any_wipe() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
 
-    let seeded = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        root.to_str().unwrap(),
-    ]);
-    assert_eq!(seeded["phase"], serde_json::json!("done"));
+    scan_start_done(&root);
 
     let missing = home.path().join("docs-typo");
     let error = execute_error(&[
@@ -1942,9 +1940,8 @@ fn scan_start_refuses_a_missing_or_non_directory_root_before_any_wipe() {
 
     // The seeded index must be intact: the refused scans never started, so
     // the stale sweep never ran.
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(1),
         "a refused scan must not wipe the index"
     );
@@ -1970,37 +1967,19 @@ fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root()
     }
     std::fs::write(docs_b.join("rootB.txt"), "from root B").unwrap();
 
-    let seeded = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs_a.to_str().unwrap(),
-    ]);
-    assert_eq!(seeded["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    scan_start_done(&docs_a);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(5),
         "root A must seed its five files"
     );
 
-    let second = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs_b.to_str().unwrap(),
-    ]);
-    assert_eq!(second["phase"], serde_json::json!("done"));
+    scan_start_done(&docs_b);
 
     // Root A was never walked this time, so none of its entries may be
     // classified as stale: the index is A's five plus B's one.
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(6),
         "scanning root B must add to the index, never wipe root A"
     );
@@ -2014,18 +1993,9 @@ fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root()
     // A file genuinely removed from a root that IS walked is still swept,
     // so scoping the sweep did not disable it.
     std::fs::remove_file(docs_b.join("rootB.txt")).unwrap();
-    let third = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs_b.to_str().unwrap(),
-    ]);
-    assert_eq!(third["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    scan_start_done(&docs_b);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(5),
         "a file that vanished under a walked root must still be swept"
     );
@@ -2050,18 +2020,9 @@ fn scan_start_vetoes_the_stale_sweep_when_a_walked_root_has_an_unreadable_subtre
     std::fs::write(docs.join("kept.txt"), "stays while vetoed").unwrap();
     std::fs::write(docs.join("locked").join("inside.md"), "# hidden").unwrap();
 
-    let seeded = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs.to_str().unwrap(),
-    ]);
-    assert_eq!(seeded["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    scan_start_done(&docs);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(2),
         "both files must be indexed before the veto scenario"
     );
@@ -2081,36 +2042,18 @@ fn scan_start_vetoes_the_stale_sweep_when_a_walked_root_has_an_unreadable_subtre
     // the round must report done (the readable part was still indexed) but
     // NOT sweep the vanished entry.
     std::fs::remove_file(docs.join("kept.txt")).unwrap();
-    let vetoed = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs.to_str().unwrap(),
-    ]);
-    assert_eq!(vetoed["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    scan_start_done(&docs);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(2),
         "the walk error must veto the stale sweep: the vanished entry lingers"
     );
 
     // The next fully readable round cleans the ghost.
     std::fs::set_permissions(docs.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    let healed = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs.to_str().unwrap(),
-    ]);
-    assert_eq!(healed["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    scan_start_done(&docs);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(1),
         "the fully readable round must sweep the vanished entry"
     );
@@ -2133,30 +2076,12 @@ fn scan_start_through_a_symlinked_root_neither_duplicates_nor_wipes_entries() {
     let link = home.path().join("docs-link");
     std::os::unix::fs::symlink(&docs, &link).unwrap();
 
-    let seeded = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs.to_str().unwrap(),
-    ]);
-    assert_eq!(seeded["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
-    assert_eq!(stats["totalFiles"], serde_json::json!(2));
+    scan_start_done(&docs);
+    assert_eq!(indexed_total_files(), serde_json::json!(2));
 
-    let through_link = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        link.to_str().unwrap(),
-    ]);
-    assert_eq!(through_link["phase"], serde_json::json!("done"));
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
+    scan_start_done(&link);
     assert_eq!(
-        stats["totalFiles"],
+        indexed_total_files(),
         serde_json::json!(2),
         "scanning through a symlink must re-visit the same keys, not mint new ones"
     );
@@ -2212,8 +2137,7 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
         |state| state["phase"] == serde_json::json!("done"),
     );
 
-    let stats = run_json(&["pinvou", "knowledge", "stats"]);
-    assert_eq!(stats["totalFiles"], serde_json::json!(2));
+    assert_eq!(indexed_total_files(), serde_json::json!(2));
     let counts = run_json(&["pinvou", "knowledge", "type-counts"]);
     let counts = counts["type_counts"].as_array().expect("type_counts array");
     assert_eq!(counts.len(), 2);
@@ -2399,10 +2323,7 @@ fn remote_connections_probe_a_configured_server() {
 fn index_cancel_targets_a_stranded_running_job() {
     let _env_guard = env_lock();
     let home = temp_home("index-cancel-stranded");
-    let id = create_collection("cancellable");
-
-    let sources = write_bulk_sources(&home, 2);
-    let job_id = strand_running_job(&home, id, &sources);
+    let (_id, job_id) = stranded_two_source_job(&home, "cancellable");
 
     let cancelled = run_child(&home, &["knowledge", "index", "cancel", &job_id]);
     assert!(cancelled.status.success(), "index cancel must succeed");
@@ -2478,9 +2399,7 @@ fn collections_delete_never_boots_the_session_store() {
 fn collections_delete_cancels_its_own_stranded_job_and_deletes() {
     let _env_guard = env_lock();
     let home = temp_home("delete-stranded-job");
-    let id = create_collection("stranded");
-    let sources = write_bulk_sources(&home, 2);
-    strand_running_job(&home, id, &sources);
+    let (id, _job_id) = stranded_two_source_job(&home, "stranded");
 
     run_ok(&[
         "pinvou",

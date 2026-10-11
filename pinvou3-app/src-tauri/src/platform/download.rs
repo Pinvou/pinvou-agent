@@ -164,13 +164,13 @@ pub(crate) fn redact_url_credentials(url_text: &str) -> String {
     parsed.to_string()
 }
 
-/// Round-40 review: free-text form of [`redact_url_credentials`]. Error
+/// Round-40 review: free-text form of `redact_url_credentials`. Error
 /// `Display` impls embed the requested URL (`reqwest` prints
 /// `... for url (https://...)`), and the connectors' labels-only aggregation
 /// rule promises never to echo a candidate URL — mirror prefixes can carry
 /// userinfo. Scans the text for embedded `http(s)://` runs (bounded by the
 /// usual delimiters) and redacts userinfo in each; non-URL text passes
-/// through unchanged. Same crate-boundary re-export as the single-URL form.
+/// through unchanged.
 pub fn redact_url_credentials_in_text(text: &str) -> String {
     let delimiters = |c: char| {
         matches!(

@@ -66,6 +66,21 @@ impl HomeGuard {
     }
 }
 
+/// Plants the skill tree exactly as the app's bundle unpack leaves it: the
+/// listed skill directory (its `references/` subdirectory plus the given
+/// `SKILL.md` body), the connector's NOTICE file, and one unlisted
+/// `unrelated/` sibling the hide direction must never touch even when it
+/// runs. Returns the skills root.
+#[cfg(unix)]
+fn plant_skill_tree(home: &HomeGuard, id: &str, dir: &str, skill_md: &str) -> PathBuf {
+    let skills = home.connector_skills_dir(id);
+    std::fs::create_dir_all(skills.join(dir).join("references")).unwrap();
+    std::fs::write(skills.join(dir).join("SKILL.md"), skill_md).unwrap();
+    std::fs::write(skills.join(format!("NOTICE-{id}.md")), "notice").unwrap();
+    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+    skills
+}
+
 /// Points `PATH` at a directory holding no vendor connector CLI (or the
 /// fake stand-ins the caller staged there), whatever the host has
 /// installed. Must be constructed while ENV_LOCK is held; restores every
@@ -718,17 +733,7 @@ fn vendor_cli_argv_is_passed_exactly_once() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let outcome = run(&[
-        "pinvou",
-        "connectors",
-        "status",
-        "feishu",
-        "--output",
-        "json",
-    ])
-    .expect("status with a fake vendor CLI must succeed");
-    let status: serde_json::Value =
-        serde_json::from_str(&outcome.stdout).expect("single-line JSON status");
+    let status = run_json(&["pinvou", "connectors", "status", "feishu"]);
     assert_eq!(
         status["connectors"][0]["connected"],
         serde_json::json!(true)
@@ -968,11 +973,7 @@ fn logout_and_apply_skills_remove_the_companion_skill_directories() {
     // NOTICE file. The unrelated sibling pins that the hide direction is
     // table-driven (the app's `apply_connector_skills` removes the listed
     // dirs, not the whole skills root).
-    let skills = home.connector_skills_dir("dingtalk");
-    std::fs::create_dir_all(skills.join("dws").join("references")).unwrap();
-    std::fs::write(skills.join("dws").join("SKILL.md"), "# dws").unwrap();
-    std::fs::write(skills.join("NOTICE-dingtalk.md"), "notice").unwrap();
-    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+    let skills = plant_skill_tree(&home, "dingtalk", "dws", "# dws");
 
     let value = run_json(&["pinvou", "connectors", "logout", "dingtalk", "--yes"]);
     assert_eq!(value["ok"], true);
@@ -1268,11 +1269,7 @@ fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
     // Plant the tree exactly as the app's bundle unpack leaves it: listed
     // skill dirs plus the connector NOTICE file, and an unlisted sibling the
     // hide direction must never touch even when it runs.
-    let skills = home.connector_skills_dir("wecom");
-    std::fs::create_dir_all(skills.join("wecomcli-doc").join("references")).unwrap();
-    std::fs::write(skills.join("wecomcli-doc").join("SKILL.md"), "# wecom doc").unwrap();
-    std::fs::write(skills.join("NOTICE-wecom.md"), "notice").unwrap();
-    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+    let skills = plant_skill_tree(&home, "wecom", "wecomcli-doc", "# wecom doc");
 
     let value = run_json(&["pinvou", "connectors", "enable", "wecom"]);
     assert_eq!(value["ok"], true);
@@ -1340,11 +1337,7 @@ fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let skills = home.connector_skills_dir("dingtalk");
-    std::fs::create_dir_all(skills.join("dws")).unwrap();
-    std::fs::write(skills.join("dws").join("SKILL.md"), "# dws").unwrap();
-    std::fs::write(skills.join("NOTICE-dingtalk.md"), "notice").unwrap();
-    std::fs::create_dir_all(skills.join("unrelated")).unwrap();
+    let skills = plant_skill_tree(&home, "dingtalk", "dws", "# dws");
 
     let value = run_json(&["pinvou", "connectors", "enable", "dingtalk"]);
     assert_eq!(value["ok"], true);
@@ -1664,17 +1657,7 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     let _prefix =
         EnvGuard::set_values(&[("NPM_CONFIG_PREFIX", Some(prefix.clone().into_os_string()))]);
 
-    let outcome = run(&[
-        "pinvou",
-        "connectors",
-        "status",
-        "tmeet",
-        "--output",
-        "json",
-    ])
-    .expect("status must resolve the npm-prefix install");
-    let status: serde_json::Value =
-        serde_json::from_str(&outcome.stdout).expect("single-line JSON status");
+    let status = run_json(&["pinvou", "connectors", "status", "tmeet"]);
     assert_eq!(
         status["connectors"][0]["connected"],
         serde_json::json!(true),

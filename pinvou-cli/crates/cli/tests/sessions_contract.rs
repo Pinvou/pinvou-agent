@@ -48,6 +48,26 @@ fn set_message_role(id: &str, index: usize, role: &str) {
     });
 }
 
+/// Seeds one markdown artifact under `sessions_root/<id>/workspace` and
+/// tracks it on the session through the store (the same feature-layer call
+/// the GUI `save_session_artifacts` command makes). Returns the canonicalized
+/// path: the CLI canonicalizes stored artifact paths (session containment
+/// check), so expectations must use the canonical form (on macOS $TMPDIR
+/// canonicalizes to /private/var/...).
+fn seed_tracked_artifact(home: &HomeGuard, id: &str, file_name: &str, content: &str) -> PathBuf {
+    let workspace_dir = home.sessions_root().join(id).join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    let artifact = workspace_dir.join(file_name);
+    std::fs::write(&artifact, content).unwrap();
+    let artifact = std::fs::canonicalize(&artifact).unwrap();
+    let store = SessionStore::boot().expect("boot session store");
+    store
+        .update_artifacts(id, vec![artifact.to_string_lossy().to_string()])
+        .expect("track artifact");
+    drop(store);
+    artifact
+}
+
 // ── parse-level coverage ────────────────────────────────────────────────────
 
 #[test]
@@ -1014,20 +1034,7 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     // `save_session_artifacts` command makes), then index it cross-session.
     // Relative artifact paths resolve against the session ledger workspace
     // (`sessions_root/<id>/workspace`), the same base the GUI uses.
-    let workspace_dir = home.sessions_root().join(&id).join("workspace");
-    std::fs::create_dir_all(&workspace_dir).unwrap();
-    let report = workspace_dir.join("report.md");
-    std::fs::write(&report, "# Report\n\nfirst version\n").unwrap();
-    // The CLI canonicalizes stored artifact paths (session containment
-    // check); on macOS $TMPDIR (/var/folders/...) canonicalizes to
-    // /private/var/..., so expectations must use the canonical form.
-    let report = std::fs::canonicalize(&report).unwrap();
-
-    let store = SessionStore::boot().expect("boot session store");
-    store
-        .update_artifacts(&id, vec![report.to_string_lossy().to_string()])
-        .expect("track artifact");
-    drop(store);
+    let report = seed_tracked_artifact(&home, &id, "report.md", "# Report\n\nfirst version\n");
 
     let value = run_json(&["pinvou", "artifacts", "list"]);
     let rows = value["artifacts"].as_array().unwrap();
@@ -1124,19 +1131,12 @@ fn artifacts_list_human_row_survives_control_characters_in_record_fields() {
     // call the GUI `save_session_artifacts` command makes). Every cell of
     // the row is derived from this name: name, ext, path, and via metadata
     // even session_id stays the well-formed id here.
-    let workspace_dir = home.sessions_root().join(&id).join("workspace");
-    std::fs::create_dir_all(&workspace_dir).unwrap();
-    let hostile = workspace_dir.join("poison\trow\njump\x1b]0;pwned\x07.md");
-    std::fs::write(&hostile, "# Report\n\nfirst version\n").unwrap();
-    // The CLI canonicalizes tracked paths; expectations must use the
-    // canonical form (on macOS $TMPDIR canonicalizes to /private/var/...).
-    let hostile = std::fs::canonicalize(&hostile).unwrap();
-
-    let store = SessionStore::boot().expect("boot session store");
-    store
-        .update_artifacts(&id, vec![hostile.to_string_lossy().to_string()])
-        .expect("track artifact");
-    drop(store);
+    let hostile = seed_tracked_artifact(
+        &home,
+        &id,
+        "poison\trow\njump\x1b]0;pwned\x07.md",
+        "# Report\n\nfirst version\n",
+    );
 
     let outcome = run(&["pinvou", "artifacts", "list"]).expect("artifacts list must succeed");
     // One artifact renders as exactly one line, whatever its filename says.
@@ -1210,16 +1210,7 @@ fn artifacts_list_collapses_a_hostile_metadata_id() {
 
     // Hostile record: the artifact filename carries tab+newline+ESC (covered
     // by the sibling test above); this one poisons only metadata/id.
-    let workspace_dir = home.sessions_root().join(&id).join("workspace");
-    std::fs::create_dir_all(&workspace_dir).unwrap();
-    let report = workspace_dir.join("report.md");
-    std::fs::write(&report, "# Report\n").unwrap();
-    let report = std::fs::canonicalize(&report).unwrap();
-    let store = SessionStore::boot().expect("boot session store");
-    store
-        .update_artifacts(&id, vec![report.to_string_lossy().to_string()])
-        .expect("track artifact");
-    drop(store);
+    seed_tracked_artifact(&home, &id, "report.md", "# Report\n");
 
     mutate_session_record(&id, |value| {
         value["metadata"]["id"] = serde_json::json!("poison\tid\nnewrow\x1b[2J");

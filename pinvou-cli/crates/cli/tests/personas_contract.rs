@@ -30,6 +30,14 @@ impl HomeGuard {
     }
 }
 
+/// `sessions_root/<session>/persona_equipped.json` — the equip-state sidecar
+/// path the round-trip and delete-sweep tests assert against.
+fn equipped_sidecar(home: &HomeGuard, session: &str) -> PathBuf {
+    home.sessions_root()
+        .join(session)
+        .join("persona_equipped.json")
+}
+
 /// Writes a persona body file and returns its path.
 /// Round-37 review: the orphan verdicts are only trustworthy against a pool
 /// the process actually enumerated. Both shapes need a FRESH process (the
@@ -44,7 +52,7 @@ fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
     let home = HomeGuard::new("personas", "active-pool-fault", Isolation::ProductHome);
     let session_id = create_session_fixture();
     // A sidecar whose card does not resolve (never existed).
-    let sidecar_dir = home.path().join("sessions").join(&session_id);
+    let sidecar_dir = home.sessions_root().join(&session_id);
     std::fs::create_dir_all(&sidecar_dir).unwrap();
     std::fs::write(
         sidecar_dir.join("persona_equipped.json"),
@@ -576,10 +584,7 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
             .stdout
             .contains(&format!("equipped {persona_id} on {session_id}"))
     );
-    let sidecar = home
-        .sessions_root()
-        .join(&session_id)
-        .join("persona_equipped.json");
+    let sidecar = equipped_sidecar(&home, &session_id);
     assert!(sidecar.is_file(), "equip state must persist to the sidecar");
     let sidecar_value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
@@ -680,14 +685,8 @@ fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
     // Equip the doomed card on session A and the keeper on session B.
     run(&["pinvou", "personas", "equip", &session_a, &deleted_id]).unwrap();
     run(&["pinvou", "personas", "equip", &session_b, &keeper_id]).unwrap();
-    let sidecar_a = home
-        .sessions_root()
-        .join(&session_a)
-        .join("persona_equipped.json");
-    let sidecar_b = home
-        .sessions_root()
-        .join(&session_b)
-        .join("persona_equipped.json");
+    let sidecar_a = equipped_sidecar(&home, &session_a);
+    let sidecar_b = equipped_sidecar(&home, &session_b);
     assert!(sidecar_a.is_file() && sidecar_b.is_file());
 
     let value = run_json(&["pinvou", "personas", "delete", &deleted_id, "--yes"]);
@@ -750,10 +749,7 @@ fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
 
     let persona_id = create_user_persona("Big Expert", &body_path);
     run(&["pinvou", "personas", "equip", &session_id, &persona_id]).unwrap();
-    let sidecar = home
-        .sessions_root()
-        .join(&session_id)
-        .join("persona_equipped.json");
+    let sidecar = equipped_sidecar(&home, &session_id);
     assert!(
         sidecar.is_file(),
         "equip must persist the sidecar for the large body"
@@ -860,10 +856,7 @@ fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
 
     let persona_id = create_user_persona("Orphan Expert", &body_path);
     run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("equip must succeed");
-    let sidecar = home
-        .sessions_root()
-        .join(&session_id)
-        .join("persona_equipped.json");
+    let sidecar = equipped_sidecar(&home, &session_id);
     assert!(sidecar.is_file());
 
     // Exactly what the desktop app's delete does: remove the card file and
@@ -923,10 +916,7 @@ fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
     // A session directory whose sidecar cannot be inspected at all: a
     // DIRECTORY where the sweep expects a file. The sweep cannot tell whether
     // it references the deleted card, so it must be named rather than skipped.
-    let blocked = home
-        .sessions_root()
-        .join("ghost-session")
-        .join("persona_equipped.json");
+    let blocked = equipped_sidecar(&home, "ghost-session");
     std::fs::create_dir_all(&blocked).unwrap();
 
     let outcome = run(&[

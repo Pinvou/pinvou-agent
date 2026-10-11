@@ -13,10 +13,11 @@
 
 mod common;
 
-use pinvou_cli::{CliCommand, ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{CliCommand, ExitCode, OutputMode, parse_args};
 
 use common::{
-    HomeGuard, Isolation, assert_usage, command_error, env_lock, parsed_debug, run_json, run_ok,
+    HomeGuard, Isolation, assert_usage, command_error, env_lock, execute_error, parsed_debug, run,
+    run_json, run_ok,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -31,11 +32,10 @@ fn enqueue_fixture(kind: &str, content: &str) -> pinvou3_lib::features::memory::
     enqueue_fixture_with_topic(kind, "", content)
 }
 
-/// Seeds one preference through the CLI's own add lane and returns its id.
-/// The preference store is replace-per-topic and the CLI add carries no
-/// topic, so the single row this leaves is exactly the item the update-lane
-/// tests below address.
-fn seeded_preference_id() -> String {
+/// Seeds the one default preference row the execute-level tests start from
+/// (`add` carries no topic, so the replace-per-topic store holds this row
+/// alone).
+fn add_default_preference() {
     run_ok(&[
         "pinvou",
         "memory",
@@ -44,6 +44,14 @@ fn seeded_preference_id() -> String {
         "--content",
         "Prefer concise answers",
     ]);
+}
+
+/// Seeds one preference through the CLI's own add lane and returns its id.
+/// The preference store is replace-per-topic and the CLI add carries no
+/// topic, so the single row this leaves is exactly the item the update-lane
+/// tests below address.
+fn seeded_preference_id() -> String {
+    add_default_preference();
     pinvou3_lib::features::memory::list_preferences().unwrap()[0]
         .id
         .clone()
@@ -434,7 +442,12 @@ fn pending_never_reason_over_the_cap_discloses_the_truncation() {
     let id = item.id;
 
     let long_reason = "r".repeat(120);
-    let parsed = parse_args(vec![
+    // The stderr note goes to the process's real stderr (`note!`), which
+    // this in-process harness cannot capture; the output-channel half is
+    // the assertable contract here (the stderr half is the same
+    // `note_truncation` helper the add/update lanes' tested disclosures
+    // share).
+    let outcome = run(&[
         "pinvou",
         "memory",
         "pending",
@@ -445,13 +458,7 @@ fn pending_never_reason_over_the_cap_discloses_the_truncation() {
         "--output",
         "json",
     ])
-    .expect("valid never command");
-    // The stderr note goes to the process's real stderr (`note!`), which
-    // this in-process harness cannot capture; the output-channel half is
-    // the assertable contract here (the stderr half is the same
-    // `note_truncation` helper the add/update lanes' tested disclosures
-    // share).
-    let outcome = execute(parsed).expect("never with a seeded pending row");
+    .expect("never with a seeded pending row");
     assert!(
         outcome.stdout.contains("\"truncated\":true"),
         "the JSON must carry the truncation fact: {}",
@@ -486,7 +493,7 @@ fn pending_never_reason_padding_does_not_publish_false_truncation_facts() {
     // 20 characters, well under the 80-character cap, so nothing is
     // truncated and no truncation fact may appear.
     let padded_reason = format!("{}{}", "r".repeat(20), " ".repeat(100));
-    let parsed = parse_args(vec![
+    let outcome = run(&[
         "pinvou",
         "memory",
         "pending",
@@ -497,8 +504,7 @@ fn pending_never_reason_padding_does_not_publish_false_truncation_facts() {
         "--output",
         "json",
     ])
-    .expect("valid never command");
-    let outcome = execute(parsed).expect("never with a seeded pending row");
+    .expect("never with a seeded pending row");
     assert!(
         !outcome.stdout.contains("\"truncated\""),
         "a whitespace-padded reason under the collapsed cap is not truncated: {}",
@@ -515,17 +521,14 @@ fn memory_add_reports_the_stable_code_for_sensitive_content() {
     let _guard = env_lock();
     let _home = temp_home("add-sensitive-code");
     for store in ["preference", "work-context"] {
-        let error = match parse_args(vec![
+        let error = command_error(&[
             "pinvou",
             "memory",
             "add",
             store,
             "--content",
             "api_key=abcdef",
-        ]) {
-            Err(error) => error,
-            Ok(parsed) => execute(parsed).expect_err("sensitive content must be refused"),
-        };
+        ]);
         assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
         let message = error.to_string();
         assert!(
@@ -559,14 +562,7 @@ fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
     let _guard = env_lock();
     let _home = temp_home("preference-roundtrip");
 
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
+    add_default_preference();
 
     let envelope = run_json(&["pinvou", "memory", "list", "--store", "preferences"]);
     // Every `list --store` JSON shape is the same {items, cleanup_warnings}
@@ -1049,7 +1045,7 @@ fn memory_organize_refuses_when_another_process_holds_the_lock() {
 #[test]
 fn memory_add_accepts_ordinary_punctuated_work_context() {
     let _guard = env_lock();
-    let home = temp_home("work-context-punctuated");
+    let _home = temp_home("work-context-punctuated");
 
     // The confirm path stores the punctuation-stripped normalization; the
     // verification must compare against the same form or this exact input
@@ -1071,7 +1067,6 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
         "the punctuated work-context item must be materialized with the \
          punctuation-stripped normalization"
     );
-    let _ = home;
 }
 
 #[test]
@@ -2020,14 +2015,7 @@ fn memory_add_still_confirms_when_every_field_matches_this_adds_own_candidate() 
     // suggestion topic normalizes to answer_style at the pending stage, the
     // same value the CLI's own add produces — and the same text.
     let seeded = enqueue_fixture("preference", "Prefer concise answers");
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
+    add_default_preference();
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
     let seeded_row = pending
         .iter()
@@ -2091,14 +2079,7 @@ fn memory_add_leaves_a_same_text_candidate_of_a_different_kind_alone() {
     // The add confirms its OWN candidate only: it succeeds (the current-focus
     // row is a different memory, not this add's), the foreign candidate stays
     // unreviewed, and nothing is written through it.
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
+    add_default_preference();
 
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
     let gui_row = pending
@@ -2268,16 +2249,14 @@ fn memory_add_whitespace_only_file_body_is_a_host_failure() {
 
     let file = home.path().join("blank.txt");
     std::fs::write(&file, "   \n\t\n").unwrap();
-    let parsed = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "memory",
         "add",
         "preference",
         "--file",
         file.to_str().unwrap(),
-    ])
-    .expect("the add line parses");
-    let error = execute(parsed).expect_err("a whitespace-only file body must fail");
+    ]);
     assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     assert!(
         error
@@ -2307,16 +2286,14 @@ fn memory_add_refuses_a_credential_location_file() {
     )
     .unwrap();
 
-    let parsed = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "memory",
         "add",
         "preference",
         "--file",
         file.to_str().unwrap(),
-    ])
-    .expect("the add line parses");
-    let error = execute(parsed).expect_err("a credential-path file must be refused");
+    ]);
     assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     assert!(
         error.to_string().contains("refusing content file"),
@@ -2342,14 +2319,7 @@ fn memory_list_store_header_counts_items_not_cleanup_warnings() {
 
     // One real preference item (the writer names the authority file after
     // the FNV-1a id of its topic).
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
+    add_default_preference();
 
     // Fixture a cleanup warning the same way the feature layer produces it:
     // a `.topic-migration-*.journal` whose stale file cannot be removed.

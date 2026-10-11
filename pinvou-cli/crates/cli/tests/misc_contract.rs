@@ -69,6 +69,16 @@ fn assert_usage(error: &CliError, context: &str) {
     );
 }
 
+/// The batch form of [`assert_usage`] for the parse lane: every argv in
+/// `invalid` must be refused by `parse_args` with the family's exit-2 usage
+/// class, the failure naming the offending line.
+fn assert_all_rejected_as_usage(invalid: Vec<Vec<&str>>) {
+    for arguments in invalid {
+        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
+        assert_usage(&error, &arguments.join(" "));
+    }
+}
+
 /// Stages the fake-credential fixture the credential-path refusal tests pin
 /// against: creates `<home>/<component>/`, writes `content` into `file`
 /// inside it, and returns the file's path. The refusals fire on the path
@@ -138,10 +148,7 @@ fn files_ingest_rejects_invalid_usage_with_exit_two() {
             "b",
         ],
     ];
-    for arguments in invalid {
-        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
-        assert_usage(&error, &arguments.join(" "));
-    }
+    assert_all_rejected_as_usage(invalid);
 }
 
 #[test]
@@ -523,10 +530,7 @@ fn voice_rejects_invalid_usage_with_exit_two() {
         // The install consent flag is accepted at most once.
         vec!["pinvou", "voice", "asr-install", "--yes", "--yes"],
     ];
-    for arguments in invalid {
-        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
-        assert_usage(&error, &arguments.join(" "));
-    }
+    assert_all_rejected_as_usage(invalid);
 }
 
 #[test]
@@ -1299,10 +1303,7 @@ fn deps_rejects_invalid_usage_with_exit_two() {
         // (round-48), so pin the `-y` arm next to the `--`-arm above.
         vec!["pinvou", "deps", "install", "ffmpeg", "-y"],
     ];
-    for arguments in invalid {
-        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
-        assert_usage(&error, &arguments.join(" "));
-    }
+    assert_all_rejected_as_usage(invalid);
 }
 
 #[test]
@@ -1458,10 +1459,7 @@ fn feedback_rejects_invalid_usage_with_exit_two() {
             "x",
         ],
     ];
-    for arguments in invalid {
-        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
-        assert_usage(&error, &arguments.join(" "));
-    }
+    assert_all_rejected_as_usage(invalid);
 }
 
 /// A concluded submission leaves exactly one file: the receipt, carrying the
@@ -1907,10 +1905,7 @@ fn monitor_rejects_invalid_usage_with_exit_two() {
         vec!["pinvou", "monitor", "status", "--live"],
         vec!["pinvou", "monitor", "snapshot", "extra"],
     ];
-    for arguments in invalid {
-        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
-        assert_usage(&error, &arguments.join(" "));
-    }
+    assert_all_rejected_as_usage(invalid);
 }
 
 /// OPT-IN: `monitor status` (run_bare_host — no display needed) probes the

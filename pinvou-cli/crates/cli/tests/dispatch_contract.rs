@@ -3,7 +3,7 @@ mod common;
 use pinvou_cli::{CliCommand, ExitCode, OutputMode, parse_args};
 use std::path::PathBuf;
 
-use common::{EnvGuard, env_lock, usage_error};
+use common::{EnvGuard, env_lock, run_ok, usage_error};
 
 #[test]
 fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
@@ -223,24 +223,16 @@ fn conflicting_global_output_modes_are_a_usage_error() {
 /// regressed `pinvou version` to exit 2 with no failing row.
 #[test]
 fn bare_version_token_is_claimed_before_family_parsing() {
-    let parsed = parse_args(["pinvou", "version"]).expect("bare version parses");
-    let outcome = pinvou_cli::execute(parsed).expect("version executes");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("pinvou "));
+    assert!(run_ok(&["pinvou", "version"]).contains("pinvou "));
 }
 
 #[test]
 fn version_is_a_usable_subcommand_with_json_output() {
-    let parsed = parse_args(["pinvou", "--version"]).expect("--version parses");
-    let outcome = pinvou_cli::execute(parsed).expect("version executes");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert!(outcome.stdout.contains("pinvou "));
+    assert!(run_ok(&["pinvou", "--version"]).contains("pinvou "));
 
-    let parsed = parse_args(["pinvou", "--version", "--output", "json"])
-        .expect("--version --output json parses");
-    let outcome = pinvou_cli::execute(parsed).expect("version executes");
+    let stdout = run_ok(&["pinvou", "--version", "--output", "json"]);
     let value: serde_json::Value =
-        serde_json::from_str(&outcome.stdout).expect("json output is a single line");
+        serde_json::from_str(&stdout).expect("json output is a single line");
     assert!(value["version"].is_string());
 }
 

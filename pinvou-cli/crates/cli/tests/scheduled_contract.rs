@@ -83,13 +83,6 @@ fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
     assert_eq!(created["name"], serde_json::json!("AfterRelease"));
 }
 
-fn parsed_scheduled(arguments: &[&str]) -> CliCommand {
-    match parse_args(with_program(arguments)) {
-        Ok(parsed) => parsed.command().clone(),
-        Err(error) => panic!("expected valid scheduled command: {error}"),
-    }
-}
-
 // The `scheduled` helpers take argv WITHOUT the leading `pinvou` token
 // (every other contract file passes full argv); the wrappers below prepend
 // it over the shared harness and merge the json/human lanes into one
@@ -180,6 +173,12 @@ fn create_task(home: &HomeGuard, name: &str) -> serde_json::Value {
         "--rrule",
         VALID_RRULE,
     ])
+}
+
+/// Creates one task through the json lane and returns only its id (the
+/// common case: most call sites never read the rest of the created record).
+fn create_task_id(home: &HomeGuard, name: &str) -> String {
+    create_task(home, name)["id"].as_str().unwrap().to_owned()
 }
 
 /// The memory-organize fixture the run-path tests share: memory is enabled
@@ -657,8 +656,9 @@ fn every_subcommand_shape_parses() {
         vec!["scheduled", "mark-viewed", "t-1", "r-1"],
         vec!["scheduled", "chat-prompt"],
     ] {
+        let parsed = parse_args(with_program(&arguments)).expect("valid scheduled command");
         assert!(
-            matches!(parsed_scheduled(&arguments), CliCommand::Scheduled(_)),
+            matches!(parsed.command(), CliCommand::Scheduled(_)),
             "{arguments:?}"
         );
     }
@@ -669,7 +669,7 @@ fn every_subcommand_shape_parses() {
 #[test]
 fn empty_home_lists_nothing_and_chat_prompt_is_available() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("scheduled", "empty", Isolation::ProductHome);
+    let _home = HomeGuard::new("scheduled", "empty", Isolation::ProductHome);
     let value = run_json(&["scheduled", "list"]);
     assert_eq!(value["tasks"].as_array().map(Vec::len), Some(0));
     assert!(run_human(&["scheduled", "list"]).contains("No scheduled tasks."));
@@ -684,7 +684,6 @@ fn empty_home_lists_nothing_and_chat_prompt_is_available() {
             .contains("scheduled-task-draft"),
         "chat prompt must carry the GUI draft-block instructions"
     );
-    let _ = home;
 }
 
 #[test]
@@ -695,7 +694,7 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
     // the CLI); these pins make copy drift a CI failure instead of a silent
     // divergence from the GUI's ONCE guidance.
     let _env_guard = env_lock();
-    let home = HomeGuard::new("scheduled", "chat-prompt-once", Isolation::ProductHome);
+    let _home = HomeGuard::new("scheduled", "chat-prompt-once", Isolation::ProductHome);
     let prompt = run_json(&["scheduled", "chat-prompt"]);
     let prompt = prompt["prompt"].as_str().unwrap();
     assert!(
@@ -706,7 +705,6 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
         prompt.contains("一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM"),
         "the chat prompt must keep the ONCE AT guidance line"
     );
-    let _ = home;
 }
 
 /// Every command taking a task id answers an unknown id with the family's
@@ -717,7 +715,7 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
 #[test]
 fn every_command_rejects_unknown_task_ids_with_the_stable_not_found() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("scheduled", "unknown-id", Isolation::ProductHome);
+    let _home = HomeGuard::new("scheduled", "unknown-id", Isolation::ProductHome);
     for arguments in [
         vec!["scheduled", "show", "does-not-exist"],
         vec!["scheduled", "runs", "does-not-exist"],
@@ -732,7 +730,6 @@ fn every_command_rejects_unknown_task_ids_with_the_stable_not_found() {
             "{arguments:?}: {error}"
         );
     }
-    let _ = home;
 }
 
 /// Human rows must not be forgeable: the name is the one fully
@@ -939,7 +936,6 @@ fn create_rejects_memory_organize_kind_while_memory_is_disabled() {
         error.starts_with("scheduled_memory_organize_disabled"),
         "{error}"
     );
-    let _ = home;
 }
 
 #[test]
@@ -993,7 +989,6 @@ fn create_refuses_non_yolo_modes_like_the_app() {
     assert_eq!(created["mode"].as_str(), Some("yolo"));
     assert_eq!(created["trustMode"].as_bool(), Some(true));
     assert_eq!(created["autoApprove"].as_bool(), Some(true));
-    let _ = home;
 }
 
 /// A run record that is valid JSON but wrong-shaped (a required field
@@ -1005,8 +1000,7 @@ fn create_refuses_non_yolo_modes_like_the_app() {
 fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-record-type", Isolation::ProductHome);
-    let created = create_task(&home, "Typechecked task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Typechecked task");
 
     // Missing `status` entirely.
     let runs = home.runs_dir(&task_id);
@@ -1080,7 +1074,6 @@ fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
     .unwrap();
     let listed = run_json(&["scheduled", "runs", &task_id]);
     assert_eq!(listed["runs"][0]["id"].as_str(), Some("run-4"));
-    let _ = home;
 }
 
 /// Round-41 review: `runs`/`runs-all` default their fan-out and disclose it.
@@ -1091,8 +1084,7 @@ fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
 fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "runs-truncation", Isolation::ProductHome);
-    let created = create_task(&home, "Truncated task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Truncated task");
     let runs = home.runs_dir(&task_id);
     std::fs::create_dir_all(&runs).unwrap();
     for index in 0..3 {
@@ -1155,7 +1147,6 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
     assert!(message.contains("the maximum is 100000"), "{message}");
     let accepted = run_json(&["scheduled", "runs-all", "--limit", "100000"]);
     assert_eq!(accepted["truncated"].as_bool(), Some(false));
-    let _ = home;
 }
 
 /// Round-49 review: `show` caps only the RENDERED run list (the summary
@@ -1167,8 +1158,7 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
 fn show_caps_the_rendered_runs_and_limit_overrides_the_default() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "show-render-cap", Isolation::ProductHome);
-    let created = create_task(&home, "Show cap task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Show cap task");
     let runs = home.runs_dir(&task_id);
     std::fs::create_dir_all(&runs).unwrap();
     let total = 205;
@@ -1209,7 +1199,6 @@ fn show_caps_the_rendered_runs_and_limit_overrides_the_default() {
     let shown = run_json(&["scheduled", "show", &task_id, "--limit", "205"]);
     assert_eq!(shown["runs"].as_array().map(Vec::len), Some(205));
     assert_eq!(shown["truncated"].as_bool(), Some(false));
-    let _ = home;
 }
 
 /// Round-49 review: the runs-all archive prune (per-task push-down of the
@@ -1284,7 +1273,6 @@ fn runs_all_archived_prune_selects_the_newest_by_time_then_index() {
     let all = run_json(&["scheduled", "runs-all"]);
     assert_eq!(all["runs"].as_array().unwrap().len(), 5);
     assert_eq!(all["truncated"].as_bool(), Some(false));
-    let _ = home;
 }
 
 /// Round-49 review: the workspace arm of create's rollback had no test. A
@@ -1352,7 +1340,6 @@ fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
         0,
         "the rolled-back task definition must not remain on disk"
     );
-    let _ = home;
 }
 
 /// The definition twin of the run-record gate: `status` is an
@@ -1368,8 +1355,7 @@ fn read_commands_refuse_undecodable_definition_values_as_malformed() {
         "def-undecodable-values",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Decodable task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Decodable task");
     let pristine: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
 
@@ -1400,15 +1386,13 @@ fn read_commands_refuse_undecodable_definition_values_as_malformed() {
     std::fs::write(home.def_path(&task_id), pristine.to_string()).unwrap();
     let shown = run_json(&["scheduled", "show", &task_id]);
     assert_eq!(shown["id"].as_str(), Some(task_id.as_str()));
-    let _ = home;
 }
 
 #[test]
 fn chat_kind_run_refuses_headless_execution_with_stable_error() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "chat-run", Isolation::ProductHome);
-    let created = create_task(&home, "Chat task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Chat task");
     let error = expect_failed(&["scheduled", "run", &task_id]);
     assert!(
         error.starts_with("scheduled_chat_run_requires_product_host"),
@@ -1416,7 +1400,6 @@ fn chat_kind_run_refuses_headless_execution_with_stable_error() {
     );
     // No run record may be fabricated for the refused chat run.
     assert!(!home.runs_dir(&task_id).exists());
-    let _ = home;
 }
 
 /// Round-44 review pin: the round-43 split gives a PRESENT-but-unsupported
@@ -1428,8 +1411,7 @@ fn chat_kind_run_refuses_headless_execution_with_stable_error() {
 fn run_refuses_a_present_but_unsupported_kind_with_the_app_remedy() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-unsupported-kind", Isolation::ProductHome);
-    let created = create_task(&home, "Bogus kind task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Bogus kind task");
     // Hand-write a present-but-unsupported kind entry (the shape a
     // hand-edited sidecar or a different app version leaves behind).
     let kinds_path = home.path().join("automations").join("task-kinds.json");
@@ -1456,15 +1438,13 @@ fn run_refuses_a_present_but_unsupported_kind_with_the_app_remedy() {
     );
     // No run record may be fabricated for the refused run.
     assert!(!home.runs_dir(&task_id).exists());
-    let _ = home;
 }
 
 #[test]
 fn delete_refuses_while_a_run_is_active() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "delete-active", Isolation::ProductHome);
-    let created = create_task(&home, "Busy task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Busy task");
     // A queued/running run left by the GUI-owned runtime (it carries the
     // foundation task id) blocks deletion, matching the GUI's
     // cancel-then-delete contract: headless, there is nothing to cancel with.
@@ -1499,15 +1479,13 @@ fn delete_refuses_while_a_run_is_active() {
     let value = run_json(&["scheduled", "delete", &task_id, "--yes"]);
     assert_eq!(value["id"], task_id.as_str());
     assert!(!home.def_path(&task_id).exists());
-    let _ = home;
 }
 
 #[test]
 fn run_reconciles_a_stranded_queued_record_before_running() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-reconcile", Isolation::ProductHome);
-    let created = create_task(&home, "Reconciled task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Reconciled task");
 
     // A CLI process killed mid-run leaves a queued record with no task id.
     write_run_file(
@@ -1535,7 +1513,6 @@ fn run_reconciles_a_stranded_queued_record_before_running() {
         reconciled.contains("\"failed\""),
         "stranded record must become terminal: {reconciled}"
     );
-    let _ = home;
 }
 
 #[test]
@@ -1571,15 +1548,13 @@ fn once_at_rejects_calendar_overflow_like_the_foundation() {
     }
     // A real date passes validation (the create then proceeds to the
     // next-run recompute).
-    let _ = home;
 }
 
 #[test]
 fn mark_viewed_round_trip_over_completed_run() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "mark-viewed", Isolation::ProductHome);
-    let created = create_task(&home, "Watched task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Watched task");
 
     // A completed scheduled run with its own conversation, the way the GUI
     // executor leaves the stores after a chat run.
@@ -1632,15 +1607,13 @@ fn mark_viewed_round_trip_over_completed_run() {
     assert_eq!(runs["runs"][0]["unread"].as_bool(), Some(false));
     // Marking again is idempotent.
     run_json(&["scheduled", "mark-viewed", &task_id, run_id]);
-    let _ = home;
 }
 
 #[test]
 fn runs_all_merges_active_and_archived_runs_with_limit() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "runs-all", Isolation::ProductHome);
-    let created = create_task(&home, "Feed task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Feed task");
     for (index, status) in ["completed", "failed"].iter().enumerate() {
         write_run_file(
             &home,
@@ -1706,7 +1679,6 @@ fn runs_all_merges_active_and_archived_runs_with_limit() {
     let runs = per_task["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0]["error"].as_str(), Some("memory organize: boom"));
-    let _ = home;
 }
 
 // ---- host paths (opt-in) ----
@@ -1744,7 +1716,6 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
         def["last_run_at"].is_string(),
         "the run must stamp last_run_at on the task definition"
     );
-    let _ = home;
 }
 
 /// A wrong-shaped read-state payload that a mutation would rewrite whole is
@@ -1760,8 +1731,7 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
 fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "mark-viewed-bad-shape", Isolation::ProductHome);
-    let created = create_task(&home, "Bad shape task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Bad shape task");
     // A completed run bound to a real scheduled-run session, so the run is
     // actually viewable and the command reaches the registry write.
     seed_completed_run(&home, &task_id, "done-1");
@@ -1799,7 +1769,6 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
     .unwrap();
     let outcome = run_json(&["scheduled", "mark-viewed", &task_id, "done-1"]);
     assert_eq!(outcome["runId"].as_str(), Some("done-1"));
-    let _ = home;
 }
 
 /// Round-45 review: legacy files carry no version and every CLI writer adds
@@ -1815,8 +1784,7 @@ fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
         "mark-viewed-versionless",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Versioned read-state task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Versioned read-state task");
     // A completed run bound to a real scheduled-run session, so the run is
     // actually viewable and the command reaches the registry write.
     seed_completed_run(&home, &task_id, "done-1");
@@ -1842,7 +1810,6 @@ fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
         rewritten["viewed_runs"][&task_id][0].as_str(),
         Some("done-1")
     );
-    let _ = home;
 }
 
 /// Round-45 review: delete's sidecar-cleanup rewrite is a raw registry
@@ -1857,8 +1824,7 @@ fn delete_cleanup_rewrite_adds_schema_version_to_a_versionless_registry() {
         "delete-versionless-registry",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Versioned cleanup task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Versioned cleanup task");
     // A legacy version-less kind registry holding this task's entry, so the
     // cleanup actually removes something and rewrites the file.
     let kinds_path = home.path().join("automations").join("task-kinds.json");
@@ -1881,7 +1847,6 @@ fn delete_cleanup_rewrite_adds_schema_version_to_a_versionless_registry() {
         rewritten["tasks"].get(&task_id).is_none(),
         "the stale entry must be gone: {rewritten}"
     );
-    let _ = home;
 }
 
 /// A history archive that is a valid object but lacks the `tasks` key must
@@ -1895,8 +1860,7 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
         "delete-archive-missing-tasks",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Archive task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Archive task");
     write_run_file(
         &home,
         &task_id,
@@ -1926,7 +1890,6 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
     assert!(snapshot.is_object(), "deleted task must be archived");
     assert_eq!(snapshot["runs"].as_array().unwrap().len(), 1);
     assert!(!home.def_path(&task_id).exists());
-    let _ = home;
 }
 
 /// Round-36 review minor: the archive snapshot is keyed by the argv id and
@@ -1939,8 +1902,7 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
 fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "delete-id-mismatch", Isolation::ProductHome);
-    let created = create_task(&home, "Mismatched task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Mismatched task");
     write_run_file(
         &home,
         &task_id,
@@ -1977,7 +1939,6 @@ fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
             "the mismatched task must not be archived: {archive}"
         );
     }
-    let _ = home;
 }
 
 // ---- round-3 fixes: RFC3339 ONCE AT calendar truth, delete pause semantics ----
@@ -2051,7 +2012,6 @@ fn leap_day_schedules_are_accepted_on_every_channel() {
         ]);
         assert_eq!(created["rrule"].as_str(), Some(rrule), "{rrule}");
     }
-    let _ = home;
 }
 
 #[test]
@@ -2163,7 +2123,6 @@ fn paused_create_still_validates_the_rrule_grammar() {
             "{bad}: a usage-refused create must not persist a task"
         );
     }
-    let _ = home;
 }
 
 #[test]
@@ -2174,8 +2133,7 @@ fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
     // GUI would misread.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "sidecar-newer-schema", Isolation::ProductHome);
-    let created = create_task(&home, "Pinned task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Pinned task");
 
     let ui_metadata = home
         .path()
@@ -2271,8 +2229,7 @@ fn malformed_schema_version_is_refused_not_treated_as_legacy() {
     // reporting success.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "schema-malformed", Isolation::ProductHome);
-    let created = create_task(&home, "Stringy schema");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Stringy schema");
     let def_path = home.def_path(&task_id);
     let mut def: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&def_path).unwrap()).unwrap();
@@ -2294,8 +2251,7 @@ fn newer_schema_read_state_is_refused_not_merged_and_written_back() {
         "read-state-newer-schema",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Watched task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Watched task");
     let run_id = "completed-run-1";
     seed_completed_run(&home, &task_id, run_id);
 
@@ -2320,8 +2276,7 @@ fn newer_schema_history_archive_blocks_delete_and_restores_the_task() {
     // retrying after upgrading must not find the task paused.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "archive-newer-schema", Isolation::ProductHome);
-    let created = create_task(&home, "Archived task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Archived task");
 
     let archive = home.path().join("automations").join("history-archive.json");
     let future_format = r#"{"schema_version": 99, "tasks": {}}"#;
@@ -2343,8 +2298,7 @@ fn newer_schema_history_archive_blocks_delete_and_restores_the_task() {
 fn delete_blocked_restores_the_previous_status() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "delete-restore", Isolation::ProductHome);
-    let created = create_task(&home, "Restore task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Restore task");
     write_run_file(
         &home,
         &task_id,
@@ -2375,8 +2329,7 @@ fn read_commands_refuse_non_object_definitions_uniformly() {
     // safe_storage_id error).
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "non-object-read", Isolation::ProductHome);
-    let created = create_task(&home, "Malformed task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Malformed task");
     std::fs::write(home.def_path(&task_id), "5").unwrap();
     let shown = expect_failed(&["scheduled", "show", &task_id]);
     assert!(
@@ -2388,7 +2341,6 @@ fn read_commands_refuse_non_object_definitions_uniformly() {
         listed.contains("Failed to parse"),
         "list must refuse a malformed definition"
     );
-    let _ = home;
 }
 
 #[test]
@@ -2398,8 +2350,7 @@ fn read_commands_refuse_definitions_missing_required_fields() {
     // a phantom task with exit 0.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "def-missing-fields", Isolation::ProductHome);
-    let created = create_task(&home, "Incomplete task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Incomplete task");
     std::fs::write(
         home.def_path(&task_id),
         serde_json::json!({ "schema_version": 2, "id": task_id }).to_string(),
@@ -2415,7 +2366,6 @@ fn read_commands_refuse_definitions_missing_required_fields() {
         listed.contains("Failed to parse"),
         "list must refuse a malformed definition"
     );
-    let _ = home;
 }
 
 /// TZ-driven: chrono only reads the `TZ` variable on Unix.
@@ -2484,8 +2434,7 @@ fn mutations_fail_honestly_on_non_object_definitions() {
             &format!("non-object-{label}"),
             Isolation::ProductHome,
         );
-        let created = create_task(&home, "Malformed task");
-        let task_id = created["id"].as_str().unwrap().to_owned();
+        let task_id = create_task_id(&home, "Malformed task");
         std::fs::write(home.def_path(&task_id), "[]").unwrap();
         let arguments: Vec<&str> = match label {
             "update" => vec!["scheduled", "update", &task_id, "--name", "Renamed"],
@@ -2503,8 +2452,7 @@ fn mutations_fail_honestly_on_non_object_definitions() {
 fn run_writes_only_terminal_records() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "run-terminal-only", Isolation::ProductHome);
-    let created = create_task(&home, "Terminal task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Terminal task");
     // No display/model here, so the run fails honestly — but it must never
     // leave a persisted `queued` record behind: the GUI cannot cancel,
     // complete, reconcile or delete around a queued record with no task id.
@@ -2528,8 +2476,7 @@ fn run_writes_only_terminal_records() {
 fn failed_delete_restores_the_previous_status() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "delete-restore", Isolation::ProductHome);
-    let created = create_task(&home, "Blocked task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Blocked task");
     // Make the archive commit fail: a directory at the archive path makes
     // every write fail. Delete must restore the pre-delete status instead of
     // leaving the task paused.
@@ -2552,8 +2499,7 @@ fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
         "delete-run-record-restore",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Run-record task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Run-record task");
     // A run record the store refuses (newer schema) makes list_runs fail
     // after the provisional pause was already committed: that failure is a
     // blocked delete like any other, so the pre-delete status must be
@@ -2582,8 +2528,7 @@ fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
 fn unreadable_registries_are_quarantined_before_the_default_is_used() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "registry-quarantine", Isolation::ProductHome);
-    let created = create_task(&home, "Quarantine task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Quarantine task");
     let bindings = home.path().join("automations").join("model-bindings.json");
     std::fs::write(&bindings, "{not json").unwrap();
     // A command reading the registry must not silently destroy the
@@ -2612,8 +2557,7 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
             &format!("registry-shape-quarantine-{label}"),
             Isolation::ProductHome,
         );
-        let created = create_task(&home, "Shape task");
-        let task_id = created["id"].as_str().unwrap().to_owned();
+        let task_id = create_task_id(&home, "Shape task");
         // Seed a real saved model: `--model-id` is validated against
         // saved_models (round-18 blocker 2), so the binding write needs an
         // id the executor could actually resolve.
@@ -2662,8 +2606,7 @@ fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
         "registry-quarantine-heal",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Heal task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Heal task");
     let model_id = add_saved_model(&home, "Heal model", "heal-wire-name");
     let bindings = home.path().join("automations").join("model-bindings.json");
     std::fs::write(&bindings, "{not json").unwrap();
@@ -2697,7 +2640,6 @@ fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
         written["tasks"][&task_id]["model_id"], model_id,
         "the healed registry accepts the mutation's write"
     );
-    let _ = home;
 }
 
 #[test]
@@ -2714,8 +2656,7 @@ fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
         "update-rollback-reresolve",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Rollback task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Rollback task");
     let model_id = add_saved_model(&home, "Rollback model", "rollback-wire-name");
 
     // Simulate the slot passing while the command runs: hand the active task
@@ -2756,7 +2697,6 @@ fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
         !next_run_at.is_empty(),
         "the rollback must leave a re-resolved future slot for an active task"
     );
-    let _ = home;
 }
 
 #[test]
@@ -2768,8 +2708,7 @@ fn read_state_with_a_stray_tasks_key_stays_readable() {
     // state — the exact regression the per-type key split fixed).
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "read-state-stray-key", Isolation::ProductHome);
-    let created = create_task(&home, "Stray key task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Stray key task");
     let read_state = home.path().join("scheduled-runs").join("read-state.json");
     std::fs::create_dir_all(read_state.parent().unwrap()).unwrap();
     std::fs::write(
@@ -2783,7 +2722,6 @@ fn read_state_with_a_stray_tasks_key_stays_readable() {
         quarantine_copies(read_state.parent().unwrap(), "read-state.json").is_empty(),
         "the stray-key read state must not be quarantined"
     );
-    let _ = home;
 }
 
 #[test]
@@ -2794,8 +2732,7 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
     // not rendered as a phantom task with empty strings.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "wrong-typed-def", Isolation::ProductHome);
-    let created = create_task(&home, "Type check task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Type check task");
 
     let mut def: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
@@ -2811,7 +2748,6 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
     std::fs::write(home.def_path(&task_id), def.to_string()).unwrap();
     let listed = expect_failed(&["scheduled", "list"]);
     assert!(listed.contains("Failed to parse"), "{listed}");
-    let _ = home;
 }
 
 // ---- round-18: model-id pairing, eager one-shot slots, run exit contract ----
@@ -2823,8 +2759,7 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
 fn update_with_model_id_moves_both_the_definition_and_the_pin() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "model-id-update", Isolation::ProductHome);
-    let created = create_task(&home, "Rebind task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Rebind task");
 
     let prompt = write_prompt_file(&home, "add.md", "x");
     let model_id = add_saved_model(&home, "Other model", "other-wire-name");
@@ -2855,8 +2790,7 @@ fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
         "model-id-update-binding-failure",
         Isolation::ProductHome,
     );
-    let created = create_task(&home, "Rollback task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Rollback task");
     let def_before: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
 
@@ -2908,8 +2842,7 @@ fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
 fn update_and_resume_persist_a_repaired_workspace_cwd() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "workspace-repair", Isolation::ProductHome);
-    let created = create_task(&home, "Repaired task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Repaired task");
     let expected = pinvou3_lib::platform::paths::scheduled_task_workspace_dir(&task_id);
     let persisted_cwds = || -> Vec<String> {
         let def: serde_json::Value =
@@ -2962,7 +2895,6 @@ fn update_and_resume_persist_a_repaired_workspace_cwd() {
         vec![expected.display().to_string()],
         "an already-pinned workspace must not be rewritten or duplicated"
     );
-    let _ = home;
 }
 
 /// BLOCKER 3 (round-18 review): a CLI one-shot used to persist
@@ -3046,8 +2978,7 @@ fn run_reports_a_failed_memory_organize_pass_as_a_failed_command() {
 fn runs_limit_returns_the_newest_records_in_order() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "runs-limit", Isolation::ProductHome);
-    let created = create_task(&home, "Limited task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Limited task");
     for index in 0..10 {
         // 19-char sortable stamp: YYYYMMDDTHHMMSSmmmZ (created_at's millis
         // mirrored into the name, foundation run_file_stamp shape). The
@@ -3083,8 +3014,7 @@ fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
     // broken), not a usage error and never a directory join.
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "path-shaped-id", Isolation::ProductHome);
-    let created = create_task(&home, "Escaped id task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
+    let task_id = create_task_id(&home, "Escaped id task");
     let mut def: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
     def["id"] = serde_json::json!("../escape");
@@ -3096,7 +3026,6 @@ fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
         !home.path().join("escape").exists(),
         "the workspace join must never escape the scheduled root"
     );
-    let _ = home;
 }
 
 // ---- model binding pairing ("--model-id" resolves the selected record) ----
@@ -3150,7 +3079,6 @@ fn create_model_id_round_trips_the_selected_records_wire_name() {
     let binding = &bindings["tasks"][created["id"].as_str().unwrap()];
     assert_eq!(binding["model_id"].as_str(), Some("sel-1"));
     assert_eq!(binding["model"].as_str(), Some("deepseek-flash"));
-    let _ = home;
 }
 
 #[test]
@@ -3186,7 +3114,6 @@ fn create_model_id_unknown_id_is_a_state_error() {
         !home.path().join("automations/model-bindings.json").exists(),
         "a refused create must not write a binding sidecar"
     );
-    let _ = home;
 }
 
 // ---- one-shot anchors (create/resume persist next_run_at = AT) ----
@@ -3259,7 +3186,6 @@ fn once_tasks_persist_their_anchor_on_create_and_resume() {
         resumed_def["next_run_at"], def["next_run_at"],
         "resuming a once task must restore its anchor, not leave it null"
     );
-    let _ = home;
 }
 
 #[test]
@@ -3310,7 +3236,6 @@ fn once_tasks_with_a_past_anchor_are_refused_at_resume() {
         "nothing fires without a future run: {}",
         resumed_def["next_run_at"]
     );
-    let _ = home;
 }
 
 // ---- run exit contract ----
@@ -3377,7 +3302,6 @@ fn run_reports_a_failed_run_through_a_nonzero_exit() {
         runs[0]["error"].as_str().is_some(),
         "the durable run record carries its error: {runs:?}"
     );
-    let _ = home;
 }
 
 /// Round-36 review minor: a flag-shaped token in the task-id slot (a
