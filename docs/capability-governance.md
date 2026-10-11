@@ -166,7 +166,10 @@ cohort 得到相反的默认姿态，此句即为二者的登记。
   的落盘 opt-out 有定义（未初始化 scope 物化的是现算扩集，不存在可对抗的
   落盘行）；`not_applied` 则**只由未初始化的现算扩集臂产生**——请求 id 不在
   扩集中即上报；**已初始化** scope 没有等价信号，恒返回空（未知 id 视为
-  已开启且不上报——空 `not_applied` 在该状态下不是覆盖证明）。
+  已开启且不上报——空 `not_applied` 在该状态下不是覆盖证明）。round-27 勘误：
+  这两个信号字段属于 `enable_packages_in_scope` 的返回结构，不属于回收站
+  恢复门（恢复门返回 `Result<(), String>`）——原文段落位置紧随恢复门句块，
+  易误读为恢复门信号。
 
 **Cross-process consistency (#515)**: the GUI and headless hosts may share one
 `~/.pinvou3`; this file's read-modify-write is serialized by an in-process
@@ -178,8 +181,11 @@ the lock is unavailable or the write to disk fails, the write is **refused**
 with an error — from the caller's perspective "`Ok` means the change landed",
 but the following designed no-op paths also return `Ok` (the known-bundle
 registration skip and its ledger variant, same-value toggle short-circuits,
-and cleanup/sync finding no change against the current set); they make no
-landed-on-disk claim.
+and cleanup/sync finding no change against the current set; plus three
+applicability short-circuits — a connector hide (`show=false`) whose
+registration materializes nothing, the builtin exemption that never enters
+scope state, and an exact-cleanup whose target row is already gone —
+round-27 enumeration completion); they make no landed-on-disk claim.
 On the write side there is **no bounded wait** for an established file lock (a
 dying peer process releases the lock with its handle; only a frozen peer
 blocks indefinitely; every write entry point runs off the executor, and the
@@ -395,7 +401,13 @@ uninstall channel snapshots the owner before deletion (round-26: post-deletion
 normalization could be hijacked by a foreign claim) and clears rows exactly,
 after the `Ok(false)` no-op exemption — the strip runs after the uninstall
 returns and outside the import lock (the round-12 B2 window is still open
-here, a disclosed residue; the ima channel is unaffected). The preset skill
+here, a disclosed residue; the ima channel is unaffected). Round-27: the
+by-name command lane refuses a skill whose gating owner is ANOTHER live pack
+(companion claim or physical nesting — the same shape the tool lane refuses
+via its deny-row probe), so a hand uninstall can no longer delete the
+claimant's materialized dir and strip its consent rows; the teardown lanes
+(`uninstall_and_strip_scope`, the eager companion strip) call the manager
+directly and keep their on-behalf-of-the-owner semantics. The preset skill
 install channel (`SkillMarketplaceManager::install`) holds the same per-id
 import lock across its whole landing (the round-20 fix, stated in full with
 its residual window below), so a same-id install and an
@@ -721,9 +733,12 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   MAJOR 2 勘误：round-27 m8 曾把「仅 secret:true」的 `manifest_secret_targets`
   过滤误归到此函数——那是恢复同意门的凭据探测，另一条收敛路径），而
   `readiness_for` 对 Mcp/Bundle 只查 credentials 必填项
-  是否在系统凭据存储，因此远程包恒报 Ready。**无法用 readiness 门控 OAuth
-  授权是否完成**；授权态由 `connect`（flow=oauth）流程自理，UI 只能依赖
-  `oauth` 标记打徽标，不能给「未授权」态。
+  是否在系统凭据存储，因此今天的远程包恒报 Ready。round-27 勘误：这是清单
+  现状使然的观察不变量，**并非机制强制**——一个同时声明必填凭据与 `servers`
+  的远程包会让 `readiness_for` 如实报 NotReady（无任何地方排除该组合）。
+  机制上的边界不变：**无法用 readiness 门控 OAuth 授权是否完成**；授权态由
+  `connect`（flow=oauth）流程自理，UI 只能依赖 `oauth` 标记打徽标，不能给
+  「未授权」态。
 
 另有三条限制已随文或在此登记：
 
