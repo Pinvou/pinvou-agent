@@ -543,7 +543,7 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       sessionModelStale: id => `この会話で選択したモデルの設定は無効になりました（見つからない設定: ${id}）。会話でモデルを選び直してください。`,
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       steerDropped: "キューしたメッセージが未達（ターン中断）のため取り消しました",
-      steerDroppedQueued: "キューしたメッセージが未達（ターン中断）のため、キューに残り順に送信されます",
+      steerDroppedQueued: "キューしたメッセージが未達（ターン中断）のため、キューに残り、順に送信されます",
       steerFailed: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容は入力欄に復元しました",
       steerFailedLost: "割り込みに失敗しました（ターン中断）。メッセージは未達のまま復元できません。もう一度送信してください",
       steerFailedQueued: "割り込みに失敗しました（セッション無効またはエンジン未起動）。内容はキューに残り、順に送信されます",
