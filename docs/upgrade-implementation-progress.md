@@ -883,3 +883,23 @@ The final entire lifecycle integration and baseline results are recorded in the
 service lifecycle plan. No production credential/API, physical or deployment
 acceptance is implied. Continue the remaining kernel and independent task work;
 undecidable owner choices remain recorded and skipped as requested.
+
+
+### T44 batch 6: original session creation (2026-10-12)
+
+Private additive migration 6 creates install/preinstall sessions under an actual
+StandardReplay owner, exact complete-scope CAS and SQL-derived original time.
+Revision-zero absence is a real read fact; concurrent creation yields one winner.
+Current decision/qualification/workflow writes remain the future T17 owner's same
+transaction responsibility; regular activation prototypes stay closed. No new
+client credential or physical preparation certification is inferred.
+
+Review repaired prospective membership capacity and safe JSON integer spelling.
+Actual PostgreSQL repair cases passed at the exact 4096-ref, 1 MiB reference and
+32 MiB member aggregate bounds, with over-capacity rollback and complete capture.
+Decimal original preparation fields now traverse initialization and ordinary
+preinstall events into existing validation registration. Resource fixtures prove
+internal byte limits only; downloads have no hard total/cumulative elapsed limit.
+Final full integration and independent review evidence is in the service plan.
+Continue remaining lifecycle work and independent tasks while owner decisions
+and deployment remain recorded and skipped.
