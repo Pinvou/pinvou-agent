@@ -88,7 +88,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::support::{FamilyLockError, open_family_lock_file, render, sandbox_home, success};
+use crate::support::{family_lock, render, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::platform::paths::pinvou3_home;
 
@@ -166,6 +166,22 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
             let mut draft: Option<String> = None;
             let mut draft_file: Option<PathBuf> = None;
             let mut index = 0;
+            // The four value options share one fetch-and-reject shape: the
+            // next token must exist and must not be empty or another
+            // option-looking `--` token, with the error naming the flag that
+            // missed it. Each arm below keeps only its own mutual-exclusion
+            // check and assignment.
+            let value_for = |flag: &str, index: usize| -> Result<String, CliError> {
+                let value = rest.get(index + 1).ok_or_else(|| {
+                    CliError::usage(format!("voice option {flag} requires a value"))
+                })?;
+                if value.is_empty() || value.starts_with("--") {
+                    return Err(CliError::usage(format!(
+                        "voice option {flag} requires a value"
+                    )));
+                }
+                Ok(value.clone())
+            };
             while index < rest.len() {
                 let token = rest[index].as_str();
                 match token {
@@ -193,28 +209,14 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
                         if text.is_some() || text_file.is_some() {
                             return Err(CliError::usage("use only one of --text or --text-file"));
                         }
-                        let value = rest.get(index + 1).ok_or_else(|| {
-                            CliError::usage("voice option --text requires a value")
-                        })?;
-                        if value.is_empty() || value.starts_with("--") {
-                            return Err(CliError::usage("voice option --text requires a value"));
-                        }
-                        text = Some(value.clone());
+                        text = Some(value_for("--text", index)?);
                         index += 2;
                     }
                     "--text-file" => {
                         if text.is_some() || text_file.is_some() {
                             return Err(CliError::usage("use only one of --text or --text-file"));
                         }
-                        let value = rest.get(index + 1).ok_or_else(|| {
-                            CliError::usage("voice option --text-file requires a value")
-                        })?;
-                        if value.is_empty() || value.starts_with("--") {
-                            return Err(CliError::usage(
-                                "voice option --text-file requires a value",
-                            ));
-                        }
-                        text_file = Some(PathBuf::from(value));
+                        text_file = Some(PathBuf::from(value_for("--text-file", index)?));
                         index += 2;
                     }
                     // The draft is the input-box body the GUI always sends
@@ -226,28 +228,14 @@ pub fn parse(values: &[String]) -> Result<VoiceCommand, CliError> {
                         if draft.is_some() || draft_file.is_some() {
                             return Err(CliError::usage("use only one of --draft or --draft-file"));
                         }
-                        let value = rest.get(index + 1).ok_or_else(|| {
-                            CliError::usage("voice option --draft requires a value")
-                        })?;
-                        if value.is_empty() || value.starts_with("--") {
-                            return Err(CliError::usage("voice option --draft requires a value"));
-                        }
-                        draft = Some(value.clone());
+                        draft = Some(value_for("--draft", index)?);
                         index += 2;
                     }
                     "--draft-file" => {
                         if draft.is_some() || draft_file.is_some() {
                             return Err(CliError::usage("use only one of --draft or --draft-file"));
                         }
-                        let value = rest.get(index + 1).ok_or_else(|| {
-                            CliError::usage("voice option --draft-file requires a value")
-                        })?;
-                        if value.is_empty() || value.starts_with("--") {
-                            return Err(CliError::usage(
-                                "voice option --draft-file requires a value",
-                            ));
-                        }
-                        draft_file = Some(PathBuf::from(value));
+                        draft_file = Some(PathBuf::from(value_for("--draft-file", index)?));
                         index += 2;
                     }
                     other => {
@@ -439,7 +427,8 @@ fn model_path() -> PathBuf {
 /// this process-global memo.
 fn model_available() -> bool {
     let spec = model_spec();
-    model_available_verified(&model_path(), spec.expected_size, spec.sha256)
+    let path = asr_dir().join(spec.filename);
+    model_available_verified(&path, spec.expected_size, spec.sha256)
 }
 
 /// The `model_available` mechanics on explicit arguments, so the gate can be
@@ -471,10 +460,10 @@ fn model_available_verified(path: &Path, expected_size: u64, expected_sha256: &s
         expected_size,
         expected_sha256.to_owned(),
     );
-    if let Some((cached_key, available)) = entry.as_ref() {
-        if *cached_key == key {
-            return *available;
-        }
+    if let Some((cached_key, available)) = entry.as_ref()
+        && *cached_key == key
+    {
+        return *available;
     }
     let available = meta.len() == expected_size && file_is_sha256(path, expected_sha256);
     *entry = Some((key, available));
@@ -528,9 +517,10 @@ fn wait_bounded(
 /// Removes a staged private file when dropped — the `TempWrapperZip`
 /// convention from `plugins.rs`, applied to this module's three staged paths:
 /// the 0600 input wav ([`write_temp_wav`]), the 0600 normalized conversion,
-/// and the model download `.part`. The explicit `remove_file` calls at the
-/// ordinary exits stay (unchanged behavior); the guard adds the panic and
-/// early-return paths, and the `let _` keeps the drop panic-free even while
+/// and the model download `.part`. The staged wav/normalized sites keep an
+/// explicit `remove_file` at the ordinary exit (the guard still covers the
+/// panic and early-return paths there); the `.part` download relies on the
+/// guard alone. The `let _` keeps the drop panic-free even while
 /// already unwinding.
 struct StagedFile {
     path: PathBuf,
@@ -542,6 +532,28 @@ impl Drop for StagedFile {
     }
 }
 
+/// The supervised bounded run shared by this module's two ffmpeg spawns
+/// (the `-version` probe and the wav conversion): process-group leader,
+/// supervised spawn, the `GroupGuard::arm` bracket, and the bounded wait —
+/// process-group semantics documented once, here.
+fn run_bounded_child(command: &mut std::process::Command, timeout: Duration) -> bool {
+    crate::support::set_process_group(command);
+    // `spawn_supervised` closes the spawn→register window (see
+    // `support/supervise.rs`): the `GroupGuard::arm` bracket below is
+    // then the idempotent belt.
+    let Ok(mut child) = crate::support::supervise::spawn_supervised(command) else {
+        return false;
+    };
+    // Group-registered for the child's whole lifetime: a Ctrl-C that lands
+    // while even this short-lived ffmpeg runs must take it down with this
+    // CLI instead of orphaning it behind its own process group (the same
+    // bracket `code.rs`'s login lane installs by hand).
+    let _supervised = crate::support::supervise::GroupGuard::arm(child.id());
+    wait_bounded(&mut child, timeout)
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn ffmpeg_available() -> bool {
     let mut command = std::process::Command::new("ffmpeg");
     command
@@ -549,21 +561,7 @@ fn ffmpeg_available() -> bool {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    crate::support::set_process_group(&mut command);
-    // `spawn_supervised` closes the spawn→register window (see
-    // `support/supervise.rs`): the `GroupGuard::register` bracket below is
-    // then the idempotent belt.
-    let Ok(mut child) = crate::support::supervise::spawn_supervised(&mut command) else {
-        return false;
-    };
-    // Group-registered for the probe's whole lifetime: a Ctrl-C that lands
-    // while even this short-lived ffmpeg runs must take it down with this
-    // CLI instead of orphaning it behind its own process group (the same
-    // bracket `code.rs`'s login lane installs by hand).
-    let _supervised = crate::support::supervise::GroupGuard::register(child.id());
-    wait_bounded(&mut child, FFMPEG_PROBE_TIMEOUT)
-        .map(|status| status.success())
-        .unwrap_or(false)
+    run_bounded_child(&mut command, FFMPEG_PROBE_TIMEOUT)
 }
 
 /// Same composition as `voice_asr::compose_status` / `status()`: macOS
@@ -575,7 +573,7 @@ fn asr_components() -> (bool, bool, bool, bool) {
     // `asr-status`/`transcribe` — a wedged ffmpeg first on PATH stalled the
     // read-only status command up to the probe timeout for a verdict
     // nothing reads (round-39 review).
-    asr_components_with(|| ffmpeg_available())
+    asr_components_with(ffmpeg_available)
 }
 
 /// `asr_components` with the ffmpeg verdict supplied: `asr-install` probes
@@ -965,17 +963,21 @@ fn asr_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     // every open so a lock left at the umask default by an older build heals
     // instead of staying readable by every local account. The arms map onto
     // the exact messages the hand-rolled pair produced.
-    let file = open_family_lock_file("voice-asr-install.lock").map_err(|error| match error {
-        FamilyLockError::CreateDir { dir, error } => CliError::failed(format!(
-            "voice asr-install: cannot create {}: {error}",
-            dir.display()
-        )),
-        FamilyLockError::Open { path, error } => CliError::failed(format!(
-            "voice asr-install: cannot open {}: {error}",
-            path.display()
-        )),
-    })?;
-    Ok(fd_lock::RwLock::new(file))
+    family_lock(
+        "voice-asr-install.lock",
+        |dir, error| {
+            CliError::failed(format!(
+                "voice asr-install: cannot create {}: {error}",
+                dir.display()
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
+                "voice asr-install: cannot open {}: {error}",
+                path.display()
+            ))
+        },
+    )
 }
 
 fn download_asr_model() -> Result<PathBuf, CliError> {
@@ -1117,10 +1119,10 @@ fn download_to(
             .and_then(|name| name.to_str())
             .unwrap_or("asr-model.gguf")
     ));
-    // Best-effort unlink of the staged `.part` on EVERY path out of this
-    // function (the explicit removes below cover the named failures; the
-    // guard adds the unnamed ones — an early error return between them, a
-    // panic), so a truncated download never sits at the staged path.
+    // The guard unlinks the staged `.part` on EVERY path out of this
+    // function — the named failures below and the unnamed ones (an early
+    // error return, a panic) alike — so a truncated download never sits at
+    // the staged path; no explicit removes are needed in this function.
     let _staged_part = StagedFile { path: part.clone() };
     // A stale `.part` from a crashed run (SIGKILL/power loss between create
     // and rename) would make the exclusive `create_new` above fail with a
@@ -1197,30 +1199,24 @@ fn download_to(
             .map_err(|error| CliError::failed(format!("voice asr-install: sync: {error}")))?;
         Ok(())
     })();
-    if let Err(error) = result {
-        let _ = std::fs::remove_file(&part);
-        return Err(error);
-    }
+    result?;
     let size = match std::fs::metadata(&part).map(|meta| meta.len()) {
         Ok(size) => size,
         Err(error) => {
             // Same cleanup guarantee as every other failure path: the stat
             // of a file this code just wrote should not fail, but if it
             // does the staged part must not leak.
-            let _ = std::fs::remove_file(&part);
             return Err(CliError::failed(format!(
                 "voice asr-install: stat: {error}"
             )));
         }
     };
     if size > max_bytes {
-        let _ = std::fs::remove_file(&part);
         return Err(CliError::failed(
             "voice asr-install: model exceeds the size cap",
         ));
     }
     if !file_is_sha256(&part, expected_sha256) {
-        let _ = std::fs::remove_file(&part);
         return Err(CliError::failed(
             "voice asr-install: model checksum mismatch; verify manually and retry",
         ));
@@ -1245,9 +1241,7 @@ fn asr_download_max_bytes(expected_size: u64) -> u64 {
 /// The native lane feeds a missing-ffmpeg installation the raw wav (GUI
 /// parity), so only non-wav inputs make an ffmpeg-only gap fatal.
 fn ffmpeg_missing_is_fatal_for(extension: Option<&str>) -> bool {
-    !extension
-        .map(|ext| ext.eq_ignore_ascii_case("wav"))
-        .unwrap_or(false)
+    !extension.is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
 }
 
 // ─────────────────────────── transcribe ────────────────────────────────────
@@ -1464,6 +1458,40 @@ fn transcribe_with(
     Ok(success(render(output, human, &value)))
 }
 
+/// Exclusive 0600 staging file at `path` in the shared temp dir — private
+/// audio, staged once for the 0600 input wav ([`write_temp_wav`]) and once
+/// for the 0600 normalized conversion. The mode is applied AT create time
+/// (OpenOptions::mode(0o600)) rather than by a chmod after the open: a
+/// post-create chmod leaves a window where the file exists 0644 in the
+/// shared temp dir — NamedTempFile (the app replaced this exact hand-built
+/// temp pattern with it for the same reason; the tempfile crate is not
+/// available here, so its guarantees are mirrored) never has that window,
+/// and the mirror is only faithful without it.
+fn create_private_staging(path: &Path) -> Result<std::fs::File, CliError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| {
+                CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
+            })
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
+            })
+    }
+}
+
 fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1473,33 +1501,7 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
         "pinvou-cli-voice-{}-{nonce}.wav",
         std::process::id()
     ));
-    // Private audio: 0600 + exclusive create (the app replaced this exact
-    // hand-built temp pattern with NamedTempFile for the same reason — the
-    // tempfile crate is not available here, so mirror its guarantees).
-    // The mode is applied AT create time (OpenOptions::mode(0o600)) rather
-    // than by a chmod after the open: a post-create chmod leaves a window
-    // where the file exists 0644 in the shared temp dir — NamedTempFile
-    // never has that window, and the mirror is only faithful without it.
-    #[cfg(unix)]
-    let mut file = {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|error| {
-                CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-            })?
-    };
-    #[cfg(not(unix))]
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| {
-            CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-        })?;
+    let mut file = create_private_staging(&path)?;
     // Any failure after the exclusive create must not leak the (empty or
     // partial) staging file.
     let staged = (|| -> std::io::Result<()> {
@@ -1582,31 +1584,7 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    // 0600 applied AT create time (OpenOptions::mode) instead of a chmod
-    // after the open — a post-create chmod leaves the file 0644 in the
-    // shared temp dir for the window between the two, a gap NamedTempFile
-    // (the app's replacement for this pattern) never has.
-    #[cfg(unix)]
-    let normalized_file = {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&normalized)
-            .map_err(|error| {
-                CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-            })?
-    };
-    #[cfg(not(unix))]
-    let normalized_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&normalized)
-        .map_err(|error| {
-            CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-        })?;
-    drop(normalized_file);
+    drop(create_private_staging(&normalized)?);
     // The normalized staging file is 0600 private audio in the shared temp
     // dir: this guard unlinks it on every path out of the rest of this
     // function (the explicit remove near the end covers only the ordinary
@@ -1628,23 +1606,7 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        crate::support::set_process_group(&mut convert_command);
-        // `spawn_supervised` closes the spawn→register window (see
-        // `support/supervise.rs`); the bracket below is the idempotent belt.
-        let spawned = crate::support::supervise::spawn_supervised(&mut convert_command);
-        let status_ok = match spawned {
-            Ok(mut convert) => {
-                // Same supervised bracket as every other spawned child: a
-                // Ctrl-C during the conversion takes the ffmpeg group down
-                // with this CLI.
-                let _supervised = crate::support::supervise::GroupGuard::register(convert.id());
-                wait_bounded(&mut convert, FFMPEG_CONVERT_TIMEOUT)
-                    .map(|status| status.success())
-                    .unwrap_or(false)
-            }
-            Err(_) => false,
-        };
-        let converted = status_ok
+        let converted = run_bounded_child(&mut convert_command, FFMPEG_CONVERT_TIMEOUT)
             && std::fs::metadata(&normalized)
                 .map(|m| m.len() > 44)
                 .unwrap_or(false);
@@ -1696,56 +1658,17 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // trade is deliberate: taking stragglers down on Ctrl-C outranks a
     // pid-recycling-scale misdirect, and connectors/code make the opposite
     // release-before-drain trade for their own drain shapes.
-    let _supervised_engine = crate::support::supervise::GroupGuard::register(child.id());
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = stdout_tx.send(drain_capped(stdout_pipe));
-    });
-    std::thread::spawn(move || {
-        let _ = stderr_tx.send(drain_capped(stderr_pipe));
-    });
+    let _supervised_engine = crate::support::supervise::GroupGuard::arm(child.id());
+    let (stdout_rx, stderr_rx) = spawn_capped_drains(&mut child);
 
     let timeout = native_engine_timeout_secs();
-    let started = Instant::now();
-    // The group kill lives on the two branches that leave the engine
-    // unreaped — a timeout and a broken wait — where the leader is
-    // verifiably still alive and its descendants must not be orphaned. Once
-    // `try_wait` has reaped the child, whatever its exit status, the pid is
-    // free for reuse and `kill(-pgid)` could hit an unrelated process group
-    // with this user's privileges, so no kill happens there (the same rule
-    // every `connectors` call site follows). A Ctrl-C already observed by
-    // the supervisor is the standing exception: the watcher is taking this
-    // process down, unwinding here lets the staged-file guards run, and the
-    // child is verifiably still alive at this point in the loop.
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => {
-                if crate::support::supervise::sigint_seen() {
-                    crate::support::kill_process_tree(&mut child);
-                    break Err(CliError::failed(
-                        "voice transcribe: local ASR engine interrupted",
-                    ));
-                }
-                if started.elapsed() >= Duration::from_secs(timeout) {
-                    crate::support::kill_process_tree(&mut child);
-                    break Err(CliError::failed(format!(
-                        "voice transcribe: local ASR engine timed out after {timeout}s"
-                    )));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => {
-                crate::support::kill_process_tree(&mut child);
-                break Err(CliError::failed(format!(
-                    "voice transcribe: local ASR engine failed unexpectedly: {error}"
-                )));
-            }
-        }
-    };
+    let status = wait_asr_child(
+        &mut child,
+        timeout,
+        "voice transcribe: local ASR engine interrupted",
+        |timeout| format!("voice transcribe: local ASR engine timed out after {timeout}s"),
+        |error| format!("voice transcribe: local ASR engine failed unexpectedly: {error}"),
+    );
     // A descendant that inherited the engine's pipes can keep them open past
     // the engine's own exit, so an unbounded join here would hang this
     // one-shot process forever; collect through the bounded grace instead
@@ -1779,7 +1702,7 @@ fn spawn_asr_engine(
     normalized: &Path,
 ) -> Result<std::process::Child, CliError> {
     // `spawn_supervised` closes the spawn→register window (see
-    // `support/supervise.rs`); the caller's `GroupGuard::register` bracket
+    // `support/supervise.rs`); the caller's `GroupGuard::arm` bracket
     // is then the idempotent belt.
     crate::support::supervise::spawn_supervised(command).map_err(|error| {
         let _ = std::fs::remove_file(normalized);
@@ -1865,6 +1788,72 @@ fn drain_with_grace(rx: std::sync::mpsc::Receiver<String>) -> String {
         .unwrap_or_default()
 }
 
+/// Spawns the two size-capped drain threads for a just-spawned ASR child —
+/// the identical scaffolding (pipe take, channel pair, one thread per pipe)
+/// both the native and the external lane run before their bounded wait.
+fn spawn_capped_drains(
+    child: &mut std::process::Child,
+) -> (
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stdout_tx.send(drain_capped(stdout_pipe));
+    });
+    std::thread::spawn(move || {
+        let _ = stderr_tx.send(drain_capped(stderr_pipe));
+    });
+    (stdout_rx, stderr_rx)
+}
+
+/// The bounded wait both ASR lanes share, parameterized only by the lane's
+/// timeout and its three error texts. The group kill lives on the two
+/// branches that leave the child unreaped — a timeout and a broken wait —
+/// where the leader is verifiably still alive and its descendants must not
+/// be orphaned. Once `try_wait` has reaped the child, whatever its exit
+/// status, the pid is free for reuse and `kill(-pgid)` could hit an
+/// unrelated process group with this user's privileges, so no kill happens
+/// there (the same rule every `connectors` call site follows). A Ctrl-C
+/// already observed by the supervisor is the standing exception: the
+/// watcher is taking this process down, unwinding here lets the staged-file
+/// guards run, and the child is verifiably still alive at this point in the
+/// loop. `interrupt` is the Ctrl-C message verbatim; the timeout and
+/// wait-error messages arrive as closures so each lane keeps its exact
+/// text.
+fn wait_asr_child(
+    child: &mut std::process::Child,
+    timeout_secs: u64,
+    interrupt: &str,
+    timeout_msg: impl FnOnce(u64) -> String,
+    wait_err: impl FnOnce(std::io::Error) -> String,
+) -> Result<std::process::ExitStatus, CliError> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if crate::support::supervise::sigint_seen() {
+                    crate::support::kill_process_tree(child);
+                    return Err(CliError::failed(interrupt.to_owned()));
+                }
+                if started.elapsed() >= Duration::from_secs(timeout_secs) {
+                    crate::support::kill_process_tree(child);
+                    return Err(CliError::failed(timeout_msg(timeout_secs)));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => {
+                crate::support::kill_process_tree(child);
+                return Err(CliError::failed(wait_err(error)));
+            }
+        }
+    }
+}
+
 /// Mirror of `run_local_asr_cli`: same argument protocol, same env-driven
 /// model/language/timeout, concurrent pipe draining, and exit code 6 as the
 /// "no speech" convention.
@@ -1937,52 +1926,21 @@ fn external_cli_transcribe(command: &Path, wav: &Path) -> Result<String, CliErro
         })?;
     // The supervised bracket for this spawn, pairing registration with the
     // forget on every exit below (see the local-engine lane).
-    let _supervised_cli = crate::support::supervise::GroupGuard::register(child.id());
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
-    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = stdout_tx.send(drain_capped(stdout_pipe));
-    });
-    std::thread::spawn(move || {
-        let _ = stderr_tx.send(drain_capped(stderr_pipe));
-    });
+    let _supervised_cli = crate::support::supervise::GroupGuard::arm(child.id());
+    let (stdout_rx, stderr_rx) = spawn_capped_drains(&mut child);
 
-    let started = Instant::now();
-    // Same rule as the local-engine lane: the group kill belongs only to the
-    // branches that leave the CLI unreaped. A non-success exit is ordinary
-    // here — exit code 6 is the documented "no speech" answer — and the child
-    // is already reaped by then, so killing its group would race a reused pid
-    // and SIGKILL an unrelated process group. A Ctrl-C already observed by
-    // the supervisor is the standing exception (child verifiably alive, this
-    // process going down): unwind now so the guards run.
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => {
-                if crate::support::supervise::sigint_seen() {
-                    crate::support::kill_process_tree(&mut child);
-                    break Err(CliError::failed(
-                        "asr_interrupted: local speech recognition was interrupted",
-                    ));
-                }
-                if started.elapsed() >= Duration::from_secs(timeout) {
-                    crate::support::kill_process_tree(&mut child);
-                    break Err(CliError::failed(format!(
-                        "asr_timeout: local speech recognition timed out ({timeout} s)"
-                    )));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => {
-                crate::support::kill_process_tree(&mut child);
-                break Err(CliError::failed(format!(
-                    "asr_runtime_error: local speech recognition failed unexpectedly: {error}"
-                )));
-            }
-        }
-    };
+    // The bounded wait carries the shared kill/reap rule (see
+    // `wait_asr_child`); the lane-specific fact it must not erase: a
+    // non-success exit is ordinary here — exit code 6 is the documented
+    // "no speech" answer — and the child is already reaped by then, so the
+    // helper takes no kill branch for it.
+    let status = wait_asr_child(
+        &mut child,
+        timeout,
+        "asr_interrupted: local speech recognition was interrupted",
+        |timeout| format!("asr_timeout: local speech recognition timed out ({timeout} s)"),
+        |error| format!("asr_runtime_error: local speech recognition failed unexpectedly: {error}"),
+    );
     // A pipe-inheriting descendant can hold EOF open past the CLI's exit, so
     // collect through the bounded grace instead of an unbounded join (see the
     // local-engine lane).
@@ -2269,7 +2227,7 @@ fn postprocess_user_content(corrected_text: &str, draft_text: Option<&str>) -> S
 fn sanitize_postprocess_output(text: &str) -> String {
     let without_thinking = strip_leading_thinking_block(text);
     let cleaned = strip_wrapping_quote(
-        &strip_wrapping_quote(without_thinking.trim().trim_matches('\u{feff}').trim(), '"'),
+        strip_wrapping_quote(without_thinking.trim().trim_matches('\u{feff}').trim(), '"'),
         '\'',
     )
     .trim();
@@ -2341,7 +2299,6 @@ fn summarize_postprocess_error(error: &reqwest::Error) -> String {
 #[derive(Debug)]
 struct PostprocessOutcome {
     text: String,
-    source: &'static str,
     truncated: bool,
 }
 
@@ -2354,16 +2311,13 @@ fn postprocess_retry_result(
     retry: Result<(String, bool), CliError>,
 ) -> Result<PostprocessOutcome, CliError> {
     match retry {
-        Ok((text, truncated)) if !text.trim().is_empty() => Ok(PostprocessOutcome {
-            text,
-            source: "llm",
-            truncated,
-        }),
+        Ok((text, truncated)) if !text.trim().is_empty() => {
+            Ok(PostprocessOutcome { text, truncated })
+        }
         // Empty output for pure-filler input is the correct answer,
         // not an error (same contract as the GUI).
         Ok(_) => Ok(PostprocessOutcome {
             text: String::new(),
-            source: "llm",
             truncated: false,
         }),
         Err(error) => Err(error),
@@ -2415,16 +2369,13 @@ fn postprocess(
     // the configured model endpoint. Same shape as the feedback lane:
     // canonicalize (symlink-accurate), then the sensitive-path refusal.
     let gate_file = |path: &Path, role: &str| -> Result<PathBuf, CliError> {
-        let canonical = std::fs::canonicalize(path).map_err(|error| {
-            CliError::failed(format!(
-                "voice postprocess: cannot resolve {role} file {}: {error}",
-                path.display()
-            ))
-        })?;
-        crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
-            CliError::failed(format!("voice postprocess: refusing {role} file: {reason}"))
-        })?;
-        Ok(canonical)
+        crate::support::gate_canonical_path(
+            path,
+            "voice postprocess",
+            &format!("{role} file"),
+            "voice postprocess",
+            &format!("{role} file"),
+        )
     };
     let raw_input = match (text, text_file) {
         (Some(text), _) => text,
@@ -2569,11 +2520,7 @@ fn postprocess(
                     .unwrap_or(false);
             let needs_retry = text.trim().is_empty() || truncated || unchanged;
             if !needs_retry {
-                return Ok::<PostprocessOutcome, CliError>(PostprocessOutcome {
-                    text,
-                    source: "llm",
-                    truncated,
-                });
+                return Ok::<PostprocessOutcome, CliError>(PostprocessOutcome { text, truncated });
             }
             let remaining = budget.saturating_sub(started.elapsed());
             if remaining.is_zero() {
@@ -2599,23 +2546,21 @@ fn postprocess(
         async move { work.await.map_err(std::convert::Into::into) }
     })
     .map_err(|error| CliError::failed(format!("voice postprocess failed: {error:#}")))?;
-    let outcome = host_result;
     let value = serde_json::json!({
-        "text": outcome.text,
+        "text": host_result.text,
         "mode": mode_str,
-        "source": outcome.source,
-        "truncated": outcome.truncated,
+        "source": "llm",
+        "truncated": host_result.truncated,
         "omitted_stages": POSTPROCESS_OMITTED_STAGES,
     });
     let human = format!(
-        "Mode: {}\nSource: {}\nTruncated: {}\nText: {}\n{}",
+        "Mode: {}\nSource: llm\nTruncated: {}\nText: {}\n{}",
         mode_str,
-        outcome.source,
-        outcome.truncated,
+        host_result.truncated,
         // The text is model output parsing an untrusted document: the same
         // ESC/bidi block sanitizer as the transcribe lane applies (JSON mode
         // keeps the verbatim bytes via serde).
-        crate::support::collapse_block_control_characters(&outcome.text),
+        crate::support::collapse_block_control_characters(&host_result.text),
         POSTPROCESS_NOTE
     );
     Ok(success(render(output, human, &value)))
@@ -2694,6 +2639,21 @@ fn postprocess_http_exchange(
         .timeout(timeout)
         .build()
         .map_err(|error| CliError::failed(format!("voice postprocess: client: {error}")))?;
+    // The OpenCode gateway enforces `x-opencode-session` on every
+    // hand-rolled auxiliary client (400 MissingSessionID otherwise, see
+    // core::model_endpoint's own doc) — the same conditional header
+    // `models probe` attaches. Both wire lanes below attach it through
+    // this one closure.
+    let with_opencode_session = |request: reqwest::blocking::RequestBuilder| {
+        if pinvou3_lib::model_probe::is_opencode_gateway_base_url(&base_url) {
+            request.header(
+                "x-opencode-session",
+                pinvou3_lib::model_probe::opencode_session_id_for("voice-postprocess"),
+            )
+        } else {
+            request
+        }
+    };
 
     if preset == pinvou3_lib::platform::prefs::ModelPreset::Anthropic {
         // Mirror of core::model_endpoint::post_anthropic_messages.
@@ -2704,16 +2664,7 @@ fn postprocess_http_exchange(
             format!("{trimmed}/v1/messages")
         };
         let mut request = client.post(url).header("anthropic-version", "2023-06-01");
-        // The OpenCode gateway enforces `x-opencode-session` on every
-        // hand-rolled auxiliary client (400 MissingSessionID otherwise, see
-        // core::model_endpoint's own doc) — the same conditional header
-        // `models probe` attaches.
-        if pinvou3_lib::model_probe::is_opencode_gateway_base_url(&base_url) {
-            request = request.header(
-                "x-opencode-session",
-                pinvou3_lib::model_probe::opencode_session_id_for("voice-postprocess"),
-            );
-        }
+        request = with_opencode_session(request);
         request = request.json(&postprocess_anthropic_body(
             &model_name,
             system,
@@ -2780,12 +2731,7 @@ fn postprocess_http_exchange(
         base_url.trim_end_matches('/')
     ));
     // Same conditional gateway header as the Anthropic lane above.
-    if pinvou3_lib::model_probe::is_opencode_gateway_base_url(&base_url) {
-        request = request.header(
-            "x-opencode-session",
-            pinvou3_lib::model_probe::opencode_session_id_for("voice-postprocess"),
-        );
-    }
+    request = with_opencode_session(request);
     let value: serde_json::Value = request
         .bearer_auth(api_key)
         .json(&body)
@@ -3066,7 +3012,6 @@ mod review_fix_tests {
         // text, exactly like the GUI contract.
         let outcome = postprocess_retry_result(Ok((String::new(), true))).unwrap();
         assert_eq!(outcome.text, "");
-        assert_eq!(outcome.source, "llm");
         assert!(!outcome.truncated);
     }
 
@@ -3077,7 +3022,6 @@ mod review_fix_tests {
         let outcome = postprocess_retry_result(Ok(("corrected text".to_owned(), false)))
             .expect("a non-empty retry succeeds");
         assert_eq!(outcome.text, "corrected text");
-        assert_eq!(outcome.source, "llm");
         assert!(!outcome.truncated);
     }
 
@@ -3344,29 +3288,100 @@ mod tests {
         postprocess_chat_body, postprocess_http_exchange, postprocess_prompt, transcribe_with,
     };
 
-    /// Panic-safe `PINVOU3_ASR_CMD` restore for the resolution test below:
-    /// a failing assert must not leak the fixture into sibling tests (the
-    /// same RAII rule as lib.rs's `RestoreHomeGuard`), with `ENV_LOCK` held
-    /// for the whole lifetime.
-    struct RestoreAsrCmd(
+    /// Serves `body` exactly once on a loopback `std::net::TcpListener` (no
+    /// external network) and answers the single request with a 200 JSON
+    /// response. The client keeps the connection open awaiting the response,
+    /// so there is no EOF to read to: the request is read until its
+    /// `Content-Length` bytes have arrived — or, when the request carries no
+    /// length prefix (a body-less GET), until the header terminator is
+    /// buffered, which is then the whole request. The raw request bytes are
+    /// handed to the returned receiver so a test can assert on what reached
+    /// the wire.
+    #[cfg(test)]
+    fn serve_once(body: String) -> (String, std::sync::mpsc::Receiver<Vec<u8>>) {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some((headers, received)) = text.split_once("\r\n\r\n") {
+                    let content_length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    });
+                    match content_length {
+                        // The length prefix ends the request: the client
+                        // holds the connection open awaiting the response.
+                        Some(length) if received.len() >= length => break,
+                        // No length prefix: the header block is the whole
+                        // request.
+                        None => break,
+                        Some(_) => {}
+                    }
+                }
+            }
+            let _ = tx.send(request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\
+content-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://127.0.0.1:{port}"), rx)
+    }
+
+    /// Panic-safe env restore for the fixture tests below: each entry is a
+    /// variable name plus the value to install — `Some(value)` sets it,
+    /// `None` removes it — and every variable's PREVIOUS value is captured
+    /// before the set and restored on drop, so a failing assert cannot leak
+    /// a fixture into sibling tests (the same RAII rule as lib.rs's
+    /// `RestoreHomeGuard`), with `ENV_LOCK` held for the guard's whole
+    /// lifetime.
+    struct RestoreEnvVars(
         Option<std::sync::MutexGuard<'static, ()>>,
-        Option<std::ffi::OsString>,
+        Vec<(&'static str, Option<std::ffi::OsString>)>,
     );
-    impl RestoreAsrCmd {
-        fn set(value: &str) -> Self {
+    impl RestoreEnvVars {
+        fn set(entries: &[(&'static str, Option<&str>)]) -> Self {
             let guard = crate::support::ENV_LOCK
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous = std::env::var_os("PINVOU3_ASR_CMD");
-            unsafe { std::env::set_var("PINVOU3_ASR_CMD", value) };
+            let previous = entries
+                .iter()
+                .map(|(name, value)| {
+                    let previous = std::env::var_os(name);
+                    match value {
+                        Some(value) => unsafe { std::env::set_var(name, value) },
+                        None => unsafe { std::env::remove_var(name) },
+                    }
+                    (*name, previous)
+                })
+                .collect();
             Self(Some(guard), previous)
         }
     }
-    impl Drop for RestoreAsrCmd {
+    impl Drop for RestoreEnvVars {
         fn drop(&mut self) {
-            match self.1.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU3_ASR_CMD", value) },
-                None => unsafe { std::env::remove_var("PINVOU3_ASR_CMD") },
+            for (name, value) in self.1.drain(..) {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(name, value) },
+                    None => unsafe { std::env::remove_var(name) },
+                }
             }
             drop(self.0.take());
         }
@@ -3383,10 +3398,10 @@ mod tests {
     fn external_asr_env_config_resolves_bare_path_names_like_the_app() {
         // Each fixture lives in its own scope: `ENV_LOCK` is a non-reentrant
         // std Mutex and shadowing a guard does not drop it, so a stacked
-        // second `RestoreAsrCmd::set` would self-deadlock.
+        // second `RestoreEnvVars::set` would self-deadlock.
         {
             let bare = if cfg!(windows) { "cmd" } else { "sh" };
-            let _guard = RestoreAsrCmd::set(bare);
+            let _guard = RestoreEnvVars::set(&[("PINVOU3_ASR_CMD", Some(bare))]);
             assert_eq!(
                 super::external_asr_command(),
                 Some(std::path::PathBuf::from(bare)),
@@ -3399,59 +3414,16 @@ mod tests {
             } else {
                 std::path::PathBuf::from("/definitely/not/here/tool")
             };
-            let _guard = RestoreAsrCmd::set(&missing.to_string_lossy());
+            let _guard = RestoreEnvVars::set(&[(
+                "PINVOU3_ASR_CMD",
+                Some(missing.to_string_lossy().as_ref()),
+            )]);
             let resolved = super::external_asr_command();
             assert_ne!(
                 resolved.as_deref(),
                 Some(missing.as_path()),
                 "a configured-but-missing value must not resolve to itself"
             );
-        }
-    }
-
-    /// Panic-safe restore for both ASR timeout variables, with `ENV_LOCK`
-    /// held for the guard's whole lifetime (the same RAII rule as
-    /// [`RestoreAsrCmd`]).
-    struct RestoreTimeoutEnv(
-        Option<std::sync::MutexGuard<'static, ()>>,
-        Option<std::ffi::OsString>,
-        Option<std::ffi::OsString>,
-    );
-    impl RestoreTimeoutEnv {
-        /// `(asr, deepspeech)`: `Some(value)` sets the variable, `None`
-        /// removes it, mirroring the combined-fixture shape the test needs.
-        fn set(asr: Option<&str>, deepspeech: Option<&str>) -> Self {
-            let guard = crate::support::ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous_asr = std::env::var_os("PINVOU3_ASR_TIMEOUT_SECS");
-            match asr {
-                Some(value) => unsafe { std::env::set_var("PINVOU3_ASR_TIMEOUT_SECS", value) },
-                None => unsafe { std::env::remove_var("PINVOU3_ASR_TIMEOUT_SECS") },
-            }
-            let previous_deepspeech = std::env::var_os("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS");
-            match deepspeech {
-                Some(value) => unsafe {
-                    std::env::set_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", value)
-                },
-                None => unsafe { std::env::remove_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS") },
-            }
-            Self(Some(guard), previous_asr, previous_deepspeech)
-        }
-    }
-    impl Drop for RestoreTimeoutEnv {
-        fn drop(&mut self) {
-            match self.1.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU3_ASR_TIMEOUT_SECS", value) },
-                None => unsafe { std::env::remove_var("PINVOU3_ASR_TIMEOUT_SECS") },
-            }
-            match self.2.take() {
-                Some(value) => unsafe {
-                    std::env::set_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", value)
-                },
-                None => unsafe { std::env::remove_var("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS") },
-            }
-            drop(self.0.take());
         }
     }
 
@@ -3468,7 +3440,10 @@ mod tests {
         // Each fixture lives in its own scope: `ENV_LOCK` is non-reentrant
         // and shadowing a guard does not drop it (see the resolution test).
         {
-            let _env = RestoreTimeoutEnv::set(None, None);
+            let _env = RestoreEnvVars::set(&[
+                ("PINVOU3_ASR_TIMEOUT_SECS", None),
+                ("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", None),
+            ]);
             assert_eq!(
                 native_engine_timeout_secs(),
                 300,
@@ -3481,7 +3456,10 @@ mod tests {
             );
         }
         {
-            let _env = RestoreTimeoutEnv::set(Some("45"), None);
+            let _env = RestoreEnvVars::set(&[
+                ("PINVOU3_ASR_TIMEOUT_SECS", Some("45")),
+                ("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", None),
+            ]);
             assert_eq!(
                 native_engine_timeout_secs(),
                 45,
@@ -3490,7 +3468,10 @@ mod tests {
             assert_eq!(asr_timeout_secs(), 45);
         }
         {
-            let _env = RestoreTimeoutEnv::set(None, Some("77"));
+            let _env = RestoreEnvVars::set(&[
+                ("PINVOU3_ASR_TIMEOUT_SECS", None),
+                ("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", Some("77")),
+            ]);
             assert_eq!(
                 native_engine_timeout_secs(),
                 77,
@@ -3499,7 +3480,10 @@ mod tests {
             assert_eq!(asr_timeout_secs(), 77);
         }
         {
-            let _env = RestoreTimeoutEnv::set(Some("0"), Some("not-a-number"));
+            let _env = RestoreEnvVars::set(&[
+                ("PINVOU3_ASR_TIMEOUT_SECS", Some("0")),
+                ("PINVOU3_DEEPSPEECH2_TIMEOUT_SECS", Some("not-a-number")),
+            ]);
             assert_eq!(
                 native_engine_timeout_secs(),
                 300,
@@ -3547,36 +3531,6 @@ mod tests {
     #[test]
     fn download_to_accepts_at_cap_and_refuses_over_cap_band() {
         const BAND: u64 = 4096;
-        // Serves `body` once on a loopback port and returns its URL.
-        fn serve(body: Vec<u8>) -> String {
-            use std::io::{Read as _, Write as _};
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            let length = body.len();
-            std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0u8; 4096];
-                loop {
-                    let read = stream.read(&mut buffer).unwrap();
-                    request.extend_from_slice(&buffer[..read]);
-                    // The GET's header block is the whole request; once the
-                    // terminator is buffered, stop reading (reqwest holds
-                    // the connection open awaiting the response).
-                    if read == 0 || request.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let mut response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
-                )
-                .into_bytes();
-                response.extend_from_slice(&body);
-                stream.write_all(&response).unwrap();
-                stream.flush().unwrap();
-            });
-            format!("http://{addr}/band.gguf")
-        }
 
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3590,12 +3544,13 @@ mod tests {
 
         // At-cap: exactly `BAND` bytes passes the `size > max_bytes` gate
         // and the sha256 verify.
-        let body = vec![b'a'; BAND as usize];
+        let body = "a".repeat(BAND as usize);
         let scratch = dir.join("at-cap.body");
-        std::fs::write(&scratch, &body).unwrap();
+        std::fs::write(&scratch, body.as_bytes()).unwrap();
         let sha = pinvou3_lib::platform::sha256_file(&scratch).unwrap();
         let dest = dir.join("at-cap.gguf");
-        download_to(&serve(body), &dest, &sha, BAND)
+        let (url, _request) = serve_once(body);
+        download_to(&url, &dest, &sha, BAND)
             .expect("a payload exactly at the band must be accepted");
         assert_eq!(
             std::fs::metadata(&dest).unwrap().len(),
@@ -3605,12 +3560,13 @@ mod tests {
 
         // Over-cap: one byte past the band is refused before any sha check
         // and leaves no file at the real path.
-        let body = vec![b'b'; BAND as usize + 1];
+        let body = "b".repeat(BAND as usize + 1);
         let scratch = dir.join("over-cap.body");
-        std::fs::write(&scratch, &body).unwrap();
+        std::fs::write(&scratch, body.as_bytes()).unwrap();
         let sha = pinvou3_lib::platform::sha256_file(&scratch).unwrap();
         let dest = dir.join("over-cap.gguf");
-        let error = download_to(&serve(body), &dest, &sha, BAND)
+        let (url, _request) = serve_once(body);
+        let error = download_to(&url, &dest, &sha, BAND)
             .expect_err("a payload over the band must be refused");
         assert!(
             error.to_string().contains("exceeds the size cap"),
@@ -3633,55 +3589,15 @@ mod tests {
     /// external network.
     #[test]
     fn anthropic_exchange_reports_a_max_tokens_stop_reason_as_truncated() {
-        use std::io::{Read as _, Write as _};
         use std::time::Duration;
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 4096];
-            // Read until the end of the JSON body: the request is a single
-            // reqwest write, so EOF on the client side ends the headers. Read
-            // greedily; the client keeps the connection open awaiting the
-            // response, so parse on Content-Length instead of read-to-EOF.
-            loop {
-                let read = stream.read(&mut buffer).unwrap();
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                let text = String::from_utf8_lossy(&request);
-                if let Some((headers, body)) = text.split_once("\r\n\r\n") {
-                    // The length prefix ends the request: the client holds the
-                    // connection open awaiting the response, so there is no
-                    // EOF to read to.
-                    let content_length = headers.lines().find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.trim()
-                            .eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().ok())?
-                    });
-                    if let Some(length) = content_length {
-                        if body.len() >= length {
-                            break;
-                        }
-                    }
-                }
-            }
-            let json = "{\"content\":[{\"type\":\"text\",\"text\":\"cut mid sent\"}],\
-\"stop_reason\":\"max_tokens\",\"model\":\"m\"}";
-            let body = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\
-content-length: {}\r\n\r\n{}",
-                json.len(),
-                json
-            );
-            stream.write_all(body.as_bytes()).unwrap();
-        });
+        let (url, _request) = serve_once(
+            "{\"content\":[{\"type\":\"text\",\"text\":\"cut mid sent\"}],\
+\"stop_reason\":\"max_tokens\",\"model\":\"m\"}"
+                .to_owned(),
+        );
         let (text, truncated) = postprocess_http_exchange(
-            format!("http://127.0.0.1:{port}"),
+            url,
             String::new(),
             String::new(),
             pinvou3_lib::platform::prefs::ModelPreset::Anthropic,
@@ -3693,7 +3609,6 @@ content-length: {}\r\n\r\n{}",
             Duration::from_secs(10),
         )
         .expect("the mock exchange must succeed");
-        server.join().unwrap();
         assert_eq!(text, "cut mid sent");
         assert!(
             truncated,
@@ -3839,56 +3754,14 @@ content-length: {}\r\n\r\n{}",
     /// `std::net::TcpListener` on loopback, no external network.
     #[test]
     fn minimax_exchange_sends_the_gui_thinking_disable_fields() {
-        use std::io::{Read as _, Write as _};
         use std::time::Duration;
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 4096];
-            // Same read loop as the Anthropic test: the client holds the
-            // connection open awaiting the response, so parse on
-            // Content-Length instead of read-to-EOF.
-            loop {
-                let read = stream.read(&mut buffer).unwrap();
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                let text = String::from_utf8_lossy(&request);
-                if let Some((headers, body)) = text.split_once("\r\n\r\n") {
-                    let content_length = headers.lines().find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.trim()
-                            .eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().ok())?
-                    });
-                    if let Some(length) = content_length {
-                        if body.len() >= length {
-                            break;
-                        }
-                    }
-                }
-            }
-            let text = String::from_utf8_lossy(&request);
-            let body = text.split_once("\r\n\r\n").expect("headers then body").1;
-            tx.send(serde_json::from_str(body).expect("the request body is JSON"))
-                .unwrap();
-            let json =
-                "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\
-content-length: {}\r\n\r\n{}",
-                json.len(),
-                json
-            );
-            stream.write_all(response.as_bytes()).unwrap();
-        });
+        let (url, request_rx) = serve_once(
+            "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}"
+                .to_owned(),
+        );
         let (text, truncated) = postprocess_http_exchange(
-            format!("http://127.0.0.1:{port}"),
+            url,
             String::new(),
             "openai_compatible".to_owned(),
             pinvou3_lib::platform::prefs::ModelPreset::Minimax,
@@ -3900,10 +3773,13 @@ content-length: {}\r\n\r\n{}",
             Duration::from_secs(10),
         )
         .expect("the mock exchange must succeed");
-        server.join().unwrap();
         assert_eq!(text, "ok");
         assert!(!truncated);
-        let body = rx.recv().expect("the server captured the request");
+        let captured = request_rx.recv().expect("the server captured the request");
+        let request = String::from_utf8_lossy(&captured);
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").expect("headers then body").1)
+                .expect("the request body is JSON");
         assert_eq!(
             body["thinking"],
             serde_json::json!({ "type": "disabled" }),

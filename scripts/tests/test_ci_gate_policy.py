@@ -16,7 +16,7 @@ REQUIRED_WORKFLOWS = (
 PUBLIC_SUBMODULE_VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
 
 
-def _extract_quoted_paths(block, tight=True):
+def _extract_quoted_paths(block):
     """提取 YAML 块中 `- 'path'` / `- "path"` 形式的路径条目(保持文本序)。
 
     Round-40 review M4: 单引号形式之外还要认双引号形式——一条
@@ -27,18 +27,19 @@ def _extract_quoted_paths(block, tight=True):
     `- '!pinvou-cli/**' # trim scope` 对 dorny 是一条排除项,旧提取器
     (要求行以引号收尾)却看不见它。引号内出现的 `#` 属于路径本身
     (YAML 规范:注释以引号后的 `#` 开始),因此先取引号闭包、再剥其后的
-    注释。凡是引用形式的条目行(`- '…'` / `- "…"` 开头)却匹配不上
-    引号闭包正则的,一律视为未识别形状直接让断言红掉——那正是"提取器
-    看不见 → 下方全部 pin 可被同一条目绕过"的形状。
+    注释。闭包按引号配对(`[^']*` / `[^"]*`):贪婪闭包 `(.*)` 会把行尾
+    注释里的引号一并吞进路径(`# was 'old/path'` 解析出一条 dorny 根本
+    看不见的垃圾条目)。凡是引用形式的条目行(`- '…'` / `- "…"` 开头)
+    却匹配不上引号闭包正则的,一律视为未识别形状直接让断言红掉——那
+    正是"提取器看不见 → 下方全部 pin 可被同一条目绕过"的形状。
 
-    Round-51 review: tight 模式(默认)把 fail-closed 扩大到所有列表条目
-    形状的行(可选空格 + `- ` 开头)。折叠标量(`- >-` + 缩进文本)与裸词
-    条目(`- pinvou-cli/**`)对 dorny 都是真实的过滤条目(dorny 会把块重新
-    按 YAML 解析),旧提取器却静默忽略——一条隐藏的 `!pinvou-cli/**`
-    排除即可静默跳过全部 CLI 腿。tight 模式下这类行一律让断言红掉。
-    `tight=False` 是显式逃生门,仅供切片覆盖整个 job/文件、因而混有作业
-    步骤(`- name:`、`- uses:`、裸 needs 等)非路径列表行的调用方使用,
-    且必须在调用处注明理由。
+    Round-51 review: fail-closed 覆盖所有列表条目形状的行(可选空格 +
+    `- ` 开头)。折叠标量(`- >-` + 缩进文本)与裸词条目(`- pinvou-cli/**`)
+    对 dorny 都是真实的过滤条目(dorny 会把块重新按 YAML 解析),旧提取器
+    却静默忽略——一条隐藏的 `!pinvou-cli/**` 排除即可静默跳过全部 CLI 腿。
+    这类行一律让断言红掉。曾经的 `tight=False` 逃生门没有生产调用方,
+    已删除:调用方必须先把 `- name:`、`- uses:` 等作业步骤行排除在切片
+    之外,而不是让提取器吞掉未识别的条目行。
     """
     paths = []
     unrecognized = []
@@ -46,12 +47,10 @@ def _extract_quoted_paths(block, tight=True):
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        match = re.match(r"""^- ('(.*)'|"(.*)")(?:\s+#.*)?$""", stripped)
+        match = re.match(r"""^- ('([^']*)'|"([^"]*)")(?:\s+#.*)?$""", stripped)
         if match:
             paths.append(match.group(2) if match.group(2) is not None else match.group(3))
-        elif stripped.startswith("- '") or stripped.startswith('- "'):
-            unrecognized.append(stripped)
-        elif tight and stripped.startswith("- "):
+        elif stripped.startswith("- "):
             unrecognized.append(stripped)
     if unrecognized:
         raise AssertionError(
@@ -415,6 +414,9 @@ class CiGatePolicyTests(unittest.TestCase):
             "            - '!pinvou-cli/docs/**' # trim the docs subtree\n"
             '            - "pinvou-cli/Cargo.lock"  # lock pin\n'
             "            - 'pinvou-cli/a#b/**' # hash inside the quotes is literal\n"
+            # 行尾注释以撇号收尾:贪婪引号闭包曾把注释里的引号一并吞进
+            # 路径,解析出一条 dorny 根本看不见的垃圾条目。
+            "            - 'pinvou-cli/rename/**' # was 'pinvou-cli/old/**'\n"
         )
         entries = _extract_quoted_paths(block)
         self.assertEqual(
@@ -424,6 +426,7 @@ class CiGatePolicyTests(unittest.TestCase):
                 "!pinvou-cli/docs/**",
                 "pinvou-cli/Cargo.lock",
                 "pinvou-cli/a#b/**",
+                "pinvou-cli/rename/**",
             ],
             "带行尾注释的条目必须被完整解析(dorny 看得见,提取器也必须看得见)",
         )
@@ -454,15 +457,18 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             _extract_quoted_paths(bare)
-        # 逃生门只限文档注明覆盖整个 job/文件的切片:键值、空行等非条目
-        # 形状的行在两种模式下都维持忽略。
+        # 逃生门(tight=False)已删除:它是零生产调用方的死参数,却给
+        # "提取器看不见 → 下方全部 pin 可绕过"留了一扇门。作业步骤行
+        # (`- name:`、`- uses:`)等非引号条目形状一律 fail-closed;覆盖
+        # 整个 job/文件的调用方必须先把这些行排除在切片之外。
         whole_job = (
             "    needs: changes\n"
             "    steps:\n"
             "      - name: Cargo cache\n"
             "        uses: Swatinem/rust-cache@v2\n"
         )
-        self.assertEqual(_extract_quoted_paths(whole_job, tight=False), [])
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(whole_job)
         # 条目行缩进不限:更深缩进的折叠标量排除同样必须红。
         deep_folded = "            - >-\n                !pinvou-cli/docs/**\n"
         with self.assertRaises(AssertionError):
@@ -667,15 +673,13 @@ class CiGatePolicyTests(unittest.TestCase):
             if line.strip().startswith("run_filtered test") and f"-p {package} " in line
         ]
         matches = [line for line in lines if line.endswith(f"--locked {filter}")]
+        # The selection above is itself the exact-token check: a line only
+        # lands in `matches` when `--locked <filter>` is its FINAL text, so a
+        # renamed (or deleted) filter fails the assertTrue — no separate
+        # re-assertion of the same property is needed.
         self.assertTrue(
             matches,
             msg or f"no run_filtered line pins -p {package} --locked {filter}",
-        )
-        self.assertEqual(
-            matches[0].rsplit("--locked ", 1)[1],
-            filter,
-            "the filter token must be exactly "
-            f"{filter!r}; a renamed filter must fail this pin",
         )
 
     def test_cli_crate_has_its_own_required_gate(self):
@@ -739,10 +743,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # EXISTS in the repository. The round-37 mcp-servers entry shipped as
         # `pinvoy3-app/...` (a typo), which no glob ever matches — the entry
         # was dead, the gap it claims to close stayed open, and this suite
-        # pinned the dead spelling as if it were coverage. A reachability
-        # check keeps the pin from outliving the path again.
-        cli_rust_entries = _extract_quoted_paths(cli_paths)
-        self.assertTrue(cli_rust_entries, "cli_rust paths 解析为空")
+        # pinned the dead spelling as if it were coverage. The reachability
+        # sweep below (assert_group_paths_reachable, applied to cli_rust by
+        # the group_bounds loop) keeps the pin from outliving the path again.
+        self.assertTrue(cli_rust_entries_probe, "cli_rust paths 解析为空")
         # Round-40 review M4: cli_rust must route on POSITIVE entries only.
         # The filter runs with dorny's `predicate-quantifier: some-with-excludes`,
         # where one negated entry (`- '!pinvou-cli/**'`) makes cli_rust false
@@ -753,7 +757,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # sees double-quoted entries, so the quote style cannot hide a
         # negation from this pin either. Exclusions belong in rust_full,
         # which owns them today (feedback/personas/pet).
-        for entry in cli_rust_entries:
+        for entry in cli_rust_entries_probe:
             self.assertFalse(
                 entry.startswith("!"),
                 f"cli_rust must not carry negation entries (one '!...' line "
@@ -769,31 +773,6 @@ class CiGatePolicyTests(unittest.TestCase):
                 stripped = line.strip()
                 if stripped.startswith("path = "):
                     submodule_paths.add(stripped[len("path = "):].strip())
-        for entry in cli_rust_entries:
-            candidate = entry[1:] if entry.startswith("!") else entry
-            if candidate.endswith("/**"):
-                # Round-39 review: the round-37 dead entry was exactly this
-                # shape (`pinvoy3-app/resources/mcp-servers/**` — a typo'd
-                # directory prefix), so the dir/** form must be reachability-
-                # checked too: the prefix directory must exist. The glob tail
-                # itself stays the paths-filter's business.
-                prefix = candidate[: -len("/**")]
-                self.assertTrue(
-                    (ROOT / prefix).is_dir(),
-                    f"cli_rust 过滤条目的目录前缀在仓库中不存在(死条目): {entry}",
-                )
-                continue
-            if "*" in candidate:
-                # Glob metachars beyond the dir/** form are resolved by the
-                # paths-filter itself; only literal and dir/** entries can
-                # rot in a checkable way.
-                continue
-            if candidate in submodule_paths:
-                continue
-            self.assertTrue(
-                (ROOT / candidate).exists(),
-                f"cli_rust 过滤路径在仓库中不存在(死条目): {entry}",
-            )
         # The connector lock tables are compiled into the CLI with include_str!
         # from src-tauri/src/platform/connector_lock.rs, so editing or
         # deleting one is a CLI source change in all but name — and
@@ -876,19 +855,28 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         # Round-40 review: the dir/**-rot class the cli_rust reachability
-        # check above closes is not cli_rust-specific. The same dead-spelling
+        # sweep closes is not cli_rust-specific. The same dead-spelling
         # shape in knowledge_rust or windows_codex silently skips the
         # knowledge and Windows codex legs for a change-set they own. The
-        # same sweep runs over both groups (existence + dir/** prefix);
-        # knowledge_rust's workflow-file entry is a literal that exists, and
-        # windows_codex's `private-runtimes/windows` gitlink resolves through
-        # the same .gitmodules exemption the cli_rust loop applies.
+        # same sweep runs over both groups (existence + dir/** prefix):
+        # knowledge_rust gets an explicit call below because the
+        # group_bounds pairs bound its neighbors (cli_rust,
+        # knowledge_dependencies) instead of knowledge_rust itself, and
+        # windows_codex rides the group_bounds list (round-51: its
+        # standalone slice was folded into that sweep — same helper, and
+        # its `private-runtimes/windows` gitlink resolves through the same
+        # .gitmodules exemption the sweep applies).
         def assert_group_paths_reachable(group_block: str, group_name: str) -> None:
             entries = _extract_quoted_paths(group_block)
             self.assertTrue(entries, f"{group_name} paths 解析为空")
             for entry in entries:
                 candidate = entry[1:] if entry.startswith("!") else entry
                 if candidate.endswith("/**"):
+                    # Round-39 review: the round-37 dead entry was exactly this
+                    # shape (`pinvoy3-app/resources/mcp-servers/**` — a typo'd
+                    # directory prefix), so the dir/** form must be reachability-
+                    # checked too: the prefix directory must exist. The glob tail
+                    # itself stays the paths-filter's business.
                     prefix = candidate[: -len("/**")]
                     self.assertTrue(
                         (ROOT / prefix).is_dir(),
@@ -896,6 +884,9 @@ class CiGatePolicyTests(unittest.TestCase):
                     )
                     continue
                 if "*" in candidate:
+                    # Glob metachars beyond the dir/** form are resolved by the
+                    # paths-filter itself; only literal and dir/** entries can
+                    # rot in a checkable way.
                     continue
                 if candidate in submodule_paths:
                     continue
@@ -908,20 +899,16 @@ class CiGatePolicyTests(unittest.TestCase):
             "            knowledge_rust:", maxsplit=1
         )[1].split("            knowledge_dependencies:", maxsplit=1)[0]
         assert_group_paths_reachable(knowledge_rust_paths, "knowledge_rust")
-        windows_codex_paths = self.pr_workflow.split(
-            "            windows_codex:", maxsplit=1
-        )[1].split("            bundle_chain:", maxsplit=1)[0]
-        assert_group_paths_reachable(windows_codex_paths, "windows_codex")
-        # Round-49 review: the standalone windows_codex slice used to split
-        # at `pet:` — a job declared BEFORE it — so the slice ran to EOF and
-        # bundle_chain's coverage was an accident of that unbounded sweep.
-        # windows_codex is now bounded at its real neighbor, and the terminal
-        # group gets its own explicit sweep. Round-51 review: that sweep is
-        # bounded at the next job header (fast-gate) instead of running to
-        # EOF of the whole file, so the slice stays a pure filter-entry list
-        # and the extractor's fail-closed entry-shape check applies to it; a
-        # whole-file slice would need the lenient extractor and could hide a
-        # folded-scalar exclusion from this sweep.
+        # Round-49 review: bundle_chain — the changes block's terminal group —
+        # gets its own explicit sweep. The standalone windows_codex slice used
+        # to split at `pet:` — a job declared BEFORE it — so the slice ran to
+        # EOF and bundle_chain's coverage was an accident of that unbounded
+        # sweep. Round-51 review: this explicit sweep is bounded at the next
+        # job header (fast-gate) instead of running to EOF of the whole file,
+        # so the slice stays a pure filter-entry list and the extractor's
+        # fail-closed entry-shape check applies to it; a whole-file slice
+        # would need the lenient extractor and could hide a folded-scalar
+        # exclusion from this sweep.
         bundle_chain_paths = self.pr_workflow.split(
             "            bundle_chain:", maxsplit=1
         )[1].split("\n  fast-gate:", maxsplit=1)[0]
@@ -1122,14 +1109,6 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "a renamed test must not become a silent pass", windows_rust_steps
         )
-        # The zero-match guard bodies are load-bearing — a renamed test must
-        # FAIL the step, not pass silently — so pin them alongside the
-        # filters they protect (round-44 review).
-        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", windows_rust_steps)
-        self.assertIn('grep -q "^test result: ok"', windows_rust_steps)
-        self.assertIn(
-            "a renamed test must not become a silent pass", windows_rust_steps
-        )
 
         # macOS-gated CLI code must type-check somewhere: cli-test is
         # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
@@ -1199,6 +1178,38 @@ class CiGatePolicyTests(unittest.TestCase):
             required_gate,
             "macos-cli-check must enter the failure loop like cli-test "
             "(success|skipped accepted so path-filtered skips do not false-fail)",
+        )
+
+    def test_cli_lint_tauri_deps_stay_identical_with_cli_test(self):
+        # Round-45 review: cli-test and cli-lint carry the same "Install Tauri
+        # Linux system dependencies" setup (the workspaces are identical: the
+        # CLI compiles pinvou3-tauri as a path dependency, so both legs need
+        # the same system libraries). A package fixed or added in one leg only
+        # hides which entries are load-bearing. The blocks are deliberately
+        # NOT deduplicated into a composite action — the structural pins above
+        # read this workflow's literal text — so this pin holds the copies
+        # equal instead. Prose comments may differ between the jobs; the
+        # executable lines may not.
+        marker = "- name: Install Tauri Linux system dependencies"
+
+        def tauri_dep_stanza(job):
+            job_text = self.pr_workflow.split(f"\n  {job}:", maxsplit=1)[1]
+            _, _, rest = job_text.partition(marker)
+            if not rest:
+                raise AssertionError(
+                    f"{job} no longer carries the {marker!r} step the "
+                    "cli-test/cli-lint parity pin needs"
+                )
+            return _without_yaml_comments(
+                marker + rest.split("- name: Build PipeWire", maxsplit=1)[0]
+            )
+
+        self.assertEqual(
+            tauri_dep_stanza("cli-test"),
+            tauri_dep_stanza("cli-lint"),
+            "the Tauri Linux system-dependency setup must stay identical "
+            "between cli-test and cli-lint: an entry that drifts in one leg "
+            "silently hides which packages are load-bearing",
         )
 
     def test_macos_cli_check_runs_on_main_push_and_merge_group(self):

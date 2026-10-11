@@ -283,22 +283,13 @@ pub(crate) struct GroupGuard {
 }
 
 impl GroupGuard {
-    /// Wrap a pgid that `spawn_supervised` just registered.
+    /// Wrap a pgid that `spawn_supervised` just registered. The supervised
+    /// spawn registers the pgid inside its own spawn window, so no separate
+    /// register call is needed — the constructor exists for the RAII release
+    /// (a panic between spawn and an explicit forget used to leave the group
+    /// registered; round-40 review folded voice's private `SupervisedGroup`
+    /// twin into this type).
     pub(crate) fn arm(pgid: u32) -> Self {
-        Self { pgid, armed: true }
-    }
-
-    /// Wrap a child spawned through `spawn_supervised` when the site needs
-    /// explicit early-release or scope-held registration semantics (voice's
-    /// ffmpeg/engine/ASR children). The supervised spawn already registered
-    /// the pgid inside its spawn window, so the `register_child_group` call
-    /// here is an idempotent belt — the reason to use this constructor is
-    /// the explicit guard, not the registration (round-40 review folded
-    /// voice's private `SupervisedGroup` twin into this type; round-44
-    /// review reworded the doc, which described a raw-spawn caller class
-    /// that no longer exists).
-    pub(crate) fn register(pgid: u32) -> Self {
-        register_child_group(pgid);
         Self { pgid, armed: true }
     }
 
@@ -566,7 +557,7 @@ mod imp {
                 // install the handler as before.
                 return false;
             }
-            action.sa_sigaction as usize == libc::SIG_IGN as usize
+            action.sa_sigaction as usize == libc::SIG_IGN
         }
     }
 
@@ -586,7 +577,7 @@ mod imp {
             }
             // SIG_IGN is 1 on every supported platform; compare the stored
             // handler address.
-            old.sa_sigaction == libc::SIG_IGN as usize
+            old.sa_sigaction == libc::SIG_IGN
         }
     }
 
@@ -1054,13 +1045,13 @@ mod tests {
             // The handler field is the same sighandler_t the installer
             // writes (same double cast).
             let mut ign: libc::sigaction = std::mem::zeroed();
-            ign.sa_sigaction = libc::SIG_IGN as *const () as libc::sighandler_t as usize;
+            ign.sa_sigaction = libc::SIG_IGN as *const () as libc::sighandler_t;
             assert_eq!(libc::sigaction(libc::SIGHUP, &ign, std::ptr::null_mut()), 0);
             assert!(inherited_sighup_is_ignored());
 
             // Default disposition → install normally.
             let mut dfl: libc::sigaction = std::mem::zeroed();
-            dfl.sa_sigaction = libc::SIG_DFL as *const () as libc::sighandler_t as usize;
+            dfl.sa_sigaction = libc::SIG_DFL as *const () as libc::sighandler_t;
             assert_eq!(libc::sigaction(libc::SIGHUP, &dfl, std::ptr::null_mut()), 0);
             assert!(!inherited_sighup_is_ignored());
 
@@ -1108,10 +1099,12 @@ mod tests {
             "the refusal names the cause: {error}"
         );
         // The override is cleared: the refusal is lifted (the `true` child
-        // exits immediately and the guard reaps it).
+        // exits immediately and the `wait` below reaps it).
         let mut command = std::process::Command::new("true");
         spawn_supervised(&mut command)
-            .expect("with the override cleared, the refusal must be lifted");
+            .expect("with the override cleared, the refusal must be lifted")
+            .wait()
+            .expect("the `true` child exits immediately");
 
         // The refusal must leave this thread's interrupt family UNBLOCKED:
         // phase 3's process-targeted re-raise is deliverable only to a

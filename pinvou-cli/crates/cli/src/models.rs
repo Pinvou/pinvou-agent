@@ -39,6 +39,7 @@
 //! tests only.
 
 use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::time::Duration;
 
 use pinvou3_lib::features::sessions::SerializableMode;
@@ -51,7 +52,9 @@ use pinvou3_lib::platform::prefs::{
     ModelPreset, SavedModel, SearchProvider, Theme, UserPrefs,
 };
 
-use crate::support::{collapse_control_characters, render, require_yes, resolve_secret, success};
+use crate::support::{
+    collapse_control_characters, ensure_env_var_name, render, require_yes, resolve_secret, success,
+};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,6 +223,16 @@ impl SettingsKey {
                 ))
             })
     }
+
+    /// The canonical settings.json spelling of this key, read off [`ALL`]
+    /// (every variant is listed exactly once, so the lookup always hits).
+    fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(_, candidate)| *candidate == self)
+            .map(|(name, _)| *name)
+            .unwrap_or_default()
+    }
 }
 
 /// A typed `settings set` value, validated at parse time so bad types and
@@ -259,7 +272,7 @@ const MODEL_PRESETS: &[&str] = &[
 fn gate_env_var(value: Option<&str>) -> Result<Option<String>, CliError> {
     match value {
         Some(value) => {
-            crate::support::ensure_env_var_name("--api-key-env", value)?;
+            ensure_env_var_name("--api-key-env", value)?;
             Ok(Some(value.to_owned()))
         }
         None => Ok(None),
@@ -386,11 +399,7 @@ fn parse_settings_value(key: SettingsKey, raw: &str) -> Result<SettingsValue, Cl
     let usage = |expected: &str| {
         CliError::usage(format!(
             "invalid value {raw:?} for {}; expected {expected}",
-            SettingsKey::ALL
-                .iter()
-                .find(|(_, candidate)| *candidate == key)
-                .map(|(name, _)| *name)
-                .unwrap_or_default(),
+            key.name()
         ))
     };
     match key {
@@ -636,13 +645,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
                      credential is used",
                 ));
             }
-            let api_key_env = match options.value("api-key-env") {
-                Some(value) => {
-                    crate::support::ensure_env_var_name("--api-key-env", value)?;
-                    Some(value.to_owned())
-                }
-                None => None,
-            };
+            let api_key_env = gate_env_var(options.value("api-key-env"))?;
             Ok(ModelsCommand::ProbeLocal {
                 url,
                 api_key_env,
@@ -728,30 +731,27 @@ fn parse_metadata_value(flag: &str, raw: &str) -> Result<String, CliError> {
 /// Reads the five optional GUI-form metadata fields off a parsed option set.
 fn parse_metadata(options: &Options) -> Result<ModelMetadata, CliError> {
     Ok(ModelMetadata {
-        alias: match options.value("alias") {
-            Some(raw) => Some(parse_metadata_value("alias", raw)?),
-            None => None,
-        },
-        provider_kind: match options.value("provider-kind") {
-            Some(raw) => Some(parse_provider_kind(raw)?),
-            None => None,
-        },
-        vendor: match options.value("vendor") {
-            Some(raw) => Some(parse_metadata_value("vendor", raw)?),
-            None => None,
-        },
-        endpoint_mode: match options.value("endpoint-mode") {
-            Some(raw) => Some(parse_metadata_value("endpoint-mode", raw)?),
-            None => None,
-        },
-        vision_model_id: match options.value("vision-model-id") {
-            Some(raw) => Some(parse_metadata_value("vision-model-id", raw)?),
-            None => None,
-        },
+        alias: opt_flag(options, "alias", |raw: &str| {
+            parse_metadata_value("alias", raw)
+        })?,
+        provider_kind: opt_flag(options, "provider-kind", parse_provider_kind)?,
+        vendor: opt_flag(options, "vendor", |raw: &str| {
+            parse_metadata_value("vendor", raw)
+        })?,
+        endpoint_mode: opt_flag(options, "endpoint-mode", |raw: &str| {
+            parse_metadata_value("endpoint-mode", raw)
+        })?,
+        vision_model_id: opt_flag(options, "vision-model-id", |raw: &str| {
+            parse_metadata_value("vision-model-id", raw)
+        })?,
     })
 }
 
-fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
+/// The value flags `models add` and `models edit` accept — the eight
+/// identity/credential/sizing flags plus the five GUI-form metadata flags —
+/// so the two commands can never accept different spellings of the same
+/// field.
+fn model_value_flags() -> Vec<&'static str> {
     let mut value_flags = vec![
         "preset",
         "name",
@@ -763,11 +763,15 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         "reasoning-effort",
     ];
     value_flags.extend_from_slice(MODEL_METADATA_FLAGS);
+    value_flags
+}
+
+fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
     let options = parse_options(
         "models",
         "add",
         rest,
-        &value_flags,
+        &model_value_flags(),
         &["api-key-stdin", "set-active"],
     )?;
     ensure_no_positionals(&options, "models add")?;
@@ -776,18 +780,13 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
             "use only one of --api-key-env or --api-key-stdin",
         ));
     }
-    let context_window = match options.value("context-window") {
-        Some(raw) => Some(parse_positive_u32("--context-window", raw)?),
-        None => None,
-    };
-    let max_output = match options.value("max-output") {
-        Some(raw) => Some(parse_positive_u32("--max-output", raw)?),
-        None => None,
-    };
-    let reasoning_effort = match options.value("reasoning-effort") {
-        Some(raw) => Some(parse_reasoning_effort(raw)?),
-        None => None,
-    };
+    let context_window = opt_flag(&options, "context-window", |raw: &str| {
+        parse_positive_u32("--context-window", raw)
+    })?;
+    let max_output = opt_flag(&options, "max-output", |raw: &str| {
+        parse_positive_u32("--max-output", raw)
+    })?;
+    let reasoning_effort = opt_flag(&options, "reasoning-effort", parse_reasoning_effort)?;
     Ok(ModelsCommand::Add {
         preset: parse_preset(options.required("preset")?)?,
         name: options.required("name")?.trim().to_owned(),
@@ -828,23 +827,27 @@ fn parse_clearable<T>(
     }
 }
 
+/// Reads one single-`Option` value flag: absent -> `None`, present ->
+/// `Some(parse(raw)?)`. The non-clearable companion of [`parse_clearable`],
+/// shared by `models add`, `parse_metadata` and the four identity fields of
+/// `models edit`.
+fn opt_flag<T>(
+    options: &Options,
+    flag: &str,
+    parse: impl Fn(&str) -> Result<T, CliError>,
+) -> Result<Option<T>, CliError> {
+    match options.value(flag) {
+        Some(raw) => parse(raw).map(Some),
+        None => Ok(None),
+    }
+}
+
 fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
-    let mut value_flags = vec![
-        "preset",
-        "name",
-        "model",
-        "base-url",
-        "api-key-env",
-        "context-window",
-        "max-output",
-        "reasoning-effort",
-    ];
-    value_flags.extend_from_slice(MODEL_METADATA_FLAGS);
     let options = parse_options(
         "models",
         "edit",
         rest,
-        &value_flags,
+        &model_value_flags(),
         &["api-key-stdin", "clear-api-key", "set-active", "yes"],
     )?;
     let id = options.exactly_one_positional()?;
@@ -864,25 +867,19 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         ));
     }
     let changes = ModelEdit {
-        preset: match options.value("preset") {
-            Some(raw) => Some(parse_preset(raw)?),
-            None => None,
-        },
+        preset: opt_flag(&options, "preset", parse_preset)?,
         // The three identity fields are not clearable: a model with no name,
         // wire model or base_url is not a model. `--name none` therefore
         // stores the literal, like `models add` would.
-        name: match options.value("name") {
-            Some(raw) => Some(parse_required_text("name", raw)?),
-            None => None,
-        },
-        model: match options.value("model") {
-            Some(raw) => Some(parse_required_text("model", raw)?),
-            None => None,
-        },
-        base_url: match options.value("base-url") {
-            Some(raw) => Some(parse_required_text("base-url", raw)?),
-            None => None,
-        },
+        name: opt_flag(&options, "name", |raw: &str| {
+            parse_required_text("name", raw)
+        })?,
+        model: opt_flag(&options, "model", |raw: &str| {
+            parse_required_text("model", raw)
+        })?,
+        base_url: opt_flag(&options, "base-url", |raw: &str| {
+            parse_required_text("base-url", raw)
+        })?,
         context_window: parse_clearable(&options, "context-window", |raw: &str| {
             parse_positive_u32("--context-window", raw)
         })?,
@@ -917,7 +914,8 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
              --api-key-stdin, --clear-api-key or --set-active",
         ));
     }
-    // A model cannot be its own vision fallback: the routing lookup would
+    // A model cannot be its own vision fallback (the GUI form drops
+    // `visionModelId === id` before saving): the routing lookup would
     // resolve straight back to the model that could not see the image. This is
     // decidable from argv alone (both values are right here), so it is a usage
     // error rather than the Failed-class check `require_known_vision_model`
@@ -1442,22 +1440,22 @@ fn apply_model_edit(model: &mut SavedModel, changes: &ModelEdit) {
 ///   model's stored `credential_ref`: a never-configured model has no keyring
 ///   entry, so there is nothing to delete (the same gate `models remove` and
 ///   `search set --clear` apply).
-/// Round-50 review: the post-flock rollback below is single-homed in
-/// [`rollback_keyring_write`] — the two write lanes used to carry
-/// line-for-line copies of the module's subtlest invariant, where a
-/// one-line divergence would be invisible.
-/// Single home for the failed-write keyring rollback `edit` and
-/// `settings search set` share. The restore is narrowed to the value THIS
-/// call wrote (`wrote`) — a peer rotation landing in the post-flock window
-/// must not be rolled back to a stale secret, so if the reference no longer
-/// holds what this call wrote (or the check cannot be done) the keyring is
-/// left untouched. A pre-transaction read error means the old state is
-/// unknown, and unknown leaves the keyring alone rather than destroy a
-/// secret prefs may still reference (a stale orphaned entry is the benign
-/// direction). `previous` being `None` means this call wrote nothing and
-/// there is nothing to roll back. Residual (round-49 review): a peer write
-/// landing between this post-flock re-read and the restoring set/delete is
-/// the last unclosable sub-window without a keyring compare-and-swap.
+///   Round-50 review: the post-flock rollback below is single-homed in
+///   [`rollback_keyring_write`] — the two write lanes used to carry
+///   line-for-line copies of the module's subtlest invariant, where a
+///   one-line divergence would be invisible.
+///   Single home for the failed-write keyring rollback `edit` and
+///   `settings search set` share. The restore is narrowed to the value THIS
+///   call wrote (`wrote`) — a peer rotation landing in the post-flock window
+///   must not be rolled back to a stale secret, so if the reference no longer
+///   holds what this call wrote (or the check cannot be done) the keyring is
+///   left untouched. A pre-transaction read error means the old state is
+///   unknown, and unknown leaves the keyring alone rather than destroy a
+///   secret prefs may still reference (a stale orphaned entry is the benign
+///   direction). `previous` being `None` means this call wrote nothing and
+///   there is nothing to roll back. Residual (round-49 review): a peer write
+///   landing between this post-flock re-read and the restoring set/delete is
+///   the last unclosable sub-window without a keyring compare-and-swap.
 fn rollback_keyring_write<S: CredentialStore>(
     store: &S,
     reference: &CredentialReference,
@@ -1493,6 +1491,24 @@ fn rollback_keyring_write<S: CredentialStore>(
     }
 }
 
+/// The post-commit hook body shared by the three deferred-delete lanes
+/// (`models edit --clear-api-key`, `models remove`,
+/// `settings search set --clear`): consume the reference the transaction
+/// captured and delete its keyring entry, warning — without failing, since
+/// the prefs record is already committed and a leftover keyring entry is the
+/// benign direction — when the delete errors.
+fn delete_after_commit<S: CredentialStore>(
+    store: &S,
+    reference: Option<CredentialReference>,
+    warning: &str,
+) {
+    if let Some(reference) = reference
+        && let Err(error) = store.delete(&reference)
+    {
+        note!("pinvou: warning: {warning}: {}", error.user_message());
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn edit<S: CredentialStore>(
     store: &S,
@@ -1511,14 +1527,6 @@ fn edit<S: CredentialStore>(
     // runnable by a mistyped command.
     if clear_api_key {
         require_yes(yes)?;
-    }
-    // A model cannot be its own vision fallback (the GUI form drops
-    // `visionModelId === id` before saving); saying so beats storing a
-    // self-reference the app then ignores.
-    if matches!(&changes.vision_model_id, Some(Some(target)) if target == id) {
-        return Err(CliError::usage(
-            "--vision-model-id must name a different model",
-        ));
     }
     // The id is checked before any secret resolution: `--api-key-stdin`
     // BLOCKS on the pipe, and a mistyped id would consume the pasted key and
@@ -1620,15 +1628,14 @@ fn edit<S: CredentialStore>(
         // lock; a failed commit never reaches it, so the secret survives a
         // failed clear (the ordering the unit lane pins).
         || {
-            if let Some(reference) = deferred_delete.borrow_mut().take()
-                && let Err(error) = store.delete(&reference)
-            {
-                note!(
-                    "pinvou: warning: model {id} api key cleared from settings, but its keyring \
-                     entry could not be deleted: {}",
-                    error.user_message()
-                );
-            }
+            delete_after_commit(
+                store,
+                deferred_delete.borrow_mut().take(),
+                &format!(
+                    "model {id} api key cleared from settings, but its keyring \
+                     entry could not be deleted"
+                ),
+            );
         },
     );
     if let Err(error) = transaction {
@@ -1743,15 +1750,11 @@ fn remove<S: CredentialStore>(
             Ok(())
         },
         || {
-            if let Some(reference) = deferred_delete.borrow_mut().take() {
-                if let Err(error) = store.delete(&reference) {
-                    note!(
-                        "pinvou: warning: model {id} removed, but its keyring secret could not \
-                         be deleted: {}",
-                        error.user_message()
-                    );
-                }
-            }
+            delete_after_commit(
+                store,
+                deferred_delete.borrow_mut().take(),
+                &format!("model {id} removed, but its keyring secret could not be deleted"),
+            );
         },
     )
     .map_err(prefs_error)?;
@@ -1815,16 +1818,50 @@ fn resolve_saved_model_key_honest<S: CredentialStore>(
     model: &SavedModel,
 ) -> Result<Option<String>, String> {
     let resolved = resolve_saved_model_key(store, model)?;
-    if resolved.is_none()
-        && let Some(reference) = &model.credential_ref
-        && store.os_keyring_unreachable(reference)
-    {
-        return Err(format!(
-            "the OS keyring holding {} is unreachable from this process; the stored key cannot be revealed or verified here",
-            reference.account
-        ));
+    match &model.credential_ref {
+        Some(reference) => honest_reference_get(store, reference, resolved, || {
+            format!(
+                "the OS keyring holding {} is unreachable from this process; the stored key cannot be revealed or verified here",
+                reference.account
+            )
+        }),
+        None => Ok(resolved),
     }
-    Ok(resolved)
+}
+
+/// The honest-miss rule [`resolve_saved_model_key_honest`] owns and the
+/// search lane shares (round-50 review): under the file-fallback valves a
+/// `get` miss cannot distinguish "never stored" from "stored in an OS
+/// keyring this process cannot reach", so a miss on a reference the keyring
+/// holds but cannot serve must ERROR with the lane's own wording instead of
+/// answering a false `None` a script might act on. `value` is the lane's
+/// already-fetched (and, on the search lane, trimmed) `get` result — the
+/// rule fires only on a miss, and each lane supplies its exact
+/// unreachable-keyring message (the model key can still be revealed from a
+/// process that reaches the keyring; the search key only verified).
+fn honest_reference_get<S: CredentialStore>(
+    store: &S,
+    reference: &CredentialReference,
+    value: Option<String>,
+    unreachable_message: impl FnOnce() -> String,
+) -> Result<Option<String>, String> {
+    if value.is_none() && store.os_keyring_unreachable(reference) {
+        return Err(unreachable_message());
+    }
+    Ok(value)
+}
+
+/// The one `credential_unavailable` mapping every honest-resolver caller in
+/// this module applies: an unreachable OS keyring is a host failure (exit 1)
+/// naming the credential, never a silent "no stored key" the caller would
+/// then misreport or the endpoint would 401 into a misleading
+/// classification.
+fn resolve_honest_saved_key<S: CredentialStore>(
+    store: &S,
+    model: &SavedModel,
+) -> Result<Option<String>, CliError> {
+    resolve_saved_model_key_honest(store, model)
+        .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))
 }
 
 fn show<S: CredentialStore>(
@@ -1848,11 +1885,7 @@ fn show<S: CredentialStore>(
             // "not stored" here is three false statements in one block
             // (`credential_state: missing`, `api_key: null`,
             // `api_key_source: none`).
-            Some(
-                resolve_saved_model_key_honest(store, &model).map_err(|error| {
-                    CliError::failed(format!("credential_unavailable: {error}"))
-                })?,
-            )
+            Some(resolve_honest_saved_key(store, &model)?)
         }
     } else {
         None
@@ -1957,28 +1990,24 @@ struct ConnectionProbe {
     http_status: Option<u16>,
 }
 
-fn connection_result(
-    ok: bool,
-    code: &'static str,
-    detail: Option<String>,
-    http_status: Option<u16>,
-) -> ConnectionProbe {
-    ConnectionProbe {
-        ok,
-        code,
-        detail,
-        http_status,
-    }
-}
-
 fn connection_http_result(status: reqwest::StatusCode) -> ConnectionProbe {
     let status_code = status.as_u16();
     let detail = Some(format!("HTTP {status_code}"));
     if status.is_success() {
-        return connection_result(true, "ok", detail, Some(status_code));
+        return ConnectionProbe {
+            ok: true,
+            code: "ok",
+            detail,
+            http_status: Some(status_code),
+        };
     }
     if status.is_redirection() {
-        return connection_result(false, "redirect", detail, Some(status_code));
+        return ConnectionProbe {
+            ok: false,
+            code: "redirect",
+            detail,
+            http_status: Some(status_code),
+        };
     }
     let code = match status_code {
         400 | 422 => "request_invalid",
@@ -1992,7 +2021,12 @@ fn connection_http_result(status: reqwest::StatusCode) -> ConnectionProbe {
         500..=599 => "server_unavailable",
         _ => "http_error",
     };
-    connection_result(false, code, detail, Some(status_code))
+    ConnectionProbe {
+        ok: false,
+        code,
+        detail,
+        http_status: Some(status_code),
+    }
 }
 
 fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
@@ -2022,7 +2056,12 @@ fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
     } else {
         "network_error"
     };
-    connection_result(false, code, Some(raw), None)
+    ConnectionProbe {
+        ok: false,
+        code,
+        detail: Some(raw),
+        http_status: None,
+    }
 }
 
 /// `models test <id>`: GET `{base_url}/models` with the saved credential,
@@ -2050,12 +2089,12 @@ fn test_connection<S: CredentialStore>(
     let key = match resolve_saved_model_key_honest(store, &model) {
         Ok(key) => key.unwrap_or_default(),
         Err(error) => {
-            let probe = connection_result(
-                false,
-                "credential_unavailable",
-                Some(error.to_string()),
-                None,
-            );
+            let probe = ConnectionProbe {
+                ok: false,
+                code: "credential_unavailable",
+                detail: Some(error.to_string()),
+                http_status: None,
+            };
             return Ok(render_probe_outcome(&probe, output));
         }
     };
@@ -2091,11 +2130,21 @@ fn run_connection_probe(base_url: &str, key: &str) -> ConnectionProbe {
         match reqwest::Url::parse(&pinvou3_lib::model_probe::models_probe_url(base_url)) {
             Ok(url) => url,
             Err(error) => {
-                return connection_result(false, "invalid_url", Some(error.to_string()), None);
+                return ConnectionProbe {
+                    ok: false,
+                    code: "invalid_url",
+                    detail: Some(error.to_string()),
+                    http_status: None,
+                };
             }
         };
     let Some(client) = connection_client() else {
-        return connection_result(false, "client_error", None, None);
+        return ConnectionProbe {
+            ok: false,
+            code: "client_error",
+            detail: None,
+            http_status: None,
+        };
     };
     match connection_probe_request(client, &parsed_url, base_url, key).send() {
         Ok(response) => connection_http_result(response.status()),
@@ -2125,7 +2174,7 @@ fn connection_probe_request(
 ) -> reqwest::blocking::RequestBuilder {
     let mut request = client.get(parsed_url.clone());
     if !key.trim().is_empty() {
-        request = if pinvou3_lib::model_probe::is_anthropic_api_url(&parsed_url) {
+        request = if pinvou3_lib::model_probe::is_anthropic_api_url(parsed_url) {
             request
                 .header("x-api-key", key.trim())
                 .header("anthropic-version", "2023-06-01")
@@ -2275,20 +2324,42 @@ fn apply_bearer(
 /// same bounded-IO rule every other CLI read follows.
 const PROBE_BODY_CAP_BYTES: usize = 4 * 1024 * 1024;
 
+/// The outcome of one capped body read: the bytes, or WHICH bounded-IO rule
+/// failed — the search lane reports a read error (`response_unreadable`)
+/// differently from an over-cap body (`response_too_large`), while the JSON
+/// reader and the Bing shape check degrade both to "no usable body".
+enum BodyRead {
+    Bytes(Vec<u8>),
+    Unreadable,
+    TooLarge,
+}
+
+/// Reads one probe response body under [`PROBE_BODY_CAP_BYTES`] — the
+/// bounded-IO rule every network read in this module follows: the timeout
+/// bounds time, but a hostile endpoint can stream within it.
+fn read_body_capped(response: reqwest::blocking::Response) -> BodyRead {
+    let mut bytes = Vec::new();
+    if response
+        .take(PROBE_BODY_CAP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return BodyRead::Unreadable;
+    }
+    if bytes.len() > PROBE_BODY_CAP_BYTES {
+        return BodyRead::TooLarge;
+    }
+    BodyRead::Bytes(bytes)
+}
+
 /// Reads and parses a probe response body under [`PROBE_BODY_CAP_BYTES`];
 /// an over-cap or non-JSON body degrades to `None` like any other probe
 /// failure.
 fn read_json_capped(response: reqwest::blocking::Response) -> Option<serde_json::Value> {
-    use std::io::Read as _;
-    let mut bytes = Vec::new();
-    response
-        .take(PROBE_BODY_CAP_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() > PROBE_BODY_CAP_BYTES {
-        return None;
+    match read_body_capped(response) {
+        BodyRead::Bytes(bytes) => serde_json::from_slice(&bytes).ok(),
+        BodyRead::Unreadable | BodyRead::TooLarge => None,
     }
-    serde_json::from_slice(&bytes).ok()
 }
 
 fn get_json(url: &str, bearer: Option<&str>) -> Option<serde_json::Value> {
@@ -2300,38 +2371,36 @@ fn get_json(url: &str, bearer: Option<&str>) -> Option<serde_json::Value> {
     read_json_capped(response)
 }
 
-fn probe_ollama_tags(base_url: &str, bearer: Option<&str>) -> bool {
-    get_json(&format!("{}/api/tags", strip_v1_suffix(base_url)), bearer).is_some_and(|value| {
+/// Shared shape of the Ollama and LM Studio signature probes: `GET
+/// {base}{path}` (after the `/v1` strip) must answer with a JSON array under
+/// `key` holding at least one entry whose `field` is a non-blank string.
+fn probe_non_empty_str_field(
+    base_url: &str,
+    bearer: Option<&str>,
+    path: &str,
+    key: &str,
+    field: &str,
+) -> bool {
+    get_json(&format!("{}{path}", strip_v1_suffix(base_url)), bearer).is_some_and(|value| {
         value
-            .get("models")
+            .get(key)
             .and_then(serde_json::Value::as_array)
             .is_some_and(|models| {
                 models.iter().any(|item| {
-                    item.get("name")
+                    item.get(field)
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|name| !name.trim().is_empty())
+                        .is_some_and(|value| !value.trim().is_empty())
                 })
             })
     })
 }
 
+fn probe_ollama_tags(base_url: &str, bearer: Option<&str>) -> bool {
+    probe_non_empty_str_field(base_url, bearer, "/api/tags", "models", "name")
+}
+
 fn probe_lmstudio_v0(base_url: &str, bearer: Option<&str>) -> bool {
-    get_json(
-        &format!("{}/api/v0/models", strip_v1_suffix(base_url)),
-        bearer,
-    )
-    .is_some_and(|value| {
-        value
-            .get("data")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|models| {
-                models.iter().any(|item| {
-                    item.get("id")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|id| !id.trim().is_empty())
-                })
-            })
-    })
+    probe_non_empty_str_field(base_url, bearer, "/api/v0/models", "data", "id")
 }
 
 fn probe_koboldcpp(base_url: &str, bearer: Option<&str>) -> bool {
@@ -2521,6 +2590,22 @@ struct ProbeCandidateHits {
     panicked: bool,
 }
 
+/// Joins one probe thread from [`probe_candidates`]'s fan-out: `Ok` yields
+/// the candidate's hit; a panicked thread degrades to "no hit" (the
+/// candidate type's `Default`) and records the panic, so the round stays
+/// best-effort and an all-miss round with a dead probe can still report
+/// `probe_failed` instead of `generic`. Only the identical join arms are
+/// shared — the spawn topology is untouched.
+fn join_probe<T: Default>(handle: std::thread::ScopedJoinHandle<'_, T>, panicked: &mut bool) -> T {
+    match handle.join() {
+        Ok(hit) => hit,
+        Err(_) => {
+            *panicked = true;
+            T::default()
+        }
+    }
+}
+
 /// Issues all seven candidate probes CONCURRENTLY, the way the GUI issues
 /// them with `tokio::join!` (`core/model_endpoint.rs`).
 ///
@@ -2553,55 +2638,13 @@ fn probe_candidates(base_url: &str, bearer: Option<&str>) -> ProbeCandidateHits 
         // all-miss round with a dead probe reports `probe_failed`, not
         // `generic`.
         let mut panicked = false;
-        let docker_mgmt_shape = match docker.join() {
-            Ok(hit) => hit,
-            Err(_) => {
-                panicked = true;
-                false
-            }
-        };
-        let ollama = match ollama.join() {
-            Ok(hit) => hit,
-            Err(_) => {
-                panicked = true;
-                false
-            }
-        };
-        let lmstudio_v0 = match lmstudio.join() {
-            Ok(hit) => hit,
-            Err(_) => {
-                panicked = true;
-                false
-            }
-        };
-        let koboldcpp = match koboldcpp.join() {
-            Ok(hit) => hit,
-            Err(_) => {
-                panicked = true;
-                false
-            }
-        };
-        let llamacpp = match llamacpp.join() {
-            Ok(hit) => hit,
-            Err(_) => {
-                panicked = true;
-                false
-            }
-        };
-        let sglang = match sglang.join() {
-            Ok(hit) => hit,
-            Err(_) => {
-                panicked = true;
-                false
-            }
-        };
-        let v1_models = match v1_models.join() {
-            Ok(probe) => probe,
-            Err(_) => {
-                panicked = true;
-                V1ModelsProbe::default()
-            }
-        };
+        let docker_mgmt_shape = join_probe(docker, &mut panicked);
+        let ollama = join_probe(ollama, &mut panicked);
+        let lmstudio_v0 = join_probe(lmstudio, &mut panicked);
+        let koboldcpp = join_probe(koboldcpp, &mut panicked);
+        let llamacpp = join_probe(llamacpp, &mut panicked);
+        let sglang = join_probe(sglang, &mut panicked);
+        let v1_models = join_probe(v1_models, &mut panicked);
         ProbeCandidateHits {
             docker_mgmt_shape,
             ollama,
@@ -2726,7 +2769,7 @@ fn probe_local<S: CredentialStore>(
                     // value use: the stored base_url is user-supplied and a
                     // control character here would forge the stderr message
                     // (round-44 review).
-                    crate::support::collapse_control_characters(&model.base_url)
+                    collapse_control_characters(&model.base_url)
                 )));
             }
             Some(model)
@@ -2780,9 +2823,7 @@ fn probe_local<S: CredentialStore>(
             // may well exist where this process cannot read it).
             let prefs = plain_prefs();
             let model = find_model(&prefs, id)?;
-            let key = resolve_saved_model_key_honest(store, &model)
-                .map_err(|error| CliError::failed(format!("credential_unavailable: {error}")))?
-                .filter(|key| !key.trim().is_empty());
+            let key = resolve_honest_saved_key(store, &model)?.filter(|key| !key.trim().is_empty());
             if key.is_none() {
                 return Err(CliError::failed(format!(
                     "probe-local: model {id} has no stored api key to present"
@@ -2812,11 +2853,7 @@ fn probe_local<S: CredentialStore>(
                     // keyring from degrading a miss into an anonymous probe
                     // (the endpoint's 401 would misclassify it) — it fails
                     // as `credential_unavailable` like every other lane.
-                    resolve_saved_model_key_honest(store, &model)
-                        .map_err(|error| {
-                            CliError::failed(format!("credential_unavailable: {error}"))
-                        })?
-                        .filter(|key| !key.trim().is_empty())
+                    resolve_honest_saved_key(store, &model)?.filter(|key| !key.trim().is_empty())
                 }
             };
             (model.base_url, bearer)
@@ -2829,48 +2866,56 @@ fn probe_local<S: CredentialStore>(
     // characters before the loopback gate, so a stored
     // `http://127.0.0.1:8000/\nkind: fake` would otherwise forge human output
     // lines. JSON keeps the verbatim value (round-39 review).
-    let human_url = crate::support::collapse_control_characters(&target);
+    let human_url = collapse_control_characters(&target);
     // `unknown_authenticated` is not a classification, it is the absence of
     // one: the endpoint answered every signature probe with 401/403. Saying
     // so with exit 1 keeps a script from reading a kind the probe never
     // earned, and the detail names the flag that would let the next run
     // actually classify it.
-    if kind == LOCAL_KIND_PROBE_FAILED {
-        let detail = "a local-server probe failed unexpectedly, so the round was \
-             incomplete; rerun the probe (if it repeats, the server's behavior on one \
-             of the probed endpoints is crashing the probe)";
-        let text = render(
-            output,
-            format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
-            &serde_json::json!({
-                "url": target,
-                "kind": kind,
-                "detail": detail,
-            }),
-        );
-        return Ok(CliOutcome {
-            exit_code: ExitCode::Failed,
-            stdout: text,
-        });
-    }
-    if kind == LOCAL_KIND_UNKNOWN_AUTHENTICATED {
-        let detail = if authenticated {
-            "the endpoint rejected the credential that was presented (401/403), so no server \
-             signature could be read"
-        } else {
-            "the endpoint requires authentication (401/403); rerun with --model <id> or \
-             --api-key-env <var> so the probe can present a credential"
+    // The two failure sentinels share one rendering — the kind, the verbatim
+    // url in JSON / collapsed url in human, and a per-lane detail — and exit
+    // 1 so a script never reads a kind the probe did not earn. Only the
+    // unknown-authenticated lane carries the `authenticated` fact; the key
+    // stays absent from the probe-failed row.
+    if kind == LOCAL_KIND_PROBE_FAILED || kind == LOCAL_KIND_UNKNOWN_AUTHENTICATED {
+        let authenticated_fact =
+            (kind == LOCAL_KIND_UNKNOWN_AUTHENTICATED).then_some(authenticated);
+        let detail = match authenticated_fact {
+            None => {
+                "a local-server probe failed unexpectedly, so the round was \
+                 incomplete; rerun the probe (if it repeats, the server's behavior on one \
+                 of the probed endpoints is crashing the probe)"
+            }
+            Some(true) => {
+                "the endpoint rejected the credential that was presented (401/403), \
+                 so no server signature could be read"
+            }
+            Some(false) => {
+                "the endpoint requires authentication (401/403); rerun with \
+                 --model <id> or --api-key-env <var> so the probe can present a credential"
+            }
         };
-        let text = render(
-            output,
-            format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
-            &serde_json::json!({
-                "url": target,
-                "kind": kind,
-                "authenticated": authenticated,
-                "detail": detail,
-            }),
-        );
+        let text = match authenticated_fact {
+            Some(authenticated_fact) => render(
+                output,
+                format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
+                &serde_json::json!({
+                    "url": target,
+                    "kind": kind,
+                    "authenticated": authenticated_fact,
+                    "detail": detail,
+                }),
+            ),
+            None => render(
+                output,
+                format!("url: {human_url}\nkind: {kind}\ndetail: {detail}"),
+                &serde_json::json!({
+                    "url": target,
+                    "kind": kind,
+                    "detail": detail,
+                }),
+            ),
+        };
         return Ok(CliOutcome {
             exit_code: ExitCode::Failed,
             stdout: text,
@@ -3003,11 +3048,7 @@ fn settings_get<S: CredentialStore>(
             serde_json::json!(prefs.pet.enabled),
         ),
     };
-    let key_name = SettingsKey::ALL
-        .iter()
-        .find(|(_, candidate)| *candidate == key)
-        .map(|(name, _)| *name)
-        .unwrap_or_default();
+    let key_name = key.name();
     let text = render(
         output,
         format!("{key_name} = {human_value}"),
@@ -3101,11 +3142,7 @@ fn settings_set(
         }),
         _ => None,
     };
-    let key_name = SettingsKey::ALL
-        .iter()
-        .find(|(_, candidate)| *candidate == key)
-        .map(|(name, _)| *name)
-        .unwrap_or_default();
+    let key_name = key.name();
     let human = match &note {
         Some(note) => format!("{key_name} updated\nnote: {note}"),
         None => format!("{key_name} updated"),
@@ -3274,13 +3311,11 @@ fn search_set<S: CredentialStore>(
                     .or_default()
                     .mark_configured(reference);
             }
-            if clear {
-                if let Some(credential) = prefs.search.credentials.get_mut(&provider) {
-                    let reference = credential.credential_ref.clone();
-                    cleared_stored_reference.set(reference.is_some());
-                    *deferred_delete.borrow_mut() = reference;
-                    credential.mark_missing();
-                }
+            if clear && let Some(credential) = prefs.search.credentials.get_mut(&provider) {
+                let reference = credential.credential_ref.clone();
+                cleared_stored_reference.set(reference.is_some());
+                *deferred_delete.borrow_mut() = reference;
+                credential.mark_missing();
             }
             Ok(())
         },
@@ -3293,15 +3328,11 @@ fn search_set<S: CredentialStore>(
         // instead of reporting a failure whose only remedy (rerun) has
         // nothing left to do.
         || {
-            if let Some(reference) = deferred_delete.borrow_mut().take() {
-                if let Err(error) = store.delete(&reference) {
-                    note!(
-                        "pinvou: warning: credential cleared from settings, but the keyring entry \
-                         could not be deleted: {}",
-                        error.user_message()
-                    );
-                }
-            }
+            delete_after_commit(
+                store,
+                deferred_delete.borrow_mut().take(),
+                "credential cleared from settings, but the keyring entry could not be deleted",
+            );
         },
     );
     // The transaction's own return value is the post-save prefs, so the
@@ -3382,7 +3413,7 @@ fn search_set<S: CredentialStore>(
 ///
 /// The four API lanes are built from the request shapes the product's own
 /// search tool sends (`CodeWhale/crates/tui/src/tools/web_search.rs`), not
-/// from an invented API contract — see [`search_api_request`].
+/// from an invented API contract — see [`search_api_request_at`].
 fn search_test<S: CredentialStore>(
     store: &S,
     provider: SearchProvider,
@@ -3458,6 +3489,35 @@ struct SearchProbe {
     verified: &'static str,
 }
 
+impl SearchProbe {
+    /// Adapts one answered request's `models test`-style connection
+    /// classification to the search lane: the row copies the connection
+    /// probe's `ok`/`code`/`detail` verbatim (the same status vocabulary, so
+    /// one exit contract covers both commands) and records that a request
+    /// WAS attempted and answered.
+    fn from_live(probe: ConnectionProbe) -> Self {
+        Self {
+            ok: probe.ok,
+            code: probe.code,
+            detail: probe.detail,
+            verified: VERIFIED_LIVE_PROBE,
+        }
+    }
+
+    /// The row for a provider that has no api-key request shape at all.
+    fn unsupported(provider: SearchProvider) -> Self {
+        Self {
+            ok: false,
+            code: "unsupported_provider",
+            detail: Some(format!(
+                "provider {} has no api-key search request",
+                provider.as_str()
+            )),
+            verified: VERIFIED_NOTHING,
+        }
+    }
+}
+
 /// The search endpoints the product actually calls, copied from
 /// `CodeWhale/crates/tui/src/tools/web_search.rs` (`TAVILY_ENDPOINT`,
 /// `BOCHA_ENDPOINT`, `BAIDU_ENDPOINT`) and from `run_metaso_search`'s
@@ -3501,21 +3561,11 @@ fn search_api_endpoint(provider: SearchProvider) -> Option<&'static str> {
 /// `CodeWhale/crates/tui/src/tools/web_search.rs`: Tavily carries the key in
 /// the JSON body (`api_key`), Bocha, Metaso and Baidu carry it as
 /// `Authorization: Bearer <key>`. Bing has no API-key form and never reaches
-/// this function. Test-only since the round-18 merge: the live probe lanes
-/// build through the parameterized `_at` forms; this fixed-endpoint wrapper
-/// survives for the unit tests that pin the per-provider shapes.
-#[cfg(test)]
-fn search_api_request(
-    client: &reqwest::blocking::Client,
-    provider: SearchProvider,
-    key: &str,
-) -> Option<reqwest::blocking::RequestBuilder> {
-    search_api_request_at(client, provider, key, search_api_endpoint(provider)?)
-}
-
-/// The endpoint-parameterized form of [`search_api_request`], used by the
-/// loopback unit tests (via [`run_search_api_probe_at`]) to drive the same
-/// request lane without network access.
+/// this function.
+///
+/// The endpoint is a parameter (rather than read from the pinned consts via
+/// [`search_api_endpoint`]) so the loopback unit tests in this module can
+/// drive the same request lane without network access.
 fn search_api_request_at(
     client: &reqwest::blocking::Client,
     provider: SearchProvider,
@@ -3566,15 +3616,7 @@ fn search_api_request_at(
 fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
     match search_api_endpoint(provider) {
         // Bing is routed to `run_bing_probe` before this function is reached.
-        None => SearchProbe {
-            ok: false,
-            code: "unsupported_provider",
-            detail: Some(format!(
-                "provider {} has no api-key search request",
-                provider.as_str()
-            )),
-            verified: VERIFIED_NOTHING,
-        },
+        None => SearchProbe::unsupported(provider),
         Some(endpoint) => run_search_api_probe_at(provider, key, endpoint),
     }
 }
@@ -3596,28 +3638,12 @@ fn run_search_api_probe_at(provider: SearchProvider, key: &str, endpoint: &str) 
             verified: VERIFIED_NOTHING,
         };
     };
-    let Some(request) = search_api_request_at(&client, provider, key, endpoint) else {
-        return SearchProbe {
-            ok: false,
-            code: "unsupported_provider",
-            detail: Some(format!(
-                "provider {} has no api-key search request",
-                provider.as_str()
-            )),
-            verified: VERIFIED_NOTHING,
-        };
+    let Some(request) = search_api_request_at(client, provider, key, endpoint) else {
+        return SearchProbe::unsupported(provider);
     };
     match request.send() {
         Ok(response) => search_response_probe(provider, response),
-        Err(error) => {
-            let probe = connection_error_result(&error);
-            SearchProbe {
-                ok: false,
-                code: probe.code,
-                detail: probe.detail,
-                verified: VERIFIED_LIVE_PROBE,
-            }
-        }
+        Err(error) => SearchProbe::from_live(connection_error_result(&error)),
     }
 }
 
@@ -3633,50 +3659,41 @@ fn search_response_probe(
     let status = response.status();
     let probe = connection_http_result(status);
     if !probe.ok {
-        return SearchProbe {
-            ok: probe.ok,
-            code: probe.code,
-            detail: probe.detail,
-            verified: VERIFIED_LIVE_PROBE,
-        };
+        return SearchProbe::from_live(probe);
     }
     // The bounded-IO rule every other probe read follows (`read_json_capped`):
     // the timeout bounds time, but a hostile endpoint can stream within it, so
     // the body is read through [`PROBE_BODY_CAP_BYTES`] instead of an
     // unbounded `text()`.
-    use std::io::Read as _;
-    let mut bytes = Vec::new();
-    let body = if response
-        .take(PROBE_BODY_CAP_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .is_err()
-    {
+    let body = match read_body_capped(response) {
         // The status says success but the body never arrived: the probe
         // learned the endpoint is reachable, not that it answered cleanly.
-        return SearchProbe {
-            ok: false,
-            code: "response_unreadable",
-            detail: Some(format!(
-                "failed to read the {} response body",
-                provider.as_str()
-            )),
-            verified: VERIFIED_LIVE_PROBE,
-        };
-    } else if bytes.len() > PROBE_BODY_CAP_BYTES {
+        BodyRead::Unreadable => {
+            return SearchProbe {
+                ok: false,
+                code: "response_unreadable",
+                detail: Some(format!(
+                    "failed to read the {} response body",
+                    provider.as_str()
+                )),
+                verified: VERIFIED_LIVE_PROBE,
+            };
+        }
         // Over-cap is its own honest failure, not a parse of the truncation.
-        return SearchProbe {
-            ok: false,
-            code: "response_too_large",
-            detail: Some(format!(
-                "the {} response body exceeded the probe cap ({PROBE_BODY_CAP_BYTES} bytes)",
-                provider.as_str()
-            )),
-            verified: VERIFIED_LIVE_PROBE,
-        };
-    } else {
+        BodyRead::TooLarge => {
+            return SearchProbe {
+                ok: false,
+                code: "response_too_large",
+                detail: Some(format!(
+                    "the {} response body exceeded the probe cap ({PROBE_BODY_CAP_BYTES} bytes)",
+                    provider.as_str()
+                )),
+                verified: VERIFIED_LIVE_PROBE,
+            };
+        }
         // Same decoding `text()` applies: invalid UTF-8 degrades to the
         // replacement character instead of failing the probe.
-        String::from_utf8_lossy(&bytes).into_owned()
+        BodyRead::Bytes(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
     };
     match search_body_error(provider, &body) {
         Some((code, detail)) => SearchProbe {
@@ -3685,12 +3702,7 @@ fn search_response_probe(
             detail: Some(detail),
             verified: VERIFIED_LIVE_PROBE,
         },
-        None => SearchProbe {
-            ok: probe.ok,
-            code: probe.code,
-            detail: probe.detail,
-            verified: VERIFIED_LIVE_PROBE,
-        },
+        None => SearchProbe::from_live(probe),
     }
 }
 
@@ -3828,15 +3840,11 @@ fn run_bing_probe() -> SearchProbe {
             // hijacked endpoint must not stream unbounded into memory before
             // the shape check runs. Over-cap degrades to unshaped, same as a
             // read failure.
-            use std::io::Read as _;
-            let mut bytes = Vec::new();
             let body_is_result_shaped = status.is_success()
-                && response
-                    .take(PROBE_BODY_CAP_BYTES as u64 + 1)
-                    .read_to_end(&mut bytes)
-                    .is_ok()
-                && bytes.len() <= PROBE_BODY_CAP_BYTES
-                && body_carries_result_element(&bytes);
+                && match read_body_capped(response) {
+                    BodyRead::Bytes(bytes) => body_carries_result_element(&bytes),
+                    BodyRead::Unreadable | BodyRead::TooLarge => false,
+                };
             if body_is_result_shaped {
                 SearchProbe {
                     ok: true,
@@ -3853,15 +3861,7 @@ fn run_bing_probe() -> SearchProbe {
                 }
             }
         }
-        Err(error) => {
-            let probe = connection_error_result(&error);
-            SearchProbe {
-                ok: false,
-                code: probe.code,
-                detail: probe.detail,
-                verified: VERIFIED_LIVE_PROBE,
-            }
-        }
+        Err(error) => SearchProbe::from_live(connection_error_result(&error)),
     }
 }
 
@@ -3942,13 +3942,12 @@ fn resolve_search_key<S: CredentialStore>(
     // (this lane's own suggested repair, `settings search set`, overwrites
     // the same deterministic reference). The caller maps this error to the
     // `credential_unavailable` probe row like every other lane.
-    if value.is_none() && store.os_keyring_unreachable(&reference) {
-        return Err(format!(
+    honest_reference_get(store, &reference, value, || {
+        format!(
             "the OS keyring holding the {} search key is unreachable from this process; the stored key cannot be verified here",
             provider.as_str()
-        ));
-    }
-    Ok(value)
+        )
+    })
 }
 
 #[cfg(test)]
@@ -4142,10 +4141,7 @@ mod tests {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
-                loop {
-                    let Ok(n) = stream.read(&mut chunk) else {
-                        break;
-                    };
+                while let Ok(n) = stream.read(&mut chunk) {
                     if n == 0 {
                         break;
                     }
@@ -4623,18 +4619,24 @@ mod tests {
         let client = reqwest::blocking::Client::builder()
             .build()
             .expect("client builds");
-        // Bing has no api-key form; it is routed to the scrape probe instead.
-        assert!(search_api_request(&client, SearchProvider::Bing, "k").is_none());
+        // Bing has no api-key form (no documented endpoint); it is routed to
+        // the scrape probe instead.
+        assert!(search_api_endpoint(SearchProvider::Bing).is_none());
         for (provider, host) in [
             (SearchProvider::Tavily, "api.tavily.com"),
             (SearchProvider::Bocha, "api.bochaai.com"),
             (SearchProvider::Metaso, "metaso.cn"),
             (SearchProvider::Baidu, "qianfan.baidubce.com"),
         ] {
-            let request = search_api_request(&client, provider, "probe-key")
-                .unwrap_or_else(|| panic!("{} must build a request", provider.as_str()))
-                .build()
-                .unwrap_or_else(|_| panic!("{} request must build", provider.as_str()));
+            let request = search_api_request_at(
+                &client,
+                provider,
+                "probe-key",
+                search_api_endpoint(provider).expect("documented endpoint"),
+            )
+            .unwrap_or_else(|| panic!("{} must build a request", provider.as_str()))
+            .build()
+            .unwrap_or_else(|_| panic!("{} request must build", provider.as_str()));
             assert_eq!(request.method(), reqwest::Method::POST);
             assert_eq!(
                 request.url().host_str(),

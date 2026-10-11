@@ -30,19 +30,19 @@ pub enum MonitorCommand {
 const USAGE: &str = "usage: pinvou monitor <status|snapshot>";
 
 pub fn parse(values: &[String]) -> Result<MonitorCommand, CliError> {
-    let subcommand = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
-    match subcommand.as_str() {
-        "status" => {
+    let subcommand: &str = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
+    match subcommand {
+        "status" | "snapshot" => {
             if values.len() > 2 {
-                return Err(CliError::usage("monitor status accepts no options"));
+                return Err(CliError::usage(format!(
+                    "monitor {subcommand} accepts no options"
+                )));
             }
-            Ok(MonitorCommand::Status)
-        }
-        "snapshot" => {
-            if values.len() > 2 {
-                return Err(CliError::usage("monitor snapshot accepts no options"));
+            if subcommand == "status" {
+                Ok(MonitorCommand::Status)
+            } else {
+                Ok(MonitorCommand::Snapshot)
             }
-            Ok(MonitorCommand::Snapshot)
         }
         _ => Err(CliError::usage(USAGE)),
     }
@@ -54,6 +54,18 @@ pub fn execute(command: MonitorCommand, output: OutputMode) -> Result<CliOutcome
         MonitorCommand::Status => status(output),
         MonitorCommand::Snapshot => snapshot(output),
     }
+}
+
+/// Wall-clock milliseconds since the unix epoch, `None` on a pre-epoch
+/// (unreadable) clock. Both lanes render the `None` as `null` / `-`: zero is
+/// a well-formed timestamp (1970-01-01T00:00:00Z), so a broken host clock
+/// must never be published as a synthetic epoch reading a freshness check
+/// would take for real.
+fn now_unix_ms() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_millis() as u64)
 }
 
 /// Mirror of `get_backend_status`: probe the active model only and derive the
@@ -68,10 +80,7 @@ fn status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // `last_check_ms` could not tell a broken host clock from a real reading.
     // The unknown case is reported as `null` / `-`, like every other
     // measurement this command could not take.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|elapsed| elapsed.as_millis() as u64);
+    let now_ms = now_unix_ms();
     // The host's work closure must resolve to `anyhow::Result`; the plain
     // probe value is lifted with `Ok(...)` so this module never names the
     // host's feature-gated error type.
@@ -200,10 +209,7 @@ fn snapshot(output: OutputMode) -> Result<CliOutcome, CliError> {
     // well-formed timestamp (1970-01-01), so an unreadable host clock must
     // surface as null/`-`, not as a fake epoch reading a freshness check
     // cannot tell apart from a real one.
-    let generated_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|elapsed| elapsed.as_millis() as u64);
+    let generated_at_ms = now_unix_ms();
     let (human, value) = snapshot_payload(&snapshot, generated_at_ms)?;
     Ok(success(render(output, human, &value)))
 }
@@ -374,9 +380,13 @@ fn snapshot_payload(
         })?;
         *slot = serde_json::Value::Null;
     }
+    // `value` was constructed as a `Value::Object` right above (the ordered
+    // rebuild against [`SNAPSHOT_KEYS`]), so this cannot fail — the error
+    // arm it replaced was unreachable and carried a message no input could
+    // ever produce.
     let object = value
         .as_object_mut()
-        .ok_or_else(|| CliError::failed("monitor snapshot: the sample is not a JSON object"))?;
+        .expect("monitor snapshot: payload was just constructed as a JSON object");
     object.insert(
         "not_applicable_headless".to_owned(),
         serde_json::Value::Array(

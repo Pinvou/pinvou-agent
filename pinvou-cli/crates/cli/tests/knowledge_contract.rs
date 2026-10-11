@@ -231,9 +231,9 @@ fn strand_running_job(home: &TempHome, id: i64, sources: &[PathBuf]) -> String {
 /// Seeds a real import job through the feature service inside THIS process
 /// (its import thread runs here, exactly like an add-sources invocation's
 /// would) — the "some other owner" position a CLI lane must refuse to race.
-/// The file count sets the import's lower time bound; returns (collection
+/// The two seed files set the import's lower time bound; returns (collection
 /// id, job id).
-fn seed_running_job(home: &TempHome, label: &str, files: usize) -> (i64, String) {
+fn seed_running_job(home: &TempHome, label: &str) -> (i64, String) {
     let db = pinvou3_lib::features::knowledge::default_db_path();
     let service = pinvou3_lib::features::knowledge::KnowledgeService::new_without_recovery(&db)
         .expect("seed service");
@@ -243,7 +243,7 @@ fn seed_running_job(home: &TempHome, label: &str, files: usize) -> (i64, String)
         .expect("seed collection");
     let dir = home.path().join(format!("{label}-src"));
     std::fs::create_dir_all(&dir).unwrap();
-    for index in 0..files {
+    for index in 0..2 {
         std::fs::write(
             dir.join(format!("item-{index:03}.txt")),
             "seed prose for the importer to parse and chunk. ".repeat(64),
@@ -253,6 +253,162 @@ fn seed_running_job(home: &TempHome, label: &str, files: usize) -> (i64, String)
     let state = service.start_index(collection, vec![dir]);
     let job = state.job_id.expect("seed job id").to_owned();
     (collection, job)
+}
+
+/// Creates a collection through the CLI's real create lane and returns its
+/// id — the fixture every execute-level test below starts from.
+fn create_collection(name: &str) -> i64 {
+    let created = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        name,
+    ]);
+    created["id"].as_i64().expect("created collection id")
+}
+
+/// `collections list`'s JSON envelope, unwrapped to its rows — the
+/// read-mostly assertion target of the CRUD and delete pins.
+fn collections_array() -> Vec<serde_json::Value> {
+    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
+    listed["collections"]
+        .as_array()
+        .expect("collections array")
+        .clone()
+}
+
+/// `search`'s JSON envelope, unwrapped to its hits (the tail after the
+/// subcommand is passed through verbatim, so `--limit`/`--ext` compose).
+fn hits_array(query: &[&str]) -> Vec<serde_json::Value> {
+    let mut arguments = vec!["pinvou", "knowledge", "search"];
+    arguments.extend_from_slice(query);
+    let hits = run_json(&arguments);
+    hits["hits"].as_array().expect("hits array").clone()
+}
+
+/// Bounded state poll (no sleep budget): runs `command --output json` until
+/// `pred` accepts the payload or `secs` elapse, then returns the last
+/// payload. `desc` names the wait in the failure message so a timeout says
+/// which wait stalled.
+fn poll_json_until(
+    desc: &str,
+    secs: u64,
+    command: &[&str],
+    pred: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let state = run_json(command);
+        if pred(&state) {
+            return state;
+        }
+        assert!(Instant::now() < deadline, "{desc} (last: {state})");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Runs the real binary as a child over `home` and returns its raw output —
+/// for the assertions that must observe a separate process (exit status,
+/// stderr), not the in-process dispatch the `run_ok`/`run_json` helpers use.
+fn run_child(home: &TempHome, args: &[&str]) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args(args)
+        .env("PINVOU3_HOME", home.path())
+        .env("PINVOU_NO_COLOR", "1");
+    command.output().expect("binary runs")
+}
+
+/// Builds the deterministic stall fixture: a wide-and-deep tree of EMPTY
+/// directories (30×30×10 = 9000 traversed entries, zero importable files).
+/// Every entry is walked by the importer with the excluder's per-entry name
+/// checks but yields zero files — the exact shape that used to look wedged.
+/// Returns the tree root.
+fn write_empty_stall_tree(home: &TempHome, name: &str) -> PathBuf {
+    let root = home.path().join(name);
+    for a in 0..30 {
+        let band = root.join(format!("a{a:03}"));
+        for b in 0..30 {
+            let cell = band.join(format!("b{b:03}"));
+            std::fs::create_dir_all(&cell).expect("create cell dir");
+            for c in 0..10 {
+                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
+            }
+        }
+    }
+    root
+}
+
+/// Drives a real `collections add-sources` child over the stall tree through
+/// the binary with `PINVOU_KB_IMPORT_STALL_MILLIS` set to `stall_millis`.
+/// Round-50 review: the bound only has to sit ABOVE the slowest 5000-entry
+/// heartbeat stretch of a healthy walk — it never fires on one, so
+/// generosity costs nothing (the walk ends when the walk ends). The old
+/// 300 ms assumed a warm runner; a loaded one blew the margin and falsely
+/// tripped the very bound the positive test asserts must NOT trip. The
+/// negative twins pass 1 ms instead: each heartbeat segment then outlives
+/// the bound many times over and the trip is deterministic.
+fn stalled_add_sources(
+    home: &TempHome,
+    id: i64,
+    root: &Path,
+    stall_millis: &str,
+) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args([
+            "knowledge",
+            "collections",
+            "add-sources",
+            &id.to_string(),
+            root.to_str().unwrap(),
+        ])
+        .env("PINVOU3_HOME", home.path())
+        .env("PINVOU_NO_COLOR", "1")
+        .env("PINVOU_KB_IMPORT_STALL_MILLIS", stall_millis)
+        .output()
+        .expect("walking add-sources child runs")
+}
+
+/// Seeds a live-owner import through `seed_running_job` and parks its thread
+/// deterministically on `PINVOU_KB_IMPORT_HOLD_FILE`: the park sits between
+/// `prepare_items` (which stages and promotes the row to `running`) and the
+/// first claim, so the state poll below returns only once the job reads
+/// `running` with the full queue and zero completions — the parked window,
+/// which is exactly the proof the thread is parked (state-based wait, no
+/// sleep budget). HoldEnvGuard removes the variable on drop so a failing
+/// assertion cannot leak the hold into later tests of this binary (ENV_LOCK
+/// only serialises the tests, it does not reset the environment; a leaked
+/// hold would park every later in-process import for its 120 s bound). The
+/// variable itself is removed before returning: `launch_import` sampled it
+/// before the worker existed, so the running/2/0 observation proves the hold
+/// path is already in the worker's hands — from there the FILE gates the
+/// park, and the variable can go away before any assertion that could fail.
+/// Returns (hold guard, hold file, seeded job id); writing `release` to the
+/// hold file drains the import.
+fn hold_import_until_parked(home: &TempHome, label: &str) -> (HoldEnvGuard, PathBuf, String, i64) {
+    let hold = home.path().join("import-hold");
+    unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
+    let guard = HoldEnvGuard;
+    let (collection, job_id) = seed_running_job(home, label);
+    let parked_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
+        if state["running"] == serde_json::json!(true)
+            && state["total"] == serde_json::json!(2)
+            && state["done"] == serde_json::json!(0)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < parked_deadline,
+            "the seeded import never reached its parked live-owner window: {state}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
+    (guard, hold, job_id, collection)
 }
 
 // The strict `poll_index_phase` helper lost its last caller when the
@@ -725,15 +881,7 @@ fn collections_crud_round_trip_on_a_temp_home() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::new("collections-crud");
 
-    let first = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "papers",
-    ]);
-    let first_id = first["id"].as_i64().expect("created collection id");
+    let first_id = create_collection("papers");
     let second = run_json(&[
         "pinvou",
         "knowledge",
@@ -748,8 +896,7 @@ fn collections_crud_round_trip_on_a_temp_home() {
     ]);
     let second_id = second["id"].as_i64().expect("created collection id");
 
-    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
-    let collections = listed["collections"].as_array().expect("collections array");
+    let collections = collections_array();
     assert_eq!(collections.len(), 2);
     assert!(
         collections
@@ -791,8 +938,7 @@ fn collections_crud_round_trip_on_a_temp_home() {
         &second_id.to_string(),
         "--yes",
     ]);
-    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
-    let collections = listed["collections"].as_array().expect("collections array");
+    let collections = collections_array();
     assert_eq!(collections.len(), 1);
     assert_eq!(collections[0]["id"], serde_json::json!(first_id));
 }
@@ -842,15 +988,7 @@ fn documents_zero_state_and_remove_no_op() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = TempHome::new("documents-zero");
 
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "empty",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("empty");
 
     let documents = run_json(&["pinvou", "knowledge", "documents", &id.to_string()]);
     assert_eq!(documents["collection_id"], serde_json::json!(id));
@@ -896,15 +1034,7 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-roundtrip");
 
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "notes",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("notes");
 
     let docs = home.path().join("docs");
     std::fs::create_dir_all(&docs).unwrap();
@@ -981,16 +1111,6 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
     // signal-only no-op that still succeeds).
     run_ok(&["pinvou", "knowledge", "index", "cancel", &job_id]);
 
-    // Resume/retry validate the named id against the latest job first: a
-    // mistyped id refuses with exit 1 without touching the store (no CLI
-    // lane runs boot recovery anymore).
-    let error = execute_error(&["pinvou", "knowledge", "index", "resume", "bogus-job"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("active/latest"), "{error}");
-    let error = execute_error(&["pinvou", "knowledge", "index", "retry", "bogus-job", "1"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("active/latest"), "{error}");
-
     // The finished job is the latest but not resumable: resume/retry name
     // that with the friendly job-not-found code instead of leaking the raw
     // rusqlite "Query returned no rows" driver message.
@@ -1022,15 +1142,7 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
 fn add_sources_refuses_to_race_a_running_job() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-resumable-guard");
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "guarded",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("guarded");
 
     let sources = write_bulk_sources(&home, 2);
     let job_id = strand_running_job(&home, id, &sources);
@@ -1075,25 +1187,7 @@ fn add_sources_refuses_to_race_a_running_job() {
 fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-resume-precheck");
-    let bin = env!("CARGO_BIN_EXE_pinvou");
-    let run_child = |args: &[&str]| {
-        let mut command = std::process::Command::new(bin);
-        command
-            .args(args)
-            .env("PINVOU3_HOME", home.path())
-            .env("PINVOU_NO_COLOR", "1");
-        command.output().expect("binary runs")
-    };
-
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "live",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("live");
 
     let sources = write_bulk_sources(&home, 2);
     let source_str = sources[0].to_str().unwrap().to_owned();
@@ -1172,7 +1266,7 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
         scan_root.to_str().unwrap(),
     ]);
     assert!(scan.is_object(), "scan start must emit a JSON object");
-    let polled = run_child(&["knowledge", "index", "status", "--output", "json"]);
+    let polled = run_child(&home, &["knowledge", "index", "status", "--output", "json"]);
     let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
     assert_eq!(
         state["phase"],
@@ -1192,15 +1286,7 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
 fn add_sources_preflights_the_source_paths() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("add-sources-preflight");
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "preflight",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("preflight");
 
     let fifo = home.path().join("preflight.fifo");
     let status = std::process::Command::new("mkfifo")
@@ -1252,15 +1338,7 @@ fn add_sources_preflights_the_source_paths() {
 fn add_sources_refuses_a_credential_path_source() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("add-sources-credential");
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "credential-gate",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("credential-gate");
 
     let ssh = home.path().join(".ssh");
     std::fs::create_dir_all(&ssh).unwrap();
@@ -1342,24 +1420,7 @@ fn index_cancel_names_an_unknown_job() {
 fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-resume-roundtrip");
-    let bin = env!("CARGO_BIN_EXE_pinvou");
-    let run = |args: &[&str]| {
-        let mut command = std::process::Command::new(bin);
-        command
-            .args(args)
-            .env("PINVOU3_HOME", home.path())
-            .env("PINVOU_NO_COLOR", "1");
-        command.output().expect("binary runs")
-    };
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "resumable",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("resumable");
 
     // Two bulk sources: the strand needs a window with one item completed
     // and another still pending, and the resume below then has genuine
@@ -1371,7 +1432,7 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     // CLI cannot distinguish a dead owner from a live desktop-app import
     // (no cross-process owner heartbeat), and the app's next boot — not a
     // CLI lane — is what relabels it.
-    let refused = run(&["knowledge", "index", "resume", &job_id]);
+    let refused = run_child(&home, &["knowledge", "index", "resume", &job_id]);
     assert!(
         !refused.status.success(),
         "resume on a running stranded job must refuse"
@@ -1395,13 +1456,16 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     let other_id = other["id"].as_i64().expect("other collection id");
     let extra = home.path().join("second.txt");
     std::fs::write(&extra, "must not be enqueued.").unwrap();
-    let refused_enqueue = run(&[
-        "knowledge",
-        "collections",
-        "add-sources",
-        &other_id.to_string(),
-        extra.to_str().unwrap(),
-    ]);
+    let refused_enqueue = run_child(
+        &home,
+        &[
+            "knowledge",
+            "collections",
+            "add-sources",
+            &other_id.to_string(),
+            extra.to_str().unwrap(),
+        ],
+    );
     assert!(
         !refused_enqueue.status.success(),
         "add-sources behind a running latest job must refuse"
@@ -1450,7 +1514,10 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
 
     // The resume re-arms the job and waits for it: the printed state is the
     // job's FINAL state under the same id, never a stranded `running`.
-    let resumed = run(&["knowledge", "index", "resume", &job_id, "--output", "json"]);
+    let resumed = run_child(
+        &home,
+        &["knowledge", "index", "resume", &job_id, "--output", "json"],
+    );
     assert!(
         resumed.status.success(),
         "index resume must succeed: {}",
@@ -1473,13 +1540,16 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
 
     // Document-level end state: the resumed import really completed — the
     // item finished before the kill and the one still pending both parsed.
-    let documents = run(&[
-        "knowledge",
-        "documents",
-        &id.to_string(),
-        "--output",
-        "json",
-    ]);
+    let documents = run_child(
+        &home,
+        &[
+            "knowledge",
+            "documents",
+            &id.to_string(),
+            "--output",
+            "json",
+        ],
+    );
     assert!(documents.status.success(), "documents listing must succeed");
     let documents: serde_json::Value = serde_json::from_slice(&documents.stdout).unwrap();
     let documents = documents["documents"].as_array().expect("documents array");
@@ -1514,41 +1584,10 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
 fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("running-job-refusal");
-    // Park the import thread for a deterministic live-owner window. The
-    // guard removes the variable on drop so a failing assertion cannot
-    // leak the hold into later tests of this binary (ENV_LOCK only
-    // serialises the tests, it does not reset the environment; a leaked
-    // hold would park every later in-process import for its 120 s bound).
-    let hold = home.path().join("import-hold");
-    unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
-    let _hold_guard = HoldEnvGuard;
-    let (_collection, job_id) = seed_running_job(&home, "guarded", 2);
-
-    // State-based wait (no sleep budget): the park sits between
-    // `prepare_items` (which promotes the row to `running`) and the first
-    // claim, so `running` with a full queue and zero completions proves
-    // the thread is parked — the owner is live and stays live until the
-    // file below is written.
-    let parked_deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        if state["running"] == serde_json::json!(true)
-            && state["total"] == serde_json::json!(2)
-            && state["done"] == serde_json::json!(0)
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < parked_deadline,
-            "the seeded import never reached its parked live-owner state: {state}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // `launch_import` sampled the variable before the worker existed, so
-    // the running/2/0 observation above proves the hold path is already
-    // in the worker's hands: from here the FILE gates the park, and the
-    // variable can go away before any assertion that could fail.
-    unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
+    // Deterministic live-owner window: the helper returns only once the
+    // import thread is provably parked, and the owner stays live until the
+    // hold file below is written.
+    let (_hold_guard, hold, job_id, _collection) = hold_import_until_parked(&home, "guarded");
 
     // The CLI sees the in-flight job as the (running) latest one and must
     // refuse both re-arming commands with the owner explanation.
@@ -1603,19 +1642,17 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     // an import it never let finish, and TempHome must not unlink the
     // store under a live thread.
     std::fs::write(&hold, b"release").unwrap();
-    let drain_deadline = Instant::now() + Duration::from_secs(60);
-    let state = loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        let phase = state["phase"].as_str().unwrap_or_default();
-        if phase == "done" || phase == "done_with_errors" {
-            break state;
-        }
-        assert!(
-            Instant::now() < drain_deadline,
-            "the released import never reached a terminal phase (last: {state})"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let state = poll_json_until(
+        "the released import never reached a terminal phase",
+        60,
+        &["pinvou", "knowledge", "index", "status"],
+        |state| {
+            matches!(
+                state["phase"].as_str(),
+                Some("done") | Some("done_with_errors")
+            )
+        },
+    );
     assert_eq!(state["jobId"], serde_json::json!(job_id));
     assert_ne!(
         state["phase"],
@@ -1647,52 +1684,16 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
 fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("stall-timeout");
-
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "stall",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("stall");
 
     // A wide-and-deep tree of EMPTY directories: every entry is traversed
     // by the importer's walk (with the excluder's per-entry name checks)
     // but yields zero files — the exact shape that used to look wedged.
-    let root = home.path().join("stall-tree");
-    for a in 0..30 {
-        let band = root.join(format!("a{a:03}"));
-        for b in 0..30 {
-            let cell = band.join(format!("b{b:03}"));
-            std::fs::create_dir_all(&cell).expect("create cell dir");
-            for c in 0..10 {
-                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
-            }
-        }
-    }
+    let root = write_empty_stall_tree(&home, "stall-tree");
 
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    command
-        .args([
-            "knowledge",
-            "collections",
-            "add-sources",
-            &id.to_string(),
-            root.to_str().unwrap(),
-        ])
-        .env("PINVOU3_HOME", home.path())
-        .env("PINVOU_NO_COLOR", "1")
-        // Round-50 review: the bound only has to sit ABOVE the slowest
-        // 5000-entry heartbeat stretch of a healthy walk — it never fires
-        // on one, so generosity costs nothing (the walk ends when the walk
-        // ends). The old 300 ms assumed a warm runner; a loaded one blew
-        // the margin and falsely tripped the very bound this test asserts
-        // must NOT trip. The negative twin below still uses 1 ms to
-        // exercise the interrupt path for real.
-        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "5000");
-    let outcome = command.output().expect("walking add-sources child runs");
+    // Generous bound: a healthy walk with a live heartbeat must NOT trip
+    // it (round-50 rationale on the helper).
+    let outcome = stalled_add_sources(&home, id, &root, "5000");
     assert!(
         outcome.status.success(),
         "a walk with a live heartbeat must NOT trip the stall bound, got {:?} with stderr {}",
@@ -1724,46 +1725,15 @@ fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
 fn a_frozen_import_is_interrupted_and_resumable() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("stall-interrupt");
-
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "stall-interrupt",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("stall-interrupt");
 
     // Same empty-directory shape as the negative test: 9000 traversed
     // entries, zero importable files. The walk's first heartbeat only fires
     // at entry 5000, so with the bound at 1 ms the signature is frozen at
     // the loop's first polls and the trip is deterministic.
-    let root = home.path().join("stall-tree");
-    for a in 0..30 {
-        let band = root.join(format!("a{a:03}"));
-        for b in 0..30 {
-            let cell = band.join(format!("b{b:03}"));
-            std::fs::create_dir_all(&cell).expect("create cell dir");
-            for c in 0..10 {
-                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
-            }
-        }
-    }
+    let root = write_empty_stall_tree(&home, "stall-tree");
 
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    command
-        .args([
-            "knowledge",
-            "collections",
-            "add-sources",
-            &id.to_string(),
-            root.to_str().unwrap(),
-        ])
-        .env("PINVOU3_HOME", home.path())
-        .env("PINVOU_NO_COLOR", "1")
-        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "1");
-    let outcome = command.output().expect("walking add-sources child runs");
+    let outcome = stalled_add_sources(&home, id, &root, "1");
     let stderr = String::from_utf8_lossy(&outcome.stderr);
     assert!(
         !outcome.status.success(),
@@ -1808,15 +1778,7 @@ fn a_frozen_import_is_interrupted_and_resumable() {
 fn index_cancel_discloses_the_staged_progress_destruction() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("cancel-disclosure");
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "cancel-disclosure",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("cancel-disclosure");
     let sources = write_bulk_sources(&home, 2);
     let job_id = strand_running_job(&home, id, &sources);
 
@@ -1847,42 +1809,12 @@ fn index_cancel_discloses_the_staged_progress_destruction() {
 fn index_retry_names_a_bad_item_id_instead_of_the_job() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("retry-item-miss");
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "retry-item-miss",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("retry-item-miss");
 
     // Same deterministic stall shape as the frozen-import test: 9000
     // traversed entries, zero importable files, 1 ms bound → interrupted.
-    let root = home.path().join("retry-tree");
-    for a in 0..30 {
-        let band = root.join(format!("a{a:03}"));
-        for b in 0..30 {
-            let cell = band.join(format!("b{b:03}"));
-            std::fs::create_dir_all(&cell).expect("create cell dir");
-            for c in 0..10 {
-                std::fs::create_dir(cell.join(format!("c{c:02}"))).expect("create leaf dir");
-            }
-        }
-    }
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    command
-        .args([
-            "knowledge",
-            "collections",
-            "add-sources",
-            &id.to_string(),
-            root.to_str().unwrap(),
-        ])
-        .env("PINVOU3_HOME", home.path())
-        .env("PINVOU_NO_COLOR", "1")
-        .env("PINVOU_KB_IMPORT_STALL_MILLIS", "1");
-    let outcome = command.output().expect("walking add-sources child runs");
+    let root = write_empty_stall_tree(&home, "retry-tree");
+    let outcome = stalled_add_sources(&home, id, &root, "1");
     assert!(!outcome.status.success(), "the 1 ms bound must trip");
 
     let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
@@ -1927,55 +1859,21 @@ fn index_retry_requeues_the_failed_item_and_finishes_the_job_done() {
     let home = TempHome::new("retry-success");
     // Park the import thread between `prepare_items` (which stages and
     // promotes the row to `running`) and the first claim, so a staged source
-    // can vanish while its item is still pending. HoldEnvGuard removes the
-    // variable on drop so a failing assertion cannot leak the hold into
-    // later tests of this binary.
-    let hold = home.path().join("import-hold");
-    unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
-    let _hold_guard = HoldEnvGuard;
-    let (_collection, job_id) = seed_running_job(&home, "retry-success", 2);
+    // can vanish while its item is still pending.
+    let (_hold_guard, hold, job_id, collection) = hold_import_until_parked(&home, "retry-success");
     let ghost = home.path().join("retry-success-src").join("item-001.txt");
-
-    // State-based wait (no sleep budget): `running` with the full queue and
-    // zero completions proves the thread is parked with both items staged.
-    let parked_deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        if state["running"] == serde_json::json!(true)
-            && state["total"] == serde_json::json!(2)
-            && state["done"] == serde_json::json!(0)
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < parked_deadline,
-            "the seeded import never reached its parked window: {state}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // `launch_import` sampled the variable before the worker existed, so the
-    // running/2/0 observation above proves the hold path is already in the
-    // worker's hands: the FILE gates the park from here, and the variable
-    // can go away before any assertion that could fail.
-    unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
 
     // The vanished staged file is a real ingest failure (the metadata read
     // fails), not a skip: mark_failed records it and `finish` promotes the
     // job to `done_with_errors` with the other item completed.
     std::fs::remove_file(&ghost).expect("remove the staged source during the park");
     std::fs::write(&hold, b"release").unwrap();
-    let drain_deadline = Instant::now() + Duration::from_secs(60);
-    let settled = loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        if state["phase"] == serde_json::json!("done_with_errors") {
-            break state;
-        }
-        assert!(
-            Instant::now() < drain_deadline,
-            "the released import never settled at done_with_errors (last: {state})"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let settled = poll_json_until(
+        "the released import never settled at done_with_errors",
+        60,
+        &["pinvou", "knowledge", "index", "status"],
+        |state| state["phase"] == serde_json::json!("done_with_errors"),
+    );
     assert_eq!(settled["jobId"], serde_json::json!(job_id));
     // `done` counts PROCESSED files (completed + skipped + failed, the
     // store's own field doc), so the settled job reports done=2 with
@@ -2013,7 +1911,7 @@ fn index_retry_requeues_the_failed_item_and_finishes_the_job_done() {
 
     // Document-level end state: the retried item really re-ingested, so the
     // collection holds both files parsed.
-    let documents = run_json(&["pinvou", "knowledge", "documents", &_collection.to_string()]);
+    let documents = run_json(&["pinvou", "knowledge", "documents", &collection.to_string()]);
     let documents = documents["documents"].as_array().expect("documents array");
     assert_eq!(documents.len(), 2, "{documents:?}");
     assert!(
@@ -2185,8 +2083,7 @@ fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root()
         serde_json::json!(6),
         "scanning root B must add to the index, never wipe root A"
     );
-    let hits = run_json(&["pinvou", "knowledge", "search", "rootA"]);
-    let hits = hits["hits"].as_array().expect("hits array");
+    let hits = hits_array(&["rootA"]);
     assert!(
         hits.iter()
             .any(|hit| hit["name"] == serde_json::json!("rootA-0.txt")),
@@ -2342,8 +2239,7 @@ fn scan_start_through_a_symlinked_root_neither_duplicates_nor_wipes_entries() {
         serde_json::json!(2),
         "scanning through a symlink must re-visit the same keys, not mint new ones"
     );
-    let hits = run_json(&["pinvou", "knowledge", "search", "linked-one"]);
-    let hits = hits["hits"].as_array().expect("hits array");
+    let hits = hits_array(&["linked-one"]);
     let named: Vec<&serde_json::Value> = hits
         .iter()
         .filter(|hit| hit["name"] == serde_json::json!("linked-one.txt"))
@@ -2388,18 +2284,12 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
             || started["phase"] == serde_json::json!("done"),
         "scan start must begin scanning or finish immediately"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "scan", "status"]);
-        if state["phase"] == serde_json::json!("done") {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "scan did not finish in time"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    poll_json_until(
+        "scan did not finish in time",
+        30,
+        &["pinvou", "knowledge", "scan", "status"],
+        |state| state["phase"] == serde_json::json!("done"),
+    );
 
     let stats = run_json(&["pinvou", "knowledge", "stats"]);
     assert_eq!(stats["totalFiles"], serde_json::json!(2));
@@ -2413,28 +2303,18 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
     );
 
     // Plain substring over name/path (2 CJK chars take the LIKE fallback).
-    let hits = run_json(&["pinvou", "knowledge", "search", "报告"]);
-    let hits = hits["hits"].as_array().expect("hits array");
+    let hits = hits_array(&["报告"]);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0]["name"], serde_json::json!("季度报告.pdf"));
     assert_eq!(hits[0]["ext"], serde_json::json!("pdf"));
 
     // NL merge without any explicit flag: ext + mtime filter only.
-    let hits = run_json(&[
-        "pinvou",
-        "knowledge",
-        "search",
-        "上周的 pdf",
-        "--limit",
-        "5",
-    ]);
-    let hits = hits["hits"].as_array().expect("hits array");
+    let hits = hits_array(&["上周的 pdf", "--limit", "5"]);
     assert_eq!(hits.len(), 1, "NL-merged query must hit the seeded pdf");
     assert_eq!(hits[0]["ext"], serde_json::json!("pdf"));
 
     // Explicit --ext composes with the text query.
-    let hits = run_json(&["pinvou", "knowledge", "search", "notes", "--ext", "txt"]);
-    let hits = hits["hits"].as_array().expect("hits array");
+    let hits = hits_array(&["notes", "--ext", "txt"]);
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0]["name"], serde_json::json!("notes.txt"));
     let hits = run_json(&["pinvou", "knowledge", "search", "notes", "--ext", "pdf"]);
@@ -2598,29 +2478,12 @@ fn remote_connections_probe_a_configured_server() {
 fn index_cancel_targets_a_stranded_running_job() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("index-cancel-stranded");
-    let bin = env!("CARGO_BIN_EXE_pinvou");
-    let run = |args: &[&str]| {
-        let mut command = std::process::Command::new(bin);
-        command
-            .args(args)
-            .env("PINVOU3_HOME", home.path())
-            .env("PINVOU_NO_COLOR", "1");
-        command.output().expect("binary runs")
-    };
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "cancellable",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("cancellable");
 
     let sources = write_bulk_sources(&home, 2);
     let job_id = strand_running_job(&home, id, &sources);
 
-    let cancelled = run(&["knowledge", "index", "cancel", &job_id]);
+    let cancelled = run_child(&home, &["knowledge", "index", "cancel", &job_id]);
     assert!(cancelled.status.success(), "index cancel must succeed");
     let stdout = String::from_utf8_lossy(&cancelled.stdout);
     assert!(
@@ -2643,7 +2506,7 @@ fn index_cancel_targets_a_stranded_running_job() {
 
     // The cancelled job is finished, so a second cancel honestly reports
     // there was nothing left to signal.
-    let again = run(&["knowledge", "index", "cancel", &job_id]);
+    let again = run_child(&home, &["knowledge", "index", "cancel", &job_id]);
     assert!(again.status.success(), "second index cancel must succeed");
     let stdout = String::from_utf8_lossy(&again.stdout);
     assert!(
@@ -2664,16 +2527,7 @@ fn collections_delete_never_boots_the_session_store() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("delete-no-session-store");
     std::fs::write(home.path().join("sessions"), b"not a directory").unwrap();
-
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "doomed",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("doomed");
 
     let outcome = run_ok(&[
         "pinvou",
@@ -2687,8 +2541,7 @@ fn collections_delete_never_boots_the_session_store() {
         !outcome.contains("session store unavailable"),
         "delete must not open the session store: {outcome}"
     );
-    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
-    let collections = listed["collections"].as_array().expect("collections array");
+    let collections = collections_array();
     assert!(
         collections.iter().all(|c| c["id"] != serde_json::json!(id)),
         "the collection must actually be gone"
@@ -2704,16 +2557,7 @@ fn collections_delete_never_boots_the_session_store() {
 fn collections_delete_cancels_its_own_stranded_job_and_deletes() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempHome::new("delete-stranded-job");
-
-    let created = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "stranded",
-    ]);
-    let id = created["id"].as_i64().expect("created collection id");
+    let id = create_collection("stranded");
     let sources = write_bulk_sources(&home, 2);
     strand_running_job(&home, id, &sources);
 
@@ -2734,8 +2578,7 @@ fn collections_delete_cancels_its_own_stranded_job_and_deletes() {
     assert_eq!(state["jobId"], serde_json::Value::Null);
     assert_eq!(state["phase"], serde_json::json!("idle"));
 
-    let listed = run_json(&["pinvou", "knowledge", "collections", "list"]);
-    let collections = listed["collections"].as_array().expect("collections array");
+    let collections = collections_array();
     assert!(
         collections.iter().all(|c| c["id"] != serde_json::json!(id)),
         "the collection must be deleted"

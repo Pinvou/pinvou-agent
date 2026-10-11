@@ -101,30 +101,34 @@ fn create_session_fixture() -> String {
     session.metadata.id
 }
 
-/// Seeds a two-message transcript by editing the persisted `SavedSession`
-/// JSON (the CLI reads transcripts from the same store file).
-fn seed_transcript(id: &str, user_text: &str, assistant_text: &str) {
+/// Rewrites the persisted `SavedSession` JSON in place (the CLI reads
+/// transcripts from the same store file).
+fn mutate_session_record(id: &str, mutate: impl FnOnce(&mut serde_json::Value)) {
     let home = PathBuf::from(std::env::var_os("PINVOU3_HOME").unwrap());
     let path = home.join("sessions").join(format!("{id}.json"));
     let mut value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    value["messages"] = serde_json::json!([
-        {"role": "user", "content": [{"type": "text", "text": user_text}]},
-        {"role": "assistant", "content": [{"type": "text", "text": assistant_text}]},
-    ]);
+    mutate(&mut value);
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+}
+
+/// Seeds a two-message transcript.
+fn seed_transcript(id: &str, user_text: &str, assistant_text: &str) {
+    mutate_session_record(id, |value| {
+        value["messages"] = serde_json::json!([
+            {"role": "user", "content": [{"type": "text", "text": user_text}]},
+            {"role": "assistant", "content": [{"type": "text", "text": assistant_text}]},
+        ]);
+    });
 }
 
 /// Rewrites one seeded message's `role` in place. `role` is a plain `String`
 /// on `SavedSession`, so a transcript can carry anything there — including the
 /// terminal escapes the body sanitizer exists to stop.
 fn set_message_role(id: &str, index: usize, role: &str) {
-    let home = PathBuf::from(std::env::var_os("PINVOU3_HOME").unwrap());
-    let path = home.join("sessions").join(format!("{id}.json"));
-    let mut value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    value["messages"][index]["role"] = serde_json::json!(role);
-    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    mutate_session_record(id, |value| {
+        value["messages"][index]["role"] = serde_json::json!(role);
+    });
 }
 
 // ── parse-level coverage ────────────────────────────────────────────────────
@@ -157,26 +161,18 @@ fn every_sessions_subcommand_parses_and_unknown_flags_exit_two() {
             .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
         // The Sessions command tree is dispatched exclusively through the
         // Sessions variant; the type is not nameable from integration tests,
-        // so assert family + variant through the derived Debug form.
+        // so assert family + variant through the derived Debug form. Every
+        // Sessions variant is the subcommand token's capitalization, so the
+        // expected Debug token is derived from the argv itself.
         let debug = format!("{:?}", parsed.command());
-        let variant = match arguments[2] {
-            "list" => "List",
-            "show" => "Show",
-            "rename" => "Rename",
-            "pin" => "Pin",
-            "unpin" => "Unpin",
-            "archive" => "Archive",
-            "restore" => "Restore",
-            "delete" => "Delete",
-            "export" => "Export",
-            "timeline" => "Timeline",
-            "subagents" => "Subagents",
-            "folder" => "Folder",
-            other => panic!("unmapped subcommand {other}"),
-        };
+        let mut chars = arguments[2].chars();
+        let variant: String = chars
+            .next()
+            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default();
         assert!(debug.starts_with("Sessions("), "{arguments:?} -> {debug}");
         assert!(
-            debug.contains(&format!("{variant} ")) || debug.ends_with(variant),
+            debug.contains(&format!("{variant} ")) || debug.ends_with(&variant),
             "{arguments:?} -> {debug}"
         );
     }
@@ -1277,16 +1273,12 @@ fn artifacts_list_human_row_survives_control_characters_in_record_fields() {
     assert_eq!(columns[5], expected_path);
 
     // None of the row-breaking bytes may survive in the rendered cells. The
-    // file name on disk still carries them (the collapse is not a data
-    // change); only the rendered line is clean. A tab or newline inside a cell
+    // file name on disk still carries them verbatim — its raw bytes are
+    // `poison\trow\njump\x1b]0;pwned\x07.md`, pinned byte-for-byte by the
+    // JSON assert below (the collapse is not a data change) — only the
+    // rendered line is clean. A tab or newline inside a cell
     // would show up as a seventh column or a second line, both already pinned
     // above — what the count assertions cannot express is ESC, checked here.
-    let raw_name = hostile
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap()
-        .to_owned();
-    assert_eq!(raw_name, "poison\trow\njump\x1b]0;pwned\x07.md");
     assert!(
         !outcome.stdout.contains('\x1b'),
         "ESC must not reach the terminal: {:?}",

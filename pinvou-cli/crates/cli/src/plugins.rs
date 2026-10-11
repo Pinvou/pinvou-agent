@@ -126,11 +126,14 @@ use crate::support::{collapse_control_characters, render, require_yes, sandbox_h
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
+    builtin::is_builtin_tool,
     bundle::{BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
-    package_export, plugin_import, recycle_bin,
+    load_disabled_bundles_for, package_export, plugin_import, recycle_bin,
+    save_disabled_bundles_for,
     scope::{
-        CONSENT_SYNC_FAILURE_MARKER, remove_bundle_from_disabled_scopes_exact,
-        resolve_pack_owner_id,
+        CONSENT_SYNC_FAILURE_MARKER, project_skills_enabled,
+        remove_bundle_from_disabled_scopes_exact, resolve_pack_owner_id,
+        set_project_skills_enabled, to_package_id_with,
     },
     skill_marketplace::SkillMarketplaceManager,
     store::{BundleSource, BundleStore},
@@ -260,7 +263,6 @@ pub enum PluginsCommand {
 }
 
 /// Flags that carry a value, per subcommand.
-const TOOLS_LIST_OPTIONS: &[&str] = &[];
 const TOOLS_OAUTH_LOGIN_OPTIONS: &[&str] = &["--timeout"];
 const EXPORT_OPTIONS: &[&str] = &["--output"];
 const META_OPTIONS: &[&str] = &["--name", "--description"];
@@ -283,9 +285,7 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
             let path = rest
                 .first()
                 .ok_or_else(|| CliError::usage("plugins import requires a PATH (zip, .md/.markdown skill file, or SKILL.md directory)"))?;
-            if rest.len() > 1 {
-                return Err(CliError::usage("plugins import accepts no options"));
-            }
+            require_no_args(&rest[1..], "plugins import accepts no options".to_owned())?;
             Ok(PluginsCommand::Import {
                 path: PathBuf::from(path),
             })
@@ -316,9 +316,7 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "recycle" => parse_recycle(rest),
         "readiness" => {
-            if !rest.is_empty() {
-                return Err(CliError::usage("plugins readiness accepts no arguments"));
-            }
+            require_no_args(rest, "plugins readiness accepts no arguments".to_owned())?;
             Ok(PluginsCommand::Readiness)
         }
         "enable" | "disable" => {
@@ -357,7 +355,7 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
     let tail = &rest[1..];
     match action {
         "list" => {
-            let (_, flags) = parse_flags(tail, TOOLS_LIST_OPTIONS, LIST_FLAGS)?;
+            let (_, flags) = parse_flags(tail, &[], LIST_FLAGS)?;
             Ok(PluginsCommand::ToolsList {
                 installed_only: flags.contains(&"--installed-only"),
             })
@@ -393,9 +391,10 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "auth" => {
             let id = require_id(tail.first())?;
-            if tail.len() > 1 {
-                return Err(CliError::usage("plugins tools auth accepts no options"));
-            }
+            require_no_args(
+                &tail[1..],
+                "plugins tools auth accepts no options".to_owned(),
+            )?;
             Ok(PluginsCommand::ToolsAuth { id })
         }
         "oauth-login" => {
@@ -406,11 +405,10 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "oauth-cancel" => {
             let id = require_id(tail.first())?;
-            if tail.len() > 1 {
-                return Err(CliError::usage(
-                    "plugins tools oauth-cancel accepts no options",
-                ));
-            }
+            require_no_args(
+                &tail[1..],
+                "plugins tools oauth-cancel accepts no options".to_owned(),
+            )?;
             Ok(PluginsCommand::ToolsOauthCancel { id })
         }
         _ => Err(CliError::usage(TOOLS_USAGE)),
@@ -432,11 +430,10 @@ fn parse_skills(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "install" | "update" => {
             let id = require_id(tail.first())?;
-            if tail.len() > 1 {
-                return Err(CliError::usage(format!(
-                    "plugins skills {action} accepts no options"
-                )));
-            }
+            require_no_args(
+                &tail[1..],
+                format!("plugins skills {action} accepts no options"),
+            )?;
             if action == "install" {
                 Ok(PluginsCommand::SkillsInstall { id })
             } else {
@@ -470,11 +467,10 @@ fn parse_recycle(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "restore" => {
             let id = require_id(tail.first())?;
-            if tail.len() > 1 {
-                return Err(CliError::usage(
-                    "plugins recycle restore accepts no options",
-                ));
-            }
+            require_no_args(
+                &tail[1..],
+                "plugins recycle restore accepts no options".to_owned(),
+            )?;
             Ok(PluginsCommand::RecycleRestore { id })
         }
         "purge" => {
@@ -568,13 +564,25 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
     Ok(id)
 }
 
+/// The "accepts no options/arguments" guards shared by the subcommands that
+/// take nothing beyond their required positionals (`args` is what remains
+/// after those). `message` is passed verbatim so each site keeps its pinned
+/// usage text.
+fn require_no_args(args: &[String], message: String) -> Result<(), CliError> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::usage(message))
+    }
+}
+
 /// Shared implementation in `support::parse_family_flags`; `family`
 /// only names this family in error messages.
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "plugins")
 }
 
@@ -591,6 +599,19 @@ fn feature_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliEr
     // document for their unmapped tails: the importer's error strings are
     // product copy owned by the lib (partly Chinese), not CLI developer copy.
     CliError::failed(format!("plugins {action}({id}): {error:#}"))
+}
+
+/// The serde string label of a `BundleKind`, with the `"unknown"` fallback
+/// the call sites shared: the label is rendered through `serde_json` exactly
+/// like the JSON lane, so the human text and the payload field cannot
+/// disagree. Concrete type instead of a `serde::Serialize` bound: this
+/// crate does not depend on `serde` directly (serde_json does not re-export
+/// the trait), and every caller serializes a `BundleKind`.
+fn enum_label(value: &BundleKind) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 /// English copy for the shared importer's security rejections, which are
@@ -719,18 +740,39 @@ pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome
 // tools
 // ---------------------------------------------------------------------------
 
+/// Shared tail of the three list commands (`tools list`, `skills list`,
+/// `recycle list`): wrap the serialized items under `key` and render them
+/// next to the (already sanitized) human tab rows. The items arrive as the
+/// `serde_json::to_value` result — this crate names no `serde` trait
+/// (serde_json does not re-export it), so the caller's `to_value` call is
+/// the one place that knows the concrete item type.
+///
+/// Round-46 review (the rule each site carried): a serialization failure is
+/// a failure, not an empty deck — exit 0 with a placeholder empty list would
+/// hand the caller a fabricated fact (personas.rs closed this exact class
+/// with the same rationale).
+fn render_list_rows(
+    label: &str,
+    key: &str,
+    items: Result<serde_json::Value, serde_json::Error>,
+    human: String,
+    output: OutputMode,
+) -> Result<CliOutcome, CliError> {
+    let value = items
+        .map(|items| {
+            let mut wrapped = serde_json::Map::new();
+            wrapped.insert(key.to_owned(), items);
+            serde_json::Value::Object(wrapped)
+        })
+        .map_err(|error| CliError::failed(format!("plugins {label}: {error}")))?;
+    Ok(success(render(output, human, &value)))
+}
+
 fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut tools = MarketplaceManager::new().list_tools();
     if installed_only {
         tools.retain(|tool| tool.installed);
     }
-    // Round-46 review: a serialization failure is a failure, not an empty
-    // deck — exit 0 with a placeholder `tools: []` would hand the caller a
-    // fabricated fact (personas.rs closed this exact class with the same
-    // rationale).
-    let value = serde_json::to_value(&tools)
-        .map(|tools| serde_json::json!({ "tools": tools }))
-        .map_err(|error| CliError::failed(format!("plugins tools list: {error}")))?;
     // Human rows must not be forgeable: tool name/description come from
     // package manifests (including imported ones) and go through the shared
     // collapse like every sibling family (JSON keeps the originals).
@@ -743,7 +785,7 @@ fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, Cl
                 if tool.installed { "installed" } else { "-" },
                 collapse_control_characters(&tool.source),
                 collapse_control_characters(&tool.version),
-                format!(
+                format_args!(
                     "{}: {}",
                     collapse_control_characters(&tool.name),
                     collapse_control_characters(&tool.description)
@@ -752,7 +794,17 @@ fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, Cl
         })
         .collect::<Vec<_>>()
         .join("\n");
-    Ok(success(render(output, human, &value)))
+    // Round-46 review: a serialization failure is a failure, not an empty
+    // deck — exit 0 with a placeholder `tools: []` would hand the caller a
+    // fabricated fact (personas.rs closed this exact class with the same
+    // rationale).
+    render_list_rows(
+        "tools list",
+        "tools",
+        serde_json::to_value(&tools),
+        human,
+        output,
+    )
 }
 
 /// Resolves `--secret KEY=ENV_VAR_NAME` pairs into the user-config map the
@@ -868,10 +920,8 @@ fn tools_install(
     // inside this loop re-walked the whole marketplace per companion (the
     // anti-pattern the round-38 hoist in `set_enabled` closed); the same
     // hoist pattern, same snapshot semantics.
-    let tool_snapshot =
-        pinvou3_lib::features::marketplace::MarketplaceManager::new().available_tools();
-    let tool_package =
-        pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, id);
+    let tool_snapshot = MarketplaceManager::new().available_tools();
+    let tool_package = to_package_id_with(&tool_snapshot, id);
     for sid in mgr.companion_skills(id) {
         match SkillMarketplaceManager::new().install(&sid) {
             Ok(()) => {
@@ -880,11 +930,7 @@ fn tools_install(
                 // package was already synced by the tool-level call above,
                 // and an unconditional re-sync only adds a failure surface
                 // whose message ("consent gap") would not be true.
-                if pinvou3_lib::features::marketplace::scope::to_package_id_with(
-                    &tool_snapshot,
-                    &sid,
-                ) != tool_package
-                {
+                if to_package_id_with(&tool_snapshot, &sid) != tool_package {
                     sync_after_install_or_fail("companion skills install", &sid)?;
                 }
                 companion_note.push(sid);
@@ -957,9 +1003,7 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
     // builtin WITH companions would lose them here and then hit the
     // refusal, the exact partial mutation the §3.1 server-side rejection
     // exists to prevent. Refuse before touching anything.
-    if pinvou3_lib::features::marketplace::builtin::is_builtin_tool(
-        &pinvou3_lib::features::marketplace::scope::resolve_pack_owner_id(id),
-    ) {
+    if is_builtin_tool(&resolve_pack_owner_id(id)) {
         return Err(feature_error(
             "tools uninstall",
             id,
@@ -1218,44 +1262,44 @@ fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let server_name = mgr.oauth_remote_server_name(id);
     let oauth_required = server_name.is_some();
     let mut mcp_configured = false;
-    if let Some(name) = server_name.as_deref() {
-        if let Some(servers) = mcp_json_servers_lenient("auth") {
-            mcp_configured = servers.get(name).is_some();
-        }
+    if let Some(name) = server_name.as_deref()
+        && let Some(servers) = mcp_json_servers_lenient("auth")
+    {
+        mcp_configured = servers.get(name).is_some();
     }
     // The foundation keeps OAuth tokens in its own credential-store namespace;
     // the CLI cannot read them, so token presence is conservative.
-    let (status, message, oauth_token_present) = if oauth_required && mcp_configured {
+    let (status, message) = if oauth_required && mcp_configured {
         (
             "config_installed_auth_pending",
             "MCP config is installed, but the CLI cannot verify OAuth token presence; use the desktop app for the interactive grant.",
-            false,
         )
     } else if oauth_required && installed {
         (
             "auth_pending",
             "Tool is installed, but the MCP config is incomplete; reconnect from the desktop app.",
-            false,
         )
     } else if oauth_required {
-        ("not_installed", "Tool is not connected yet.", false)
+        ("not_installed", "Tool is not connected yet.")
     } else if installed {
-        ("connected", "Tool is installed.", false)
+        ("connected", "Tool is installed.")
     } else {
-        ("not_installed", "Tool is not installed.", false)
+        ("not_installed", "Tool is not installed.")
     };
     let value = serde_json::json!({
         "installed": installed,
         "mcp_configured": mcp_configured,
         "oauth_required": oauth_required,
-        "oauth_token_present": oauth_token_present,
+        // Always the same conservative `false` headless — the module docs'
+        // `tools auth` bullet owns the rationale.
+        "oauth_token_present": false,
         "status": status,
         "server_name": server_name,
         "message": message,
         "token_check": if oauth_required { "unavailable_in_cli" } else { "not_applicable" },
     });
     let human = format!(
-        "tool: {id}\ninstalled: {installed}\noauth_required: {oauth_required}\nmcp_configured: {mcp_configured}\noauth_token_present: {oauth_token_present}\nstatus: {status}\nserver_name: {}\nmessage: {message}",
+        "tool: {id}\ninstalled: {installed}\noauth_required: {oauth_required}\nmcp_configured: {mcp_configured}\noauth_token_present: false\nstatus: {status}\nserver_name: {}\nmessage: {message}",
         server_name.as_deref().unwrap_or("-"),
     );
     Ok(success(render(output, human, &value)))
@@ -1263,7 +1307,8 @@ fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
 
 fn tools_oauth_login(
     id: &str,
-    timeout: Option<u64>,
+    // Accepted for argv compatibility; there is no login to time out.
+    _timeout: Option<u64>,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     // Same guards as the GUI `start_marketplace_tool_oauth_login`.
@@ -1273,15 +1318,16 @@ fn tools_oauth_login(
             "plugins tools oauth-login({id}): tool does not declare a remote MCP OAuth login"
         ))
     })?;
-    let configured = read_mcp_json_servers("oauth-login")?
+    // The lookup IS the guard: a declared server missing from mcp.json
+    // refuses here, and the resolved entry has no further consumer — the
+    // login flow it would feed lives in the foundation crate (refused below).
+    read_mcp_json_servers("oauth-login")?
         .and_then(|servers| servers.get(&server_name).cloned())
         .ok_or_else(|| {
             CliError::failed(format!(
                 "plugins tools oauth-login({id}): mcp.json has no server '{server_name}'"
             ))
         })?;
-    let _ = configured;
-    let _ = timeout; // accepted for argv compatibility; there is no login to time out
     Err(CliError::failed(
         "oauth_login_unavailable_in_cli: the MCP OAuth login flow (PKCE + local callback + token persistence) lives in the CodeWhale foundation crate, which the pinvou CLI does not link; complete the interactive grant in the desktop app, or configure the credential with 'pinvou plugins tools install --secret KEY=ENV_VAR_NAME'",
     ))
@@ -1312,10 +1358,6 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
     if installed_only {
         skills.retain(|skill| skill.installed);
     }
-    // Round-46 review: same not-a-placeholder rule as `tools list`.
-    let value = serde_json::to_value(&skills)
-        .map(|skills| serde_json::json!({ "skills": skills }))
-        .map_err(|error| CliError::failed(format!("plugins skills list: {error}")))?;
     // Same no-forgeable-rows rule as `tools_list`.
     let human = skills
         .iter()
@@ -1334,7 +1376,7 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
                 } else {
                     "-"
                 },
-                format!(
+                format_args!(
                     "{}: {}",
                     collapse_control_characters(&skill.title),
                     collapse_control_characters(&skill.description)
@@ -1343,7 +1385,14 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
         })
         .collect::<Vec<_>>()
         .join("\n");
-    Ok(success(render(output, human, &value)))
+    // Round-46 review: same not-a-placeholder rule as `tools list`.
+    render_list_rows(
+        "skills list",
+        "skills",
+        serde_json::to_value(&skills),
+        human,
+        output,
+    )
 }
 
 fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1558,31 +1607,17 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
         // own chosen payload, but there is no reason to broadcast it to
         // every local user for the duration of the import.
         #[cfg(unix)]
-        let mut file = {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(tmp)
-                .map_err(|error| {
-                    CliError::failed(format!(
-                        "plugins import: cannot create temporary zip {}: {error}",
-                        tmp.display()
-                    ))
-                })?
-        };
-        #[cfg(not(unix))]
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(tmp)
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "plugins import: cannot create temporary zip {}: {error}",
-                    tmp.display()
-                ))
-            })?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(tmp).map_err(|error| {
+            CliError::failed(format!(
+                "plugins import: cannot create temporary zip {}: {error}",
+                tmp.display()
+            ))
+        })?;
         // Armed before the first write, so a failed write_all (or any other
         // early return below) removes the just-created wrapper via Drop.
         let guard = TempWrapperZip { path: tmp.clone() };
@@ -1611,10 +1646,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Upload safety default (GUI parity): imported packages start disabled in
     // initialized DenyAll scopes until explicitly enabled.
     sync_after_install_or_fail("import", &report.id)?;
-    let kind = serde_json::to_value(&report.kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".to_owned());
+    let kind = enum_label(&report.kind);
     let value = serde_json::json!({
         "id": report.id,
         "kind": kind,
@@ -1691,16 +1723,16 @@ fn reserve_export_destination(
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let mut created_parent = None;
-            if let Some(parent) = dest.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent).map_err(|error| {
-                        CliError::failed(format!(
-                            "{action}({id}): cannot create output directory {}: {error}",
-                            parent.display()
-                        ))
-                    })?;
-                    created_parent = Some(parent.to_path_buf());
-                }
+            if let Some(parent) = dest.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    CliError::failed(format!(
+                        "{action}({id}): cannot create output directory {}: {error}",
+                        parent.display()
+                    ))
+                })?;
+                created_parent = Some(parent.to_path_buf());
             }
             match std::fs::File::create_new(dest) {
                 Ok(marker) => {
@@ -1714,6 +1746,43 @@ fn reserve_export_destination(
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(refuse()),
         Err(error) => Err(cannot_create(error)),
     }
+}
+
+/// The reserve → export → cleanup → render tail `export` and
+/// `recycle_export` share. `export` receives the reserved destination and
+/// returns the caller's already-mapped error (via `feature_error`); on
+/// failure the empty reservation — and the directory this call created for
+/// it — is removed before the error propagates.
+fn run_export(
+    id: &str,
+    dest: &Path,
+    action: &str,
+    human: String,
+    output: OutputMode,
+    export: impl FnOnce(&Path) -> Result<(), CliError>,
+) -> Result<CliOutcome, CliError> {
+    let created_parent = reserve_export_destination(id, dest, action)?;
+    let export_result = export(dest);
+    if export_result.is_err() {
+        // The lib writes through a temp file and persists at the end, so a
+        // failure leaves our empty reservation behind — remove it. A
+        // preset/builtin refusal fires INSIDE the lib (after reserve's
+        // create_dir_all), so the self-created empty directory is debris the
+        // call site's "existence first" comment promises not to leave. Only
+        // the directory THIS call created is removed (remove_dir cannot
+        // touch a non-empty one), so a destination directory the caller
+        // already had is never touched.
+        let _ = std::fs::remove_file(dest);
+        if let Some(parent) = created_parent {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    export_result?;
+    let value = serde_json::json!({
+        "id": id,
+        "output": dest.display().to_string(),
+    });
+    Ok(success(render(output, human, &value)))
 }
 
 fn export(
@@ -1742,33 +1811,17 @@ fn export(
     // An existing destination is refused, not overwritten: the default name
     // is `<id>.zip` in the caller's cwd, so a silent overwrite could destroy
     // an unrelated file with exit 0 (the same policy as `sessions export`).
-
-    let created_parent = reserve_export_destination(id, &dest, "plugins export")?;
-    let export_result = package_export::export_installed_plugin(id, &dest)
-        .map_err(|error| feature_error("export", id, error));
-    if export_result.is_err() {
-        // The lib writes through a temp file and persists at the end, so a
-        // failure leaves our empty reservation behind — remove it. A
-        // preset/builtin refusal fires INSIDE the lib (after reserve's
-        // create_dir_all), so the self-created empty directory is debris the
-        // comment above promises not to leave. Only the directory THIS call
-        // created is removed (remove_dir cannot touch a non-empty one), so a
-        // destination directory the caller already had is never touched.
-        let _ = std::fs::remove_file(&dest);
-        if let Some(parent) = created_parent {
-            let _ = std::fs::remove_dir(parent);
-        }
-    }
-    export_result?;
-    let value = serde_json::json!({
-        "id": id,
-        "output": dest.display().to_string(),
-    });
-    Ok(success(render(
-        output,
+    run_export(
+        id,
+        &dest,
+        "plugins export",
         format!("exported {id} -> {}", dest.display()),
-        &value,
-    )))
+        output,
+        |dest| {
+            package_export::export_installed_plugin(id, dest)
+                .map_err(|error| feature_error("export", id, error))
+        },
+    )
 }
 
 fn meta(
@@ -1808,10 +1861,6 @@ fn recycle_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let entries = recycle_bin::RecycleBin::new()
         .list()
         .map_err(|error| CliError::failed(format!("plugins recycle list: {error:#}")))?;
-    // Round-46 review: same not-a-placeholder rule as `tools list`.
-    let value = serde_json::to_value(&entries)
-        .map(|entries| serde_json::json!({ "recycled": entries }))
-        .map_err(|error| CliError::failed(format!("plugins recycle list: {error}")))?;
     let human = entries
         .iter()
         .map(|entry| {
@@ -1837,7 +1886,14 @@ fn recycle_list(output: OutputMode) -> Result<CliOutcome, CliError> {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    Ok(success(render(output, human, &value)))
+    // Round-46 review: same not-a-placeholder rule as `tools list`.
+    render_list_rows(
+        "recycle list",
+        "recycled",
+        serde_json::to_value(&entries),
+        human,
+        output,
+    )
 }
 
 fn recycle_restore(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1896,26 +1952,18 @@ fn recycle_export(
     // Same no-overwrite policy as `export` (the default is `<id>.zip` in the
     // caller's cwd), with the same atomic reservation and the same
     // self-created-directory cleanup on the failure path.
-    let created_parent = reserve_export_destination(id, &dest, "plugins recycle export")?;
-    let export_result = recycle_bin::RecycleBin::new()
-        .export_package(id, &dest)
-        .map_err(|error| feature_error("recycle export", id, error));
-    if export_result.is_err() {
-        let _ = std::fs::remove_file(&dest);
-        if let Some(parent) = created_parent {
-            let _ = std::fs::remove_dir(parent);
-        }
-    }
-    export_result?;
-    let value = serde_json::json!({
-        "id": id,
-        "output": dest.display().to_string(),
-    });
-    Ok(success(render(
-        output,
+    run_export(
+        id,
+        &dest,
+        "plugins recycle export",
         format!("exported recycled {id} -> {}", dest.display()),
-        &value,
-    )))
+        output,
+        |dest| {
+            recycle_bin::RecycleBin::new()
+                .export_package(id, dest)
+                .map_err(|error| feature_error("recycle export", id, error))
+        },
+    )
 }
 
 /// Same default the GUI save dialog proposes: `<package id>.zip` in the
@@ -2027,6 +2075,9 @@ fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> (bool, bool,
 
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
     let registry = BundleRegistry::new();
+    // One store handle serves every row: the store is stateless to read
+    // through, so there is no reason to re-derive it per row below.
+    let credential_store = SystemCredentialStore::new();
     let rows = registry
         .list_bundles()
         .into_iter()
@@ -2042,13 +2093,30 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             // below, so they are read on every readiness run regardless of
             // the store record (a GUI-connected ima has credentials present
             // even when no bundle record exists yet).
-            let credential_store = SystemCredentialStore::new();
             // ima mirrors the GUI's `bundle_readiness` ima arm instead of the
             // registry branch: ready = ima_status's `connected` (credentials
             // AND companion skill), credentials judged first, installed =
             // credentials OR skill — the registry's `IMA_CLIENT_ID`/
             // `IMA_API_KEY` lookup is the wrong namespace and would report
             // `missing_credentials` for a connected ima.
+            // Every row carries the same six pinned keys (the JSON shape must
+            // not vary by kind), so both branches below build through this
+            // one local literal.
+            let row = |id: &str,
+                       kind: &str,
+                       installed: bool,
+                       ready: bool,
+                       reason: &Option<String>,
+                       probe: &str| {
+                serde_json::json!({
+                    "bundle_id": id,
+                    "kind": kind,
+                    "installed": installed,
+                    "ready": ready,
+                    "reason": reason,
+                    "probe": probe,
+                })
+            };
             if bundle.kind == BundleKind::Skill && bundle.id == "ima" {
                 let (credentials_present, skill_installed, store_unavailable) =
                     ima_readiness_parts(&credential_store);
@@ -2064,18 +2132,15 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
                 } else {
                     Some(REASON_IMA_SKILL_NOT_INSTALLED.to_owned())
                 };
-                let kind = serde_json::to_value(bundle.kind)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "unknown".to_owned());
-                return Ok(serde_json::json!({
-                    "bundle_id": bundle.id,
-                    "kind": kind,
-                    "installed": credentials_present || skill_installed,
-                    "ready": ready,
-                    "reason": reason,
-                    "probe": PROBE_REGISTRY,
-                }));
+                let kind = enum_label(&bundle.kind);
+                return Ok(row(
+                    &bundle.id,
+                    &kind,
+                    credentials_present || skill_installed,
+                    ready,
+                    &reason,
+                    PROBE_REGISTRY,
+                ));
             }
             let bundle_id = bundle.id.clone();
             // The credential reads are fallible for INSTALLED bundles,
@@ -2186,18 +2251,15 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
             } else {
                 (registry_ready, registry_reason, PROBE_REGISTRY)
             };
-            let kind = serde_json::to_value(bundle.kind)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "unknown".to_owned());
-            Ok(serde_json::json!({
-                "bundle_id": bundle.id,
-                "kind": kind,
-                "installed": bundle.installed,
-                "ready": ready,
-                "reason": reason,
-                "probe": probe,
-            }))
+            let kind = enum_label(&bundle.kind);
+            Ok(row(
+                &bundle.id,
+                &kind,
+                bundle.installed,
+                ready,
+                &reason,
+                probe,
+            ))
         })
         .collect::<Result<Vec<_>, CliError>>()?;
     let value = serde_json::json!({ "bundles": rows });
@@ -2247,10 +2309,8 @@ fn set_enabled(
     // the retain's normalization, and the read-back verification — the same
     // hoist the lib made for its own multi-entry lists (round-23 MINOR 3);
     // the per-entry id normalization here had reintroduced it.
-    let tool_snapshot =
-        pinvou3_lib::features::marketplace::MarketplaceManager::new().available_tools();
-    let packages =
-        pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, id);
+    let tool_snapshot = MarketplaceManager::new().available_tools();
+    let packages = to_package_id_with(&tool_snapshot, id);
     // `--scope both` is two independent single-scope writes: the storage layer
     // exposes one scope per critical section and no two-scope transaction, so
     // a failure on the second scope cannot roll the first one back. Rather
@@ -2270,32 +2330,25 @@ fn set_enabled(
         // The loaded list is the effective one (DenyAll fallback included),
         // so saving it freezes an uninitialized DenyAll scope with exactly
         // what the user saw plus this change — the GUI's shape too.
-        let mut ids =
-            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
+        let mut ids = load_disabled_bundles_for(connector_scope);
         if enabled {
             // Drop the normalized projection, not just the exact spelling:
             // the verification below checks the same projection, so a stale
             // differently-spelled entry (a companion skill id still spelled
             // raw) must not survive an enable and deadlock every retry into
             // a remedy-less hard failure.
-            ids.retain(|existing| {
-                pinvou3_lib::features::marketplace::scope::to_package_id_with(
-                    &tool_snapshot,
-                    existing,
-                ) != packages
-            });
+            ids.retain(|existing| to_package_id_with(&tool_snapshot, existing) != packages);
         } else if !ids.iter().any(|existing| existing == &packages) {
             ids.push(packages.clone());
         }
-        pinvou3_lib::features::marketplace::save_disabled_bundles_for(connector_scope, &ids)
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "plugins {action}: could not update disabled bundles for {id} in \
+        save_disabled_bundles_for(connector_scope, &ids).map_err(|error| {
+            CliError::failed(format!(
+                "plugins {action}: could not update disabled bundles for {id} in \
                      scope {}: {error}{}",
-                    connector_scope.as_str(),
-                    applied_scopes_suffix(&applied)
-                ))
-            })?;
+                connector_scope.as_str(),
+                applied_scopes_suffix(&applied)
+            ))
+        })?;
         // Round-44 review: verify against a REAL read-back of what the writer
         // persisted — the previous check recomputed the same pure function
         // over the same in-memory list, so the guard below was dead code and
@@ -2307,12 +2360,10 @@ fn set_enabled(
         // already surfaced through the `?`. Fail closed in both directions:
         // an enable that did not stick re-activates the package, and a lost
         // disable leaves it ACTIVE while the caller sees success.
-        let persisted =
-            pinvou3_lib::features::marketplace::load_disabled_bundles_for(connector_scope);
-        let recorded = persisted.iter().any(|existing| {
-            pinvou3_lib::features::marketplace::scope::to_package_id_with(&tool_snapshot, existing)
-                == packages
-        });
+        let persisted = load_disabled_bundles_for(connector_scope);
+        let recorded = persisted
+            .iter()
+            .any(|existing| to_package_id_with(&tool_snapshot, existing) == packages);
         if recorded == enabled {
             return Err(CliError::failed(format!(
                 "plugins {action}: could not persist {id} for scope {} (the resolved \
@@ -2392,9 +2443,9 @@ fn project_skills(enabled: bool, output: OutputMode) -> Result<CliOutcome, CliEr
     // `scope::set_project_skills_enabled` (the scope.rs storage the GUI
     // set_project_skills_enabled command writes). A failing write propagates;
     // the getter still verifies the persisted value.
-    pinvou3_lib::features::marketplace::scope::set_project_skills_enabled(enabled)
+    set_project_skills_enabled(enabled)
         .map_err(|error| CliError::failed(format!("plugins project-skills: {error}")))?;
-    if pinvou3_lib::features::marketplace::scope::project_skills_enabled() != enabled {
+    if project_skills_enabled() != enabled {
         return Err(CliError::failed(
             "plugins project-skills: could not persist the new value (the storage write \
              failed or was dropped)",
@@ -2558,8 +2609,7 @@ fn wrapper_zip_structure_overhead(entries: &[(String, Vec<u8>)]) -> u64 {
     entries
         .iter()
         .map(|(name, _)| {
-            (LOCAL_FILE_HEADER + CENTRAL_DIRECTORY_ENTRY)
-                .saturating_add(2 * name.as_bytes().len() as u64)
+            (LOCAL_FILE_HEADER + CENTRAL_DIRECTORY_ENTRY).saturating_add(2 * name.len() as u64)
         })
         .fold(END_OF_CENTRAL_DIRECTORY, u64::saturating_add)
 }

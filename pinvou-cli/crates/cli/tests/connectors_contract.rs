@@ -375,40 +375,8 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "connectors", "disable", "feishu", "--extra"],
         vec!["pinvou", "connectors", "logout", "feishu", "--x"],
         vec!["pinvou", "connectors", "apply-skills", "feishu", "--y"],
-        // connect --timeout must be a positive integer when present.
-        vec!["pinvou", "connectors", "connect", "feishu", "--timeout"],
-        vec![
-            "pinvou",
-            "connectors",
-            "connect",
-            "feishu",
-            "--timeout",
-            "abc",
-        ],
-        vec![
-            "pinvou",
-            "connectors",
-            "connect",
-            "feishu",
-            "--timeout",
-            "0",
-        ],
-        vec![
-            "pinvou",
-            "connectors",
-            "connect",
-            "feishu",
-            "--timeout",
-            "-5",
-        ],
-        vec![
-            "pinvou",
-            "connectors",
-            "connect",
-            "feishu",
-            "--timeout",
-            "1.5",
-        ],
+        // connect --timeout must be a positive integer when present (the bad
+        // values are looped over below); an unknown option is refused too.
         vec!["pinvou", "connectors", "connect", "feishu", "--bogus"],
         vec![
             "pinvou",
@@ -450,6 +418,24 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
     ];
     for arguments in &invalid {
         let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+    }
+
+    // connect --timeout must be a positive integer when present: a missing,
+    // empty, non-numeric, zero, negative or fractional value is a usage
+    // error (the bad value stays in the failure label).
+    for bad in ["", "abc", "0", "-5", "1.5"] {
+        let arguments = vec![
+            "pinvou",
+            "connectors",
+            "connect",
+            "feishu",
+            "--timeout",
+            bad,
+        ];
+        let error = parse_args(arguments.clone()).expect_err(&format!(
+            "connect feishu --timeout {bad:?} must be rejected"
+        ));
         assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
     }
 
@@ -836,6 +822,24 @@ fn write_fake_cli(bin: &std::path::Path, name: &str, version: &str, body: &str) 
     write_fake_cli_logged(bin, name, version, body, None);
 }
 
+/// Creates the throwaway directory a fake-vendor-CLI test stages its
+/// scripted stand-ins into. The directory then becomes the test's whole
+/// PATH via `VendorCliGuard::new_at`, whose `Drop` removes it again — so a
+/// test must NOT clean it up itself.
+#[cfg(unix)]
+fn fake_bin_dir(label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let bin = std::env::temp_dir().join(format!(
+        "pinvou-cli-connectors-fake-bin-{label}-{}-{nonce}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&bin).unwrap();
+    bin
+}
+
 /// Writes a scripted vendor CLI stand-in. Every invocation appends its argv
 /// to `args_log` (when given) before dispatching, so tests can pin the exact
 /// argv each spawn receives; `--version` is answered by the prelude.
@@ -865,15 +869,7 @@ fn write_fake_cli_logged(
 fn vendor_cli_argv_is_passed_exactly_once() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("argv-once");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("argv-once");
     let args_file = bin.join("seen-args.txt");
     // Every spawn appends its argv to the log; doubled argv (the regression
     // this pins) would repeat entries. The status response reports feishu as
@@ -910,7 +906,6 @@ fn vendor_cli_argv_is_passed_exactly_once() {
         vec!["--version", "auth", "status", "--json"],
         "vendor argv must be passed exactly once per spawn"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -918,15 +913,7 @@ fn vendor_cli_argv_is_passed_exactly_once() {
 fn connect_failure_carries_the_captured_login_link() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("connect-note");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("connect-note");
     // The fake login child prints the authorize link and then blocks (like
     // the real vendor CLIs, which stay alive until the user authorizes);
     // the connect budget expires first and the error must carry the link.
@@ -952,7 +939,6 @@ fn connect_failure_carries_the_captured_login_link() {
         message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
         "the failure must surface the captured login link: {message}"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -960,15 +946,7 @@ fn connect_failure_carries_the_captured_login_link() {
 fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("connect-no-code");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("connect-no-code");
     // dws prints only the authorize link and exits 0 — no user code line, the
     // feishu/tmeet/wecom situation. The old `while url.is_none() ||
     // user_code.is_none()` wait burned the whole 60s `login_url_wait_secs`
@@ -1002,7 +980,6 @@ fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
         message.contains("exited before authorization completed"),
         "{message}"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1010,15 +987,7 @@ fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
 fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("connect-dingtalk-code");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("connect-dingtalk-code");
     // dingtalk's login page needs the `user_code` the vendor CLI prints on a
     // separate line after the authorize link; the GUI loop keeps draining
     // after the bare URL until both halves are in hand. The CLI must do the
@@ -1060,7 +1029,6 @@ fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
         message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
         "the failure must surface the captured login link: {message}"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1068,15 +1036,7 @@ fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
 fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("wecom-qr");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("wecom-qr");
     // The vendor writes `qr.png` into its working directory around the time
     // it prints the (landing-page) URL, then blocks waiting for the scan.
     write_fake_cli(
@@ -1105,7 +1065,6 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
         message.contains("one-scan login grant") && message.contains("delete it"),
         "the QR note must disclose the credential-equivalent leftover: {message}"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1113,15 +1072,7 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
 fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("connect-vendor-tail");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("connect-vendor-tail");
     // The single commonest dingtalk onboarding blocker: the organization has
     // not enabled CLI data access, `dws auth login` says so on its own
     // output and exits. That output is piped (the drainer needs it to find
@@ -1159,7 +1110,6 @@ fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
         message.contains("[redacted credential line]"),
         "the credential line must be replaced, not silently dropped: {message}"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1167,15 +1117,7 @@ fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
 fn logout_and_apply_skills_remove_the_companion_skill_directories() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("logout-skill-hide");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("logout-skill-hide");
     // `auth logout` succeeds; every other subcommand (notably `auth status`)
     // falls through to exit 1, so the connector reads as not connected.
     write_fake_cli(
@@ -1236,8 +1178,6 @@ fn logout_and_apply_skills_remove_the_companion_skill_directories() {
     let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
     assert_eq!(value["skills_unpack"], "app-only");
     assert_eq!(value["ruleset_refresh"], "gui-only");
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1245,15 +1185,7 @@ fn logout_and_apply_skills_remove_the_companion_skill_directories() {
 fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("logout-old-tmeet");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("logout-old-tmeet");
     let args_file = bin.join("seen-args.txt");
     // tmeet 1.0.10 parses but sits below the install gate: status /
     // ensure-cli treat it as upgrade_required, yet the vendor credentials it
@@ -1285,7 +1217,6 @@ fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
         vec!["--version", "auth", "logout"],
         "logout must run the real `tmeet auth logout` even below the minimum version"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// A below-minimum install is `upgrade_required`, but the vendor credentials
@@ -1303,15 +1234,7 @@ fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
 fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("upgrade-gate-probe");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("upgrade-gate-probe");
     // wecom 1.2.0 parses but sits below the 1.2.1 baseline; its status probe
     // answers the whole line `authorized` with exit 0 like a connected one.
     write_fake_cli(
@@ -1373,8 +1296,6 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
     );
     assert_eq!(entry["ok"], false, "{entry}");
     assert!(entry.get("note").is_none(), "{entry}");
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// Round-49 feishu version-gate parity (M3): the GUI gates lark-cli on
@@ -1395,15 +1316,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
 fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("feishu-below-min");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("feishu-below-min");
     // lark-cli 1.0.65 parses but sits below the 1.0.95 baseline; its status
     // probe answers the ready JSON like a connected one.
     write_fake_cli(
@@ -1446,8 +1359,6 @@ fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
         "the human row must name the below-minimum version: {}",
         outcome.stdout
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// Round-49 feishu version-gate parity (M3), the unparseable half: the GUI's
@@ -1464,15 +1375,7 @@ fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
 fn feishu_with_an_unparseable_version_reports_not_installed() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("feishu-unparseable");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("feishu-unparseable");
     // The `--version` prelude prints a line with no parseable number; every
     // other subcommand falls through to the trailing exit 1.
     write_fake_cli(&bin, "lark-cli", "lark-cli version banana", "");
@@ -1500,8 +1403,6 @@ fn feishu_with_an_unparseable_version_reports_not_installed() {
         entry["configured"], false,
         "the feishu DTO carries configured:false in the uninstalled shape: {entry}"
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// Round-48's enable-scoped skill-tree guard, pinned directly (the disable
@@ -1592,15 +1493,7 @@ fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
 fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("enable-not-connected");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("enable-not-connected");
     // `--version` answers (the enable path does not gate on it, the probe
     // just needs a spawnable CLI); `auth status` exits 0 with an explicit
     // not-authenticated JSON — a CLEAN not-connected verdict, not an error.
@@ -1642,8 +1535,6 @@ fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
         skills.join("unrelated").is_dir(),
         "the hide direction must not wipe unlisted entries in the skills root"
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// A vendor CLI that writes past the 8 MiB drain cap must still complete.
@@ -1660,15 +1551,7 @@ fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
 fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("drain-past-cap");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("drain-past-cap");
     // `yes x | head -c 9961472` produces 9,961,472 bytes (8 MiB cap
     // 8,388,608 + ~1.5 MiB margin, far more than a 64 KiB pipe buffer) and
     // then exits 0 like a chatty-but-healthy vendor CLI.
@@ -1706,8 +1589,6 @@ fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
         "{}",
         outcome.stdout
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// A status probe that fails AFTER the version gate answered must keep the
@@ -1726,15 +1607,7 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
 
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("wedged-probe");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("wedged-probe");
     // The self-wedge must chmod the absolute path (the CLI PATH-searches the
     // spawn, so `$0` is the bare name) through `/bin/chmod` (the guard sets
     // PATH to this directory alone, so a bare `chmod` cannot resolve).
@@ -1790,8 +1663,6 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
         "the human row must surface the probe failure: {}",
         outcome.stdout
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1801,15 +1672,7 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
 
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("logout-success");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("logout-success");
     let args_file = bin.join("seen-args.txt");
     // Usable-version fakes: `--version` answers through the prelude, the
     // logout subcommand exits 0 like a real logged-out vendor CLI.
@@ -1881,7 +1744,6 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
             "{id}: logout must mark the store record disconnected"
         );
     }
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1891,15 +1753,7 @@ fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
 
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("logout-broken-probe");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("logout-broken-probe");
     use std::os::unix::fs::PermissionsExt as _;
     let args_file = bin.join("seen-args.txt");
     // A CLI that resolves but whose every invocation exits non-zero (npm
@@ -1950,7 +1804,6 @@ fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
         vec!["--version"],
         "no auth logout may run when the probe is unconfirmed"
     );
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 #[test]
@@ -1962,14 +1815,7 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     // The GUI's tmeet install applies the user npm prefix, so a GUI-installed
     // tmeet lives in <prefix>/bin/tmeet — typically not on PATH. Resolution
     // must find it there exactly like the GUI's connector_cli_program.
-    let prefix = std::env::temp_dir().join(format!(
-        "pinvoy-cli-connectors-npm-prefix-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let prefix = fake_bin_dir("npm-prefix");
     std::fs::create_dir_all(prefix.join("bin")).unwrap();
     let script = prefix.join("bin").join("tmeet");
     std::fs::write(
@@ -2019,15 +1865,7 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
 fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("connect-scope-sync");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("connect-scope-sync");
     // dingtalk (dws): a lock-table connector (unlike tmeet's npm lane — it
     // has no lock-table entry, so the asset-pin mutation below would be a
     // no-op there). `--version` answers, `auth login` prints the login URL
@@ -2092,8 +1930,6 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
         "connect must not fabricate asset pins the GUI never writes: {:?}",
         record.assets
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// The feishu poll judges readiness by a status probe on every tick; the
@@ -2122,15 +1958,7 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
 fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("connect-probe-hiccup");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
+    let bin = fake_bin_dir("connect-probe-hiccup");
     let hidden = bin.join("lark-cli.off");
     let counter = bin.join("status-probes");
     let script = bin.join("lark-cli");
@@ -2217,8 +2045,6 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
         feishu_entry,
         "the connect must still run the DenyAll code-scope sync after a probe error: {persisted}"
     );
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 /// `ensure-cli`'s user-facing claim is "present and executes". The final

@@ -137,15 +137,14 @@ pub enum ProjectsCommand {
 
 /// Flags that carry a value, per subcommand. `--root` is the one repeatable
 /// flag (the GUI create/update take a root list), so it is pre-extracted
-/// before the single-use flags go through the shared parser.
-const CREATE_OPTIONS: &[&str] = &["--name"];
-const UPDATE_OPTIONS: &[&str] = &["--name"];
+/// before the single-use flags go through the shared parser. `create` and
+/// `update` both accept exactly `--name`.
+const NAME_OPTIONS: &[&str] = &["--name"];
 const UPDATE_FLAGS: &[&str] = &["--clear-roots"];
 
-/// Boolean (valueless) flags, per subcommand.
-const DELETE_FLAGS: &[&str] = &["--yes"];
-const MOVE_FLAGS: &[&str] = &["--yes"];
-const REBIND_FLAGS: &[&str] = &["--yes"];
+/// Boolean (valueless) flags, per subcommand. `delete`, `move` and `rebind`
+/// all gate on exactly `--yes`.
+const YES_FLAGS: &[&str] = &["--yes"];
 
 pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
     let subcommand = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
@@ -157,8 +156,8 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
         }
         "create" => {
             let (rest, roots) = extract_roots(rest)?;
-            let (options, _) = parse_flags(&rest, CREATE_OPTIONS, &[])?;
-            let name = option(&options, "--name")
+            let (options, _) = parse_flags(&rest, NAME_OPTIONS, &[])?;
+            let name = crate::support::family_option(&options, "--name")
                 .ok_or_else(|| CliError::usage("projects create requires --name N"))?
                 .to_owned();
             if name.trim().is_empty() {
@@ -169,8 +168,10 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
         "update" => {
             let id = require_id(rest.first(), "update")?;
             let (rest, roots) = extract_roots(&rest[1..])?;
-            let (options, flags) = parse_flags(&rest, UPDATE_OPTIONS, UPDATE_FLAGS)?;
-            if option(&options, "--name").is_some_and(|name| name.trim().is_empty()) {
+            let (options, flags) = parse_flags(&rest, NAME_OPTIONS, UPDATE_FLAGS)?;
+            if crate::support::family_option(&options, "--name")
+                .is_some_and(|name| name.trim().is_empty())
+            {
                 return Err(CliError::usage("projects update --name must not be empty"));
             }
             // `--clear-roots` expresses the GUI's Some([]) (drop every root):
@@ -190,13 +191,13 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
             };
             Ok(ProjectsCommand::Update {
                 id,
-                name: option(&options, "--name").map(str::to_owned),
+                name: crate::support::family_option(&options, "--name").map(str::to_owned),
                 roots,
             })
         }
         "delete" => {
             let id = require_id(rest.first(), "delete")?;
-            let (_, flags) = parse_flags(&rest[1..], &[], DELETE_FLAGS)?;
+            let (_, flags) = parse_flags(&rest[1..], &[], YES_FLAGS)?;
             Ok(ProjectsCommand::Delete {
                 id,
                 yes: flags.contains(&"--yes"),
@@ -242,7 +243,7 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
                     (Some(id.clone()), &[])
                 }
             };
-            let (_, flags) = parse_flags(flag_tail, &[], MOVE_FLAGS)?;
+            let (_, flags) = parse_flags(flag_tail, &[], YES_FLAGS)?;
             Ok(ProjectsCommand::Move {
                 session_id,
                 project_id,
@@ -259,7 +260,7 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
             // empty, relative and filesystem-root `from` alike.
             let from = require_path(rest.first(), "rebind <from> <to>")?;
             let to = require_path(rest.get(1), "rebind <from> <to>")?;
-            let (_, flags) = parse_flags(&rest[2..], &[], REBIND_FLAGS)?;
+            let (_, flags) = parse_flags(&rest[2..], &[], YES_FLAGS)?;
             Ok(ProjectsCommand::Rebind {
                 from,
                 to,
@@ -296,24 +297,13 @@ fn extract_roots(values: &[String]) -> Result<(Vec<String>, Vec<PathBuf>), CliEr
 }
 
 fn require_id(value: Option<&String>, subcommand: &str) -> Result<String, CliError> {
-    let id = value
-        .ok_or_else(|| CliError::usage(format!("projects {subcommand} requires an id")))?
-        .clone();
-    if id.is_empty() {
-        return Err(CliError::usage(format!(
-            "projects {subcommand} requires an id"
-        )));
-    }
-    // A flag-shaped token in the id slot (`projects delete --yes` with the
-    // id forgotten) must name the real mistake here, not two steps later at
-    // `require_yes`, which would tell the user to pass the flag they just
-    // passed. Same discipline as `require_path` / `move`'s positional guard.
-    if id.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "projects {subcommand}: expected an id, got flag-shaped {id:?}"
-        )));
-    }
-    Ok(id)
+    // Shared guard (`support::require_family_id`, which carries the
+    // flag-shaped-id rationale, including the `require_yes` misdirection it
+    // avoids); both messages name the subcommand: "projects {subcommand}
+    // requires an id" / "projects {subcommand}: expected an id, got
+    // flag-shaped …".
+    let prefix = format!("projects {subcommand}");
+    crate::support::require_family_id(value, &prefix, &prefix, "an id")
 }
 
 /// Positional path token for `rebind`: required, and never flag-shaped (an
@@ -334,12 +324,8 @@ fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "projects")
-}
-
-fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    crate::support::family_option(options, name)
 }
 
 // ─────────────────────────────── execute ───────────────────────────────
@@ -842,6 +828,16 @@ fn validate_rebind_to(to: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+/// The typed overlap refusal (`REBIND_ROOTS_CONFLICT` copy stated once): the
+/// plan pre-flight and the roots commit both map `RebindRootsError::Overlap`
+/// onto the same message, and the two sites must not drift.
+fn rebind_roots_conflict(context: impl std::fmt::Display) -> CliError {
+    CliError::failed(format!(
+        "projects rebind: rebinding would produce overlapping project roots \
+         (REBIND_ROOTS_CONFLICT): {context:#}"
+    ))
+}
+
 /// Mirror of the GUI's `reject_nested_rebind_target` (equality is handled by
 /// the caller first): a target inside the old directory deepens on every
 /// rerun (/a/x → /a/x/new/x → …), breaking idempotency. Round-38 review:
@@ -858,6 +854,18 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
     let from_key = pinvou3_lib::platform::filesystem_path_identity_key(&from.to_string_lossy());
     pinvou3_lib::platform::path_identity_is_same_or_nested(&to_key, &from_key)
         || pinvou3_lib::platform::path_identity_is_same_or_nested(&from_key, &to_key)
+}
+
+/// The folded path-identity comparison shared by the metadata-replay
+/// classifier and the to-lane admit scan: a workspace is behind (or ahead
+/// of) its binding when the case/separator-folded identity keys — with the
+/// trailing `/` trimmed on BOTH sides, the GUI's round-14 SF-2 trim —
+/// disagree. (The no-op-rename short-circuit above deliberately trims both
+/// separators instead and keeps its own spelling.)
+fn folded_workspace_differs(a: &Path, b: &Path) -> bool {
+    pinvou3_lib::platform::filesystem_path_identity_key(&a.to_string_lossy()).trim_end_matches('/')
+        != pinvou3_lib::platform::filesystem_path_identity_key(&b.to_string_lossy())
+            .trim_end_matches('/')
 }
 
 /// Mirror of `rebind_workspace_root` (storage half, review #463/#464 lineage):
@@ -884,7 +892,7 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
 /// pre-rewrite snapshot (see the module header). Per-session failures never
 /// abort the run: like the GUI, they are reported (`failed_session_ids`) and
 /// a rerun converges them; only a store call failing outright exits 1.
-
+///
 /// Round-45 review: the post-lane codex fence reads the on-disk index
 /// fresh. ACP binds persist index-only, so the disk is the only shared
 /// truth a second process has: a session the GUI binds under `from` after
@@ -911,9 +919,16 @@ fn fence_stragglers_from_disk(from_display: &Path, final_stale: &mut Vec<String>
         }
     };
     for (session_id, _) in fence_agents.sessions_under_workspace(from_display) {
-        if !final_stale.contains(&session_id) {
-            final_stale.push(session_id);
-        }
+        push_unique(final_stale, session_id);
+    }
+}
+
+/// Order-preserving deduplicated push for the rebind's accumulating id
+/// lists: append only NEW ids, keeping first-seen order — the contains-guard
+/// the fences and lane merges hand-rolled, stated once.
+fn push_unique(out: &mut Vec<String>, id: String) {
+    if !out.contains(&id) {
+        out.push(id);
     }
 }
 
@@ -963,9 +978,9 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // a future validator edit that emits a trailing `/` on Windows slip past
     // the fold.
     if pinvou3_lib::platform::filesystem_path_identity_key(
-        &from_display.to_string_lossy().trim_end_matches(['/', '\\']),
+        from_display.to_string_lossy().trim_end_matches(['/', '\\']),
     ) == pinvou3_lib::platform::filesystem_path_identity_key(
-        &to_display.to_string_lossy().trim_end_matches(['/', '\\']),
+        to_display.to_string_lossy().trim_end_matches(['/', '\\']),
     ) {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
@@ -990,10 +1005,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
             // `Persist` keeps out of the conflict copy here like the GUI's
             // plan arm (the commit path owns REBIND_ROOTS_PERSIST).
             match error {
-                RebindRootsError::Overlap(context) => CliError::failed(format!(
-                    "projects rebind: rebinding would produce overlapping project roots \
-                     (REBIND_ROOTS_CONFLICT): {context:#}"
-                )),
+                RebindRootsError::Overlap(context) => rebind_roots_conflict(context),
                 error => project_error("rebind", error),
             }
         })?;
@@ -1032,9 +1044,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // them via the on-disk prefix scan.
     let mut final_stale = prefix_outcome.sidecar_final_stale.clone();
     for session_id in &plain_rebind.failed_session_ids {
-        if !final_stale.contains(session_id) {
-            final_stale.push(session_id.clone());
-        }
+        push_unique(&mut final_stale, session_id.clone());
     }
     // Plain-lane fence rescan, the GUI's `plain_lane_fence_rescan`: a binding
     // whose rewrite succeeded no longer matches `from`, and a failed rewrite
@@ -1046,9 +1056,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // "a rerun converges them" true instead of silent. (The contains-guard
     // keeps this a pure addition of NEW hits, exactly like the GUI.)
     for (session_id, _) in sessions.workspace_bindings_under(&from_display) {
-        if !final_stale.contains(&session_id) {
-            final_stale.push(session_id);
-        }
+        push_unique(&mut final_stale, session_id);
     }
     // Codex twin of that plain-lane fence (the GUI's review-#463 round-15
     // rescan): a codex session bound under `from` while this run was in
@@ -1122,11 +1130,12 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // The ghost classifier's moved-this-run term: the union of what BOTH
     // lanes actually rewrote this run (the GUI's `classify_absent_record_session`
     // input; a to-lane retry admit is in neither set when its earlier run
-    // did the moving).
-    let moved_this_run: HashSet<String> = prefix_outcome
-        .affected
+    // did the moving). A superset of `code_rebound_ids` — the codex half is
+    // the same `affected` mapping — so it is derived from it instead of
+    // rebuilt.
+    let moved_this_run: HashSet<String> = code_rebound_ids
         .iter()
-        .map(|(session_id, _)| session_id.clone())
+        .cloned()
         .chain(
             plain_rebind
                 .rebound
@@ -1207,14 +1216,9 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         let pre_translation =
             SessionAgentStore::rebind_target_path(bound_path, &to_display, &from_display)
                 .unwrap_or_else(|| bound_path.clone());
-        let metadata_behind_binding = pre_sync_workspace.as_ref().is_some_and(|pre_sync| {
-            pinvou3_lib::platform::filesystem_path_identity_key(&pre_sync.to_string_lossy())
-                .trim_end_matches('/')
-                != pinvou3_lib::platform::filesystem_path_identity_key(
-                    &pre_translation.to_string_lossy(),
-                )
-                .trim_end_matches('/')
-        });
+        let metadata_behind_binding = pre_sync_workspace
+            .as_ref()
+            .is_some_and(|pre_sync| folded_workspace_differs(pre_sync, &pre_translation));
         // The two halves translate with the session's PRE-sync metadata
         // workspace only when it actually lags the binding the scan
         // admitted (the stranded half-migration shape): run 1 can move the
@@ -1351,10 +1355,8 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // silently dropped — otherwise a boot restore could resurrect the old
     // path while the run claims success.
     for session_id in &final_stale {
-        if !metadata_targets.iter().any(|(id, _)| id == session_id)
-            && !failed_session_ids.contains(session_id)
-        {
-            failed_session_ids.push(session_id.clone());
+        if !metadata_targets.iter().any(|(id, _)| id == session_id) {
+            push_unique(&mut failed_session_ids, session_id.clone());
         }
     }
     // Project roots LAST: the overlap invariant was pre-flighted above and is
@@ -1375,10 +1377,7 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                 );
             }
             match error {
-                RebindRootsError::Overlap(context) => CliError::failed(format!(
-                    "projects rebind: rebinding would produce overlapping project roots \
-                     (REBIND_ROOTS_CONFLICT): {context:#}"
-                )),
+                RebindRootsError::Overlap(context) => rebind_roots_conflict(context),
                 // The typed marker rides the message the same way the GUI's
                 // command layer surfaces it (store.rs: the roots were
                 // restored, only the persist failed).
@@ -1420,18 +1419,12 @@ fn admit_to_lane_retry_candidate(
             // the GUI applies to both sides, its round-14 SF-2): a Windows
             // case/separator spelling drift between metadata and binding
             // must not re-admit a healthy session for a whole-record
-            // rewrite plus a false "rebound" report entry. The other
-            // Windows deviations this module documents
-            // (`path_is_under_root`, `rebind_target_is_same_or_nested`)
-            // follow the same fold.
-            pinvou3_lib::platform::filesystem_path_identity_key(
-                &session.metadata.workspace.to_string_lossy(),
-            )
-            .trim_end_matches('/')
-                != pinvou3_lib::platform::filesystem_path_identity_key(
-                    &bound_path.to_string_lossy(),
-                )
-                .trim_end_matches('/')
+            // rewrite plus a false "rebound" report entry. The comparison
+            // lives on [`folded_workspace_differs`], shared with the
+            // metadata-replay classifier; the other Windows deviations this
+            // module documents (`path_is_under_root`,
+            // `rebind_target_is_same_or_nested`) follow the same fold.
+            folded_workspace_differs(&session.metadata.workspace, &bound_path)
         }
         Err(_) => true,
     };

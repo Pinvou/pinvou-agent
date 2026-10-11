@@ -142,15 +142,13 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
     // canonicalized gate below): its content is embedded in the same
     // permanent receipt, and a scripted `--body-file ~/.aws/credentials`
     // is the same footgun the attachment lane refuses.
-    let body_canonical = std::fs::canonicalize(&submit.body_file).map_err(|error| {
-        CliError::failed(format!(
-            "feedback submit: cannot resolve body file {}: {error}",
-            submit.body_file.display()
-        ))
-    })?;
-    crate::artifacts::check_sensitive_path(&body_canonical).map_err(|reason| {
-        CliError::failed(format!("feedback submit: refusing body file: {reason}"))
-    })?;
+    let body_canonical = crate::support::gate_canonical_path(
+        &submit.body_file,
+        "feedback submit",
+        "body file",
+        "feedback submit",
+        "body file",
+    )?;
     // The body is validated further down — oversized bodies are REJECTED,
     // not truncated; the cap only stops an unbounded file from being loaded
     // in the first place. The CANONICAL path is what was policy-checked
@@ -191,15 +189,16 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
         // applies (`artifacts::check_sensitive_path`, the mirror of
         // `platform::path_policy::check_sensitive_components`). The canonical
         // form is what the policy is defined over, so resolve first.
-        let canonical = std::fs::canonicalize(path).map_err(|error| {
-            CliError::failed(format!(
-                "feedback submit: cannot resolve attachment {}: {error}",
-                path.display()
-            ))
-        })?;
-        crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
-            CliError::failed(format!("feedback submit: refusing attachment: {reason}"))
-        })?;
+        // The canonical form is what the policy is defined over, so resolve
+        // first. Nothing downstream reads the canonical path here — only the
+        // gate runs on it (the request records the argv spelling).
+        crate::support::gate_canonical_path(
+            path,
+            "feedback submit",
+            "attachment",
+            "feedback submit",
+            "attachment",
+        )?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -393,15 +392,15 @@ impl Drop for PendingBundleGuard {
         // well would tell the user their feedback was not recorded when it
         // was. The file is `0600` and stays theirs; the warning only says
         // that nothing will ever retry it.
-        if let Err(error) = std::fs::remove_file(&self.path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                note!(
-                    "warning: feedback submit: the staged bundle {} could not be removed \
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            note!(
+                "warning: feedback submit: the staged bundle {} could not be removed \
                      after the run concluded ({error}); delete it manually — \
                      nothing will retry it",
-                    self.path.display()
-                );
-            }
+                self.path.display()
+            );
         }
     }
 }
@@ -412,19 +411,19 @@ impl Drop for PendingBundleGuard {
 fn translate_feedback_text(text: &str) -> String {
     if text.contains("请填写反馈说明") {
         "a feedback description is required".to_owned()
-    } else if text.contains("反馈说明最多") {
-        // The character count is embedded in the original message.
+    } else if text.contains("反馈说明最多") || text.contains("反馈标题最多") {
+        // The character count is embedded in the original message; the
+        // marker decides the English noun ("description" / "title").
+        let noun = if text.contains("反馈说明最多") {
+            "description"
+        } else {
+            "title"
+        };
         let count = text
             .chars()
             .filter(char::is_ascii_digit)
             .collect::<String>();
-        format!("the feedback description allows at most {count} characters")
-    } else if text.contains("反馈标题最多") {
-        let count = text
-            .chars()
-            .filter(char::is_ascii_digit)
-            .collect::<String>();
-        format!("the feedback title allows at most {count} characters")
+        format!("the feedback {noun} allows at most {count} characters")
     } else if text.contains("反馈入口来源无效") {
         "invalid feedback entry point".to_owned()
     } else if text.contains("社区版不会上传反馈") {

@@ -384,7 +384,7 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
         "connect" => {
             let connector = require_connector(rest, "connect")?;
             let (options, _) = parse_flags(&rest[1..], CONNECT_OPTIONS, &[])?;
-            let timeout = match option(&options, "--timeout") {
+            let timeout = match crate::support::family_option(&options, "--timeout") {
                 None => CONNECT_DEFAULT_TIMEOUT_SECS,
                 Some(value) => value
                     .parse::<u64>()
@@ -413,7 +413,7 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                 "connect" => {
                     let (options, flags) =
                         parse_flags(rest, IMA_CONNECT_OPTIONS, IMA_CONNECT_FLAGS)?;
-                    let client_id_env = option(&options, "--client-id-env")
+                    let client_id_env = crate::support::family_option(&options, "--client-id-env")
                         .ok_or_else(|| {
                             CliError::usage(
                                 "connectors ima connect requires --client-id-env VAR (secrets are never accepted as argv values)",
@@ -425,7 +425,8 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                     // echoed by a later not-set error), the same doctrine the
                     // plugins --secret gate established.
                     crate::support::ensure_env_var_name("--client-id-env", &client_id_env)?;
-                    let api_key_env = match option(&options, "--api-key-env") {
+                    let api_key_env = match crate::support::family_option(&options, "--api-key-env")
+                    {
                         Some(value) => {
                             crate::support::ensure_env_var_name("--api-key-env", value)?;
                             Some(value.to_owned())
@@ -473,12 +474,8 @@ fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "connectors")
-}
-
-fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    crate::support::family_option(options, name)
 }
 
 // ─────────────────────── vendor CLI subprocess helpers ───────────────────────
@@ -492,10 +489,10 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 /// prefixes would make CLI-installed and GUI-installed npm CLIs invisible to
 /// each other.
 fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
-    if let Some(path) = locked_cli_path(spec.cli_bin) {
-        if path.is_file() {
-            return Some(path);
-        }
+    if let Some(path) = locked_cli_path(spec.cli_bin)
+        && path.is_file()
+    {
+        return Some(path);
     }
     if let Some(bin_dir) = pinvou3_lib::platform::paths::managed_connector_bin_dir() {
         let candidate = if cfg!(windows) {
@@ -503,7 +500,7 @@ fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
                 spec.cli_bin,
             ))
         } else {
-            bin_dir.join(&spec.cli_bin)
+            bin_dir.join(spec.cli_bin)
         };
         if candidate.is_file() {
             return Some(candidate);
@@ -514,8 +511,17 @@ fn resolve_vendor_cli(spec: &VendorSpec) -> Option<PathBuf> {
             return Some(candidate);
         }
     }
+    find_first_on_path(spec.cli_bin)
+}
+
+/// First existing `PATH` × platform-candidate match for `program` — the
+/// final fallback of [`resolve_vendor_cli`] and the whole lookup the npm
+/// lane uses (`None` also covers an unset `PATH`). Directories are scanned
+/// in PATH order, each against every `crate::support::binary_candidates`
+/// spelling, so the first PATH directory holding any candidate wins.
+fn find_first_on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let candidates = crate::support::binary_candidates(spec.cli_bin);
+    let candidates = crate::support::binary_candidates(program);
     std::env::split_paths(&path)
         .flat_map(|dir| candidates.iter().map(move |candidate| dir.join(candidate)))
         .find(|candidate| candidate.is_file())
@@ -541,10 +547,10 @@ fn npm_prefix_candidates(program: &str) -> Vec<PathBuf> {
     } else {
         std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npm-global"))
     };
-    if let Some(prefix) = default_prefix {
-        if !prefixes.contains(&prefix) {
-            prefixes.push(prefix);
-        }
+    if let Some(prefix) = default_prefix
+        && !prefixes.contains(&prefix)
+    {
+        prefixes.push(prefix);
     }
     let mut candidates = Vec::new();
     for prefix in &prefixes {
@@ -554,10 +560,10 @@ fn npm_prefix_candidates(program: &str) -> Vec<PathBuf> {
             candidates.push(prefix.join("bin").join(program));
         }
     }
-    if !cfg!(windows) {
-        if let Some(home) = std::env::var_os("HOME") {
-            candidates.push(PathBuf::from(home).join(".local").join("bin").join(program));
-        }
+    if !cfg!(windows)
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        candidates.push(PathBuf::from(home).join(".local").join("bin").join(program));
     }
     candidates
 }
@@ -616,13 +622,12 @@ fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
         // Windows (npm otherwise writes to the roaming profile).
         if std::env::var_os("NPM_CONFIG_CACHE").is_none()
             && std::env::var_os("npm_config_cache").is_none()
+            && let Some(cache) = std::env::var_os("LOCALAPPDATA")
         {
-            if let Some(cache) = std::env::var_os("LOCALAPPDATA") {
-                let cache = PathBuf::from(cache).join("pinvou3").join("npm-cache");
-                let _ = std::fs::create_dir_all(&cache);
-                cmd.env("NPM_CONFIG_CACHE", &cache)
-                    .env("npm_config_cache", &cache);
-            }
+            let cache = PathBuf::from(cache).join("pinvou3").join("npm-cache");
+            let _ = std::fs::create_dir_all(&cache);
+            cmd.env("NPM_CONFIG_CACHE", &cache)
+                .env("npm_config_cache", &cache);
         }
     }
     let mut paths = vec![path_entry];
@@ -672,15 +677,19 @@ fn redact_argv_pairing(args: &[&str]) -> String {
     pinvou3_lib::platform::credential_store::redact_secret(&joined)
 }
 
-/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — like
-/// [`run_cli`], with a hard kill at `deadline`: the GUI cancels through its
-/// host, so the CLI must enforce the `--timeout` budget itself on every
-/// blocking phase.
-fn run_cli_bounded(
+/// The vendor child spawn preamble [`run_cli_bounded`] and
+/// [`spawn_and_capture_url`] shared verbatim: resolve the vendor CLI, build
+/// the command, apply the spec's envs, an optional working directory, the
+/// piped-stdio posture and the process group. Stops deliberately before
+/// `spawn_supervised` — the two callers bracket the child differently
+/// ([`GroupGuard`](crate::support::supervise::GroupGuard) vs
+/// [`LoginChildGuard`]) — so the guard registration stays at the call
+/// sites. The pinned not-found message lives here, once.
+fn spawn_vendor_command(
     spec: &VendorSpec,
     args: &[&str],
-    deadline: Instant,
-) -> Result<(bool, String, String), CliError> {
+    work_dir: Option<&Path>,
+) -> Result<Command, CliError> {
     let Some(executable) = resolve_vendor_cli(spec) else {
         return Err(CliError::failed(format!(
             "{} was not found (managed install or PATH); install it first: pinvou connectors \
@@ -694,10 +703,26 @@ fn run_cli_bounded(
     for (key, value) in spec.envs {
         cmd.env(key, value);
     }
+    if let Some(dir) = work_dir {
+        cmd.current_dir(dir);
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::support::set_process_group(&mut cmd);
+    Ok(cmd)
+}
+
+/// Runs `<cli> <args>` capturing `(success, stdout, stderr)` — like
+/// [`run_cli`], with a hard kill at `deadline`: the GUI cancels through its
+/// host, so the CLI must enforce the `--timeout` budget itself on every
+/// blocking phase.
+fn run_cli_bounded(
+    spec: &VendorSpec,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<(bool, String, String), CliError> {
+    let mut cmd = spawn_vendor_command(spec, args, None)?;
     // `spawn_supervised` is spawn + registration with the interrupt signals
     // blocked across the two: a SIGINT landing between a bare pair would
     // forward to nothing and re-raise with this child absent from the
@@ -807,26 +832,16 @@ fn run_cli_bounded(
 /// a child that outproduces the cap can still finish instead of blocking on
 /// a full pipe. Same contract as the shared
 /// [`drain_capped_to_eof`](crate::support::drain_capped_to_eof) (which
-/// voice.rs and code.rs call); this lane keeps its own exact-cap copy —
-/// no `cap + 1` keep window and no total to report.
+/// voice.rs and code.rs call), which this lane now calls instead of keeping
+/// its own exact-cap copy: the helper keeps a `cap + 1` window and reports a
+/// total, so the call passes `MAX_VENDOR_OUTPUT_BYTES - 1` and truncates the
+/// kept bytes back to the exact cap — keep-window-plus-truncate is exactly
+/// the old hand-rolled keep (the first 8 MiB bytes, everything past it read
+/// and discarded), the total is unused here, and a missing pipe still
+/// drains to an empty string.
 fn drain_vendor_output<R: std::io::Read>(pipe: Option<R>) -> String {
-    let mut kept: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 64 * 1024];
-    let Some(mut pipe) = pipe else {
-        return String::new();
-    };
-    loop {
-        match pipe.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => {
-                let room = MAX_VENDOR_OUTPUT_BYTES.saturating_sub(kept.len() as u64) as usize;
-                if room > 0 {
-                    kept.extend_from_slice(&chunk[..read.min(room)]);
-                }
-            }
-            Err(_) => break,
-        }
-    }
+    let (mut kept, _) = crate::support::drain_capped_to_eof(pipe, MAX_VENDOR_OUTPUT_BYTES - 1);
+    kept.truncate(MAX_VENDOR_OUTPUT_BYTES as usize);
     String::from_utf8_lossy(&kept).into_owned()
 }
 
@@ -893,11 +908,15 @@ fn semver_from_stream(spec: &VendorSpec, source: &str) -> Option<(u64, u64, u64)
     }
 }
 
+/// One `--version` probe: `(parsed semver if any, first non-empty version
+/// line)`.
+type VersionProbe = (Option<(u64, u64, u64)>, String);
+
 /// `(semver if parseable, first non-empty version line)` from one
 /// `--version` invocation. Presence is judged by the exit status only (the
 /// GUI's `*_cli_present`); a version line without a parseable number means
 /// "installed, version unknown" for the connectors that do not gate on one.
-fn probe_cli_version(spec: &VendorSpec) -> Option<(Option<(u64, u64, u64)>, String)> {
+fn probe_cli_version(spec: &VendorSpec) -> Option<VersionProbe> {
     let (ok, stdout, stderr) = run_cli(spec, &["--version"]).ok()?;
     if !ok {
         return None;
@@ -1369,20 +1388,7 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
         .map(|entry| {
             let mut line = format!("{}\t", entry["id"].as_str().unwrap_or("-"));
             if entry.get("credentials_present").is_some() {
-                line.push_str(&format!(
-                    "connected={}\tcredentials={}\tskill_installed={}",
-                    yes_no(bool_field(entry, "connected")),
-                    yes_no(bool_field(entry, "credentials_present")),
-                    yes_no(bool_field(entry, "skill_installed")),
-                ));
-                if let Some(note) = entry.get("note").and_then(Value::as_str) {
-                    // Same collapse discipline as the sibling version cell:
-                    // the note embeds error-chain text (round-44 review).
-                    line.push_str(&format!(
-                        "\t({})",
-                        crate::support::collapse_control_characters(note)
-                    ));
-                }
+                line.push_str(&ima_status_cells(entry));
             } else {
                 let installed = if bool_field(entry, "installed") {
                     match entry.get("version").and_then(Value::as_str) {
@@ -1420,14 +1426,14 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
                         "\tlegacy_disabled_marker=yes (run `pinvou connectors enable {id}` to clear it)"
                     ));
                 }
-                if let Some(note) = entry.get("note").and_then(Value::as_str) {
-                    // Same collapse discipline as the sibling version cell:
-                    // the note embeds error-chain text (round-44 review).
-                    line.push_str(&format!(
-                        "\t({})",
-                        crate::support::collapse_control_characters(note)
-                    ));
-                }
+            }
+            if let Some(note) = entry.get("note").and_then(Value::as_str) {
+                // Same collapse discipline as the sibling version cell:
+                // the note embeds error-chain text (round-44 review).
+                line.push_str(&format!(
+                    "\t({})",
+                    crate::support::collapse_control_characters(note)
+                ));
             }
             line
         })
@@ -1447,6 +1453,19 @@ fn yes_no(value: bool) -> &'static str {
 /// `Value` boolean read defaulting to false (JSON round-trips of DTO fields).
 fn bool_field(entry: &Value, key: &str) -> bool {
     entry.get(key).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The three ima human cells (`connected` / `credentials` /
+/// `skill_installed` as yes/no), shared by the overview row and the
+/// dedicated `connectors ima status` output so the two renderings of the
+/// same entry cannot drift.
+fn ima_status_cells(entry: &Value) -> String {
+    format!(
+        "connected={}\tcredentials={}\tskill_installed={}",
+        yes_no(bool_field(entry, "connected")),
+        yes_no(bool_field(entry, "credentials_present")),
+        yes_no(bool_field(entry, "skill_installed")),
+    )
 }
 
 /// One status object per connector, mirroring the GUI feature DTO fields
@@ -1470,7 +1489,9 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
         "legacy_disabled_marker": legacy_marker,
         "skills_applied": skills_applied(kind, disabled),
     });
-    match version_gate(spec) {
+    let gate = version_gate(spec);
+    let upgrade_required = matches!(gate, VersionGate::Upgrade { .. });
+    match gate {
         VersionGate::Missing => {
             entry["ok"] = json!(false);
             entry["connected"] = json!(false);
@@ -1518,19 +1539,21 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
                 entry["upgrade_required"] = json!(false);
             }
         }
-        VersionGate::Upgrade { raw } => {
-            // Installed but below the command-model baseline. The status
-            // probe still runs here, GUI parity: `wecom_status` /
-            // `tmeet_status` gate on `*_cli_version` (parse gate, not the
-            // minimum), so an overly old install gets the same `auth …`
-            // spawn as a usable one and reports `connected = ok &&
-            // authorized` / "Logged in" from the live probe. A pre-fix hard
-            // `connected:false, ok:false` lied "logged out" for a credential
-            // the vendor still holds. `upgrade_required: true` is the
-            // CLI-only extra the GUI handles through ensure_cli's version
-            // gate instead.
+        // Installed — usable or below the command-model baseline. The two
+        // arms shared their whole probe tail and merged (the verdict
+        // difference is the derived `upgrade_required` flag plus the feishu
+        // `configured` field below). The status probe still runs here, GUI
+        // parity: `wecom_status` / `tmeet_status` gate on `*_cli_version`
+        // (parse gate, not the minimum), so an overly old install gets the
+        // same `auth …` spawn as a usable one and reports `connected = ok &&
+        // authorized` / "Logged in" from the live probe. A pre-fix hard
+        // `connected:false, ok:false` lied "logged out" for a credential
+        // the vendor still holds. `upgrade_required` is the
+        // CLI-only extra the GUI handles through ensure_cli's version
+        // gate instead.
+        VersionGate::Upgrade { raw } | VersionGate::Usable { raw } => {
             entry["installed"] = json!(true);
-            entry["upgrade_required"] = json!(true);
+            entry["upgrade_required"] = json!(upgrade_required);
             entry["version"] = json!(raw);
             let (ok, stdout, stderr) = match run_status_probe(spec) {
                 Ok(result) => result,
@@ -1540,24 +1563,11 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
                 }
             };
             let connected = connected_from_probe(spec, ok, &stdout, &stderr);
-            entry["ok"] = json!(ok);
-            entry["connected"] = json!(connected);
-        }
-        VersionGate::Usable { raw } => {
-            entry["installed"] = json!(true);
-            entry["upgrade_required"] = json!(false);
-            entry["version"] = json!(raw);
-            let (ok, stdout, stderr) = match run_status_probe(spec) {
-                Ok(result) => result,
-                Err(error) => {
-                    degrade_probe_failure(spec, &mut entry, &error);
-                    return Ok(entry);
-                }
-            };
-            let connected = connected_from_probe(spec, ok, &stdout, &stderr);
-            if spec.id == "feishu" {
+            if !upgrade_required && spec.id == "feishu" {
                 // Mirror `feishu_status`'s extra `configured` flag (non-empty
-                // appId in the auth status payload).
+                // appId in the auth status payload). Gated on the usable
+                // verdict so field presence stays exact: an Upgrade entry
+                // carries no `configured` key at all, as before the merge.
                 let configured = parse_json(&stdout)
                     .or_else(|| parse_json(&stderr))
                     .as_ref()
@@ -1669,8 +1679,7 @@ fn set_enabled(
     // JSON key stays present but null (the ima degrade row's "null is not
     // false") and the human row says "unknown"; the gating above is
     // untouched.
-    let probe = cli_connected(spec);
-    let connected = probe.as_ref().ok().copied();
+    let connected = cli_connected(spec).ok();
     let enable_probe_errored = enabled && connected.is_none();
     // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
     // the connection state + the legacy `<id>_disabled` marker
@@ -2014,7 +2023,7 @@ fn wecom_config_dir() -> Result<PathBuf, CliError> {
 /// against, and the app export returns byte-identical content (empty on
 /// platforms with no reviewed artifacts, which keeps the `NO_LOCK` error
 /// path below intact).
-
+///
 /// The lock table has no `serde` derive here (the CLI crate depends on
 /// `serde_json` only), so artifacts are pulled out as `Value` records.
 struct LockArtifact {
@@ -2225,13 +2234,7 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     let _install_guard = install_lock.write().map_err(install_lock_unavailable)?;
     // npm is an npm.cmd shim on Windows; resolve the candidate and wrap the
     // spawn the same way every other vendor CLI child is wrapped.
-    let npm = crate::support::binary_candidates("npm")
-        .into_iter()
-        .find_map(|candidate| {
-            std::env::split_paths(&std::env::var_os("PATH")?)
-                .map(|dir| dir.join(&candidate))
-                .find(|path| path.is_file())
-        })
+    let npm = find_first_on_path("npm")
         .ok_or_else(|| CliError::failed("npm was not found on PATH; install Node.js first"))?;
     // GUI parity (`tmeet.rs::install_tmeet_cli`): the default npm registry
     // first, then one retry through npmmirror — "registry.npmjs.org is
@@ -2318,43 +2321,34 @@ fn run_npm_attempt(
     // world-readable 0644 log next to the npmrc tokens it can echo is the
     // wrong default. Unix-scoped like every other 0600 claim in this CLI.
     let (out, err) = {
+        // Single arm with unix-only statements (the `download_https`
+        // OpenOptions precedent): the two former cfg arms differed only by
+        // the 0600 mode at create and the best-effort tighten below.
+        let mut open_log = std::fs::OpenOptions::new();
+        open_log.create(true).append(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt as _;
-            let mut open_log = std::fs::OpenOptions::new();
-            open_log.create(true).append(true).mode(0o600);
-            match open_log.open(&log_path) {
-                Ok(file) => {
+            open_log.mode(0o600);
+        }
+        match open_log.open(&log_path) {
+            Ok(file) => {
+                #[cfg(unix)]
+                {
                     // Round-46 review: mode(0o600) applies only on CREATE —
                     // the desktop app usually creates this shared log first
                     // with the umask default, and this CLI's npmrc-token
                     // rationale applies to the append just the same. Best
                     // effort: a chmod failure must not fail the install.
-                    #[cfg(unix)]
-                    let file = {
-                        use std::os::unix::fs::PermissionsExt as _;
-                        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-                        file
-                    };
-                    match file.try_clone() {
-                        Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
-                        Err(_) => (Stdio::null(), Stdio::null()),
-                    }
+                    use std::os::unix::fs::PermissionsExt as _;
+                    let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
                 }
-                Err(_) => (Stdio::null(), Stdio::null()),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let mut open_log = std::fs::OpenOptions::new();
-            open_log.create(true).append(true);
-            match open_log.open(&log_path) {
-                Ok(file) => match file.try_clone() {
+                match file.try_clone() {
                     Ok(clone) => (Stdio::from(file), Stdio::from(clone)),
                     Err(_) => (Stdio::null(), Stdio::null()),
-                },
-                Err(_) => (Stdio::null(), Stdio::null()),
+                }
             }
+            Err(_) => (Stdio::null(), Stdio::null()),
         }
     };
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
@@ -2369,38 +2363,29 @@ fn run_npm_attempt(
     // the paired forgets below answer the ordinary exits, the guard covers
     // everything a panic could skip.
     let group = crate::support::supervise::GroupGuard::arm(child.id());
-    let start = Instant::now();
-    loop {
-        // An OS-level wait error leaves the child's state unknown, and a
-        // plain `?` would both orphan it and leave its group registered —
-        // so it goes down with the group (it may still be running) and the
-        // registration is released, the same convention as the timeout arm.
-        let polled = match child.try_wait() {
-            Ok(polled) => polled,
-            Err(error) => {
-                crate::support::kill_process_tree(&mut child);
-                group.release();
-                return Err(CliError::failed(format!("wait: {error}")));
-            }
-        };
-        match polled {
-            Some(status) => {
-                // Reaped here, so the group must leave the registry before
-                // the OS can recycle the pgid.
-                group.release();
-                return Ok(status.success());
-            }
-            None => {
-                if start.elapsed() > Duration::from_secs(NPM_INSTALL_TIMEOUT_SECS) {
-                    crate::support::kill_process_tree(&mut child);
-                    group.release();
-                    return Err(CliError::failed(format!(
-                        "CLI install timed out after {NPM_INSTALL_TIMEOUT_SECS}s (network or proxy blocked; log at {})",
-                        log_path.display()
-                    )));
-                }
-                std::thread::sleep(Duration::from_millis(300));
-            }
+    match child.wait_timeout(Duration::from_secs(NPM_INSTALL_TIMEOUT_SECS)) {
+        Ok(Some(status)) => {
+            // Reaped here, so the group must leave the registry before
+            // the OS can recycle the pgid.
+            group.release();
+            Ok(status.success())
+        }
+        Ok(None) => {
+            crate::support::kill_process_tree(&mut child);
+            group.release();
+            Err(CliError::failed(format!(
+                "CLI install timed out after {NPM_INSTALL_TIMEOUT_SECS}s (network or proxy blocked; log at {})",
+                log_path.display()
+            )))
+        }
+        Err(error) => {
+            // An OS-level wait error leaves the child's state unknown, and a
+            // plain `?` would both orphan it and leave its group registered —
+            // so it goes down with the group (it may still be running) and the
+            // registration is released, the same convention as the timeout arm.
+            crate::support::kill_process_tree(&mut child);
+            group.release();
+            Err(CliError::failed(format!("wait: {error}")))
         }
     }
 }
@@ -2434,23 +2419,26 @@ fn run_npm_attempt(
 /// code docs/pinvou-cli.md lists for the lock lane. A script matching the
 /// code must not depend on WHICH lock step failed; the human explanation
 /// behind the code still names it.
+///
+/// Round-51 cleanup: the `RwLock` wrap and the two-arm `FamilyLockError`
+/// mapping moved to `support::family_lock` as well; this fn passes the two
+/// byte-identical message texts as closures (the failed arm's path is
+/// ignored here, exactly as the hand-copied match ignored it).
 fn open_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
-    let lock_file = crate::support::open_family_lock_file("connector-install.lock");
-    let install_lock_file = match lock_file {
-        Ok(file) => file,
-        Err(crate::support::FamilyLockError::CreateDir { error, .. }) => {
-            return Err(CliError::failed(format!(
+    crate::support::family_lock(
+        "connector-install.lock",
+        |_dir, error| {
+            CliError::failed(format!(
                 "connectors_install_lock_unavailable: cannot create the connector lock \
                  directory: {error}"
-            )));
-        }
-        Err(crate::support::FamilyLockError::Open { error, .. }) => {
-            return Err(CliError::failed(format!(
+            ))
+        },
+        |_path, error| {
+            CliError::failed(format!(
                 "connectors_install_lock_unavailable: cannot open the install lock: {error}"
-            )));
-        }
-    };
-    Ok(fd_lock::RwLock::new(install_lock_file))
+            ))
+        },
+    )
 }
 
 /// The install-lock acquisition refusal, shared by both lanes that take the
@@ -2516,13 +2504,7 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
         // idempotent overwrite, so re-attempting it here heals the gap; a
         // persistent failure fails the command exactly like the late write
         // does (a redistribution-compliance gap must not silently succeed).
-        pinvou3_lib::features::write_managed_license(&version_dir, &artifact.name).map_err(
-            |error| {
-                CliError::failed(format!(
-                    "connector installed, but its license file could not be written: {error}"
-                ))
-            },
-        )?;
+        write_license(&version_dir, &artifact.name)?;
         return Ok(());
     }
 
@@ -2619,31 +2601,38 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
 
     let extract_dir = staging_dir.join(format!("{}-extract-{}", artifact.name, std::process::id()));
     let _ = std::fs::remove_dir_all(&extract_dir);
-    std::fs::create_dir_all(&extract_dir)
-        .map_err(|error| CliError::failed(format!("cannot create extract directory: {error}")))?;
-    if let Err(error) = extract_member(&archive, &filename, &extract_dir) {
-        let _ = std::fs::remove_dir_all(&extract_dir);
-        return Err(error);
-    }
-    // tar preserves the member's internal directory layout, so the binary
-    // may land in a nested dir; locate it by name before verifying.
-    let extracted = match find_file_by_name(&extract_dir, &filename) {
-        Some(path) => path,
-        None => {
-            let _ = std::fs::remove_dir_all(&extract_dir);
-            return Err(CliError::failed(format!(
+    // One cleanup point for the extract/locate/verify section, the same
+    // closure idiom the staging-to-destination section below uses: every
+    // error exit flows out of the closure and the conditional `let _ =`
+    // after it removes the extract directory. Success keeps it — the
+    // extracted binary still lives inside until the staging rename below
+    // moves it out, and the tail of `ensure_native_cli` removes the
+    // directory unconditionally either way.
+    let extraction_result = (|| -> Result<PathBuf, CliError> {
+        std::fs::create_dir_all(&extract_dir).map_err(|error| {
+            CliError::failed(format!("cannot create extract directory: {error}"))
+        })?;
+        extract_member(&archive, &filename, &extract_dir)?;
+        // tar preserves the member's internal directory layout, so the binary
+        // may land in a nested dir; locate it by name before verifying.
+        let extracted = find_file_by_name(&extract_dir, &filename).ok_or_else(|| {
+            CliError::failed(format!(
                 "{} executable not found in the extracted archive",
+                artifact.name
+            ))
+        })?;
+        if !file_is_sha256(&extracted, &artifact.binary_sha256) {
+            return Err(CliError::failed(format!(
+                "{} executable checksum mismatch",
                 artifact.name
             )));
         }
-    };
-    if !file_is_sha256(&extracted, &artifact.binary_sha256) {
+        Ok(extracted)
+    })();
+    if extraction_result.is_err() {
         let _ = std::fs::remove_dir_all(&extract_dir);
-        return Err(CliError::failed(format!(
-            "{} executable checksum mismatch",
-            artifact.name
-        )));
     }
+    let extracted = extraction_result?;
 
     let staging = version_dir.join(format!(".{filename}.installing-{}", std::process::id()));
     let _ = std::fs::remove_file(&staging);
@@ -2716,23 +2705,32 @@ fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
     }
     let _ = std::fs::remove_dir_all(&extract_dir);
     staging_result?;
-    // Round-40 review: the license side-files the GUI installer writes next
-    // to every managed binary. The CLI skipped them, so a machine
-    // provisioned only through `pinvou connectors ensure-cli` held pinned
-    // third-party binaries with no license text anywhere — a
-    // redistribution-compliance gap that silently succeeded. Same writer,
-    // same `licenses/` location derived from the version dir; a failure
-    // fails the install like the GUI's own installer, and the npm-lane
-    // connectors (no bundled license text) keep the unknown-connector
-    // refusal they have there.
-    pinvou3_lib::features::write_managed_license(&version_dir, &artifact.name).map_err(
-        |error| {
-            CliError::failed(format!(
-                "connector installed, but its license file could not be written: {error}"
-            ))
-        },
-    )?;
+    // Round-40 rationale (why the side-file exists and why a failure fails
+    // the install) lives on `write_license`'s doc — the hash-matched early
+    // return above shares the same writer through it.
+    write_license(&version_dir, &artifact.name)?;
     Ok(())
+}
+
+/// The managed-license side-file both [`ensure_native_cli`] exits write —
+/// the hash-matched early return and the fresh-install tail — so the write
+/// must not depend on WHICH branch produced the bytes (round-41 review).
+///
+/// Round-40 review: the license side-files the GUI installer writes next
+/// to every managed binary. The CLI skipped them, so a machine
+/// provisioned only through `pinvou connectors ensure-cli` held pinned
+/// third-party binaries with no license text anywhere — a
+/// redistribution-compliance gap that silently succeeded. Same writer,
+/// same `licenses/` location derived from the version dir; a failure
+/// fails the install like the GUI's own installer, and the npm-lane
+/// connectors (no bundled license text) keep the unknown-connector
+/// refusal they have there.
+fn write_license(version_dir: &Path, artifact_name: &str) -> Result<(), CliError> {
+    pinvou3_lib::features::write_managed_license(version_dir, artifact_name).map_err(|error| {
+        CliError::failed(format!(
+            "connector installed, but its license file could not be written: {error}"
+        ))
+    })
 }
 
 fn file_is_sha256(path: &Path, expected: &str) -> bool {
@@ -3056,6 +3054,69 @@ fn tar_program() -> std::process::Command {
     Command::new("tar")
 }
 
+/// The one choreography both [`extract_member`] tar lanes run over their
+/// fully-argued child: piped-stdio posture, supervised spawn, RAII
+/// [`GroupGuard`](crate::support::supervise::GroupGuard), a capped drain
+/// thread, the bounded [`wait_or_kill`], the paired release, and a bounded
+/// collection of the kept bytes. `spawn_context` names the lane in the
+/// spawn error ("list archive" / "extract archive"); `phase` names it in
+/// the wait errors ("listing the connector archive" / "extracting the
+/// connector archive"); `cap` is the drain thread's keep bound (the
+/// extraction lane passes one byte past [`MAX_MEMBER_BYTES`] so an
+/// over-size member stays detectable).
+fn tar_capture(
+    mut cmd: Command,
+    spawn_context: &str,
+    phase: &str,
+    cap: u64,
+) -> Result<Vec<u8>, CliError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::support::set_process_group(&mut cmd);
+    // Short-lived and piped, but the same bracket discipline as every other
+    // vendor child: until it is reaped, a terminal SIGINT takes the group
+    // down with the CLI, and `spawn_supervised` closes the spawn→register
+    // window (see `run_cli_bounded`).
+    let mut child = crate::support::supervise::spawn_supervised(&mut cmd)
+        .map_err(|error| CliError::failed(format!("cannot {spawn_context} with tar: {error}")))?;
+    // RAII bracket (see `run_cli_bounded`): the drain-thread spawn below
+    // sits between the supervised spawn and the paired forget.
+    let group = crate::support::supervise::GroupGuard::arm(child.id());
+    // The output is drained on a thread and the BOUNDED WAIT drives the
+    // lane, the same order `run_cli_bounded` uses. In the previous order
+    // (blocking read, then wait) a tar that produced under the cap and
+    // stalled without exiting or closing stdout would block the read
+    // forever and the deadline would never be reached. Here a stall is
+    // bounded by `wait_or_kill`: the kill closes the pipe and ends the
+    // read. Past the cap the drainer keeps reading and discarding so tar
+    // can never block on a full pipe and be misreported as timed out.
+    let bytes_thread = {
+        let mut stdout = child.stdout.take().expect("tar stdout is piped");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = (&mut stdout).take(cap).read_to_end(&mut bytes);
+            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+            let _ = tx.send(bytes);
+        });
+        rx
+    };
+    let waited = wait_or_kill(&mut child, phase);
+    // Paired on every exit including the `?` arms of `waited` below: the
+    // child is reaped or dead by now, so leaving the pgid registered would
+    // only invite the recycled-pid kill.
+    group.release();
+    waited?;
+    // Bounded collection instead of an unbounded `join`: a pipe-inheriting
+    // descendant that escaped the group can hold stdout open past the reap,
+    // and the sibling drains (`run_cli_bounded`) answer exactly that with a
+    // grace + default rather than hanging the CLI.
+    Ok(bytes_thread
+        .recv_timeout(TAR_DRAIN_GRACE)
+        .unwrap_or_default())
+}
+
 fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), CliError> {
     // `--` ends option parsing on every tar the CLI runs on (bsdtar and GNU
     // tar alike): without it, a member name that begins with a dash would be
@@ -3067,55 +3128,14 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // archive named "--"), so it is placed as a separator after the archive
     // operand in both child constructions (see `tar_separated_operands`).
     let mut list = tar_program();
-    list.arg("-tf")
-        .arg(archive)
-        .arg("--")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::support::set_process_group(&mut list);
-    // Short-lived and piped, but the same bracket discipline: until it is
-    // reaped, a terminal SIGINT takes the group down with the CLI.
-    // `spawn_supervised` closes the spawn→register window (see
-    // `run_cli_bounded`).
-    let mut child = crate::support::supervise::spawn_supervised(&mut list)
-        .map_err(|error| CliError::failed(format!("cannot list archive with tar: {error}")))?;
-    // RAII bracket (see `run_cli_bounded`): the drain-thread spawn below
-    // sits between the supervised spawn and the paired forget.
-    let group = crate::support::supervise::GroupGuard::arm(child.id());
-    // The listing is drained on a thread and the BOUNDED WAIT drives the
-    // lane, the same order `run_cli_bounded` uses. In the previous order
-    // (blocking read, then wait) a tar that produced under the cap and
-    // stalled without exiting or closing stdout would block the read
-    // forever and the deadline would never be reached. Here a stall is
-    // bounded by `wait_or_kill`: the kill closes the pipe and ends the
-    // read. Past the cap the drainer keeps reading and discarding so tar
-    // can never block on a full pipe and be misreported as timed out.
-    let listing_thread = {
-        use std::io::Read as _;
-        let mut stdout = child.stdout.take().expect("tar stdout is piped");
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = (&mut stdout).take(TAR_LIST_CAP).read_to_end(&mut bytes);
-            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-            let _ = tx.send(String::from_utf8_lossy(&bytes).into_owned());
-        });
-        rx
-    };
-    let listed = wait_or_kill(&mut child, "listing the connector archive");
-    // Paired on every exit including the `?` arms of `listed` below: the
-    // child is reaped or dead by now, so leaving the pgid registered would
-    // only invite the recycled-pid kill.
-    group.release();
-    listed?;
-    // Bounded collection instead of an unbounded `join`: a pipe-inheriting
-    // descendant that escaped the group can hold stdout open past the reap,
-    // and the sibling drains (`run_cli_bounded`) answer exactly that with a
-    // grace + default rather than hanging the CLI.
-    let listing = listing_thread
-        .recv_timeout(TAR_DRAIN_GRACE)
-        .unwrap_or_default();
+    list.arg("-tf").arg(archive).arg("--");
+    let listing_bytes = tar_capture(
+        list,
+        "list archive",
+        "listing the connector archive",
+        TAR_LIST_CAP,
+    )?;
+    let listing = String::from_utf8_lossy(&listing_bytes).into_owned();
     let entry = listing
         .lines()
         .map(str::trim)
@@ -3136,50 +3156,18 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // the member name cannot steer where the file lands: the caller's
     // `target` dir and the requested `member` name do.
     let mut extract = tar_program();
-    extract
-        .arg("-xOf")
-        .arg(archive)
-        .arg("--")
-        .arg(entry)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::support::set_process_group(&mut extract);
-    // Same bracket as the listing child above (the comment there applies
-    // here too: short-lived and piped, but supervised until it is reaped,
-    // with the spawn→register window closed).
-    let mut child = crate::support::supervise::spawn_supervised(&mut extract)
-        .map_err(|error| CliError::failed(format!("cannot extract archive with tar: {error}")))?;
-    // RAII bracket, same as the listing lane above.
-    let group = crate::support::supervise::GroupGuard::arm(child.id());
-    // Same wait-first discipline as the listing lane above: the bounded
-    // wait drives the deadline, the drainer thread keeps the pipe empty
-    // (one byte past the cap is KEPT so an over-size member is detectable
-    // rather than silently truncated into a hash mismatch; everything after
-    // it is drained and discarded), and a kill closes the pipe so the
-    // drainer cannot hang past the kill.
-    let bytes_thread = {
-        use std::io::Read as _;
-        let mut stdout = child.stdout.take().expect("tar stdout is piped");
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = (&mut stdout)
-                .take(MAX_MEMBER_BYTES + 1)
-                .read_to_end(&mut bytes);
-            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-            let _ = tx.send(bytes);
-        });
-        rx
-    };
-    let extracted = wait_or_kill(&mut child, "extracting the connector archive");
-    // Paired on every exit, as in the listing lane.
-    group.release();
-    extracted?;
-    // Same bounded collection as the listing lane above.
-    let bytes = bytes_thread
-        .recv_timeout(TAR_DRAIN_GRACE)
-        .unwrap_or_default();
+    extract.arg("-xOf").arg(archive).arg("--").arg(entry);
+    // The extraction lane keeps ONE BYTE PAST the cap (`MAX_MEMBER_BYTES +
+    // 1`) so an over-size member is detectable rather than silently
+    // truncated into a hash mismatch; everything after it is drained and
+    // discarded (`tar_capture`'s drainer holds the wait-first discipline
+    // both lanes share).
+    let bytes = tar_capture(
+        extract,
+        "extract archive",
+        "extracting the connector archive",
+        MAX_MEMBER_BYTES + 1,
+    )?;
     if bytes.len() as u64 > MAX_MEMBER_BYTES {
         // tar already exited (the wait above reaped it after it wrote
         // itself out past the kept cap), so only the verdict is left to
@@ -3300,9 +3288,8 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             )?;
             if !status_ok {
                 return Err(CliError::failed(format!(
-                    "feishu app registration did not complete (cancelled or timed out){}{}",
-                    captured_notes(&notes),
-                    vendor_output_tail(spec, &tail)
+                    "feishu app registration did not complete (cancelled or timed out){}",
+                    connect_failure_suffix(spec, &notes, &tail)
                 )));
             }
             let _ = url;
@@ -3317,9 +3304,8 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // captured vendor output; this arm dropped it, so a failed
                 // authorize left the user with no vendor reason at all.
                 return Err(CliError::failed(format!(
-                    "feishu auth login did not return a link{}{}",
-                    captured_notes(&notes),
-                    vendor_output_tail(spec, &tail)
+                    "feishu auth login did not return a link{}",
+                    connect_failure_suffix(spec, &notes, &tail)
                 )));
             }
             let payload = parse_json(&stdout).or_else(|| parse_json(&stderr));
@@ -3358,9 +3344,8 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             loop {
                 if Instant::now() >= deadline {
                     return Err(CliError::failed(format!(
-                        "feishu authorization timed out before the scan completed{}{}",
-                        captured_notes(&notes),
-                        vendor_output_tail(spec, &tail)
+                        "feishu authorization timed out before the scan completed{}",
+                        connect_failure_suffix(spec, &notes, &tail)
                     )));
                 }
                 std::thread::sleep(Duration::from_secs(3));
@@ -3460,9 +3445,8 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // connect failure.
                 if !cli_connected_bounded(spec, deadline) {
                     return Err(CliError::failed(format!(
-                        "wecom authorization did not complete (cancelled or timed out){}{}",
-                        captured_notes(&notes),
-                        vendor_output_tail(spec, &tail)
+                        "wecom authorization did not complete (cancelled or timed out){}",
+                        connect_failure_suffix(spec, &notes, &tail)
                     )));
                 }
                 Ok(())
@@ -3525,10 +3509,9 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             }
             if !connected {
                 return Err(CliError::failed(format!(
-                    "{} login exited before authorization completed{}{}",
+                    "{} login exited before authorization completed{}",
                     spec.display_name,
-                    captured_notes(&notes),
-                    vendor_output_tail(spec, &tail)
+                    connect_failure_suffix(spec, &notes, &tail)
                 )));
             }
             finish_connect_side_effects(spec)?;
@@ -3562,26 +3545,7 @@ fn spawn_and_capture_url(
     deadline: Instant,
     work_dir: Option<&Path>,
 ) -> Result<(Option<String>, Option<String>, bool), CliError> {
-    let Some(executable) = resolve_vendor_cli(spec) else {
-        return Err(CliError::failed(format!(
-            "{} was not found (managed install or PATH); install it first: pinvou connectors \
-             ensure-cli {}",
-            spec.cli_bin, spec.id
-        )));
-    };
-    // `build_command` already carries `args`; `Command::args` appends, so a
-    // second call here would double the argv and break every vendor parser.
-    let mut cmd = crate::support::build_command(&executable, args);
-    for (key, value) in spec.envs {
-        cmd.env(key, value);
-    }
-    if let Some(dir) = work_dir {
-        cmd.current_dir(dir);
-    }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    crate::support::set_process_group(&mut cmd);
+    let mut cmd = spawn_vendor_command(spec, args, work_dir)?;
     // RAII around the login child: see [`LoginChildGuard`]. `connect` blocks
     // for up to five minutes here waiting for a human to scan, and every
     // error path below (plus a panic unwind) would otherwise leave the
@@ -3618,10 +3582,10 @@ fn spawn_and_capture_url(
     // (`compose_user_code`) because the login page asks for a code the
     // raw URL does not carry.
     let (tx, rx) = mpsc::channel::<LoginStreamEvent>();
-    if let Some(stdout) = guard.child_mut().stdout.take() {
+    if let Some(stdout) = guard.child.stdout.take() {
         drain_for_url(spec, stdout, tx.clone());
     }
-    if let Some(stderr) = guard.child_mut().stderr.take() {
+    if let Some(stderr) = guard.child.stderr.take() {
         drain_for_url(spec, stderr, tx.clone());
     }
     drop(tx);
@@ -3642,9 +3606,10 @@ fn spawn_and_capture_url(
     } else {
         // The 1 s floor applies only while the remaining budget can afford
         // it: a sub-second remainder must not be rounded UP past the
-        // connect deadline.
+        // connect deadline. (The trailing `.min(remaining)` the chain used
+        // to carry was redundant: `.max(1s).min(remaining)` already pins
+        // the result at or under `remaining` in every branch.)
         Duration::from_secs(spec.login_url_wait_secs)
-            .min(remaining)
             .max(Duration::from_secs(1))
             .min(remaining)
     };
@@ -3670,10 +3635,10 @@ fn spawn_and_capture_url(
         if remaining.is_zero() {
             break;
         }
-        if let Some(qr) = &qr_png {
-            if !qr_announced {
-                qr_announced = announce_wecom_qr(qr, notes);
-            }
+        if let Some(qr) = &qr_png
+            && !qr_announced
+        {
+            qr_announced = announce_wecom_qr(qr, notes);
         }
         match rx.recv_timeout(Duration::from_millis(200).min(remaining)) {
             Ok(LoginStreamEvent::Url(found)) => {
@@ -3716,19 +3681,19 @@ fn spawn_and_capture_url(
             break;
         }
     }
-    if let Some(qr) = &qr_png {
-        if !qr_announced {
-            // Breaking on the first URL can win the race against the vendor
-            // writing `qr.png` (the GUI polls the PNG for up to 6s after the
-            // URL — `wecom.rs::poll_qr_png`); give the file the same short
-            // grace window, capped by the connect budget, so the one-scan
-            // note is not lost.
-            let qr_deadline = (Instant::now() + Duration::from_secs(6)).min(deadline);
-            while !qr.is_file() && Instant::now() < qr_deadline {
-                std::thread::sleep(Duration::from_millis(150));
-            }
-            announce_wecom_qr(qr, notes);
+    if let Some(qr) = &qr_png
+        && !qr_announced
+    {
+        // Breaking on the first URL can win the race against the vendor
+        // writing `qr.png` (the GUI polls the PNG for up to 6s after the
+        // URL — `wecom.rs::poll_qr_png`); give the file the same short
+        // grace window, capped by the connect budget, so the one-scan
+        // note is not lost.
+        let qr_deadline = (Instant::now() + Duration::from_secs(6)).min(deadline);
+        while !qr.is_file() && Instant::now() < qr_deadline {
+            std::thread::sleep(Duration::from_millis(150));
         }
+        announce_wecom_qr(qr, notes);
     }
     if url.is_none() {
         // The remedy is already known when the URL window lapses — a
@@ -3754,7 +3719,7 @@ fn spawn_and_capture_url(
         );
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
-    let wait = guard.child_mut().wait_timeout(remaining);
+    let wait = guard.child.wait_timeout(remaining);
     // Whatever the drain threads produced after the loop above stopped
     // reading (it breaks at the first URL) is still queued; absorb it
     // non-blockingly before the verdict is formatted, so the failure message
@@ -3795,10 +3760,9 @@ fn spawn_and_capture_url(
             // disarm so Drop does not repeat it.
             guard.kill_and_disarm();
             return Err(CliError::failed(format!(
-                "{} login timed out (connect budget exhausted; retry with a larger --timeout){}{}",
+                "{} login timed out (connect budget exhausted; retry with a larger --timeout){}",
                 spec.cli_bin,
-                captured_notes(notes),
-                vendor_output_tail(spec, tail.as_slice()),
+                connect_failure_suffix(spec, notes.as_slice(), tail.as_slice()),
             )));
         }
         Err(error) => {
@@ -3860,10 +3824,6 @@ impl LoginChildGuard {
             child,
             disarmed: false,
         }
-    }
-
-    fn child_mut(&mut self) -> &mut std::process::Child {
-        &mut self.child
     }
 
     /// The child was reaped: killing its group afterwards could race a reused
@@ -3958,6 +3918,20 @@ fn vendor_output_tail(spec: &VendorSpec, tail: &[String]) -> String {
         tail.len(),
         spec.cli_bin,
         tail.join(" | ")
+    )
+}
+
+/// The suffix pair every connect failure carries: the login material
+/// captured so far ([`captured_notes`]) followed by the vendor CLI's own
+/// redacted last words ([`vendor_output_tail`]). One copy of the pairing
+/// shared by the failure sites, so the two parts cannot drift apart or drop
+/// from one of them. (The bare wait-error arm in `spawn_and_capture_url`
+/// keeps its tail-only suffix; only the notes+tail pairs are unified here.)
+fn connect_failure_suffix(spec: &VendorSpec, notes: &[String], tail: &[String]) -> String {
+    format!(
+        "{}{}",
+        captured_notes(notes),
+        vendor_output_tail(spec, tail)
     )
 }
 
@@ -4107,16 +4081,16 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
                 } else {
                     None
                 };
-                if let Some(event) = event {
-                    if tx.send(event).is_err() {
-                        return;
-                    }
-                }
-            }
-            if let Some(code) = extract_user_code(&line) {
-                if tx.send(LoginStreamEvent::Code(code)).is_err() {
+                if let Some(event) = event
+                    && tx.send(event).is_err()
+                {
                     return;
                 }
+            }
+            if let Some(code) = extract_user_code(&line)
+                && tx.send(LoginStreamEvent::Code(code)).is_err()
+            {
+                return;
             }
             let Some(index) = line.find("https://") else {
                 continue;
@@ -4177,12 +4151,7 @@ fn execute_ima(action: ImaCommand, output: OutputMode) -> Result<CliOutcome, Cli
     match action {
         ImaCommand::Status => {
             let entry = ima_status_entry()?;
-            let human = format!(
-                "ima\tconnected={}\tcredentials={}\tskill_installed={}",
-                yes_no(bool_field(&entry, "connected")),
-                yes_no(bool_field(&entry, "credentials_present")),
-                yes_no(bool_field(&entry, "skill_installed")),
-            );
+            let human = format!("ima\t{}", ima_status_cells(&entry));
             Ok(success(render(output, human, &entry)))
         }
         ImaCommand::Connect {
@@ -4200,11 +4169,11 @@ fn execute_ima(action: ImaCommand, output: OutputMode) -> Result<CliOutcome, Cli
 fn ima_status_entry() -> Result<Value, CliError> {
     let store = SystemCredentialStore::new();
     let client_id = store
-        .get(&ima_secret_ref("client_id"))
+        .get(&CredentialReference::for_ima_secret("client_id"))
         .map_err(credential_error)?
         .filter(|value| !value.trim().is_empty());
     let api_key = store
-        .get(&ima_secret_ref("api_key"))
+        .get(&CredentialReference::for_ima_secret("api_key"))
         .map_err(credential_error)?
         .filter(|value| !value.trim().is_empty());
     let credentials_present = client_id.is_some() && api_key.is_some();
@@ -4218,10 +4187,6 @@ fn ima_status_entry() -> Result<Value, CliError> {
         "credentials_present": credentials_present,
         "skill_installed": skill_installed,
     }))
-}
-
-fn ima_secret_ref(name: &str) -> CredentialReference {
-    CredentialReference::for_ima_secret(name)
 }
 
 fn credential_error(error: impl std::fmt::Display) -> CliError {
@@ -4264,8 +4229,8 @@ fn ima_connect(
     validate_ima_credentials(client_id.trim(), api_key.trim())?;
 
     let store = SystemCredentialStore::new();
-    let client_ref = ima_secret_ref("client_id");
-    let api_ref = ima_secret_ref("api_key");
+    let client_ref = CredentialReference::for_ima_secret("client_id");
+    let api_ref = CredentialReference::for_ima_secret("api_key");
     let previous_client_id = store.get(&client_ref).map_err(credential_error)?;
     let previous_api_key = store.get(&api_ref).map_err(credential_error)?;
     let result = (|| -> Result<(), CliError> {
@@ -4365,7 +4330,6 @@ fn validate_ima_credentials(client_id: &str, api_key: &str) -> Result<(), CliErr
     }
     // Mirror the GUI's 1 MiB response cap: a hostile or broken server must
     // not be able to balloon the CLI's memory.
-    use std::io::Read as _;
     let mut bytes = Vec::new();
     response
         .take(IMA_MAX_RESPONSE_BYTES + 1)
@@ -4440,8 +4404,8 @@ fn redact_ima_known_credentials(mut text: String, client_id: &str, api_key: &str
 fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store = SystemCredentialStore::new();
-    let client_result = store.delete(&ima_secret_ref("client_id"));
-    let api_result = store.delete(&ima_secret_ref("api_key"));
+    let client_result = store.delete(&CredentialReference::for_ima_secret("client_id"));
+    let api_result = store.delete(&CredentialReference::for_ima_secret("api_key"));
     // The skill uninstall is part of this logout's promised state: a failed
     // one is collected here and named in the error below rather than being
     // swallowed — and it GATES the consent cleanup (see the module doc).

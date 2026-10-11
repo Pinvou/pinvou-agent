@@ -14,7 +14,7 @@
 //! test created.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -161,6 +161,26 @@ fn write_body_file(label: &str, body: &str) -> PathBuf {
     ));
     std::fs::write(&path, body).unwrap();
     path
+}
+
+/// Creates a user card through the CLI's JSON lane and returns its generated
+/// id. Cards are always located (or absence-checked) by this exact id — the
+/// user pool is cached process-globally, so counts are never assumed (module
+/// docs above).
+fn create_user_persona(name: &str, body: &Path) -> String {
+    let value = run_json(&[
+        "pinvou",
+        "personas",
+        "create",
+        "--name",
+        name,
+        "--file",
+        body.to_str().unwrap(),
+    ]);
+    value["id"]
+        .as_str()
+        .expect("create must return the generated id")
+        .to_owned()
 }
 
 /// Round-44 review: the body file is a model-context lane (the card body is
@@ -599,16 +619,7 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     assert!(value.is_null(), "no active persona must serialize as null");
 
     // Create a user card to equip.
-    let value = run_json(&[
-        "pinvou",
-        "personas",
-        "create",
-        "--name",
-        "Equip Expert",
-        "--file",
-        body_path.to_str().unwrap(),
-    ]);
-    let persona_id = value["id"].as_str().unwrap().to_owned();
+    let persona_id = create_user_persona("Equip Expert", &body_path);
 
     // equip returns the card summary and persists the state for the next
     // CLI invocation (the GUI's in-memory sidecar would die with the
@@ -732,26 +743,8 @@ fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
     let body_path = write_body_file("sweep", "# Sweep Expert\n\nbody\n");
 
     // Two user cards: one to delete, one that must stay equipped.
-    let value = run_json(&[
-        "pinvou",
-        "personas",
-        "create",
-        "--name",
-        "Sweep Expert",
-        "--file",
-        body_path.to_str().unwrap(),
-    ]);
-    let deleted_id = value["id"].as_str().unwrap().to_owned();
-    let value = run_json(&[
-        "pinvou",
-        "personas",
-        "create",
-        "--name",
-        "Keeper Expert",
-        "--file",
-        body_path.to_str().unwrap(),
-    ]);
-    let keeper_id = value["id"].as_str().unwrap().to_owned();
+    let deleted_id = create_user_persona("Sweep Expert", &body_path);
+    let keeper_id = create_user_persona("Keeper Expert", &body_path);
 
     // Equip the doomed card on session A and the keeper on session B.
     run(&["pinvou", "personas", "equip", &session_a, &deleted_id]).unwrap();
@@ -820,16 +813,7 @@ fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
     let big_body = format!("# Big Expert\n\n{}\n", "x".repeat(100 * 1024));
     let body_path = write_body_file("sweep-big", &big_body);
 
-    let value = run_json(&[
-        "pinvou",
-        "personas",
-        "create",
-        "--name",
-        "Big Expert",
-        "--file",
-        body_path.to_str().unwrap(),
-    ]);
-    let persona_id = value["id"].as_str().unwrap().to_owned();
+    let persona_id = create_user_persona("Big Expert", &body_path);
     run(&["pinvou", "personas", "equip", &session_id, &persona_id]).unwrap();
     let sidecar = home
         .sessions_root()
@@ -939,16 +923,7 @@ fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
     let session_id = create_session_fixture();
     let body_path = write_body_file("orphan", "# Orphan Expert\n\nbody\n");
 
-    let value = run_json(&[
-        "pinvou",
-        "personas",
-        "create",
-        "--name",
-        "Orphan Expert",
-        "--file",
-        body_path.to_str().unwrap(),
-    ]);
-    let persona_id = value["id"].as_str().unwrap().to_owned();
+    let persona_id = create_user_persona("Orphan Expert", &body_path);
     run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("equip must succeed");
     let sidecar = home
         .sessions_root()
@@ -1007,16 +982,7 @@ fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
     let session_id = create_session_fixture();
     let body_path = write_body_file("sweep-errors", "# Stuck Expert\n\nbody\n");
 
-    let value = run_json(&[
-        "pinvou",
-        "personas",
-        "create",
-        "--name",
-        "Stuck Expert",
-        "--file",
-        body_path.to_str().unwrap(),
-    ]);
-    let persona_id = value["id"].as_str().unwrap().to_owned();
+    let persona_id = create_user_persona("Stuck Expert", &body_path);
     run(&["pinvou", "personas", "equip", &session_id, &persona_id]).expect("equip must succeed");
 
     // A session directory whose sidecar cannot be inspected at all: a

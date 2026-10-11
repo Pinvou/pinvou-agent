@@ -65,6 +65,18 @@ fn run_ok(arguments: &[&str]) -> String {
     outcome.stdout
 }
 
+/// Parses the single-line JSON envelope of a `--output json` invocation —
+/// the same helper knowledge_contract.rs and artifacts_contract.rs carry, so
+/// every family's JSON assertions share one plumbing path.
+fn run_json(arguments: &[&str]) -> serde_json::Value {
+    let mut owned = arguments.to_vec();
+    owned.push("--output");
+    owned.push("json");
+    let stdout = run_ok(&owned);
+    assert!(!stdout.contains('\n'), "json output must stay single-line");
+    serde_json::from_str(&stdout).expect("single-line json object")
+}
+
 /// A command error from either the parse or the execute lane. Despite the
 /// old name, only SOME call sites assert the exit-2 usage class (through
 /// `assert_usage`) — the rest deliberately expect exit-1 host failures, so
@@ -83,16 +95,29 @@ fn assert_usage(arguments: &[&str]) {
     assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
 }
 
+/// Enqueues a pending candidate with the CLI's own empty topic (normalized
+/// to a default bucket at the pending stage) — delegates to
+/// [`enqueue_fixture_with_topic`].
 fn enqueue_fixture(kind: &str, content: &str) -> pinvou3_lib::features::memory::PendingMemoryItem {
-    pinvou3_lib::features::memory::enqueue_memory_candidate(
-        pinvou3_lib::features::memory::MemorySuggestion {
-            kind: kind.to_owned(),
-            topic: String::new(),
-            content: content.to_owned(),
-            source: "contract-test".to_owned(),
-        },
-    )
-    .expect("fixture pending entry")
+    enqueue_fixture_with_topic(kind, "", content)
+}
+
+/// Seeds one preference through the CLI's own add lane and returns its id.
+/// The preference store is replace-per-topic and the CLI add carries no
+/// topic, so the single row this leaves is exactly the item the update-lane
+/// tests below address.
+fn seeded_preference_id() -> String {
+    run_ok(&[
+        "pinvou",
+        "memory",
+        "add",
+        "preference",
+        "--content",
+        "Prefer concise answers",
+    ]);
+    pinvou3_lib::features::memory::list_preferences().unwrap()[0]
+        .id
+        .clone()
 }
 
 // ---- parse-level coverage ----
@@ -373,8 +398,7 @@ fn memory_profile_set_get_round_trips_through_feature_io() {
     assert_eq!(profile.identity.call_name, "Alice");
     assert_eq!(profile.identity.assistant_alias, "Pin");
 
-    let json = run_ok(&["pinvou", "memory", "profile", "get", "--output", "json"]);
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let value = run_json(&["pinvou", "memory", "profile", "get"]);
     assert_eq!(value["identity"]["call_name"], "Alice");
     assert_eq!(value["identity"]["assistant_alias"], "Pin");
 }
@@ -576,16 +600,7 @@ fn memory_add_preference_shows_up_in_list_and_supports_update_delete() {
         "Prefer concise answers",
     ]);
 
-    let json = run_ok(&[
-        "pinvou",
-        "memory",
-        "list",
-        "--store",
-        "preferences",
-        "--output",
-        "json",
-    ]);
-    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let envelope = run_json(&["pinvou", "memory", "list", "--store", "preferences"]);
     // Every `list --store` JSON shape is the same {items, cleanup_warnings}
     // envelope; preferences may carry a cleanup warning, the others always
     // report an empty array.
@@ -658,16 +673,7 @@ fn memory_add_work_context_from_file_and_positional_arguments() {
         "contract",
     ]);
 
-    let json = run_ok(&[
-        "pinvou",
-        "memory",
-        "list",
-        "--store",
-        "work-context",
-        "--output",
-        "json",
-    ]);
-    let items: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let items = run_json(&["pinvou", "memory", "list", "--store", "work-context"]);
     let items = items["items"].as_array().expect("envelope items array");
     // The feature upserts work context by topic; the CLI adds without a topic
     // share the default topic, so the second add rewrites the first entry.
@@ -719,16 +725,7 @@ fn memory_list_collapses_control_characters_in_human_rows() {
         human
     );
 
-    let json = run_ok(&[
-        "pinvou",
-        "memory",
-        "list",
-        "--store",
-        "preferences",
-        "--output",
-        "json",
-    ]);
-    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let envelope = run_json(&["pinvou", "memory", "list", "--store", "preferences"]);
     assert_eq!(
         envelope["items"][0]["text"],
         serde_json::json!(stored[0].text),
@@ -811,10 +808,7 @@ fn memory_list_surfaces_the_never_store() {
 
     // The dedicated store lane: same {items, cleanup_warnings} envelope as
     // every other `list --store` shape.
-    let json = run_ok(&[
-        "pinvou", "memory", "list", "--store", "never", "--output", "json",
-    ]);
-    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let envelope = run_json(&["pinvou", "memory", "list", "--store", "never"]);
     let items = envelope["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{envelope}");
     assert_eq!(items[0]["pattern"], "Avoid storing billing notes");
@@ -824,8 +818,7 @@ fn memory_list_surfaces_the_never_store() {
     assert!(human.contains("billing details"), "{human}");
 
     // And the aggregate listing carries the same facts under its own key.
-    let aggregate = run_ok(&["pinvou", "memory", "list", "--output", "json"]);
-    let value: serde_json::Value = serde_json::from_str(&aggregate).unwrap();
+    let value = run_json(&["pinvou", "memory", "list"]);
     let never = value["never"]
         .as_array()
         .expect("the aggregate list must carry a never key");
@@ -900,8 +893,7 @@ fn memory_overview_counts_match_fixtures_and_write_snapshot() {
     // one recent work entry
     seed_recent_work("Shipped CLI memory parity", "");
 
-    let json = run_ok(&["pinvou", "memory", "overview", "--output", "json"]);
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let value = run_json(&["pinvou", "memory", "overview"]);
     assert_eq!(
         value["preferences"].as_array().unwrap().len(),
         1,
@@ -1087,16 +1079,7 @@ fn memory_add_accepts_ordinary_punctuated_work_context() {
         "We deploy on Fridays.",
     ]);
 
-    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
-        "pinvou",
-        "memory",
-        "list",
-        "--store",
-        "work-context",
-        "--output",
-        "json",
-    ]))
-    .expect("single-line JSON output");
+    let json = run_json(&["pinvou", "memory", "list", "--store", "work-context"]);
     let items = json["items"].as_array().expect("work-context items array");
     assert!(
         items
@@ -1113,17 +1096,14 @@ fn memory_add_preference_reports_the_replaced_item() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("preference-replacement");
 
-    let first = run_ok(&[
+    let first = run_json(&[
         "pinvou",
         "memory",
         "add",
         "preference",
         "--content",
         "Prefer concise answers",
-        "--output",
-        "json",
     ]);
-    let first: serde_json::Value = serde_json::from_str(&first).unwrap();
     let first_id = first["id"].as_str().unwrap().to_owned();
     assert!(
         first.get("replaced").is_none(),
@@ -1134,17 +1114,14 @@ fn memory_add_preference_reports_the_replaced_item() {
     // topic, so every add targets the same bucket and the write deletes the
     // previous item. The second add must say so instead of presenting the
     // store as append-only.
-    let second = run_ok(&[
+    let second = run_json(&[
         "pinvou",
         "memory",
         "add",
         "preference",
         "--content",
         "Prefer bullet answers",
-        "--output",
-        "json",
     ]);
-    let second: serde_json::Value = serde_json::from_str(&second).unwrap();
     assert_eq!(second["replaced"], serde_json::json!([first_id]));
     let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
     assert_eq!(stored.len(), 1, "the replaced item is gone");
@@ -1213,15 +1190,7 @@ fn memory_pending_confirm_reports_a_profile_shaped_no_op_honestly() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("confirm-profile-noop");
 
-    let item = pinvou3_lib::features::memory::enqueue_memory_candidate(
-        pinvou3_lib::features::memory::MemorySuggestion {
-            kind: "preference".to_owned(),
-            topic: String::new(),
-            content: "请以后称呼用户为老板".to_owned(),
-            source: "test".to_owned(),
-        },
-    )
-    .expect("enqueue the profile-shaped candidate");
+    let item = enqueue_fixture("preference", "请以后称呼用户为老板");
 
     let error = expect_command_error(&["pinvou", "memory", "pending", "confirm", &item.id]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -1363,22 +1332,12 @@ fn memory_update_discloses_prefix_normalization_on_both_output_channels() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("update-normalization");
 
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
-    let id = pinvou3_lib::features::memory::list_preferences().unwrap()[0]
-        .id
-        .clone();
+    let id = seeded_preference_id();
 
     // In-cap content whose only reduction is the stripped 请记住 prefix: the
     // normalization branch, not the truncation branch, must fire.
     let submitted = "请记住 Prefer terse answers";
-    let json = run_ok(&[
+    let value = run_json(&[
         "pinvou",
         "memory",
         "update",
@@ -1386,10 +1345,7 @@ fn memory_update_discloses_prefix_normalization_on_both_output_channels() {
         &id,
         "--content",
         submitted,
-        "--output",
-        "json",
     ]);
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["normalized"], serde_json::json!(true));
     assert!(
         value.get("truncated").is_none(),
@@ -1550,7 +1506,7 @@ fn memory_update_work_context_caps_at_160() {
     let content: String = std::iter::repeat_n("abcdefghij", 17).collect();
     assert_eq!(content.chars().count(), 170);
 
-    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+    let json = run_json(&[
         "pinvou",
         "memory",
         "update",
@@ -1558,10 +1514,7 @@ fn memory_update_work_context_caps_at_160() {
         &id,
         "--content",
         &content,
-        "--output",
-        "json",
-    ]))
-    .expect("single-line JSON output");
+    ]);
 
     assert_eq!(json["truncated"], serde_json::json!(true), "{json}");
     assert_eq!(json["submitted_characters"], serde_json::json!(170));
@@ -1610,17 +1563,14 @@ fn memory_add_work_context_over_the_cap_reports_the_truncation() {
     let content: String = std::iter::repeat_n("abcdefghij", 13).collect();
     assert_eq!(content.chars().count(), 130);
 
-    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+    let json = run_json(&[
         "pinvou",
         "memory",
         "add",
         "work-context",
         "--content",
         &content,
-        "--output",
-        "json",
-    ]))
-    .expect("single-line JSON output");
+    ]);
 
     assert_eq!(
         json["truncated"],
@@ -1686,21 +1636,7 @@ fn memory_update_preferences_over_the_cap_reports_the_truncation() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("update-over-cap");
 
-    // Seed one preference through the add pipeline; its id is what the
-    // updates below address.
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
-    let id = pinvou3_lib::features::memory::list_preferences()
-        .unwrap()
-        .last()
-        .map(|item| item.id.clone())
-        .expect("the seeded preference must be listed");
+    let id = seeded_preference_id();
 
     // 130 single-byte characters, no whitespace runs and no leading or
     // trailing punctuation, so the only normalization that can change the
@@ -1708,7 +1644,7 @@ fn memory_update_preferences_over_the_cap_reports_the_truncation() {
     let content: String = std::iter::repeat_n("abcdefghij", 13).collect();
     assert_eq!(content.chars().count(), 130);
 
-    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+    let json = run_json(&[
         "pinvou",
         "memory",
         "update",
@@ -1716,10 +1652,7 @@ fn memory_update_preferences_over_the_cap_reports_the_truncation() {
         &id,
         "--content",
         &content,
-        "--output",
-        "json",
-    ]))
-    .expect("single-line JSON output");
+    ]);
 
     assert_eq!(
         json["truncated"],
@@ -2229,17 +2162,14 @@ fn memory_add_caps_multibyte_text_on_char_boundaries() {
     assert_eq!(content.chars().count(), 130);
     assert_eq!(content.len(), 390);
 
-    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+    let json = run_json(&[
         "pinvou",
         "memory",
         "add",
         "work-context",
         "--content",
         &content,
-        "--output",
-        "json",
-    ]))
-    .expect("single-line JSON output");
+    ]);
 
     assert_eq!(
         json["truncated"],
@@ -2310,7 +2240,7 @@ fn memory_update_current_focus_over_the_cap_truncates_at_the_timed_cap() {
     let content: String = std::iter::repeat_n("abcdefghij", 19).collect();
     assert_eq!(content.chars().count(), 190);
 
-    let json: serde_json::Value = serde_json::from_str(&run_ok(&[
+    let json = run_json(&[
         "pinvou",
         "memory",
         "update",
@@ -2318,10 +2248,7 @@ fn memory_update_current_focus_over_the_cap_truncates_at_the_timed_cap() {
         &seeded_item.id,
         "--content",
         &content,
-        "--output",
-        "json",
-    ]))
-    .expect("single-line JSON output");
+    ]);
     assert_eq!(
         json["truncated"],
         serde_json::json!(true),
@@ -2516,16 +2443,7 @@ fn memory_list_store_header_counts_items_not_cleanup_warnings() {
 
     // The JSON envelope is unchanged: `items` and `cleanup_warnings` stay
     // separate arrays.
-    let json = run_ok(&[
-        "pinvou",
-        "memory",
-        "list",
-        "--store",
-        "preferences",
-        "--output",
-        "json",
-    ]);
-    let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let envelope = run_json(&["pinvou", "memory", "list", "--store", "preferences"]);
     assert_eq!(envelope["items"].as_array().unwrap().len(), 1);
     let warnings = envelope["cleanup_warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1);
@@ -2654,18 +2572,7 @@ fn memory_add_refuses_block_marker_content_from_file() {
 fn memory_update_refuses_block_marker_content_and_keeps_the_item() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let _home = TempHome::new("update-marker");
-
-    run_ok(&[
-        "pinvou",
-        "memory",
-        "add",
-        "preference",
-        "--content",
-        "Prefer concise answers",
-    ]);
-    let id = pinvou3_lib::features::memory::list_preferences().unwrap()[0]
-        .id
-        .clone();
+    let id = seeded_preference_id();
 
     let error = expect_command_error(&[
         "pinvou",

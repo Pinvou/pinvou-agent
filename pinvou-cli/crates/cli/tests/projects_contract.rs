@@ -12,7 +12,7 @@
 //! test created and never assume anything about other stores.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -95,8 +95,76 @@ fn create_session_fixture() -> String {
     session.metadata.id
 }
 
+/// Seeds a plain-lane session whose SavedSession metadata and
+/// workspace-binding sidecar both point at `dir` — the same store
+/// constructors the CLI command itself uses — and returns the session id.
+fn bind_plain_session(dir: &Path) -> String {
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, dir.to_path_buf())
+        .expect("create plain session");
+    let id = session.metadata.id;
+    sessions
+        .bind_session_workspace(&id, dir.to_path_buf())
+        .expect("bind plain workspace");
+    id
+}
+
+/// The codex-lane twin: the session plus the agent-index record binding the
+/// authoritative code-session sidecar to `dir`. Returns the session id.
+fn bind_code_session(dir: &Path) -> String {
+    let sessions = SessionStore::boot().expect("boot session store");
+    let session = sessions
+        .create_new("test-model".to_owned(), None, dir.to_path_buf())
+        .expect("create code session");
+    let id = session.metadata.id;
+    drop(sessions);
+    let agents = SessionAgentStore::load_or_empty();
+    agents
+        .bind_code_native_session(&id, CodexWorkspaceKind::Project, Some(dir.to_path_buf()))
+        .expect("bind code session");
+    drop(agents);
+    id
+}
+
+/// The id list a rebind report carries under `key` (`rebound_session_ids` /
+/// `failed_session_ids`).
+fn report_ids(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("{key} must be present in the rebind report"))
+        .iter()
+        .map(|entry| entry.as_str().expect("report ids are strings").to_owned())
+        .collect()
+}
+
+/// An owning project-root fixture: `Drop` removes the directory tree, so a
+/// failing assertion can no longer leak it (the manual `remove_dir_all`
+/// epilogues this replaces were exactly the cleanup a panic skipped).
+struct TempRoot(PathBuf);
+
+impl std::ops::Deref for TempRoot {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempRoot {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Creates an absolute, existing directory to use as a project root.
-fn make_root_dir(label: &str) -> PathBuf {
+fn make_root_dir(label: &str) -> TempRoot {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -106,7 +174,7 @@ fn make_root_dir(label: &str) -> PathBuf {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TempRoot(dir)
 }
 
 // ── parse-level coverage ────────────────────────────────────────────────────
@@ -142,21 +210,20 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         // The Projects command tree is dispatched exclusively through the
         // Projects variant; assert family + subcommand through the derived
         // Debug form (the types are not nameable from integration tests).
+        // Every Projects variant is the subcommand token's capitalization, so
+        // the expected Debug token is derived from the argv itself.
         let debug = format!("{:?}", parsed.command());
-        let variant = match arguments[2] {
-            "list" => "List",
-            "create" => "Create",
-            "update" => "Update",
-            "delete" => "Delete",
-            "move" => "Move",
-            other => panic!("unmapped subcommand {other}"),
-        };
+        let mut chars = arguments[2].chars();
+        let variant: String = chars
+            .next()
+            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default();
         assert!(
             debug.starts_with("Projects("),
             "{arguments:?} did not render a Projects debug"
         );
         assert!(
-            debug.contains(variant),
+            debug.contains(&variant),
             "{arguments:?} did not mention the {variant} subcommand"
         );
     }
@@ -380,8 +447,6 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
         error.to_string().contains("project not found"),
         "an unknown project must be named in the failure"
     );
-
-    std::fs::remove_dir_all(&root_dir).ok();
 }
 
 #[test]
@@ -435,8 +500,6 @@ fn projects_root_validation_errors_are_clean_failures() {
         value["projects"].as_array().unwrap().is_empty(),
         "rejected creates must not leave a project behind"
     );
-
-    std::fs::remove_dir_all(&parent).ok();
 }
 
 #[test]
@@ -619,7 +682,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
 
     // The ungroup asymmetry is disclosed on the move usage errors too. This one
     // is rejected at PARSE time, so it never reaches `run`'s execute step.
-    let error = parse_args(&["pinvou", "projects", "move", &session_id, &project_id, "x"])
+    let error = parse_args(["pinvou", "projects", "move", &session_id, &project_id, "x"])
         .expect_err("a trailing token is a usage error");
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("cannot be reverted"), "{error}");
@@ -690,20 +753,10 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
 
     // Plain lane: session JSON + workspace-binding.json sidecar, both seeded
     // through the same store constructors the CLI command itself uses.
-    let sessions = SessionStore::boot().expect("boot session store");
-    let plain_session = sessions
-        .create_new("test-model".to_owned(), None, from.clone())
-        .expect("create plain session");
-    let plain_id = plain_session.metadata.id;
-    sessions
-        .bind_session_workspace(&plain_id, from.clone())
-        .expect("bind plain workspace");
+    let plain_id = bind_plain_session(&from);
     // Codex lane: the session JSON plus the agent-index record and the
     // authoritative code-session sidecar.
-    let code_session = sessions
-        .create_new("test-model".to_owned(), None, from.clone())
-        .expect("create code session");
-    let code_id = code_session.metadata.id;
+    let code_id = bind_code_session(&from);
     // Seed the ACP state the GUI's spawn path writes (boot recovery reads
     // `workspace.path` BEFORE the workspace baseline, so an untranslated
     // state file resurrects the vanished root if the agent index is later
@@ -715,12 +768,6 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         serde_json::json!({ "workspace": { "path": from.to_string_lossy() } }).to_string(),
     )
     .unwrap();
-    drop(sessions);
-    let agents = SessionAgentStore::load_or_empty();
-    agents
-        .bind_code_native_session(&code_id, CodexWorkspaceKind::Project, Some(from.clone()))
-        .expect("bind code session");
-    drop(agents);
 
     let value = run_json(&[
         "pinvou",
@@ -735,14 +782,9 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         failed.is_empty(),
         "a healthy two-lane rebind must not report failures: {failed:?}"
     );
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+    let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
-        rebound.contains(&plain_id.as_str()) && rebound.contains(&code_id.as_str()),
+        rebound.contains(&plain_id) && rebound.contains(&code_id),
         "both lanes' sessions must be reported as rebound: {rebound:?}"
     );
     assert_eq!(
@@ -842,9 +884,6 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
         "the rerun must report an empty convergence: {:?}",
         outcome.stdout
     );
-
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
 }
 
 #[test]
@@ -868,7 +907,9 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
     // metadata still names `from` (the write that failed), while both
     // binding lanes already sit under `to` (the writes that succeeded).
     // Nothing is left under `from`, so the lane batches of the rerun return
-    // empty and only the retry pass can see the session.
+    // empty and only the retry pass can see the session. The split geometry
+    // IS the fixture: created under `from`, bound to `to` — the shared
+    // same-dir bind helpers cannot express it.
     let sessions = SessionStore::boot().expect("boot session store");
     let plain_session = sessions
         .create_new("test-model".to_owned(), None, from.clone())
@@ -901,14 +942,9 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
         failed.is_empty(),
         "a converged rerun must not report failures: {failed:?}"
     );
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+    let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
-        rebound.contains(&plain_id.as_str()) && rebound.contains(&code_id.as_str()),
+        rebound.contains(&plain_id) && rebound.contains(&code_id),
         "both half-migrated sessions must be reported as rebound: {rebound:?}"
     );
 
@@ -956,9 +992,6 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
             .exists(),
         "a plain-chat admittee must not gain a codex baseline"
     );
-
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
 }
 
 #[test]
@@ -1021,14 +1054,9 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
         failed.is_empty(),
         "the stranded session must converge: {failed:?}"
     );
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+    let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
-        rebound.contains(&stranded_id.as_str()),
+        rebound.contains(&stranded_id),
         "the stranded session must be reported as rebound: {rebound:?}"
     );
 
@@ -1065,10 +1093,6 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
         sidecar.contains(to.to_str().unwrap()),
         "the binding sidecar must move: {sidecar}"
     );
-
-    std::fs::remove_dir_all(&origin_dir).ok();
-    std::fs::remove_dir_all(&mid_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
 }
 
 #[test]
@@ -1098,20 +1122,16 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
     // A healthy session bound at the subpath: metadata, artifact storage
     // and acp-state all name `from/sub` (nothing is stranded — this is the
     // plain moved-project shape, the most common rebind input).
+    let session_id = bind_plain_session(&from_sub);
+    // The bind and the artifact list are independent record fields, so
+    // seeding the storage path after the bind leaves the same fixture state.
     let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, from_sub.clone())
-        .expect("create subpath session");
-    let session_id = session.metadata.id;
     sessions
         .update_artifacts(
             &session_id,
             vec![artifact_on_from.to_string_lossy().into_owned()],
         )
         .expect("seed the artifact storage path");
-    sessions
-        .bind_session_workspace(&session_id, from_sub.clone())
-        .expect("bind the session at the subpath");
     drop(sessions);
     std::fs::create_dir_all(home.sessions_root().join(&session_id)).unwrap();
     std::fs::write(
@@ -1135,14 +1155,9 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
         failed.is_empty(),
         "the subpath session must rebind cleanly: {failed:?}"
     );
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+    let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
-        rebound.contains(&session_id.as_str()),
+        rebound.contains(&session_id),
         "the subpath session must be reported as rebound: {rebound:?}"
     );
 
@@ -1176,8 +1191,6 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
         "the acp-state workspace.path must translate onto the translated subpath: {acp_state}"
     );
 
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
     let _ = home;
 }
 
@@ -1193,15 +1206,7 @@ fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
     let from = std::fs::canonicalize(&from_dir).unwrap();
     let to = std::fs::canonicalize(&to_dir).unwrap();
 
-    let sessions = SessionStore::boot().expect("boot session store");
-    let healthy = sessions
-        .create_new("test-model".to_owned(), None, to.clone())
-        .expect("create a healthy to-lane session");
-    let healthy_id = healthy.metadata.id;
-    sessions
-        .bind_session_workspace(&healthy_id, to.clone())
-        .expect("bind the healthy session under to");
-    drop(sessions);
+    let healthy_id = bind_plain_session(&to);
 
     let value = run_json(&[
         "pinvou",
@@ -1211,25 +1216,12 @@ fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
         to.to_str().unwrap(),
         "--yes",
     ]);
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
-    let failed: Vec<&str> = value["failed_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+    let rebound = report_ids(&value, "rebound_session_ids");
+    let failed = report_ids(&value, "failed_session_ids");
     assert!(
-        !rebound.contains(&healthy_id.as_str()) && !failed.contains(&healthy_id.as_str()),
+        !rebound.contains(&healthy_id) && !failed.contains(&healthy_id),
         "a healthy to-lane session must not be re-reported: rebound {rebound:?}, failed {failed:?}"
     );
-
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
 }
 
 #[test]
@@ -1264,9 +1256,6 @@ fn projects_rebind_without_yes_is_refused_before_any_store_access() {
         !home.sessions_root().exists(),
         "a refused rebind must not create the sessions root"
     );
-
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
 }
 
 #[test]
@@ -1331,9 +1320,6 @@ fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
         !home.store_file().exists(),
         "rejected arguments must not touch the projects store"
     );
-
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
 }
 
 #[test]
@@ -1355,15 +1341,7 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
         same.to_str().unwrap(),
     ]);
     let project_id = value["id"].as_str().unwrap().to_owned();
-    let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, same.clone())
-        .expect("create session");
-    let session_id = session.metadata.id;
-    sessions
-        .bind_session_workspace(&session_id, same.clone())
-        .expect("bind workspace");
-    drop(sessions);
+    let session_id = bind_plain_session(&same);
 
     let value = run_json(&[
         "pinvou",
@@ -1394,151 +1372,92 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
         sidecar.contains(same.to_str().unwrap()),
         "the no-op must leave the binding as-is: {sidecar}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The GUI's mirror geometry (#463 round-17 MAJOR-2): `from` strictly inside
-/// `to` deepens a `from/sub` binding one level per rerun and is false-failed
-/// by run 1's fence rescan, so the CLI refuses it with the same typed marker
+/// The GUI's mirror geometry (#463 round-17 MAJOR-2): a rebind whose `from`
+/// and `to` nest inside each other deepens a binding or root one level per
+/// rerun (and is false-failed by run 1's fence rescan), so the CLI refuses
+/// BOTH mirror geometries with the same typed `REBIND_TO_NESTED` marker
 /// instead of performing a rebind the desktop app would have rejected. The
 /// refusal must leave the project root and the session sidecar untouched.
+/// The two geometries are one assertion matrix over a two-case table; the
+/// to-inside-from case is the arm the head commit restored — dropping the
+/// `to.starts_with(from)` arm fails only that row.
 #[test]
-fn projects_rebind_refuses_from_strictly_inside_to() {
+fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-mirror-nested");
     let dir = make_root_dir("rebind-mirror-nested");
     let outer = std::fs::canonicalize(&dir).unwrap();
     let inner = outer.join("B");
     std::fs::create_dir_all(&inner).unwrap();
+    let to_inner = outer.join("new");
+    std::fs::create_dir_all(&to_inner).unwrap();
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Mirror",
-        "--root",
-        outer.to_str().unwrap(),
-    ]);
-    let project_id = value["id"].as_str().unwrap().to_owned();
-    let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, inner.clone())
-        .expect("create session");
-    let session_id = session.metadata.id;
-    sessions
-        .bind_session_workspace(&session_id, inner.clone())
-        .expect("bind workspace");
-    drop(sessions);
+    // (label, from, to, project_root): the session is bound at the rebind's
+    // `from` in both geometries, and the project root is the OUTER directory
+    // (case 1: it IS `to`; case 2: it is the source `from`).
+    for (label, from, to, project_root) in [
+        (
+            "from strictly inside to",
+            inner.clone(),
+            outer.clone(),
+            outer.clone(),
+        ),
+        (
+            "to strictly inside from",
+            outer.clone(),
+            to_inner.clone(),
+            outer.clone(),
+        ),
+    ] {
+        let home = HomeGuard::new("rebind-mirror-nested");
+        let value = run_json(&[
+            "pinvou",
+            "projects",
+            "create",
+            "--name",
+            label,
+            "--root",
+            project_root.to_str().unwrap(),
+        ]);
+        let project_id = value["id"].as_str().unwrap().to_owned();
+        let session_id = bind_plain_session(&from);
 
-    let error = run(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        inner.to_str().unwrap(),
-        outer.to_str().unwrap(),
-        "--yes",
-    ])
-    .expect_err("a rebind with the original inside the destination must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(
-        error.to_string().contains("REBIND_TO_NESTED"),
-        "the refusal must carry the typed marker: {error}"
-    );
+        let error = run(&[
+            "pinvou",
+            "projects",
+            "rebind",
+            from.to_str().unwrap(),
+            to.to_str().unwrap(),
+            "--yes",
+        ])
+        .expect_err("a rebind with nested roots must refuse");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{label}");
+        assert!(
+            error.to_string().contains("REBIND_TO_NESTED"),
+            "{label}: the refusal must carry the typed marker: {error}"
+        );
 
-    // Nothing moved: the project keeps its root and the sidecar binding is
-    // intact.
-    let list = run_json(&["pinvou", "projects", "list"]);
-    assert_eq!(list["projects"][0]["id"], project_id);
-    assert_eq!(
-        list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
-        outer.to_str().unwrap()
-    );
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&session_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("the sidecar must still exist");
-    assert!(
-        sidecar.contains(inner.to_str().unwrap()),
-        "the refusal must leave the binding as-is: {sidecar}"
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-/// The other mirror geometry — the DESTINATION strictly inside the source —
-/// is the arm the head commit restored: `/a/x -> /a/x/new` deepens the
-/// project root one level per rerun and breaks idempotency, so the CLI
-/// refuses it with the same typed `REBIND_TO_NESTED` marker. Without this
-/// pin, a regression dropping the `to.starts_with(from)` arm passes the
-/// whole suite (the sibling test covers only from-inside-to).
-#[test]
-fn projects_rebind_refuses_to_strictly_inside_from() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-deepen-nested");
-    let dir = make_root_dir("rebind-deepen-nested");
-    let from = std::fs::canonicalize(&dir).unwrap();
-    let to = from.join("new");
-    std::fs::create_dir_all(&to).unwrap();
-
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Deepen",
-        "--root",
-        from.to_str().unwrap(),
-    ]);
-    let project_id = value["id"].as_str().unwrap().to_owned();
-    let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, from.clone())
-        .expect("create session");
-    let session_id = session.metadata.id;
-    sessions
-        .bind_session_workspace(&session_id, from.clone())
-        .expect("bind workspace");
-    drop(sessions);
-
-    let error = run(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ])
-    .expect_err("a rebind with the destination inside the source must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(
-        error.to_string().contains("REBIND_TO_NESTED"),
-        "the refusal must carry the typed marker: {error}"
-    );
-
-    // Nothing moved: the project keeps its root and the sidecar binding is
-    // intact.
-    let list = run_json(&["pinvou", "projects", "list"]);
-    assert_eq!(list["projects"][0]["id"], project_id);
-    assert_eq!(
-        list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
-        from.to_str().unwrap()
-    );
-    let sidecar = std::fs::read_to_string(
-        home.sessions_root()
-            .join(&session_id)
-            .join("workspace-binding.json"),
-    )
-    .expect("the sidecar must still exist");
-    assert!(
-        sidecar.contains(from.to_str().unwrap()),
-        "the refusal must leave the binding as-is: {sidecar}"
-    );
-
-    std::fs::remove_dir_all(&dir).ok();
+        // Nothing moved: the project keeps its root and the sidecar binding
+        // is intact.
+        let list = run_json(&["pinvou", "projects", "list"]);
+        assert_eq!(list["projects"][0]["id"], project_id, "{label}");
+        assert_eq!(
+            list["projects"][0]["roots"][0]["path"].as_str().unwrap(),
+            project_root.to_str().unwrap(),
+            "{label}"
+        );
+        let sidecar = std::fs::read_to_string(
+            home.sessions_root()
+                .join(&session_id)
+                .join("workspace-binding.json"),
+        )
+        .expect("the sidecar must still exist");
+        assert!(
+            sidecar.contains(from.to_str().unwrap()),
+            "{label}: the refusal must leave the binding as-is: {sidecar}"
+        );
+    }
 }
 
 /// A legacy table that exists but never parses (corrupt or hand-truncated)
@@ -1557,31 +1476,15 @@ fn projects_rebind_surfaces_an_unparseable_legacy_table() {
     let from = std::fs::canonicalize(&from_dir).unwrap();
     let to = std::fs::canonicalize(&to_dir).unwrap();
 
-    let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, from.clone())
-        .expect("create the session");
-    let session_id = session.metadata.id;
     // A real binding sidecar under `from`: the gate must refuse BEFORE this
     // sidecar moves — that is the fail-closed contract under test.
-    sessions
-        .bind_session_workspace(&session_id, from.clone())
-        .expect("seed the binding sidecar");
+    let session_id = bind_plain_session(&from);
     // A codex-lane session too: the plan-phase gate runs BEFORE the codex
     // lane (the store's "nothing was moved" contract is lane-wide), so the
     // agent index must still name the source when the run aborts. A command
     // that let the codex lane rewrite first and only then hit the gate would
     // fail this assertion.
-    let code_session = sessions
-        .create_new("test-model".to_owned(), None, from.clone())
-        .expect("create the code session");
-    let code_id = code_session.metadata.id;
-    drop(sessions);
-    let agents = SessionAgentStore::load_or_empty();
-    agents
-        .bind_code_native_session(&code_id, CodexWorkspaceKind::Project, Some(from.clone()))
-        .expect("bind the code session");
-    drop(agents);
+    let code_id = bind_code_session(&from);
 
     // A legacy table that exists but can never parse: the plan-phase sync
     // reads it as corrupt and must abort the run.
@@ -1713,14 +1616,9 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
         failed.is_empty(),
         "the legacy-bound session must rebind cleanly: {failed:?}"
     );
-    let rebound: Vec<&str> = value["rebound_session_ids"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|entry| entry.as_str())
-        .collect();
+    let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
-        rebound.contains(&legacy_id.as_str()),
+        rebound.contains(&legacy_id),
         "the legacy-table-only binding must be seen and rebound: {rebound:?}"
     );
 
@@ -1749,10 +1647,6 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
         other_sidecar.contains(elsewhere.to_str().unwrap()),
         "the unrelated legacy binding must survive the rebind: {other_sidecar}"
     );
-
-    std::fs::remove_dir_all(&from_dir).ok();
-    std::fs::remove_dir_all(&to_dir).ok();
-    std::fs::remove_dir_all(&elsewhere_dir).ok();
 }
 
 /// The GUI's `Some([])` (drop every root) has a CLI spelling: `--clear-roots`.
@@ -1853,15 +1747,7 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
         "--root",
         from.to_str().unwrap(),
     ]);
-    let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, from.clone())
-        .expect("create session");
-    let id = session.metadata.id;
-    sessions
-        .bind_session_workspace(&id, from.clone())
-        .expect("bind workspace");
-    drop(sessions);
+    let id = bind_plain_session(&from);
 
     let outcome = run(&[
         "pinvou",
@@ -1985,15 +1871,7 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
 
     // The session's workspace sits UNDER the project root, and no explicit
     // assignment is created — resolution must come from tier 2.
-    let sessions = SessionStore::boot().expect("boot session store");
-    let session = sessions
-        .create_new("test-model".to_owned(), None, root.join("sub"))
-        .expect("create session");
-    let id = session.metadata.id;
-    sessions
-        .bind_session_workspace(&id, root.join("sub"))
-        .expect("bind workspace");
-    drop(sessions);
+    let id = bind_plain_session(&root.join("sub"));
 
     // The ungroup gate resolves the session through tier 2 and lets the
     // explicit-opt-out write through.
@@ -2013,12 +1891,12 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
 
 /// Round-49 review: tier 2's agent-index half is read directly (bounded read
 /// + parse) instead of through `SessionAgentStore::load_or_empty`, whose
-/// corrupt-file path prints the app-side zh `[pinvou3-app] … starting empty`
-/// line into the CLI's stderr and answers tier 2 from an empty table. The
-/// codex-lane healthy arm also pins the field-for-field serde mirror the
-/// direct parse relies on: a `workspace_kind`/`workspace_path`
-/// representation change in the store must fail here, not silently drop
-/// tier 2.
+///   corrupt-file path prints the app-side zh `[pinvou3-app] … starting empty`
+///   line into the CLI's stderr and answers tier 2 from an empty table. The
+///   codex-lane healthy arm also pins the field-for-field serde mirror the
+///   direct parse relies on: a `workspace_kind`/`workspace_path`
+///   representation change in the store must fail here, not silently drop
+///   tier 2.
 #[test]
 fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_line() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2040,21 +1918,7 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
     // Healthy codex lane first: the session's project workspace comes from
     // the agent index alone (no plain sidecar, no assignment), so the ungroup
     // resolves through the parsed index and must keep succeeding.
-    let sessions = SessionStore::boot().expect("boot session store");
-    let healthy = sessions
-        .create_new("test-model".to_owned(), None, root.join("sub"))
-        .expect("create session");
-    let healthy_id = healthy.metadata.id;
-    drop(sessions);
-    let agents = SessionAgentStore::load_or_empty();
-    agents
-        .bind_code_native_session(
-            &healthy_id,
-            CodexWorkspaceKind::Project,
-            Some(root.join("sub")),
-        )
-        .expect("bind the codex workspace");
-    drop(agents);
+    let healthy_id = bind_code_session(&root.join("sub"));
     let value = run_json(&["pinvou", "projects", "move", &healthy_id, "--yes"]);
     assert!(
         value.get("project_id").is_none() || value["project_id"].is_null(),
@@ -2065,21 +1929,7 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
     // corrupted on disk. The in-process harness cannot capture the note's
     // stderr, so this arm drives the real binary (same pattern as the
     // corrupt-index delete-cascade tests in sessions_contract.rs).
-    let sessions = SessionStore::boot().expect("boot session store");
-    let corrupt = sessions
-        .create_new("test-model".to_owned(), None, root.join("sub"))
-        .expect("create session");
-    let corrupt_id = corrupt.metadata.id;
-    drop(sessions);
-    let agents = SessionAgentStore::load_or_empty();
-    agents
-        .bind_code_native_session(
-            &corrupt_id,
-            CodexWorkspaceKind::Project,
-            Some(root.join("sub")),
-        )
-        .expect("bind the codex workspace");
-    drop(agents);
+    let corrupt_id = bind_code_session(&root.join("sub"));
     let agents_path = home.root.join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 

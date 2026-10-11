@@ -322,7 +322,7 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
             let sources = [
                 option(&options, "--code").is_some(),
                 option(&options, "--code-env").is_some(),
-                booleans.iter().any(|flag| *flag == "--code-stdin"),
+                booleans.contains(&"--code-stdin"),
             ];
             if sources.iter().filter(|present| **present).count() > 1 {
                 return Err(CliError::usage(
@@ -338,7 +338,7 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
                 // literal must be refused at parse time, not echoed back by
                 // a later not-set error.
                 let var = option(&options, "--code-env").unwrap_or_default();
-                crate::support::ensure_env_var_name("--code-env", &var)?;
+                crate::support::ensure_env_var_name("--code-env", var)?;
                 Some(LoginCodeSource::Env(var.to_owned()))
             } else if sources[2] {
                 Some(LoginCodeSource::Stdin)
@@ -673,10 +673,10 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
     // shared id shape here so an invalid id is a usage error (exit 2), the
     // same contract `require_session_id` enforces everywhere else. Deep
     // existence validation stays with the store.
-    if let Some(session) = rest.get(1) {
-        if !crate::support::valid_session_id(session) {
-            return Err(CliError::usage("invalid session id"));
-        }
+    if let Some(session) = rest.get(1)
+        && !crate::support::valid_session_id(session)
+    {
+        return Err(CliError::usage("invalid session id"));
     }
     let positional = |index: usize, what: &str| -> Result<String, CliError> {
         rest.get(index)
@@ -908,61 +908,52 @@ type Flags<'a> = HashMap<&'a str, &'a str>;
 /// Mirrors the pair-based flag parsing of the other families: every token is a
 /// known value flag (followed by a non-empty value), a known boolean flag, or
 /// nothing. `--model-slot` and `--mode`-style repeats accumulate into a list.
+/// What [`parse_flags`] hands back: value-flag pairs, the boolean flags
+/// seen, and repeated flag pairs (`--model-slot`) in argv order.
+type ParsedFlags<'a> = (Flags<'a>, Vec<&'a str>, Vec<(&'a str, &'a str)>);
+
+/// [`split_positional_flags`]'s shape: positional tokens collected
+/// separately (they may appear before or after the flags), then the
+/// [`ParsedFlags`] sets in the same order.
+type SplitFlags<'a> = (
+    Vec<&'a str>,
+    Flags<'a>,
+    Vec<&'a str>,
+    Vec<(&'a str, &'a str)>,
+);
+
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
     label: &str,
-) -> Result<(Flags<'a>, Vec<&'a str>, Vec<(&'a str, &'a str)>), CliError> {
+) -> Result<ParsedFlags<'a>, CliError> {
     let mut options = Flags::new();
     let mut flags = Vec::new();
     let mut repeated = Vec::new();
     let mut index = 0;
     while index < values.len() {
-        let token = values[index].as_str();
-        if boolean_flags.contains(&token) {
-            if flags.contains(&token) {
+        match take_flag_token(
+            values,
+            index,
+            value_flags,
+            boolean_flags,
+            label,
+            &mut options,
+            &mut flags,
+            &mut repeated,
+        )? {
+            Some(step) => index += step,
+            // Not a known flag, and this shape has no positional slot: the
+            // same unsupported-option usage error whether or not the token is
+            // `--`-prefixed (the ordering the inline loop pinned).
+            None => {
                 return Err(CliError::usage(format!(
-                    "duplicate code {label} option {token}"
-                )));
-            }
-            flags.push(token);
-            index += 1;
-            continue;
-        }
-        if !value_flags.contains(&token) {
-            return Err(CliError::usage(format!(
-                "unsupported code {label} option: {token}"
-            )));
-        }
-        let value = values.get(index + 1).ok_or_else(|| {
-            CliError::usage(format!("code {label} option {token} requires a value"))
-        })?;
-        if value.is_empty() || (value.starts_with("--") && token != "--message") {
-            return Err(CliError::usage(format!(
-                "code {label} option {token} requires a value"
-            )));
-        }
-        // `--message` is the one flag allowed a `--`-prefixed value, because a
-        // commit message may legitimately start with `--`. That exemption also
-        // makes `--message --yes` swallow the confirmation flag, and the
-        // failure then surfaces much later as the generic "pass --yes to
-        // confirm this destructive action" — which names neither `--message`
-        // nor the flag it ate. Rejecting only the exact case where the value
-        // IS one of this command's own boolean flags is the smaller fix than
-        // dropping the exemption: every legitimate `--`-prefixed message keeps
-        // working, and the one ambiguous spelling gets told what happened.
-        reject_swallowed_boolean_flag(token, value, boolean_flags, label)?;
-        if token == "--model-slot" {
-            repeated.push((token, value.as_str()));
-        } else {
-            if options.insert(token, value.as_str()).is_some() {
-                return Err(CliError::usage(format!(
-                    "duplicate code {label} option {token}"
+                    "unsupported code {label} option: {}",
+                    values[index]
                 )));
             }
         }
-        index += 2;
     }
     Ok((options, flags, repeated))
 }
@@ -987,6 +978,68 @@ fn reject_swallowed_boolean_flag(
     Ok(())
 }
 
+/// The per-token body shared by [`parse_flags`] and [`split_positional_flags`]
+/// (the two loops were hand-copied, error strings included): classifies
+/// `values[index]` and, for a known flag, records it and returns the step to
+/// advance (1 for a boolean flag, 2 for a value flag plus its value).
+/// `Ok(None)` marks a token that is no known flag — the only behavioral
+/// difference between the two loops — and each caller keeps that branch
+/// itself so neither loop's usage-message ordering can be reordered.
+#[allow(clippy::too_many_arguments)]
+fn take_flag_token<'a>(
+    values: &'a [String],
+    index: usize,
+    value_flags: &[&str],
+    boolean_flags: &[&str],
+    label: &str,
+    options: &mut Flags<'a>,
+    flags: &mut Vec<&'a str>,
+    repeated: &mut Vec<(&'a str, &'a str)>,
+) -> Result<Option<usize>, CliError> {
+    let token = values[index].as_str();
+    if boolean_flags.contains(&token) {
+        if flags.contains(&token) {
+            return Err(CliError::usage(format!(
+                "duplicate code {label} option {token}"
+            )));
+        }
+        flags.push(token);
+        return Ok(Some(1));
+    }
+    if !value_flags.contains(&token) {
+        return Ok(None);
+    }
+    let value = values
+        .get(index + 1)
+        .ok_or_else(|| CliError::usage(format!("code {label} option {token} requires a value")))?;
+    if value.is_empty() || (value.starts_with("--") && token != "--message") {
+        return Err(CliError::usage(format!(
+            "code {label} option {token} requires a value"
+        )));
+    }
+    // `--message` is the one flag allowed a `--`-prefixed value, because a
+    // commit message may legitimately start with `--`. That exemption also
+    // makes `--message --yes` swallow the confirmation flag, and the
+    // failure then surfaces much later as the generic "pass --yes to
+    // confirm this destructive action" — which names neither `--message`
+    // nor the flag it ate. Rejecting only the exact case where the value
+    // IS one of this command's own boolean flags is the smaller fix than
+    // dropping the exemption: every legitimate `--`-prefixed message keeps
+    // working, and the one ambiguous spelling gets told what happened.
+    // Guard shared by both splitters here, so a future subcommand that
+    // routes `--message` through the positional splitter inherits the guard
+    // instead of the confusing late failure.
+    reject_swallowed_boolean_flag(token, value, boolean_flags, label)?;
+    if token == "--model-slot" {
+        repeated.push((token, value.as_str()));
+    } else if options.insert(token, value.as_str()).is_some() {
+        return Err(CliError::usage(format!(
+            "duplicate code {label} option {token}"
+        )));
+    }
+    Ok(Some(2))
+}
+
 fn option<'a>(options: &'a Flags, name: &str) -> Option<&'a str> {
     options.get(name).copied()
 }
@@ -1000,63 +1053,35 @@ fn split_positional_flags<'a>(
     value_flags: &[&str],
     boolean_flags: &[&str],
     label: &str,
-) -> Result<
-    (
-        Vec<&'a str>,
-        Flags<'a>,
-        Vec<&'a str>,
-        Vec<(&'a str, &'a str)>,
-    ),
-    CliError,
-> {
+) -> Result<SplitFlags<'a>, CliError> {
     let mut positionals = Vec::new();
     let mut options = Flags::new();
     let mut flags = Vec::new();
     let mut repeated = Vec::new();
     let mut index = 0;
     while index < values.len() {
-        let token = values[index].as_str();
-        if boolean_flags.contains(&token) {
-            if flags.contains(&token) {
-                return Err(CliError::usage(format!(
-                    "duplicate code {label} option {token}"
-                )));
+        match take_flag_token(
+            values,
+            index,
+            value_flags,
+            boolean_flags,
+            label,
+            &mut options,
+            &mut flags,
+            &mut repeated,
+        )? {
+            Some(step) => index += step,
+            None => {
+                let token = values[index].as_str();
+                if token.starts_with("--") {
+                    return Err(CliError::usage(format!(
+                        "unsupported code {label} option: {token}"
+                    )));
+                }
+                positionals.push(token);
+                index += 1;
             }
-            flags.push(token);
-            index += 1;
-            continue;
         }
-        if value_flags.contains(&token) {
-            let value = values.get(index + 1).ok_or_else(|| {
-                CliError::usage(format!("code {label} option {token} requires a value"))
-            })?;
-            if value.is_empty() || (value.starts_with("--") && token != "--message") {
-                return Err(CliError::usage(format!(
-                    "code {label} option {token} requires a value"
-                )));
-            }
-            // Same `--message` exemption, same swallowed-flag hazard as
-            // `parse_flags` above; kept in step so a future subcommand that
-            // routes `--message` through the positional splitter inherits the
-            // guard instead of the confusing late failure.
-            reject_swallowed_boolean_flag(token, value, boolean_flags, label)?;
-            if token == "--model-slot" {
-                repeated.push((token, value.as_str()));
-            } else if options.insert(token, value.as_str()).is_some() {
-                return Err(CliError::usage(format!(
-                    "duplicate code {label} option {token}"
-                )));
-            }
-            index += 2;
-            continue;
-        }
-        if token.starts_with("--") {
-            return Err(CliError::usage(format!(
-                "unsupported code {label} option: {token}"
-            )));
-        }
-        positionals.push(token);
-        index += 1;
     }
     Ok((positionals, options, flags, repeated))
 }
@@ -1243,21 +1268,23 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             api_key_env,
             api_key_stdin,
         } => providers_save(
-            &agent,
-            None,
-            Some(name),
-            Some(base_url),
-            wire_api.as_deref(),
-            model,
-            &model_slots,
-            context_window,
-            api_key_env,
-            api_key_stdin,
-            false,
-            // `add` never deletes a key (delete_key=false above), so the
-            // update-lane --yes gate would never fire; pass false and let
-            // require_yes see a non-destructive call.
-            false,
+            ProviderSaveInput {
+                // `add` never deletes a key (delete_key=false here), so the
+                // update-lane --yes gate would never fire; pass false and let
+                // require_yes see a non-destructive call.
+                agent,
+                provider_id: None,
+                name: Some(name),
+                base_url: Some(base_url),
+                wire_api,
+                model,
+                model_slots,
+                context_window,
+                api_key_env,
+                api_key_stdin,
+                delete_key: false,
+                yes: false,
+            },
             output,
         ),
         CodeCommand::ProvidersUpdate {
@@ -1274,18 +1301,20 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
             delete_key,
             yes,
         } => providers_save(
-            &agent,
-            Some(&provider_id),
-            name,
-            base_url,
-            wire_api.as_deref(),
-            model,
-            &model_slots,
-            context_window,
-            api_key_env,
-            api_key_stdin,
-            delete_key,
-            yes,
+            ProviderSaveInput {
+                agent,
+                provider_id: Some(provider_id),
+                name,
+                base_url,
+                wire_api,
+                model,
+                model_slots,
+                context_window,
+                api_key_env,
+                api_key_stdin,
+                delete_key,
+                yes,
+            },
             output,
         ),
         CodeCommand::ProvidersRemove {
@@ -1440,12 +1469,13 @@ struct AgentProbe {
     authenticated: bool,
 }
 
-fn agent_cli_name(agent: &str) -> &'static str {
-    match agent {
-        "claude" => "claude",
-        "kimi" => "kimi",
-        _ => "codex",
-    }
+/// The CLI each agent probes is named after the agent id itself: parse's
+/// `require_agent` admits only codex|claude|kimi and the GUI's catalog lists
+/// the same three (`AgentBackend::ACP_BACKENDS`), so the former per-agent
+/// match spelled one identity arm per agent plus a codex fallback no
+/// reachable input could reach.
+fn agent_cli_name(agent: &str) -> &str {
+    agent
 }
 
 /// Mirror of `install::agent_cli_names`: the per-agent Windows candidate
@@ -1489,8 +1519,11 @@ fn find_in_path(agent: &str, name: &str) -> Option<PathBuf> {
 /// exactly that reason). Only codex gates its override through the
 /// compatibility gate; claude/kimi overrides win unconditionally, like the
 /// GUI. The app's adapter-beside claude runtime location is app-bundle-specific
-/// and not mirrored here.
-fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
+/// and not mirrored here. The second tuple element carries the override
+/// probe from the codex gate (see [`probe_override_gate`]) so the caller
+/// need not spawn the same `--version` twice; callers that only resolve a
+/// path discard it.
+fn resolve_agent_cli(agent: &str, name: &str) -> (Option<PathBuf>, Option<VersionProbe>) {
     let override_var = match agent {
         "codex" => Some("PINVOU3_CODEX_PATH"),
         "claude" => Some("PINVOU3_CLAUDE_CLI_PATH"),
@@ -1499,22 +1532,24 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
         "kimi" => Some("PINVOU3_KIMI_ACP_BIN"),
         _ => None,
     };
-    if let Some(var) = override_var {
-        if let Some(path) = std::env::var_os(var)
+    if let Some(var) = override_var
+        && let Some(path) = std::env::var_os(var)
             .map(PathBuf::from)
-            .filter(|path| nonempty_file(&path))
-        {
-            // Codex is the only agent whose GUI resolution gates the
-            // override through the compatibility check
-            // (`runtime::probe_codex_runtime`); claude
-            // (`PINVOU3_CLAUDE_CLI_PATH`) and kimi (`PINVOU3_KIMI_ACP_BIN`)
-            // honor a nonempty override file unconditionally
-            // (`install::resolve_claude_cli`/`resolve_kimi_path`). Gating
-            // them here made the CLI silently fall back to a different
-            // binary than the GUI operates.
-            if agent != "codex" || override_passes_version_gate(agent, &path) {
-                return Some(path);
-            }
+            .filter(|path| nonempty_file(path))
+    {
+        // Codex is the only agent whose GUI resolution gates the
+        // override through the compatibility check
+        // (`runtime::probe_codex_runtime`); claude
+        // (`PINVOU3_CLAUDE_CLI_PATH`) and kimi (`PINVOU3_KIMI_ACP_BIN`)
+        // honor a nonempty override file unconditionally
+        // (`install::resolve_claude_cli`/`resolve_kimi_path`). Gating
+        // them here made the CLI silently fall back to a different
+        // binary than the GUI operates.
+        if agent != "codex" {
+            return (Some(path), None);
+        }
+        if let Some(probe) = probe_override_gate(agent, &path) {
+            return (Some(path), Some(probe));
         }
     }
     let home = pinvou3_lib::platform::paths::user_home_dir();
@@ -1543,14 +1578,13 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
     } else {
         None
     };
-    if let Some(dir) = managed_dir {
-        if let Some(path) = agent_cli_names(agent, name)
+    if let Some(dir) = managed_dir
+        && let Some(path) = agent_cli_names(agent, name)
             .iter()
             .map(|candidate| dir.join(candidate.as_ref()))
             .find(|candidate| nonempty_file(candidate))
-        {
-            return Some(path);
-        }
+    {
+        return (Some(path), None);
     }
     #[cfg(target_os = "windows")]
     if agent == "codex" {
@@ -1569,10 +1603,10 @@ fn resolve_agent_cli(agent: &str, name: &str) -> Option<PathBuf> {
             .join("bin")
             .join("codex.exe");
         if nonempty_file(&path) {
-            return Some(path);
+            return (Some(path), None);
         }
     }
-    find_in_path(agent, name)
+    (find_in_path(agent, name), None)
 }
 
 /// Runs `executable args...` with a hard timeout. `Err` = the process could
@@ -1657,6 +1691,21 @@ fn command_output_with_timeout(
     }
 }
 
+/// UTF-8-safe byte-count eviction shared by the two transcript tails
+/// (`drain_stream` and the login drain): the cap can land inside a
+/// multi-byte character; advance to the next UTF-8 boundary (any
+/// non-continuation byte starts a character) so the buffer never starts
+/// mid-character.
+fn evict_past_cap(bytes: &mut Vec<u8>, cap: usize) {
+    if bytes.len() > cap {
+        let mut cut = bytes.len() - cap;
+        while cut < bytes.len() && (bytes[cut] & 0xC0) == 0x80 {
+            cut += 1;
+        }
+        bytes.drain(..cut);
+    }
+}
+
 /// Drains a byte stream into a string (bounded tail: the buffer keeps the
 /// last 64 KiB so a chatty vendor CLI cannot grow it without limit). The
 /// bytes are decoded once at the end: converting per chunk mangles a
@@ -1672,17 +1721,7 @@ fn drain_stream<R: Read>(mut pipe: Option<R>) -> String {
             Ok(0) | Err(_) => break,
             Ok(read) => {
                 bytes.extend_from_slice(&chunk[..read]);
-                if bytes.len() > 65_536 {
-                    // Byte-count eviction can land inside a multi-byte
-                    // character; advance to the next UTF-8 boundary (any
-                    // non-continuation byte starts a character) so the
-                    // buffer never starts mid-character.
-                    let mut cut = bytes.len() - 65_536;
-                    while cut < bytes.len() && (bytes[cut] & 0xC0) == 0x80 {
-                        cut += 1;
-                    }
-                    bytes.drain(..cut);
-                }
+                evict_past_cap(&mut bytes, 65_536);
             }
         }
     }
@@ -1712,15 +1751,19 @@ fn probe_cli_version(executable: &Path) -> VersionProbe {
     }
 }
 
+/// The candidate rule both codex predicates share: a whitespace token whose
+/// dot/dash/plus-separated head is all digits carries a version.
+fn is_version_candidate(token: &str) -> bool {
+    token
+        .split(['.', '-', '+'])
+        .next()
+        .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Whether `codex_version_token` has a real digit-headed token to find —
 /// the fallback-free precondition for treating probed output as a version.
 fn codex_output_has_version_token(version: &str) -> bool {
-    version.split_whitespace().any(|token| {
-        token
-            .split(['.', '-', '+'])
-            .next()
-            .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
-    })
+    version.split_whitespace().any(is_version_candidate)
 }
 
 /// Mirror of `runtime::parse_codex_version_output`: codex prints a
@@ -1729,12 +1772,7 @@ fn codex_output_has_version_token(version: &str) -> bool {
 fn codex_version_token(version: &str) -> &str {
     version
         .split_whitespace()
-        .find(|token| {
-            token
-                .split(['.', '-', '+'])
-                .next()
-                .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
-        })
+        .find(|token| is_version_candidate(token))
         .unwrap_or(version)
 }
 
@@ -1763,9 +1801,6 @@ fn version_supported_for(agent: &str, version: &str, minimum: &str) -> bool {
     }
 }
 
-/// An override binary must clear the same compatibility gate as any other
-/// candidate (mirror of the GUI's `runtime_version_is_compatible` filter on
-/// overrides).
 /// Mirror of `install::nonempty_file`: the GUI's candidate checks require a
 /// readable file with content, not mere existence (a 0-byte stub is not a
 /// usable binary).
@@ -1775,56 +1810,30 @@ fn nonempty_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// One-shot memo of the codex override's passing `--version` verdict,
-/// written by [`override_passes_version_gate`] and read by
-/// [`memoized_override_probe`]: `probe_agent` needs the same `--version`
-/// for the override resolution the gate just handed back, and without the
-/// memo the codex lanes spawn the override twice (two 15 s-bounded spawns;
-/// the app avoids the same double spawn in `runtime::probe_codex_runtime`
-/// by threading the verdict). ANY `Version` verdict is cached — passing or
-/// not (the memo is stored before the gate evaluates it) — keyed by the
-/// resolved path; behaviorally inert because the memo is only read back for
-/// the exact same path, whose verdict classifies identically fresh or
-/// memoized (round-37 review corrected the earlier "passing only" claim).
-static LAST_OVERRIDE_PROBE: std::sync::OnceLock<
-    std::sync::Mutex<Option<(std::path::PathBuf, VersionProbe)>>,
-> = std::sync::OnceLock::new();
-
-fn override_passes_version_gate(agent: &str, path: &Path) -> bool {
+/// An override binary must clear the same compatibility gate as any other
+/// candidate (mirror of the GUI's `runtime_version_is_compatible` filter on
+/// overrides). The `--version` probe runs ONCE here and is handed back to
+/// the caller: `probe_agent` needs the same verdict for the override
+/// resolution this gate just accepted, and re-spawning it would cost a
+/// second 15 s-bounded spawn (the app threads the verdict the same way
+/// through `runtime::probe_codex_runtime`; the process-global memo that
+/// used to stand in for this threading is gone with it). `None` means the
+/// override is refused: no probe at all, a failed/timed-out probe, or a
+/// version under the agent's minimum.
+fn probe_override_gate(agent: &str, path: &Path) -> Option<VersionProbe> {
     let probe = probe_cli_version(path);
-    if let VersionProbe::Version(_) = &probe {
-        let mut last = LAST_OVERRIDE_PROBE
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *last = Some((path.to_owned(), probe.clone()));
-    }
-    let version = match probe {
-        VersionProbe::Version(version) => version,
-        VersionProbe::Failed | VersionProbe::TimedOut => return false,
+    let passes = match &probe {
+        VersionProbe::Version(version) => match MIN_VERSIONS
+            .iter()
+            .find(|(id, _)| *id == agent)
+            .map(|(_, min)| *min)
+        {
+            Some(minimum) => version_supported_for(agent, version, minimum),
+            None => true,
+        },
+        VersionProbe::Failed | VersionProbe::TimedOut => false,
     };
-    let minimum = MIN_VERSIONS
-        .iter()
-        .find(|(id, _)| *id == agent)
-        .map(|(_, min)| *min);
-    match minimum {
-        Some(minimum) => version_supported_for(agent, &version, minimum),
-        None => true,
-    }
-}
-
-/// The memoized verdict of the codex override gate, when the path being
-/// probed is exactly the override that gate just passed (see
-/// [`LAST_OVERRIDE_PROBE`]).
-fn memoized_override_probe(path: &Path) -> Option<VersionProbe> {
-    let last = LAST_OVERRIDE_PROBE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match last.as_ref() {
-        Some((cached_path, probe)) if cached_path == path => Some(probe.clone()),
-        _ => None,
-    }
+    passes.then_some(probe)
 }
 
 /// Mirror of `install::is_bare_semver`: exactly three all-digit parts.
@@ -2061,13 +2070,13 @@ fn kimi_data_root() -> PathBuf {
 
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     let cli_name = agent_cli_name(agent);
-    let cli_path = resolve_agent_cli(agent, cli_name);
-    // Reuse the verdict the codex override gate just produced for this exact
-    // path instead of spawning the same `--version` twice. Banner-only
-    // codex output classifies as a failed probe (see `classify_codex_probe`).
-    let probe = cli_path
-        .as_deref()
-        .map(|path| memoized_override_probe(path).unwrap_or_else(|| probe_cli_version(path)))
+    // The codex override gate hands back the verdict it already produced for
+    // this exact binary, so the same `--version` is never spawned twice;
+    // every other resolution path probes here. Banner-only codex output
+    // classifies as a failed probe (see `classify_codex_probe`).
+    let (cli_path, override_probe) = resolve_agent_cli(agent, cli_name);
+    let probe = override_probe
+        .or_else(|| cli_path.as_deref().map(probe_cli_version))
         .map(|probe| {
             if agent == "codex" {
                 classify_codex_probe(probe)
@@ -2138,7 +2147,7 @@ fn probe_all_agents() -> Vec<AgentProbe> {
     };
     AcpPool::agent_catalog()
         .into_iter()
-        .filter_map(|descriptor| {
+        .map(|descriptor| {
             // Same degrade doctrine as the join below: a failed spawn
             // (fd/memory exhaustion) is one degraded row, not an abort of
             // the whole listing.
@@ -2146,8 +2155,8 @@ fn probe_all_agents() -> Vec<AgentProbe> {
                 .name(format!("agent-probe-{}", descriptor.agent_id))
                 .spawn(move || probe_agent(descriptor.agent_id, descriptor.agent_name));
             match spawned {
-                Ok(handle) => Some((descriptor, Some(handle))),
-                Err(_) => Some((descriptor, None)),
+                Ok(handle) => (descriptor, Some(handle)),
+                Err(_) => (descriptor, None),
             }
         })
         .collect::<Vec<_>>()
@@ -2310,15 +2319,15 @@ fn extract_device_code(output: &str, login_url: Option<&str>) -> Option<String> 
                 .chars()
                 .all(|character| character.is_ascii_alphanumeric() || character == '-')
     };
-    if let Some(url) = login_url {
-        if let Some(value) = url.split("user_code=").nth(1) {
-            let code = value
-                .split(|character: char| character == '&' || character.is_whitespace())
-                .next()
-                .unwrap_or_default();
-            if valid(code) {
-                return Some(code.to_string());
-            }
+    if let Some(url) = login_url
+        && let Some(value) = url.split("user_code=").nth(1)
+    {
+        let code = value
+            .split(|character: char| character == '&' || character.is_whitespace())
+            .next()
+            .unwrap_or_default();
+        if valid(code) {
+            return Some(code.to_string());
         }
     }
     ["enter code:", "user code:"]
@@ -2407,17 +2416,7 @@ fn spawn_login_drain<R: Read + Send + 'static>(
                 Ok(read) => read,
             };
             bytes.extend_from_slice(&chunk[..read]);
-            if bytes.len() > 65_536 {
-                // Byte-count eviction can land inside a multi-byte character;
-                // advance to the next UTF-8 boundary (any non-continuation
-                // byte starts a character) so the buffer never starts
-                // mid-character.
-                let mut cut = bytes.len() - 65_536;
-                while cut < bytes.len() && (bytes[cut] & 0xC0) == 0x80 {
-                    cut += 1;
-                }
-                bytes.drain(..cut);
-            }
+            evict_past_cap(&mut bytes, 65_536);
             if url_sent && code_sent {
                 // Both artefacts are out; the rest of this pipe is transcript
                 // only, so skip the scan entirely.
@@ -2562,7 +2561,8 @@ fn read_deferred_login_code() -> Option<String> {
 }
 
 fn login_executable(agent: &str) -> Result<PathBuf, CliError> {
-    resolve_agent_cli(agent, agent_cli_name(agent)).ok_or_else(|| {
+    let (cli_path, _) = resolve_agent_cli(agent, agent_cli_name(agent));
+    cli_path.ok_or_else(|| {
         CliError::failed(format!(
             "code_login_cli_missing: {agent} CLI not found; install it first \
              (`pinvou code agents status {agent}` shows the probe result)"
@@ -2571,9 +2571,10 @@ fn login_executable(agent: &str) -> Result<PathBuf, CliError> {
 }
 
 fn login_args(agent: &str) -> &'static [&'static str] {
+    // codex and kimi run the same bare `login` subcommand (parse's
+    // require_agent pins the input, so the default arm covers both).
     match agent {
         "claude" => &["auth", "login"],
-        "kimi" => &["login"],
         _ => &["login"],
     }
 }
@@ -2937,6 +2938,38 @@ fn login(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
     let combined = strip_login_code(&combined, code.as_deref().or(deferred_code.as_deref()));
+    // The transcript echo (redact → human gate → credential-marker withhold)
+    // and the "; last login link:" suffix are shared verbatim by the timeout
+    // path and the exit paths below — one closure each, so the two
+    // hand-copied blocks cannot drift.
+    //
+    // The vendor login output is echoed once, redacted: login transcripts are
+    // exactly what users paste into issues, so the bulk of the stream must
+    // never reach the terminal unredacted. (The login URL and the device code
+    // are the two exceptions, already streamed live by the drains above —
+    // they are what the user must act on, and they are extracted through the
+    // agent allow-list rather than passed through verbatim.) It goes to
+    // stderr and only in human mode, so `--output json` stdout stays a single
+    // serde_json line.
+    let echo_login_transcript = |combined: &str| {
+        // Unlike the unconditionally-printed single-line link above, the
+        // multi-line transcript dump is human-gated: `--output json`
+        // keeps stderr free of it.
+        let echoed = pinvou3_lib::platform::credential_store::redact_secret(combined);
+        if output == OutputMode::Human && !echoed.trim().is_empty() {
+            if login_echo_withheld(combined) {
+                note!(
+                    "login transcript withheld: it carries credential markers the shape-based redaction cannot scrub"
+                );
+            } else {
+                note!("{echoed}");
+            }
+        }
+    };
+    let login_link_hint = |login_url: &Option<String>| match login_url {
+        Some(url) => format!("; last login link: {url}"),
+        None => String::new(),
+    };
     if timed_out {
         // The buffered transcript would die with this error otherwise, and
         // its login link is exactly what the user needs to finish the flow.
@@ -2950,46 +2983,14 @@ fn login(
         {
             note!("login link: {url}");
         }
-        // Unlike the unconditionally-printed single-line link above, the
-        // multi-line transcript dump below is human-gated: `--output json`
-        // keeps stderr free of it.
-        let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
-        if output == OutputMode::Human && !echoed.trim().is_empty() {
-            if login_echo_withheld(&combined) {
-                note!(
-                    "login transcript withheld: it carries credential markers the shape-based redaction cannot scrub"
-                );
-            } else {
-                note!("{echoed}");
-            }
-        }
-        let link_hint = match &login_url {
-            Some(url) => format!("; last login link: {url}"),
-            None => String::new(),
-        };
+        echo_login_transcript(&combined);
+        let link_hint = login_link_hint(&login_url);
         return Err(CliError::failed(format!(
             "code_login_timeout: authorization wait timed out; rerun `pinvou code login`{link_hint}"
         )));
     }
     let status = status.expect("loop only breaks with a status or returns");
-    // The vendor login output is echoed once, redacted: login transcripts are
-    // exactly what users paste into issues, so the bulk of the stream must
-    // never reach the terminal unredacted. (The login URL and the device code
-    // are the two exceptions, already streamed live by the drains above —
-    // they are what the user must act on, and they are extracted through the
-    // agent allow-list rather than passed through verbatim.) It goes to
-    // stderr and only in human mode, so `--output json` stdout stays a single
-    // serde_json line.
-    let echoed = pinvou3_lib::platform::credential_store::redact_secret(&combined);
-    if output == OutputMode::Human && !echoed.trim().is_empty() {
-        if login_echo_withheld(&combined) {
-            note!(
-                "login transcript withheld: it carries credential markers the shape-based redaction cannot scrub"
-            );
-        } else {
-            note!("{echoed}");
-        }
-    }
+    echo_login_transcript(&combined);
     let login_url = extract_login_url(agent, &combined);
     let device_code = extract_device_code(&combined, login_url.as_deref());
     let state = if status.success() {
@@ -3031,10 +3032,7 @@ fn login(
         // Same rationale as the timeout path above: the captured login link
         // is the only actionable part of a failed flow, so it survives into
         // the error.
-        let link_hint = match &login_url {
-            Some(url) => format!("; last login link: {url}"),
-            None => String::new(),
-        };
+        let link_hint = login_link_hint(&login_url);
         Err(CliError::failed(format!(
             "code_login_failed: {agent} login process exited with {}{link_hint}",
             status
@@ -3051,20 +3049,19 @@ fn login(
 /// credentials, so it requires `--yes` like every other destructive action.
 fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
+    // No unknown-agent arm: parse already ran `require_agent` with the pinned
+    // codex|claude|kimi message, so this lane matches `login_args`' shape and
+    // defaults the kimi subcommand.
     let args: &[&str] = match agent {
         "codex" => &["logout"],
         "claude" => &["auth", "logout"],
-        "kimi" => &["provider", "remove", "managed:kimi-code"],
-        _ => {
-            return Err(CliError::usage(format!(
-                "unknown agent '{agent}'; valid agents are codex|claude|kimi"
-            )));
-        }
+        _ => &["provider", "remove", "managed:kimi-code"],
     };
     // Logout resolves the same binary as login but reports its own error: a
     // missing CLI on a logout action is "nothing to log out", not a
     // login-flow failure.
-    let executable = resolve_agent_cli(agent, agent_cli_name(agent)).ok_or_else(|| {
+    let (resolved, _) = resolve_agent_cli(agent, agent_cli_name(agent));
+    let executable = resolved.ok_or_else(|| {
         CliError::failed(format!(
             "code_logout_cli_missing: {agent} CLI not found; there is nothing to log \
                  out (`pinvou code agents status {agent}` shows the probe result)"
@@ -3161,7 +3158,7 @@ fn providers_list(agent: Option<&str>, output: OutputMode) -> Result<CliOutcome,
     if views.len() == 1 {
         let (agent, view) = &views[0];
         let value = serde_json::json!({ "agent": agent, "providers": view });
-        let human = render_provider_view(agent, &view);
+        let human = render_provider_view(agent, view);
         Ok(success(render(output, human, &value)))
     } else {
         let value = serde_json::json!({
@@ -3197,7 +3194,7 @@ fn render_provider_view(agent: &str, view: &AcpProvidersView) -> String {
             crate::support::collapse_control_characters(&provider.id),
             crate::support::collapse_control_characters(&provider.name),
             crate::support::collapse_control_characters(&provider.base_url),
-            serde_json::to_value(&provider.wire_api)
+            serde_json::to_value(provider.wire_api)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_default(),
@@ -3233,22 +3230,43 @@ fn parse_wire_api_value(value: Option<&str>) -> Result<ProviderWireApi, CliError
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn providers_save(
-    agent: &str,
-    provider_id: Option<&str>,
+/// The add/update inputs `providers_save` acts on, built from either parse
+/// variant — one struct instead of thirteen positional parameters the two
+/// call sites had to keep aligned by hand.
+struct ProviderSaveInput {
+    agent: String,
+    provider_id: Option<String>,
     name: Option<String>,
     base_url: Option<String>,
-    wire_api: Option<&str>,
+    wire_api: Option<String>,
     model: Option<String>,
-    model_slots: &[(String, String)],
+    model_slots: Vec<(String, String)>,
     context_window: Option<i64>,
     api_key_env: Option<String>,
     api_key_stdin: bool,
     delete_key: bool,
     yes: bool,
-    output: OutputMode,
-) -> Result<CliOutcome, CliError> {
+}
+
+fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let ProviderSaveInput {
+        agent,
+        provider_id,
+        name,
+        base_url,
+        wire_api,
+        model,
+        model_slots,
+        context_window,
+        api_key_env,
+        api_key_stdin,
+        delete_key,
+        yes,
+    } = input;
+    let agent = agent.as_str();
+    let provider_id = provider_id.as_deref();
+    let wire_api = wire_api.as_deref();
+    let model_slots = model_slots.as_slice();
     require_provider_agent(agent)?;
     // A key deletion is a destructive one-way credential action: mirror the
     // family's remove/require_yes convention so an unattended run cannot
@@ -3319,12 +3337,12 @@ fn providers_save(
              (refined model slots); these agents take --model only"
         )));
     }
-    if let Some(name) = name.as_deref() {
-        if name.trim().is_empty() {
-            return Err(CliError::usage(format!(
-                "code providers {lane}: --name must not be blank"
-            )));
-        }
+    if let Some(name) = name.as_deref()
+        && name.trim().is_empty()
+    {
+        return Err(CliError::usage(format!(
+            "code providers {lane}: --name must not be blank"
+        )));
     }
     if let Some(url) = base_url.as_deref() {
         let trimmed = url.trim();
@@ -3370,10 +3388,7 @@ fn providers_save(
     }
     let name = name.or_else(|| existing.as_ref().map(|record| record.name.clone()));
     let base_url = base_url.or_else(|| existing.as_ref().map(|record| record.base_url.clone()));
-    let model = match model {
-        Some(model) => Some(model),
-        None => existing.as_ref().and_then(|record| record.model.clone()),
-    };
+    let model = model.or_else(|| existing.as_ref().and_then(|record| record.model.clone()));
     let existing_slots = existing
         .as_ref()
         .and_then(|record| record.model_slots.clone())
@@ -3822,26 +3837,36 @@ fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliO
 /// more to the user than a dropped one. Must be revisited if the app-side
 /// wrappers ever gain a third shape.
 fn translate_import_entry_error(error: &str) -> String {
-    if let Some(rest) = error.strip_prefix("保存 ") {
-        if let Some((name, cause)) = rest.split_once(" 失败: ") {
-            return format!("failed to save {name}: {cause}");
-        }
+    if let Some(rest) = error.strip_prefix("保存 ")
+        && let Some((name, cause)) = rest.split_once(" 失败: ")
+    {
+        return format!("failed to save {name}: {cause}");
     }
-    if let Some(rest) = error.strip_prefix("写入 ") {
-        if let Some((name, cause)) = rest.split_once(" 密钥失败: ") {
-            return format!("failed to write the {name} key: {cause}");
-        }
+    if let Some(rest) = error.strip_prefix("写入 ")
+        && let Some((name, cause)) = rest.split_once(" 密钥失败: ")
+    {
+        return format!("failed to write the {name} key: {cause}");
     }
     error.to_owned()
 }
 
 // ── code sessions ───────────────────────────────────────────────────────────
 
-/// The three ACP session model names (`features::codex_acp`), used to detect
-/// ACP sessions whose sidecar record was lost (same fallback as
-/// `acp_session_backend`).
+/// The three ACP session model names (`features::codex_acp`) paired with the
+/// agent identity each stands for — the one table [`acp_session_model`] and
+/// [`agent_label`]'s lost-sidecar fallback both derive from, so a model name
+/// added app-side cannot be spelled one way in the gate and another way in
+/// the label.
+const ACP_SESSION_MODELS: [(&str, &str, &str); 3] = [
+    ("Codex (ACP)", "codex", "Codex"),
+    ("Claude Code (ACP)", "claude", "Claude Code"),
+    ("Kimi (ACP)", "kimi", "Kimi"),
+];
+
+/// Used to detect ACP sessions whose sidecar record was lost (same fallback
+/// as `acp_session_backend`).
 fn acp_session_model(model: &str) -> bool {
-    matches!(model, "Codex (ACP)" | "Claude Code (ACP)" | "Kimi (ACP)")
+    ACP_SESSION_MODELS.iter().any(|(name, _, _)| *name == model)
 }
 
 fn is_code_chat_session(agents: &SessionAgentStore, id: &str, model: &str) -> bool {
@@ -3858,12 +3883,11 @@ fn agent_label(agents: &SessionAgentStore, id: &str, model: &str) -> (&'static s
         AgentBackend::CodexAcp => ("codex", "Codex"),
         AgentBackend::ClaudeAcp => ("claude", "Claude Code"),
         AgentBackend::KimiAcp => ("kimi", "Kimi"),
-        AgentBackend::Deepseek => match model {
-            "Codex (ACP)" => ("codex", "Codex"),
-            "Claude Code (ACP)" => ("claude", "Claude Code"),
-            "Kimi (ACP)" => ("kimi", "Kimi"),
-            _ => ("pinvou", "Pinvou"),
-        },
+        AgentBackend::Deepseek => ACP_SESSION_MODELS
+            .iter()
+            .find(|(name, _, _)| *name == model)
+            .map(|(_, id, label)| (*id, *label))
+            .unwrap_or(("pinvou", "Pinvou")),
     }
 }
 
@@ -4098,10 +4122,10 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
                 if line.trim().is_empty() {
                     continue;
                 }
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-                    if value.is_object() {
-                        events.push(value);
-                    }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
+                    && value.is_object()
+                {
+                    events.push(value);
                 }
             }
             events.sort_by_key(|event| {
@@ -4651,25 +4675,19 @@ fn commit_command_args(root: &Path, message: &str) -> Result<Vec<String>, CliErr
 /// probe: it runs no hooks, so it needs no isolation beyond the redirection
 /// strip every lane shares.
 fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
-    // Uses the same redirection strip as the commit it feeds, so both see the
-    // same effective repository and the same configuration files: an ambient
-    // GIT_DIR/GIT_WORK_TREE/GIT_CONFIG_* would otherwise read a different
-    // repo's (or no) identity and fail an otherwise-valid commit with
-    // user.useConfigOnly. The user's global config is deliberately visible
-    // here — reading the identity they actually commit with is the point.
-    let mut command = std::process::Command::new("git");
-    command
-        .current_dir(root)
-        .args(["config", "--null", "--get-regexp", r"^user\.(name|email)$"])
-        // The house contract for git children in this module: stdin is
-        // /dev/null so nothing here can turn interactive.
-        .stdin(std::process::Stdio::null());
-    strip_git_redirection_env(&mut command);
-    // Supervised and bounded like every other capture in this module: a
-    // hostile config cannot buffer unbounded, and an interrupt that targets
-    // the CLI takes the probe down with it.
-    let capture = run_git_captured(
-        command,
+    // Uses the same redirection strip as the commit it feeds (`git_command`
+    // owns it), so both see the same effective repository and the same
+    // configuration files: an ambient GIT_DIR/GIT_WORK_TREE/GIT_CONFIG_*
+    // would otherwise read a different repo's (or no) identity and fail an
+    // otherwise-valid commit with user.useConfigOnly. The user's global
+    // config is deliberately visible here — reading the identity they
+    // actually commit with is the point. The house contract for git children
+    // in this module holds here too: stdin is /dev/null so nothing here can
+    // turn interactive, and the capture is supervised and bounded like every
+    // other one — a hostile config cannot buffer unbounded, and an interrupt
+    // that targets the CLI takes the probe down with it.
+    let capture = run_git_at(
+        root,
         &["config", "--null", "--get-regexp", r"^user\.(name|email)$"],
     )
     .ok()?;
@@ -4777,6 +4795,23 @@ fn git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
 
 fn git_output(root: &Path, arguments: &[&str]) -> Result<String, CliError> {
     run_git_output(git_command(root, arguments), arguments)
+}
+
+/// [`git_command`] + [`run_git_captured`] in one step: every capture lane
+/// used to pass the same argv twice (once to build the command, once for the
+/// failure messages).
+fn run_git_at(root: &Path, arguments: &[&str]) -> Result<GitCapture, CliError> {
+    run_git_captured(git_command(root, arguments), arguments)
+}
+
+/// The capped variant of [`run_git_at`] for lanes that keep the raw capture
+/// parts (the diff reader and the tracked-ness oracle).
+fn run_git_at_capped(
+    root: &Path,
+    arguments: &[&str],
+    cap: u64,
+) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>, u64), CliError> {
+    run_git_captured_capped(git_command(root, arguments), arguments, cap)
 }
 
 /// `workspace checkout --mode commit`'s own `git commit`: identical to
@@ -4933,13 +4968,12 @@ fn git_output_capped(
     arguments: &[&str],
     cap: u64,
 ) -> Result<(String, bool), CliError> {
-    let command = git_command(root, arguments);
     // Supervised like every other vendor child (see `run_git_captured_capped`):
     // the spawn→register window is closed, so an interrupt aimed at the CLI
     // takes the diff — and any filter process or hook git is running on the
     // user's real working tree — down with it.
     let (status, stdout_bytes, stderr_bytes, stdout_total) =
-        run_git_captured_capped(command, arguments, cap)?;
+        run_git_at_capped(root, arguments, cap)?;
     if !status.success() {
         return Err(CliError::failed(format!(
             "code workspace: git {} failed: {}",
@@ -4968,57 +5002,33 @@ fn git_root(root: &Path) -> Option<PathBuf> {
     // Supervised like every git lane (see `run_git_captured`): the probe is
     // normally instant, but an interrupt aimed at the CLI must not leave it
     // orphaned, and a pathological `rev-parse` cannot buffer unbounded.
-    let capture = run_git_captured(
-        git_command(root, &["rev-parse", "--show-toplevel"]),
-        &["rev-parse", "--show-toplevel"],
-    )
-    .ok()?;
+    let capture = run_git_at(root, &["rev-parse", "--show-toplevel"]).ok()?;
     if !capture.success {
         return None;
     }
     std::fs::canonicalize(capture.stdout.trim()).ok()
 }
 
-fn git_status_label(x: char, y: char) -> &'static str {
-    if x == '?' && y == '?' {
-        "untracked"
-    } else if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
-        "conflict"
-    } else if x == 'A' || y == 'A' {
-        "added"
-    } else if x == 'D' || y == 'D' {
-        "deleted"
-    } else if x == 'R' || y == 'R' {
-        "renamed"
-    } else if x == 'C' || y == 'C' {
-        "copied"
-    } else {
-        "modified"
-    }
-}
-
-fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliError> {
-    let capture = run_git_captured(
-        git_command(
-            root,
-            &[
-                "status",
-                "--porcelain=v1",
-                "-z",
-                "--untracked-files=all",
-                "--",
-                ".",
-            ],
-        ),
-        &[
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--",
-            ".",
-        ],
-    )?;
+/// Whether `git status` reports anything in the working tree: the checkout
+/// gate only needs "is there a record to carry/stash/commit", so the parse
+/// this probe used to perform (an XY/label/path breakdown whose sole
+/// consumer was `.is_empty()`) is gone. A clean tree prints an empty
+/// porcelain stream and every porcelain record is at least four bytes
+/// ("XY " + a path), so `!stdout.is_empty()` and the old record-list
+/// emptiness agree exactly. If a future lane ever consumes the records
+/// again, carry over the round-37 Windows note from that parse: a literal
+/// backslash is a legal Unix filename, so the `\` → `/` separator rewrite
+/// is a Windows `status` quirk only and mangled paths elsewhere.
+fn git_status_dirty(root: &Path) -> Result<bool, CliError> {
+    let arguments = [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        ".",
+    ];
+    let capture = run_git_at(root, &arguments)?;
     if !capture.success {
         return Err(CliError::failed(format!(
             "code workspace: git status failed: {}",
@@ -5035,39 +5045,7 @@ fn git_status_entries(root: &Path) -> Result<Vec<(String, String, bool)>, CliErr
             "code workspace: git status output exceeded the {GIT_CAPTURE_CAP}-byte capture cap"
         )));
     }
-    let records = capture.stdout.split('\0').collect::<Vec<_>>();
-    let mut changes = Vec::new();
-    let mut index = 0;
-    while index < records.len() {
-        let record = records[index];
-        index += 1;
-        if record.len() < 4 {
-            continue;
-        }
-        // The `XY ` prefix is ASCII even when the path is not, so byte
-        // indexing stays safe; the path keeps the lossy decode the old
-        // whole-buffer `from_utf8_lossy` produced.
-        let bytes = record.as_bytes();
-        let x = bytes[0] as char;
-        let y = bytes[1] as char;
-        // The separator rewrite is a Windows `status` quirk only; on Unix a
-        // literal backslash is a legal filename and rewriting it mangled the
-        // parsed path (round-37 review — inert today, latent wrong-path parse
-        // if the payload is ever consumed).
-        #[cfg(target_os = "windows")]
-        let path = record[3..].replace('\\', "/");
-        #[cfg(not(target_os = "windows"))]
-        let path = record[3..].to_string();
-        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
-            index += 1;
-        }
-        changes.push((
-            path,
-            git_status_label(x, y).to_string(),
-            x != ' ' && x != '?',
-        ));
-    }
-    Ok(changes)
+    Ok(!capture.stdout.is_empty())
 }
 
 fn workspace_changes(
@@ -5204,7 +5182,7 @@ fn workspace_checkout(
             "code workspace checkout: branch not found {branch}"
         )));
     }
-    if git_status_entries(&root)?.is_empty() {
+    if !git_status_dirty(&root)? {
         git_output(&root, &["checkout", branch])?;
         return finish_checkout(&root, branch, output);
     }
@@ -5229,26 +5207,22 @@ fn workspace_checkout(
             )?;
             let stash_created = stash_head(&root)? != prior_stash;
             if let Err(error) = git_output(&root, &["checkout", branch]) {
-                if stash_created {
-                    if let Err(pop_error) = git_output(&root, &["stash", "pop"]) {
-                        return Err(CliError::failed(format!(
-                            "code workspace checkout: switching to {branch} failed and restoring the \
+                if stash_created && let Err(pop_error) = git_output(&root, &["stash", "pop"]) {
+                    return Err(CliError::failed(format!(
+                        "code workspace checkout: switching to {branch} failed and restoring the \
                              stashed changes failed too; your changes are safe in the stash (git \
                              stash list). checkout error: {error}; pop error: {pop_error}"
-                        )));
-                    }
+                    )));
                 }
                 return Err(error);
             }
-            if stash_created {
-                if let Err(error) = git_output(&root, &["stash", "pop"]) {
-                    return Err(CliError::failed(format!(
-                        "code workspace checkout: switched to {branch}, but restoring the stashed \
+            if stash_created && let Err(error) = git_output(&root, &["stash", "pop"]) {
+                return Err(CliError::failed(format!(
+                    "code workspace checkout: switched to {branch}, but restoring the stashed \
                          changes failed; the conflicting content was applied and the stash entry \
                          was kept. Inspect it with `git stash show -u stash@{{0}}` before dropping: \
                          {error}"
-                    )));
-                }
+                )));
             }
         }
         BranchSwitchMode::Commit => {
@@ -5325,18 +5299,31 @@ fn workspace_diff(
             // (the GUI shows the per-file list in the changes panel instead).
             // Capped so a 2,000-file refactor does not turn into thousands of
             // git spawns; the changes list itself stays uncapped.
-            let changes = workspace_changes_value(session_id, &root)?;
+            // The changes list the `workspace changes` command serializes,
+            // fetched directly instead of round-tripping through that
+            // command's rendered JSON stdout; the error text stays the
+            // command lane's.
+            let changes = workspace::workspace_changes(session_id, &root)
+                .map_err(|error| CliError::failed(format!("code workspace changes: {error:#}")))
+                .and_then(|changes| {
+                    serde_json::to_value(&changes)
+                        .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))
+                })?;
             let mut combined = String::new();
-            let mut diffed_files = 0usize;
             let mut hit_diff_limit = false;
             let mut hit_file_cap = false;
             let mut failures: Vec<serde_json::Value> = Vec::new();
-            for row in changes["changes"].as_array().cloned().unwrap_or_default() {
+            for (diffed_files, row) in changes["changes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+            {
                 if diffed_files >= WORKSPACE_DIFF_FILE_CAP {
                     hit_file_cap = true;
                     break;
                 }
-                diffed_files += 1;
                 // Stop diffing once the payload is over the cap instead of
                 // accumulating every per-file diff (500 × 1 MiB) before the
                 // final truncation runs.
@@ -5415,10 +5402,10 @@ fn workspace_diff(
                 if !combined.is_empty() {
                     combined.push('\n');
                 }
-                combined.push_str(&format!(
+                combined.push_str(
                     "# diff truncated: stopped at the 1 MiB payload cap; the \
-                     remaining changed files are not included\n"
-                ));
+                     remaining changed files are not included\n",
+                );
             }
             // Actually cut the payload when reporting truncation — the
             // per-file path below does the same.
@@ -5445,12 +5432,6 @@ fn workspace_diff(
     }
 }
 
-fn workspace_changes_value(session_id: &str, root: &Path) -> Result<serde_json::Value, CliError> {
-    let outcome = workspace_changes(session_id, root, OutputMode::Json)?;
-    serde_json::from_str(&outcome.stdout)
-        .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))
-}
-
 /// One-file diff with the same composition rules as
 /// `workspace::workspace_diff`: staged + unstaged sections, synthetic diff for
 /// untracked text files, preview fallback outside git.
@@ -5467,11 +5448,11 @@ fn workspace_diff_one(
 ) -> Result<(String, String, bool), CliError> {
     let relative = normalize_relative_path(relative_path)?;
     let path = root.join(&relative);
-    if !path.starts_with(root) {
-        return Err(CliError::failed(
-            "code workspace diff: path escapes the workspace",
-        ));
-    }
+    // No lexical containment re-check here: `normalize_relative_path` has
+    // already rejected absolute paths and `..`/root/prefix components, so
+    // `root.join(&relative)` cannot escape `root` (the former
+    // `path.starts_with(root)` refusal was provably unreachable). The
+    // symlink re-checks below are the load-bearing containment checks.
     let mut captured_over_cap = false;
     let mut text = if at_git_root {
         // Capped like the untracked lane below: a modified multi-gigabyte
@@ -5694,11 +5675,8 @@ fn git_ls_files_tracked(root: &Path, relative: &str) -> bool {
         "--",
         &format!(":(literal){relative}"),
     ];
-    let (status, stdout_bytes) = match run_git_captured_capped(
-        git_command(root, &arguments),
-        &arguments,
-        GIT_LS_FILES_CAPTURE_CAP,
-    ) {
+    let (status, stdout_bytes) = match run_git_at_capped(root, &arguments, GIT_LS_FILES_CAPTURE_CAP)
+    {
         Ok((status, stdout_bytes, _, _)) => (status, stdout_bytes),
         // A spawn/wait failure (git missing, a hard supervision refusal) is
         // no answer either: keep the "tracked" (stay silent) verdict, as the
@@ -5717,10 +5695,9 @@ fn git_ls_files_tracked(root: &Path, relative: &str) -> bool {
 
 /// Session → workspace root with the same gate as the GUI's
 /// `codex_workspace_root`: the session must be an ACP or native code session
-/// and the resolved workspace must exist.
-fn resolve_session_workspace(
-    session: &str,
-) -> Result<(SessionStore, SessionAgentStore, PathBuf), CliError> {
+/// and the resolved workspace must exist. The stores this gate opens stay
+/// private to it; every caller only needs the root.
+fn resolve_session_workspace(session: &str) -> Result<PathBuf, CliError> {
     let store = open_store()?;
     let agents = open_agent_store()?;
     require_existing(&store, session, "workspace")?;
@@ -5734,22 +5711,21 @@ fn resolve_session_workspace(
             root.display()
         )));
     }
-    Ok((store, agents, root))
+    Ok(root)
 }
 
 fn with_workspace(
     session: &str,
     handler: impl FnOnce(&Path) -> Result<CliOutcome, CliError>,
 ) -> Result<CliOutcome, CliError> {
-    let (_, _, root) = resolve_session_workspace(session)?;
-    handler(&root)
+    with_workspace_session(session, |_, root| handler(root))
 }
 
 fn with_workspace_session(
     session: &str,
     handler: impl FnOnce(String, &Path) -> Result<CliOutcome, CliError>,
 ) -> Result<CliOutcome, CliError> {
-    let (_, _, root) = resolve_session_workspace(session)?;
+    let root = resolve_session_workspace(session)?;
     handler(session.to_owned(), &root)
 }
 
@@ -6216,12 +6192,12 @@ fn permissions(session: &str, _output: OutputMode) -> Result<CliOutcome, CliErro
 }
 
 fn respond(
-    session: &str,
+    _session: &str,
     request_id: &str,
     allow: bool,
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    let _ = (session, request_id, allow);
+    let _ = allow;
     Err(CliError::failed(format!(
         "code_respond_requires_product_host: permission requests are answered inside the process \
          that owns the ACP connection (the GUI host); the pending store is process-local, so \

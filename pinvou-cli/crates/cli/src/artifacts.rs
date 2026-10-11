@@ -132,29 +132,14 @@ pub fn parse(values: &[String]) -> Result<ArtifactsCommand, CliError> {
     let rest = &values[2..];
     match subcommand.as_str() {
         "list" => {
-            let mut session = None;
-            let mut index = 0;
-            while index < rest.len() {
-                if rest[index] != "--session" {
-                    return Err(CliError::usage(format!(
-                        "unsupported artifacts option: {}",
-                        rest[index]
-                    )));
-                }
-                if session.is_some() {
-                    return Err(CliError::usage("duplicate artifacts option --session"));
-                }
-                let value = rest.get(index + 1).ok_or_else(|| {
-                    CliError::usage("artifacts option --session requires a value")
-                })?;
-                if value.is_empty() || value.starts_with("--") {
-                    return Err(CliError::usage(
-                        "artifacts option --session requires a value",
-                    ));
-                }
-                session = Some(value.clone());
-                index += 2;
-            }
+            // Shared family parser: the hand-rolled loop emitted the exact
+            // texts the shared parser produces for one value flag
+            // (`unsupported artifacts option: {t}`, `duplicate artifacts
+            // option --session`, `artifacts option --session requires a
+            // value`), so one call replaces it.
+            let (options, _) =
+                crate::support::parse_family_flags(rest, &["--session"], &[], "artifacts")?;
+            let session = crate::support::family_option(&options, "--session").map(str::to_owned);
             Ok(ArtifactsCommand::List { session })
         }
         "read" => {
@@ -836,15 +821,13 @@ fn write(
             // applies (`agent run --attach`, `feedback --attach`) — without
             // it, `artifacts write s-1 notes.md --file ~/.ssh/id_rsa` copied
             // credential content into model-readable session storage.
-            let resolved = std::fs::canonicalize(file).map_err(|error| {
-                CliError::failed(format!(
-                    "artifacts write: cannot resolve {}: {error}",
-                    file.display()
-                ))
-            })?;
-            crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
-                CliError::failed(format!("artifacts write: refusing --file: {reason}"))
-            })?;
+            let resolved = crate::support::gate_canonical_path(
+                file,
+                "artifacts write",
+                "",
+                "artifacts write",
+                "--file",
+            )?;
             // Read the CANONICAL path — it is what was policy-checked
             // (round-41 review); the original spelling would let a symlink
             // swapped between the two calls route unverified content past
@@ -856,21 +839,16 @@ fn write(
             )?
         }
         (None, true) => {
-            let mut content = String::new();
-            std::io::Read::read_to_string(
-                &mut std::io::Read::take(
-                    std::io::stdin().lock(),
-                    MAX_EDITABLE_MARKDOWN_BYTES as u64 + 1,
-                ),
-                &mut content,
-            )
-            .map_err(|error| {
-                CliError::failed(format!("artifacts write cannot read stdin: {error}"))
-            })?;
-            if content.len() > MAX_EDITABLE_MARKDOWN_BYTES {
-                return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
-            }
-            content
+            // Shared capped stdin slurp (`crate::personas::read_stdin_capped`):
+            // this lane's exact texts ride the two closures — the read error
+            // keeps its unpunctuated `artifacts write cannot read stdin:`
+            // prefix and the over-cap refusal keeps the GUI-derived wire
+            // code.
+            crate::personas::read_stdin_capped(
+                MAX_EDITABLE_MARKDOWN_BYTES,
+                |error| CliError::failed(format!("artifacts write cannot read stdin: {error}")),
+                || CliError::failed("markdown_artifact_is_too_large_to_save"),
+            )?
         }
         // Unreachable via parse; kept total so execute stays total too.
         (Some(_), true) | (None, false) => {
@@ -893,9 +871,11 @@ fn write(
     if ext != "md" && ext != "markdown" {
         return Err(CliError::failed("only_markdown_artifacts_can_be_edited"));
     }
-    if content.len() > MAX_EDITABLE_MARKDOWN_BYTES {
-        return Err(CliError::failed("markdown_artifact_is_too_large_to_save"));
-    }
+    // No over-cap re-check here: both lanes above already bound `content` —
+    // the file lane refuses an over-cap file at its pre-stat and its capped
+    // reader rejects a file that grows past the cap between stat and read,
+    // and the stdin lane's take-bounded slurp checks the same cap — so the
+    // save-size contract is enforced before this point.
     // Stage + rename (the GUI writes atomically under its lifecycle lock): a
     // crash mid-write must not leave a truncated deliverable behind. A
     // deliverable is no more sensitive than the session directory that holds

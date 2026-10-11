@@ -503,7 +503,7 @@ fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
                 BenchmarkDispatch::Smoke => {
                     return Err(CliError::usage("benchmark run smoke accepts no options"));
                 }
-                BenchmarkDispatch::Gaia => parse_gaia_run(&values)?,
+                BenchmarkDispatch::Gaia => parse_gaia_run(values)?,
                 BenchmarkDispatch::NotAvailable => {
                     if values.len() != 3 {
                         return Err(CliError::usage("planned benchmark accepts no options"));
@@ -513,13 +513,13 @@ fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
             }
         }
         Some("run") => return Err(CliError::usage("benchmark run requires one benchmark id")),
-        Some("status") => BenchmarkCommand::Status(required_value(&values, "status")?),
-        Some("resume") => BenchmarkCommand::Resume(required_value(&values, "resume")?),
-        Some("report") => BenchmarkCommand::Report(required_value(&values, "report")?),
-        Some("fetch") => parse_gaia_fetch(&values)?,
-        Some("verify") => parse_gaia_verify(&values)?,
-        Some("score") => parse_gaia_score(&values)?,
-        Some("submission") => parse_gaia_submission(&values)?,
+        Some("status") => BenchmarkCommand::Status(required_value(values, "status")?),
+        Some("resume") => BenchmarkCommand::Resume(required_value(values, "resume")?),
+        Some("report") => BenchmarkCommand::Report(required_value(values, "report")?),
+        Some("fetch") => parse_gaia_fetch(values)?,
+        Some("verify") => parse_gaia_verify(values)?,
+        Some("score") => parse_gaia_score(values)?,
+        Some("submission") => parse_gaia_submission(values)?,
         _ => {
             // Benchmark takes no family-level `--output` (its files go to
             // `--destination`; only the gaia run's legacy alias accepts one),
@@ -2025,50 +2025,17 @@ mod tests {
         assert!(!outcome.stdout.contains("ready"));
     }
 
-    /// Panic-safe `PINVOU3_HOME` restore: a failing assert must not leak the
-    /// temp home into sibling unit tests (the same RAII rule the
-    /// integration tests' `RestoreHome` guard applies).
-    ///
-    /// The guard also holds [`crate::support::ENV_LOCK`] for its whole
-    /// lifetime: these gaia tests steer the process-global `PINVOU3_HOME`
-    /// with no lock of their own and used to race the models credential
-    /// tests' `TempHome` fixtures in the same test binary (reproduced 4/5 in
-    /// combined runs, both green in isolation). The lock is taken in
-    /// `set_home`, before the env write, and released in `Drop` only after
-    /// the previous value has been restored, so every other env-steering
-    /// test in the binary (models included) observes either the untouched
-    /// environment or this test's finished fixture, never a half-set one.
-    struct RestoreHomeGuard(
-        Option<std::sync::MutexGuard<'static, ()>>,
-        Option<std::ffi::OsString>,
-    );
-    impl RestoreHomeGuard {
-        fn set_home(path: &std::path::Path) -> Self {
-            let guard = crate::support::ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous = std::env::var_os("PINVOU3_HOME");
-            unsafe { std::env::set_var("PINVOU3_HOME", path) };
-            Self(Some(guard), previous)
-        }
-    }
-    impl Drop for RestoreHomeGuard {
-        fn drop(&mut self) {
-            match self.1.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-            }
-            // Release the shared lock only after the environment is back:
-            // a sibling test waking up on the unlock must never observe the
-            // fixture value this test is about to undo.
-            drop(self.0.take());
-        }
-    }
-
     #[test]
     fn official_gaia_consumer_rejects_a_tampered_marker_at_the_real_ready_root() {
         let home = temp_base("gaia-tampered-ready");
-        let _home_guard = RestoreHomeGuard::set_home(&home);
+        // The shared fixture guard: lock first (whole-test hold, the rule
+        // that ended the gaia-vs-models env race), fixture second — its
+        // Drop restores the previous PINVOU3_HOME while the lock is still
+        // held, so no sibling wakes up on a half-set environment.
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = crate::support::test_support::TempHome::at(&home);
         let snapshot = gaia_snapshot_root().unwrap();
         std::fs::create_dir(&snapshot).unwrap();
         std::fs::write(

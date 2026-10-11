@@ -106,6 +106,37 @@ impl Drop for RestoreEnvVar {
     }
 }
 
+/// Hermeticity against an ambient `DEEPSEEK_API_KEY`: it short-circuits
+/// `refresh_credential_states_with_store` to `env_override` for EVERY model,
+/// so keyless-"missing" and stored-credential assertions fail spuriously on
+/// any machine that exports it. Snapshots and clears the variable; the guard
+/// restores the previous value on drop (also covering a test that re-sets
+/// the variable mid-body, like the env_override half of the fresh-list test).
+fn clear_ambient_deepseek_key() -> RestoreEnvVar {
+    let guard = RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
+    // SAFETY: ENV_LOCK is held by the owning test.
+    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    guard
+}
+
+/// The env tier of the search-credential resolution must be empty for the
+/// providers that have env names, or `settings search test` would try to
+/// reach them. Snapshots and clears both variables; the guards restore the
+/// previous values on drop.
+fn clear_search_provider_keys() -> (RestoreEnvVar, RestoreEnvVar) {
+    let metaso = RestoreEnvVar("METASO_API_KEY", std::env::var_os("METASO_API_KEY"));
+    let baidu = RestoreEnvVar(
+        "BAIDU_SEARCH_API_KEY",
+        std::env::var_os("BAIDU_SEARCH_API_KEY"),
+    );
+    // SAFETY: ENV_LOCK is held by the owning test.
+    unsafe {
+        std::env::remove_var("METASO_API_KEY");
+        std::env::remove_var("BAIDU_SEARCH_API_KEY");
+    }
+    (metaso, baidu)
+}
+
 fn usage_error(args: &[&str]) -> String {
     let error = parse_args(args.to_vec()).expect_err("expected a usage error");
     assert_eq!(error.exit_code(), ExitCode::Usage, "message: {error}");
@@ -138,6 +169,28 @@ fn load_prefs() -> UserPrefs {
     UserPrefs::load()
 }
 
+/// Every `models add` success prints `id: <id>` as its whole stdout; the
+/// execute-level tests branch on the minted id.
+fn added_model_id(stdout: &str) -> String {
+    stdout
+        .strip_prefix("id: ")
+        .expect("prints the new id")
+        .trim()
+        .to_owned()
+}
+
+/// Parses a `models list` JSON dump and returns the entry whose `id` matches.
+fn listed_model(json: &str, id: &str) -> serde_json::Value {
+    let value: serde_json::Value = serde_json::from_str(json).expect("single-line json");
+    value["models"]
+        .as_array()
+        .expect("models array")
+        .iter()
+        .find(|model| model["id"] == id)
+        .expect("added model listed")
+        .clone()
+}
+
 const ADD_ARGS: &[&str] = &[
     "pinvou",
     "models",
@@ -150,6 +203,54 @@ const ADD_ARGS: &[&str] = &[
     "deepseek-v4-pro",
     "--base-url",
     "https://api.deepseek.com",
+];
+
+/// The canonical parse-fixture base argv for `models add` rejections:
+/// preset deepseek, name N, model M, base-url U.
+const PARSE_ADD_BASE: &[&str] = &[
+    "pinvou",
+    "models",
+    "add",
+    "--preset",
+    "deepseek",
+    "--name",
+    "N",
+    "--model",
+    "M",
+    "--base-url",
+    "U",
+];
+
+/// `PARSE_ADD_BASE` plus `extra` value flags — the argv shape the
+/// parse-level rejection tests pin.
+fn add_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = PARSE_ADD_BASE.to_vec();
+    args.extend_from_slice(extra);
+    args
+}
+
+/// `models add` carrying every optional GUI-form metadata field (the
+/// openai_compatible fixture shared by the metadata tests).
+const METADATA_ADD_ARGS: &[&str] = &[
+    "pinvou",
+    "models",
+    "add",
+    "--preset",
+    "openai_compatible",
+    "--name",
+    "Compatible",
+    "--model",
+    "glm-4.7",
+    "--base-url",
+    "https://example.invalid/api/paas/v4",
+    "--alias",
+    "GLM",
+    "--provider-kind",
+    "custom",
+    "--vendor",
+    "glm",
+    "--endpoint-mode",
+    "full_chat_completions",
 ];
 
 // ---------------------------------------------------------------------------
@@ -173,30 +274,13 @@ fn parses_every_models_subcommand() {
             "--base-url",
             "http://127.0.0.1:8000/v1",
         ],
-        // Every optional GUI-form field the model editor writes.
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "openai_compatible",
-            "--name",
-            "Compatible",
-            "--model",
-            "glm-4.7",
-            "--base-url",
-            "https://example.invalid/api/paas/v4",
-            "--alias",
-            "GLM",
-            "--provider-kind",
-            "custom",
-            "--vendor",
-            "glm",
-            "--endpoint-mode",
-            "full_chat_completions",
-            "--vision-model-id",
-            "m_other",
-        ],
+        // Every optional GUI-form field the model editor writes (the shared
+        // metadata fixture), extended with the vision fallback flag.
+        {
+            let mut extended = METADATA_ADD_ARGS.to_vec();
+            extended.extend_from_slice(&["--vision-model-id", "m_other"]);
+            extended
+        },
         vec!["pinvou", "models", "edit", "m1", "--name", "Renamed"],
         vec!["pinvou", "models", "edit", "m1", "--alias", "none"],
         vec!["pinvou", "models", "edit", "m1", "--clear-api-key"],
@@ -278,21 +362,7 @@ fn models_add_rejects_bad_presets_and_efforts() {
         "usage names valid presets: {message}"
     );
 
-    let message = usage_error(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "N",
-        "--model",
-        "M",
-        "--base-url",
-        "https://example.invalid/v1",
-        "--reasoning-effort",
-        "turbo",
-    ]);
+    let message = usage_error(&add_args(&["--reasoning-effort", "turbo"]));
     assert!(
         message.contains("off, low, medium, high, max"),
         "usage names valid efforts: {message}"
@@ -348,67 +418,10 @@ fn models_add_requires_core_fields() {
 #[test]
 fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
     for args in [
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-            "--context-window",
-            "abc",
-        ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-            "--context-window",
-            "0",
-        ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-            "--max-output",
-            "-3",
-        ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-            "--api-key-env",
-            "A",
-            "--api-key-stdin",
-        ],
+        add_args(&["--context-window", "abc"]),
+        add_args(&["--context-window", "0"]),
+        add_args(&["--max-output", "-3"]),
+        add_args(&["--api-key-env", "A", "--api-key-stdin"]),
     ] {
         let error = parse_args(args).expect_err("invalid add options");
         assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
@@ -515,6 +528,10 @@ fn settings_rejects_unknown_subcommands_and_keys() {
     assert!(usage_error(&["pinvou", "settings", "bogus"]).contains("get|set|search"));
     let message = usage_error(&["pinvou", "settings", "get", "bogus_key"]);
     assert!(message.contains("bogus_key") && message.contains("theme"));
+    // The "nope" spelling rides the same parse-level refusal (this used to
+    // be a separate execute-level test that only ever called parse_args).
+    let message = usage_error(&["pinvou", "settings", "get", "nope"]);
+    assert!(message.contains("nope") && message.contains("theme"));
     let message = usage_error(&["pinvou", "settings", "set", "bogus_key", "true"]);
     assert!(message.contains("bogus_key") && message.contains("pet.enabled"));
 }
@@ -617,14 +634,7 @@ fn models_token_only_accepts_models_subcommands() {
 fn models_list_reports_fresh_default_model() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("list-fresh");
-    // Hermeticity first: an ambient DEEPSEEK_API_KEY short-circuits
-    // refresh_credential_states_with_store to env_override for EVERY model,
-    // so the "missing" assertions below would fail spuriously on any
-    // machine that exports it. Cleared before the first run, restored on
-    // drop (the same guard the env_override half below re-uses).
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _restore_deepseek_key = clear_ambient_deepseek_key();
     let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
     let models = value["models"].as_array().expect("models array");
@@ -775,31 +785,14 @@ fn settings_enforces_the_memory_locale_policy_through_the_prefs_layer() {
 }
 
 #[test]
-fn settings_json_get_reports_a_bad_key_as_usage_error() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("settings-bad-key");
-    let parsed = parse_args(["pinvou", "settings", "get", "nope"].to_vec()).unwrap_err();
-    assert_eq!(parsed.exit_code(), ExitCode::Usage);
-}
-
-#[test]
 fn models_add_use_show_remove_round_trip_without_secrets() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("model-lifecycle");
-    // Hermeticity: an ambient DEEPSEEK_API_KEY short-circuits every model's
-    // credential_state to env_override, so the keyless "missing" assertion
-    // below fails spuriously on machines that export it.
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // Add without a key: must not touch the credential store.
     let stdout = run_ok(ADD_ARGS);
-    let added_id = stdout
-        .strip_prefix("id: ")
-        .expect("prints the new id")
-        .trim()
-        .to_owned();
+    let added_id = added_model_id(&stdout);
     assert!(
         added_id.starts_with("m_"),
         "models add should print an m_-prefixed GUI id"
@@ -807,14 +800,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
 
     // list shows the entry with the requested limits.
     let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let entry = value["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|model| model["id"] == added_id.as_str())
-        .expect("added model listed")
-        .clone();
+    let entry = listed_model(&json, &added_id);
     assert_eq!(entry["preset"], "deepseek");
     assert_eq!(entry["model"], "deepseek-v4-pro");
     assert_eq!(entry["base_url"], "https://api.deepseek.com");
@@ -832,14 +818,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
         Some(added_id.as_str())
     );
     let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
-    let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
-    let active_entry = value["models"]
-        .as_array()
-        .expect("models array")
-        .iter()
-        .find(|model| model["id"] == added_id.as_str())
-        .expect("added model listed")
-        .clone();
+    let active_entry = listed_model(&json, &added_id);
     assert_eq!(
         active_entry["active"], true,
         "models list json should mark the model active"
@@ -896,7 +875,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
 fn models_remove_refuses_the_only_model_without_changes() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("remove-only-model");
-    let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    let before = read_settings();
     let (message, code) = run_err(&["pinvou", "models", "remove", "default", "--yes"]);
     assert_eq!(
         code,
@@ -911,9 +890,9 @@ fn models_remove_refuses_the_only_model_without_changes() {
         load_prefs().model_by_id("default").is_some(),
         "the only model must survive the refused removal"
     );
-    let after = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
     assert_eq!(
-        before, after,
+        read_settings(),
+        before,
         "a refused removal must not write settings.json"
     );
 }
@@ -943,7 +922,7 @@ fn models_add_set_active_and_unknown_ids() {
         "high",
         "--set-active",
     ]);
-    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let id = added_model_id(&stdout);
     let prefs = load_prefs();
     assert_eq!(prefs.advanced.active_model_id.as_deref(), Some(id.as_str()));
     let model = prefs.model_by_id(&id).unwrap();
@@ -1008,6 +987,12 @@ fn home_settings_path() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .expect("PINVOU3_HOME set by SandboxHome")
         .join("settings.json")
+}
+
+/// Snapshot of the sandbox `settings.json` bytes for the read-before /
+/// refused-command / assert-unchanged pattern (an absent file reads as "").
+fn read_settings() -> String {
+    std::fs::read_to_string(home_settings_path()).unwrap_or_default()
 }
 
 #[test]
@@ -1223,21 +1208,7 @@ fn models_rejects_empty_option_values() {
             "--base-url",
             "https://example.com",
         ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "https://example.com",
-            "--api-key-env",
-            "",
-        ],
+        add_args(&["--api-key-env", ""]),
         vec!["pinvou", "models", "probe-local", "--url", ""],
         vec!["pinvou", "settings", "search", "set", "--provider", ""],
     ] {
@@ -1328,17 +1299,7 @@ fn settings_search_list_reports_defaults() {
 fn settings_search_test_without_a_key_verifies_only_credential_presence() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("search-test-no-key");
-    // The env tier of the credential resolution must be empty for the
-    // providers that have env names, or the test would try to reach them.
-    let _restore_metaso = RestoreEnvVar("METASO_API_KEY", std::env::var_os("METASO_API_KEY"));
-    let _restore_baidu = RestoreEnvVar(
-        "BAIDU_SEARCH_API_KEY",
-        std::env::var_os("BAIDU_SEARCH_API_KEY"),
-    );
-    unsafe {
-        std::env::remove_var("METASO_API_KEY");
-        std::env::remove_var("BAIDU_SEARCH_API_KEY");
-    }
+    let (_restore_metaso, _restore_baidu) = clear_search_provider_keys();
 
     for provider in ["metaso", "bocha", "baidu", "tavily"] {
         let (stdout, code) = run_outcome(&[
@@ -1453,7 +1414,7 @@ fn models_edit_clear_api_key_requires_yes() {
 
     // The bare form must refuse like `models remove`: a usage error whose
     // message names --yes, with nothing written.
-    let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    let before = read_settings();
     let (message, code) = run_err(&["pinvou", "models", "edit", "default", "--clear-api-key"]);
     assert_eq!(
         code,
@@ -1465,7 +1426,7 @@ fn models_edit_clear_api_key_requires_yes() {
         "the refusal must name the flag: {message}"
     );
     assert_eq!(
-        std::fs::read_to_string(home_settings_path()).unwrap_or_default(),
+        read_settings(),
         before,
         "a refused clear must not write settings.json"
     );
@@ -1529,9 +1490,7 @@ fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
     let _home = SandboxHome::new("edit-clear-replace");
     // An ambient DEEPSEEK_API_KEY would classify every model as env_override
     // and hide the stored-credential lane entirely.
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _restore_deepseek_key = clear_ambient_deepseek_key();
     let _first = RestoreEnvVar(
         "PINVOU_CLI_TEST_ROTATE_A",
         std::env::var_os("PINVOU_CLI_TEST_ROTATE_A"),
@@ -1544,11 +1503,7 @@ fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
     unsafe { std::env::set_var("PINVOU_CLI_TEST_ROTATE_B", "sk-rotate-second-1234567890") };
 
     let stdout = run_ok(ADD_ARGS);
-    let id = stdout
-        .strip_prefix("id: ")
-        .expect("prints the new id")
-        .trim()
-        .to_owned();
+    let id = added_model_id(&stdout);
 
     // Replace keeps replace semantics: still configured, and the revealed
     // value is the NEW secret (stored in the sandboxed file backend).
@@ -1620,7 +1575,7 @@ fn settings_search_set_clear_requires_yes() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("search-set-clear-yes");
 
-    let before = std::fs::read_to_string(home_settings_path()).unwrap_or_default();
+    let before = read_settings();
     let (message, code) = run_err(&[
         "pinvou",
         "settings",
@@ -1640,14 +1595,15 @@ fn settings_search_set_clear_requires_yes() {
         "the refusal must name the flag: {message}"
     );
     assert_eq!(
-        std::fs::read_to_string(home_settings_path()).unwrap_or_default(),
+        read_settings(),
         before,
         "a refused clear must not write settings.json"
     );
 
-    // With --yes the clear proceeds (and still must not switch the active
-    // provider — that contract is pinned separately in
-    // settings_search_set_clear_does_not_switch_the_active_provider).
+    // With --yes the clear proceeds. That it still must not switch the
+    // active provider (the active_provider payload and the persisted prefs)
+    // is pinned by settings_search_set_clear_does_not_switch_the_active_provider;
+    // the unique fact here is the round-41 `unchanged` receipt.
     let stdout = run_ok(&[
         "pinvou",
         "--output",
@@ -1664,12 +1620,6 @@ fn settings_search_set_clear_requires_yes() {
     assert_eq!(
         value["credential"], "unchanged",
         "a never-configured provider has no credential to clear (round-41 review): {stdout}"
-    );
-    assert_eq!(value["active_provider"], "bing", "{stdout}");
-    assert_eq!(
-        load_prefs().search.provider,
-        SearchProvider::Bing,
-        "the persisted active provider must be untouched by a clear"
     );
 }
 
@@ -1696,7 +1646,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
         "--base-url",
         "https://api.deepseek.com",
     ]);
-    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let id = added_model_id(&stdout);
 
     let human = run_ok(&["pinvou", "models", "list"]);
     assert_eq!(
@@ -1738,9 +1688,7 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
 fn models_show_reveal_key_names_the_credential_source() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("reveal-key-source");
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // No credential reference at all: genuinely nothing stored.
     let human = run_ok(&["pinvou", "models", "show", "default", "--reveal-key"]);
@@ -1787,28 +1735,8 @@ fn models_show_reveal_key_names_the_credential_source() {
 fn models_show_human_carries_the_writable_metadata_fields() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("show-metadata-fields");
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
-        "openai_compatible",
-        "--name",
-        "Compatible",
-        "--model",
-        "glm-4.7",
-        "--base-url",
-        "https://example.invalid/api/paas/v4",
-        "--alias",
-        "GLM",
-        "--provider-kind",
-        "custom",
-        "--vendor",
-        "glm",
-        "--endpoint-mode",
-        "full_chat_completions",
-    ]);
-    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let stdout = run_ok(METADATA_ADD_ARGS);
+    let id = added_model_id(&stdout);
 
     let human = run_ok(&["pinvou", "models", "show", &id]);
     assert!(human.contains("alias: GLM"), "{human}");
@@ -1845,28 +1773,8 @@ fn models_show_human_carries_the_writable_metadata_fields() {
 fn models_add_writes_the_gui_form_metadata() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("models-add-metadata");
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
-        "openai_compatible",
-        "--name",
-        "Compatible",
-        "--model",
-        "glm-4.7",
-        "--base-url",
-        "https://example.invalid/api/paas/v4",
-        "--alias",
-        "GLM",
-        "--provider-kind",
-        "custom",
-        "--vendor",
-        "glm",
-        "--endpoint-mode",
-        "full_chat_completions",
-    ]);
-    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let stdout = run_ok(METADATA_ADD_ARGS);
+    let id = added_model_id(&stdout);
     let prefs = load_prefs();
     let model = prefs.model_by_id(&id).expect("added model");
     assert_eq!(model.alias.as_deref(), Some("GLM"));
@@ -1899,21 +1807,7 @@ fn models_add_writes_the_gui_form_metadata() {
 
     // An unrecognized provider_kind is a typo, not a value the prefs layer
     // will keep.
-    let message = usage_error(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "N",
-        "--model",
-        "M",
-        "--base-url",
-        "https://api.deepseek.com",
-        "--provider-kind",
-        "nope",
-    ]);
+    let message = usage_error(&add_args(&["--provider-kind", "nope"]));
     assert!(
         message.contains("official_api") && message.contains("custom"),
         "{message}"
@@ -1979,7 +1873,7 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
         "--alias",
         "DS",
     ]);
-    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let id = added_model_id(&stdout);
 
     let json = run_ok(&[
         "pinvou",
@@ -2334,12 +2228,7 @@ fn configured_model_show_without_reveal_key_leaks_nothing() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("no-reveal");
     let secret = "sk-no-reveal-check-1234567890";
-    // Hermeticity, same as the lifecycle test: an ambient DEEPSEEK_API_KEY
-    // short-circuits credential_state to env_override, which would make the
-    // fixture not exercise the stored-credential gate at all.
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _restore_deepseek_key = clear_ambient_deepseek_key();
     let _key_env = RestoreEnvVar(
         "PINVOU_CLI_TEST_NOREVEAL_KEY",
         Some(std::ffi::OsString::from(secret)),
@@ -2363,11 +2252,7 @@ fn configured_model_show_without_reveal_key_leaks_nothing() {
         "--api-key-env",
         "PINVOU_CLI_TEST_NOREVEAL_KEY",
     ]);
-    let id = stdout
-        .strip_prefix("id: ")
-        .expect("prints the new id")
-        .trim()
-        .to_owned();
+    let id = added_model_id(&stdout);
 
     let human = run_ok(&["pinvou", "models", "show", &id]);
     let json = run_ok(&["pinvou", "--output", "json", "models", "show", &id]);
@@ -2421,16 +2306,14 @@ fn search_provider_surface_matches_gui() {
 fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_store_fails() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("m1-broken-store");
-    let _restore_deepseek_key =
-        RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
+    let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // A healthy store writes fine: add a keyless model so the CLI itself
     // authors a valid settings.json, then inject a legacy plaintext key into
     // the record it created (value-level edit of a known-good document, so
     // the fixture cannot drift from the real serde shape).
     let stdout = run_ok(ADD_ARGS);
-    let id = stdout.strip_prefix("id: ").unwrap().trim().to_owned();
+    let id = added_model_id(&stdout);
     let settings = home.root.join("settings.json");
     let mut document: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();

@@ -84,8 +84,8 @@ use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
 
 use crate::support::{
-    FamilyLockError, collapse_control_characters, open_family_lock_file, render, require_yes,
-    sandbox_home, success,
+    collapse_control_characters, family_lock, family_option, gate_canonical_path, render,
+    require_family_id, require_yes, sandbox_home, success,
 };
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 
@@ -135,9 +135,8 @@ kind can only be set at create time"
 /// `auto_approve` on. The app therefore refuses `agent`/`plan` outright in
 /// `canonical_scheduled_mode`, and this enum mirrors that decision by having
 /// no variant to represent them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskMode {
-    #[default]
     Yolo,
 }
 
@@ -160,14 +159,9 @@ on) and an 'agent'/'plan' request would be discarded without notice",
         }
     }
 
-    /// The mode persisted for every scheduled task.
+    /// The mode persisted for every scheduled task (there is only one, so
+    /// the persisted value is the constant itself — no per-variant method).
     const PERSISTED: &'static str = "yolo";
-
-    fn persisted(self) -> &'static str {
-        match self {
-            Self::Yolo => Self::PERSISTED,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,7 +177,6 @@ pub enum ScheduledCommand {
         rrule: String,
         kind: TaskKind,
         model_id: Option<String>,
-        mode: Option<TaskMode>,
         paused: bool,
     },
     Update {
@@ -357,14 +350,14 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         ],
         &["--paused"],
     )?;
-    let name = option(&options, "--name")
+    let name = family_option(&options, "--name")
         .ok_or_else(|| CliError::usage("scheduled create requires --name N"))?
         .to_owned();
     let prompt_file = PathBuf::from(
-        option(&options, "--prompt-file")
+        family_option(&options, "--prompt-file")
             .ok_or_else(|| CliError::usage("scheduled create requires --prompt-file F"))?,
     );
-    let rrule = option(&options, "--rrule")
+    let rrule = family_option(&options, "--rrule")
         .ok_or_else(|| {
             CliError::usage(
                 "scheduled create requires --rrule R (e.g. \
@@ -385,22 +378,25 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     // the layer that owns the rule (exit 1).
     validate_rrule(&rrule)?;
     let paused = flags.contains(&"--paused");
-    let kind = match option(&options, "--kind") {
+    let kind = match family_option(&options, "--kind") {
         Some(value) => TaskKind::parse_value(value)?,
         None => TaskKind::Chat,
     };
-    let model_id = option(&options, "--model-id").map(str::to_owned);
-    let mode = match option(&options, "--mode") {
-        Some(value) => Some(TaskMode::parse_value(value)?),
-        None => None,
-    };
+    let model_id = family_option(&options, "--model-id").map(str::to_owned);
+    // `--mode` is validated, never carried: there is exactly one persisted
+    // mode (`TaskMode::PERSISTED`), which `create` writes directly, so the
+    // parsed value would have no field to land in — the parse-time refusal
+    // of anything but `yolo`/empty is the whole point of the flag (see
+    // `TaskMode::parse_value` and `mode_accepts_only_the_yolo_...`).
+    if let Some(value) = family_option(&options, "--mode") {
+        TaskMode::parse_value(value)?;
+    }
     Ok(ScheduledCommand::Create {
         name,
         prompt_file,
         rrule,
         kind,
         model_id,
-        mode,
         paused,
     })
 }
@@ -425,9 +421,9 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         &["--name", "--prompt-file", "--rrule", "--model-id"],
         &[],
     )?;
-    let name = option(&options, "--name").map(str::to_owned);
-    let prompt_file = option(&options, "--prompt-file").map(PathBuf::from);
-    let rrule = match option(&options, "--rrule") {
+    let name = family_option(&options, "--name").map(str::to_owned);
+    let prompt_file = family_option(&options, "--prompt-file").map(PathBuf::from);
+    let rrule = match family_option(&options, "--rrule") {
         Some(value) => {
             // Unconditionally active-grammar: `update` cannot see the stored
             // status from the parser, and the strict reading is the safe
@@ -438,7 +434,7 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         }
         None => None,
     };
-    let model_id = option(&options, "--model-id").map(str::to_owned);
+    let model_id = family_option(&options, "--model-id").map(str::to_owned);
     if name.is_none() && prompt_file.is_none() && rrule.is_none() && model_id.is_none() {
         return Err(CliError::usage(
             "scheduled update requires at least one of --name, --prompt-file, --rrule, \
@@ -465,23 +461,13 @@ fn expect_no_arguments(values: &[String], command: &str) -> Result<(), CliError>
 }
 
 fn require_id(value: Option<&String>, command: &str) -> Result<String, CliError> {
-    let id = value
-        .ok_or_else(|| CliError::usage(format!("{command} requires a task id")))?
-        .trim()
-        .to_owned();
-    if id.is_empty() {
-        return Err(CliError::usage(format!("{command} requires a task id")));
-    }
-    // A flag-shaped token in the id slot (`scheduled show --limit` with the
-    // id forgotten) must fail as usage here, not as an exit-1 store lookup
-    // against a task named after the flag. Same discipline as `projects`' id
-    // guard.
-    if id.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "{command}: expected a task id, got flag-shaped {id:?}"
-        )));
-    }
-    Ok(id)
+    // This family trims the id slot BEFORE the guard (the shared helper
+    // deliberately does not — see `require_family_id`): a padded id still
+    // passes, a whitespace-only one still refuses as missing, and a padded
+    // flag token still reads as flag-shaped. The two prefixes are the same
+    // `{command}` here; the guard's messages are the family's stable texts.
+    let trimmed = value.map(|id| id.trim().to_owned());
+    require_family_id(trimmed.as_ref(), command, command, "a task id")
 }
 
 /// Shared implementation in `support::parse_family_flags`; `family`
@@ -490,12 +476,8 @@ fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "scheduled")
-}
-
-fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    crate::support::family_option(options, name)
 }
 
 fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
@@ -560,23 +542,19 @@ const MAX_HOURLY_INTERVAL: u32 = 1_000_000;
 /// not bound).
 fn validate_rrule(rrule: &str) -> Result<(), CliError> {
     let parts = parse_rrule_pairs(rrule)?;
-    for (key, _) in &parts {
-        if key == "INTERVAL" {
-            // Only for the HOURLY grammar, where the sweep does interval
-            // arithmetic; ONCE/WEEKLY/CRON ignore the field.
-            if matches!(freq_of(&parts).as_deref(), Some("HOURLY")) {
-                let interval = parts
-                    .iter()
-                    .find(|(name, _)| name == "INTERVAL")
-                    .and_then(|(_, value)| value.parse::<u32>().ok())
-                    .unwrap_or(1);
-                if interval > MAX_HOURLY_INTERVAL {
-                    return Err(CliError::usage(format!(
-                        "INTERVAL must be <= {MAX_HOURLY_INTERVAL} for HOURLY schedules (a larger \
-                         step cannot be evaluated by the scheduler without overflowing its \
-                         date range)"
-                    )));
-                }
+    // `parse_rrule_pairs` dedupes keys, so at most one INTERVAL pair exists
+    // and a single find replaces the per-key scan.
+    if let Some((_, interval_value)) = parts.iter().find(|(key, _)| key == "INTERVAL") {
+        // Only for the HOURLY grammar, where the sweep does interval
+        // arithmetic; ONCE/WEEKLY/CRON ignore the field.
+        if matches!(freq_of(&parts).as_deref(), Some("HOURLY")) {
+            let interval = interval_value.parse::<u32>().ok().unwrap_or(1);
+            if interval > MAX_HOURLY_INTERVAL {
+                return Err(CliError::usage(format!(
+                    "INTERVAL must be <= {MAX_HOURLY_INTERVAL} for HOURLY schedules (a larger \
+                     step cannot be evaluated by the scheduler without overflowing its \
+                     date range)"
+                )));
             }
         }
     }
@@ -620,21 +598,14 @@ fn freq_of(parts: &[(String, String)]) -> Option<String> {
         .map(|(_, value)| value.trim().to_ascii_uppercase())
 }
 
-fn parse_byday(value: &str) -> Vec<&'static str> {
+fn parse_byday(value: &str) -> Vec<String> {
     // Parser is the foundation's; this renders the label (best effort).
-    let mut days = Vec::new();
+    let mut days: Vec<String> = Vec::new();
     for token in value.split(',') {
-        let day = match token.trim().to_ascii_uppercase().as_str() {
-            "MO" => "MO",
-            "TU" => "TU",
-            "WE" => "WE",
-            "TH" => "TH",
-            "FR" => "FR",
-            "SA" => "SA",
-            "SU" => "SU",
-            _ => continue,
-        };
-        if !days.contains(&day) {
+        let day = token.trim().to_ascii_uppercase();
+        if matches!(day.as_str(), "MO" | "TU" | "WE" | "TH" | "FR" | "SA" | "SU")
+            && !days.contains(&day)
+        {
             days.push(day);
         }
     }
@@ -1024,19 +995,24 @@ fn write_json_atomic_staged(path: &Path, tmp: &Path, content: &[u8]) -> Result<(
 /// stays a documented residual, like the code family's session locks.
 fn scheduled_store_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     // Shared family helper (round-49): one copy of the directory-create and
-    // open this site hand-rolled, tightened to 0600 on every open. The arms
-    // map onto the exact messages the hand-rolled pair produced.
-    let file = open_family_lock_file("scheduled-store.lock").map_err(|error| match error {
-        FamilyLockError::CreateDir { dir, error } => CliError::failed(format!(
-            "scheduled_storage_unavailable: cannot create the lock directory {}: {error}",
-            dir.display()
-        )),
-        FamilyLockError::Open { path, error } => CliError::failed(format!(
-            "scheduled_storage_unavailable: cannot open the store lock {}: {error}",
-            path.display()
-        )),
-    })?;
-    Ok(fd_lock::RwLock::new(file))
+    // open this site hand-rolled, tightened to 0600 on every open. The two
+    // closures map the helper's error arms onto the exact messages the
+    // hand-rolled pair produced.
+    family_lock(
+        "scheduled-store.lock",
+        |dir, error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot create the lock directory {}: {error}",
+                dir.display()
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
+                "scheduled_storage_unavailable: cannot open the store lock {}: {error}",
+                path.display()
+            ))
+        },
+    )
 }
 
 /// Round-41 review: the registry read is bounded. These files sit on the
@@ -1327,33 +1303,55 @@ fn quarantine_unreadable(path: &Path) -> bool {
     }
 }
 
-fn registry_tasks_mut<'a>(
+/// The `tasks`-keyed specialization of [`registry_map_mut`] used by every
+/// sidecar registry whose entries are keyed by task id.
+fn registry_tasks_mut(
+    registry: &mut serde_json::Value,
+    schema_version: u32,
+) -> Result<&mut serde_json::Map<String, serde_json::Value>, CliError> {
+    registry_map_mut(registry, schema_version, "tasks", "registry")
+}
+
+/// The registry read-modify normalize `registry_tasks_mut` and the archive /
+/// read-state lanes shared, keyed once: a newer-schema registry is refused,
+/// a non-object registry becomes the versioned default, a legacy file gets
+/// its `schema_version`, and a missing or wrong-shaped `key` value
+/// normalizes to an empty object so the caller's per-entry updates are
+/// never silently dropped. `what` names the registry in the newer-schema
+/// refusal ("registry" for the generic tasks registries, "history archive"
+/// / "read-state" where the message names the specific file).
+fn registry_map_mut<'a>(
     registry: &'a mut serde_json::Value,
     schema_version: u32,
+    key: &str,
+    what: &str,
 ) -> Result<&'a mut serde_json::Map<String, serde_json::Value>, CliError> {
     // A registry written by a newer app version must be refused, never
     // merged and written back (the GUI's VersionedJsonStore quarantines the
     // same situation); the version check only gates objects that carry one.
     if registry.is_object() {
-        ensure_sidecar_schema(registry, schema_version as u64, "registry")?;
+        ensure_sidecar_schema(registry, schema_version as u64, what)?;
     }
     if !registry.is_object() {
-        *registry = serde_json::json!({ "schema_version": schema_version, "tasks": {} });
+        *registry = serde_json::json!({ "schema_version": schema_version });
+        registry[key] = serde_json::Value::Object(serde_json::Map::new());
     }
     let object = registry.as_object_mut().expect("registry is object");
+    // Round-45 review: legacy files carry no version and every CLI writer
+    // adds one (`ensure_sidecar_schema`).
     object
         .entry("schema_version")
         .or_insert_with(|| serde_json::json!(schema_version));
-    // Defense in depth: read_registry quarantines a wrong-shaped `tasks`
-    // value before this point, so the normalize is only reachable for
+    // Defense in depth: read_registry quarantines a wrong-shaped value
+    // before this point, so the normalize is only reachable for
     // registries built in memory.
-    if !object.get("tasks").is_some_and(Value::is_object) {
-        object.insert("tasks".to_owned(), serde_json::json!({}));
+    if !object.get(key).is_some_and(Value::is_object) {
+        object.insert(key.to_owned(), serde_json::json!({}));
     }
     Ok(object
-        .get_mut("tasks")
+        .get_mut(key)
         .and_then(Value::as_object_mut)
-        .expect("tasks normalized to an object above"))
+        .expect("normalized to an object above"))
 }
 
 /// Current instant in the RFC3339 shape the foundation writes
@@ -1404,9 +1402,9 @@ fn ensure_sidecar_schema(
     }
 }
 
-fn registry_tasks_view<'a>(
-    registry: &'a serde_json::Value,
-) -> &'a serde_json::Map<String, serde_json::Value> {
+fn registry_tasks_view(
+    registry: &serde_json::Value,
+) -> &serde_json::Map<String, serde_json::Value> {
     static EMPTY: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
         std::sync::OnceLock::new();
     registry
@@ -1444,13 +1442,15 @@ fn humanize_rrule(rrule: &str) -> String {
     let Ok(parts) = parse_rrule_pairs(rrule) else {
         return rrule.to_owned();
     };
+    // Borrows from `parts`: the pairs live for the whole render, so no
+    // per-field clone is needed.
     let value = |name: &str| {
         parts
             .iter()
             .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone())
+            .map(|(_, value)| value.as_str())
     };
-    match value("FREQ").as_deref() {
+    match value("FREQ") {
         Some("HOURLY") => {
             let interval = value("INTERVAL")
                 .and_then(|value| value.parse::<u32>().ok())
@@ -1468,7 +1468,7 @@ fn humanize_rrule(rrule: &str) -> String {
                 (None, Some(minute)) => format!(" at minute {minute:02}"),
                 (None, None) => String::new(),
             };
-            with_days(value("BYDAY").as_deref(), &format!("{base}{anchor}"))
+            with_days(value("BYDAY"), &format!("{base}{anchor}"))
         }
         Some("WEEKLY") => {
             let hour = value("BYHOUR")
@@ -1477,7 +1477,7 @@ fn humanize_rrule(rrule: &str) -> String {
             let minute = value("BYMINUTE")
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(0);
-            with_days(value("BYDAY").as_deref(), &format!("{hour:02}:{minute:02}"))
+            with_days(value("BYDAY"), &format!("{hour:02}:{minute:02}"))
         }
         _ => rrule.to_owned(),
     }
@@ -1492,7 +1492,7 @@ fn with_days(byday: Option<&str>, label: &str) -> String {
         label.to_owned()
     } else {
         let workdays = ["MO", "TU", "WE", "TH", "FR"];
-        let days_label = if days == workdays {
+        let days_label = if days.iter().map(String::as_str).eq(workdays) {
             "workdays".to_owned()
         } else {
             days.join(",")
@@ -1520,15 +1520,15 @@ fn run_is_unread(
 
 /// `store` is `None` when the sessions store could not be opened for
 /// best-effort enrichment (see `open_sessions_for_enrichment`): the task is
-/// then rendered without session-derived fields instead of failing.
+/// then rendered without session-derived fields instead of failing. The
+/// task id is passed directly — the only def field the predicate ever read.
 fn unread_and_running(
-    def: &serde_json::Value,
+    task_id: &str,
     runs: &[serde_json::Value],
     store: Option<&SessionStore>,
     read_state: &serde_json::Value,
     titles: &std::collections::HashMap<String, String>,
 ) -> (bool, bool) {
-    let task_id = str_field(def, "id").unwrap_or("");
     let is_running = runs
         .iter()
         .any(|run| matches!(str_field(run, "status").unwrap_or(""), "queued" | "running"));
@@ -1611,20 +1611,39 @@ fn pinned_for(ui_metadata: &serde_json::Value, task_id: &str) -> (bool, Option<S
     }
 }
 
+/// The four sidecar registries every task-DTO render enriches with, read
+/// together so the 4-registry read block and the 8-argument `map_task` call
+/// stay in one place instead of being pasted at each read lane.
+struct SidecarViews {
+    read_state: serde_json::Value,
+    bindings: serde_json::Value,
+    kinds: serde_json::Value,
+    ui_metadata: serde_json::Value,
+}
+
+impl SidecarViews {
+    fn load(store_holder: &TaskStore) -> Self {
+        Self {
+            read_state: read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
+            bindings: read_registry(&store_holder.model_bindings_path(), &["tasks"]),
+            kinds: read_registry(&store_holder.task_kinds_path(), &["tasks"]),
+            ui_metadata: read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        }
+    }
+}
+
 fn map_task(
     def: &serde_json::Value,
     runs: &[serde_json::Value],
     store: Option<&SessionStore>,
-    read_state: &serde_json::Value,
-    bindings: &serde_json::Value,
-    kinds: &serde_json::Value,
-    ui_metadata: &serde_json::Value,
+    views: &SidecarViews,
     titles: &std::collections::HashMap<String, String>,
 ) -> serde_json::Value {
     let task_id = str_field(def, "id").unwrap_or("").to_owned();
     let model = str_field(def, "model");
-    let (has_unread_runs, is_running) = unread_and_running(def, runs, store, read_state, titles);
-    let (pinned, pinned_at) = pinned_for(ui_metadata, &task_id);
+    let (has_unread_runs, is_running) =
+        unread_and_running(&task_id, runs, store, &views.read_state, titles);
+    let (pinned, pinned_at) = pinned_for(&views.ui_metadata, &task_id);
     serde_json::json!({
         "id": task_id,
         "name": str_field(def, "name").unwrap_or(""),
@@ -1638,8 +1657,8 @@ fn map_task(
         // the DTO field empty).
         "cwds": [],
         "model": model.map(str::to_owned),
-        "modelId": model_id_for(bindings, &task_id, model),
-        "kind": kind_for(kinds, &task_id),
+        "modelId": model_id_for(&views.bindings, &task_id, model),
+        "kind": kind_for(&views.kinds, &task_id),
         "mode": def.get("mode").cloned().unwrap_or(serde_json::Value::Null),
         "allowShell": bool_field(def, "allow_shell", false),
         "trustMode": bool_field(def, "trust_mode", false),
@@ -1768,7 +1787,7 @@ fn render_runs(
                 .get(automation_id)
                 .map(|(name, model)| (Some(name.as_str()), model.as_deref()))
                 .unwrap_or((None, None));
-            let value = map_run(run, Some(store), &titles, read_state, task_name, task_model);
+            let value = map_run(run, Some(store), titles, read_state, task_name, task_model);
             // Same no-forgeable-rows rule as `list`: the `error` cell can
             // carry vendor/store text, so every textual cell collapses.
             lines.push(format!(
@@ -1878,18 +1897,8 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
             rrule,
             kind,
             model_id,
-            mode,
             paused,
-        } => create(
-            &name,
-            &prompt_file,
-            &rrule,
-            kind,
-            model_id,
-            mode,
-            paused,
-            output,
-        ),
+        } => create(&name, &prompt_file, &rrule, kind, model_id, paused, output),
         ScheduledCommand::Update {
             id,
             name,
@@ -1901,7 +1910,9 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
         ScheduledCommand::Resume { id } => pause_or_resume(&id, false, output),
         ScheduledCommand::Pin { id } => set_pinned(&id, true, output),
         ScheduledCommand::Unpin { id } => set_pinned(&id, false, output),
-        ScheduledCommand::Delete { id, yes } => delete(&id, yes, output),
+        // `--yes` was already enforced before the lock (the usage-error gate
+        // above); delete itself no longer re-checks it.
+        ScheduledCommand::Delete { id, .. } => delete(&id, output),
         ScheduledCommand::Run { id } => run(&id, output),
         ScheduledCommand::Runs { id, limit } => runs(&id, limit, output),
         ScheduledCommand::RunsAll { limit } => runs_all(limit, output),
@@ -1913,10 +1924,7 @@ pub fn execute(command: ScheduledCommand, output: OutputMode) -> Result<CliOutco
 fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
-    let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
-    let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
-    let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
+    let views = SidecarViews::load(&store_holder);
     let defs = store_holder.list_defs()?;
     let titles = session_titles(&sessions);
     let mut lines = Vec::new();
@@ -1935,16 +1943,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
             // grows with store age (~8,760 records/year for one hourly
             // task).
             let runs = store_holder.list_runs(&task_id, None)?;
-            let value = map_task(
-                def,
-                &runs,
-                Some(&sessions),
-                &read_state,
-                &bindings,
-                &kinds,
-                &ui_metadata,
-                &titles,
-            );
+            let value = map_task(def, &runs, Some(&sessions), &views, &titles);
             // Human rows must not be forgeable: every textual cell goes
             // through the shared collapse (JSON keeps the originals), the
             // same rule the sibling families pin.
@@ -1977,10 +1976,7 @@ fn show(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     let store_holder = TaskStore::new()?;
     let def = store_holder.read_def(id)?;
     let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
-    let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
-    let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
-    let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
+    let views = SidecarViews::load(&store_holder);
     // The FULL run list feeds the summary facts: `map_task` derives
     // hasUnreadRuns/is-running from it, and the family's display-cap rule
     // (see `DEFAULT_RUNS_DISPLAY_LIMIT`) keeps semantic lanes untruncated —
@@ -1990,16 +1986,7 @@ fn show(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     // every record without bound).
     let runs = store_holder.list_runs(id, None)?;
     let titles = session_titles(&sessions);
-    let task = map_task(
-        &def,
-        &runs,
-        Some(&sessions),
-        &read_state,
-        &bindings,
-        &kinds,
-        &ui_metadata,
-        &titles,
-    );
+    let task = map_task(&def, &runs, Some(&sessions), &views, &titles);
     let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
     let (rendered_runs, truncated) = if runs.len() > effective_limit {
         (&runs[..effective_limit], true)
@@ -2008,7 +1995,7 @@ fn show(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
     };
     let names = task_name_map(std::slice::from_ref(&def));
     let (mut run_lines, run_values) =
-        render_runs(&sessions, rendered_runs, &read_state, &names, &titles);
+        render_runs(&sessions, rendered_runs, &views.read_state, &names, &titles);
     // Same no-forgeable-output rule as `list`: every textual value collapses
     // before it reaches the terminal (JSON keeps the originals).
     let cell = |key: &str, default: &str| {
@@ -2088,13 +2075,51 @@ fn rollback_created_task(store_holder: &TaskStore, id: &str, workspace_may_be_ab
     }
 }
 
+/// The shared `--model-id` resolution behind `create`/`update`. The model
+/// wire name and the saved-model pin are resolved as ONE pair, exactly like
+/// the GUI (`model: selected.model, modelId: selected.id`): the executor's
+/// `resolve_scheduled_model` rejects a task whose binding's wire name does
+/// not match the id's current wire name, so pinning X while persisting the
+/// ACTIVE model's wire name (the old CLI behavior) produced a task that
+/// fails on every run. With `--model-id` the definition carries the named
+/// model's own wire name; without it, the caller falls back to the active
+/// model (the GUI's `current_automation_model`) — only create has that
+/// fallback, so the helper returns `None` and create substitutes it. An
+/// unknown `--model-id` is refused before anything is persisted: it names a
+/// saved model that does not exist, the same state-dependent refusal class
+/// the family's conventions dictate (exit 1, like `models ... model not
+/// found:`). Round-51 review: a whitespace-only value is a refusal, not a
+/// silent fall-through to the active model (create) or a silent no-op
+/// (update) — every other invalid value in the family is a named refusal,
+/// and `parse_family_flags` only catches truly empty strings. (Changing the
+/// model wire name without an id is not offered: the GUI's update applies
+/// input.model, and the CLI has no flag that names a bare wire model — the
+/// docs say to edit the model in the GUI or recreate the task.)
+fn resolve_model_pair(
+    subcommand: &str,
+    model_id: Option<&str>,
+) -> Result<Option<(String, String)>, CliError> {
+    match model_id.map(str::trim) {
+        Some("") => Err(CliError::usage(format!(
+            "scheduled {subcommand} requires a non-empty --model-id"
+        ))),
+        Some(raw) => {
+            let prefs = UserPrefs::load();
+            let selected = prefs
+                .model_by_id(raw)
+                .ok_or_else(|| CliError::failed(format!("model not found: {raw}")))?;
+            Ok(Some((selected.model.clone(), raw.to_owned())))
+        }
+        None => Ok(None),
+    }
+}
+
 fn create(
     name: &str,
     prompt_file: &Path,
     rrule: &str,
     kind: TaskKind,
     model_id: Option<String>,
-    mode: Option<TaskMode>,
     paused: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
@@ -2113,15 +2138,15 @@ fn create(
     // knowledge/artifacts): canonicalize first, gate the canonical form, and
     // read the CANONICAL path so a post-gate symlink swap cannot re-route
     // the read.
-    let prompt_canonical = std::fs::canonicalize(&prompt_file).map_err(|error| {
-        CliError::failed(format!(
-            "scheduled create --prompt-file: cannot resolve {}: {error}",
-            prompt_file.display()
-        ))
-    })?;
-    crate::artifacts::check_sensitive_path(&prompt_canonical).map_err(|reason| {
-        CliError::failed(format!("scheduled create: refusing prompt file: {reason}"))
-    })?;
+    let prompt_canonical = gate_canonical_path(
+        prompt_file,
+        // resolve: "scheduled create --prompt-file: cannot resolve {path}: …"
+        "scheduled create --prompt-file",
+        "",
+        // refuse: "scheduled create: refusing prompt file: …"
+        "scheduled create",
+        "prompt file",
+    )?;
     let prompt = crate::support::read_text_file_capped(
         &prompt_canonical,
         4 * 1024 * 1024,
@@ -2145,23 +2170,10 @@ fn create(
     // names a saved model that does not exist, the same state-dependent
     // refusal class the family's conventions dictate (exit 1, like `models
     // ... model not found:`).
-    let (model, validated_model_id) = match model_id.as_deref().map(str::trim) {
-        // Round-51 review: a whitespace-only value is a refusal, not a
-        // silent fall-through to the active model — every other invalid
-        // value in the family is a named refusal, and `parse_family_flags`
-        // only catches truly empty strings.
-        Some(raw) if raw.is_empty() => {
-            return Err(CliError::usage(
-                "scheduled create requires a non-empty --model-id",
-            ));
-        }
-        Some(raw) => {
-            let prefs = UserPrefs::load();
-            let selected = prefs
-                .model_by_id(raw)
-                .ok_or_else(|| CliError::failed(format!("model not found: {raw}")))?;
-            (selected.model.clone(), Some(raw.to_owned()))
-        }
+    let (model, validated_model_id) = match resolve_model_pair("create", model_id.as_deref())? {
+        Some((model, saved_model_id)) => (model, Some(saved_model_id)),
+        // No pin requested: the active model's wire name (the GUI's
+        // `current_automation_model`).
         None => (default_automation_model(), None),
     };
     if kind == TaskKind::MemoryOrganize && !memory_feature::memory_enabled() {
@@ -2193,7 +2205,9 @@ enabled in settings",
             // interchangeable with that id (same as the GUI's request).
             model_provider: None,
             model_provider_id: None,
-            mode: Some(mode.unwrap_or_default().persisted().to_owned()),
+            // The app overwrites `mode` unconditionally and `yolo` is the
+            // only value a scheduled task can carry (`TaskMode::PERSISTED`).
+            mode: Some(TaskMode::PERSISTED.to_owned()),
             allow_shell: Some(current_allow_shell()),
             trust_mode: Some(true),
             // 不可绕过的审批（rlm_eval/hook ask）仍由 force_prompt 拦截。
@@ -2251,43 +2265,43 @@ enabled in settings",
     // failure into a failed create where the GUI would succeed. The pair
     // written matches the definition's model by construction (resolved
     // together above), so the executor accepts it.
-    if validated_model_id.as_deref().is_some() {
-        if let Err(error) = write_model_binding(&store_holder, &id, validated_model_id.as_deref()) {
-            // Roll back the just-created task so no kind-less/binding-less task
-            // lingers, mirroring the GUI create rollback.
-            rollback_created_task(&store_holder, &id, false);
-            return Err(error);
-        }
+    if validated_model_id.as_deref().is_some()
+        && let Err(error) = write_model_binding(&store_holder, &id, validated_model_id.as_deref())
+    {
+        // Roll back the just-created task so no kind-less/binding-less task
+        // lingers, mirroring the GUI create rollback.
+        rollback_created_task(&store_holder, &id, false);
+        return Err(error);
     }
-    if let Some(stored_kind) = kind.stored_kind() {
-        if let Err(error) = persist_task_kind(&store_holder, &id, Some(stored_kind)) {
-            rollback_created_task(&store_holder, &id, false);
-            // A binding written above must not outlive the rolled-back task:
-            // clear it so no binding for a nonexistent id lingers in the
-            // shared registry.
-            if validated_model_id.as_deref().is_some() {
-                if let Err(clear_error) = write_model_binding(&store_holder, &id, None) {
-                    note!(
-                        "pinvou: warning: scheduled create: rollback could not clear the model binding: {clear_error}"
-                    );
-                }
-            }
-            return Err(error);
+    if let Some(stored_kind) = kind.stored_kind()
+        && let Err(error) = persist_task_kind(&store_holder, &id, Some(stored_kind))
+    {
+        rollback_created_task(&store_holder, &id, false);
+        // A binding written above must not outlive the rolled-back task:
+        // clear it so no binding for a nonexistent id lingers in the
+        // shared registry.
+        if validated_model_id.as_deref().is_some()
+            && let Err(clear_error) = write_model_binding(&store_holder, &id, None)
+        {
+            note!(
+                "pinvou: warning: scheduled create: rollback could not clear the model binding: {clear_error}"
+            );
         }
+        return Err(error);
     }
     // The definition (and its sidecar records) are committed above; session
     // enrichment is best-effort so a sessions-store failure cannot misreport
     // the committed create as a failure (same rationale as the mutating
-    // commands).
+    // commands). Loading all four views (rather than the previous Null
+    // read-state) is equivalent for a task whose id was just allocated:
+    // viewed entries are keyed by task id, which cannot exist yet.
     let sessions = open_sessions_for_enrichment();
+    let views = SidecarViews::load(&store_holder);
     let value = map_task(
         &def,
         &[],
         sessions.as_ref(),
-        &serde_json::Value::Null,
-        &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
-        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
-        &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        &views,
         &session_titles_for(sessions.as_ref()),
     );
     Ok(success(render(
@@ -2295,6 +2309,28 @@ enabled in settings",
         format!("Created scheduled task: {id}"),
         &value,
     )))
+}
+
+/// The restore-status-through-foundation dispatch shared by the rollback
+/// lanes: `active` re-resolves its slot through resume, everything else
+/// parks paused (the foundation status enum has exactly active/paused, and
+/// the def was written by the same foundation, so anything else cannot
+/// occur — pause is the conservative arm). The foundation update eagerly
+/// re-resolves a future slot, so a restored ACTIVE task never carries a
+/// past-due `next_run_at` the sweep would deliver late. Callers keep their
+/// own note!/rollback texts around the result.
+fn restore_automation_status(
+    store_holder: &TaskStore,
+    id: &str,
+    status: &str,
+) -> Result<(), CliError> {
+    let manager = store_holder.manager()?;
+    match status {
+        "active" => manager.resume_automation(id),
+        _ => manager.pause_automation(id),
+    }
+    .map(|_| ())
+    .map_err(|error| CliError::failed(format!("{error:#}")))
 }
 
 /// Rolls back a committed `scheduled update` definition change whose paired
@@ -2323,13 +2359,7 @@ fn rollback_committed_update_definition(
         .and_then(Value::as_str)
         .unwrap_or("active")
         .to_owned();
-    let reresolved = store_holder.manager().and_then(|manager| {
-        match status.as_str() {
-            "active" => manager.resume_automation(id),
-            _ => manager.pause_automation(id),
-        }
-        .map_err(|restore_error| CliError::failed(format!("{restore_error:#}")))
-    });
+    let reresolved = restore_automation_status(store_holder, id, &status);
     if let Err(restore_error) = reresolved {
         // The dangerous shape is an ACTIVE pre-update status whose resume
         // was refused (a one-shot whose anchor elapsed while the command
@@ -2375,33 +2405,16 @@ fn update(
     // for a missing task, before any sidecar is touched). The captured value
     // is also the rollback point for a failed binding write below.
     let pre_update_def = store_holder.read_def(id)?;
-    // Same pair-resolution rule as create (see there): `--model-id` X
-    // re-binds the pin to X AND the definition to X's wire name — the GUI
-    // sends `model: selected.model, modelId: selected.id`, and the executor
-    // rejects any other combination. Unknown ids are refused before any
-    // write. (Changing the model wire name without an id is not offered:
-    // the GUI's update applies input.model, and the CLI has no flag that
-    // names a bare wire model — the docs say to edit the model in the GUI
-    // or recreate the task.)
+    // Same pair-resolution rule as `resolve_model_pair` (see there):
+    // `--model-id` X re-binds the pin to X AND the definition to X's wire
+    // name — the GUI sends `model: selected.model, modelId: selected.id`,
+    // and the executor rejects any other combination. Unknown ids are
+    // refused before any write.
     let mut model_update: Option<String> = None;
     let mut validated_model_id: Option<String> = None;
-    match model_id.as_deref().map(str::trim) {
-        // Round-51 review: a whitespace-only value is a refusal, not a
-        // silent no-op update.
-        Some(raw) if raw.is_empty() => {
-            return Err(CliError::usage(
-                "scheduled update requires a non-empty --model-id",
-            ));
-        }
-        Some(raw) => {
-            let prefs = UserPrefs::load();
-            let selected = prefs
-                .model_by_id(raw)
-                .ok_or_else(|| CliError::failed(format!("model not found: {raw}")))?;
-            model_update = Some(selected.model.clone());
-            validated_model_id = Some(raw.to_owned());
-        }
-        None => {}
+    if let Some((wire_model, saved_model_id)) = resolve_model_pair("update", model_id.as_deref())? {
+        model_update = Some(wire_model);
+        validated_model_id = Some(saved_model_id);
     }
     let mut request = UpdateAutomationRequest::default();
     if let Some(name) = name {
@@ -2415,16 +2428,17 @@ fn update(
     }
     if let Some(prompt_file) = prompt_file {
         // Round-51 review: same credential-path gate as create (model
-        // context; canonicalize → gate → read canonical).
-        let prompt_canonical = std::fs::canonicalize(&prompt_file).map_err(|error| {
-            CliError::failed(format!(
-                "scheduled update --prompt-file: cannot resolve {}: {error}",
-                prompt_file.display()
-            ))
-        })?;
-        crate::artifacts::check_sensitive_path(&prompt_canonical).map_err(|reason| {
-            CliError::failed(format!("scheduled update: refusing prompt file: {reason}"))
-        })?;
+        // context; canonicalize → gate → read canonical) through the shared
+        // helper.
+        let prompt_canonical = gate_canonical_path(
+            &prompt_file,
+            // resolve: "scheduled update --prompt-file: cannot resolve {path}: …"
+            "scheduled update --prompt-file",
+            "",
+            // refuse: "scheduled update: refusing prompt file: …"
+            "scheduled update",
+            "prompt file",
+        )?;
         let prompt = crate::support::read_text_file_capped(
             &prompt_canonical,
             4 * 1024 * 1024,
@@ -2480,44 +2494,32 @@ fn update(
         );
         return Err(error);
     }
-    if validated_model_id.is_some() {
-        if let Err(error) = write_model_binding(&store_holder, id, validated_model_id.as_deref()) {
-            // The definition's new model wire name is already committed, so
-            // propagating the failure as-is would leave the pair the executor
-            // resolves (definition model + pin) inconsistent — the helper
-            // restores the pre-update definition and re-resolves its slot.
-            return Err(rollback_committed_update_definition(
-                &store_holder,
-                id,
-                &pre_update_def,
-                error,
-            ));
-        }
+    if validated_model_id.is_some()
+        && let Err(error) = write_model_binding(&store_holder, id, validated_model_id.as_deref())
+    {
+        // The definition's new model wire name is already committed, so
+        // propagating the failure as-is would leave the pair the executor
+        // resolves (definition model + pin) inconsistent — the helper
+        // restores the pre-update definition and re-resolves its slot.
+        return Err(rollback_committed_update_definition(
+            &store_holder,
+            id,
+            &pre_update_def,
+            error,
+        ));
     }
     // Enrichment is best-effort: the update is committed above, so a
     // sessions store boot failure must not report the update as failed —
     // the same applies to the run records, whose read failure must not
     // disown an already-committed mutation.
     let sessions = open_sessions_for_enrichment();
-    let runs = match store_holder.list_runs(id, None) {
-        Ok(runs) => runs,
-        Err(error) => {
-            crate::note!(
-                "pinvou: warning: run history for {id} could not be read ({}); \
-the update itself is committed",
-                error
-            );
-            Vec::new()
-        }
-    };
+    let runs = best_effort_history(&store_holder, id, "update");
+    let views = SidecarViews::load(&store_holder);
     let value = map_task(
         &def,
         &runs,
         sessions.as_ref(),
-        &read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
-        &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
-        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
-        &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        &views,
         &session_titles_for(sessions.as_ref()),
     );
     Ok(success(render(
@@ -2562,12 +2564,30 @@ fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Re
     store_holder.write_def(def)
 }
 
+/// The sidecar read-modify-write scaffold the per-task sidecar mutators
+/// shared: capture the foreign-write stamp, read the registry for write,
+/// normalize it through [`registry_tasks_mut`], apply the caller's update to
+/// the `tasks` map, and write atomically-checked (refusing instead of
+/// clobbering a concurrent desktop-app write).
+fn mutate_sidecar_tasks(
+    path: &Path,
+    update: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> Result<(), CliError> {
+    let stamp = SidecarStamp::capture(path);
+    let mut registry = read_registry_for_write(path, &["tasks"])?;
+    let tasks = registry_tasks_mut(&mut registry, 1)?;
+    update(tasks);
+    write_json_atomic_checked(path, &registry, &stamp)
+}
+
 /// Persist one (model_id, wire model) pair in the bindings sidecar. The
 /// pair is the executor's acceptance contract (`resolve_scheduled_model`
 /// rejects a task whose bound wire model diverges from the saved model id's
 /// current wire name), so callers resolve BOTH halves together from the same
 /// saved model before calling (see `create`/`update`); the wire name is
-/// re-read from the definition only as a consistency fallback.
+/// re-read from the definition only as a consistency fallback — and only
+/// when a binding is actually written: the clearing arm also runs from
+/// create's rollback, after the definition has already been removed.
 fn write_model_binding(
     store_holder: &TaskStore,
     id: &str,
@@ -2577,34 +2597,35 @@ fn write_model_binding(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let model_bindings_path = store_holder.model_bindings_path();
-    let stamp = SidecarStamp::capture(&model_bindings_path);
-    let mut registry = read_registry_for_write(&model_bindings_path, &["tasks"])?;
-    let tasks = registry_tasks_mut(&mut registry, 1)?;
-    match model_id {
-        Some(model_id) => {
-            let model = store_holder
-                .read_def(id)?
-                .get("model")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_owned();
-            tasks.insert(
-                id.to_owned(),
-                serde_json::json!({
-                    "model_id": model_id,
-                    "model": model,
-                    "updated_at": now_string(),
-                }),
-            );
-        }
-        // The GUI clears a binding when model id and model are not both
-        // present; a bare --model-id always carries both here.
-        None => {
-            tasks.remove(id);
-        }
-    }
-    write_json_atomic_checked(&model_bindings_path, &registry, &stamp)
+    let model = match model_id {
+        Some(_) => store_holder
+            .read_def(id)?
+            .get("model")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+        None => String::new(),
+    };
+    mutate_sidecar_tasks(
+        &store_holder.model_bindings_path(),
+        |tasks| match model_id {
+            Some(model_id) => {
+                tasks.insert(
+                    id.to_owned(),
+                    serde_json::json!({
+                        "model_id": model_id,
+                        "model": model,
+                        "updated_at": now_string(),
+                    }),
+                );
+            }
+            // The GUI clears a binding when model id and model are not both
+            // present; a bare --model-id always carries both here.
+            None => {
+                tasks.remove(id);
+            }
+        },
+    )
 }
 
 fn persist_task_kind(
@@ -2612,11 +2633,7 @@ fn persist_task_kind(
     id: &str,
     kind: Option<&str>,
 ) -> Result<(), CliError> {
-    let task_kinds_path = store_holder.task_kinds_path();
-    let stamp = SidecarStamp::capture(&task_kinds_path);
-    let mut registry = read_registry_for_write(&task_kinds_path, &["tasks"])?;
-    let tasks = registry_tasks_mut(&mut registry, 1)?;
-    match kind {
+    mutate_sidecar_tasks(&store_holder.task_kinds_path(), |tasks| match kind {
         Some(kind) => {
             tasks.insert(
                 id.to_owned(),
@@ -2626,8 +2643,7 @@ fn persist_task_kind(
         None => {
             tasks.remove(id);
         }
-    }
-    write_json_atomic_checked(&task_kinds_path, &registry, &stamp)
+    })
 }
 
 fn pause_or_resume(id: &str, pause: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -2677,25 +2693,13 @@ the resume itself is committed"
     // the same applies to the run records, whose read failure must not
     // disown an already-committed mutation.
     let sessions = open_sessions_for_enrichment();
-    let runs = match store_holder.list_runs(id, None) {
-        Ok(runs) => runs,
-        Err(error) => {
-            crate::note!(
-                "pinvou: warning: run history for {id} could not be read ({}); \
-the status change itself is committed",
-                error
-            );
-            Vec::new()
-        }
-    };
+    let runs = best_effort_history(&store_holder, id, "status change");
+    let views = SidecarViews::load(&store_holder);
     let value = map_task(
         &def,
         &runs,
         sessions.as_ref(),
-        &read_registry(&store_holder.read_state_path(), &["viewed_runs"]),
-        &read_registry(&store_holder.model_bindings_path(), &["tasks"]),
-        &read_registry(&store_holder.task_kinds_path(), &["tasks"]),
-        &read_registry(&store_holder.ui_metadata_path(), &["tasks"]),
+        &views,
         &session_titles_for(sessions.as_ref()),
     );
     Ok(success(render(
@@ -2710,20 +2714,17 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     // Same existence gate as the GUI: pin state never lingers for a deleted
     // task.
     store_holder.read_def(id)?;
-    let ui_metadata_path = store_holder.ui_metadata_path();
-    let stamp = SidecarStamp::capture(&ui_metadata_path);
-    let mut registry = read_registry_for_write(&ui_metadata_path, &["tasks"])?;
-    let tasks = registry_tasks_mut(&mut registry, 1)?;
-    if pinned {
-        let now = now_string();
-        tasks.insert(
-            id.to_owned(),
-            serde_json::json!({ "pinned": true, "pinned_at": now, "updated_at": now }),
-        );
-    } else {
-        tasks.remove(id);
-    }
-    write_json_atomic_checked(&ui_metadata_path, &registry, &stamp)?;
+    mutate_sidecar_tasks(&store_holder.ui_metadata_path(), |tasks| {
+        if pinned {
+            let now = now_string();
+            tasks.insert(
+                id.to_owned(),
+                serde_json::json!({ "pinned": true, "pinned_at": now, "updated_at": now }),
+            );
+        } else {
+            tasks.remove(id);
+        }
+    })?;
     let action = if pinned { "pinned" } else { "unpinned" };
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(
@@ -2733,8 +2734,10 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     )))
 }
 
-fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
-    require_yes(yes)?;
+/// `--yes` is enforced once in `execute`, before the store lock (a missing
+/// confirmation must read as the usage error it is even under lock
+/// contention), so this function only runs for a confirmed delete.
+fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store_holder = TaskStore::new()?;
     let mut def = store_holder.read_def(id)?;
     // The archive snapshot is keyed by this id, and the GUI's validator
@@ -2755,7 +2758,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
                 // interpolated cell takes the same collapse discipline as
                 // the rendered rows (round-44 review).
                 other
-                    .map(|value| crate::support::collapse_control_characters(value))
+                    .map(crate::support::collapse_control_characters)
                     .unwrap_or_else(|| "<missing>".to_owned())
             )));
         }
@@ -2788,17 +2791,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // would not). Best-effort like before: a restore failure is noted, never
     // masks the run's own outcome.
     let restore_status = |status: &str| {
-        let restore = store_holder.manager().and_then(|manager| {
-            match status {
-                "active" => manager.resume_automation(id),
-                // The foundation status enum has exactly active/paused; the
-                // def was written by the same foundation, so anything else
-                // cannot occur — pause is the conservative arm.
-                _ => manager.pause_automation(id),
-            }
-            .map_err(|error| CliError::failed(format!("{error:#}")))
-        });
-        if let Err(restore_error) = restore {
+        if let Err(restore_error) = restore_automation_status(&store_holder, id, status) {
             note!(
                 "pinvou: warning: scheduled delete: the rollback could not restore the pre-delete status: {restore_error}"
             );
@@ -2872,25 +2865,21 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             return Err(error);
         }
     };
-    // Same newer-schema refusal as registry_tasks_mut: an archive written by
-    // a newer app version must not be merged and written back. The refusal
-    // restores the provisional pause like every other blocked path — a
-    // caller retrying after upgrading must not find the task paused.
-    if archive.is_object() {
-        if let Err(error) = ensure_sidecar_schema(&archive, 2, "history archive") {
+    // Same newer-schema refusal and normalize sequence as the write paths'
+    // `registry_map_mut` (keyed once): an archive written by a newer app
+    // version must not be merged and written back, and a missing or
+    // wrong-shaped "tasks" normalizes to an empty object so the snapshot
+    // below is never silently dropped (run history would be lost once the
+    // definition and runs are removed). The refusal restores the provisional
+    // pause like every other blocked path — a caller retrying after
+    // upgrading must not find the task paused.
+    let existing_snapshot = match registry_map_mut(&mut archive, 2, "tasks", "history archive") {
+        Ok(tasks) => tasks.clone(),
+        Err(error) => {
             restore_status(&previous_status);
             return Err(error);
         }
-    }
-    if !archive.is_object() {
-        archive = serde_json::json!({ "schema_version": 2, "tasks": {} });
-    }
-    // Missing or wrong-shaped "tasks" normalizes to an empty object so the
-    // snapshot below is never silently dropped (run history would be lost
-    // once the definition and runs are removed).
-    if !archive.get("tasks").is_some_and(Value::is_object) {
-        archive["tasks"] = serde_json::Value::Object(serde_json::Map::new());
-    }
+    };
     let snapshot = serde_json::json!({
         "schema_version": 2,
         "tasks": {
@@ -2905,19 +2894,13 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
             }
         },
     });
-    let existing_snapshot = archive
-        .get("tasks")
-        .and_then(|value| value.as_object())
-        .expect("tasks normalized to an object above")
-        .clone();
-    let existing = &existing_snapshot;
-    {
-        let mut merged = existing.clone();
-        if let Some(new_tasks) = snapshot["tasks"].as_object() {
-            for (key, value) in new_tasks {
-                merged.insert(key.clone(), value.clone());
-            }
-        }
+    if let Some(new_tasks) = snapshot["tasks"].as_object() {
+        let mut merged = existing_snapshot.clone();
+        merged.extend(
+            new_tasks
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
         archive["tasks"] = serde_json::Value::Object(merged);
     }
     // Round-40 review: the commit write carries the foreign-write stamp
@@ -3013,18 +2996,12 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // read-state enrichment) from the CLI and a real kind from the app.
     let receipt = {
         let sessions = open_sessions_for_enrichment();
-        let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
-        let bindings = read_registry(&store_holder.model_bindings_path(), &["tasks"]);
-        let kinds = read_registry(&store_holder.task_kinds_path(), &["tasks"]);
-        let ui_metadata = read_registry(&store_holder.ui_metadata_path(), &["tasks"]);
+        let views = SidecarViews::load(&store_holder);
         map_task(
             &def,
             &runs,
             sessions.as_ref(),
-            &read_state,
-            &bindings,
-            &kinds,
-            &ui_metadata,
+            &views,
             &session_titles_for(sessions.as_ref()),
         )
     };
@@ -3068,29 +3045,28 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         if let Some(tasks) = registry
             .get_mut("tasks")
             .and_then(|value| value.as_object_mut())
+            && tasks.remove(id).is_some()
         {
-            if tasks.remove(id).is_some() {
-                // Round-45 review: the raw rewrite must also give a legacy version-less registry its schema_version (1 for bindings/kinds/ui-metadata), per `ensure_sidecar_schema`'s rule.
-                if let Some(object) = registry.as_object_mut() {
-                    object
-                        .entry("schema_version")
-                        .or_insert_with(|| serde_json::json!(1));
-                }
-                // Best-effort like the rollback lanes, but not silent: the
-                // GUI poll compaction prunes the stale entry within seconds,
-                // so the impact is small — still, a skipped cleanup write
-                // contradicts the file-head no-silent-failure policy. The
-                // checked write refuses instead of clobbering when a
-                // concurrent desktop-app write landed mid-read (round-41
-                // review: pins, bindings and kinds are not re-healed from
-                // anywhere, so a lost foreign write here is permanent).
-                if let Err(error) = write_json_atomic_checked(&path, &registry, &stamp) {
-                    note!(
-                        "pinvou: warning: could not clean task {id} out of {}: {error} \
+            // Round-45 review: the raw rewrite must also give a legacy version-less registry its schema_version (1 for bindings/kinds/ui-metadata), per `ensure_sidecar_schema`'s rule.
+            if let Some(object) = registry.as_object_mut() {
+                object
+                    .entry("schema_version")
+                    .or_insert_with(|| serde_json::json!(1));
+            }
+            // Best-effort like the rollback lanes, but not silent: the
+            // GUI poll compaction prunes the stale entry within seconds,
+            // so the impact is small — still, a skipped cleanup write
+            // contradicts the file-head no-silent-failure policy. The
+            // checked write refuses instead of clobbering when a
+            // concurrent desktop-app write landed mid-read (round-41
+            // review: pins, bindings and kinds are not re-healed from
+            // anywhere, so a lost foreign write here is permanent).
+            if let Err(error) = write_json_atomic_checked(&path, &registry, &stamp) {
+                note!(
+                    "pinvou: warning: could not clean task {id} out of {}: {error} \
                          (the GUI poll compaction will prune it)",
-                        path.display()
-                    );
-                }
+                    path.display()
+                );
             }
         }
     }
@@ -3242,7 +3218,7 @@ enabled in settings",
     // record is committed above, so a sessions store boot failure must not
     // report a finished, irreversible run as failed.
     let sessions = open_sessions_for_enrichment();
-    let titles = sessions.as_ref().map(session_titles).unwrap_or_default();
+    let titles = session_titles_for(sessions.as_ref());
     let value = map_run(
         &record,
         sessions.as_ref(),
@@ -3279,13 +3255,11 @@ enabled in settings",
     // the `models` family set with `probe-local`: the output body (and the
     // persisted run record) stay exactly as before, but the exit code must
     // tell scripts the outcome was not a success.
-    // The Err arm above owns the failed verdict; this branch is defense-in-depth.
+    // The Err arm above owns the failed verdict and returns before this
+    // point, so a failed run can never reach here: `status` is always
+    // "completed" at this line and plain Success is the whole contract.
     Ok(CliOutcome {
-        exit_code: if status == "failed" {
-            ExitCode::Failed
-        } else {
-            ExitCode::Success
-        },
+        exit_code: ExitCode::Success,
         stdout,
     })
 }
@@ -3338,37 +3312,30 @@ fn organize_headless() -> Result<(), String> {
 /// them would report false facts.
 const DEFAULT_RUNS_DISPLAY_LIMIT: usize = 200;
 
-fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let store_holder = TaskStore::new()?;
-    let def = store_holder.read_def(id)?;
-    let sessions = open_sessions()?;
-    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
-    let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
-    // Round-42 review: `+1` for the exact-truncation probe must not overflow
-    // — `--limit 18446744073709551615` would panic in debug builds (exit 101)
-    // and silently read zero runs with `truncated: false` in release.
-    let probe_limit = effective_limit.checked_add(1).ok_or_else(|| {
-        CliError::usage(format!(
-            "--limit {effective_limit} is too large (the maximum is {})",
-            usize::MAX - 1
-        ))
-    })?;
-    // Read one past the cap so `truncated` is a fact, not an assumption:
-    // the foundation truncates the sortable listing BEFORE reading, so the
-    // extra record costs at most one more stat.
-    let mut records = store_holder.list_runs(id, Some(probe_limit))?;
+/// The display-cap scaffold `runs`/`runs_all` share: their reads already
+/// fetched one record past the cap (the probe that makes `truncated` a
+/// fact, not an assumption), so this only measures and truncates.
+fn cap_for_display(
+    mut records: Vec<serde_json::Value>,
+    effective_limit: usize,
+) -> (Vec<serde_json::Value>, bool) {
     let truncated = records.len() > effective_limit;
     records.truncate(effective_limit);
-    let names = task_name_map(std::slice::from_ref(&def));
-    let (mut lines, values) = render_runs(
-        &sessions,
-        &records,
-        &read_state,
-        &names,
-        &session_titles(&sessions),
-    );
-    let human = if lines.is_empty() {
-        format!("No runs for scheduled task {id}.")
+    (records, truncated)
+}
+
+/// The identical human trailer of the two display lanes: the truncation
+/// disclosure after the rendered rows. The empty-store openers differ
+/// ("No runs for scheduled task {id}." vs "No scheduled runs.") and stay at
+/// the call sites.
+fn runs_display_human(
+    mut lines: Vec<String>,
+    truncated: bool,
+    effective_limit: usize,
+    empty_store_message: String,
+) -> String {
+    if lines.is_empty() {
+        empty_store_message
     } else {
         if truncated {
             lines.push(format!(
@@ -3377,7 +3344,37 @@ fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
             ));
         }
         lines.join("\n")
-    };
+    }
+}
+
+fn runs(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliError> {
+    let store_holder = TaskStore::new()?;
+    let def = store_holder.read_def(id)?;
+    let sessions = open_sessions()?;
+    let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
+    let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
+    // Round-42's checked_add overflow probe is unreachable by construction:
+    // `parse_runs_limit` refuses `--limit` above MAX_RUNS_LIMIT (100_000) at
+    // parse time, so the +1 exact-truncation probe cannot overflow. Read one
+    // past the cap so `truncated` is a fact, not an assumption: the
+    // foundation truncates the sortable listing BEFORE reading, so the
+    // extra record costs at most one more stat.
+    let records = store_holder.list_runs(id, Some(effective_limit + 1))?;
+    let (records, truncated) = cap_for_display(records, effective_limit);
+    let names = task_name_map(std::slice::from_ref(&def));
+    let (lines, values) = render_runs(
+        &sessions,
+        &records,
+        &read_state,
+        &names,
+        &session_titles(&sessions),
+    );
+    let human = runs_display_human(
+        lines,
+        truncated,
+        effective_limit,
+        format!("No runs for scheduled task {id}."),
+    );
     let value = serde_json::json!({ "id": id, "runs": values, "truncated": truncated });
     Ok(success(render(output, human, &value)))
 }
@@ -3387,17 +3384,17 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     let sessions = open_sessions()?;
     let read_state = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
     let effective_limit = limit.unwrap_or(DEFAULT_RUNS_DISPLAY_LIMIT);
-    // Round-42 review: same overflow guard as `runs` above.
-    let probe_limit = effective_limit.checked_add(1).ok_or_else(|| {
-        CliError::usage(format!(
-            "--limit {effective_limit} is too large (the maximum is {})",
-            usize::MAX - 1
-        ))
-    })?;
+    // Same unreachable-by-construction probe as `runs` (`parse_runs_limit`
+    // pins the bound at parse time).
+    let probe_limit = effective_limit + 1;
     let defs = store_holder.list_defs()?;
     let mut records: Vec<serde_json::Value> = Vec::new();
     let mut names = task_name_map(&defs);
-    let mut active_keys = std::collections::HashSet::new();
+    // Per-task run-id sets of the reads above, probed by the archive lane
+    // below; a HashMap of sets avoids allocating a (task_id, run_id) tuple
+    // String pair per archived run just to answer one contains().
+    let mut active_keys: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     for def in &defs {
         let task_id = str_field(def, "id").unwrap_or("").to_owned();
         // Push the limit down per task: the foundation truncates the
@@ -3419,10 +3416,10 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         // longer suppresses an equal archived-twin id below — a layout only
         // a hand-crafted store can produce, since run ids are fresh per run.
         for run in store_holder.list_runs(&task_id, Some(probe_limit))? {
-            active_keys.insert((
-                task_id.clone(),
-                str_field(&run, "id").unwrap_or("").to_owned(),
-            ));
+            active_keys
+                .entry(task_id.clone())
+                .or_default()
+                .insert(str_field(&run, "id").unwrap_or("").to_owned());
             records.push(run);
         }
     }
@@ -3481,7 +3478,10 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
                         continue;
                     }
                     let run_id = str_field(run, "id").unwrap_or("");
-                    if !active_keys.contains(&(task_id.clone(), run_id.to_owned())) {
+                    if !active_keys
+                        .get(task_id)
+                        .is_some_and(|ids| ids.contains(run_id))
+                    {
                         records.push(run.clone());
                     }
                 }
@@ -3497,31 +3497,25 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         .into_iter()
         .map(|run| (record_sort_key(&run), run))
         .collect();
-    keyed.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut records: Vec<serde_json::Value> = keyed.into_iter().map(|(_, run)| run).collect();
+    keyed.sort_by_key(|a| std::cmp::Reverse(a.0));
+    let records: Vec<serde_json::Value> = keyed.into_iter().map(|(_, run)| run).collect();
     // Round-41 review: same default fan-out cap as `runs`; the per-task
     // push-down above reads the default cap plus the one-record probe, and
     // the global truncate + `truncated` marker disclose it.
-    let truncated = records.len() > effective_limit;
-    records.truncate(effective_limit);
-    let (mut lines, values) = render_runs(
+    let (records, truncated) = cap_for_display(records, effective_limit);
+    let (lines, values) = render_runs(
         &sessions,
         &records,
         &read_state,
         &names,
         &session_titles(&sessions),
     );
-    let human = if lines.is_empty() {
-        "No scheduled runs.".to_owned()
-    } else {
-        if truncated {
-            lines.push(format!(
-                "… showing the newest {effective_limit} runs; older runs were not read \
-                 (pass a larger --limit)"
-            ));
-        }
-        lines.join("\n")
-    };
+    let human = runs_display_human(
+        lines,
+        truncated,
+        effective_limit,
+        "No scheduled runs.".to_owned(),
+    );
     let value = serde_json::json!({ "runs": values, "truncated": truncated });
     Ok(success(render(output, human, &value)))
 }
@@ -3581,42 +3575,24 @@ viewed"
     let read_state_path = store_holder.read_state_path();
     let read_state_stamp = SidecarStamp::capture(&read_state_path);
     let mut read_state = read_registry_for_write(&read_state_path, &["viewed_runs"])?;
-    // Same newer-schema refusal as registry_tasks_mut: a read-state file
-    // written by a newer app version must not be merged and written back.
-    if read_state.is_object() {
-        ensure_sidecar_schema(&read_state, 2, "read-state")?;
+    // Same newer-schema refusal and normalize sequence as registry_tasks_mut
+    // (`registry_map_mut`, keyed once): a read-state file written by a newer
+    // app version must not be merged and written back, and a wrong-shaped
+    // but valid payload (hand-edited or partially written file) normalizes
+    // to the default like the parse-failure path instead of panicking with
+    // an exit code outside the 0/1/2 contract.
+    let viewed = registry_map_mut(&mut read_state, 2, "viewed_runs", "read-state")?;
+    let entry = viewed
+        .entry(task_id.to_owned())
+        .or_insert_with(|| serde_json::json!([]));
+    if !entry.is_array() {
+        *entry = serde_json::json!([]);
     }
-    // A wrong-shaped but valid payload (hand-edited or partially written
-    // file) normalizes to the default like the parse-failure path instead of
-    // panicking with an exit code outside the 0/1/2 contract.
-    if !read_state.is_object() {
-        read_state = serde_json::json!({ "schema_version": 2, "viewed_runs": {} });
-    }
-    if !read_state.get("viewed_runs").is_some_and(Value::is_object) {
-        read_state["viewed_runs"] = serde_json::json!({});
-    }
-    // Round-45 review: legacy files carry no version and every CLI writer adds one (`ensure_sidecar_schema`); the app's serde default for this file is schema 2.
-    read_state
-        .as_object_mut()
-        .expect("read_state normalized to an object above")
-        .entry("schema_version")
-        .or_insert_with(|| serde_json::json!(2));
-    {
-        let viewed = read_state["viewed_runs"]
-            .as_object_mut()
-            .expect("viewed_runs normalized to an object above");
-        let entry = viewed
-            .entry(task_id.to_owned())
-            .or_insert_with(|| serde_json::json!([]));
-        if !entry.is_array() {
-            *entry = serde_json::json!([]);
-        }
-        let list = entry
-            .as_array_mut()
-            .expect("viewed list normalized to an array above");
-        if !list.iter().any(|value| value.as_str() == Some(run_id)) {
-            list.push(serde_json::json!(run_id));
-        }
+    let list = entry
+        .as_array_mut()
+        .expect("viewed list normalized to an array above");
+    if !list.iter().any(|value| value.as_str() == Some(run_id)) {
+        list.push(serde_json::json!(run_id));
     }
     // Same opportunistic compaction as the GUI's `compact_viewed_runs`:
     // viewed ids outside the retained run list this command read (active
@@ -3638,17 +3614,19 @@ viewed"
     // Round-40 review: same foreign-write stamp guard as the other registry
     // RMW lanes — a GUI mark-viewed landing mid-read must not be reverted.
     write_json_atomic_checked(&read_state_path, &read_state, &read_state_stamp)?;
-    let (has_unread, _) = {
-        let refreshed = read_registry(&store_holder.read_state_path(), &["viewed_runs"]);
-        let def = serde_json::json!({ "id": task_id });
-        unread_and_running(
-            &def,
-            &runs,
-            Some(&sessions),
-            &refreshed,
-            &session_titles(&sessions),
-        )
-    };
+    // The read-state document this command just wrote is passed directly
+    // instead of re-reading the file it was written to: the bytes are the
+    // same view in memory, and re-reading only buys a redundant disk read.
+    // Accepted trade: a concurrent GUI write landing inside the window
+    // would change the best-effort hasUnreadRuns answer (the pre-write
+    // re-read could observe it, this cannot).
+    let (has_unread, _) = unread_and_running(
+        task_id,
+        &runs,
+        Some(&sessions),
+        &read_state,
+        &session_titles(&sessions),
+    );
     let value = serde_json::json!({
         "automationId": task_id,
         "runId": run_id,
@@ -3688,6 +3666,28 @@ fn open_sessions_for_enrichment() -> Option<SessionStore> {
                  {error}"
             );
             None
+        }
+    }
+}
+
+/// The run-history half of the same best-effort enrichment (the committed
+/// mutations' response rendering): a read failure is disclosed on stderr,
+/// naming what is already committed, and the response renders with an empty
+/// history instead of failing.
+fn best_effort_history(
+    store_holder: &TaskStore,
+    id: &str,
+    committed_what: &str,
+) -> Vec<serde_json::Value> {
+    match store_holder.list_runs(id, None) {
+        Ok(runs) => runs,
+        Err(error) => {
+            crate::note!(
+                "pinvou: warning: run history for {id} could not be read ({}); \
+the {committed_what} itself is committed",
+                error
+            );
+            Vec::new()
         }
     }
 }
@@ -3874,7 +3874,6 @@ mod tests {
                 rrule: "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30".into(),
                 kind: TaskKind::MemoryOrganize,
                 model_id: Some("m-1".into()),
-                mode: Some(TaskMode::Yolo),
                 paused: true,
             }
         );
@@ -3895,7 +3894,6 @@ mod tests {
                 rrule: "FREQ=WEEKLY;BYDAY=MO,FR;BYHOUR=9;BYMINUTE=30".into(),
                 kind: TaskKind::Chat,
                 model_id: None,
-                mode: None,
                 paused: false,
             }
         );

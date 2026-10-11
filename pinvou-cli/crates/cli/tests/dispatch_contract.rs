@@ -67,68 +67,6 @@ fn vec_string(arguments: &[&str]) -> Vec<String> {
     arguments.iter().map(|a| (*a).to_owned()).collect()
 }
 
-#[test]
-fn every_family_token_dispatches_to_its_module() {
-    // One representative valid subcommand per family: the parse layer must
-    // route the family token even when the subcommand-specific validation
-    // differs per family.
-    let tokens = [
-        ("sessions", "list"),
-        ("models", "list"),
-        ("settings", "get"),
-        ("memory", "overview"),
-        ("knowledge", "stats"),
-        ("scheduled", "list"),
-        ("plugins", "readiness"),
-        ("connectors", "status"),
-        ("personas", "list"),
-        ("code", "agents list"),
-        // files ingest requires its PATH argument since the family was
-        // implemented (it used to be a bare-token stub).
-        ("files", "ingest /tmp/a.md"),
-        ("voice", "asr-status"),
-        ("deps", "check"),
-        // feedback submit requires its options since the family was
-        // implemented (it used to be a bare-token stub).
-        (
-            "feedback",
-            "submit --type issue --title t --body-file /tmp/b.md",
-        ),
-        ("monitor", "status"),
-        ("artifacts", "list"),
-        ("projects", "list"),
-    ];
-    for (token, subcommand) in tokens {
-        let mut argv = vec!["pinvou".to_string(), token.to_string()];
-        argv.extend(subcommand.split_whitespace().map(str::to_string));
-        let parsed = parse_args(&argv)
-            .unwrap_or_else(|error| panic!("family {token} did not dispatch: {error}"));
-        let command = parsed.command();
-        assert!(
-            matches!(
-                command,
-                CliCommand::Sessions(_)
-                    | CliCommand::Models(_)
-                    | CliCommand::Memory(_)
-                    | CliCommand::Knowledge(_)
-                    | CliCommand::Scheduled(_)
-                    | CliCommand::Plugins(_)
-                    | CliCommand::Connectors(_)
-                    | CliCommand::Personas(_)
-                    | CliCommand::Code(_)
-                    | CliCommand::Files(_)
-                    | CliCommand::Voice(_)
-                    | CliCommand::Deps(_)
-                    | CliCommand::Feedback(_)
-                    | CliCommand::Monitor(_)
-                    | CliCommand::Artifacts(_)
-                    | CliCommand::Projects(_)
-            ),
-            "unexpected command variant for {token}: {command:?}"
-        );
-    }
-}
-
 /// The discriminator the exact-match test below asserts on. Exhaustive over
 /// `CliCommand`, so adding a family forces this test to decide its token —
 /// the union test above cannot notice a family routed into another

@@ -80,6 +80,18 @@ fn code_points(set: &BTreeSet<char>) -> String {
         .join(", ")
 }
 
+/// Both relations below extract the app's display-unsafe set from the same
+/// app source with the same signature; extract it once. Repo-root-relative:
+/// four `..` from this file's directory reach the repository root (same depth
+/// as cli_contract.rs's `../../../../docs`).
+fn app_display_unsafe_set() -> BTreeSet<char> {
+    unsafe_char_set(
+        include_str!("../../../../pinvou3-app/src-tauri/src/features/marketplace/store.rs"),
+        "fn is_display_unsafe_char(c: char) -> bool {",
+        "app store.rs",
+    )
+}
+
 /// `plugins.rs::is_display_unsafe_char` documents itself as a mirror of the
 /// app's `features/marketplace/store.rs::is_display_unsafe_char` (crate-
 /// private there): the sets must be EQUAL, so a GUI-added invisible
@@ -87,13 +99,7 @@ fn code_points(set: &BTreeSet<char>) -> String {
 /// (and vice versa — the CLI must not reject a name the GUI would store).
 #[test]
 fn plugins_display_sanitizer_set_equals_the_app_set() {
-    // Repo-root-relative: four `..` from this file's directory reach the
-    // repository root (same depth as cli_contract.rs's `../../../../docs`).
-    let app = unsafe_char_set(
-        include_str!("../../../../pinvou3-app/src-tauri/src/features/marketplace/store.rs"),
-        "fn is_display_unsafe_char(c: char) -> bool {",
-        "app store.rs",
-    );
+    let app = app_display_unsafe_set();
     let plugins = unsafe_char_set(
         include_str!("../src/plugins.rs"),
         "fn is_display_unsafe_char(c: char) -> bool {",
@@ -122,11 +128,7 @@ fn plugins_display_sanitizer_set_equals_the_app_set() {
 /// superset must stay strict, so dropping the CLI's own extras fails too.
 #[test]
 fn row_sanitizer_set_is_a_strict_superset_of_the_app_set() {
-    let app = unsafe_char_set(
-        include_str!("../../../../pinvou3-app/src-tauri/src/features/marketplace/store.rs"),
-        "fn is_display_unsafe_char(c: char) -> bool {",
-        "app store.rs",
-    );
+    let app = app_display_unsafe_set();
     let rows = unsafe_char_set(
         include_str!("../src/support.rs"),
         "fn is_row_unsafe_char(ch: char) -> bool {",

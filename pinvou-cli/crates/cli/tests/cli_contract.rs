@@ -606,22 +606,24 @@ fn invalid_usage_maps_to_exit_code_two() {
 /// the store, so no `PINVOU3_HOME` fixture is needed.
 #[test]
 fn usage_failures_exit_two_through_the_real_binary() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .arg("__no_such_family__")
-        .output()
-        .expect("spawn the pinvou binary");
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
+    // Both refusal classes exit 2: a plain unknown family token, and (unix
+    // only) a non-UTF-8 argv token the decode step must refuse the same way.
+    let non_utf8_argument: Option<std::ffi::OsString> = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            Some(std::ffi::OsStr::from_bytes(b"\xff\xfe").to_os_string())
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    };
+    let mut first_arguments: Vec<std::ffi::OsString> = vec!["__no_such_family__".into()];
+    first_arguments.extend(non_utf8_argument);
+    for argument in first_arguments {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-            .arg(std::ffi::OsStr::from_bytes(b"\xff\xfe"))
+            .arg(argument)
             .output()
             .expect("spawn the pinvou binary");
         assert_eq!(

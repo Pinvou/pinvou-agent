@@ -662,8 +662,81 @@ fn load_memory_sources() -> LoadedMemorySources {
     }
 }
 
+/// The outcome of one snapshot.md refresh attempt
+/// ([`refresh_snapshot_document`]): either the document was really
+/// rewritten, or the attempt carries its diagnostic
+/// (`snapshot_refresh_deferred` / `snapshot_refresh_failed` plus the detail)
+/// for the caller to map onto its own output channel.
+enum SnapshotRefreshOutcome {
+    Rewritten(PathBuf),
+    Reported { code: &'static str, detail: String },
+}
+
+/// One snapshot.md refresh attempt — the flow `overview` and the
+/// post-organize refresh implemented line for line (the GUI keeps the same
+/// helper shape behind both surfaces): the same all-sources-available gate
+/// (a partial read must not wipe that category from the document, so the
+/// refresh is deferred when any source is unavailable) and the same write
+/// with `runtime: None` (see the runtime source note in `overview` — a
+/// one-shot CLI process has no active session to render a prompt for, which
+/// is exactly what the GUI passes when none is open).
+///
+/// Disclosure at the point of action: the rewrite drops the runtime section
+/// the desktop app wrote for its active session. The behaviour is deliberate
+/// (see the module header), yet a caller polling `overview` in a loop would
+/// otherwise keep degrading the app's snapshot with nothing anywhere saying
+/// so — the shared stderr note therefore fires here, byte-identically for
+/// both lanes, and both lanes also report the rewrite on their own output
+/// channel, because stderr is exactly what such a loop discards. The
+/// non-rewrite outcomes come back as
+/// [`SnapshotRefreshOutcome::Reported`]; `deferred_detail_suffix` extends
+/// the deferred detail so each lane keeps its exact current wording
+/// (`""` for overview, `" after organize"` for the organize pass).
+fn refresh_snapshot_document(
+    loaded: &LoadedMemorySources,
+    deferred_detail_suffix: &str,
+) -> SnapshotRefreshOutcome {
+    if !loaded.sources.values().all(available) {
+        return SnapshotRefreshOutcome::Reported {
+            code: "snapshot_refresh_deferred",
+            detail: format!(
+                "memory sources unavailable; snapshot refresh deferred{deferred_detail_suffix}"
+            ),
+        };
+    }
+    match feature::write_memory_snapshot_document(
+        &loaded.profile,
+        &loaded.preferences,
+        &loaded.work_context,
+        &loaded.current_focus,
+        &loaded.recent_activity,
+        &loaded.recent_work,
+        &loaded.pending,
+        &loaded.never,
+        None,
+    ) {
+        Ok(path) => {
+            note!(
+                "[memory] snapshot_rewritten_without_runtime snapshot: {} was rewritten \
+without the runtime section (a one-shot CLI owns no active session); the desktop app restores \
+it on its next refresh",
+                path.display()
+            );
+            SnapshotRefreshOutcome::Rewritten(path)
+        }
+        Err(error) => SnapshotRefreshOutcome::Reported {
+            code: "snapshot_refresh_failed",
+            detail: format!("write memory snapshot: {error}"),
+        },
+    }
+}
+
 fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
+    // The shared refresh core reads the loaded sources map for its
+    // availability gate; borrow it first, destructure it below.
+    let loaded = load_memory_sources();
+    let refresh = refresh_snapshot_document(&loaded, "");
     let LoadedMemorySources {
         profile,
         preferences,
@@ -675,7 +748,7 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
         never,
         mut warnings,
         mut sources,
-    } = load_memory_sources();
+    } = loaded;
     // Runtime prompt: the GUI overview renders the ACTIVE session's cached
     // runtime memory, but `SessionStore::active_id()` is process-local state —
     // a one-shot CLI process never owns the desktop app's active session — so
@@ -687,73 +760,23 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
     mark_source(&mut sources, "runtime", true, None);
     // Same gate as the GUI overview: refresh snapshot.md only when every
     // authoritative source is available, otherwise defer (a partial read must
-    // not wipe that category from the snapshot document).
+    // not wipe that category from the snapshot document). Applied inside the
+    // shared refresh core; overview maps the outcome onto its
+    // warnings/sources payload.
     let mut snapshot_failed = false;
-    let snapshot_path = if sources.values().all(available) {
-        match feature::write_memory_snapshot_document(
-            &profile,
-            &preferences,
-            &work_context,
-            &current_focus,
-            &recent_activity,
-            &recent_work,
-            &pending,
-            &never,
-            // No runtime section: see the runtime source note above — a
-            // one-shot CLI process has no active session to render a prompt
-            // for, which is exactly what the GUI passes when none is open.
-            None,
-        ) {
-            Ok(path) => {
-                mark_source(&mut sources, "snapshot", true, None);
-                // Disclosure at the point of action: `overview` reads like a
-                // read-only command but rewrites the shared snapshot.md, and
-                // with `runtime: None` it drops the runtime section the
-                // desktop app wrote for its active session. The behaviour is
-                // deliberate (see the module header), yet a caller polling
-                // `overview` in a loop would otherwise keep degrading the
-                // app's snapshot with nothing anywhere saying so. Also
-                // reported on stdout/JSON below, because stderr is exactly
-                // what such a loop discards.
-                note!(
-                    "[memory] snapshot_rewritten_without_runtime snapshot: {} was rewritten \
-without the runtime section (a one-shot CLI owns no active session); the desktop app restores \
-it on its next refresh",
-                    path.display()
-                );
-                path.display().to_string()
-            }
-            Err(error) => {
-                push_warning(
-                    &mut warnings,
-                    "snapshot_refresh_failed",
-                    "snapshot",
-                    format!("write memory snapshot: {error}"),
-                );
-                mark_source(
-                    &mut sources,
-                    "snapshot",
-                    false,
-                    Some("snapshot_refresh_failed"),
-                );
-                snapshot_failed = true;
-                String::new()
-            }
+    let snapshot_path = match refresh {
+        SnapshotRefreshOutcome::Rewritten(path) => {
+            mark_source(&mut sources, "snapshot", true, None);
+            path.display().to_string()
         }
-    } else {
-        push_warning(
-            &mut warnings,
-            "snapshot_refresh_deferred",
-            "snapshot",
-            "memory sources unavailable; snapshot refresh deferred".to_owned(),
-        );
-        mark_source(
-            &mut sources,
-            "snapshot",
-            false,
-            Some("snapshot_refresh_deferred"),
-        );
-        String::new()
+        SnapshotRefreshOutcome::Reported { code, detail } => {
+            push_warning(&mut warnings, code, "snapshot", detail);
+            mark_source(&mut sources, "snapshot", false, Some(code));
+            if code == "snapshot_refresh_failed" {
+                snapshot_failed = true;
+            }
+            String::new()
+        }
     };
     let mut lines = vec![
         format!(
@@ -994,8 +1017,8 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                         "detail": detail,
                     }))
                     .collect::<Vec<_>>(),
-                "preferences": serde_json::to_value(&preferences).unwrap_or_default(),
-                "work_context": serde_json::to_value(&work_context).unwrap_or_default(),
+                "preferences": serde_json::to_value(preferences).unwrap_or_default(),
+                "work_context": serde_json::to_value(work_context).unwrap_or_default(),
                 "current_focus": serde_json::to_value(&current_focus).unwrap_or_default(),
                 "recent_activity": serde_json::to_value(&recent_activity).unwrap_or_default(),
                 "recent_work": serde_json::to_value(&recent_work).unwrap_or_default(),
@@ -1005,6 +1028,32 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
             Ok(success(render(output, lines.join("\n"), &value)))
         }
     }
+}
+
+/// The preferences/work-context arms of [`load_store_items`] — 18-line
+/// near-copies, single-sourced here: the only two stores whose read carries a
+/// cleanup sweep, so their envelope gains one `memory_topic_cleanup_required`
+/// warning when the sweep reported one; item lines, the JSON DTO array and
+/// the envelope shape are the caller's (`load_store_items` folds both into
+/// the same `{items, cleanup_warnings}` envelope as the plain stores).
+fn cleanup_topic_items<T>(
+    topic: &str,
+    read: std::io::Result<feature::TopicRead<T>>,
+    render: impl Fn(&T) -> (Vec<String>, serde_json::Value),
+) -> Result<(Vec<String>, serde_json::Value, Vec<serde_json::Value>), CliError> {
+    let read = read.map_err(|error| feature_error("list", error))?;
+    let (lines, value) = render(&read.value);
+    let warnings = read
+        .cleanup_warning
+        .map(|detail| {
+            vec![serde_json::json!({
+                "topic": topic,
+                "code": "memory_topic_cleanup_required",
+                "detail": detail,
+            })]
+        })
+        .unwrap_or_default();
+    Ok((lines, value, warnings))
 }
 
 /// Loads one store for `memory list --store`, returning the human item lines,
@@ -1020,44 +1069,26 @@ fn load_store_items(
 ) -> Result<(Vec<String>, Vec<String>, serde_json::Value), CliError> {
     let io_error = |error| feature_error("list", error);
     let (items, value, cleanup_warnings) = match store {
-        MemoryStore::Preferences => {
-            let read = feature::list_preferences_with_cleanup().map_err(io_error)?;
-            let lines: Vec<String> = read.value.iter().map(render_preference).collect();
-            let warnings = read
-                .cleanup_warning
-                .map(|detail| {
-                    vec![serde_json::json!({
-                        "topic": "preferences",
-                        "code": "memory_topic_cleanup_required",
-                        "detail": detail,
-                    })]
-                })
-                .unwrap_or_default();
-            (
-                lines,
-                serde_json::to_value(&read.value).unwrap_or_default(),
-                warnings,
-            )
-        }
-        MemoryStore::WorkContext => {
-            let read = feature::load_work_context_with_cleanup().map_err(io_error)?;
-            let lines: Vec<String> = read.value.iter().map(render_work_context).collect();
-            let warnings = read
-                .cleanup_warning
-                .map(|detail| {
-                    vec![serde_json::json!({
-                        "topic": "work_context",
-                        "code": "memory_topic_cleanup_required",
-                        "detail": detail,
-                    })]
-                })
-                .unwrap_or_default();
-            (
-                lines,
-                serde_json::to_value(&read.value).unwrap_or_default(),
-                warnings,
-            )
-        }
+        MemoryStore::Preferences => cleanup_topic_items(
+            "preferences",
+            feature::list_preferences_with_cleanup(),
+            |value| {
+                (
+                    value.iter().map(render_preference).collect(),
+                    serde_json::to_value(value).unwrap_or_default(),
+                )
+            },
+        )?,
+        MemoryStore::WorkContext => cleanup_topic_items(
+            "work_context",
+            feature::load_work_context_with_cleanup(),
+            |value| {
+                (
+                    value.iter().map(render_work_context).collect(),
+                    serde_json::to_value(value).unwrap_or_default(),
+                )
+            },
+        )?,
         MemoryStore::CurrentFocus => {
             let items = feature::load_current_focus().map_err(io_error)?;
             (
@@ -1310,19 +1341,6 @@ fn expected_stored_text(kind: AddKind, content: &str) -> String {
     }
 }
 
-/// The kind of pending row this add would identify as its own.
-///
-/// The pending stage's `pending_item_from_suggestion` runs
-/// `normalize_pending_kind(clean_text(&suggestion.kind, 20))` on the SUGGESTION
-/// kind; both CLI kinds ("preference", "work_context") are recognized there, so
-/// the row kind is the kind string itself, unchanged. The AddKind enum already
-/// carries it through `feature_kind`, which is the same string — no mirror, no
-/// drift; this accessor exists so the divergence check reads symmetrically
-/// next to `expected_pending_topic` and `expected_stored_text`.
-fn expected_pending_kind(kind: AddKind) -> &'static str {
-    kind.feature_kind()
-}
-
 /// The pending-row topic this add would identify as its own, per kind.
 ///
 /// `pending_item_from_suggestion` normalizes topics ONLY for preference-kind
@@ -1394,8 +1412,14 @@ fn diverged_candidate(
     if pending.topic != expected_pending_topic(kind) {
         return diverge("topic", expected_pending_topic(kind), &pending.topic);
     }
-    if pending.kind != expected_pending_kind(kind) {
-        return diverge("kind", expected_pending_kind(kind), &pending.kind);
+    // The pending stage's `pending_item_from_suggestion` runs
+    // `normalize_pending_kind(clean_text(&suggestion.kind, 20))` on the
+    // SUGGESTION kind; both CLI kinds ("preference", "work_context") are
+    // recognized there unchanged, so `feature_kind` IS the row kind — no
+    // mirror, no drift (the old `expected_pending_kind` accessor existed only
+    // so this check read symmetrically next to `expected_pending_topic`).
+    if pending.kind != kind.feature_kind() {
+        return diverge("kind", kind.feature_kind(), &pending.kind);
     }
     let actually_stored = expected_stored_text(kind, &pending.content);
     if actually_stored == *expected {
@@ -1465,12 +1489,8 @@ fn clean_pending_id(value: &str) -> String {
 /// materialized into its authoritative store.
 fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
-    let file_path = match &source {
-        AddSource::Inline(_) => None,
-        AddSource::File(path) => Some(path.clone()),
-    };
-    let content = match source {
-        AddSource::Inline(content) => content,
+    let (content, file_path) = match source {
+        AddSource::Inline(content) => (content, None),
         AddSource::File(path) => {
             // Round-43 review: join the gated-file-read rule this PR applies
             // everywhere else user-pointed file content enters a model
@@ -1481,16 +1501,21 @@ fn add(kind: AddKind, source: AddSource, output: OutputMode) -> Result<CliOutcom
             // `--file ~/.aws/credentials` would otherwise store the secret
             // head into a store later LLM calls consume. The CANONICAL path
             // is what was policy-checked, so it is also what gets read.
-            let canonical = std::fs::canonicalize(&path).map_err(|error| {
-                CliError::failed(format!(
-                    "memory add: cannot resolve content file {}: {error}",
-                    path.display()
-                ))
-            })?;
-            crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
-                CliError::failed(format!("memory add: refusing content file: {reason}"))
-            })?;
-            support::read_text_file_capped(&canonical, 64 * 1024, "memory_content_file_unreadable")?
+            let canonical = support::gate_canonical_path(
+                &path,
+                "memory add",
+                "content file",
+                "memory add",
+                "content file",
+            )?;
+            (
+                support::read_text_file_capped(
+                    &canonical,
+                    64 * 1024,
+                    "memory_content_file_unreadable",
+                )?,
+                Some(path),
+            )
         }
     };
     if content.trim().is_empty() {
@@ -1563,11 +1588,14 @@ normalization (task-like or punctuation-only text is not stored)",
     // warning never fired, so the tail vanished silently and the post-write
     // check (which compared against the already-truncated echo) still passed.
     let collapsed = feature::clean_text(&content, usize::MAX);
-    let truncated = collapsed.chars().count() > ADD_PIPELINE_TEXT_MAX_CHARS;
+    // Measured once and reused by every disclosure below, so the reported
+    // count cannot drift between the stderr note and the output channel.
+    let collapsed_chars = collapsed.chars().count();
+    let truncated = collapsed_chars > ADD_PIPELINE_TEXT_MAX_CHARS;
     if truncated {
         note_truncation(
             "add",
-            collapsed.chars().count(),
+            collapsed_chars,
             ADD_PIPELINE_TEXT_MAX_CHARS,
             "applied when the candidate is queued",
         );
@@ -1686,7 +1714,7 @@ the memory profile instead)",
         disclose_truncation(
             &mut value,
             &mut human,
-            collapsed.chars().count(),
+            collapsed_chars,
             expected.chars().count(),
             ADD_PIPELINE_TEXT_MAX_CHARS,
             "applied when the candidate is queued",
@@ -1702,7 +1730,7 @@ the memory profile instead)",
         disclose_normalization(
             &mut value,
             &mut human,
-            collapsed.chars().count(),
+            collapsed_chars,
             expected.chars().count(),
         );
         // Round-40 review: the contract requires truncation AND
@@ -1710,12 +1738,7 @@ the memory profile instead)",
         // lane carries both halves (`note_normalization` at its mirror
         // site); the add lane was missing the stderr half, so a
         // stderr-capturing consumer saw an unexplained shrink.
-        note_normalization(
-            "add",
-            collapsed.chars().count(),
-            expected.chars().count(),
-            true,
-        );
+        note_normalization("add", collapsed_chars, expected.chars().count(), true);
     }
     if !replaced.is_empty() {
         if let Some(object) = value.as_object_mut() {
@@ -2270,7 +2293,7 @@ fn map_organize_error_detail(detail: &str) -> CliError {
 /// for why the feature layer's in-memory guard is not enough for two CLI
 /// processes. Same `$PINVOU3_HOME/locks` directory and same fd-lock primitive
 /// as `voice asr-install`'s install lock. The open goes through
-/// `support::open_family_lock_file` (round-49 review, the connectors/code.rs
+/// `support::family_lock` (round-49 review, the connectors/code.rs
 /// conversion wave): one copy of the directory-create and open code, plus the
 /// family permission posture — the file is created 0600 AND re-tightened to
 /// 0600 on EVERY open (best-effort, the chmod-on-every-append doctrine), so a
@@ -2281,22 +2304,21 @@ fn map_organize_error_detail(detail: &str) -> CliError {
 fn organize_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     // `sandbox_home` already ran in `execute`, so the lock cannot land in a
     // cwd-relative directory.
-    let file = match support::open_family_lock_file("memory-organize.lock") {
-        Ok(file) => file,
-        Err(support::FamilyLockError::CreateDir { dir, error }) => {
-            return Err(CliError::failed(format!(
+    support::family_lock(
+        "memory-organize.lock",
+        |dir, error| {
+            CliError::failed(format!(
                 "memory organize: cannot create {}: {error}",
                 dir.display()
-            )));
-        }
-        Err(support::FamilyLockError::Open { path, error }) => {
-            return Err(CliError::failed(format!(
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
                 "memory organize: cannot open {}: {error}",
                 path.display()
-            )));
-        }
-    };
-    Ok(fd_lock::RwLock::new(file))
+            ))
+        },
+    )
 }
 
 /// Runs one full memory organize pass through the windowless product host —
@@ -2408,11 +2430,12 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
         ),
     ];
     if snapshot_rewritten_without_runtime {
-        lines.push(format!(
+        lines.push(
             "Note: this organize pass rewrote snapshot.md without the runtime section \
              (a one-shot CLI owns no active session); the desktop app restores it on \
              its next refresh"
-        ));
+                .to_string(),
+        );
     }
     if !report.warnings.is_empty() {
         // Warnings quote store ids and pass names: collapse like every
@@ -2449,58 +2472,19 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// the organize report discloses it on both channels, the same disclosure
 /// the `overview` command makes for the identical rewrite (round-41 review).
 fn refresh_snapshot_document_after_organize() -> bool {
-    let LoadedMemorySources {
-        profile,
-        preferences,
-        work_context,
-        current_focus,
-        recent_activity,
-        recent_work,
-        pending,
-        never,
-        warnings,
-        sources,
-    } = load_memory_sources();
+    let loaded = load_memory_sources();
     // Surface every load/cleanup diagnostic on stderr like the GUI's
     // load_memory_source does, so a deferred or partial refresh is explained.
-    append_warning_lines_to_stderr(&warnings);
-    if !sources.values().all(available) {
-        note!(
-            "[memory] snapshot_refresh_deferred snapshot: memory sources unavailable; \
-snapshot refresh deferred after organize"
-        );
-        return false;
-    }
-    match feature::write_memory_snapshot_document(
-        &profile,
-        &preferences,
-        &work_context,
-        &current_focus,
-        &recent_activity,
-        &recent_work,
-        &pending,
-        &never,
-        // No runtime section: the desktop app's active session is
-        // process-local state, so there is nothing to render here (the GUI
-        // passes None the same way when no session is open).
-        None,
-    ) {
-        Ok(path) => {
-            // Disclosure at the point of action (round-41 review): the
-            // rewrite drops the runtime section the desktop app wrote for
-            // its active session — the same temporary degradation the
-            // `overview` command notes three ways, so organize's report
-            // carries it too instead of only the module header.
-            note!(
-                "[memory] snapshot_rewritten_without_runtime snapshot: {} was rewritten \
-without the runtime section (a one-shot CLI owns no active session); the desktop app restores \
-it on its next refresh",
-                path.display()
-            );
-            true
-        }
-        Err(error) => {
-            note!("[memory] snapshot_refresh_failed snapshot: write memory snapshot: {error}");
+    append_warning_lines_to_stderr(&loaded.warnings);
+    // Disclosure at the point of action (round-41 review): the rewrite drops
+    // the runtime section the desktop app wrote for its active session — the
+    // shared core fires that stderr note for both lanes; the deferred /
+    // failed diagnostics map onto stderr notes here, keeping their exact
+    // current texts.
+    match refresh_snapshot_document(&loaded, " after organize") {
+        SnapshotRefreshOutcome::Rewritten(_) => true,
+        SnapshotRefreshOutcome::Reported { code, detail } => {
+            note!("[memory] {code} snapshot: {detail}");
             false
         }
     }
@@ -2522,30 +2506,34 @@ fn append_warning_lines_to_stderr(warnings: &[serde_json::Value]) {
     }
 }
 
+/// Joins one sanitized tab-separated row per item — the shared scaffold
+/// behind the family's human listings. The caller owns the empty case (its
+/// own honest message) and any incremental `lines` vec; each row closure
+/// keeps its per-cell `collapse_control_characters` discipline at the site.
+fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
+    items.iter().map(row).collect::<Vec<_>>().join("\n")
+}
+
 fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {
     support::sandbox_home()?;
     let history = feature::load_organize_history();
     let human = if history.is_empty() {
         "No organize history.".to_owned()
     } else {
-        history
-            .iter()
-            .map(|report| {
-                // Round-46 review: `started_at` is store-derived and was
-                // the one row cell taken raw — a forged/corrupt history
-                // file could forge rows or columns through it. Same
-                // collapse as the two cells beside it (`profile get`
-                // collapses its store-written `updated_at` for the same
-                // consistency).
-                format!(
-                    "{}\t{}\t{}",
-                    support::collapse_control_characters(&report.started_at),
-                    support::collapse_control_characters(&report.model),
-                    support::collapse_control_characters(&organize_summary(report))
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        join_rows(&history, |report| {
+            // Round-46 review: `started_at` is store-derived and was
+            // the one row cell taken raw — a forged/corrupt history
+            // file could forge rows or columns through it. Same
+            // collapse as the two cells beside it (`profile get`
+            // collapses its store-written `updated_at` for the same
+            // consistency).
+            format!(
+                "{}\t{}\t{}",
+                support::collapse_control_characters(&report.started_at),
+                support::collapse_control_characters(&report.model),
+                support::collapse_control_characters(&organize_summary(report))
+            )
+        })
     };
     let value = serde_json::to_value(&history).unwrap_or_default();
     Ok(success(render(output, human, &value)))

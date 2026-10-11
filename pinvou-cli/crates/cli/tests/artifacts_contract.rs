@@ -144,6 +144,18 @@ fn create_session_fixture() -> String {
     session.metadata.id
 }
 
+/// Creates `<id>/workspace/report.md` under the sandbox home with `content`
+/// and returns the canonicalized path: the index reports canonical paths,
+/// and on macOS $TMPDIR (/var/folders/…) canonicalizes to /private/var/…,
+/// so expectations must use the canonical form.
+fn seeded_report(home: &HomeGuard, id: &str, content: &str) -> PathBuf {
+    let workspace = home.workspace_of(id);
+    std::fs::create_dir_all(&workspace).unwrap();
+    let report = workspace.join("report.md");
+    std::fs::write(&report, content).unwrap();
+    std::fs::canonicalize(&report).unwrap()
+}
+
 /// Drives the real binary with `stdin` piped to it (the `--stdin` write lane
 /// is process-global, so it cannot be exercised through in-process dispatch).
 fn drive_binary(home: &HomeGuard, arguments: &[&str], stdin: &[u8]) -> std::process::Output {
@@ -180,13 +192,7 @@ fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
     let home = HomeGuard::new("happy");
     let id = create_session_fixture();
 
-    let workspace = home.workspace_of(&id);
-    std::fs::create_dir_all(&workspace).unwrap();
-    let report = workspace.join("report.md");
-    std::fs::write(&report, "# Report\n\nfirst version\n").unwrap();
-    // The index reports canonical paths; on macOS $TMPDIR (/var/folders/…)
-    // canonicalizes to /private/var/…, so expectations use the canonical form.
-    let report = std::fs::canonicalize(&report).unwrap();
+    let report = seeded_report(&home, &id, "# Report\n\nfirst version\n");
     let content_len = std::fs::metadata(&report).unwrap().len();
 
     let store = SessionStore::boot().expect("boot session store");
@@ -292,11 +298,7 @@ fn artifacts_write_refuses_over_cap_sources_before_any_store_boot() {
     let home = HomeGuard::new("over-cap");
     let id = create_session_fixture();
 
-    let workspace = home.workspace_of(&id);
-    std::fs::create_dir_all(&workspace).unwrap();
-    let report = workspace.join("report.md");
-    std::fs::write(&report, "old\n").unwrap();
-    let report = std::fs::canonicalize(&report).unwrap();
+    let report = seeded_report(&home, &id, "old\n");
 
     // One byte over the cap: refused with the exact stable wire code, and
     // the target is untouched. 0xFF bytes are not valid UTF-8 on purpose —
@@ -378,11 +380,7 @@ fn artifacts_write_file_gate_refuses_credential_source_paths() {
     let home = HomeGuard::new("credential-gate");
     let id = create_session_fixture();
 
-    let workspace = home.workspace_of(&id);
-    std::fs::create_dir_all(&workspace).unwrap();
-    let report = workspace.join("report.md");
-    std::fs::write(&report, "old\n").unwrap();
-    let report = std::fs::canonicalize(&report).unwrap();
+    let report = seeded_report(&home, &id, "old\n");
 
     let ssh_key = home.root.join(".ssh").join("id_rsa");
     std::fs::create_dir_all(ssh_key.parent().unwrap()).unwrap();
@@ -599,11 +597,7 @@ fn artifacts_list_reports_unscannable_records_in_skipped_sessions() {
     let home = HomeGuard::new("skipped");
     let id = create_session_fixture();
 
-    let workspace = home.workspace_of(&id);
-    std::fs::create_dir_all(&workspace).unwrap();
-    let report = workspace.join("report.md");
-    std::fs::write(&report, "# Report\n").unwrap();
-    let report = std::fs::canonicalize(&report).unwrap();
+    let report = seeded_report(&home, &id, "# Report\n");
     let store = SessionStore::boot().expect("boot session store");
     store
         .update_artifacts(&id, vec![report.to_string_lossy().to_string()])
@@ -685,11 +679,7 @@ fn artifacts_write_stdin_lane_round_trips_and_refuses_over_cap_input() {
     let home = HomeGuard::new("stdin");
     let id = create_session_fixture();
 
-    let workspace = home.workspace_of(&id);
-    std::fs::create_dir_all(&workspace).unwrap();
-    let report = workspace.join("report.md");
-    std::fs::write(&report, "old\n").unwrap();
-    let report = std::fs::canonicalize(&report).unwrap();
+    let report = seeded_report(&home, &id, "old\n");
 
     let arguments = [
         "artifacts",

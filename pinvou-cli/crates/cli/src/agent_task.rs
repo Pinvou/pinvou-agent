@@ -135,11 +135,7 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                         // Same charset gate as the sessions family: an id the
                         // store would reject is a usage error, not a
                         // not-found host failure after the fact.
-                        if !crate::support::valid_session_id(value) {
-                            return Err(CliError::usage(
-                                "agent run --session requires a valid session id ([A-Za-z0-9_-])",
-                            ));
-                        }
+                        crate::support::require_valid_session_id(value, "agent run --session")?;
                         session = Some(value.clone());
                     }
                     "--mode" => match value.as_str() {
@@ -247,14 +243,13 @@ fn run_agent(
     // Canonicalize first, gate the canonical form, and read the CANONICAL
     // path so a post-gate symlink swap cannot re-route the read (the
     // discipline artifacts/memory/voice already follow).
-    let prompt_path = std::fs::canonicalize(prompt_file).map_err(|error| {
-        CliError::failed(format!(
-            "agent_prompt_file_unreadable: cannot resolve {}: {error}",
-            prompt_file.display()
-        ))
-    })?;
-    crate::artifacts::check_sensitive_path(&prompt_path)
-        .map_err(|reason| CliError::failed(format!("agent run: refusing prompt file: {reason}")))?;
+    let prompt_path = crate::support::gate_canonical_path(
+        prompt_file,
+        "agent_prompt_file_unreadable",
+        "",
+        "agent run",
+        "prompt file",
+    )?;
     let prompt = crate::support::read_text_file_capped(
         &prompt_path,
         PROMPT_FILE_MAX_BYTES,
@@ -294,16 +289,14 @@ fn run_agent(
         staged_turn
             .as_ref()
             .and_then(|(session_id, turn)| persona_turn_injection(session_id, turn)),
-        session
-            .as_deref()
-            .and_then(crate::personas::equipped_persona_anchor),
+        session.and_then(crate::personas::equipped_persona_anchor),
     );
     // Round-38 review: the fail-open deferral (staged body kept because the
     // persona pool was unreadable) used to be completely silent on the run
     // that skipped it.
     if injection.is_none()
         && !orphaned_staged
-        && let Some(session_id) = session.as_deref()
+        && let Some(session_id) = session
     {
         crate::personas::note_deferred_staged_injection(session_id);
     }
@@ -1058,53 +1051,12 @@ mod tests {
     /// The turn lane tests steer the process-global product root (`persona
     /// sidecars` resolve under `PINVOU3_HOME`), so they hold the lib binary's
     /// shared env lock and point it at a throwaway directory for the whole
-    /// test — the same rule the models unit tests' `TempHome` and the
-    /// gaia tests' `RestoreHomeGuard` apply.
+    /// test — the same rule the models unit tests' local `TempHome` copy
+    /// applies. The fixture guard itself is the shared
+    /// `crate::support::test_support::TempHome` (the lock guard stays a
+    /// local binding of each test, declared before the fixture).
     #[cfg(feature = "product-backend")]
     use crate::support::ENV_LOCK;
-
-    #[cfg(feature = "product-backend")]
-    struct TempHome(
-        Option<std::sync::MutexGuard<'static, ()>>,
-        Option<std::ffi::OsString>,
-        std::path::PathBuf,
-    );
-
-    #[cfg(feature = "product-backend")]
-    impl TempHome {
-        fn new(label: &str) -> Self {
-            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let root = std::env::temp_dir().join(format!(
-                "pinvou-cli-agent-unit-{label}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&root).expect("create temp home");
-            let previous = std::env::var_os("PINVOU3_HOME");
-            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-            Self(Some(guard), previous, root)
-        }
-
-        fn sessions_root(&self) -> std::path::PathBuf {
-            self.2.join("sessions")
-        }
-    }
-
-    #[cfg(feature = "product-backend")]
-    impl Drop for TempHome {
-        fn drop(&mut self) {
-            if let Some(value) = self.1.take() {
-                unsafe { std::env::set_var("PINVOU3_HOME", value) };
-            } else {
-                unsafe { std::env::remove_var("PINVOU3_HOME") };
-            }
-            drop(self.0.take());
-            let _ = std::fs::remove_dir_all(&self.2);
-        }
-    }
 
     /// The orphan half of the injection path: a staged body whose card was
     /// deleted elsewhere must reach no turn, and its sidecar must be consumed
@@ -1118,10 +1070,14 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn an_orphaned_staged_injection_is_discarded_and_cleared() {
-        let home = TempHome::new("orphan-injection");
+        // Lock first, fixture second: the fixture's Drop restores the
+        // previous PINVOU3_HOME while the lock is still held (the ordering
+        // rule the shared guard documents).
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = crate::support::test_support::TempHome::new("agent-unit-orphan-injection");
         let session_id = "orphan-injection";
         let sidecar = home
-            .sessions_root()
+            .join("sessions")
             .join(session_id)
             .join("persona_equipped.json");
         std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();

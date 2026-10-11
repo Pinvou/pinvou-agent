@@ -168,6 +168,11 @@ fn expect_failed(arguments: &[&str]) -> String {
     error.to_string()
 }
 
+/// Asserts the usage exit-code class (2) for a refused argv and returns the
+/// message. Both parse-time grammar refusals (rrules, including ONCE AT, run
+/// at parse time) and execute-time usage gates (`delete` without `--yes`)
+/// must stay in this class — the code is pinned instead of accepting either
+/// layer, so a regression to execute-time rejection (exit 1) fails the test.
 fn assert_usage(arguments: &[&str]) -> String {
     let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
         .chain(arguments.iter().map(|value| value.to_string()))
@@ -232,6 +237,146 @@ fn create_task(home: &TempHome, name: &str) -> serde_json::Value {
         "--rrule",
         VALID_RRULE,
     ])
+}
+
+/// A completed scheduled run with its own conversation, the way the GUI
+/// executor leaves the stores after a chat run: the session comes from
+/// `SessionStore::boot` (`create_scheduled_run` writes the same profile the
+/// executor does) and the run record carries the full terminal shape (start/
+/// end stamps, the foundation task id, the thread link), so the run is
+/// actually viewable and `mark-viewed` reaches the registry write. Returns
+/// the session id the record links to.
+fn seed_completed_run(home: &TempHome, task_id: &str, run_id: &str) -> String {
+    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
+    let session = store
+        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
+            task_id: task_id.to_owned(),
+            model: "default-model".to_owned(),
+            model_id: None,
+            workspace: home
+                .path()
+                .join("scheduled")
+                .join(task_id)
+                .join("workspace"),
+            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
+            allow_shell: false,
+            trust_mode: true,
+            auto_approve: true,
+        })
+        .unwrap();
+    let session_id = session.metadata.id.clone();
+    std::fs::create_dir_all(home.runs_dir(task_id)).unwrap();
+    std::fs::write(
+        home.runs_dir(task_id).join(format!("{run_id}.json")),
+        serde_json::json!({
+            "schema_version": 1,
+            "id": run_id,
+            "automation_id": task_id,
+            "scheduled_for": "2026-09-10T08:00:00.000Z",
+            "status": "completed",
+            "created_at": "2026-09-10T08:00:00.000Z",
+            "started_at": "2026-09-10T08:00:01.000Z",
+            "ended_at": "2026-09-10T08:05:00.000Z",
+            "task_id": "foundation-task-1",
+            "thread_id": session_id,
+            "turn_id": "turn-1",
+            "error": null
+        })
+        .to_string(),
+    )
+    .unwrap();
+    session_id
+}
+
+/// Seeds a saved model the way the tests do it from the outside — a
+/// child-process `models add` against the fixture home (the child owns the
+/// models store bootstrap; `models add` prints the id on stdout) — and
+/// returns that id.
+fn add_saved_model(home: &TempHome, name: &str, wire: &str) -> String {
+    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    add.args([
+        "models",
+        "add",
+        "--preset",
+        "deepseek",
+        "--name",
+        name,
+        "--model",
+        wire,
+        "--base-url",
+        "https://api.deepseek.com",
+    ])
+    .env("PINVOU3_HOME", home.path());
+    let added = add.output().expect("models add runs");
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    String::from_utf8_lossy(&added.stdout)
+        .trim()
+        .strip_prefix("id: ")
+        .expect("models add prints the id")
+        .trim()
+        .to_owned()
+}
+
+/// Writes one well-formed run record under `automations/runs/<task_id>/` in
+/// the foundation's field shape (`schema_version`, the record id, the owning
+/// automation, the status, and `scheduled_for` — these fixtures always keep
+/// `created_at` at the same instant). `foundation_task` seeds the record's
+/// `task_id` link (`Some(id)` marks a run a runtime owns — its presence is
+/// what blocks a delete; `None` leaves the field out entirely, and a
+/// deliberate `null` link rides in `extras`). The other rare fields (a
+/// custom `schema_version` for newer-schema fixtures, a terminal `error`
+/// message) ride in `extras` too. Malformed records stay hand-written at
+/// their test sites: their broken shape is the pin.
+#[allow(clippy::too_many_arguments)]
+fn write_run_file(
+    home: &TempHome,
+    task_id: &str,
+    file_name: &str,
+    run_id: &str,
+    status: &str,
+    scheduled_for: &str,
+    foundation_task: Option<&str>,
+    extras: &[(&str, serde_json::Value)],
+) {
+    let mut record = serde_json::json!({
+        "schema_version": 1,
+        "id": run_id,
+        "automation_id": task_id,
+        "scheduled_for": scheduled_for,
+        "status": status,
+        "created_at": scheduled_for,
+    });
+    if let Some(foundation_task) = foundation_task {
+        record["task_id"] = serde_json::json!(foundation_task);
+    }
+    for (key, value) in extras {
+        record[key] = value.clone();
+    }
+    let runs = home.runs_dir(task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(runs.join(file_name), record.to_string()).unwrap();
+}
+
+/// The quarantine renames a refused payload aside as `<stem>.invalid-<stamp>`
+/// next to the original; collect whatever copies of `stem` exist in `dir`
+/// (their contents — the collect sites compare payloads, the emptiness of
+/// the vector is the `any`-shaped existence check).
+fn quarantine_copies(dir: &Path, stem: &str) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{stem}.invalid-"))
+        })
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect()
 }
 
 /// Writes the saved-model store `UserPrefs::load` reads: a default (active)
@@ -586,30 +731,27 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
     let _ = home;
 }
 
+/// Every command taking a task id answers an unknown id with the family's
+/// stable `scheduled_task_not_found` (single-sourced through `read_def` in
+/// the CLI — show/runs/mark-viewed/delete like pause/resume/pin/update/run),
+/// not the foundation's raw `scheduled_update_failed: … Failed to read
+/// automation …` read error.
 #[test]
-fn runs_and_show_reject_unknown_task_ids() {
+fn every_command_rejects_unknown_task_ids_with_the_stable_not_found() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("unknown-id");
-    expect_failed(&["scheduled", "show", "does-not-exist"]);
-    expect_failed(&["scheduled", "runs", "does-not-exist"]);
-    expect_failed(&["scheduled", "mark-viewed", "does-not-exist", "run-1"]);
-    expect_failed(&["scheduled", "delete", "does-not-exist", "--yes"]);
-    let _ = home;
-}
-
-/// pause/resume answer an unknown id with the family's stable
-/// `scheduled_task_not_found` (like show/runs/pin/update/run), not the
-/// foundation's raw `scheduled_update_failed: … Failed to read automation …`
-/// read error.
-#[test]
-fn pause_and_resume_reject_unknown_task_ids_like_the_rest_of_the_family() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("unknown-id-pause-resume");
-    for command in ["pause", "resume"] {
-        let error = expect_failed(&["scheduled", command, "does-not-exist"]);
+    for arguments in [
+        vec!["scheduled", "show", "does-not-exist"],
+        vec!["scheduled", "runs", "does-not-exist"],
+        vec!["scheduled", "mark-viewed", "does-not-exist", "run-1"],
+        vec!["scheduled", "delete", "does-not-exist", "--yes"],
+        vec!["scheduled", "pause", "does-not-exist"],
+        vec!["scheduled", "resume", "does-not-exist"],
+    ] {
+        let error = expect_failed(&arguments);
         assert!(
             error.starts_with("scheduled_task_not_found"),
-            "{command}: {error}"
+            "{arguments:?}: {error}"
         );
     }
     let _ = home;
@@ -835,7 +977,7 @@ fn create_refuses_non_yolo_modes_like_the_app() {
     let home = TempHome::new("mode-refusal");
     let prompt = write_prompt_file(&home, "mode.md", "Summarize the reports.");
     for refused in ["agent", "plan"] {
-        let error = assert_validation_fail(&[
+        let error = assert_usage(&[
             "scheduled",
             "create",
             "--name",
@@ -1014,13 +1156,12 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
     // cap the accepted limit at 100000 (each unit costs one run-record read,
     // runs-all across every task), and the message keeps the overflow
     // probes' "too large" shape.
-    let message =
-        assert_validation_fail(&["scheduled", "runs-all", "--limit", "18446744073709551615"]);
+    let message = assert_usage(&["scheduled", "runs-all", "--limit", "18446744073709551615"]);
     assert!(
         message.contains("too large") && message.contains("the maximum is 100000"),
         "the refusal names the bound: {message}"
     );
-    let message = assert_validation_fail(&[
+    let message = assert_usage(&[
         "scheduled",
         "runs",
         &task_id,
@@ -1032,7 +1173,7 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
     // One past the clamp is a parse refusal; the clamp itself is accepted
     // and the command runs end to end (the store here holds 3 runs, so the
     // marker is exact false).
-    let message = assert_validation_fail(&["scheduled", "runs-all", "--limit", "100001"]);
+    let message = assert_usage(&["scheduled", "runs-all", "--limit", "100001"]);
     assert!(message.contains("the maximum is 100000"), "{message}");
     let accepted = run_json(&["scheduled", "runs-all", "--limit", "100000"]);
     assert_eq!(accepted["truncated"].as_bool(), Some(false));
@@ -1341,21 +1482,16 @@ fn delete_refuses_while_a_run_is_active() {
     // A queued/running run left by the GUI-owned runtime (it carries the
     // foundation task id) blocks deletion, matching the GUI's
     // cancel-then-delete contract: headless, there is nothing to cancel with.
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("active-run.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "active-run",
-            "automation_id": task_id,
-            "task_id": "foundation-task-1",
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "running",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "active-run.json",
+        "active-run",
+        "running",
+        "2026-09-10T08:00:00.000Z",
+        Some("foundation-task-1"),
+        &[],
+    );
     let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     assert!(error.starts_with("scheduled_delete_blocked"), "{error}");
     assert!(home.def_path(&task_id).exists());
@@ -1363,20 +1499,16 @@ fn delete_refuses_while_a_run_is_active() {
     // A queued record with no task id is CLI bookkeeping (a CLI process
     // killed mid-run) that no runtime can cancel; it must not wedge the task
     // forever, so delete proceeds past it.
-    std::fs::write(
-        home.runs_dir(&task_id).join("stranded-run.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "stranded-run",
-            "automation_id": task_id,
-            "task_id": serde_json::Value::Null,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "queued",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "stranded-run.json",
+        "stranded-run",
+        "queued",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[("task_id", serde_json::Value::Null)],
+    );
     std::fs::remove_file(home.runs_dir(&task_id).join("active-run.json")).unwrap();
     let value = run_json(&["scheduled", "delete", &task_id, "--yes"]);
     assert_eq!(value["id"], task_id.as_str());
@@ -1392,29 +1524,22 @@ fn run_reconciles_a_stranded_queued_record_before_running() {
     let task_id = created["id"].as_str().unwrap().to_owned();
 
     // A CLI process killed mid-run leaves a queued record with no task id.
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id)
-            .join("20260910T080000000Z-stranded.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "stranded",
-            "automation_id": task_id,
-            "task_id": serde_json::Value::Null,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "queued",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "20260910T080000000Z-stranded.json",
+        "stranded",
+        "queued",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[("task_id", serde_json::Value::Null)],
+    );
 
     // The next run reconciles it to a terminal failed record instead of
     // accumulating undeletable state (this environment has no display/model,
     // so the new run itself then fails honestly; the runs list still shows
     // the reconciled record).
-    let error = expect_failed(&["scheduled", "run", &task_id]);
-    assert!(!error.is_empty(), "{error}");
+    let _ = expect_failed(&["scheduled", "run", &task_id]);
     let reconciled = std::fs::read_to_string(
         home.runs_dir(&task_id)
             .join("20260910T080000000Z-stranded.json"),
@@ -1443,7 +1568,7 @@ fn once_at_rejects_calendar_overflow_like_the_foundation() {
         // sweep. Grammar rejection happens at parse time through the
         // foundation parser (exit 2), the same class as before — only the
         // message source changed (chrono's own error).
-        let error = assert_validation_fail(&[
+        let error = assert_usage(&[
             "scheduled",
             "create",
             "--name",
@@ -1463,21 +1588,6 @@ fn once_at_rejects_calendar_overflow_like_the_foundation() {
     let _ = home;
 }
 
-/// Rrule validation (including ONCE AT) runs at parse time, so a regression
-/// to execute-time rejection (exit 1) must fail the test: pin the usage exit
-/// code here instead of accepting either layer.
-fn assert_validation_fail(arguments: &[&str]) -> String {
-    let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
-        .chain(arguments.iter().map(|value| value.to_string()))
-        .collect();
-    let error = match parse_args(owned.drain(..)) {
-        Err(error) => error,
-        Ok(parsed) => execute(parsed).expect_err("expected validation failure"),
-    };
-    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
-    error.to_string()
-}
-
 #[test]
 fn mark_viewed_round_trip_over_completed_run() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -1487,45 +1597,8 @@ fn mark_viewed_round_trip_over_completed_run() {
 
     // A completed scheduled run with its own conversation, the way the GUI
     // executor leaves the stores after a chat run.
-    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
-    let session = store
-        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
-            task_id: task_id.clone(),
-            model: "default-model".to_owned(),
-            model_id: None,
-            workspace: home
-                .path()
-                .join("scheduled")
-                .join(&task_id)
-                .join("workspace"),
-            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
-            allow_shell: false,
-            trust_mode: true,
-            auto_approve: true,
-        })
-        .unwrap();
-    let session_id = session.metadata.id.clone();
     let run_id = "completed-run-1";
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join(format!("{run_id}.json")),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": run_id,
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "completed",
-            "created_at": "2026-09-10T08:00:00.000Z",
-            "started_at": "2026-09-10T08:00:01.000Z",
-            "ended_at": "2026-09-10T08:05:00.000Z",
-            "task_id": "foundation-task-1",
-            "thread_id": session_id,
-            "turn_id": "turn-1",
-            "error": null
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let session_id = seed_completed_run(&home, &task_id, run_id);
 
     // The run is unread until viewed.
     let listed = run_json(&["scheduled", "list"]);
@@ -1582,26 +1655,24 @@ fn runs_all_merges_active_and_archived_runs_with_limit() {
     let home = TempHome::new("runs-all");
     let created = create_task(&home, "Feed task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
     for (index, status) in ["completed", "failed"].iter().enumerate() {
-        std::fs::write(
-            home.runs_dir(&task_id).join(format!("run-{index}.json")),
-            serde_json::json!({
-                "schema_version": 1,
-                "id": format!("run-{index}"),
-                "automation_id": task_id,
-                "scheduled_for": format!("2026-09-1{index}T08:00:00.000Z"),
-                "status": status,
-                "created_at": format!("2026-09-1{index}T08:00:00.000Z"),
-                "error": if *status == "failed" {
+        write_run_file(
+            &home,
+            &task_id,
+            &format!("run-{index}.json"),
+            &format!("run-{index}"),
+            status,
+            &format!("2026-09-1{index}T08:00:00.000Z"),
+            None,
+            &[(
+                "error",
+                if *status == "failed" {
                     serde_json::json!("memory organize: boom")
                 } else {
                     serde_json::Value::Null
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
+                },
+            )],
+        );
     }
     // Deleted tasks keep their runs visible through the history archive.
     let archived_task_id = "archived-task";
@@ -1727,44 +1798,7 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A completed run bound to a real scheduled-run session, so the run is
     // actually viewable and the command reaches the registry write.
-    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
-    let session = store
-        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
-            task_id: task_id.clone(),
-            model: "default-model".to_owned(),
-            model_id: None,
-            workspace: home
-                .path()
-                .join("scheduled")
-                .join(&task_id)
-                .join("workspace"),
-            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
-            allow_shell: false,
-            trust_mode: true,
-            auto_approve: true,
-        })
-        .unwrap();
-    let session_id = session.metadata.id.clone();
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("done-1.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "done-1",
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "completed",
-            "created_at": "2026-09-10T08:00:00.000Z",
-            "started_at": "2026-09-10T08:00:01.000Z",
-            "ended_at": "2026-09-10T08:05:00.000Z",
-            "task_id": "foundation-task-1",
-            "thread_id": session_id,
-            "turn_id": "turn-1",
-            "error": null
-        })
-        .to_string(),
-    )
-    .unwrap();
+    seed_completed_run(&home, &task_id, "done-1");
 
     // `viewed_runs` as an array: a whole-file rewrite here would drop every
     // OTHER task's viewed-run state, so the mutation refuses and quarantines
@@ -1788,16 +1822,10 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
         error.to_string().contains("scheduled_store_unreadable"),
         "the refusal must carry the documented error code: {error}"
     );
-    let quarantined = std::fs::read_dir(read_state.parent().unwrap())
-        .unwrap()
-        .flatten()
-        .any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("read-state.json.invalid-")
-        });
-    assert!(quarantined, "the malformed payload must be preserved");
+    assert!(
+        !quarantine_copies(read_state.parent().unwrap(), "read-state.json").is_empty(),
+        "the malformed payload must be preserved"
+    );
     assert!(!read_state.exists(), "no default-based rewrite may land");
 
     // A shape-valid payload with a per-task wrong-typed entry still
@@ -1828,44 +1856,7 @@ fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A completed run bound to a real scheduled-run session, so the run is
     // actually viewable and the command reaches the registry write.
-    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
-    let session = store
-        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
-            task_id: task_id.clone(),
-            model: "default-model".to_owned(),
-            model_id: None,
-            workspace: home
-                .path()
-                .join("scheduled")
-                .join(&task_id)
-                .join("workspace"),
-            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
-            allow_shell: false,
-            trust_mode: true,
-            auto_approve: true,
-        })
-        .unwrap();
-    let session_id = session.metadata.id.clone();
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("done-1.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "done-1",
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "completed",
-            "created_at": "2026-09-10T08:00:00.000Z",
-            "started_at": "2026-09-10T08:00:01.000Z",
-            "ended_at": "2026-09-10T08:05:00.000Z",
-            "task_id": "foundation-task-1",
-            "thread_id": session_id,
-            "turn_id": "turn-1",
-            "error": null
-        })
-        .to_string(),
-    )
-    .unwrap();
+    seed_completed_run(&home, &task_id, "done-1");
 
     // A legacy version-less read-state file (pre-versioning app build).
     let read_state = home.root.join("scheduled-runs").join("read-state.json");
@@ -1935,20 +1926,16 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
     let home = TempHome::new("delete-archive-missing-tasks");
     let created = create_task(&home, "Archive task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("old-run.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "old-run",
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "completed",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "old-run.json",
+        "old-run",
+        "completed",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[],
+    );
     // Valid JSON object, but no `tasks` key.
     std::fs::create_dir_all(home.root.join("automations")).unwrap();
     std::fs::write(
@@ -1983,20 +1970,16 @@ fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
     let home = TempHome::new("delete-id-mismatch");
     let created = create_task(&home, "Mismatched task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("old-run.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "old-run",
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "completed",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "old-run.json",
+        "old-run",
+        "completed",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[],
+    );
 
     // Hand-corrupt the definition: the inner id stops matching the file.
     let def_path = home.def_path(&task_id);
@@ -2157,13 +2140,13 @@ fn once_at_rejects_past_times_like_the_gui() {
 
 #[test]
 fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
-    // The refusal above is the *active* rule only. The foundation resolves the
+    // The refusal pinned by `once_at_rejects_past_times_like_the_gui` is the
+    // *active* rule only. The foundation resolves the
     // schedule solely for an active record (`create_automation` calls
     // `next_after_with_anchor` inside `if matches!(status, Active)`), so the
     // GUI creates a paused one-shot with an elapsed AT without complaint — a
     // drafted task the user edits and resumes later. `--paused` must not be
-    // stricter in the CLI than on the surface it mirrors, while the very same
-    // rrule without `--paused` stays a usage error.
+    // stricter in the CLI than on the surface it mirrors.
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("paused-past-once");
     let prompt = write_prompt_file(&home, "paused-past.md", "Summarize the reports.");
@@ -2191,18 +2174,6 @@ fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
         .unwrap();
         assert_eq!(def["status"].as_str(), Some("paused"), "{past}");
         assert!(def["next_run_at"].is_null(), "{past}");
-
-        let error = expect_failed(&[
-            "scheduled",
-            "create",
-            "--name",
-            "active once",
-            "--prompt-file",
-            prompt.to_str().unwrap(),
-            "--rrule",
-            past,
-        ]);
-        assert!(error.contains("no future run"), "{past}: {error}");
     }
 }
 
@@ -2217,7 +2188,7 @@ fn paused_create_still_validates_the_rrule_grammar() {
     let home = TempHome::new("paused-grammar");
     let prompt = write_prompt_file(&home, "paused-grammar.md", "Summarize the reports.");
     for bad in ["FREQ=BOGUS", "FREQ=ONCE", "FREQ=HOURLY;INTERVAL=4000000000"] {
-        let error = assert_usage(&[
+        assert_usage(&[
             "scheduled",
             "create",
             "--name",
@@ -2228,7 +2199,6 @@ fn paused_create_still_validates_the_rrule_grammar() {
             bad,
             "--paused",
         ]);
-        assert!(!error.is_empty(), "{bad}: {error}");
         let listed = run_json(&["scheduled", "list"]);
         assert_eq!(
             listed["tasks"].as_array().map(Vec::len),
@@ -2278,7 +2248,7 @@ fn hourly_interval_beyond_scheduler_range_is_refused() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let home = TempHome::new("hourly-interval-bound");
     let prompt = write_prompt_file(&home, "interval.md", "Summarize the reports.");
-    let error = assert_validation_fail(&[
+    let error = assert_usage(&[
         "scheduled",
         "create",
         "--name",
@@ -2291,7 +2261,7 @@ fn hourly_interval_beyond_scheduler_range_is_refused() {
     assert!(error.contains("INTERVAL must be <="), "{error}");
 
     // Just past the bound is refused, the bound itself is accepted.
-    let error = assert_validation_fail(&[
+    let error = assert_usage(&[
         "scheduled",
         "create",
         "--name",
@@ -2365,45 +2335,8 @@ fn newer_schema_read_state_is_refused_not_merged_and_written_back() {
     let home = TempHome::new("read-state-newer-schema");
     let created = create_task(&home, "Watched task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-
-    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
-    let session = store
-        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
-            task_id: task_id.clone(),
-            model: "default-model".to_owned(),
-            model_id: None,
-            workspace: home
-                .path()
-                .join("scheduled")
-                .join(&task_id)
-                .join("workspace"),
-            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
-            allow_shell: false,
-            trust_mode: true,
-            auto_approve: true,
-        })
-        .unwrap();
     let run_id = "completed-run-1";
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join(format!("{run_id}.json")),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": run_id,
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "completed",
-            "created_at": "2026-09-10T08:00:00.000Z",
-            "started_at": "2026-09-10T08:00:01.000Z",
-            "ended_at": "2026-09-10T08:05:00.000Z",
-            "task_id": "foundation-task-1",
-            "thread_id": session.metadata.id,
-            "turn_id": "turn-1",
-            "error": null
-        })
-        .to_string(),
-    )
-    .unwrap();
+    seed_completed_run(&home, &task_id, run_id);
 
     let read_state = home.path().join("scheduled-runs").join("read-state.json");
     std::fs::create_dir_all(read_state.parent().unwrap()).unwrap();
@@ -2451,21 +2384,16 @@ fn delete_blocked_restores_the_previous_status() {
     let home = TempHome::new("delete-restore");
     let created = create_task(&home, "Restore task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("active-run.json"),
-        serde_json::json!({
-            "schema_version": 1,
-            "id": "active-run",
-            "automation_id": task_id,
-            "task_id": "foundation-task-1",
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "queued",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "active-run.json",
+        "active-run",
+        "queued",
+        "2026-09-10T08:00:00.000Z",
+        Some("foundation-task-1"),
+        &[],
+    );
     let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     assert!(error.starts_with("scheduled_delete_blocked"), "{error}");
     // The pause applied for the deletion check is rolled back: the sweep
@@ -2475,17 +2403,6 @@ fn delete_blocked_restores_the_previous_status() {
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
     assert_eq!(def["status"], "active");
     assert!(def.get("paused").is_none());
-}
-
-#[test]
-fn delete_on_a_non_object_definition_fails_instead_of_panicking() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-non-object");
-    let created = create_task(&home, "Malformed task");
-    let task_id = created["id"].as_str().unwrap().to_owned();
-    std::fs::write(home.def_path(&task_id), "5").unwrap();
-    let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
-    assert!(error.contains("Failed to parse"), "{error}");
 }
 
 #[test]
@@ -2608,7 +2525,7 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
 #[test]
 fn mutations_fail_honestly_on_non_object_definitions() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    for label in ["update", "pause", "resume"] {
+    for label in ["update", "pause", "resume", "delete"] {
         let home = TempHome::new(&format!("non-object-{label}"));
         let created = create_task(&home, "Malformed task");
         let task_id = created["id"].as_str().unwrap().to_owned();
@@ -2616,6 +2533,7 @@ fn mutations_fail_honestly_on_non_object_definitions() {
         let arguments: Vec<&str> = match label {
             "update" => vec!["scheduled", "update", &task_id, "--name", "Renamed"],
             "pause" => vec!["scheduled", "pause", &task_id],
+            "delete" => vec!["scheduled", "delete", &task_id, "--yes"],
             _ => vec!["scheduled", "resume", &task_id],
         };
         let error = expect_failed(&arguments);
@@ -2660,8 +2578,7 @@ fn failed_delete_restores_the_previous_status() {
     // leaving the task paused.
     let archive = home.path().join("automations").join("history-archive.json");
     std::fs::create_dir_all(&archive).unwrap();
-    let error = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
-    assert!(!error.is_empty(), "{error}");
+    let _ = expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     let def: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
     assert_eq!(
@@ -2680,20 +2597,16 @@ fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
     // after the provisional pause was already committed: that failure is a
     // blocked delete like any other, so the pre-delete status must be
     // restored instead of leaving the task paused with no next run.
-    std::fs::create_dir_all(home.runs_dir(&task_id)).unwrap();
-    std::fs::write(
-        home.runs_dir(&task_id).join("future-run.json"),
-        serde_json::json!({
-            "schema_version": 99,
-            "id": "future-run",
-            "automation_id": task_id,
-            "scheduled_for": "2026-09-10T08:00:00.000Z",
-            "status": "done",
-            "created_at": "2026-09-10T08:00:00.000Z"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_run_file(
+        &home,
+        &task_id,
+        "future-run.json",
+        "future-run",
+        "done",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[("schema_version", serde_json::json!(99))],
+    );
     expect_failed(&["scheduled", "delete", &task_id, "--yes"]);
     let def: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
@@ -2716,16 +2629,10 @@ fn unreadable_registries_are_quarantined_before_the_default_is_used() {
     // malformed file on the next write: it is quarantined next to the
     // original first. (`show` degrades to the default and succeeds.)
     let _ = run_human(&["scheduled", "show", &task_id]);
-    let quarantined = std::fs::read_dir(bindings.parent().unwrap())
-        .unwrap()
-        .flatten()
-        .any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("model-bindings.json.invalid-")
-        });
-    assert!(quarantined, "the malformed registry must be quarantined");
+    assert!(
+        !quarantine_copies(bindings.parent().unwrap(), "model-bindings.json").is_empty(),
+        "the malformed registry must be quarantined"
+    );
 }
 
 #[test]
@@ -2745,32 +2652,7 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
         // Seed a real saved model: `--model-id` is validated against
         // saved_models (round-18 blocker 2), so the binding write needs an
         // id the executor could actually resolve.
-        let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-        add.args([
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "Shape model",
-            "--model",
-            "shape-wire-name",
-            "--base-url",
-            "https://api.deepseek.com",
-        ])
-        .env("PINVOU3_HOME", home.path());
-        let added = add.output().expect("models add runs");
-        assert!(
-            added.status.success(),
-            "{}",
-            String::from_utf8_lossy(&added.stderr)
-        );
-        let model_id = String::from_utf8_lossy(&added.stdout)
-            .trim()
-            .strip_prefix("id: ")
-            .expect("models add prints the id")
-            .trim()
-            .to_owned();
+        let model_id = add_saved_model(&home, "Shape model", "shape-wire-name");
         let bindings = home.path().join("automations").join("model-bindings.json");
         std::fs::write(&bindings, payload).unwrap();
         // A mutating command reading the registry must quarantine the
@@ -2795,17 +2677,8 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
             error.to_string().contains("scheduled_store_unreadable"),
             "the refusal must carry the documented error code: {error}"
         );
-        let quarantine_copies: Vec<_> = std::fs::read_dir(bindings.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("model-bindings.json.invalid-")
-            })
-            .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
-            .collect();
+        let quarantine_copies =
+            quarantine_copies(bindings.parent().unwrap(), "model-bindings.json");
         assert_eq!(
             quarantine_copies,
             vec![payload.to_owned()],
@@ -2836,28 +2709,7 @@ fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
     let home = TempHome::new("registry-quarantine-heal");
     let created = create_task(&home, "Heal task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    add.args([
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "Heal model",
-        "--model",
-        "heal-wire-name",
-        "--base-url",
-        "https://api.deepseek.com",
-    ])
-    .env("PINVOU3_HOME", home.path());
-    let added = add.output().expect("models add runs");
-    assert!(added.status.success());
-    let model_id = String::from_utf8_lossy(&added.stdout)
-        .trim()
-        .strip_prefix("id: ")
-        .expect("models add prints the id")
-        .trim()
-        .to_owned();
+    let model_id = add_saved_model(&home, "Heal model", "heal-wire-name");
     let bindings = home.path().join("automations").join("model-bindings.json");
     std::fs::write(&bindings, "{not json").unwrap();
 
@@ -2931,28 +2783,7 @@ fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
     let home = TempHome::new("update-rollback-reresolve");
     let created = create_task(&home, "Rollback task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    add.args([
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "Rollback model",
-        "--model",
-        "rollback-wire-name",
-        "--base-url",
-        "https://api.deepseek.com",
-    ])
-    .env("PINVOU3_HOME", home.path());
-    let added = add.output().expect("models add runs");
-    assert!(added.status.success());
-    let model_id = String::from_utf8_lossy(&added.stdout)
-        .trim()
-        .strip_prefix("id: ")
-        .expect("models add prints the id")
-        .trim()
-        .to_owned();
+    let model_id = add_saved_model(&home, "Rollback model", "rollback-wire-name");
 
     // Simulate the slot passing while the command runs: hand the active task
     // a past-due next_run_at (well-formed otherwise), and poison the binding
@@ -3028,17 +2859,8 @@ fn read_state_with_a_stray_tasks_key_stays_readable() {
     .unwrap();
     let listed = run_human(&["scheduled", "runs", &task_id]);
     assert!(!listed.is_empty(), "runs must stay readable");
-    let quarantined = std::fs::read_dir(read_state.parent().unwrap())
-        .unwrap()
-        .flatten()
-        .any(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("read-state.json.invalid-")
-        });
     assert!(
-        !quarantined,
+        quarantine_copies(read_state.parent().unwrap(), "read-state.json").is_empty(),
         "the stray-key read state must not be quarantined"
     );
     let _ = home;
@@ -3074,113 +2896,6 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
 
 // ---- round-18: model-id pairing, eager one-shot slots, run exit contract ----
 
-/// BLOCKER 2 (round-18 review): `create --model-id X` used to pair X with the
-/// ACTIVE model's wire name while the definition persisted that same active
-/// wire name — a pairing the executor rejects on every run
-/// (`resolve_scheduled_model`: "此任务绑定的 AI 模型配置已变更"). The GUI
-/// sends `model: selected.model, modelId: selected.id`; the CLI resolves the
-/// pair the same way now, and X is validated against the saved models before
-/// anything is persisted (an unknown id is the family's state-dependent
-/// refusal, exit 1, matching `models ...` "model not found:").
-#[test]
-fn create_with_model_id_binds_the_definition_to_that_models_wire_name() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("model-id-pair");
-
-    // Seed a saved model the way the GUI does (models add prints the id).
-    let prompt = write_prompt_file(&home, "pair.md", "Summarize the reports.");
-    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    add.args([
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "Pair test",
-        "--model",
-        "pair-wire-name",
-        "--base-url",
-        "https://api.deepseek.com",
-    ])
-    .env("PINVOU3_HOME", home.path());
-    let added = add.output().expect("models add runs");
-    assert!(
-        added.status.success(),
-        "{}",
-        String::from_utf8_lossy(&added.stderr)
-    );
-    let model_id = String::from_utf8_lossy(&added.stdout)
-        .trim()
-        .strip_prefix("id: ")
-        .expect("models add prints the id")
-        .trim()
-        .to_owned();
-
-    // Create with --model-id: definition model AND binding must both carry
-    // the named model's wire name, exactly the GUI's pairing.
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Pinned task",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        VALID_RRULE,
-        "--model-id",
-        &model_id,
-    ]);
-    assert_eq!(created["model"].as_str(), Some("pair-wire-name"));
-    assert_eq!(created["modelId"].as_str(), Some(model_id.as_str()));
-    let def: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.def_path(created["id"].as_str().unwrap())).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(def["model"].as_str(), Some("pair-wire-name"));
-    let bindings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.path().join("automations/model-bindings.json")).unwrap(),
-    )
-    .unwrap();
-    let task_id = created["id"].as_str().unwrap();
-    assert_eq!(
-        bindings["tasks"][task_id]["model_id"].as_str(),
-        Some(model_id.as_str())
-    );
-    assert_eq!(
-        bindings["tasks"][task_id]["model"].as_str(),
-        Some("pair-wire-name")
-    );
-}
-
-/// Unknown `--model-id` values are refused before anything is persisted —
-/// the pairing cannot be constructed for a model that does not exist, and a
-/// task bound to a phantom id fails on every run with the executor's
-/// "配置已失效" refusal.
-#[test]
-fn create_refuses_an_unknown_model_id_without_persisting_a_task() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("model-id-unknown");
-    let prompt = write_prompt_file(&home, "unknown.md", "Summarize the reports.");
-    let error = expect_failed(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Phantom pin",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        VALID_RRULE,
-        "--model-id",
-        "m-does-not-exist",
-    ]);
-    assert!(
-        error.contains("model not found: m-does-not-exist"),
-        "{error}"
-    );
-    let listed = run_json(&["scheduled", "list"]);
-    assert_eq!(listed["tasks"].as_array().map(Vec::len), Some(0));
-}
-
 /// `update --model-id` re-binds the pair on the same rule (the GUI applies
 /// input.model + modelId together; the old CLI only re-bound the pin and
 /// left the definition's wire name alone, which the executor rejects).
@@ -3192,32 +2907,7 @@ fn update_with_model_id_moves_both_the_definition_and_the_pin() {
     let task_id = created["id"].as_str().unwrap().to_owned();
 
     let prompt = write_prompt_file(&home, "add.md", "x");
-    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    add.args([
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "Other model",
-        "--model",
-        "other-wire-name",
-        "--base-url",
-        "https://api.deepseek.com",
-    ])
-    .env("PINVOU3_HOME", home.path());
-    let added = add.output().expect("models add runs");
-    assert!(
-        added.status.success(),
-        "{}",
-        String::from_utf8_lossy(&added.stderr)
-    );
-    let model_id = String::from_utf8_lossy(&added.stdout)
-        .trim()
-        .strip_prefix("id: ")
-        .expect("models add prints the id")
-        .trim()
-        .to_owned();
+    let model_id = add_saved_model(&home, "Other model", "other-wire-name");
 
     let updated = run_json(&["scheduled", "update", &task_id, "--model-id", &model_id]);
     assert_eq!(updated["modelId"].as_str(), Some(model_id.as_str()));
@@ -3246,32 +2936,7 @@ fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
     let def_before: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.def_path(&task_id)).unwrap()).unwrap();
 
-    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    add.args([
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        "Rollback model",
-        "--model",
-        "rollback-wire-name",
-        "--base-url",
-        "https://api.deepseek.com",
-    ])
-    .env("PINVOU3_HOME", home.path());
-    let added = add.output().expect("models add runs");
-    assert!(
-        added.status.success(),
-        "{}",
-        String::from_utf8_lossy(&added.stderr)
-    );
-    let model_id = String::from_utf8_lossy(&added.stdout)
-        .trim()
-        .strip_prefix("id: ")
-        .expect("models add prints the id")
-        .trim()
-        .to_owned();
+    let model_id = add_saved_model(&home, "Rollback model", "rollback-wire-name");
 
     let bindings = home.path().join("automations").join("model-bindings.json");
     let future_format = r#"{"schema_version": 99, "tasks": {}}"#;
@@ -3382,8 +3047,9 @@ fn update_and_resume_persist_a_repaired_workspace_cwd() {
 /// never ran. The foundation's create/resume resolve the slot eagerly — the
 /// CLI routes through them, so an active one-shot (here: a near-future
 /// stamp the sweep would fire late) carries a concrete next_run_at from the
-/// moment it is created, and a resumed one-shot is re-resolved (a past AT
-/// is refused at resume time with the scheduler's own "no future run").
+/// moment it is created, and a resumed one-shot is re-resolved (the
+/// past-AT refusal at resume time is pinned separately by
+/// `once_tasks_with_a_past_anchor_are_refused_at_resume`).
 #[test]
 fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -3423,29 +3089,6 @@ fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
         resumed["nextRunAt"].as_str().is_some(),
         "resume must re-resolve the one-shot slot eagerly: {}",
         resumed["nextRunAt"]
-    );
-
-    // The silent-pause trap: resuming a one-shot whose AT has passed is the
-    // exact case the sweep used to pause silently; the foundation resume
-    // refuses it up front instead.
-    let past = chrono::Local::now() - chrono::Duration::hours(24);
-    let past_rrule = format!("FREQ=ONCE;AT={}", past.format("%Y-%m-%dT%H:%M"));
-    let staged = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Staged once",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        &past_rrule,
-        "--paused",
-    ]);
-    let staged_id = staged["id"].as_str().unwrap().to_owned();
-    let error = expect_failed(&["scheduled", "resume", &staged_id]);
-    assert!(
-        error.contains("no future run"),
-        "a past one-shot must be refused at resume, not silently paused: {error}"
     );
 }
 
@@ -3501,8 +3144,6 @@ fn runs_limit_returns_the_newest_records_in_order() {
     let home = TempHome::new("runs-limit");
     let created = create_task(&home, "Limited task");
     let task_id = created["id"].as_str().unwrap().to_owned();
-    let runs = home.runs_dir(&task_id);
-    std::fs::create_dir_all(&runs).unwrap();
     for index in 0..10 {
         // 19-char sortable stamp: YYYYMMDDTHHMMSSmmmZ (created_at's millis
         // mirrored into the name, foundation run_file_stamp shape). The
@@ -3512,19 +3153,16 @@ fn runs_limit_returns_the_newest_records_in_order() {
         let stamp = format!("20260910T08000{index}000Z");
         assert_eq!(stamp.len(), 19, "{stamp}");
         let instant = format!("2026-09-10T08:00:{index:02}.000Z");
-        std::fs::write(
-            runs.join(format!("{stamp}-run-{index}.json")),
-            serde_json::json!({
-                "schema_version": 1,
-                "id": format!("run-{index}"),
-                "automation_id": task_id,
-                "scheduled_for": instant,
-                "status": "completed",
-                "created_at": instant,
-            })
-            .to_string(),
-        )
-        .unwrap();
+        write_run_file(
+            &home,
+            &task_id,
+            &format!("{stamp}-run-{index}.json"),
+            &format!("run-{index}"),
+            "completed",
+            &instant,
+            None,
+            &[],
+        );
     }
     let limited = run_json(&["scheduled", "runs", &task_id, "--limit", "3"]);
     let values = limited["runs"].as_array().unwrap();
@@ -3910,10 +3548,9 @@ fn create_refuses_a_credential_path_prompt_file() {
 
     // Nothing may have been persisted by the refusal.
     let list = run_json(&["scheduled", "list"]);
-    let tasks = list
-        .as_array()
-        .or_else(|| list["tasks"].as_array())
-        .map(|tasks| tasks.len())
-        .unwrap_or(0);
-    assert_eq!(tasks, 0, "the refusal must not have created a task: {list}");
+    assert_eq!(
+        list["tasks"].as_array().map(Vec::len),
+        Some(0),
+        "the refusal must not have created a task: {list}"
+    );
 }

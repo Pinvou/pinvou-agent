@@ -349,10 +349,7 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                             "knowledge collections add-sources requires a collection id and at least one path",
                         )
                     })?, "collection")?;
-                    let paths = head[1..]
-                        .iter()
-                        .map(|path| PathBuf::from(path))
-                        .collect::<Vec<_>>();
+                    let paths = head[1..].iter().map(PathBuf::from).collect::<Vec<_>>();
                     if paths.is_empty() {
                         return Err(CliError::usage(
                             "knowledge collections add-sources requires at least one path",
@@ -604,11 +601,11 @@ fn require_session_id(value: &str) -> Result<String, CliError> {
     // Same charset gate as every other session-id family: an id the store
     // would reject is a usage error (exit 2), not a host failure, and a
     // traversal-shaped id is refused before any path is derived from it.
-    if !crate::support::valid_session_id(value) {
-        return Err(CliError::usage(
-            "knowledge requires a valid session id ([A-Za-z0-9_-])",
-        ));
-    }
+    // Delegated to the shared helper so the alphabet gate and the usage
+    // message are single-sourced with the other families; the wrapper stays
+    // because the mount docs reference this name at parse time and the
+    // callers want the owned `String`.
+    crate::support::require_valid_session_id(value, "knowledge")?;
     Ok(value.to_owned())
 }
 
@@ -635,7 +632,7 @@ fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "knowledge")
 }
 
@@ -711,6 +708,15 @@ fn open_service() -> Result<KnowledgeService, CliError> {
 /// the operation as context prefix.
 fn feature_error(operation: &str, error: impl std::fmt::Display) -> CliError {
     CliError::failed(format!("knowledge {operation}: {error}"))
+}
+
+/// Joins one sanitized tab-separated row per item — the scaffold every
+/// store/remote-derived human listing in this family shares. The caller owns
+/// the empty case (its own honest message) and any incremental `lines` vec;
+/// each row closure keeps its per-cell `collapse_control_characters`
+/// discipline visible at the site.
+fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
+    items.iter().map(row).collect::<Vec<_>>().join("\n")
 }
 
 pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -863,8 +869,9 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     // disallowed files under a few countable ones — walks healthily for a
     // long time without `scanned` moving, and keying on it alone would
     // misclassify that walk as a wedged thread and kill it mid-tree.
-    let mut last_scanned = service.status().scanned;
-    let mut last_raw_seen = service.status().raw_seen;
+    let first_status = service.status();
+    let mut last_scanned = first_status.scanned;
+    let mut last_raw_seen = first_status.raw_seen;
     let mut last_progress = std::time::Instant::now();
     loop {
         let state = service.status();
@@ -908,6 +915,17 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     }
 }
 
+/// The env-override body both stall bounds share: `key` (milliseconds,
+/// positive) overrides the default; an unusable value keeps the default.
+fn stall_millis_override(key: &str, default: Duration) -> Duration {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(default)
+}
+
 /// How long `scan start` keeps waiting on a scan that is flagged running but
 /// has stopped counting. Generous on purpose: the walker only reports every
 /// 5000 entries, and a cold spinning disk or a slow network mount can spend
@@ -917,12 +935,10 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
 /// `PINVOU_KB_IMPORT_STALL_MILLIS` has, so the timeout path stays
 /// automatable; an unusable value keeps the default.
 fn scan_no_progress_timeout() -> std::time::Duration {
-    std::env::var("PINVOU_KB_SCAN_STALL_MILLIS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|millis| *millis > 0)
-        .map(std::time::Duration::from_millis)
-        .unwrap_or(std::time::Duration::from_secs(300))
+    stall_millis_override(
+        "PINVOU_KB_SCAN_STALL_MILLIS",
+        std::time::Duration::from_secs(300),
+    )
 }
 
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1014,20 +1030,16 @@ fn type_counts(output: OutputMode) -> Result<CliOutcome, CliError> {
     let human = if counts.is_empty() {
         "no indexed files".to_owned()
     } else {
-        counts
-            .iter()
+        join_rows(&counts, |count| {
             // `ext` derives from filenames, and Unix filenames may carry
             // tabs/C0 controls: collapse like every other store-derived cell
             // so the row cannot forge columns (JSON keeps the original).
-            .map(|count| {
-                format!(
-                    "{}\t{}",
-                    crate::support::collapse_control_characters(&count.ext),
-                    count.count
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+            format!(
+                "{}\t{}",
+                crate::support::collapse_control_characters(&count.ext),
+                count.count
+            )
+        })
     };
     let value = serde_json::json!({
         "type_counts": serde_json::to_value(&counts).unwrap_or_default(),
@@ -1074,26 +1086,23 @@ fn search(
     let human = if hits.is_empty() {
         format!("no matches for {query}")
     } else {
-        hits.iter()
-            .map(|hit| {
-                // Store/user-sourced cells: collapsed like every other
-                // family's tab rows, so a name or path carrying a control
-                // character cannot forge extra rows or columns in the human
-                // block (JSON keeps the originals).
-                format!(
-                    "{}\t{}\t{}\t{}\t{}",
-                    crate::support::collapse_control_characters(&hit.name),
-                    hit.ext
-                        .as_deref()
-                        .map(|ext| crate::support::collapse_control_characters(ext))
-                        .unwrap_or_else(|| "-".to_owned()),
-                    hit.size,
-                    hit.mtime,
-                    crate::support::collapse_control_characters(&hit.path)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        join_rows(&hits, |hit| {
+            // Store/user-sourced cells: collapsed like every other
+            // family's tab rows, so a name or path carrying a control
+            // character cannot forge extra rows or columns in the human
+            // block (JSON keeps the originals).
+            format!(
+                "{}\t{}\t{}\t{}\t{}",
+                crate::support::collapse_control_characters(&hit.name),
+                hit.ext
+                    .as_deref()
+                    .map(crate::support::collapse_control_characters)
+                    .unwrap_or_else(|| "-".to_owned()),
+                hit.size,
+                hit.mtime,
+                crate::support::collapse_control_characters(&hit.path)
+            )
+        })
     };
     let value = serde_json::json!({
         "query": query,
@@ -1146,7 +1155,6 @@ mod date_math_tests {
         assert_eq!(days_from_civil(2026, 9, 1), 20_697);
         assert_eq!(days_in_month(2000, 2), 29);
         assert_eq!(days_in_month(1900, 2), 28);
-        assert_eq!(days_in_month(2000, 2), 29);
         assert_eq!(parse_date_epoch("1970-01-01", "--before").unwrap(), 0);
         assert_eq!(parse_date_epoch("1970-01-02", "--after").unwrap(), 86_400);
         assert_eq!(
@@ -1189,23 +1197,19 @@ fn collections_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let human = if collections.is_empty() {
         "no collections".to_owned()
     } else {
-        collections
-            .iter()
-            .map(|collection| {
-                // User-named cell: collapsed like every other family's tab
-                // rows (JSON keeps the original name).
-                format!(
-                    "{}\t{}\t{}\tdocs={}\tchunks={}\tbytes={}",
-                    collection.id,
-                    crate::support::collapse_control_characters(&collection.name),
-                    collection.status,
-                    collection.doc_count,
-                    collection.chunk_count,
-                    collection.total_bytes
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        join_rows(&collections, |collection| {
+            // User-named cell: collapsed like every other family's tab
+            // rows (JSON keeps the original name).
+            format!(
+                "{}\t{}\t{}\tdocs={}\tchunks={}\tbytes={}",
+                collection.id,
+                crate::support::collapse_control_characters(&collection.name),
+                collection.status,
+                collection.doc_count,
+                collection.chunk_count,
+                collection.total_bytes
+            )
+        })
     };
     let value = serde_json::json!({
         "collections": serde_json::to_value(&collections).unwrap_or_default(),
@@ -1427,17 +1431,13 @@ fn collections_add_sources(
         // window would sail through unresolved. The re-canonicalize for
         // the stored name below keeps its own documented fallback: there
         // the walk itself re-reports missing paths.
-        let resolved = path.canonicalize().map_err(|error| {
-            CliError::failed(format!(
-                "knowledge collections add-sources: cannot resolve source path {}: {error}",
-                path.display()
-            ))
-        })?;
-        crate::artifacts::check_sensitive_path(&resolved).map_err(|reason| {
-            CliError::failed(format!(
-                "knowledge collections add-sources: refusing source path: {reason}"
-            ))
-        })?;
+        crate::support::gate_canonical_path(
+            path,
+            "knowledge collections add-sources",
+            "source path",
+            "knowledge collections add-sources",
+            "source path",
+        )?;
     }
     let service = open_service()?;
     ensure_collection_exists(&service, id, "collections add-sources")?;
@@ -1499,7 +1499,6 @@ fn collections_add_sources(
         })?;
         resolved_paths.push(resolved);
     }
-    let paths = resolved_paths;
     // Disclosed residual (same sub-second race class the id-taking
     // `cancel_index_job` documents): a job a desktop app starts on this
     // collection between the pre-check above and `start_index` carries a
@@ -1510,7 +1509,7 @@ fn collections_add_sources(
     // invocation's stall timeout, the timeout interrupts the app's healthy
     // job (it lands `interrupted`, immediately resumable — no data loss,
     // but a live GUI import was flipped as a side effect).
-    let state = service.start_index(id, paths);
+    let state = service.start_index(id, resolved_paths);
     // Upstream quirk: any resumable job short-circuits start_index and the
     // requested sources are silently dropped — a fresh job reports
     // preparing/running with resumable=false, so resumable here always
@@ -1589,22 +1588,18 @@ fn documents(
     let human = if documents.is_empty() {
         format!("no documents in collection {collection_id}")
     } else {
-        documents
-            .iter()
-            .map(|document| {
-                // Store/filesystem-sourced cells: collapsed like every other
-                // family's tab rows (JSON keeps the originals).
-                format!(
-                    "{}\t{}\t{}\tchunks={}\t{}",
-                    document.id,
-                    crate::support::collapse_control_characters(&document.name),
-                    document.parse_status,
-                    document.n_chunks,
-                    crate::support::collapse_control_characters(&document.path)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        join_rows(&documents, |document| {
+            // Store/filesystem-sourced cells: collapsed like every other
+            // family's tab rows (JSON keeps the originals).
+            format!(
+                "{}\t{}\t{}\tchunks={}\t{}",
+                document.id,
+                crate::support::collapse_control_characters(&document.name),
+                document.parse_status,
+                document.n_chunks,
+                crate::support::collapse_control_characters(&document.path)
+            )
+        })
     };
     let value = serde_json::json!({
         "collection_id": collection_id,
@@ -1670,6 +1665,23 @@ fn index_status(job_id: Option<&str>, output: OutputMode) -> Result<CliOutcome, 
     index_out("index status", state, output)
 }
 
+/// The per-job store-error mapping the id-addressing index lanes share: an
+/// unknown job id answers rusqlite's `QueryReturnedNoRows` upstream, which is
+/// mapped onto the family's stable `knowledge_index_job_not_found` code
+/// instead of leaking the driver message; every other store failure keeps the
+/// `knowledge {label}` context prefix. `op_label` is the site's verbatim
+/// operation label (`index status(<id>)`, `index cancel(<id>)`, `index
+/// failed`); `job_id` names the not-found job in the stable code's message.
+fn job_store_error(op_label: &str, job_id: &str, error: String) -> CliError {
+    if error.contains("Query returned no rows") {
+        CliError::failed(format!(
+            "knowledge_index_job_not_found: no index job {job_id} exists"
+        ))
+    } else {
+        feature_error(op_label, error)
+    }
+}
+
 /// Reads one named job's state, mapping the store's "unknown id" answer
 /// (rusqlite's `QueryReturnedNoRows`) onto the family's stable
 /// `knowledge_index_job_not_found` code instead of leaking the driver
@@ -1679,15 +1691,9 @@ fn named_job_state(
     job_id: &str,
     operation: &str,
 ) -> Result<IndexState, CliError> {
-    service.index_job_state(job_id).map_err(|error| {
-        if error.contains("Query returned no rows") {
-            CliError::failed(format!(
-                "knowledge_index_job_not_found: no index job {job_id} exists"
-            ))
-        } else {
-            feature_error(&format!("index {operation}({job_id})"), error)
-        }
-    })
+    service
+        .index_job_state(job_id)
+        .map_err(|error| job_store_error(&format!("index {operation}({job_id})"), job_id, error))
 }
 
 /// GUI `kb_index_cancel` targets the active/latest job. The CLI takes the
@@ -1710,15 +1716,9 @@ fn index_cancel(job_id: &str, output: OutputMode) -> Result<CliOutcome, CliError
     // The pre-transition read and the transition are the same store call, so
     // the `was_active` decision below cannot describe a different job than
     // the one the store cancelled.
-    let pre = service.cancel_index_job(job_id).map_err(|error| {
-        if error.contains("Query returned no rows") {
-            CliError::failed(format!(
-                "knowledge_index_job_not_found: no index job {job_id} exists"
-            ))
-        } else {
-            feature_error(&format!("index cancel({job_id})"), error)
-        }
-    })?;
+    let pre = service
+        .cancel_index_job(job_id)
+        .map_err(|error| job_store_error(&format!("index cancel({job_id})"), job_id, error))?;
     // A running or resumable job got a real cancel signal; a finished job
     // (done/cancelled) took the same call without anything to signal —
     // `ImportJobStore::cancel`'s WHERE clause is the idempotent no-op here.
@@ -1902,12 +1902,7 @@ const IMPORT_NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(300);
 /// (milliseconds, positive) overrides the default for automation and tests
 /// that exercise the timeout path; an unusable value keeps the default.
 fn import_no_progress_timeout() -> Duration {
-    std::env::var("PINVOU_KB_IMPORT_STALL_MILLIS")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|millis| *millis > 0)
-        .map(Duration::from_millis)
-        .unwrap_or(IMPORT_NO_PROGRESS_TIMEOUT)
+    stall_millis_override("PINVOU_KB_IMPORT_STALL_MILLIS", IMPORT_NO_PROGRESS_TIMEOUT)
 }
 
 /// Waits until the named job leaves the running phase, polling the per-job
@@ -2192,8 +2187,7 @@ fn index_finished(state: &IndexState, output: OutputMode) -> Result<CliOutcome, 
         _ => ("index completed", false),
     };
     let human = format!("{header}\n{}", render_index_state(state));
-    let mut value = serde_json::to_value(state).unwrap_or_default();
-    value["phase"] = serde_json::json!(display_phase(state));
+    let value = index_payload(state);
     Ok(CliOutcome {
         exit_code: if failed {
             ExitCode::Failed
@@ -2204,10 +2198,18 @@ fn index_finished(state: &IndexState, output: OutputMode) -> Result<CliOutcome, 
     })
 }
 
+/// The JSON payload both index reporters share: the store state with the
+/// CLI's derived `phase` inserted (the app's job state carries no phase
+/// string — see [`display_phase`]).
+fn index_payload(state: &IndexState) -> serde_json::Value {
+    let mut value = serde_json::to_value(state).unwrap_or_default();
+    value["phase"] = serde_json::json!(display_phase(state));
+    value
+}
+
 fn index_out(header: &str, state: IndexState, output: OutputMode) -> Result<CliOutcome, CliError> {
     let human = format!("{header}\n{}", render_index_state(&state));
-    let mut value = serde_json::to_value(&state).unwrap_or_default();
-    value["phase"] = serde_json::json!(display_phase(&state));
+    let value = index_payload(&state);
     Ok(success(render(output, human, &value)))
 }
 
@@ -2359,13 +2361,7 @@ fn index_failed(
             // job id with rusqlite's `QueryReturnedNoRows`; name the real
             // cause instead of leaking the raw driver message (the same
             // mapping `index resume`/`index retry` use).
-            if error.contains("Query returned no rows") {
-                CliError::failed(format!(
-                    "knowledge_index_job_not_found: no index job {job_id} exists"
-                ))
-            } else {
-                feature_error("index failed", error)
-            }
+            job_store_error("index failed", job_id, error)
         })?;
     let mut lines = if page.files.is_empty() {
         vec![format!("no failed files for job {job_id}")]
@@ -2480,6 +2476,29 @@ fn open_remote_service() -> Result<RemoteKnowledgeService, CliError> {
         .map_err(|error| CliError::failed(format!("knowledge remote connections: {error}")))
 }
 
+/// The zero-connections refusal the two remote lanes that need a configured
+/// server share; `lane` carries the command's exact prefix so each refusal
+/// keeps its current text byte-for-byte.
+#[cfg(feature = "product-backend")]
+fn no_remote_connections(lane: &str) -> CliError {
+    CliError::failed(format!(
+        "{lane}: no remote knowledge connections configured \
+         (pair with a server from the desktop app)"
+    ))
+}
+
+/// The errors-join tail the two remote lanes share: per-connection failures
+/// are reported inline, and the command only fails when no connection
+/// answered, with every connection's error string joined for the report.
+#[cfg(feature = "product-backend")]
+fn remote_errors_joined(errors: &[serde_json::Value]) -> String {
+    errors
+        .iter()
+        .filter_map(|error| error["error"].as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// GUI `remote_kb_connections`: probe every configured connection (network).
 /// With zero configured connections this answers offline without booting the
 /// windowless host.
@@ -2496,33 +2515,28 @@ fn remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> {
             .map_err(|error| anyhow::anyhow!("{error}"))
     })
     .map_err(|error| host_error("remote connections", error))?;
-    let human = if statuses.is_empty() {
-        "no remote knowledge connections".to_owned()
-    } else {
-        statuses
-            .iter()
-            .map(|status| {
-                let base = format!(
-                    "{}\t{}\t{}\tonline={}\tready={}",
-                    status.connection.server_id,
-                    crate::support::collapse_control_characters(&status.connection.name),
-                    crate::support::collapse_control_characters(&status.connection.endpoint),
-                    status.online,
-                    status.ready
-                );
-                match &status.error {
-                    // Server-originated error text: collapse like every other
-                    // remote-derived cell so it cannot forge rows/columns.
-                    Some(error) => format!(
-                        "{base}\t{}",
-                        crate::support::collapse_control_characters(error)
-                    ),
-                    None => base,
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    // `statuses()` answers one entry per configured connection and the
+    // zero-connections case is intercepted above, so the rows join directly —
+    // the old `statuses.is_empty()` arm here was unreachable.
+    let human = join_rows(&statuses, |status| {
+        let base = format!(
+            "{}\t{}\t{}\tonline={}\tready={}",
+            status.connection.server_id,
+            crate::support::collapse_control_characters(&status.connection.name),
+            crate::support::collapse_control_characters(&status.connection.endpoint),
+            status.online,
+            status.ready
+        );
+        match &status.error {
+            // Server-originated error text: collapse like every other
+            // remote-derived cell so it cannot forge rows/columns.
+            Some(error) => format!(
+                "{base}\t{}",
+                crate::support::collapse_control_characters(error)
+            ),
+            None => base,
+        }
+    });
     let value = serde_json::json!({
         "connections": serde_json::to_value(&statuses).unwrap_or_default(),
     });
@@ -2583,10 +2597,7 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_remote_service()?;
     let connections = service.configured_connections();
     if connections.is_empty() {
-        return Err(CliError::failed(
-            "knowledge remote collections: no remote knowledge connections configured \
-             (pair with a server from the desktop app)",
-        ));
+        return Err(no_remote_connections("knowledge remote collections"));
     }
     let mut lines = Vec::new();
     let mut results = Vec::new();
@@ -2647,11 +2658,7 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
     if results.is_empty() {
         return Err(CliError::failed(format!(
             "knowledge remote collections: {}",
-            errors
-                .iter()
-                .filter_map(|error| error["error"].as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
+            remote_errors_joined(&errors)
         )));
     }
     let human = if lines.is_empty() {
@@ -2678,10 +2685,7 @@ fn remote_search(
     let service = open_remote_service()?;
     let connections = service.configured_connections();
     if connections.is_empty() {
-        return Err(CliError::failed(
-            "knowledge remote search: no remote knowledge connections configured \
-             (pair with a server from the desktop app)",
-        ));
+        return Err(no_remote_connections("knowledge remote search"));
     }
     let wanted = collection.to_owned();
     let remote_query = query.to_owned();
@@ -2747,11 +2751,7 @@ fn remote_search(
     if results.is_empty() {
         return Err(CliError::failed(format!(
             "knowledge remote search: {}",
-            errors
-                .iter()
-                .filter_map(|error| error["error"].as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
+            remote_errors_joined(&errors)
         )));
     }
     let human = if lines.is_empty() {

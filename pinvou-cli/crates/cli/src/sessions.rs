@@ -222,7 +222,7 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             })
         }
         "export" => {
-            if rest.first().is_none() {
+            if rest.is_empty() {
                 // Missing id: show the export-specific usage so the global
                 // --output collision note is disclosed at the point of
                 // invocation (see EXPORT_USAGE).
@@ -230,7 +230,7 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             }
             let id = require_id(rest.first())?;
             let (options, _) = parse_flags(&rest[1..], EXPORT_OPTIONS, &[])?;
-            let format = match option(&options, "--format") {
+            let format = match crate::support::family_option(&options, "--format") {
                 None => ExportFormat::Markdown,
                 Some("markdown") => ExportFormat::Markdown,
                 Some("json") => ExportFormat::Json,
@@ -240,7 +240,7 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
                     )));
                 }
             };
-            let output = option(&options, "--output").map(PathBuf::from);
+            let output = crate::support::family_option(&options, "--output").map(PathBuf::from);
             Ok(SessionsCommand::Export { id, format, output })
         }
         "timeline" | "subagents" | "folder" => {
@@ -290,22 +290,11 @@ title words after it, is refused rather than silently edited — retitle through
 instead";
 
 fn require_id(value: Option<&String>) -> Result<String, CliError> {
-    let id = value
-        .ok_or_else(|| CliError::usage("sessions command requires a session id"))?
-        .clone();
-    if id.is_empty() {
-        return Err(CliError::usage("sessions command requires a session id"));
-    }
-    // A flag-shaped token in the id slot (`sessions delete --yes` with the
-    // id forgotten) must name the real mistake here, not two steps later at
-    // `require_yes`, which would tell the user to pass the flag they just
-    // passed. Same discipline as `projects`' id guard.
-    if id.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "sessions: expected a session id, got flag-shaped {id:?}"
-        )));
-    }
-    Ok(id)
+    // Shared guard (`support::require_family_id`, which carries the
+    // flag-shaped-id rationale, including the `require_yes` misdirection it
+    // avoids): reproduces "sessions command requires a session id" and
+    // "sessions: expected a session id, got flag-shaped …" byte-for-byte.
+    crate::support::require_family_id(value, "sessions command", "sessions", "a session id")
 }
 
 /// Shared implementation in `support::parse_family_flags`; `family`
@@ -314,12 +303,8 @@ fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "sessions")
-}
-
-fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    crate::support::family_option(options, name)
 }
 
 fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
@@ -355,60 +340,54 @@ fn kind_label(store: &SessionStore, id: &str) -> &'static str {
     }
 }
 
+impl SessionsCommand {
+    /// The id positional of every id-taking subcommand; `List` takes none.
+    /// Lets `execute` state the one shared id validation once, above the
+    /// match, instead of repeating the identical first line in every arm.
+    fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::List { .. } => None,
+            Self::Show { id, .. }
+            | Self::Rename { id, .. }
+            | Self::Pin { id }
+            | Self::Unpin { id }
+            | Self::Archive { id }
+            | Self::Restore { id }
+            | Self::Delete { id, .. }
+            | Self::Export { id, .. }
+            | Self::Timeline { id }
+            | Self::Subagents { id }
+            | Self::Folder { id } => Some(id.as_str()),
+        }
+    }
+}
+
 pub fn execute(command: SessionsCommand, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Every id-taking subcommand rejects an invalid id with the same usage
     // error (exit 2), whether or not the store layer would also catch it.
-    let named_id = |id: &str| crate::support::require_valid_session_id(id, "sessions");
+    // Hoisted above the match (eleven of the twelve arms used to repeat the
+    // identical `named_id(&id)?` first line); the check still runs before
+    // any arm boots the store, and `list` is the only id-less subcommand.
+    if let Some(id) = command.session_id() {
+        crate::support::require_valid_session_id(id, "sessions")?;
+    }
     match command {
         SessionsCommand::List { archived, limit } => list(archived, limit, output),
-        SessionsCommand::Show { id, last, full } => {
-            named_id(&id)?;
-            show(&id, last, full, output)
-        }
-        SessionsCommand::Rename { id, title } => {
-            named_id(&id)?;
-            rename(&id, &title, output)
-        }
-        SessionsCommand::Pin { id } => {
-            named_id(&id)?;
-            set_pinned(&id, true, output)
-        }
-        SessionsCommand::Unpin { id } => {
-            named_id(&id)?;
-            set_pinned(&id, false, output)
-        }
-        SessionsCommand::Archive { id } => {
-            named_id(&id)?;
-            set_hidden(&id, true, output)
-        }
-        SessionsCommand::Restore { id } => {
-            named_id(&id)?;
-            set_hidden(&id, false, output)
-        }
-        SessionsCommand::Delete { id, yes } => {
-            named_id(&id)?;
-            delete(&id, yes, output)
-        }
+        SessionsCommand::Show { id, last, full } => show(&id, last, full, output),
+        SessionsCommand::Rename { id, title } => rename(&id, &title, output),
+        SessionsCommand::Pin { id } => set_pinned(&id, true, output),
+        SessionsCommand::Unpin { id } => set_pinned(&id, false, output),
+        SessionsCommand::Archive { id } => set_hidden(&id, true, output),
+        SessionsCommand::Restore { id } => set_hidden(&id, false, output),
+        SessionsCommand::Delete { id, yes } => delete(&id, yes, output),
         SessionsCommand::Export {
             id,
             format,
             output: destination,
-        } => {
-            named_id(&id)?;
-            export(&id, format, destination, output)
-        }
-        SessionsCommand::Timeline { id } => {
-            named_id(&id)?;
-            timeline(&id, output)
-        }
-        SessionsCommand::Subagents { id } => {
-            named_id(&id)?;
-            subagents(&id, output)
-        }
-        SessionsCommand::Folder { id } => {
-            named_id(&id)?;
-            folder(&id, output)
-        }
+        } => export(&id, format, destination, output),
+        SessionsCommand::Timeline { id } => timeline(&id, output),
+        SessionsCommand::Subagents { id } => subagents(&id, output),
+        SessionsCommand::Folder { id } => folder(&id, output),
     }
 }
 
@@ -446,7 +425,11 @@ fn collect_rows(store: &SessionStore, archived: bool) -> Result<Vec<SessionRow>,
             title: metadata.title.clone(),
             updated_at: metadata.updated_at.to_rfc3339(),
             pinned: store.is_pinned(&metadata.id),
-            archived: store.is_hidden(&metadata.id),
+            // The retain above already filtered the rows to the requested
+            // side (kept when `is_hidden` on the archived list, kept when
+            // `!is_hidden` on the live one), so the field IS the parameter —
+            // re-probing the registry per row would answer the same value.
+            archived,
             kind: kind_label(store, &metadata.id),
         })
         .collect())
@@ -509,14 +492,17 @@ fn message_text(message: &serde_json::Value) -> String {
     let mut parts = Vec::new();
     if let Some(blocks) = message.get("content").and_then(|value| value.as_array()) {
         for block in blocks {
-            match block.get("type").and_then(|value| value.as_str()) {
-                Some("text") => {
-                    if let Some(text) = block.get("text").and_then(|value| value.as_str()) {
-                        parts.push(text.to_owned());
-                    }
+            // A text block concatenates its `text` values; a named non-text
+            // block renders as a `[type]` placeholder, and a block with no
+            // usable `type` contributes nothing (the old `None => {}` arm,
+            // folded into the `else if`).
+            let block_type = block.get("type").and_then(|value| value.as_str());
+            if block_type == Some("text") {
+                if let Some(text) = block.get("text").and_then(|value| value.as_str()) {
+                    parts.push(text.to_owned());
                 }
-                Some(other) => parts.push(format!("[{other}]")),
-                None => {}
+            } else if let Some(other) = block_type {
+                parts.push(format!("[{other}]"));
             }
         }
     }
@@ -564,7 +550,9 @@ fn show(
         .map_err(|error| CliError::failed(format!("sessions show({id}): {error}")))?;
     drop(session);
     // Take the array by value; `as_array().cloned()` would reintroduce a copy
-    // of the very window this function just narrowed.
+    // of the very window this function just narrowed. (`to_value` of a `Vec`
+    // always serializes as an array, so the fallback arm is unreachable — it
+    // only keeps a hypothetical shape change from panicking.)
     let messages = match messages {
         serde_json::Value::Array(messages) => messages,
         _other => Vec::new(),
@@ -687,17 +675,17 @@ fn sidecar_not_persisted(
     // protect the surviving entries (`sidecars.rs`), a diagnosis the fixed
     // "check writability" remedy used to swallow.
     error: impl std::fmt::Display,
-) -> Result<CliOutcome, CliError> {
+) -> CliError {
     // The sidecar registries live next to the transcripts, so a read-only or
     // full sessions directory is the failure a caller can actually act on.
     let location = crate::support::sandbox_home()
         .map(|home| home.join("sessions").display().to_string())
         .unwrap_or_else(|_| "the sessions directory".to_owned());
-    Err(CliError::failed(format!(
+    CliError::failed(format!(
         "sessions {verb}({id}): the {sidecar} sidecar did not persist the change (the session \
          is still {still}; root cause: {error:#}); check that {location} is writable and retry \
          the command"
-    )))
+    ))
 }
 
 /// Mirrors the GUI `set_session_pinned` / `set_session_archived` guards: the
@@ -723,13 +711,13 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     }
     require_existing(&store, id, verb)?;
     if let Err(error) = store.set_pinned(id, pinned) {
-        return sidecar_not_persisted(
+        return Err(sidecar_not_persisted(
             verb,
             id,
             "pinned-sessions",
             if pinned { "unpinned" } else { "pinned" },
             &error,
-        );
+        ));
     }
     let value = serde_json::json!({ "id": id, "action": action });
     Ok(success(render(output, format!("{action} {id}"), &value)))
@@ -753,13 +741,13 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
     }
     require_existing(&store, id, verb)?;
     if let Err(error) = store.set_hidden(id, hidden) {
-        return sidecar_not_persisted(
+        return Err(sidecar_not_persisted(
             verb,
             id,
             "hidden-sessions",
             if hidden { "visible" } else { "archived" },
             &error,
-        );
+        ));
     }
     // `set_hidden(id, true)` is TWO durable writes: it clears the pin first
     // (`features/sessions/sidecars.rs`, so an archived session cannot keep a
@@ -783,26 +771,26 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
             // The durable registry answers: still pinned -> half-landed.
             Some(pins) => {
                 if pins.contains(id) {
-                    return sidecar_not_persisted(
+                    return Err(sidecar_not_persisted(
                         verb,
                         id,
                         "pinned-sessions",
                         "pinned",
                         "the pin-clear half of the archive did not land",
-                    );
+                    ));
                 }
             }
             // Unreadable registry: the pin-clear cannot be verified -
             // refuse rather than claim success over unverifiable durable
             // state.
             None => {
-                return sidecar_not_persisted(
+                return Err(sidecar_not_persisted(
                     verb,
                     id,
                     "pinned-sessions",
                     "pinned",
                     "the pinned-sessions registry could not be read, so the pin-clear half of the archive cannot be verified",
-                );
+                ));
             }
         }
     }
@@ -1026,22 +1014,16 @@ fn export(
 /// Human-readable transcript with role headers, built from the serialized
 /// `SavedSession` (messages carry `role` plus tagged `content` blocks).
 fn render_markdown(id: &str, value: &serde_json::Value) -> String {
-    let title = value
-        .pointer("/metadata/title")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let created = value
-        .pointer("/metadata/created_at")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let updated = value
-        .pointer("/metadata/updated_at")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let model = value
-        .pointer("/metadata/model")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
+    let meta = |pointer: &str| {
+        value
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+    };
+    let title = meta("/metadata/title");
+    let created = meta("/metadata/created_at");
+    let updated = meta("/metadata/updated_at");
+    let model = meta("/metadata/model");
     let messages = value
         .get("messages")
         .and_then(|value| value.as_array())
@@ -1081,11 +1063,13 @@ fn is_timeline_event(value: &serde_json::Value) -> bool {
         "tool_call_completed",
         "model_request_metric",
     ];
-    value.is_object()
-        && value
-            .get("turn_id")
-            .and_then(|v| v.as_str())
-            .is_some_and(|turn| !turn.trim().is_empty())
+    // (The `is_object` half of the old conjunction is implied: `Value::get`
+    // with a string key answers `None` for every non-object value, so the
+    // predicates below already reject them.)
+    value
+        .get("turn_id")
+        .and_then(|v| v.as_str())
+        .is_some_and(|turn| !turn.trim().is_empty())
         && value
             .get("event")
             .and_then(|v| v.as_str())
@@ -1098,9 +1082,6 @@ fn is_timeline_event(value: &serde_json::Value) -> bool {
 }
 
 fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    if !crate::support::valid_session_id(id) {
-        return Err(CliError::usage("invalid session id"));
-    }
     // A missing sidecar and a missing session both read as empty output, so
     // gate on the session like list/show do.
     require_existing(&open_store()?, id, "timeline")?;
@@ -1150,12 +1131,15 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
                 // non-empty ts. The GUI reader drops anything else, and so
                 // must the CLI — a stray JSON object would otherwise sort to
                 // the front of the timeline.
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if is_timeline_event(&value) {
-                        events.push(value);
-                    }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                    && is_timeline_event(&value)
+                {
+                    events.push(value);
                 }
             }
+            // `is_timeline_event` already required an integer `timestamp` on
+            // every event it admitted, so the `unwrap_or(0)` fallback below
+            // is unreachable.
             events.sort_by_key(|event| {
                 event
                     .get("timestamp")
@@ -1205,9 +1189,6 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
 /// `list_subagent_transcripts` command makes, with the session ledger root
 /// (the GUI's `session_state_root`) and no live-engine epoch.
 fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    if !crate::support::valid_session_id(id) {
-        return Err(CliError::usage("invalid session id"));
-    }
     let store = open_store()?;
     require_existing(&store, id, "subagents")?;
     let ledger = store
@@ -1273,9 +1254,6 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
 /// workspace (the ledger root) is the folder; chat sessions map to
 /// `sessions_root()/<id>`.
 fn folder(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    if !crate::support::valid_session_id(id) {
-        return Err(CliError::usage("invalid session id"));
-    }
     // Validate the sandbox-home contract before touching the store so a bad
     // PINVOU3_HOME is refused instead of resolving session paths against the
     // current working directory.

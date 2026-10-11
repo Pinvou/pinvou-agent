@@ -118,6 +118,34 @@ fn assert_usage(error: &CliError, context: &str) {
     );
 }
 
+/// Stages the fake-credential fixture the credential-path refusal tests pin
+/// against: creates `<home>/<component>/`, writes `content` into `file`
+/// inside it, and returns the file's path. The refusals fire on the path
+/// component before any content is read, so the bodies are placeholders.
+fn write_credential_fixture(
+    home: &std::path::Path,
+    component: &str,
+    file: &str,
+    content: &str,
+) -> PathBuf {
+    let dir = home.join(component);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(file);
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+/// The GUI's `warning` chip and sibling i18n copy is Simplified Chinese; none
+/// of it may reach CLI output in either mode.
+fn assert_no_cjk_output(stdout: &str) {
+    assert!(
+        !stdout
+            .chars()
+            .any(|value| ('\u{4e00}'..='\u{9fff}').contains(&value)),
+        "no CJK GUI copy may reach CLI output: {stdout}"
+    );
+}
+
 // ── files ingest ────────────────────────────────────────────────────────────
 
 #[test]
@@ -299,10 +327,7 @@ fn files_ingest_translates_the_credential_component_refusal() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("files-credential");
     let scoped = ScopedHomeDir::new("files-credential");
-    let ssh = scoped.dir.join(".ssh");
-    std::fs::create_dir_all(&ssh).unwrap();
-    let key = ssh.join("leaked.md");
-    std::fs::write(&key, "# pretend notes\n").unwrap();
+    let key = write_credential_fixture(&scoped.dir, ".ssh", "leaked.md", "# pretend notes\n");
 
     let error = run(&["pinvou", "files", "ingest", key.to_str().unwrap()])
         .expect_err("a credential path must be refused");
@@ -343,14 +368,7 @@ fn files_ingest_translates_the_warning_chip_to_english() {
         "{}",
         outcome.stdout
     );
-    assert!(
-        !outcome
-            .stdout
-            .chars()
-            .any(|value| ('\u{4e00}'..='\u{9fff}').contains(&value)),
-        "no CJK GUI copy may reach CLI output: {}",
-        outcome.stdout
-    );
+    assert_no_cjk_output(&outcome.stdout);
 
     let value = run_json(&["pinvou", "files", "ingest", blob.to_str().unwrap()]);
     assert_eq!(
@@ -388,14 +406,7 @@ fn files_ingest_redacts_a_secret_extension_with_the_english_chip() {
         "the human chip must name the key/private-key class: {}",
         outcome.stdout
     );
-    assert!(
-        !outcome
-            .stdout
-            .chars()
-            .any(|value| ('\u{4e00}'..='\u{9fff}').contains(&value)),
-        "no CJK GUI copy may reach CLI output: {}",
-        outcome.stdout
-    );
+    assert_no_cjk_output(&outcome.stdout);
     assert!(
         !outcome.stdout.contains("BEGIN PRIVATE KEY"),
         "the secret body must never surface: {}",
@@ -579,7 +590,7 @@ fn voice_transcribe_refuses_option_shaped_positional_at_parse() {
     // lib.rs, so the family-level pin uses tokens the family really sees.)
     for token in ["-o", "--text", "--output-file"] {
         let arguments = ["pinvou", "voice", "transcribe", token];
-        let error = parse_args(&arguments).expect_err(token);
+        let error = parse_args(arguments).expect_err(token);
         assert_usage(&error, token);
         assert!(
             error
@@ -593,45 +604,15 @@ fn voice_transcribe_refuses_option_shaped_positional_at_parse() {
 /// The ASR env overrides (like `PINVOU3_ASR_CMD`) configure engines without
 /// PATH; a hermetic voice test must clear them for the duration and restore
 /// them after. Caller holds ENV_LOCK.
-struct AsrEnvGuard {
-    saved: Vec<(String, Option<std::ffi::OsString>)>,
-}
+const ASR_ENV_NAMES: [&str; 3] = [
+    "PINVOU3_ASR_CMD",
+    "PINVOU3_DEEPSPEECH2_CMD",
+    "PADDLESPEECH_BIN",
+];
 
-impl AsrEnvGuard {
-    const NAMES: [&str; 3] = [
-        "PINVOU3_ASR_CMD",
-        "PINVOU3_DEEPSPEECH2_CMD",
-        "PADDLESPEECH_BIN",
-    ];
-
-    fn new() -> Self {
-        let mut saved: Vec<(String, Option<std::ffi::OsString>)> = Vec::new();
-        for name in Self::NAMES {
-            saved.push((name.to_owned(), std::env::var_os(name)));
-            // SAFETY: ENV_LOCK is held by the owning test.
-            unsafe { std::env::remove_var(name) };
-        }
-        Self { saved }
-    }
-}
-
-impl Drop for AsrEnvGuard {
-    fn drop(&mut self) {
-        for (name, value) in &self.saved {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-    }
-}
-
-/// Sets explicit env values for the duration of a test, restoring the
-/// previous values (or absence) on drop, including during panic unwinding.
-/// Caller holds ENV_LOCK.
+/// Sets explicit env values (or clears named variables) for the duration of a
+/// test, restoring the previous values (or absence) on drop, including during
+/// panic unwinding. Caller holds ENV_LOCK.
 struct EnvOverrideGuard {
     saved: Vec<(String, Option<OsString>)>,
 }
@@ -643,6 +624,18 @@ impl EnvOverrideGuard {
             saved.push(((*name).to_owned(), std::env::var_os(name)));
             // SAFETY: ENV_LOCK is held by the owning test.
             unsafe { std::env::set_var(name, value) };
+        }
+        Self { saved }
+    }
+
+    /// Saves the named variables and removes them for the duration of the
+    /// test.
+    fn clear(names: &[&str]) -> Self {
+        let mut saved = Vec::new();
+        for name in names {
+            saved.push(((*name).to_owned(), std::env::var_os(name)));
+            // SAFETY: ENV_LOCK is held by the owning test.
+            unsafe { std::env::remove_var(name) };
         }
         Self { saved }
     }
@@ -662,45 +655,16 @@ impl Drop for EnvOverrideGuard {
     }
 }
 
-/// Empties `PATH` for the duration of machine-dependent probes (ffmpeg,
-/// external ASR CLIs) so the sandbox stays deterministic; restores the
-/// previous value on drop, including during panic unwinding. Caller holds
-/// ENV_LOCK.
-struct PathGuard {
-    saved: Option<OsString>,
-}
-
-impl PathGuard {
-    fn empty() -> Self {
-        let saved = std::env::var_os("PATH");
-        // SAFETY: ENV_LOCK is held by the owning test.
-        unsafe { std::env::set_var("PATH", "") };
-        Self { saved }
-    }
-}
-
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        // SAFETY: ENV_LOCK is held by the owning test.
-        unsafe {
-            match self.saved.take() {
-                Some(path) => std::env::set_var("PATH", path),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-    }
-}
-
 #[test]
 fn voice_asr_status_reports_hermetic_zero_state() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-status");
-    let _asr_env = AsrEnvGuard::new();
+    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
     // Empty PATH makes the machine-dependent probes deterministic: no ffmpeg
     // on PATH and no external ASR CLI anywhere. Env writes are safe here
     // because ENV_LOCK serializes all tests in this process.
     let value = {
-        let _path = PathGuard::empty();
+        let _path = EnvOverrideGuard::set(&[("PATH", "")]);
         run_json(&["pinvou", "voice", "asr-status"])
     };
     // macOS reports the host Speech runtime (present by definition, exactly
@@ -748,7 +712,7 @@ fn voice_asr_status_reports_hermetic_zero_state() {
     );
     // The human output mirrors the same fields.
     let outcome = {
-        let _path = PathGuard::empty();
+        let _path = EnvOverrideGuard::set(&[("PATH", "")]);
         run(&["pinvou", "voice", "asr-status"]).unwrap()
     };
     if cfg!(target_os = "macos") {
@@ -766,11 +730,11 @@ fn voice_asr_status_reports_hermetic_zero_state() {
 fn voice_transcribe_reports_missing_engine_cleanly_without_asr() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-transcribe");
-    let _asr_env = AsrEnvGuard::new();
+    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
     // Empty PATH too: a developer with a real `pinvou-asr` on PATH must not
     // have an arbitrary external binary executed by a default test run.
     let error = {
-        let _path = PathGuard::empty();
+        let _path = EnvOverrideGuard::set(&[("PATH", "")]);
         let wav = home.root.join("capture.wav");
         // 44-byte header-only WAV: large enough to pass the empty-audio gate.
         std::fs::write(&wav, vec![0u8; 44]).unwrap();
@@ -806,6 +770,25 @@ fn voice_transcribe_uses_installed_asr_runtime() {
     assert!(outcome.stdout.contains("Text: "));
 }
 
+/// Writes and chmods +x a fake ASR engine script under `home` and returns its
+/// path; the process-tree tests point `PINVOU3_ASR_CMD` at it.
+#[cfg(unix)]
+fn stage_fake_asr(home: &std::path::Path, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let engine = home.join("fake-asr.sh");
+    std::fs::write(&engine, script).unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    engine
+}
+
+/// Writes a WAV file of exactly `length` zero bytes. The process-tree tests
+/// pass 44: a header-only WAV, large enough to pass the empty-audio gate.
+#[cfg(unix)]
+fn write_wav(path: &std::path::Path, length: usize) {
+    std::fs::write(path, vec![0u8; length]).unwrap();
+}
+
 /// The ASR child is spawned as a process-group leader, so the timeout kill
 /// takes its descendants with it instead of orphaning them (the same
 /// contract as `pinvou connectors`'s vendor CLI spawns). The fake engine
@@ -814,29 +797,23 @@ fn voice_transcribe_uses_installed_asr_runtime() {
 #[cfg(unix)]
 #[test]
 fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
-    use std::os::unix::fs::PermissionsExt;
-
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-transcribe-tree-kill");
-    let _asr_env = AsrEnvGuard::new();
+    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
     let marker = home.root.join("descendant.pid");
-    let engine = home.root.join("fake-asr.sh");
-    std::fs::write(
-        &engine,
-        format!(
+    let engine = stage_fake_asr(
+        &home.root,
+        &format!(
             "#!/bin/sh\nsleep 300 &\necho $! > {}\nsleep 600\n",
             marker.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let _overrides = EnvOverrideGuard::set(&[
         ("PINVOU3_ASR_CMD", engine.to_str().unwrap()),
         ("PINVOU3_ASR_TIMEOUT_SECS", "1"),
     ]);
     let wav = home.root.join("capture.wav");
-    // 44-byte header-only WAV: large enough to pass the empty-audio gate.
-    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+    write_wav(&wav, 44);
 
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("the wedged fake engine must time out");
@@ -877,29 +854,23 @@ fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
 #[cfg(unix)]
 #[test]
 fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
-    use std::os::unix::fs::PermissionsExt;
-
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("voice-transcribe-no-speech");
-    let _asr_env = AsrEnvGuard::new();
+    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
     let marker = home.root.join("descendant.pid");
-    let engine = home.root.join("fake-asr.sh");
     // The descendant's own pipes go to /dev/null so it cannot hold the CLI's
     // capture pipes open past the exit; only the process-group membership
     // matters for this test.
-    std::fs::write(
-        &engine,
-        format!(
+    let engine = stage_fake_asr(
+        &home.root,
+        &format!(
             "#!/bin/sh\nsleep 300 >/dev/null 2>&1 &\necho $! > {}\nexit 6\n",
             marker.display()
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let _overrides = EnvOverrideGuard::set(&[("PINVOU3_ASR_CMD", engine.to_str().unwrap())]);
     let wav = home.root.join("capture.wav");
-    // 44-byte header-only WAV: large enough to pass the empty-audio gate.
-    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+    write_wav(&wav, 44);
 
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("exit code 6 is the no-speech failure");
@@ -1064,10 +1035,10 @@ fn voice_postprocess_refuses_credential_path_files() {
     // must hold ENV_LOCK like every other HomeGuard user in this file.
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("voice-postprocess-gate");
-    let secret = _home.root.join(".ssh").join("id_rsa.txt");
-    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
-    std::fs::write(&secret, "PRIVATE KEY").unwrap();
-    let secret = secret.to_str().unwrap().to_owned();
+    let secret = write_credential_fixture(&_home.root, ".ssh", "id_rsa.txt", "PRIVATE KEY")
+        .to_str()
+        .unwrap()
+        .to_owned();
 
     for lane in [
         vec![
@@ -1769,10 +1740,7 @@ fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
     let home = HomeGuard::new("feedback-attach-secret");
     let body = home.root.join("body.md");
     std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
-    let ssh = home.root.join(".ssh");
-    std::fs::create_dir_all(&ssh).unwrap();
-    let key = ssh.join("id_rsa");
-    std::fs::write(&key, "PRIVATE KEY").unwrap();
+    let key = write_credential_fixture(&home.root, ".ssh", "id_rsa", "PRIVATE KEY");
 
     let error = run(&[
         "pinvou",
@@ -1803,10 +1771,7 @@ fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
 fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("feedback-body-secret");
-    let ssh = home.root.join(".ssh");
-    std::fs::create_dir_all(&ssh).unwrap();
-    let key = ssh.join("id_rsa");
-    std::fs::write(&key, "PRIVATE KEY").unwrap();
+    let key = write_credential_fixture(&home.root, ".ssh", "id_rsa", "PRIVATE KEY");
 
     let error = run(&[
         "pinvou",
@@ -1872,10 +1837,7 @@ fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
 fn agent_run_refuses_an_attachment_under_a_credential_path() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("agent-attach-secret");
-    let ssh = home.root.join(".ssh");
-    std::fs::create_dir_all(&ssh).unwrap();
-    let key = ssh.join("id_rsa");
-    std::fs::write(&key, "PRIVATE KEY").unwrap();
+    let key = write_credential_fixture(&home.root, ".ssh", "id_rsa", "PRIVATE KEY");
     let prompt = home.root.join("prompt.txt");
     std::fs::write(&prompt, "summarize the report").unwrap();
 
@@ -1904,10 +1866,12 @@ fn agent_run_refuses_an_attachment_under_a_credential_path() {
 fn agent_run_refuses_a_prompt_file_under_a_credential_path() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("agent-promptfile-secret");
-    let aws = home.root.join(".aws");
-    std::fs::create_dir_all(&aws).unwrap();
-    let credentials = aws.join("credentials");
-    std::fs::write(&credentials, "[default]\naws_access_key_id = AKIAFAKE").unwrap();
+    let credentials = write_credential_fixture(
+        &home.root,
+        ".aws",
+        "credentials",
+        "[default]\naws_access_key_id = AKIAFAKE",
+    );
 
     let error = run(&[
         "pinvou",
@@ -2058,59 +2022,24 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
         outcome.stdout.contains("Online: false"),
         "monitor status output missing the offline line"
     );
-    // The zero state carries the same 8-key set as the model-present branch,
-    // so scripts parse one stable shape. Asserted on the key set itself: a
-    // key emitted as an explicit JSON `null` is `Some(Value::Null)`, so a
-    // `get(key).is_none()` check passes on a key that is very much present —
-    // which is how `upstream` survived the last "stale keys are gone" guard.
+    // The zero state carries the same fields the model-present branch does;
+    // the stable key set and human line set are pinned hermetically by the
+    // monitor unit tests (see the doc comment above), so this opt-in probe
+    // only pins the live zero-state values.
     let value = run_json(&["pinvou", "monitor", "status"]);
     assert_eq!(value["vllm_online"], false);
     assert_eq!(value["health_status"], "unavailable");
-    let keys: Vec<&str> = value
-        .as_object()
-        .expect("monitor status json must be an object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        keys,
-        [
-            "vllm_online",
-            "last_check_ms",
-            "max_model_len",
-            "status",
-            "health_status",
-            "model",
-            "configured_model",
-            "target_kind",
-        ]
-    );
-    for key in [
-        "max_model_len",
-        "status",
-        "model",
-        "configured_model",
-        "target_kind",
-    ] {
-        assert!(
-            value.get(key).is_some_and(serde_json::Value::is_null),
-            "{key} must be present and null in the zero state"
-        );
-    }
-    // Human mode mirrors the same fields in both branches (8 labeled lines);
-    // the zero state used to print only three.
-    assert_eq!(
-        outcome.stdout.trim_end().lines().count(),
-        8,
-        "{}",
-        outcome.stdout
-    );
 }
 
 /// OPT-IN: `monitor snapshot` (run_bare_host — no display needed) queries
 /// nvidia-smi/local resources and probes the model endpoint.
 /// Run with: cargo test -p pinvou-cli --test misc_contract -- --ignored
 ///   monitor_snapshot
+///
+/// The stable-shape rules (key sets, process-local accumulators reported as
+/// not-applicable) are pinned hermetically by `monitor::tests::snapshot_*`
+/// (`cargo test -p pinvou-cli --lib monitor`); this opt-in test only checks
+/// that a live sample still dispatches and carries the headers.
 #[test]
 #[ignore = "needs GPU/endpoint probing: cargo test --test misc_contract -- --ignored"]
 fn monitor_snapshot_produces_a_one_shot_sample() {
@@ -2126,31 +2055,6 @@ fn monitor_snapshot_produces_a_one_shot_sample() {
     assert!(outcome.stdout.contains("Ram: "));
     assert!(outcome.stdout.contains("Cpu: "));
     assert!(outcome.stdout.contains("Backend: "));
-    // The process-local accumulators are structurally zero in a one-shot
-    // process, so they are reported as not-applicable rather than as a
-    // measurement. The shape rules are pinned hermetically in
-    // `monitor::tests::snapshot_*`; this only checks the live sample agrees.
-    assert!(
-        outcome.stdout.contains("SelfPerf: n/a"),
-        "{}",
-        outcome.stdout
-    );
-    assert!(
-        !outcome.stdout.contains("SelfGenTokens"),
-        "{}",
-        outcome.stdout
-    );
-    let value = run_json(&["pinvou", "monitor", "snapshot"]);
-    assert!(value["self_perf"].is_null(), "{value}");
-    assert!(value["app"]["session_uptime_secs"].is_null(), "{value}");
-    assert!(
-        value.get("cpu").is_some(),
-        "cpu must always be a key: {value}"
-    );
-    assert_eq!(
-        value["not_applicable_headless"],
-        serde_json::json!(["/self_perf", "/app/session_uptime_secs"])
-    );
 }
 
 /// Round-41 review: `feedback submit --attach` used to accept a DIRECTORY —

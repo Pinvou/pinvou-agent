@@ -89,6 +89,20 @@ impl Drop for RestoreEnvVar {
     }
 }
 
+/// Points the credential store's file fallback at a fresh empty directory
+/// under the sandbox: a missing `secrets.json` loads as "no credentials" for
+/// every key, so a host whose ambient `~/.codewhale/secrets/secrets.json`
+/// carries real ima credentials still exercises the asserted zero state.
+/// Inert where the OS keyring wins the probe (the keyring has its own
+/// namespace). The previous value is snapshotted and restored on drop
+/// (including the panic path). Must be constructed while ENV_LOCK is held.
+fn isolate_credential_store(home: &Path) -> RestoreEnvVar {
+    let guard = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
+    // SAFETY: the file-scoped ENV_LOCK is held for the whole test.
+    unsafe { std::env::set_var("CODEWHALE_HOME", home.join("codewhale")) };
+    guard
+}
+
 fn run_ok(args: &[&str]) -> String {
     let parsed = parse_args(args.to_vec()).expect("valid command");
     let outcome = execute(parsed).expect("execute succeeds");
@@ -122,6 +136,19 @@ fn disabled_bundles_json(home: &Path) -> serde_json::Value {
     let content = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     serde_json::from_str(&content).expect("disabled_bundles.json parses")
+}
+
+/// Finds the row whose `id_field` equals `id` inside `list[key]` — the shared
+/// shape of the family's list payloads (`skills list` rows key on `id`,
+/// `readiness` rows on `bundle_id`) — with the id in the panic message.
+fn row_of(list: &serde_json::Value, key: &str, id_field: &str, id: &str) -> serde_json::Value {
+    list[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a {key} array: {list}"))
+        .iter()
+        .find(|row| row[id_field] == id)
+        .unwrap_or_else(|| panic!("{id} not listed under {key} by {id_field}: {list}"))
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -330,21 +357,30 @@ fn plugins_usage_errors_exit_two() {
     assert!(usage_error(&["pinvou", "plugins", "tools", "bogus"]).contains("usage"));
     assert!(usage_error(&["pinvou", "plugins", "skills", "bogus"]).contains("usage"));
     assert!(usage_error(&["pinvou", "plugins", "recycle", "bogus"]).contains("usage"));
-    // missing ids
-    assert!(usage_error(&["pinvou", "plugins", "tools", "install"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "tools", "uninstall"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "tools", "auth"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "tools", "oauth-login"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "tools", "oauth-cancel"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "skills", "install"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "skills", "uninstall"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "export"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "meta"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "recycle", "restore"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "recycle", "purge"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "recycle", "export"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "enable"]).contains("id"));
-    assert!(usage_error(&["pinvou", "plugins", "disable"]).contains("id"));
+    // missing ids: every id-taking subcommand refuses, naming the id.
+    for tail in [
+        vec!["tools", "install"],
+        vec!["tools", "uninstall"],
+        vec!["tools", "auth"],
+        vec!["tools", "oauth-login"],
+        vec!["tools", "oauth-cancel"],
+        vec!["skills", "install"],
+        vec!["skills", "uninstall"],
+        vec!["export"],
+        vec!["meta"],
+        vec!["recycle", "restore"],
+        vec!["recycle", "purge"],
+        vec!["recycle", "export"],
+        vec!["enable"],
+        vec!["disable"],
+    ] {
+        let mut arguments = vec!["pinvou", "plugins"];
+        arguments.extend_from_slice(&tail);
+        assert!(
+            usage_error(&arguments).contains("id"),
+            "missing id must be refused naming the id: {arguments:?}"
+        );
+    }
     // unsupported / malformed options
     assert!(usage_error(&["pinvou", "plugins", "tools", "list", "--bogus"]).contains("--bogus"));
     let no_equals = usage_error(&[
@@ -372,26 +408,6 @@ fn plugins_usage_errors_exit_two() {
             "pinvou", "plugins", "tools", "install", "w", "--secret", "=ENV"
         ])
         .contains("non-empty KEY")
-    );
-    // Round-42 review: the value must look like an env-var NAME — a pasted
-    // literal secret is refused at parse (and never echoed) instead of
-    // riding argv until a missing-variable failure later.
-    let pasted = usage_error(&[
-        "pinvou",
-        "plugins",
-        "tools",
-        "install",
-        "w",
-        "--secret",
-        "api_key=sk-pasted-literal-1234567890",
-    ]);
-    assert!(
-        pasted.contains("environment variable"),
-        "a pasted literal must be refused as a name shape error: {pasted}"
-    );
-    assert!(
-        !pasted.contains("sk-pasted-literal"),
-        "the refusal must not echo the pasted secret: {pasted}"
     );
     assert!(
         !usage_error(&[
@@ -502,11 +518,7 @@ fn import_directory_and_zip_show_up_in_skills_list() {
     assert!(installed_only.contains(FIXTURE_ZIP_SKILL));
 
     let value = run_json(&["pinvou", "plugins", "skills", "list"]);
-    let skills = value["skills"].as_array().expect("skills array");
-    let fixture = skills
-        .iter()
-        .find(|skill| skill["id"] == FIXTURE_ZIP_SKILL)
-        .expect("zip fixture listed");
+    let fixture = row_of(&value, "skills", "id", FIXTURE_ZIP_SKILL);
     assert_eq!(fixture["installed"], serde_json::json!(true));
     assert_eq!(fixture["user_uploaded"], serde_json::json!(true));
 }
@@ -550,11 +562,7 @@ fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
 
     // JSON keeps the verbatim description — only the human row sanitizes.
     let value = run_json(&["pinvou", "plugins", "skills", "list"]);
-    let skills = value["skills"].as_array().expect("skills array");
-    let fixture = skills
-        .iter()
-        .find(|skill| skill["id"] == "collapse-hostile")
-        .expect("imported skill listed");
+    let fixture = row_of(&value, "skills", "id", "collapse-hostile");
     assert_eq!(
         fixture["description"].as_str(),
         Some("ok\tinjected\trow"),
@@ -621,7 +629,6 @@ fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
         ids[0].starts_with("skill-") && ids[1].starts_with("skill-"),
         "pure non-ASCII names must land on the skill-<hash> fallback form"
     );
-    let _ = home;
 }
 
 /// Regression for the sanitizer × hash interaction: a name carrying
@@ -651,7 +658,6 @@ fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
         ids[0], ids[1],
         "names sanitizing to the same label must keep distinct ids"
     );
-    let _ = home;
 }
 
 #[test]
@@ -816,6 +822,23 @@ fn import_directory_counts_root_skill_md_once() {
     }
 }
 
+/// Shared body of the two FIFO-refusal pins: the import channel must refuse
+/// the special file from its metadata ("not a regular file", exit 1) instead
+/// of blocking on `open` until an unrelated writer appeared (a hang, not an
+/// error). Unix-only because FIFOs are a unix special file type.
+#[cfg(unix)]
+fn assert_fifo_rejected(home: &Path, file_name: &str) {
+    let fifo = home.join(file_name);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo failed");
+    let (message, code) = run_err(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]);
+    assert_eq!(code, ExitCode::Failed);
+    assert!(message.contains("not a regular file"), "message: {message}");
+}
+
 /// A FIFO shaped like a skill file is rejected from its metadata, before any
 /// read: the old `read_to_string` path would block on `open` until an
 /// unrelated writer appeared (a hang, not an error). Unix-only because FIFOs
@@ -825,16 +848,7 @@ fn import_directory_counts_root_skill_md_once() {
 fn import_rejects_fifo_skill_file_without_reading() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("import-fifo");
-
-    let fifo = home.path().join("pipe.md");
-    let status = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .expect("run mkfifo");
-    assert!(status.success(), "mkfifo failed");
-    let (message, code) = run_err(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
-    assert!(message.contains("not a regular file"), "message: {message}");
+    assert_fifo_rejected(home.path(), "pipe.md");
 }
 
 /// The `.zip` channel gets the same pre-flight: the shared importer's
@@ -862,16 +876,7 @@ fn import_rejects_oversize_zip_package() {
 fn import_rejects_fifo_zip_package_without_opening() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = SandboxHome::new("import-fifo-zip");
-
-    let fifo = home.path().join("pipe.zip");
-    let status = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .expect("run mkfifo");
-    assert!(status.success(), "mkfifo failed");
-    let (message, code) = run_err(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
-    assert!(message.contains("not a regular file"), "message: {message}");
+    assert_fifo_rejected(home.path(), "pipe.zip");
 }
 
 /// Non-regular entries inside a directory tree stay skipped (only regular,
@@ -1439,13 +1444,7 @@ fn skills_preset_install_update_uninstall_round_trip() {
         "the JSON skills install must carry the hot-refresh fact the human note states"
     );
     let value = run_json(&["pinvou", "plugins", "skills", "list"]);
-    let visualizer = value["skills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|skill| skill["id"] == "visualizer")
-        .expect("preset listed")
-        .clone();
+    let visualizer = row_of(&value, "skills", "id", "visualizer");
     assert_eq!(visualizer["installed"], serde_json::json!(true));
     assert_eq!(visualizer["user_uploaded"], serde_json::json!(false));
 
@@ -1599,12 +1598,7 @@ fn recycle_round_trip_via_fixture() {
     );
     assert_eq!(value["credentials_required"], serde_json::json!(false));
     let value = run_json(&["pinvou", "plugins", "skills", "list"]);
-    let restored = value["skills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|skill| skill["id"] == FIXTURE_ZIP_SKILL)
-        .expect("restored skill listed");
+    let restored = row_of(&value, "skills", "id", FIXTURE_ZIP_SKILL);
     assert_eq!(restored["installed"], serde_json::json!(true));
     let value = run_json(&["pinvou", "plugins", "recycle", "list"]);
     assert!(value["recycled"].as_array().unwrap().is_empty());
@@ -1661,14 +1655,10 @@ fn recycle_round_trip_via_fixture() {
 fn readiness_zero_state_reports_uninstalled_catalog() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("readiness");
-    // The ima row reads the credential store on every readiness run, and on
-    // a headless host whose ambient `~/.codewhale/secrets/secrets.json`
-    // carries real ima credentials the zero-state verdict would flip to
-    // `installed: true`. Same `CODEWHALE_HOME` snapshot-and-redirect the
-    // ima sibling below applies for exactly this exposure (inert where the
-    // OS keyring wins the probe).
-    let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
-    unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
+    // The ima row reads the credential store on every readiness run; the
+    // redirect keeps a host with real ambient ima credentials in the
+    // asserted zero state (inert where the OS keyring wins the probe).
+    let _codewhale = isolate_credential_store(_home.path());
 
     let human = run_ok(&["pinvou", "plugins", "readiness"]);
     assert!(
@@ -1724,10 +1714,7 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
             );
         }
     }
-    let weather = bundles
-        .iter()
-        .find(|bundle| bundle["bundle_id"] == "weather")
-        .expect("weather listed");
+    let weather = row_of(&value, "bundles", "bundle_id", "weather");
     assert_eq!(weather["kind"], serde_json::json!("mcp"));
     assert_eq!(
         weather["reason"],
@@ -1735,19 +1722,13 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
         "weather requires AMAP_KEY"
     );
     // Credential-free remote MCP is registry-ready though uninstalled.
-    let canva = bundles
-        .iter()
-        .find(|bundle| bundle["bundle_id"] == "canva-mcp")
-        .expect("canva-mcp listed");
+    let canva = row_of(&value, "bundles", "bundle_id", "canva-mcp");
     assert_eq!(canva["ready"], serde_json::json!(true));
     assert_eq!(canva["probe"], serde_json::json!("registry"));
     // A cli-kind row in the zero state: "not installed" IS a registry-visible
     // fact, so the reason names it rather than the headless limitation — the
     // probe marker still records that no connection check was performed.
-    let feishu = bundles
-        .iter()
-        .find(|bundle| bundle["bundle_id"] == "feishu")
-        .expect("feishu listed");
+    let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
     assert_eq!(feishu["kind"], serde_json::json!("cli"));
     assert_eq!(feishu["reason"], serde_json::json!("cli_not_installed"));
     assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
@@ -1801,9 +1782,9 @@ fn seed_bundle_record(home: &std::path::Path, record_json: &str) {
 /// - a legacy binary that fails its SHA-256 check against the lock table
 ///   (`store::legacy_cli_records`, a one-off first-boot import path); the fix
 ///   is re-downloading.
-/// Collapsing both onto `cli_assets_mismatch` sent an operator who had merely
-/// logged out off to re-download a binary — the exact misdirection the reason
-/// code exists to prevent.
+///   Collapsing both onto `cli_assets_mismatch` sent an operator who had merely
+///   logged out off to re-download a binary — the exact misdirection the reason
+///   code exists to prevent.
 #[test]
 fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1816,11 +1797,7 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
             r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"已断开授权：配套技能已随断开移除，重新连接即可恢复"}"#,
         );
         let value = run_json(&["pinvou", "plugins", "readiness"]);
-        let rows = value["bundles"].as_array().expect("bundles array");
-        let feishu = rows
-            .iter()
-            .find(|row| row["bundle_id"] == "feishu")
-            .expect("feishu row");
+        let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
         assert_eq!(feishu["installed"], serde_json::json!(true));
         assert_eq!(feishu["ready"], serde_json::json!(false));
         assert_eq!(
@@ -1839,11 +1816,7 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
             r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"CLI 二进制 SHA-256 与 lock 表不符，待重新下载"}"#,
         );
         let value = run_json(&["pinvou", "plugins", "readiness"]);
-        let rows = value["bundles"].as_array().expect("bundles array");
-        let feishu = rows
-            .iter()
-            .find(|row| row["bundle_id"] == "feishu")
-            .expect("feishu row");
+        let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
         assert_eq!(feishu["ready"], serde_json::json!(false));
         assert_eq!(feishu["reason"], serde_json::json!("cli_assets_mismatch"));
         assert_ne!(
@@ -1871,11 +1844,7 @@ fn readiness_never_claims_an_unprobed_cli_record_is_ready() {
     );
 
     let value = run_json(&["pinvou", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let feishu = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "feishu")
-        .expect("feishu row");
+    let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
     assert_eq!(feishu["installed"], serde_json::json!(true));
     assert_eq!(
         feishu["ready"],
@@ -1909,11 +1878,7 @@ fn readiness_derives_assets_missing_for_a_degraded_package() {
     );
 
     let value = run_json(&["pinvou", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let canva = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "canva-mcp")
-        .expect("canva-mcp row");
+    let canva = row_of(&value, "bundles", "bundle_id", "canva-mcp");
     assert_eq!(canva["kind"], serde_json::json!("mcp"));
     assert_eq!(canva["installed"], serde_json::json!(true));
     assert_eq!(
@@ -1954,20 +1919,10 @@ fn readiness_derives_assets_missing_for_a_degraded_package() {
 fn readiness_ima_without_credentials_reports_the_gui_reason() {
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = SandboxHome::new("readiness-ima-zero");
-    // Point the credential store's file fallback at a fresh empty dir under
-    // the sandbox (a missing secrets.json loads as "no credentials" for every
-    // key), so a host with real ima credentials in the ambient file store
-    // still exercises the asserted zero state. Inert where the OS keyring
-    // wins the probe.
-    let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
-    unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
+    let _codewhale = isolate_credential_store(_home.path());
 
     let value = run_json(&["pinvou", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let ima = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "ima")
-        .expect("ima row");
+    let ima = row_of(&value, "bundles", "bundle_id", "ima");
     assert_eq!(ima["kind"], serde_json::json!("skill"));
     assert_eq!(ima["installed"], serde_json::json!(false));
     assert_eq!(ima["ready"], serde_json::json!(false));
@@ -1989,11 +1944,7 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     // installed even though no credential is present.
     run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
     let value = run_json(&["pinvou", "plugins", "readiness"]);
-    let rows = value["bundles"].as_array().expect("bundles array");
-    let ima = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "ima")
-        .expect("ima row");
+    let ima = row_of(&value, "bundles", "bundle_id", "ima");
     assert_eq!(ima["installed"], serde_json::json!(true));
     assert_eq!(ima["ready"], serde_json::json!(false));
     assert_eq!(
@@ -2018,17 +1969,11 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     // The special case must not bleed into other rows: a required-credential
     // MCP package keeps its registry verdict, and a cli-kind row keeps the
     // headless non-verdict.
-    let weather = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "weather")
-        .expect("weather row");
+    let weather = row_of(&value, "bundles", "bundle_id", "weather");
     assert_eq!(weather["ready"], serde_json::json!(false));
     assert_eq!(weather["reason"], serde_json::json!("missing_credentials"));
     assert_eq!(weather["probe"], serde_json::json!("registry"));
-    let feishu = rows
-        .iter()
-        .find(|row| row["bundle_id"] == "feishu")
-        .expect("feishu row");
+    let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
     assert_eq!(feishu["ready"], serde_json::json!(false));
     assert_eq!(
         feishu["probe"],

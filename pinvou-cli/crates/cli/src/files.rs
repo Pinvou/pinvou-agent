@@ -66,27 +66,14 @@ pub fn parse(values: &[String]) -> Result<FilesCommand, CliError> {
                 )));
             }
             let rest = &values[3..];
-            let mut output: Option<PathBuf> = None;
-            let mut index = 0;
-            while index < rest.len() {
-                let token = rest[index].as_str();
-                if token != "--output" {
-                    return Err(CliError::usage(format!(
-                        "unsupported files option: {token}"
-                    )));
-                }
-                if output.is_some() {
-                    return Err(CliError::usage("duplicate files option --output"));
-                }
-                let value = rest
-                    .get(index + 1)
-                    .ok_or_else(|| CliError::usage("files option --output requires a value"))?;
-                if value.is_empty() || value.starts_with("--") {
-                    return Err(CliError::usage("files option --output requires a value"));
-                }
-                output = Some(PathBuf::from(value));
-                index += 2;
-            }
+            // Shared family parser: the hand-rolled loop emitted the exact
+            // texts the shared parser produces for one value flag
+            // (`unsupported files option: {t}`, `duplicate files option
+            // --output`, `files option --output requires a value`), so one
+            // call replaces it.
+            let (options, _) =
+                crate::support::parse_family_flags(rest, &["--output"], &[], "files")?;
+            let output = crate::support::family_option(&options, "--output").map(PathBuf::from);
             Ok(FilesCommand::Ingest { path, output })
         }
         _ => Err(CliError::usage(USAGE)),
@@ -144,20 +131,13 @@ fn write_file(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     use std::io::Write;
-    let markdown = result.markdown.clone().unwrap_or_default();
+    let markdown = result.markdown.as_deref().unwrap_or_default();
     // Same no-overwrite policy as `sessions export`: a plain write could
     // destroy an unrelated file the user pointed at with exit 0, and
     // `create_new` makes the check and the write one atomic step.
     // Owner-only like `sessions export`: the extracted text is a derived
     // copy of the user document and has no business being group/world
     // readable by default.
-    #[cfg(unix)]
-    let destination_perms = {
-        use std::os::unix::fs::PermissionsExt;
-        Some(std::fs::Permissions::from_mode(0o600))
-    };
-    #[cfg(not(unix))]
-    let destination_perms: Option<std::fs::Permissions> = None;
     let mut file = std::fs::OpenOptions::new();
     // The 0600 mode is applied at CREATE time, not by a post-create chmod:
     // a post-create chmod leaves a window where the file exists world- or
@@ -166,9 +146,7 @@ fn write_file(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        if destination_perms.is_some() {
-            file.mode(0o600);
-        }
+        file.mode(0o600);
     }
     let mut file = file
         .write(true)
@@ -210,8 +188,13 @@ fn write_file(
             destination.display()
         ))
     })?;
-    if let Some(perms) = destination_perms {
-        let _ = file.set_permissions(perms);
+    // Best-effort owner-only tighten after the write, mirroring the
+    // create-time mode above; the ignored result keeps a failing chmod from
+    // failing a write that already succeeded.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
     }
     let mut value = ingest_json(result);
     if let Some(map) = value.as_object_mut() {

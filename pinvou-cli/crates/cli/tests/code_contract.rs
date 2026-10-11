@@ -29,6 +29,35 @@ use pinvou3_lib::features::sessions::SessionStore;
 /// parallel test runner executes them concurrently.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// Derives a uniquely-named scratch path under the system temp dir
+/// (`pinvou-cli-code-<label>-<pid>-<nanos>`) — the shared scaffold for
+/// fixture repositories, fake vendor binaries and the real-binary login
+/// fixtures. Does NOT create the path: most callers do, but the absent-home
+/// fixture must receive a nonexistent path.
+fn scratch_root(label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "pinvou-cli-code-{label}-{}-{nonce}",
+        std::process::id()
+    ))
+}
+
+/// The environment values `HomeGuard` snapshots in `new` and restores on
+/// drop, in snapshot order (PINVOU3_HOME, CODEWHALE_HOME, HOME, USERPROFILE,
+/// HOMEDRIVE, HOMEPATH, CODEWHALE_SECRET_BACKEND).
+type PreviousEnv = (
+    Option<OsString>,
+    Option<OsString>,
+    Option<OsString>,
+    Option<OsString>,
+    Option<OsString>,
+    Option<OsString>,
+    Option<OsString>,
+);
+
 /// Sets `PINVOU3_HOME`, `CODEWHALE_HOME`, and `HOME` to fresh throwaway
 /// directories for the duration of the test and restores the previous values
 /// on drop. `HOME` isolation keeps `ProviderManager`'s per-CLI config writers
@@ -42,15 +71,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// cleanup, not isolation). The file backend roots inside the sandboxed
 /// `CODEWHALE_HOME`.
 struct HomeGuard {
-    previous: (
-        Option<OsString>,
-        Option<OsString>,
-        Option<OsString>,
-        Option<OsString>,
-        Option<OsString>,
-        Option<OsString>,
-        Option<OsString>,
-    ),
+    previous: PreviousEnv,
     root: PathBuf,
 }
 
@@ -193,6 +214,37 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Captures one secret-lane environment variable and restores the previous
+/// value on drop, so a failing assertion cannot leak a seeded value into
+/// sibling tests. The non-`cfg(unix)` twin of `EnvVarGuard`, used by the
+/// providers fixtures whose tests compile on Windows too.
+struct KeyVar {
+    name: &'static str,
+    previous: Option<OsString>,
+}
+
+impl KeyVar {
+    fn capture(name: &'static str) -> Self {
+        Self {
+            name,
+            previous: std::env::var_os(name),
+        }
+    }
+}
+
+impl Drop for KeyVar {
+    fn drop(&mut self) {
+        // SAFETY: the owning test holds ENV_LOCK, so env writes are
+        // serialized in-process.
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
+
 /// Removes a scratch directory on drop (panic-safe cleanup for fake CLI bins).
 #[cfg(unix)]
 struct ScratchDir(PathBuf);
@@ -219,6 +271,22 @@ fn run_json(arguments: &[&str]) -> serde_json::Value {
 
 fn usage_error(arguments: &[&str]) -> CliError {
     parse_args(arguments.to_vec()).expect_err(arguments.join(" ").as_str())
+}
+
+/// Runs a command the family's `require_yes` gate must refuse: executes it and
+/// asserts the refusal is the usage-class error naming `--yes`, then returns
+/// the error. The per-command gate tests stay — this only collapses their
+/// shared assertion shape.
+fn yes_gate_error(arguments: &[&str]) -> CliError {
+    let parsed = parse_args(arguments.to_vec())
+        .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
+    let error = execute(parsed).expect_err("{arguments:?} must be refused without --yes");
+    assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+    assert!(
+        error.to_string().contains("--yes"),
+        "{arguments:?}: the refusal must name the flag: {error}"
+    );
+    error
 }
 
 /// Creates one chat session and binds it as a native code session (the same
@@ -311,46 +379,49 @@ fn fixture_git(root: &Path, arguments: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Runs one fixture-owned git invocation with the same ambient-gitconfig
+/// isolation as `fixture_git`: `true` on success, `false` ONLY when the git
+/// binary itself is missing (the environment-skip case), and a panic for a
+/// present-but-failing git — a broken fixture, a shim that errors, or a
+/// regressed config isolation is a test failure, not an environment skip.
+fn fixture_git_ok(root: &Path, arguments: &[&str]) -> bool {
+    match std::process::Command::new("git")
+        .current_dir(root)
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .output()
+    {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => panic!(
+            "fixture git {arguments:?} failed (a present-but-failing git is a \
+             test failure, not an environment skip): {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("fixture git {arguments:?} could not be spawned: {error}"),
+    }
+}
+
 /// Initializes a git repository with `main` + `feature` branches and one
 /// committed file; returns `None` when git is unavailable, printing a visible
 /// skip line so a green run cannot hide an environment gap.
 fn init_git_repo(label: &str) -> Option<PathBuf> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-repo-{label}-{}-{nonce}",
-        std::process::id()
-    ));
+    let root = scratch_root(&format!("repo-{label}"));
     std::fs::create_dir_all(&root).unwrap();
     // Same ambient-gitconfig isolation as the production `git_command`: a
     // developer's global/system config (aliases, hooks, credential helpers)
     // must not decide whether the fixture repository builds.
-    let devnull = if cfg!(windows) { "NUL" } else { "/dev/null" };
     // Round-42 review: only a MISSING git binary (spawn io::Error) may skip
     // the test — a PRESENT-but-failing git (a broken fixture, a shim that
     // errors, a regressed config isolation) used to be swallowed into the
     // same silent skip, green-boarding the destructive checkout --yes gate
-    // and every other git-dependent pin. A failing git now fails the test.
-    let run = |args: &[&str]| -> bool {
-        match std::process::Command::new("git")
-            .current_dir(&root)
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", devnull)
-            .output()
-        {
-            Ok(output) if output.status.success() => true,
-            Ok(output) => panic!(
-                "git {args:?} failed in the fixture repo (a present-but-failing \
-                 git is a test failure, not an environment skip): {:?}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => panic!("git {args:?} could not be spawned: {error}"),
-        }
-    };
+    // and every other git-dependent pin. A failing git now fails the test;
+    // `fixture_git_ok` answers false only for the missing binary.
+    let run = |args: &[&str]| fixture_git_ok(&root, args);
     let skip = |reason: &str| -> Option<PathBuf> {
         eprintln!("skipping: git unavailable ({reason})");
         None
@@ -377,6 +448,16 @@ fn init_git_repo(label: &str) -> Option<PathBuf> {
 
 // ── parse-level coverage ────────────────────────────────────────────────────
 
+/// Builds one `pinvou code providers add` row for the parse tables: the
+/// command spine is spelled once and `extra` carries the case's own flags
+/// verbatim. Each row keeps its own vec entry so a regression names its
+/// exact case.
+fn add(agent: &'static str, extra: &[&'static str]) -> Vec<&'static str> {
+    let mut arguments = vec!["pinvou", "code", "providers", "add", "--agent", agent];
+    arguments.extend_from_slice(extra);
+    arguments
+}
+
 #[test]
 fn every_code_subcommand_parses() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -389,98 +470,83 @@ fn every_code_subcommand_parses() {
         vec!["pinvou", "code", "logout", "codex"],
         vec!["pinvou", "code", "providers", "list"],
         vec!["pinvou", "code", "providers", "list", "--agent", "codex"],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+        add(
             "codex",
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com/v1",
-            "--wire-api",
-            "openai",
-            "--model",
-            "gpt-test",
-            "--context-window",
-            "128000",
-            "--api-key-env",
-            "MY_KEY",
-        ],
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com/v1",
+                "--wire-api",
+                "openai",
+                "--model",
+                "gpt-test",
+                "--context-window",
+                "128000",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
         // The docs row pins the app parser's alias acceptance
         // (`openai_compatible`/`chat`): a regression narrowing the CLI
         // spellings to `openai` alone must fail here, not in the field.
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+        add(
             "codex",
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com/v1",
-            "--wire-api",
-            "openai_compatible",
-            "--api-key-env",
-            "MY_KEY",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com/v1",
+                "--wire-api",
+                "openai_compatible",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        add(
             "codex",
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com/v1",
-            "--wire-api",
-            "chat",
-            "--api-key-env",
-            "MY_KEY",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com/v1",
+                "--wire-api",
+                "chat",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        add(
             "claude",
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com",
-            "--model-slot",
-            "opus=o1",
-            "--model-slot",
-            "sonnet=s1",
-            "--model-slot",
-            "haiku=h1",
-            "--model-slot",
-            "fable=f1",
-            "--model-slot",
-            "subagent=su1",
-            "--api-key-env",
-            "MY_KEY",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--model-slot",
+                "opus=o1",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "haiku=h1",
+                "--model-slot",
+                "fable=f1",
+                "--model-slot",
+                "subagent=su1",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        add(
             "kimi",
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com",
-            "--api-key-stdin",
-        ],
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--api-key-stdin",
+            ],
+        ),
         vec![
             "pinvou",
             "code",
@@ -672,55 +738,30 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
         vec!["pinvou", "code", "agents", "status", "gemini"],
         vec!["pinvou", "code", "login", "deepseek"],
         vec!["pinvou", "code", "logout"],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
-            "gpt",
-            "--name",
-            "n",
-            "--base-url",
-            "https://a.com",
-        ],
-        vec!["pinvou", "code", "providers", "add", "--agent", "codex"],
+        add("gpt", &["--name", "n", "--base-url", "https://a.com"]),
+        add("codex", &[]),
         // A keyless add is a usage error (the usage text marks the key
         // source required): it would create a provider that only fails at
         // the next switch.
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
-            "codex",
-            "--name",
-            "n",
-            "--base-url",
-            "https://a.com",
-        ],
+        add("codex", &["--name", "n", "--base-url", "https://a.com"]),
         // Round-51 review: a repeated slot id used to be silently last-wins
         // at the downstream HashMap insert — refused at parse like every
         // other repeated flag in this parser.
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+        add(
             "codex",
-            "--name",
-            "n",
-            "--base-url",
-            "https://a.com",
-            "--api-key-env",
-            "MY_KEY",
-            "--model-slot",
-            "sonnet=s1",
-            "--model-slot",
-            "sonnet=s2",
-        ],
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--api-key-env",
+                "MY_KEY",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "sonnet=s2",
+            ],
+        ),
         // Round-51 review: the env-var-NAME parse gates — a pasted literal
         // secret must be refused at parse (never ride argv), for the login
         // --code-env lane and the providers --api-key-env lane alike (the
@@ -752,61 +793,43 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
         // a parse refusal (0 would otherwise reach the store's own zh
         // validation through the store_error boundary this family pins
         // everywhere else).
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+        add(
             "codex",
-            "--name",
-            "n",
-            "--base-url",
-            "https://a.com",
-            "--api-key-env",
-            "MY_KEY",
-            "--context-window",
-            "0",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--api-key-env",
+                "MY_KEY",
+                "--context-window",
+                "0",
+            ],
+        ),
+        add("codex", &["--name", "n"]),
+        add(
             "codex",
-            "--name",
-            "n",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--wire-api",
+                "grpc",
+            ],
+        ),
+        add(
             "codex",
-            "--name",
-            "n",
-            "--base-url",
-            "https://a.com",
-            "--wire-api",
-            "grpc",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "add",
-            "--agent",
-            "codex",
-            "--name",
-            "n",
-            "--base-url",
-            "https://a.com",
-            "--api-key-env",
-            "A",
-            "--api-key-stdin",
-        ],
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--api-key-env",
+                "A",
+                "--api-key-stdin",
+            ],
+        ),
         vec![
             "pinvou",
             "code",
@@ -1004,11 +1027,7 @@ fn rewind_without_yes_is_a_usage_error() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("rewind-needs-yes");
     let id = create_code_session_fixture(None);
-    let parsed = parse_args(["pinvou", "code", "checkpoints", "rewind", &id, "0"].to_vec())
-        .expect("rewind parses without --yes");
-    let error = execute(parsed).expect_err("rewind without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("--yes"));
+    yes_gate_error(&["pinvou", "code", "checkpoints", "rewind", &id, "0"]);
 }
 
 #[test]
@@ -1018,18 +1037,10 @@ fn logout_and_undo_without_yes_are_usage_errors() {
     let id = create_code_session_fixture(None);
 
     // logout erases the vendor CLI's stored credentials, so it gates on --yes.
-    let parsed = parse_args(["pinvou", "code", "logout", "codex"].to_vec())
-        .expect("logout parses without --yes");
-    let error = execute(parsed).expect_err("logout without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("--yes"));
+    yes_gate_error(&["pinvou", "code", "logout", "codex"]);
 
     // undo restores the working tree and rewrites the transcript, like rewind.
-    let parsed = parse_args(["pinvou", "code", "checkpoints", "undo", &id].to_vec())
-        .expect("undo parses without --yes");
-    let error = execute(parsed).expect_err("undo without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("--yes"));
+    yes_gate_error(&["pinvou", "code", "checkpoints", "undo", &id]);
 }
 
 // ── execute-level coverage (pure storage, temp PINVOU3_HOME) ────────────────
@@ -1239,9 +1250,7 @@ fn sessions_timeline_cap_is_enforced_at_the_boundary() {
     // comment on the data line (malformed-after-prefix lines are skipped only
     // if they fail to parse — a valid JSON line still counts, so the padding
     // must itself parse. A single huge valid line is the simplest form.)
-    let prefix = format!(
-        "{{\"seq\":1,\"timestamp\":\"t1\",\"turnId\":\"t-1\",\"event\":{{\"type\":\"turn_started\",\"data\":{{\"pad\":\""
-    );
+    let prefix = "{\"seq\":1,\"timestamp\":\"t1\",\"turnId\":\"t-1\",\"event\":{\"type\":\"turn_started\",\"data\":{\"pad\":\"".to_string();
     // Closes the pad string, then the data, event, and envelope objects.
     let suffix = "\"}}}\n";
     let pad_len = MAX_TIMELINE_BYTES as usize - prefix.len() - suffix.len();
@@ -1490,21 +1499,19 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
     assert_eq!(value["current"], "feature");
 
     // checkout validation: unknown branches fail at execute level.
-    for branch in ["missing-branch"] {
-        let error = run(&[
-            "pinvou",
-            "code",
-            "workspace",
-            "checkout",
-            &id,
-            branch,
-            "--mode",
-            "carry",
-            "--yes",
-        ])
-        .unwrap_err();
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{branch}");
-    }
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "missing-branch",
+        "--mode",
+        "carry",
+        "--yes",
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed, "missing-branch");
 
     // commit mode requires a non-empty --message (parse-level exit 2).
     let error = usage_error(&[
@@ -1556,12 +1563,7 @@ fn workspace_checkout_requires_yes_before_touching_the_tree() {
         if mode == "commit" {
             arguments.extend(["--message", "wip"]);
         }
-        let error = run(&arguments).expect_err("an unconfirmed checkout must be refused");
-        assert_eq!(error.exit_code(), ExitCode::Usage, "--mode {mode}: {error}");
-        assert!(
-            error.to_string().contains("--yes"),
-            "--mode {mode}: the refusal must name the flag: {error}"
-        );
+        yes_gate_error(&arguments);
     }
 
     // Nothing moved: still on main, the dirty content is untouched, no stash
@@ -1680,7 +1682,7 @@ fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
             "--output",
             "json",
         ])
-        .and_then(|parsed| pinvou_cli::execute(parsed));
+        .and_then(pinvou_cli::execute);
         let _ = tx.send(result);
     });
     let result = rx.recv_timeout(std::time::Duration::from_secs(90)).expect(
@@ -1713,18 +1715,10 @@ fn per_file_diff_composes_staged_and_unstaged_sections() {
     // Stage one version, then modify the file further: the per-file diff
     // must render both sections against the committed baseline.
     std::fs::write(project.join("tracked.txt"), "v2 staged\n").unwrap();
-    let devnull = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .current_dir(&project)
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", devnull)
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
-    };
-    assert!(git(&["add", "tracked.txt"]), "git add must succeed");
+    assert!(
+        fixture_git_ok(&project, &["add", "tracked.txt"]),
+        "git add must succeed"
+    );
     std::fs::write(project.join("tracked.txt"), "v2 staged\nv3 unstaged\n").unwrap();
 
     let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
@@ -1790,26 +1784,18 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
     // A file committed at HEAD and left untouched (round-40 review): this
     // case used to fall through to the synthetic new-file diff on BOTH
     // surfaces (both git diffs empty + the file exists → `untracked_diff`),
-    // reporting the whole content as added from /dev/null. The run helper
-    // inside `init_git_repo` is not in scope here, so the same ambient-config
-    // isolation is repeated inline.
+    // reporting the whole content as added from /dev/null. The ambient-config
+    // isolation is the shared `fixture_git_ok` helper — the same isolation
+    // `init_git_repo` applies.
     std::fs::write(project.join("unchanged.txt"), "same\n").unwrap();
     for args in [
         &["add", "unchanged.txt"][..],
         &["commit", "-m", "unchanged"][..],
     ] {
-        let ok = std::process::Command::new("git")
-            .current_dir(&project)
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env(
-                "GIT_CONFIG_GLOBAL",
-                if cfg!(windows) { "NUL" } else { "/dev/null" },
-            )
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-        assert!(ok, "fixture commit of unchanged.txt failed");
+        assert!(
+            fixture_git_ok(&project, args),
+            "fixture commit of unchanged.txt failed"
+        );
     }
 
     // Sanity: the filter really is in effect, so the equality below is being
@@ -2071,15 +2057,11 @@ fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
             "init",
         ],
     ] {
-        let ok = std::process::Command::new("git")
-            .current_dir(&project)
-            .args(&args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false);
-        assert!(ok, "fixture git {:?} failed", args.first());
+        assert!(
+            fixture_git_ok(&project, &args),
+            "fixture git {:?} failed",
+            args.first()
+        );
     }
 
     std::fs::write(project.join("a*x.txt"), "glob-shaped untracked\n").unwrap();
@@ -2338,7 +2320,7 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     )
     .expect("create turn-1 checkpoint");
     std::fs::write(project.join("turn-one.txt"), "first\n").unwrap();
-    let turn2 = checkpoints::create_checkpoint(
+    let _turn2 = checkpoints::create_checkpoint(
         &roots.ledger,
         &roots.execution,
         Some(2),
@@ -2425,8 +2407,6 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     // Rewinding to a turn without a snapshot fails honestly.
     let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]).unwrap_err();
     assert!(error.to_string().contains("checkpoint_missing"), "{error}");
-
-    let _ = turn2;
 }
 
 #[test]
@@ -2434,8 +2414,7 @@ fn checkpoints_refuse_non_native_code_sessions() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("checkpoints-gate");
     // ACP sessions have no native checkpoints (by design in ACP).
-    let project =
-        std::env::temp_dir().join(format!("pinvou-cli-code-acp-gate-{}", std::process::id()));
+    let project = scratch_root("acp-gate");
     std::fs::create_dir_all(&project).unwrap();
     let id = create_acp_session_fixture(&project);
     let error = run(&["pinvou", "code", "checkpoints", "list", &id]).unwrap_err();
@@ -2461,18 +2440,9 @@ fn checkpoints_refuse_non_native_code_sessions() {
 
 #[test]
 fn providers_round_trip_against_temp_home() {
-    struct KeyVar(Option<std::ffi::OsString>);
-    impl Drop for KeyVar {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_ROUNDTRIP_KEY", value) },
-                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_ROUNDTRIP_KEY") },
-            }
-        }
-    }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = HomeGuard::new("providers");
-    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_ROUNDTRIP_KEY"));
+    let _key = KeyVar::capture("PINVOU_CLI_TEST_ROUNDTRIP_KEY");
     unsafe {
         std::env::set_var(
             "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
@@ -2691,7 +2661,7 @@ fn providers_round_trip_against_temp_home() {
     assert_eq!(providers[0]["name"], "Imported");
 
     // remove without --yes is refused before any mutation.
-    let error = run(&[
+    yes_gate_error(&[
         "pinvou",
         "code",
         "providers",
@@ -2699,10 +2669,7 @@ fn providers_round_trip_against_temp_home() {
         &added_id,
         "--agent",
         "codex",
-    ])
-    .unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("--yes"));
+    ]);
 }
 
 #[test]
@@ -2737,6 +2704,19 @@ fn engine_bound_paths_return_stable_honest_errors() {
                 ".",
                 "--prompt",
                 "hi",
+            ],
+            "code_run_requires_product_host",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "run",
+                "codex",
+                "--workspace",
+                ".",
+                "--prompt-file",
+                "prompt.md",
             ],
             "code_run_requires_product_host",
         ),
@@ -2781,14 +2761,7 @@ fn engine_bound_paths_return_stable_honest_errors() {
     // that does not exist: any store access would either create the sessions
     // root or fail with a store error instead of the stable host-bound code.
     // HomeGuard::drop restores the original root on the way out.
-    let absent_home = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-absent-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let absent_home = scratch_root("absent");
     // SAFETY: this test holds ENV_LOCK for its whole body.
     unsafe {
         std::env::set_var("PINVOU3_HOME", &absent_home);
@@ -2847,27 +2820,6 @@ fn login_streams_vendor_cli_flow() {
             );
         }
     }
-}
-
-/// Opt-in: a one-shot ACP turn requires the product host (adapter process +
-/// async protocol client). The default assertion pins the stable error.
-#[test]
-#[ignore = "the real one-shot turn path is product-host-bound; kept to document the gap"]
-fn run_one_shot_turn_requires_product_host() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("ignored-run");
-    let error = run(&[
-        "pinvou",
-        "code",
-        "run",
-        "codex",
-        "--workspace",
-        ".",
-        "--prompt-file",
-        "prompt.md",
-    ])
-    .unwrap_err();
-    assert!(error.to_string().contains("code_run_requires_product_host"));
 }
 
 /// Re-derives the execution-root lock filename (FNV-1a over the canonical
@@ -3127,18 +3079,9 @@ impl Drop for KeyringCleanup {
 #[test]
 fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     use std::os::unix::fs::PermissionsExt;
-    struct KeyVar(Option<std::ffi::OsString>);
-    impl Drop for KeyVar {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_EXPORT_KEY", value) },
-                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_EXPORT_KEY") },
-            }
-        }
-    }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("export-refuse");
-    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_EXPORT_KEY"));
+    let _key = KeyVar::capture("PINVOU_CLI_TEST_EXPORT_KEY");
     unsafe {
         std::env::set_var(
             "PINVOU_CLI_TEST_EXPORT_KEY",
@@ -3318,35 +3261,131 @@ fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
     );
 }
 
+/// Writes `body` to `dir/name` and marks it executable — the shared
+/// create+chmod scaffold for the fake vendor CLI scripts.
+#[cfg(unix)]
+fn write_fake_vendor(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let script = dir.join(name);
+    std::fs::write(&script, body).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// Spawns the real `pinvou` binary against the scratch `root` (the sandbox
+/// store/secrets/home variables plus the caller's override pairs), with piped
+/// stdout/stderr and stdin piped or null — the shared fixture of the
+/// login-streaming tests that must observe the process while it is live.
+#[cfg(unix)]
+fn spawn_pinvou(
+    root: &Path,
+    arguments: &[&str],
+    env_pairs: &[(&str, &Path)],
+    piped_stdin: bool,
+) -> std::process::Child {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args(arguments)
+        .env("PINVOU3_HOME", root)
+        .env("CODEWHALE_HOME", root.join("codewhale"))
+        .env("HOME", root.join("home"))
+        .env("PINVOU_NO_COLOR", "1")
+        .stdin(if piped_stdin {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in env_pairs {
+        command.env(name, value);
+    }
+    command.spawn().expect("the pinvou binary must spawn")
+}
+
+/// Takes over `child`'s piped stderr: spawns the line-reader thread that
+/// forwards every line into the returned channel and, for failure
+/// diagnostics, into the returned shared tail. The channel closes at EOF.
+#[cfg(unix)]
+fn pump_stderr(
+    child: &mut std::process::Child,
+) -> (
+    std::sync::mpsc::Receiver<String>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    use std::io::BufRead as _;
+
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let reader = tail.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            match line {
+                Ok(line) => {
+                    reader
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(line.clone());
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (rx, tail)
+}
+
+/// Receives stderr lines until `satisfied` names one (or `deadline_secs`
+/// pass, or the pump hangs up), returning every line seen. The caller owns
+/// the predicate and the follow-up assertions; this loop only owns the
+/// deadline discipline.
+#[cfg(unix)]
+fn wait_for_line(
+    rx: &std::sync::mpsc::Receiver<String>,
+    deadline_secs: u64,
+    mut satisfied: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(deadline_secs);
+    let mut seen: Vec<String> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(line) => {
+                let done = satisfied(&line);
+                seen.push(line);
+                if done {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    seen
+}
+
 /// Writes a scripted `codex` stand-in into a fresh bin directory (argv logged
 /// to `seen-args.txt` for spawn assertions) and returns the directory and the
 /// script path. `version_snippet` runs for `--version` and `login_snippet`
 /// for `login` (each must end in its own exit); any other subcommand exits 1.
 #[cfg(unix)]
 fn write_fake_codex(label: &str, version_snippet: &str, login_snippet: &str) -> (PathBuf, PathBuf) {
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-fake-codex-{label}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let bin = scratch_root(&format!("fake-codex-{label}"));
     std::fs::create_dir_all(&bin).unwrap();
     let args_file = bin.join("seen-args.txt");
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = bin.join("codex");
-    std::fs::write(
-        &script,
-        format!(
+    let script = write_fake_vendor(
+        &bin,
+        "codex",
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nif [ \"$1\" = \"--version\" ]; then {}\nfi\nif [ \"$1\" = \"login\" ]; then {}\nfi\nexit 1\n",
             args_file.display(),
             version_snippet,
             login_snippet
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     (bin, script)
 }
 
@@ -3482,23 +3521,13 @@ fn version_probe_failure_is_reported_and_fails_the_gate() {
 fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("claude-login-stdin-flood");
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-fake-claude-stdin-flood-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let bin = scratch_root("fake-claude-stdin-flood");
     std::fs::create_dir_all(&bin).unwrap();
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = bin.join("claude");
-    std::fs::write(
-        &script,
+    let script = write_fake_vendor(
+        &bin,
+        "claude",
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  awk 'BEGIN{for(i=0;i<20000;i++) printf \"%s\", \"012345678901234567890123456789\"}'\n  echo\n  echo \"flood done\"\n  exit 0\nfi\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let _bin = ScratchDir(bin);
     let _claude_path = EnvVarGuard::capture("PINVOU3_CLAUDE_CLI_PATH");
     unsafe { std::env::set_var("PINVOU3_CLAUDE_CLI_PATH", &script) };
@@ -3516,7 +3545,7 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
             "--code",
             "SRCRT-LOGIN-CODE-42",
         ])
-        .and_then(|parsed| pinvou_cli::execute(parsed));
+        .and_then(pinvou_cli::execute);
         let _ = tx.send(result);
     });
     let result = rx
@@ -3547,28 +3576,18 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
 #[cfg(unix)]
 fn login_echo_strips_the_authorization_code_the_heuristic_would_miss() {
     let bin = env!("CARGO_BIN_EXE_pinvou");
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-login-echo-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let root = scratch_root("login-echo");
     std::fs::create_dir_all(root.join("home")).unwrap();
     let _root = ScratchDir(root.clone());
 
     // The fake claude answers the version gate, consumes the stdin code, and
     // echoes it back on stdout — the exact shape the strip exists for: the
     // value is too short and un-shaped for `redact_secret` to catch.
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = root.join("claude");
-    std::fs::write(
-        &script,
+    let script = write_fake_vendor(
+        &root,
+        "claude",
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  echo \"auth code received: $line\"\n  exit 0\nfi\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
     // A short, plain code: un-shaped for the secret heuristic (the echoed
     // copy under the strip must read [REDACTED] instead).
@@ -3610,17 +3629,7 @@ fn login_echo_strips_the_authorization_code_the_heuristic_would_miss() {
 #[test]
 #[cfg(unix)]
 fn login_streams_the_link_and_device_code_before_the_child_exits() {
-    use std::io::BufRead as _;
-
-    let bin = env!("CARGO_BIN_EXE_pinvou");
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-login-stream-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let root = scratch_root("login-stream");
     std::fs::create_dir_all(root.join("home")).unwrap();
     let _root = ScratchDir(root.clone());
 
@@ -3628,60 +3637,29 @@ fn login_streams_the_link_and_device_code_before_the_child_exits() {
     // gate, so the fake only has to answer `login`. It prints the authorize
     // link (which carries `user_code=`) and a separate code prompt, then
     // sleeps — standing in for a vendor CLI waiting on the user.
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = root.join("kimi");
-    std::fs::write(
-        &script,
+    let script = write_fake_vendor(
+        &root,
+        "kimi",
         "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then\n  echo \"Open https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788 to authorize\"\n  echo \"then enter code: WXYZ-7788\"\n  sleep 30\n  exit 0\nfi\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
-    let mut child = std::process::Command::new(bin)
-        .args(["code", "login", "kimi", "--output", "json"])
-        .env("PINVOU3_HOME", &root)
-        .env("CODEWHALE_HOME", root.join("codewhale"))
-        .env("HOME", root.join("home"))
-        .env("PINVOU3_KIMI_ACP_BIN", &script)
-        .env("PINVOU_NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("the pinvou binary must spawn");
-    let stderr = child.stderr.take().expect("stderr is piped");
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines() {
-            match line {
-                Ok(line) => {
-                    if tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let mut child = spawn_pinvou(
+        &root,
+        &["code", "login", "kimi", "--output", "json"],
+        &[("PINVOU3_KIMI_ACP_BIN", &script)],
+        false,
+    );
+    let (rx, _tail) = pump_stderr(&mut child);
 
     // Well inside the fake's 30 s sleep: if this budget is spent the child has
     // not exited either, so a failure here is a genuine "nothing streamed".
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let mut seen: Vec<String> = Vec::new();
     let mut saw_url = false;
     let mut saw_code = false;
-    while (!saw_url || !saw_code) && std::time::Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
-            Ok(line) => {
-                saw_url |=
-                    line.contains("https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788");
-                saw_code |= line.contains("device code") && line.contains("WXYZ-7788");
-                seen.push(line);
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
+    let seen = wait_for_line(&rx, 20, |line| {
+        saw_url |= line.contains("https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788");
+        saw_code |= line.contains("device code") && line.contains("WXYZ-7788");
+        saw_url && saw_code
+    });
     // Sampled before the kill: the CLI must still be inside its wait loop,
     // which is what makes the artefacts above actionable rather than a
     // post-mortem transcript dump.
@@ -3770,20 +3748,11 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
 /// deleting the merged-set gate went green.
 #[test]
 fn providers_update_claude_rejects_a_legacy_record_without_slots() {
-    struct KeyVar(Option<std::ffi::OsString>);
-    impl Drop for KeyVar {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_SLOTS_KEY", value) },
-                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_SLOTS_KEY") },
-            }
-        }
-    }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("claude-legacy-slots");
     // The ADD lane (positive seeding) requires the secret env to be set; the
     // update refusal below never reaches the credential layer.
-    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_SLOTS_KEY"));
+    let _key = KeyVar::capture("PINVOU_CLI_TEST_SLOTS_KEY");
     unsafe { std::env::set_var("PINVOU_CLI_TEST_SLOTS_KEY", "sk-test-slots-1234567890") };
     let store_path = _home.root.join("acp-providers.json");
 
@@ -3891,10 +3860,8 @@ fn strip_claude_slots(store: &mut serde_json::Value, provider_id: &str) -> bool 
                     .get("id")
                     .and_then(serde_json::Value::as_str)
                     .is_some_and(|id| id == provider_id);
-                if is_target {
-                    if map.remove("model_slots").is_some() {
-                        return true;
-                    }
+                if is_target && map.remove("model_slots").is_some() {
+                    return true;
                 }
                 map.values_mut().any(|child| walk(child, provider_id))
             }
@@ -3913,18 +3880,9 @@ fn strip_claude_slots(store: &mut serde_json::Value, provider_id: &str) -> bool 
 /// `store_error`.
 #[test]
 fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
-    struct KeyVar(Option<std::ffi::OsString>);
-    impl Drop for KeyVar {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU_CLI_TEST_RULES_KEY", value) },
-                None => unsafe { std::env::remove_var("PINVOU_CLI_TEST_RULES_KEY") },
-            }
-        }
-    }
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _home = HomeGuard::new("providers-english-mirrors");
-    let _key = KeyVar(std::env::var_os("PINVOU_CLI_TEST_RULES_KEY"));
+    let _key = KeyVar::capture("PINVOU_CLI_TEST_RULES_KEY");
     unsafe {
         std::env::set_var("PINVOU_CLI_TEST_RULES_KEY", "sk-test-rules-1234567890");
     }
@@ -4104,17 +4062,7 @@ fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
 #[test]
 #[cfg(unix)]
 fn login_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
-    use std::io::BufRead as _;
-
-    let bin = env!("CARGO_BIN_EXE_pinvou");
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-login-guard-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let root = scratch_root("login-guard");
     std::fs::create_dir_all(root.join("home")).unwrap();
     let _root = ScratchDir(root.clone());
 
@@ -4123,61 +4071,31 @@ fn login_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
     // stays alive with a grandchild — exactly the shape a terminal interrupt
     // used to orphan. Only the CLI's failure returns early; the fake always
     // records the pids so the test can police leftovers on any path.
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = root.join("kimi");
-    std::fs::write(
-        &script,
-        format!(
+    let script = write_fake_vendor(
+        &root,
+        "kimi",
+        &format!(
             "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then\n  echo $$ > {vendor}\n  sleep 30 &\n  echo $! > {grandchild}\n  echo \"Open https://www.kimi.com/code/authorize_device?user_code=GUARD-9911 to authorize\"\n  wait $!\n  exit 0\nfi\nexit 1\n",
             vendor = root.join("vendor.pid").display(),
             grandchild = root.join("grandchild.pid").display(),
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
-    let mut child = std::process::Command::new(bin)
-        .args(["code", "login", "kimi", "--output", "json"])
-        .env("PINVOU3_HOME", &root)
-        .env("CODEWHALE_HOME", root.join("codewhale"))
-        .env("HOME", root.join("home"))
-        .env("PINVOU3_KIMI_ACP_BIN", &script)
-        .env("PINVOU_NO_COLOR", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("the pinvou binary must spawn");
-    let stderr = child.stderr.take().expect("stderr is piped");
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines() {
-            match line {
-                Ok(line) => {
-                    if tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let mut child = spawn_pinvou(
+        &root,
+        &["code", "login", "kimi", "--output", "json"],
+        &[("PINVOU3_KIMI_ACP_BIN", &script)],
+        false,
+    );
+    let (rx, _tail) = pump_stderr(&mut child);
 
     // The link on stderr means the CLI is inside its wait loop with a live
     // vendor child — the only state in which the guard has anything to do.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let mut seen: Vec<String> = Vec::new();
     let mut saw_url = false;
-    while !saw_url && std::time::Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
-            Ok(line) => {
-                saw_url |= line.starts_with("login link: https://www.kimi.com/");
-                seen.push(line);
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
+    let seen = wait_for_line(&rx, 20, |line| {
+        saw_url |= line.starts_with("login link: https://www.kimi.com/");
+        saw_url
+    });
     if !saw_url {
         let _ = child.kill();
         let _ = child.wait();
@@ -4267,22 +4185,12 @@ fn login_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
 #[test]
 #[cfg(unix)]
 fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
-    use std::io::{BufRead as _, Write as _};
+    use std::io::Write as _;
 
-    let bin = env!("CARGO_BIN_EXE_pinvou");
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-code-login-code-stdin-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let root = scratch_root("login-code-stdin");
     std::fs::create_dir_all(root.join("home")).unwrap();
     let _root = ScratchDir(root.clone());
 
-    use std::os::unix::fs::PermissionsExt as _;
-    let script = root.join("claude");
     let marker = root.join("received.txt");
     // The fake's `auth login` prints the link, reads one code line off its
     // stdin, and records it. An EOF watcher then parks on the CLI↔vendor
@@ -4298,70 +4206,36 @@ fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
     // ends, and only then `stdin-eof` — the CLI releases the held-open pipe
     // after its loop observes this exit. A close-after-write CLI emits
     // `stdin-eof` immediately after `code:`, well before `vendor-exit`.
-    std::fs::write(
-        &script,
-        format!(
+    let script = write_fake_vendor(
+        &root,
+        "claude",
+        &format!(
             "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  echo \"Open https://claude.com/cai/oauth/authorize?state=fake to authorize\"\n  read line\n  printf 'code:%s\\n' \"$line\" > {marker}\n  exec 3<&0\n  ( read second <&3 || printf 'stdin-eof\\n' >> {marker} ) &\n  sleep 2.5\n  echo vendor-exit >> {marker}\n  exit 0\nfi\nexit 1\n",
             marker = marker.display(),
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
-    let mut child = std::process::Command::new(bin)
-        .args([
+    let mut child = spawn_pinvou(
+        &root,
+        &[
             "code",
             "login",
             "claude",
             "--code-stdin",
             "--output",
             "json",
-        ])
-        .env("PINVOU3_HOME", &root)
-        .env("CODEWHALE_HOME", root.join("codewhale"))
-        .env("HOME", root.join("home"))
-        .env("PINVOU3_CLAUDE_CLI_PATH", &script)
-        .env("PINVOU_NO_COLOR", "1")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("the pinvou binary must spawn");
-    let stderr = child.stderr.take().expect("stderr is piped");
-    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let tail_reader = tail.clone();
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines() {
-            match line {
-                Ok(line) => {
-                    tail_reader
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push(line.clone());
-                    if tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+        ],
+        &[("PINVOU3_CLAUDE_CLI_PATH", &script)],
+        true,
+    );
+    let (rx, tail) = pump_stderr(&mut child);
     // parked on an empty pipe here, so this deadline receiving nothing IS
     // the red outcome (HEAD collected the code before the child existed).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let mut seen: Vec<String> = Vec::new();
     let mut saw_url = false;
-    while !saw_url && std::time::Instant::now() < deadline {
-        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
-            Ok(line) => {
-                saw_url |= line.starts_with("login link: https://claude.com/");
-                seen.push(line);
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
+    let seen = wait_for_line(&rx, 20, |line| {
+        saw_url |= line.starts_with("login link: https://claude.com/");
+        saw_url
+    });
     if !saw_url {
         let _ = child.kill();
         let _ = child.wait();
@@ -4435,20 +4309,12 @@ fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
 #[test]
 fn providers_update_delete_key_requires_yes() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-key-gate");
+    // HomeGuard drops last, resetting PINVOU3_HOME itself.
+    let _home = HomeGuard::new("delete-key-gate");
     // Round-38 review: restore the variable on every exit path like the
     // sibling secret lanes' KeyVar guards, instead of leaking the seeded
     // value to parallel tests for the rest of the run.
-    struct KeyVar(Option<std::ffi::OsString>);
-    impl Drop for KeyVar {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", value) },
-                None => unsafe { std::env::remove_var("PINVOU_TEST_DELETE_KEY_SECRET") },
-            }
-        }
-    }
-    let _key = KeyVar(std::env::var_os("PINVOU_TEST_DELETE_KEY_SECRET"));
+    let _key = KeyVar::capture("PINVOU_TEST_DELETE_KEY_SECRET");
 
     // Seed one provider with a key, so `--delete-key` has a real target.
     // SAFETY: the suite's ENV_LOCK is held for the whole test (same contract
@@ -4483,11 +4349,9 @@ fn providers_update_delete_key_requires_yes() {
         agent: "codex",
         provider_id: added_id.clone(),
     };
-    let home_path = home.root.clone();
-    let _ = home_path; // HomeGuard drops last, resetting PINVOU3_HOME itself.
 
     // Refusal without --yes: exit 2-style usage error, store untouched.
-    let outcome = run(&[
+    yes_gate_error(&[
         "pinvou",
         "code",
         "providers",
@@ -4496,25 +4360,14 @@ fn providers_update_delete_key_requires_yes() {
         "--agent",
         "codex",
         "--delete-key",
-    ])
-    .unwrap_err();
-    assert_eq!(
-        outcome.exit_code(),
-        ExitCode::Usage,
-        "must be a usage error"
-    );
-    let refusal = outcome.to_string();
-    assert!(
-        refusal.contains("--yes"),
-        "the refusal must name --yes: {refusal}"
-    );
+    ]);
 
     // Ordering control: with the secret source UNSET, the refusal must still
     // be the --yes gate and not a resolution failure — proving the gate runs
     // before any secret resolution, exactly as the comment above claims. The
     // variable is restored so the --yes lane below sees the seeded state.
     unsafe { std::env::remove_var("PINVOU_TEST_DELETE_KEY_SECRET") };
-    let outcome = run(&[
+    yes_gate_error(&[
         "pinvou",
         "code",
         "providers",
@@ -4523,13 +4376,7 @@ fn providers_update_delete_key_requires_yes() {
         "--agent",
         "codex",
         "--delete-key",
-    ])
-    .unwrap_err();
-    assert_eq!(outcome.exit_code(), ExitCode::Usage);
-    assert!(
-        outcome.to_string().contains("--yes"),
-        "with the secret unset the refusal must still be the --yes gate: {outcome}"
-    );
+    ]);
     unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
 
     // The refusal persisted nothing: the credential is still configured.

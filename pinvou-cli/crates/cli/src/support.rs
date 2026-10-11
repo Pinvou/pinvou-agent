@@ -269,6 +269,29 @@ pub(crate) fn open_family_lock_file(name: &str) -> Result<std::fs::File, FamilyL
     Ok(file)
 }
 
+/// Opens one of the family lock files via [`open_family_lock_file`] AND
+/// wraps it in the `fd_lock::RwLock` every family's `*_lock` constructor
+/// then built — the one step past the shared opener this module previously
+/// left hand-copied. Still deliberately free of the acquire policy
+/// (blocking vs try, guard handling) and of error-code mapping: each family
+/// renders its exact current messages through the two closures, which
+/// receive the failed [`FamilyLockError`] arm's path and `io::Error` (the
+/// same destructuring the hand-copied `match` performed, so the
+/// `{action}_lock` texts stay byte-identical — a family that does not name
+/// the path ignores it, one that shares a mapper across arms reconstructs
+/// the enum, both unchanged).
+pub(crate) fn family_lock(
+    name: &str,
+    on_create_dir: impl FnOnce(PathBuf, std::io::Error) -> CliError,
+    on_open: impl FnOnce(PathBuf, std::io::Error) -> CliError,
+) -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
+    let file = open_family_lock_file(name).map_err(|error| match error {
+        FamilyLockError::CreateDir { dir, error } => on_create_dir(dir, error),
+        FamilyLockError::Open { path, error } => on_open(path, error),
+    })?;
+    Ok(fd_lock::RwLock::new(file))
+}
+
 /// Reads a UTF-8 text file with a byte cap so `--*-file` arguments cannot
 /// load an unbounded source (a multi-GB log, a character device like
 /// /dev/zero) into memory before the family's own truncation runs, and
@@ -297,56 +320,12 @@ pub fn read_text_file_capped(
     max_bytes: usize,
     action: &str,
 ) -> Result<String, CliError> {
-    // Regular files only, checked through metadata BEFORE the open: a FIFO's
-    // open blocks until a writer appears and its read blocks until bytes
-    // arrive, so neither the cap nor any downstream deadline could act. The
-    // metadata probe follows symlinks, so a link to a regular file still
-    // reads. The probe is NOT atomic with the open below — a path swapped
-    // to a FIFO in between still reaches `File::open` and can block — so it
-    // rejects the ordinary case, it does not close the race.
-    let meta = std::fs::metadata(path).map_err(|error| {
-        // Classify the probe failure. Reporting every `metadata` error as
-        // "does not exist" sends the user hunting for a typo when the real
-        // cause is EACCES on a parent directory, a symlink loop (ELOOP) or
-        // an over-long path (ENAMETOOLONG) — different problems with
-        // different fixes. The exit class stays 1 for all of them.
-        match error.kind() {
-            std::io::ErrorKind::NotFound => {
-                CliError::failed(format!("{action}: {} does not exist", path.display()))
-            }
-            std::io::ErrorKind::PermissionDenied => CliError::failed(format!(
-                "{action}: {} cannot be read: permission denied",
-                path.display()
-            )),
-            _ => CliError::failed(format!(
-                "{action}: cannot inspect {}: {error}",
-                path.display()
-            )),
-        }
-    })?;
-    if !meta.is_file() {
-        return Err(CliError::failed(format!(
-            "{action}: {} is not a regular file",
-            path.display()
-        )));
-    }
-    let file = std::fs::File::open(path).map_err(|error| {
-        CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
-    })?;
-    let mut bytes = Vec::new();
-    // Round-45 review: saturate so a usize::MAX cap ("unbounded") neither panics in debug nor wraps to take(0) in release.
-    file.take((max_bytes as u64).saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            CliError::failed(format!("{action}: cannot read {}: {error}", path.display()))
-        })?;
-    if bytes.len() > max_bytes {
-        return Err(CliError::failed(format!(
-            "{action}: {} exceeds the {max_bytes}-byte read limit",
-            path.display()
-        )));
-    }
-    String::from_utf8(bytes)
+    // The byte twin below carries the whole shared implementation (the
+    // regular-file gate, the error classification, the take-bounded read);
+    // this wrapper only adds the UTF-8 contract on top, so the two readers
+    // cannot drift. Every error message, byte cap and exit class is decided
+    // there and is byte-identical for both.
+    String::from_utf8(read_bytes_capped(path, max_bytes, action)?)
         .map_err(|_| CliError::failed(format!("{action}: {} is not valid UTF-8", path.display())))
 }
 
@@ -365,6 +344,14 @@ pub const VENDOR_CONFIG_READ_CAP_BYTES: usize = 16 * 1024 * 1024;
 /// has grown, not a format limit, so callers pass their existing failure
 /// code as `action` and keep their contract stable.
 pub fn read_bytes_capped(path: &Path, max_bytes: usize, action: &str) -> Result<Vec<u8>, CliError> {
+    // Regular files only, checked through metadata BEFORE the open: a FIFO's
+    // open blocks until a writer appears and its read blocks until bytes
+    // arrive, so neither the cap nor any downstream deadline could act. The
+    // metadata probe follows symlinks, so a link to a regular file still
+    // reads. The probe is NOT atomic with the open below — a path swapped
+    // to a FIFO in between still reaches `File::open` and can block — so it
+    // rejects the ordinary case, it does not close the race.
+    //
     // Round-43 review: same error classification as the text twin —
     // collapsing every metadata failure into "cannot inspect" sends the
     // user hunting for a typo when the real cause is EACCES on a parent
@@ -405,6 +392,57 @@ pub fn read_bytes_capped(path: &Path, max_bytes: usize, action: &str) -> Result<
         )));
     }
     Ok(bytes)
+}
+
+/// The canonicalize → sensitive-path gate the family ingest lanes share,
+/// and the single home of the round-46 doctrine each call site's comment
+/// restates: the credential-path gate every model-context ingest lane
+/// applies (`agent run --prompt-file`/`--attach`, `memory add --file`,
+/// `personas --file`, `scheduled create/update --prompt-file`, `feedback
+/// submit --body-file`/`--attach`, `voice postprocess --text-file`/
+/// `--draft-file`, `artifacts write --file`, `knowledge collections
+/// add-sources`) — a scripted pointer at `~/.aws/credentials` would
+/// otherwise ship the secret verbatim to the model endpoint and into the
+/// session transcript or a persisted receipt. Canonicalize first, gate the
+/// canonical form, and return the CANONICAL path so the caller reads what
+/// was policy-checked: reading the original spelling would let a symlink
+/// swapped in between the two calls route unverified content past the
+/// refusal. The gate fails CLOSED on a canonicalize failure (round-47
+/// review): a vanished path is an error, never a pass-through of the raw
+/// spelling.
+///
+/// Message contract, so every site reproduces its current texts
+/// byte-for-byte: the resolve failure renders
+/// `{resolve_prefix}: cannot resolve {resolve_subject}{path}: {error}` —
+/// the subject phrase plus one separating space is inserted only when
+/// `resolve_subject` is non-empty (`"content file "`, `"body file"`,
+/// `"source path"`, `""`) — and the refusal renders
+/// `{refuse_prefix}: refusing {refuse_noun}: {reason}`. The two prefixes
+/// differ where a site's resolve failure carries a stable snake_case code
+/// (`agent_prompt_file_unreadable`) while its refusal renders the
+/// family-verb phrase (`agent run`).
+pub(crate) fn gate_canonical_path(
+    path: &Path,
+    resolve_prefix: &str,
+    resolve_subject: &str,
+    refuse_prefix: &str,
+    refuse_noun: &str,
+) -> Result<PathBuf, CliError> {
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        let subject = if resolve_subject.is_empty() {
+            String::new()
+        } else {
+            format!("{resolve_subject} ")
+        };
+        CliError::failed(format!(
+            "{resolve_prefix}: cannot resolve {subject}{}: {error}",
+            path.display()
+        ))
+    })?;
+    crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
+        CliError::failed(format!("{refuse_prefix}: refusing {refuse_noun}: {reason}"))
+    })?;
+    Ok(canonical)
 }
 
 /// Replaces every character that can corrupt a terminal row with a space,
@@ -536,6 +574,45 @@ pub fn require_valid_session_id(id: &str, action: &str) -> Result<(), CliError> 
     }
 }
 
+/// The families' identical `require_id` guard, stated once: a missing or
+/// empty id and a `--`-prefixed (flag-shaped) id are usage errors, and any
+/// other value passes through untouched. The two messages keep each
+/// family's current text byte-for-byte: missing/empty renders
+/// `{missing_prefix} requires {noun}` and a flag-shaped token renders
+/// `{flag_prefix}: expected {noun}, got flag-shaped {id:?}`. The two
+/// prefixes differ where a family names the command in the missing case
+/// but not the flag case (`sessions command` / `sessions`); `noun` carries
+/// its own article (`"an id"`, `"a session id"`, `"a task id"`).
+///
+/// The helper does NOT trim: `scheduled` trims its id before calling this,
+/// while sessions/personas/projects pass the token through as-is — trimming
+/// here would change what the other three accept and return.
+pub(crate) fn require_family_id(
+    value: Option<&String>,
+    missing_prefix: &str,
+    flag_prefix: &str,
+    noun: &str,
+) -> Result<String, CliError> {
+    let id = value.ok_or_else(|| CliError::usage(format!("{missing_prefix} requires {noun}")))?;
+    if id.is_empty() {
+        return Err(CliError::usage(format!("{missing_prefix} requires {noun}")));
+    }
+    // A flag-shaped token in the id slot (`sessions delete --yes` with the
+    // id forgotten) must fail as usage here, not as an exit-1 store lookup
+    // against a record named after the flag — the mistake is named at the
+    // parse boundary, not two steps later at `require_yes` or the store.
+    if id.starts_with("--") {
+        return Err(CliError::usage(format!(
+            "{flag_prefix}: expected {noun}, got flag-shaped {id:?}"
+        )));
+    }
+    Ok(id.clone())
+}
+
+/// The shape [`parse_family_flags`] returns: value-flag pairs in argv order,
+/// then the boolean flags seen.
+pub(crate) type FamilyFlags<'a> = (Vec<(&'a str, &'a str)>, Vec<&'a str>);
+
 /// Family flag parser shared by the sessions/scheduled/knowledge/plugins/
 /// personas/connectors families (mirrors the pair-based `named_options`
 /// helper in lib.rs, extended with valueless boolean flags).
@@ -555,7 +632,7 @@ pub fn parse_family_flags<'a>(
     value_flags: &[&str],
     boolean_flags: &[&str],
     family: &str,
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<FamilyFlags<'a>, CliError> {
     let mut options = Vec::new();
     let mut flags = Vec::new();
     let mut index = 0;
@@ -1043,7 +1120,7 @@ mod tests {
         ENV_LOCK, FamilyLockError, collapse_block_control_characters, collapse_control_characters,
         decode_arguments, drain_capped_to_eof, emit_report, json_failure_payload,
         open_family_lock_file, read_bytes_capped, read_text_file_capped, resolve_secret,
-        validate_sandbox_home,
+        test_support, validate_sandbox_home,
     };
     use crate::{CliOutcome, ExitCode};
     use std::io::{self, Write};
@@ -1444,18 +1521,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        struct RestoreHome(Option<std::ffi::OsString>, PathBuf);
-        impl Drop for RestoreHome {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-                let _ = std::fs::remove_dir_all(&self.1);
-            }
-        }
-        let _home = RestoreHome(std::env::var_os("PINVOU3_HOME"), root.clone());
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let _home = test_support::TempHome::at(&root);
 
         let file = open_family_lock_file("contract-fresh.lock")
             .expect("a fresh lock file must open in a writable home");
@@ -1488,18 +1554,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(root.join("locks")).unwrap();
-        struct RestoreHome(Option<std::ffi::OsString>, PathBuf);
-        impl Drop for RestoreHome {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-                let _ = std::fs::remove_dir_all(&self.1);
-            }
-        }
-        let _home = RestoreHome(std::env::var_os("PINVOU3_HOME"), root.clone());
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let _home = test_support::TempHome::at(&root);
 
         let path = root.join("locks").join("contract-heal.lock");
         std::fs::write(&path, b"").unwrap();
@@ -1532,18 +1587,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        struct RestoreHome(Option<std::ffi::OsString>, PathBuf);
-        impl Drop for RestoreHome {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-                let _ = std::fs::remove_dir_all(&self.1);
-            }
-        }
-        let _home = RestoreHome(std::env::var_os("PINVOU3_HOME"), root.clone());
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let _home = test_support::TempHome::at(&root);
 
         // A FILE at the locks path: create_dir_all fails with something
         // other than success, and the error must name the DIRECTORY.
@@ -1561,6 +1605,89 @@ mod tests {
             FamilyLockError::Open { .. } => {
                 panic!("a file standing in for locks/ must be the CreateDir arm, not Open")
             }
+        }
+    }
+}
+
+/// Test-only fixtures shared by the env-steering unit tests. Test-only:
+/// integration tests link the library WITHOUT `cfg(test)` (the same rule
+/// [`ENV_LOCK`] documents), so this module does not exist in a normal
+/// build.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::{Path, PathBuf};
+
+    /// Panic-safe `PINVOU3_HOME` fixture: points the process-global product
+    /// root at a throwaway directory for one test and restores the previous
+    /// value on Drop — a failing assert must not leak the fixture into
+    /// sibling unit tests (the same RAII rule the integration tests'
+    /// `RestoreHome` guard applies). The temp root itself is removed on
+    /// Drop (`remove_dir_all`, best-effort).
+    ///
+    /// The caller still acquires [`super::ENV_LOCK`] itself: the env has no
+    /// in-process synchronization of its own, so every env-steering test in
+    /// this binary holds the one lock (the race history is on the lock's doc
+    /// comment). Declare the lock guard in a binding BEFORE this guard, so
+    /// this guard drops first: the previous value is restored while the
+    /// lock is still held, and a sibling test waking up on the unlock
+    /// observes either the untouched environment or this test's finished
+    /// fixture, never a half-set one.
+    ///
+    /// Two constructors: [`TempHome::new`] creates a unique temp directory
+    /// named after `label`; [`TempHome::at`] adopts a directory the caller
+    /// already made (the gaia tests' pre-built roots, the lock tests'
+    /// pre-shaped stores). Both set `PINVOU3_HOME` to the root; the struct
+    /// derefs to the root's `PathBuf` so tests can `.join` off it.
+    pub(crate) struct TempHome {
+        previous: Option<std::ffi::OsString>,
+        root: PathBuf,
+    }
+
+    impl TempHome {
+        /// Creates `<temp>/pinvou-cli-{label}-{pid}-{nanos}` and points
+        /// `PINVOU3_HOME` at it. The pid+nanos suffix makes concurrent test
+        /// binaries and retried runs unable to collide on the directory.
+        pub(crate) fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "pinvou-cli-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&root).expect("create temp home");
+            Self::at(&root)
+        }
+
+        /// Adopts an existing directory (created and pre-shaped by the
+        /// caller) as the `PINVOU3_HOME` fixture root; it is removed on
+        /// Drop.
+        pub(crate) fn at(dir: &Path) -> Self {
+            let previous = std::env::var_os("PINVOU3_HOME");
+            unsafe { std::env::set_var("PINVOU3_HOME", dir) };
+            Self {
+                previous,
+                root: dir.to_path_buf(),
+            }
+        }
+    }
+
+    impl std::ops::Deref for TempHome {
+        type Target = PathBuf;
+
+        fn deref(&self) -> &PathBuf {
+            &self.root
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
         }
     }
 }

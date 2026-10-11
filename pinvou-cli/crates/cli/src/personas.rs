@@ -157,15 +157,15 @@ pub enum PersonasCommand {
     },
 }
 
-/// Flags that carry a value, per subcommand.
-const CREATE_OPTIONS: &[&str] = &["--name", "--description", "--file"];
-const UPDATE_OPTIONS: &[&str] = &["--name", "--description", "--file"];
+/// Flags that carry a value, per subcommand. `create` and `update` accept
+/// the identical option surface, so one pair serves both (the two former
+/// constants were byte-identical; a future drift is now impossible).
 const LIST_OPTIONS: &[&str] = &["--source"];
+const BODY_OPTIONS: &[&str] = &["--name", "--description", "--file"];
 
 /// Boolean (valueless) flags, per subcommand.
 const DELETE_FLAGS: &[&str] = &["--yes"];
-const CREATE_FLAGS: &[&str] = &["--stdin"];
-const UPDATE_FLAGS: &[&str] = &["--stdin"];
+const BODY_FLAGS: &[&str] = &["--stdin"];
 
 pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
     let subcommand = values.get(1).ok_or_else(|| CliError::usage(USAGE))?;
@@ -173,7 +173,7 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
     match subcommand.as_str() {
         "list" => {
             let (options, _) = parse_flags(rest, LIST_OPTIONS, &[])?;
-            let source = match option(&options, "--source") {
+            let source = match crate::support::family_option(&options, "--source") {
                 None => SourceFilter::All,
                 // `embedded` is a deprecated INPUT alias for `builtin`, kept
                 // for compatibility only. The published CLI reference used to
@@ -219,30 +219,34 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
             }
         }
         "create" => {
-            let (options, flags) = parse_flags(rest, CREATE_OPTIONS, CREATE_FLAGS)?;
-            let name = option(&options, "--name")
+            let (options, flags) = parse_flags(rest, BODY_OPTIONS, BODY_FLAGS)?;
+            let name = crate::support::family_option(&options, "--name")
                 .ok_or_else(|| CliError::usage("personas create requires --name N"))?
                 .to_owned();
             if name.trim().is_empty() {
                 return Err(CliError::usage("personas create --name must not be empty"));
             }
-            let body = body_source(&options, &flags, "create")?.ok_or_else(|| {
-                CliError::usage("personas create requires a body via --file BODY.md or --stdin")
-            })?;
+            // Unreachable arm removed: `body_source` refuses a body-less
+            // `create` itself, with this exact message, so the option can
+            // never be `None` here; `expect` keeps that invariant local
+            // (the user-facing path is the `body_source` error either way).
+            let body = body_source(&options, &flags, "create")?
+                .expect("personas create requires a body via --file BODY.md or --stdin");
             Ok(PersonasCommand::Create {
                 name,
-                description: option(&options, "--description").map(str::to_owned),
+                description: crate::support::family_option(&options, "--description")
+                    .map(str::to_owned),
                 body,
             })
         }
         "update" => {
             let id = require_id(rest.first(), "update")?;
-            let (options, flags) = parse_flags(&rest[1..], UPDATE_OPTIONS, UPDATE_FLAGS)?;
+            let (options, flags) = parse_flags(&rest[1..], BODY_OPTIONS, BODY_FLAGS)?;
             // Same whitespace rule `create` applies (and `projects` applies
             // to both of its lanes): an all-whitespace name is argv-class,
             // not a feature error that would surface later as a translated
             // exit 1 for the same shape of input.
-            if let Some(name) = option(&options, "--name")
+            if let Some(name) = crate::support::family_option(&options, "--name")
                 && name.trim().is_empty()
             {
                 return Err(CliError::usage("personas update --name must not be empty"));
@@ -250,8 +254,9 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
             let body = body_source(&options, &flags, "update")?;
             Ok(PersonasCommand::Update {
                 id,
-                name: option(&options, "--name").map(str::to_owned),
-                description: option(&options, "--description").map(str::to_owned),
+                name: crate::support::family_option(&options, "--name").map(str::to_owned),
+                description: crate::support::family_option(&options, "--description")
+                    .map(str::to_owned),
                 body,
             })
         }
@@ -296,7 +301,7 @@ fn body_source(
     flags: &[&str],
     subcommand: &str,
 ) -> Result<Option<BodySource>, CliError> {
-    let file = option(options, "--file").map(PathBuf::from);
+    let file = crate::support::family_option(options, "--file").map(PathBuf::from);
     let stdin = flags.contains(&"--stdin");
     if file.is_some() && stdin {
         return Err(CliError::usage(
@@ -319,25 +324,17 @@ fn body_source(
     Ok(body)
 }
 
+/// Thin forward over the shared [`crate::support::require_family_id`] guard
+/// with this family's pinned texts (`personas {sub} requires an id` /
+/// `personas {sub}: expected an id, got flag-shaped {id:?}`); the missing =
+/// empty merge and the flag-shaped rationale live on the shared helper.
 fn require_id(value: Option<&String>, subcommand: &str) -> Result<String, CliError> {
-    let id = value
-        .ok_or_else(|| CliError::usage(format!("personas {subcommand} requires an id")))?
-        .clone();
-    if id.is_empty() {
-        return Err(CliError::usage(format!(
-            "personas {subcommand} requires an id"
-        )));
-    }
-    // A flag-shaped token in the id slot (`personas show --source` with the
-    // id forgotten) would otherwise become an exit-1 store lookup for a
-    // persona named after the flag. Same discipline as `projects`' id guard
-    // and `equip`'s persona-slot guard.
-    if id.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "personas {subcommand}: expected an id, got flag-shaped {id:?}"
-        )));
-    }
-    Ok(id)
+    crate::support::require_family_id(
+        value,
+        &format!("personas {subcommand}"),
+        &format!("personas {subcommand}"),
+        "an id",
+    )
 }
 
 /// Shared implementation in `support::parse_family_flags`; `family`
@@ -346,12 +343,8 @@ fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
-) -> Result<(Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError> {
+) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "personas")
-}
-
-fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    crate::support::family_option(options, name)
 }
 
 // ─────────────────────────────── execute ───────────────────────────────
@@ -413,6 +406,17 @@ fn translate_persona_error(message: &str) -> String {
     }
 }
 
+/// The row scaffolding both personas renderers share: collapse every cell
+/// through the column sanitizer (the per-cell rationale is on [`persona_row`])
+/// and tab-join the row.
+fn collapsed_row<const N: usize>(cells: [&str; N]) -> String {
+    cells
+        .iter()
+        .map(|cell| crate::support::collapse_control_characters(cell))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
 /// One human-mode `personas list` row: five tab-separated columns
 /// (id, source, name, dept, description).
 ///
@@ -429,19 +433,17 @@ fn translate_persona_error(message: &str) -> String {
 /// below 0x20, so it is already safe to read back). Sibling rule and sibling
 /// test in `projects.rs`.
 fn persona_row(summary: &PersonaSummary) -> String {
-    let cell = crate::support::collapse_control_characters;
-    format!(
-        "{}\t{}\t{}\t{}\t{}",
-        cell(&summary.id),
-        cell(&summary.source),
-        cell(&summary.name),
-        cell(&summary.dept),
-        cell(if summary.description.is_empty() {
+    collapsed_row([
+        &summary.id,
+        &summary.source,
+        &summary.name,
+        &summary.dept,
+        if summary.description.is_empty() {
             "-"
         } else {
-            &summary.description
-        }),
-    )
+            summary.description.as_str()
+        },
+    ])
 }
 
 /// One human-mode `personas active` row: three tab-separated columns
@@ -449,13 +451,7 @@ fn persona_row(summary: &PersonaSummary) -> String {
 /// [`persona_row`] — a name safe in `list` and raw in `active` would be the
 /// CLI contradicting itself one command apart.
 fn active_row(summary: &PersonaSummary) -> String {
-    let cell = crate::support::collapse_control_characters;
-    format!(
-        "{}\t{}\t{}",
-        cell(&summary.id),
-        cell(&summary.name),
-        cell(&summary.source),
-    )
+    collapsed_row([&summary.id, &summary.name, &summary.source])
 }
 
 fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1067,35 +1063,15 @@ fn consume_staged_persona_injection_at(
     let _guard = lock.write().map_err(|error| {
         CliError::failed(format!("cannot lock the persona equip state: {error}"))
     })?;
-    let raw = match crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run") {
-        Ok(raw) => raw,
-        // Missing/unreadable: nothing verifiably staged to clear. Degrading to
-        // success matches the read side's tolerance — decoration that cannot
-        // be inspected was never guaranteed to inject either.
-        Err(_) => return Ok(()),
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+    // The sidecar parse is the read side's ([`staged_persona_injection_at`])
+    // verbatim, including its tolerance: a missing/unreadable/corrupt
+    // sidecar, or one without a staged body, is "nothing verifiably staged
+    // to clear" — degrading to success matches the read side's tolerance
+    // (decoration that cannot be inspected was never guaranteed to inject
+    // either).
+    let Some(staged) = staged_persona_injection_at(path) else {
         return Ok(());
     };
-    let Some(persona_id) = value
-        .get("persona_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_owned)
-    else {
-        return Ok(());
-    };
-    let staged_body = value
-        .get("pending_body")
-        .and_then(serde_json::Value::as_str)
-        .filter(|body| !body.trim().is_empty());
-    let Some(body) = staged_body else {
-        return Ok(());
-    };
-    let staged_at = value
-        .get("staged_at")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
     // Lost-update guard: only the exact pair the consuming turn read is
     // spent. A mid-run restage (a new `equip`) keeps its body for the next
     // run instead of being cleared by a consume that never injected it.
@@ -1104,11 +1080,10 @@ fn consume_staged_persona_injection_at(
     // UNCHANGED body produces a byte-identical pair a value-only guard
     // cannot distinguish from the spent one (round-40 review M6); the
     // stage stamp is what makes that restage visible.
-    if persona_id != expected.persona_id || body != expected.body || staged_at != expected.staged_at
-    {
+    if staged != *expected {
         return Ok(());
     }
-    let payload = serde_json::json!({ "persona_id": persona_id, "pending_body": null });
+    let payload = serde_json::json!({ "persona_id": staged.persona_id, "pending_body": null });
     let bytes = serde_json::to_vec(&payload).map_err(|error| {
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
     })?;
@@ -1121,8 +1096,10 @@ fn consume_staged_persona_injection_at(
 
 /// 4 MiB body cap × worst-case JSON escape expansion + wrapper/envelope.
 const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
-/// The body budget the sidecar cap is computed from — the same 4 MiB the
-/// CLI's own persona write paths enforce.
+/// The body budget the sidecar cap is computed from — the one 4 MiB constant
+/// the CLI's own persona write paths enforce (`read_body` on the raw
+/// `create`/`update` body and `require_equippable_body` on the equipped card
+/// share it), so the two can no longer disagree.
 const MAX_EQUIP_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Nanos since the Unix epoch, saturating at 0 if the clock is before it —
@@ -1188,22 +1165,21 @@ fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     // umask default by an older build heals instead of staying readable by
     // every local account. The arms map onto the exact messages the
     // hand-rolled pair produced.
-    let file =
-        crate::support::open_family_lock_file("persona-equip.lock").map_err(
-            |error| match error {
-                crate::support::FamilyLockError::CreateDir { dir, error } => {
-                    CliError::failed(format!(
-                        "cannot create the persona lock directory {}: {error}",
-                        dir.display()
-                    ))
-                }
-                crate::support::FamilyLockError::Open { path, error } => CliError::failed(format!(
-                    "cannot open the persona equip lock {}: {error}",
-                    path.display()
-                )),
-            },
-        )?;
-    Ok(fd_lock::RwLock::new(file))
+    crate::support::family_lock(
+        "persona-equip.lock",
+        |dir, error| {
+            CliError::failed(format!(
+                "cannot create the persona lock directory {}: {error}",
+                dir.display()
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
+                "cannot open the persona equip lock {}: {error}",
+                path.display()
+            ))
+        },
+    )
 }
 
 /// Test-only convenience: the production equip/unequip lanes call the
@@ -1377,12 +1353,12 @@ fn unequip(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError>
     let _guard = lock.write().map_err(|error| {
         CliError::failed(format!("cannot lock the persona equip state: {error}"))
     })?;
-    if let Err(error) = std::fs::remove_file(&path) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(CliError::failed(format!(
-                "personas unequip: cannot remove the session persona sidecar: {error}"
-            )));
-        }
+    if let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(CliError::failed(format!(
+            "personas unequip: cannot remove the session persona sidecar: {error}"
+        )));
     }
     let value = serde_json::json!({ "session_id": session_id, "action": "unequipped" });
     Ok(success(render(
@@ -1482,12 +1458,36 @@ fn open_store() -> Result<SessionStore, CliError> {
         .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
 }
 
+/// The capped stdin slurp shared by this crate's two `--stdin` body lanes
+/// (`personas create/update` and `artifacts write`): keep at most `max_bytes`
+/// bytes by reading one byte past the cap — which distinguishes "at the cap"
+/// from "over it" — and hand each lane its exact error texts through the two
+/// closures.
+pub(crate) fn read_stdin_capped(
+    max_bytes: usize,
+    on_read_error: impl FnOnce(std::io::Error) -> CliError,
+    on_over_cap: impl FnOnce() -> CliError,
+) -> Result<String, CliError> {
+    let mut content = String::new();
+    let stdin = std::io::stdin();
+    let mut handle = stdin.lock();
+    if let Err(error) = std::io::Read::read_to_string(
+        &mut std::io::Read::take(&mut handle, max_bytes as u64 + 1),
+        &mut content,
+    ) {
+        return Err(on_read_error(error));
+    }
+    if content.len() > max_bytes {
+        return Err(on_over_cap());
+    }
+    Ok(content)
+}
+
 /// Read the persona body from `--file` or stdin; bodies are multi-KB
 /// markdown, so argv delivery is deliberately not offered. Both lanes are
 /// capped at 4 MiB: an unbounded file (`--file /dev/zero`) or stdin
 /// (`yes | ...`) would exhaust memory before any validation ran.
 fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> {
-    const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
     let content = match source {
         BodySource::File(path) => {
             // Round-44 review: the body is stored as a persona card and
@@ -1497,47 +1497,31 @@ fn read_body(source: &BodySource, subcommand: &str) -> Result<String, CliError> 
             // --attach): canonicalize (symlink-accurate), then the
             // sensitive-path refusal. The CANONICAL path is what was
             // policy-checked, so it is also what gets read.
-            let canonical = std::fs::canonicalize(path).map_err(|error| {
-                CliError::failed(format!(
-                    "personas {subcommand}: cannot resolve body file {}: {error}",
-                    path.display()
-                ))
-            })?;
-            crate::artifacts::check_sensitive_path(&canonical).map_err(|reason| {
-                CliError::failed(format!(
-                    "personas {subcommand}: refusing body file: {reason}"
-                ))
-            })?;
+            let canonical = crate::support::gate_canonical_path(
+                path,
+                &format!("personas {subcommand}"),
+                "body file",
+                &format!("personas {subcommand}"),
+                "body file",
+            )?;
             crate::support::read_text_file_capped(
                 &canonical,
-                MAX_BODY_BYTES,
+                MAX_EQUIP_BODY_BYTES,
                 &format!("personas {subcommand}"),
             )?
         }
-        BodySource::Stdin => {
-            // Reading one byte past the cap distinguishes "at the cap" from
-            // "over it".
-            let mut content = String::new();
-            let stdin = std::io::stdin();
-            let mut handle = stdin.lock();
-            if let Err(error) = std::io::Read::read_to_string(
-                &mut std::io::Read::take(&mut handle, MAX_BODY_BYTES as u64 + 1),
-                &mut content,
-            ) {
-                return Err(CliError::failed(format!(
-                    "personas {subcommand}: cannot read stdin: {error}"
-                )));
-            }
-            if content.len() > MAX_BODY_BYTES {
+        BodySource::Stdin => read_stdin_capped(
+            MAX_EQUIP_BODY_BYTES,
+            |error| CliError::failed(format!("personas {subcommand}: cannot read stdin: {error}")),
+            || {
                 // Input size is a content error (exit 1), not an invocation
                 // error — the same classification as the artifacts/feedback
                 // read caps.
-                return Err(CliError::failed(format!(
+                CliError::failed(format!(
                     "personas {subcommand}: the persona body exceeds the 4 MiB stdin limit"
-                )));
-            }
-            content
-        }
+                ))
+            },
+        )?,
     };
     if content.trim().is_empty() {
         // Content-classified (exit 1), like the over-cap branch above:
@@ -1801,48 +1785,15 @@ mod tests {
     /// resolution below steers the process-global card pool
     /// (`personas::get` syncs from `PINVOU3_HOME`), so tests that drive it
     /// hold the lib binary's shared env lock and point `PINVOU3_HOME` at a
-    /// throwaway directory for their whole lifetime.
-    use crate::support::ENV_LOCK;
-
-    /// Points `PINVOU3_HOME` at a fresh temp dir for one test and restores
-    /// the previous value on drop, holding [`ENV_LOCK`] throughout — the
-    /// same RAII rule the integration suites' `HomeGuard` and the models
-    /// unit tests' `TempHome` apply.
-    struct TempHome(
-        Option<std::sync::MutexGuard<'static, ()>>,
-        Option<std::ffi::OsString>,
-        std::path::PathBuf,
-    );
-
-    impl TempHome {
-        fn new(label: &str) -> Self {
-            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let root = std::env::temp_dir().join(format!(
-                "pinvou-cli-personas-unit-{label}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&root).expect("create temp home");
-            let previous = std::env::var_os("PINVOU3_HOME");
-            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-            Self(Some(guard), previous, root)
-        }
-    }
-
-    impl Drop for TempHome {
-        fn drop(&mut self) {
-            if let Some(value) = self.1.take() {
-                unsafe { std::env::set_var("PINVOU3_HOME", value) };
-            } else {
-                unsafe { std::env::remove_var("PINVOU3_HOME") };
-            }
-            drop(self.0.take());
-            let _ = std::fs::remove_dir_all(&self.2);
-        }
-    }
+    /// throwaway directory for their whole lifetime. The fixture is the
+    /// shared [`crate::support::test_support::TempHome`] (its `new` keeps
+    /// this suite's `pinvou-cli-personas-unit-{label}` on-disk label style);
+    /// each test still takes [`ENV_LOCK`] itself and declares the lock guard
+    /// BEFORE the fixture binding, so the previous env value is restored
+    /// while the lock is still held (the race history is on the lock's doc
+    /// comment).
+    #[cfg(feature = "product-backend")]
+    use crate::support::{ENV_LOCK, test_support::TempHome};
 
     /// The round-18 wiring this seam exists for: `equip` stages
     /// `equip_body_injection` on the sidecar, `agent run --session` reads it
@@ -1858,7 +1809,10 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_returns_the_equip_staged_body_verbatim() {
-        let _home = TempHome::new("seam-verbatim");
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = TempHome::new("personas-unit-seam-verbatim");
         let card = PersonaCard {
             id: "user-seam".to_owned(),
             dept: "specialized".to_owned(),
@@ -1925,7 +1879,10 @@ mod tests {
         // Same lock-directory discipline as the verbatim seam test: the
         // consume no-ops here, but it still takes the equip lock under
         // `pinvou3_home()` (round-39 review).
-        let _home = TempHome::new("seam-tolerant");
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = TempHome::new("personas-unit-seam-tolerant");
         let dir = std::env::temp_dir().join(format!(
             "pinvou-cli-personas-seam-tol-{}-{}",
             std::process::id(),
@@ -1964,7 +1921,10 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn the_turn_injects_only_while_the_staged_card_is_live() {
-        let _home = TempHome::new("turn-pool-check");
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = TempHome::new("personas-unit-turn-pool-check");
         let session_id = "turn-pool-check";
 
         // A live card stages into an injectable turn: the embedded pool
@@ -2021,7 +1981,10 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn a_consume_does_not_clear_a_mid_run_restage() {
-        let _home = TempHome::new("consume-race");
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = TempHome::new("personas-unit-consume-race");
         let session_id = "consume-race";
         persist_equipped_persona(session_id, "pinvou-card-creator", "read body").unwrap();
         let expected = match staged_persona_turn(session_id) {
@@ -2067,7 +2030,10 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn an_identical_body_restage_survives_the_consume() {
-        let _home = TempHome::new("consume-race-identical");
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = TempHome::new("personas-unit-consume-race-identical");
         let session_id = "consume-race-identical";
         persist_equipped_persona(session_id, "pinvou-card-creator", "unchanged body").unwrap();
         let expected = match staged_persona_turn(session_id) {
@@ -2114,7 +2080,10 @@ mod tests {
     #[cfg(feature = "product-backend")]
     #[test]
     fn an_equipped_card_without_a_staged_body_still_anchors_the_turn() {
-        let _home = TempHome::new("equip-anchor");
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home = TempHome::new("personas-unit-equip-anchor");
         let session_id = "equip-anchor";
 
         // Nothing equipped: no anchor.
