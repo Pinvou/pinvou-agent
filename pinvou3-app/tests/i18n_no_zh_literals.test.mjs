@@ -3,12 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// 仅扫描本 PR 清理过的两个文件中「引号内含 CJK 的活跃字面量」。
+// 仅扫描本 PR 清理过的文件（工具商店 + 会话引用控件）中「引号内含 CJK 的活跃字面量」。
 // 注意：这是针对性回归守卫，不是全仓 i18n 完整审计——它只看引号包裹的串，
 // 不覆盖 JSX 文本节点（<div>中文</div>）、正则字面量（/中文/）或多行模板串。
 // 整行注释（以 // 或 * 开头，去前导空白后）直接跳过。
 const files = [
   'src/features/tools/ToolStoreView.jsx',
+  // Session mention UI (PR #586): all copy comes from uiSessionMention in
+  // shared/i18n (zh/en/ja); the injection contract in session-mention.js is
+  // deliberately English model-context protocol, not UI copy.
+  'src/features/chat/SessionMentionControls.jsx',
+  'src/features/chat/session-mention.js',
 ];
 // 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
 // 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。
@@ -63,5 +68,5 @@ for (const rel of files) {
   total += n;
   if (n > 0) console.error(`${rel}: ${n} active CJK literal(s) remaining`);
 }
-assert.equal(total, 0, `Expected 0 active CJK string literals in ToolStoreView, found ${total}`);
+assert.equal(total, 0, `Expected 0 active CJK string literals in the checked feature views, found ${total}`);
 console.log('OK: no active CJK string literals in checked feature views');
