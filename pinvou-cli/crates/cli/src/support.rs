@@ -1647,6 +1647,9 @@ pub(crate) mod test_support {
         /// Creates `<temp>/pinvou-cli-{label}-{pid}-{nanos}` and points
         /// `PINVOU3_HOME` at it. The pid+nanos suffix makes concurrent test
         /// binaries and retried runs unable to collide on the directory.
+        /// Every caller is a product-backend-gated test; featureless test
+        /// builds only reach [`TempHome::at`].
+        #[cfg_attr(not(feature = "product-backend"), allow(dead_code))]
         pub(crate) fn new(label: &str) -> Self {
             let root = std::env::temp_dir().join(format!(
                 "pinvou-cli-{label}-{}-{}",

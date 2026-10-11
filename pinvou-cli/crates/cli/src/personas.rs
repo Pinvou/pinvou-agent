@@ -1184,8 +1184,9 @@ fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
 
 /// Test-only convenience: the production equip/unequip lanes call the
 /// checked variant directly (round-44 review removed the dead in-production
-/// wrapper; the unit tests stage through the always-true checker).
-#[cfg(test)]
+/// wrapper; the unit tests stage through the always-true checker). Its
+/// callers are product-backend-gated tests, so the wrapper is too.
+#[cfg(all(test, feature = "product-backend"))]
 fn persist_equipped_persona(
     session_id: &str,
     persona_id: &str,
