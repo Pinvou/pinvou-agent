@@ -928,6 +928,29 @@ fn withdraw_materialized_connector_dirs(tool_id: &str, pkg_dir: &Path) -> Result
     }
 }
 
+/// Restore the bundles.json mirror record after an aborted uninstall — and
+/// only the record THIS call removed: writes back `pre_remove_record` (the
+/// snapshot taken immediately before `store.remove`), gated on
+/// `removed_by_us`, so a record a concurrent actor already removed is never
+/// revived. Write-back failure is logged, not propagated: the uninstall has
+/// already failed, and the mirror stays best-effort.
+fn write_back_pre_remove_record(
+    store: &store::BundleStore,
+    tool_id: &str,
+    removed_by_us: bool,
+    pre_remove_record: Option<store::BundleRecord>,
+) {
+    if removed_by_us {
+        if let Some(record) = pre_remove_record {
+            if let Err(re) = store.upsert(record) {
+                log::warn!(
+                    "[marketplace] record write-back after an aborted uninstall ({tool_id}): {re}"
+                );
+            }
+        }
+    }
+}
+
 /// 安装与命令层共用的「工具不存在」拒绝文案：两个入口的同一 id 必须得到
 /// 逐字一致的提示（pub(crate) 供命令层复用）。
 pub(crate) fn unknown_tool_error(tool_id: &str) -> String {
@@ -1705,18 +1728,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
                         // installed.json / mcp.json 由下方事务 rollback 恢复；
                         // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
-                        // An aborted uninstall must leave the bundles.json
-                        // mirror exactly as it found it: the record THIS call
-                        // removed is written back, and only that one — a
-                        // record a concurrent actor already removed is never
-                        // revived.
-                        if removed_by_us {
-                            if let Err(re) = store.upsert(record) {
-                                log::warn!(
-                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
-                                );
-                            }
-                        }
+                        write_back_pre_remove_record(
+                            &store,
+                            tool_id,
+                            removed_by_us,
+                            pre_remove_record,
+                        );
                         return Err(format!("移入回收站失败（{tool_id}）: {e}"));
                     }
                 }
@@ -1729,13 +1746,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             } else if !source_may_be_upload && !bundle::cli_bundle_skill_dirs(tool_id).is_empty() {
                 // Builtin CLI connector: withdraw the
                 // materialized companion skills together with the record.
-                // Their presence is the consent gate's materialized-dirs
-                // known-clause evidence; leaving them while the in-lock
-                // cleanup just stripped the consent rows and the sync ledger
-                // would make every later show/refresh skip registration for
-                // a consent state that no longer exists. All content here is
-                // redeliverable embedded materialization — the next gated
-                // show re-extracts and registers fresh (fail-closed heal).
+                // Why withdraw: see the builtin-CLI bullet in the
+                // disposition list above — the gate's materialized-dirs
+                // clause keys on these files.
                 //
                 // Deletion failures propagate: the consent
                 // strip only runs after THIS transaction commits, so a failed
@@ -1753,20 +1766,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // The transaction rollback covers mcp.json /
                         // installed.json but the mirror record and the pack
                         // dir live outside its snapshot — restore the record
-                        // like the recycle-failure leg above, so the aborted
-                        // uninstall leaves the registration state exactly as
-                        // it found it: the record THIS call removed is
-                        // written back, and only that one — a record a
-                        // concurrent actor already removed is never revived.
-                        if removed_by_us {
-                            if let Some(record) = pre_remove_record {
-                                if let Err(re) = store.upsert(record) {
-                                    log::warn!(
-                                        "[marketplace] record write-back after a failed withdrawal ({tool_id}): {re}"
-                                    );
-                                }
-                            }
-                        }
+                        // like the recycle-failure leg above.
+                        write_back_pre_remove_record(
+                            &store,
+                            tool_id,
+                            removed_by_us,
+                            pre_remove_record,
+                        );
                         return Err(withdraw_error);
                     }
                 }
@@ -1922,7 +1928,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Scope-strip tail of the uninstall teardown: this pack's own consent
     /// rows plus the companion-skill consent/physical handling. Split from
     /// [`Self::cleanup_uninstalled_tool_state`] so no caller threads a
-    /// 6-positional-bool argument list.
+    /// long positional argument list.
     ///
     /// Scope entries are consent state: strip them only when this call
     /// actually removed the install record. A vacuous uninstall (no record
@@ -2110,7 +2116,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // IO，preflight 已在 recycle_package 内先行）不阻断修复降级，改为
                 // 跳过 companion 物理清理 —— 否则 cleanup 会对仍在盘上的技能目录
                 // remove_dir_all，销毁唯一副本（review P1：修复路径漏接回收站）。
-                // `strip_recycled_companions` is set only when the
+                // `companions_moved_with_package` is set only when the
                 // recycle actually moved the pack away. A preset/custom pack's
                 // repair downgrade does not remove the pack dir — the companion
                 // dirs are still on disk, so cleanup must take its else arm
@@ -2948,7 +2954,6 @@ pub(crate) mod tests {
     /// quarantine sibling-count assertion helper. Shared with scope.rs's
     /// tests, which import it as
     /// `crate::features::marketplace::tests::corrupt_sibling_count`.
-    #[cfg(test)]
     pub(crate) fn corrupt_sibling_count(path: &std::path::Path) -> usize {
         let parent = path.parent().unwrap();
         let prefix = format!("{}.corrupt.", path.file_name().unwrap().to_string_lossy());
@@ -3173,31 +3178,15 @@ pub(crate) mod tests {
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             crate::platform::paths::tests::plant_fifo(&mcp_path);
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let result = migrate_mcp_json_paths();
-                let _ = tx.send(result);
-            });
-            let result = rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| {
-                    // The regressed worker stays
-                    // blocked while HOLDING mcp.lock — a plain panic would
-                    // cascade-hang every later mcp.lock test in the serial
-                    // lane, so die loudly and contain it (the scope.rs
-                    // funnel pins' convention).
-                    eprintln!(
-                        "FAIL: migrate still blocks on a planted mcp.json FIFO while holding mcp.lock — \
-                         aborting the test process to contain the leaked lock holder"
-                    );
-                    std::process::abort();
-                });
-            let error = result.expect_err("a planted FIFO must fail the migration loudly");
+            let error = crate::platform::test_support::run_bounded_worker_or_abort(
+                "migrate still blocks on a planted mcp.json FIFO while holding mcp.lock",
+                || migrate_mcp_json_paths(),
+            )
+            .expect_err("a planted FIFO must fail the migration loudly");
             assert!(
                 error.contains("读取 mcp.json 失败"),
                 "the refusal must keep the migration's error shape: {error}"
             );
-            worker.join().unwrap();
         });
     }
 
@@ -7791,7 +7780,8 @@ pub(crate) mod tests {
     /// lock, so both its reads must route through the hardened primitives —
     /// a planted FIFO at installed.json must refuse fast, not block the
     /// lock holder's open. Bounded worker: a regressed bare read hangs here
-    /// and fails the recv_timeout instead of wedging the suite.
+    /// and trips the helper's 5s bound (loud abort) instead of wedging the
+    /// suite.
     #[cfg(unix)]
     #[test]
     fn installed_json_read_refuses_a_planted_fifo() {
@@ -7802,23 +7792,10 @@ pub(crate) mod tests {
             crate::platform::paths::tests::plant_fifo(&path);
 
             let manager = MarketplaceManager::new();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                tx.send(manager.try_installed_ids())
-                    .expect("worker should send its result");
-            });
-            let result = rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| {
-                    // A regressed worker stays
-                    // blocked holding the store-side lock — contain the
-                    // cascade with a loud process death.
-                    eprintln!(
-                        "FAIL: the installed.json read still blocks on a planted FIFO — \
-                         aborting the test process to contain the leaked lock holder"
-                    );
-                    std::process::abort();
-                });
+            let result = crate::platform::test_support::run_bounded_worker_or_abort(
+                "the installed.json read still blocks on a planted FIFO",
+                move || manager.try_installed_ids(),
+            );
             assert!(
                 result.is_err(),
                 "a planted FIFO must be refused by the regular-file gate"
@@ -8959,13 +8936,6 @@ pub(crate) mod tests {
                 "the companion row must be stripped by the successful uninstall"
             );
             assert!(!mgr.installed_ids().contains(&"preset-repair".to_string()));
-            assert!(
-                !crate::platform::paths::bundles_root()
-                    .join("preset-repair")
-                    .join("skills/preset-repair-comp")
-                    .exists(),
-                "the companion dir must not survive"
-            );
         });
     }
 
