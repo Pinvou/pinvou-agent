@@ -305,6 +305,10 @@ fn every_personas_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "personas", "create", "--name", "N", "--bogus"],
         // update requires an id and only knows the three field flags.
         vec!["pinvou", "personas", "update"],
+        // Round-52 review: a fieldless update used to re-persist the card
+        // unchanged and report success — a silent no-op — so it refuses as
+        // usage, mirroring memory profile set's empty refusal.
+        vec!["pinvou", "personas", "update", "p-1"],
         vec!["pinvou", "personas", "update", "p-1", "--bogus"],
         vec!["pinvou", "personas", "update", "p-1", "--name"],
         vec!["pinvou", "personas", "update", "p-1", "--file"],

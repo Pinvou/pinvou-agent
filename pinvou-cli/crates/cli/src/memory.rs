@@ -110,6 +110,21 @@ current-focus, recent-activity, recent-work, pending, never)"
         }
     }
 
+    /// The canonical hyphenated spelling for HUMAN-facing lines (the
+    /// `memory list` header, the `Updated …`/`Deleted …` echoes): `as_str`
+    /// is the storage/JSON form, and echoing it back read like an internal
+    /// field name the user never typed. JSON keys stay on `as_str`
+    /// (canonical for consumers).
+    fn canonical_str(self) -> &'static str {
+        match self {
+            Self::WorkContext => "work-context",
+            Self::CurrentFocus => "current-focus",
+            Self::RecentActivity => "recent-activity",
+            Self::RecentWork => "recent-work",
+            other => other.as_str(),
+        }
+    }
+
     /// Stores whose items support text update/delete; recent-work only
     /// archives and pending items are resolved through `memory pending`.
     fn supports_content_edit(self) -> bool {
@@ -265,6 +280,25 @@ fn parse_profile(values: &[String]) -> Result<MemoryCommand, CliError> {
                 return Err(CliError::usage(
                     "memory profile set requires --call-name and/or --assistant-alias",
                 ));
+            }
+            // Round-52 review: a whitespace-only label is not the empty case
+            // `parse_options` refuses — `"   "` passes that guard — and the
+            // execute-level wipe guard deliberately does not cover it (it
+            // classifies labels the store's NORMALIZER would empty, and
+            // short-circuits on blank input), so `profile set --call-name
+            // "   "` reached the patch and wiped the stored field with exit
+            // 0. Blank is argv-class like empty: refuse here, and keep
+            // clearing a stored field a desktop-app action.
+            for (flag, value) in [
+                ("--call-name", &call_name),
+                ("--assistant-alias", &assistant_alias),
+            ] {
+                if value.is_some_and(|label| label.trim().is_empty()) {
+                    return Err(CliError::usage(format!(
+                        "{flag} requires a non-blank value; clearing a stored field is a \
+                         desktop-app action"
+                    )));
+                }
             }
             Ok(MemoryCommand::ProfileSet {
                 call_name: call_name.map(str::to_owned),
@@ -924,7 +958,9 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
             // Round-45 review: the header count must be the ITEM count — the
             // cleanup warnings render as rows below the items, not as items.
             let (item_lines, warning_lines, value) = load_store_items(store)?;
-            let mut lines = vec![format!("{} ({})", store.as_str(), item_lines.len())];
+            // Round-52 review: the header echoes the canonical hyphen
+            // spelling the user typed, not `as_str()`'s storage form.
+            let mut lines = vec![format!("{} ({})", store.canonical_str(), item_lines.len())];
             lines.extend(item_lines);
             lines.extend(warning_lines);
             Ok(success(render(output, lines.join("\n"), &value)))
@@ -1971,7 +2007,7 @@ fn update(
                 .map_err(|error| feature_error("update", error))?
                 .ok_or_else(|| not_found(store, id))?;
             (
-                format!("Updated {}: {}", store.as_str(), item.id),
+                format!("Updated {}: {}", store.canonical_str(), item.id),
                 serde_json::to_value(&item).unwrap_or_default(),
                 None,
             )
@@ -1988,15 +2024,10 @@ fn update(
             // Round-50 review: echo the canonical hyphen spelling (the one
             // the valid list in this very message uses), not `as_str()`'s
             // underscore form.
-            let name = match store {
-                MemoryStore::RecentWork => "recent-work",
-                MemoryStore::Pending => "pending",
-                MemoryStore::Never => "never",
-                _ => store.as_str(),
-            };
             return Err(CliError::usage(format!(
-                "memory update does not support store '{name}' (valid: preferences, \
-work-context, current-focus, recent-activity)"
+                "memory update does not support store '{}' (valid: preferences, \
+work-context, current-focus, recent-activity)",
+                store.canonical_str()
             )));
         }
     };
@@ -2077,21 +2108,18 @@ fn delete(
             return Err(CliError::usage(format!(
                 "memory delete does not support store '{}' (valid: preferences, \
 work-context, current-focus, recent-activity)",
-                match store {
-                    // Round-50 review: canonical hyphen spellings (as_str()
-                    // is the underscore storage form).
-                    MemoryStore::RecentWork => "recent-work",
-                    MemoryStore::Pending => "pending",
-                    MemoryStore::Never => "never",
-                    other => other.as_str(),
-                }
+                // Round-50 review: canonical hyphen spellings (as_str()
+                // is the underscore storage form).
+                store.canonical_str()
             )));
         }
     };
     if !changed {
         return Err(not_found(store, id));
     }
-    let human = format!("Deleted {}: {}", store.as_str(), id);
+    // Round-52 review: the echo uses the canonical hyphen spelling the user
+    // typed, not `as_str()`'s storage form (the JSON keys stay canonical).
+    let human = format!("Deleted {}: {}", store.canonical_str(), id);
     let value = serde_json::json!({ "store": store.as_str(), "id": id, "deleted": true });
     Ok(success(render(output, human, &value)))
 }

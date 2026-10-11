@@ -252,11 +252,24 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
                 return Err(CliError::usage("personas update --name must not be empty"));
             }
             let body = body_source(&options, &flags, "update")?;
+            let name = crate::support::family_option(&options, "--name").map(str::to_owned);
+            let description =
+                crate::support::family_option(&options, "--description").map(str::to_owned);
+            // Round-52 review: with no field to change the command used to
+            // re-persist the fetched card unchanged and report success — a
+            // silent no-op masquerading as an update. Mirror memory profile
+            // set's empty refusal: a fieldless update is a usage error, not
+            // a successful rewrite.
+            if name.is_none() && description.is_none() && body.is_none() {
+                return Err(CliError::usage(
+                    "personas update requires at least one of --name, --description, --file, \
+                     --stdin (nothing to update)",
+                ));
+            }
             Ok(PersonasCommand::Update {
                 id,
-                name: crate::support::family_option(&options, "--name").map(str::to_owned),
-                description: crate::support::family_option(&options, "--description")
-                    .map(str::to_owned),
+                name,
+                description,
                 body,
             })
         }

@@ -1961,3 +1961,74 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
         "the corrupt index must be left in place for repair"
     );
 }
+
+/// Round-52 review: a corrupt session-agents index must refuse the rebind
+/// with the CLI-styled copy (naming the file and the repair) and WITHOUT
+/// the store's zh anyhow chain (`解析 … 失败`) or the app-side
+/// `[pinvou3-app] … starting empty` recovery line — the empty fallback
+/// used to print the latter from the rebind's own boot load, and the codex
+/// lane surfaced the former through `project_error`'s `{error:#}`. The
+/// in-process harness cannot capture stderr, so this drives the real
+/// binary (same pattern as the corrupt-index move/delete tests).
+#[test]
+fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_chain() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = HomeGuard::new("rebind-corrupt-index");
+    let from_dir = make_root_dir("rebind-corrupt-from");
+    let to_dir = make_root_dir("rebind-corrupt-to");
+    let from = std::fs::canonicalize(&from_dir).unwrap();
+    let to = std::fs::canonicalize(&to_dir).unwrap();
+
+    // A healthy codex-lane binding first: its authoritative sidecar is what
+    // "nothing was moved" is asserted against.
+    let code_id = bind_code_session(&from);
+    let agents_path = home.root.join("session-agents.json");
+    std::fs::write(&agents_path, "{not json").unwrap();
+
+    let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args([
+            "projects",
+            "rebind",
+            from.to_str().unwrap(),
+            to.to_str().unwrap(),
+            "--yes",
+        ])
+        .output()
+        .expect("spawn the pinvou binary");
+    let stderr = String::from_utf8_lossy(&spawned.stderr);
+    assert_eq!(
+        spawned.status.code(),
+        Some(1),
+        "the corrupt index must refuse with the store-failure exit class: {stderr}"
+    );
+    assert!(
+        stderr.contains("rebind_workspace_root")
+            && stderr.contains("the code-session agent index is unreadable")
+            && stderr.contains("repair or remove session-agents.json"),
+        "the refusal must carry the CLI-styled copy naming the repair: {stderr}"
+    );
+    assert!(
+        !stderr.contains("解析"),
+        "the store's zh chain must not leak into the CLI output: {stderr}"
+    );
+    assert!(
+        !stderr.contains("[pinvou3-app]"),
+        "the app-side boot recovery line must not leak into the CLI: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&agents_path).unwrap(),
+        "{not json",
+        "the corrupt index must be left in place for repair"
+    );
+    // And nothing was moved: the authoritative sidecar still binds `from`.
+    let sidecar = std::fs::read_to_string(
+        home.sessions_root()
+            .join(&code_id)
+            .join("code-session.json"),
+    )
+    .expect("the code-session sidecar must be untouched");
+    assert!(
+        sidecar.contains(from.to_str().unwrap()) && !sidecar.contains(to.to_str().unwrap()),
+        "a refused rebind must not move the binding: {sidecar}"
+    );
+}

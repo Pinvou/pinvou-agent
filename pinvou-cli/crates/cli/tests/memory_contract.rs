@@ -403,6 +403,41 @@ fn memory_profile_set_get_round_trips_through_feature_io() {
     assert_eq!(value["identity"]["assistant_alias"], "Pin");
 }
 
+/// Round-52 review: a whitespace-only label is not the empty case the
+/// option parser refuses, and the execute-level wipe guard short-circuits
+/// on blank input, so `profile set --call-name "   "` used to reach the
+/// patch and wipe the stored field with exit 0. The refusal is usage-class
+/// (exit 2) at the parse boundary and the stored value survives.
+#[test]
+fn memory_profile_set_refuses_a_whitespace_only_label_and_preserves_the_store() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _home = TempHome::new("profile-blank-refusal");
+
+    // Seed a stored value the refused update must not destroy.
+    run_ok(&["pinvou", "memory", "profile", "set", "--call-name", "Alice"]);
+
+    for flag in ["--call-name", "--assistant-alias"] {
+        let error = expect_command_error(&["pinvou", "memory", "profile", "set", flag, "   "]);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{flag}: {error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("requires a non-blank value"),
+            "{flag}: the refusal must say the value is blank: {message}"
+        );
+    }
+
+    // The stored value survived, on the same feature io the GUI reads.
+    let profile = pinvou3_lib::features::memory::load_profile().unwrap();
+    assert_eq!(
+        profile.identity.call_name, "Alice",
+        "a blank label must not wipe the stored call name"
+    );
+    assert_eq!(
+        profile.identity.assistant_alias, "",
+        "a blank label must not write an assistant alias"
+    );
+}
+
 /// Round-40 review MAJOR: a label the profile normalizer would silently
 /// empty (here: over twelve characters) used to be persisted as an empty
 /// field with exit 0 — wiping the stored value with no note on any
@@ -679,6 +714,21 @@ fn memory_add_work_context_from_file_and_positional_arguments() {
     // share the default topic, so the second add rewrites the first entry.
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["text"], "Reviewing the cli contract");
+
+    // Round-52 review: the human lines echo the store the way the user
+    // typed it (the canonical hyphen spelling), not the underscore storage
+    // form the JSON keys keep.
+    let human = run_ok(&["pinvou", "memory", "list", "--store", "work-context"]);
+    assert!(
+        human.starts_with("work-context (1)"),
+        "the list header must echo the hyphenated spelling: {human:?}"
+    );
+    let id = items[0]["id"].as_str().unwrap().to_owned();
+    let human = run_ok(&["pinvou", "memory", "delete", "work-context", &id, "--yes"]);
+    assert!(
+        human.starts_with("Deleted work-context:"),
+        "the delete echo must use the hyphenated spelling: {human:?}"
+    );
 }
 
 /// Stored memory text can legitimately contain control characters: the

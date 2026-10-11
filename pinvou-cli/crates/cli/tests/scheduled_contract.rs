@@ -623,6 +623,11 @@ fn rejects_invalid_usage_with_exit_code_two() {
         vec!["scheduled", "runs-all", "--limit"],
         vec!["scheduled", "mark-viewed", "t-1"],
         vec!["scheduled", "mark-viewed", "t-1", "r-1", "--force"],
+        // Round-52 review: a flag-shaped token in the RUN-ID slot gets the
+        // same guard as the task-id slot — it used to skip the guard at
+        // parse and die at execute as an exit-1 not-found lookup against a
+        // record named after the flag.
+        vec!["scheduled", "mark-viewed", "t-1", "--foo"],
         vec!["scheduled", "chat-prompt", "--extra"],
     ];
     for arguments in &invalid {

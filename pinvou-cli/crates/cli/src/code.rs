@@ -1184,6 +1184,13 @@ fn parse_model_slot_pairs(
     repeated: &[(&str, &str)],
     label: &str,
 ) -> Result<Vec<(String, String)>, CliError> {
+    // Round-52 review: an unknown slot id used to parse fine and then be
+    // silently dropped — the add/update gates only check that the REQUIRED
+    // slots are present, so `--model-slot bogus=X` exited 0 and the binding
+    // vanished without a note on any channel. Validate at parse against the
+    // same imported pair list the gates build `missing` from, so an
+    // app-side slot change cannot drift out of this refusal.
+    let valid_slots: Vec<&str> = CLAUDE_MODEL_SLOTS.iter().map(|(slot, _)| *slot).collect();
     let mut seen_slots = std::collections::BTreeSet::new();
     repeated
         .iter()
@@ -1199,6 +1206,12 @@ fn parse_model_slot_pairs(
             if slot.is_empty() || model.is_empty() {
                 return Err(CliError::usage(format!(
                     "code {label} --model-slot must be SLOT=MODEL"
+                )));
+            }
+            if !valid_slots.contains(&slot) {
+                return Err(CliError::usage(format!(
+                    "code {label}: unknown --model-slot slot '{slot}' (valid slots: {})",
+                    valid_slots.join(", "),
                 )));
             }
             // Round-51 review: a repeated slot id used to be silently
@@ -5739,6 +5752,13 @@ fn require_native_code_session(
     agents: &SessionAgentStore,
     session: &str,
 ) -> Result<(PathBuf, PathBuf), CliError> {
+    // Round-52 review: existence BEFORE the code-session check. The
+    // persisted record lookup answers false for a missing id
+    // (`unwrap_or_default` on the store read), so a typo'd session id used
+    // to be misdiagnosed as "only native code sessions support
+    // checkpoints" instead of the not-found answer every sibling lane
+    // gives (`require_existing`).
+    require_existing(store, session, "checkpoints")?;
     if !agents.is_code_session(session) {
         return Err(CliError::failed(format!(
             "code_checkpoints_requires_native_code_session: only native code sessions support \
@@ -6208,6 +6228,43 @@ fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExitCode;
+
+    /// Round-52 review: an unknown `--model-slot` slot used to parse fine
+    /// and then be silently dropped — the add gate only checks that the
+    /// REQUIRED slots are present, so `--model-slot bogus=X` exited 0 and
+    /// the binding vanished. The refusal fires at parse and names the valid
+    /// set (same source of truth as the gates' `missing` list).
+    #[test]
+    fn parse_model_slot_pairs_refuses_an_unknown_slot_and_names_the_valid_set() {
+        let error =
+            parse_model_slot_pairs(&[("--model-slot", "bogus=claude-opus-4")], "providers add")
+                .expect_err("an unknown slot must be refused at parse");
+        assert_eq!(error.exit_code(), ExitCode::Usage);
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown --model-slot slot 'bogus'"),
+            "the refusal must name the offending slot: {message}"
+        );
+        assert!(
+            message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
+            "the refusal must make the slot set discoverable: {message}"
+        );
+
+        // The known slots still parse, in argv order.
+        let pairs = parse_model_slot_pairs(
+            &[("--model-slot", "fable=f3"), ("--model-slot", "opus=o1")],
+            "providers update",
+        )
+        .expect("known slots parse");
+        assert_eq!(
+            pairs,
+            vec![
+                ("fable".to_owned(), "f3".to_owned()),
+                ("opus".to_owned(), "o1".to_owned()),
+            ]
+        );
+    }
 
     /// Round-37 review: the constant's doc promises lockstep with the
     /// library clamp the wired consumers use; without a pin the "must stay

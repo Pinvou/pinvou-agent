@@ -5899,5 +5899,17 @@ mod tests {
             "an unreachable keyring must not masquerade as a missing key: {}",
             outcome.stdout
         );
+
+        // Round-51 review: `show --reveal-key` rides the same honest
+        // resolver — with the keyring unreachable it must fail naming the
+        // credential instead of printing the false `api_key: (not stored)`
+        // / `credential_state: missing` block.
+        let error = show(&store, &id, true, OutputMode::Human)
+            .expect_err("must fail: the keyring holding the key is unreachable");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains("credential_unavailable"),
+            "the refusal must name the credential: {error}"
+        );
     }
 }

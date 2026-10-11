@@ -932,6 +932,22 @@ fn push_unique(out: &mut Vec<String>, id: String) {
     }
 }
 
+/// CLI-styled refusal for an unreadable/corrupt code-session agent index
+/// (`session-agents.json`), shared by the strict pre-lane load and the codex
+/// lane's own error arm (the index can turn corrupt between the two reads).
+/// The store's own error is an app-side zh anyhow chain (`解析 … 失败`);
+/// echoing it through `{error:#}` surfaced Chinese the user must act on
+/// without being able to read, so the chain is deliberately not carried —
+/// the copy names the file and the repair instead. Nothing has been moved
+/// whenever this fires (the pre-lane load runs first; the lane's own
+/// persist rolls its memory back on failure).
+fn rebind_index_unreadable() -> CliError {
+    CliError::failed(
+        "rebind_workspace_root: the code-session agent index is unreadable; nothing was \
+         moved — repair or remove session-agents.json, then retry",
+    )
+}
+
 fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // Argument-shape validation first (pure path checks, no store access —
     // the same order `move` uses for its session-id gate): a malformed
@@ -945,7 +961,19 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     require_yes(yes)?;
     let store = open_store()?;
     let sessions = open_session_store()?;
-    let agents = SessionAgentStore::load_or_empty();
+    // Round-52 review: `load()`, not `load_or_empty()` — the empty
+    // fallback prints the app-styled `[pinvou3-app] … starting empty`
+    // recovery line into CLI output (with the store's zh chain attached),
+    // and its empty map would sail into a codex lane that then refuses
+    // anyway. Load strictly BEFORE any lane runs — nothing has been moved
+    // — and refuse with the CLI-styled copy that names the repair; the
+    // underlying zh chain is deliberately not echoed.
+    let agents = match SessionAgentStore::load() {
+        Ok(agents) => agents,
+        Err(_) => {
+            return Err(rebind_index_unreadable());
+        }
+    };
     // Rebind-side critical section (`begin_rebind`, the same token the GUI
     // command takes): root-accepting project writers hold `rebind_fence` and
     // refuse to commit while this is held, which is what makes the
@@ -1030,10 +1058,13 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         })?;
     // Codex lane: the store's own batch rewrites the helper index and the
     // authoritative code-session sidecars (off-index orphans included) and
-    // reports both what moved and what is finally stale.
+    // reports both what moved and what is finally stale. Round-52 review:
+    // the lane's error is the store's zh anyhow chain (its under-lock
+    // reload refuses a corrupt index fail-closed); map it to the same
+    // CLI-styled copy as the pre-lane load instead of echoing the chain.
     let prefix_outcome = agents
         .rebind_workspace_prefix(&from_display, &to_display)
-        .map_err(|error| project_error("rebind", error))?;
+        .map_err(|_error| rebind_index_unreadable())?;
     // Plain-chat lane, APPLY phase: the store's own batch moves the binding
     // sidecars and the in-memory cache. The legacy table already carries the
     // plan's translations, so a fault here heals forward at the next boot

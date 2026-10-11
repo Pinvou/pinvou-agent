@@ -1018,6 +1018,19 @@ pub fn drain_capped_to_eof<R: std::io::Read>(pipe: Option<R>, cap: u64) -> (Vec<
                     kept.extend_from_slice(&chunk[..n.min(remaining)]);
                 }
             }
+            // Round-52 review: a signal arriving before any byte is
+            // retryable, not an end of stream — treating it as EOF ended
+            // the drain early, truncated the capture and under-reported
+            // `total` while the child was still writing.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            // Stated plainly: a non-EINTR read error is indistinguishable
+            // from EOF here — `Read` reports both through `Err`, and this
+            // loop has no error channel, so the error keeps the
+            // break-with-current-semantics and the child may then block in
+            // `write(2)` on a full pipe. The window is narrow: the spawned
+            // children run under SA_RESTART on the targets we support, so
+            // a signal usually retries the read in-kernel and this arm
+            // only sees genuine stream errors.
             Err(_) => break,
         }
     }
@@ -1093,6 +1106,42 @@ mod tests {
         assert_eq!(total, 100, "total counts everything drained to EOF");
         let (kept, total) = drain_capped_to_eof(None::<std::io::Empty>, 40);
         assert_eq!((kept.len(), total), (0, 0), "a missing pipe drains empty");
+    }
+
+    /// Round-52 review: the reader is a generic `Read`, so the signal is
+    /// injectable — an `Interrupted` error before any byte must retry the
+    /// read, not end the drain (which truncated the capture and
+    /// under-reported `total` while the writer was still going).
+    #[test]
+    fn drain_capped_to_eof_retries_interrupted_reads_instead_of_ending_the_drain() {
+        struct Flaky {
+            cursor: std::io::Cursor<Vec<u8>>,
+            interruptions_left: u32,
+        }
+        impl std::io::Read for Flaky {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.interruptions_left > 0 {
+                    self.interruptions_left -= 1;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "injected signal",
+                    ));
+                }
+                self.cursor.read(buf)
+            }
+        }
+        let (kept, total) = drain_capped_to_eof(
+            Some(Flaky {
+                cursor: std::io::Cursor::new(b"payload".to_vec()),
+                interruptions_left: 3,
+            }),
+            40,
+        );
+        assert_eq!(
+            kept, b"payload",
+            "the payload survives the injected signals"
+        );
+        assert_eq!(total, 7, "the drain ran to true EOF past the signals");
     }
 
     #[test]

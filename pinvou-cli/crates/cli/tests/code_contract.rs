@@ -273,6 +273,16 @@ fn usage_error(arguments: &[&str]) -> CliError {
     parse_args(arguments.to_vec()).expect_err(arguments.join(" ").as_str())
 }
 
+/// A command error from either the parse or the execute lane — for pins
+/// whose refusal deliberately fires at parse (the class is asserted per
+/// call site).
+fn command_error(arguments: &[&str]) -> CliError {
+    match parse_args(arguments.to_vec()) {
+        Err(error) => error,
+        Ok(parsed) => execute(parsed).expect_err("expected a command error"),
+    }
+}
+
 /// Runs a command the family's `require_yes` gate must refuse: executes it and
 /// asserts the refusal is the usage-class error naming `--yes`, then returns
 /// the error. The per-command gate tests stay — this only collapses their
@@ -991,6 +1001,44 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
         vec!["pinvou", "code", "providers", "switch", "codex", "--model"],
         vec!["pinvou", "code", "checkpoints", "diff", "s-1", "--yes"],
         vec!["pinvou", "code", "respond", "s-1", "--deny", "allow"],
+        // Round-52 review: an unknown --model-slot slot id used to parse
+        // fine and be silently dropped downstream (the add gate only checks
+        // that the REQUIRED slots are present), so the refusal fires at
+        // parse in both lanes.
+        add(
+            "claude",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--model-slot",
+                "bogus=x",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "opus=o1",
+                "--model-slot",
+                "haiku=h1",
+                "--model-slot",
+                "fable=f1",
+                "--model-slot",
+                "subagent=su1",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "update",
+            "pv-1234567890ab",
+            "--agent",
+            "claude",
+            "--model-slot",
+            "bogus=x",
+        ],
     ];
     for arguments in &invalid {
         let error = usage_error(arguments);
@@ -2033,6 +2081,10 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
 /// `a*x.txt` used to match the tracked `abx.txt`, answer "tracked", and lose
 /// its diff silently. The `:(literal)` prefix (both surfaces) makes the
 /// glob-shaped untracked file diff like any other untracked file.
+/// Round-52 review: the same prefix on the DIFF arm is pinned by the
+/// tracked second half below — a plain pathspec there would glob the
+/// modified alias target's hunks into the answer, which the untracked arm
+/// alone cannot observe.
 #[cfg(unix)]
 #[test]
 fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
@@ -2073,6 +2125,48 @@ fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
             .contains("glob-shaped untracked"),
         "an untracked glob-metacharacter filename must diff, not vanish: {}",
         cli["text"]
+    );
+
+    // Round-52 review: the untracked arm above cannot see a lost
+    // `:(literal)` prefix — with plain glob pathspecs the synthetic
+    // untracked fallback supplies the same text. Track the glob-shaped
+    // file and modify BOTH it and the alias target: with the literal
+    // prefix the diff renders a*x.txt's own hunks only, while a plain
+    // `a*x.txt` pathspec globs onto the modified abx.txt too and its
+    // unrelated hunks leak into the answer — red below.
+    for args in [
+        vec!["add", "a*x.txt"],
+        vec![
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "track the glob-shaped file",
+        ],
+    ] {
+        assert!(
+            fixture_git_ok(&project, &args),
+            "fixture git {:?} failed",
+            args.first()
+        );
+    }
+    std::fs::write(
+        project.join("a*x.txt"),
+        "glob-shaped untracked\nglob-modified\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("abx.txt"), "tracked\nalias-modified\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "a*x.txt"]);
+    let text = cli["text"].as_str().unwrap();
+    assert!(
+        text.contains("glob-modified"),
+        "the tracked glob-shaped file's own modification must diff: {text}"
+    );
+    assert!(
+        !text.contains("abx.txt") && !text.contains("alias-modified"),
+        "the alias target's hunks must not leak through a glob match: {text}"
     );
 }
 
@@ -2436,6 +2530,23 @@ fn checkpoints_refuse_non_native_code_sessions() {
     ])
     .unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Usage);
+
+    // Round-52 review: a MISSING session must answer the not-found class
+    // every sibling lane gives, not the native-session refusal — the
+    // persisted record lookup answers false for a missing id, so the gate
+    // used to misdiagnose a typo'd id as a non-code session.
+    let error = run(&["pinvou", "code", "checkpoints", "list", "missing-session"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let message = error.to_string();
+    assert!(
+        message.contains("load_session(\"missing-session\")")
+            || message.contains("load_session(missing-session)"),
+        "the not-found answer must come from the existence probe: {message}"
+    );
+    assert!(
+        !message.contains("code_checkpoints_requires_native_code_session"),
+        "a missing session is not a non-code session: {message}"
+    );
 }
 
 #[test]
@@ -3738,6 +3849,59 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
         message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
         "the error must make the slot set discoverable: {message}"
     );
+}
+
+/// Round-52 review: an unknown slot id must be refused at parse (exit 2)
+/// with a message that names the valid set — the slot used to parse fine
+/// and be silently dropped, because the add gate only checks that the
+/// REQUIRED slots are present.
+#[test]
+fn providers_refuse_an_unknown_model_slot_naming_the_valid_set() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = HomeGuard::new("claude-unknown-slot");
+    for arguments in [
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "add",
+            "--agent",
+            "claude",
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--model-slot",
+            "sonnet=s1",
+            "--model-slot",
+            "bogus=x",
+            "--api-key-env",
+            "MY_KEY",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "update",
+            "pv-1234567890ab",
+            "--agent",
+            "claude",
+            "--model-slot",
+            "bogus=x",
+        ],
+    ] {
+        let error = command_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown --model-slot slot 'bogus'"),
+            "the refusal must name the offending slot: {message}"
+        );
+        assert!(
+            message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
+            "the refusal must make the slot set discoverable: {message}"
+        );
+    }
 }
 
 /// The update lane's claude gate works on the MERGED slot set: a legacy

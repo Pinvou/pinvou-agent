@@ -13,9 +13,10 @@
 //! `next_run_at: null` on create where the foundation resolves the
 //! slot eagerly, silently pausing past one-shots). What stays CLI-local:
 //! - atomic JSON writes with a per-pid/nanos-unique staging file
-//!   (`write_json_atomic`); the foundation SIDECAR writer stages under its
-//!   own unique temp name (`tempfile`-generated), so neither side can
-//!   collide with the other's staging path there. Definitions are
+//!   (`write_json_atomic`); the foundation SIDECAR writer stages through
+//!   the app's `atomic_write_private`, whose staging name is unique the
+//!   same way (`.{name}.tmp-{pid}-{nanos}`), so neither side can collide
+//!   with the other's staging path there. Definitions are
 //!   different: BOTH surfaces write them through the foundation's
 //!   `save_automation`, whose staging name is a fixed `<def>.json.tmp` —
 //!   a GUI def write racing a CLI mutation of the same task stays a
@@ -321,9 +322,20 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
         }
         "mark-viewed" => {
             let task_id = require_id(rest.first(), "scheduled mark-viewed")?;
-            let run_id = rest.get(1).cloned().ok_or_else(|| {
-                CliError::usage("scheduled mark-viewed requires <task-id> <run-id>")
-            })?;
+            // Round-52 review: the run-id slot is the same id shape as the
+            // task-id slot, so it goes through the same guard
+            // (`require_family_id`, the shared implementation `require_id`
+            // routes through). Taken raw, a flag-shaped token
+            // (`mark-viewed t-1 --foo`) skipped the guard at parse and died
+            // one step later as an exit-1 not-found lookup against a record
+            // named after the flag.
+            let run_id = rest.get(1).map(|id| id.trim().to_owned());
+            let run_id = require_family_id(
+                run_id.as_ref(),
+                "scheduled mark-viewed",
+                "scheduled mark-viewed",
+                "a run id",
+            )?;
             expect_no_arguments(&rest[2..], "scheduled mark-viewed")?;
             Ok(ScheduledCommand::MarkViewed { task_id, run_id })
         }
@@ -3447,6 +3459,16 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
                 // the work anyway. The `truncated` marker stays truthful:
                 // it already only claims "older runs were not read" — now
                 // they are also not decoded.
+                //
+                // Round-52 review, the displacement interaction: the
+                // newest-N window is selected over the RAW records, and the
+                // typed gate runs after the cut — so invalid records inside
+                // the window displace exactly that many valid runs from it
+                // (they still count toward `probe_limit`), and the command
+                // shows fewer archived runs than the store holds even
+                // though the displaced ones are decodable. The marker stays
+                // truthful either way: it only ever claimed "older runs
+                // were not read".
                 // Sort (time, original index) newest-first; the index tiebreak
                 // keeps the selection deterministic for equal timestamps.
                 let mut newest_first = runs

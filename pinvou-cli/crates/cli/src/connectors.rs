@@ -5286,4 +5286,138 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── version-parse arms + spec parity (round-52 review) ──────────────
+
+    /// `TMEET_NPM_SPEC` hand-copies the version the GUI floor carries, and
+    /// nothing tied the two: raising the app's `TMEET_MIN_VERSION` (the
+    /// install AND upgrade gate this crate imports) would have silently
+    /// left `npm install -g` pinning the OLD spec — the freshly installed
+    /// CLI then fails the new floor and every connect answers
+    /// "upgrade required" forever. The spec's version suffix must parse to
+    /// exactly the imported floor, so a GUI-side raise turns this red until
+    /// the spec moves with it (the app asserts the same parity for its own
+    /// pair).
+    #[test]
+    fn tmeet_npm_spec_version_matches_the_imported_min_version_floor() {
+        let suffix = TMEET_NPM_SPEC
+            .rsplit('@')
+            .next()
+            .expect("the spec carries an @version suffix");
+        let parsed =
+            parse_semver3(suffix).unwrap_or_else(|| panic!("'{suffix}' must be a semver3"));
+        assert_eq!(
+            parsed, TMEET_MIN_VERSION,
+            "TMEET_NPM_SPEC must pin exactly the imported TMEET_MIN_VERSION floor; \
+             raise TMEET_NPM_SPEC in the same change as the GUI floor"
+        );
+        // And the package half is untouched — only the version may move.
+        assert!(
+            TMEET_NPM_SPEC.starts_with("@tencentcloud/tmeet@"),
+            "the spec must keep installing the tmeet package: {TMEET_NPM_SPEC}"
+        );
+    }
+
+    /// Each per-connector `--version` parse arm at the odd output shape it
+    /// exists for, plus the shared default's leading-numeric-noise behavior.
+    /// The arms mirror the GUI's per-connector parsers; a refactor that
+    /// collapses them to one `parse_semver3` call passes the happy paths and
+    /// silently misparses exactly these shapes.
+    #[test]
+    fn semver_from_stream_matches_each_connector_version_shape() {
+        // wecom: the version is the token AFTER the one containing
+        // `wecom-cli`, with build-timestamp noise around it — a plain
+        // whole-output parse would answer the timestamp (`wecom-cli 1.1.0
+        // (wecom 2026-08-17T03:14:38Z 889c555)` is the real 1.1.0+ shape).
+        let wecom = ConnectorKind::Wecom.spec();
+        assert_eq!(
+            semver_from_stream(
+                wecom,
+                "wecom-cli 1.2.3 (wecom 2026-08-17T03:14:38Z 889c555)"
+            ),
+            Some((1, 2, 3)),
+            "the token after the wecom-cli token is the version"
+        );
+        assert_eq!(
+            semver_from_stream(wecom, "1.9.9 noise wecom-cli  0.2.1"),
+            Some((0, 2, 1)),
+            "position, not order, selects the version token"
+        );
+        assert_eq!(
+            semver_from_stream(wecom, "no marker here 1.2.3"),
+            None,
+            "without the marker the arm refuses instead of guessing"
+        );
+
+        // tmeet: skip to the `version` marker, then the first
+        // digit-or-`v` run, then strip a `v` prefix — the banner puts
+        // package/scope text (which parses as numbers) BEFORE the version.
+        let tmeet = ConnectorKind::Tmeet.spec();
+        assert_eq!(
+            semver_from_stream(tmeet, "@tencentcloud/tmeet version v1.0.18"),
+            Some((1, 0, 18)),
+            "the marker skip survives a v-prefixed version"
+        );
+        assert_eq!(
+            semver_from_stream(tmeet, "TMEET VERSION 2.3.4"),
+            Some((2, 3, 4)),
+            "the marker match is case-insensitive"
+        );
+        assert_eq!(
+            semver_from_stream(tmeet, "tmeet 9.9.9"),
+            Some((9, 9, 9)),
+            "without a `version` marker the scan starts at 0 and answers the \
+             first number (the GUI parses both streams the same way)"
+        );
+
+        // feishu/dingtalk take the default arm: a whole-output three-segment
+        // parse from the FIRST numeric run. Leading numeric noise therefore
+        // wins over a later real version — current behavior, documented
+        // here so a change to it is a decision, not an accident (dingtalk
+        // is version-ungated; feishu's floor sits at the first number).
+        let feishu = ConnectorKind::Feishu.spec();
+        assert_eq!(
+            semver_from_stream(feishu, "2024.01.09 lark-cli 1.0.95"),
+            Some((2024, 1, 9)),
+            "the default arm answers the leading numeric run, noise included"
+        );
+        assert_eq!(
+            semver_from_stream(feishu, "lark-cli version 1.0.95"),
+            Some((1, 0, 95)),
+            "the happy path still parses the real version"
+        );
+    }
+
+    /// The timeout error redacts the `--device-code` value BY EXACT VALUE
+    /// before the heuristic pass: a short device code is not
+    /// secret-shaped, so the heuristic alone would echo it back in the
+    /// `timed out` error the user pastes into an issue.
+    #[test]
+    fn redact_argv_pairing_strips_the_device_code_value_from_the_error_text() {
+        // Short, non-secret-shaped: survives `redact_secret`'s heuristic,
+        // must still be gone by exact-value strip.
+        let redacted =
+            redact_argv_pairing(&["connect", "--device-code", "abc123", "--timeout", "30"]);
+        assert!(
+            !redacted.contains("abc123"),
+            "the exact device-code value must not survive: {redacted}"
+        );
+        assert!(
+            redacted.contains("[REDACTED]"),
+            "the value is replaced by the redaction marker: {redacted}"
+        );
+        // The rest of the argv stays readable (the error must keep its
+        // shape and its non-pairing values).
+        assert!(
+            redacted.contains("connect") && redacted.contains("30"),
+            "unrelated argv must survive: {redacted}"
+        );
+        // Secret-shaped values keep the heuristic as the second net.
+        let redacted =
+            redact_argv_pairing(&["connect", "--device-code", "sk-live-pasted-literal-987654"]);
+        assert!(
+            !redacted.contains("sk-live-pasted-literal-987654"),
+            "a secret-shaped value must not survive either: {redacted}"
+        );
+    }
 }
