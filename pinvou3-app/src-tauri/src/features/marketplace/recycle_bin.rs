@@ -362,6 +362,18 @@ impl RecycleBin {
             let Some(index) = file.entries.iter().position(|e| e.id == pkg_id) else {
                 return Err(format!("包 '{pkg_id}' 不在回收站"));
             };
+            // Round-28 review: the manifest is a 0600 state file, but still a
+            // hand-editable one — a snapshot whose record declares a different
+            // id would register the restored tree under the record's id (a
+            // live record no directory backs, and a `source: Preset` record
+            // downgrades the later uninstall to a physical delete). The entry
+            // id is authoritative; refuse the mismatch before anything moves.
+            if file.entries[index].record.id != pkg_id {
+                return Err(format!(
+                    "回收站条目 '{pkg_id}' 的快照 record id '{}' 不一致，拒绝恢复",
+                    file.entries[index].record.id
+                ));
+            }
             let src = self.root.join(pkg_id);
             let dst = self.bundles_root.join(pkg_id);
             if !src.is_dir() {
@@ -980,6 +992,39 @@ mod tests {
             .recycle_package(id, KIND_SKILL, &format!("{id}.zip"), record)
             .unwrap();
         pkg
+    }
+
+    /// Round-28 review: a hand-edited manifest whose snapshot record declares
+    /// a different id must be refused BEFORE anything moves — restoring it
+    /// would register the tree under the record's id (a live record no
+    /// directory backs, and a Preset-source record downgrades the later
+    /// uninstall of that directory to a physical delete).
+    #[test]
+    fn take_back_refuses_a_snapshot_record_id_mismatch() {
+        crate::platform::test_support::with_temp_home("pinvou3-recycle-id-mismatch", || {
+            bin_package("demo", "demo", false);
+            let bin = RecycleBin::new();
+
+            let mut manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&bin.file).unwrap()).unwrap();
+            manifest["entries"][0]["record"]["id"] =
+                serde_json::Value::String("victim".to_string());
+            std::fs::write(&bin.file, manifest.to_string()).unwrap();
+
+            let error = bin.take_back("demo").unwrap_err();
+            assert!(
+                error.contains("不一致"),
+                "the mismatch must be refused with the snapshot-id error: {error}"
+            );
+            assert!(
+                bin.root.join("demo").is_dir(),
+                "the refusal must fire before the directory moves"
+            );
+            assert!(
+                !paths::bundles_root().join("demo").exists(),
+                "nothing may land at the restore target"
+            );
+        });
     }
 
     /// RAII-locked, freshly seeded PINVOU3_HOME for the deny-first restore
