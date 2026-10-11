@@ -755,6 +755,44 @@ mod tests {
     }
 
     #[test]
+    fn screening_hit_composes_across_an_invisible_gap() {
+        // The seam composition pair is adjacent in the FOLDED stream, so the
+        // raw characters between the starter (ｺ) and its voiced mark fold
+        // away — a pure invisible run of any length. A verbatim raw tail
+        // holds invisible padding instead of the starter once the run pushes
+        // ｺ past the re-fed window, and the whole-string fold still composes
+        // ゴミ箱: the smallest divergence is exactly one invisible character
+        // more than the tail holds. The seam must reach past the run.
+        for tail_back in [8usize, 9, 12, 30] {
+            for (gap, label) in [
+                ("\u{200B}".repeat(tail_back), "zero-width"),
+                (" ".repeat(tail_back), "whitespace"),
+            ] {
+                let mut raw = "a".repeat(FOLD_CHUNK_CHARS - 1 - tail_back);
+                raw.push('ｺ');
+                raw.push_str(&gap);
+                raw.push('\u{FF9E}');
+                raw.push_str("ミ箱");
+                assert!(
+                    screening_hit(&raw),
+                    "ｺ {tail_back} back with a {label} gap spanning the boundary must compose"
+                );
+            }
+        }
+        // The starter one whole chunk before the mark: an all-invisible
+        // middle chunk must not evict the tail (the pair still composes).
+        let mut raw = "a".repeat(FOLD_CHUNK_CHARS - 1);
+        raw.push('ｺ');
+        raw.push_str(&"\u{200B}".repeat(FOLD_CHUNK_CHARS));
+        raw.push('\u{FF9E}');
+        raw.push_str("ミ箱");
+        assert!(
+            screening_hit(&raw),
+            "ｺ + all-invisible chunk + ﾞミ箱 must compose across two boundaries"
+        );
+    }
+
+    #[test]
     fn screening_hit_sees_through_invisible_and_confusable_characters() {
         // Every one of these rendered identically to the user and screened
         // Clear under the previous plain `to_lowercase().contains()` match.

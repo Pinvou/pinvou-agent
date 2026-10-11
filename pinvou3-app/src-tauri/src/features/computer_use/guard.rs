@@ -206,13 +206,16 @@ pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 /// cannot drift away from the real chunk size.
 pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
 
-/// Raw characters re-fed ahead of each chunk in [`for_each_folded_window`]:
-/// NFC composition is applied per chunk, so a base character and the
-/// combining mark that completes it must not be split across a chunk
-/// boundary. Unicode composition fuses a starter with the marks that follow
-/// it — a span of at most two characters, or three for the algorithmic
-/// Hangul L+V+T jamo — so eight raw characters cover every composition
-/// Unicode can perform, with room to spare.
+/// Visible raw characters re-fed ahead of each chunk in
+/// [`for_each_folded_window`]: NFC composition is applied per chunk, so a
+/// base character and the combining mark that completes it must not be split
+/// across a chunk boundary. Unicode composition fuses a starter with the
+/// marks that follow it — a span of at most two characters, or three for the
+/// algorithmic Hangul L+V+T jamo — so eight raw characters cover every
+/// composition Unicode can perform, with room to spare. The count is over
+/// characters the fold keeps: the pair is adjacent in the folded stream, so
+/// any run of invisible characters between them folds away and must not
+/// consume the tail budget (see the seam-window doc on the walker).
 pub(crate) const FOLD_COMPOSITION_OVERLAP_CHARS: usize = 8;
 
 /// Whether `c` is invisible to the user and therefore must not separate two
@@ -767,25 +770,41 @@ pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
 ///   is the true continuation of the folded stream, so a term straddling
 ///   the boundary is found exactly as a whole-string fold would find it;
 /// - the **seam window** — the previous chunk's last
-///   [`FOLD_COMPOSITION_OVERLAP_CHARS`] raw characters re-folded together
-///   with this chunk's first [`T3_MATCH_WINDOW_CHARS`] raw characters —
-///   exists because composition is applied per fold: `ｺ`+U+FF9E split
-///   across the boundary would fold to コ and a lone voiced mark, and only
-///   re-folding the raw pair composes ゴ. A term starting inside the re-fed
-///   tail spans at most the tail plus [`T3_MATCH_WINDOW_CHARS`] folded
-///   characters — the same bound the carry argument uses — so the short
-///   seam window cannot miss one.
+///   [`FOLD_COMPOSITION_OVERLAP_CHARS`] visible raw characters re-folded
+///   together with this chunk's first [`T3_MATCH_WINDOW_CHARS`] visible raw
+///   characters — exists because composition is applied per fold: `ｺ`+U+FF9E
+///   split across the boundary would fold to コ and a lone voiced mark, and
+///   only re-folding the raw pair composes ゴ.
+///
+/// Both seam sides select only characters the fold keeps (`!
+/// [`is_invisible_for_matching`]). The pair a seam must re-compose is
+/// adjacent in the **folded** stream, so every raw character between them
+/// folds away — a pure invisible run of any length. A verbatim raw tail
+/// would end at the boundary and can therefore miss the starter by one
+/// invisible character (`ｺ` + nine U+200B + U+FF9E across a boundary folds
+/// to ゴミ箱 as a whole string but to コ | ‵ﾞ‵ミ箱 per chunk, and the
+/// verbatim tail holds eight invisible characters, not the `ｺ`). Filtering
+/// to fold-relevant characters keeps the window faithful: the fold's first
+/// step drops exactly the selected-out characters, so the seam is still the
+/// fold of the contiguous raw region and cannot fabricate a match the
+/// whole-string fold would not show. A chunk that folds to nothing (pure
+/// invisible) must not evict the tail — the starter may sit one chunk before
+/// the mark with only invisible characters between.
+///
+/// A term starting inside the re-fed visible tail spans at most the tail
+/// plus [`T3_MATCH_WINDOW_CHARS`] folded characters — the same bound the
+/// carry argument uses — so the short seam window cannot miss one.
 ///
 /// Both windows are faithful folds of contiguous regions of `raw` (the
 /// carry really is the fold of the raw text immediately preceding the
-/// fresh chunk; the seam really re-folds adjacent raw text), so neither can
-/// fabricate a match a whole-string fold would not show — and between them
-/// a whole-string fold can never show a match they miss. Peak memory stays
-/// proportional to the chunk, not the label, so a hostile multi-megabyte
-/// accessible name or `AXRole` buys no proportional allocation. Used by the
-/// platform denylist matcher (`platform::helpers::screening_hit`) and
-/// [`is_secure_role`], which would otherwise each need their own copy of
-/// the walk.
+/// fresh chunk; the seam really re-folds adjacent raw text up to fold-dropped
+/// characters), so neither can fabricate a match a whole-string fold would
+/// not show — and between them a whole-string fold can never show a match
+/// they miss. Peak memory stays proportional to the chunk, not the label,
+/// so a hostile multi-megabyte accessible name or `AXRole` buys no
+/// proportional allocation. Used by the platform denylist matcher
+/// (`platform::helpers::screening_hit`) and [`is_secure_role`], which would
+/// otherwise each need their own copy of the walk.
 pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) -> bool) -> bool {
     let carry = T3_MATCH_WINDOW_CHARS.saturating_sub(1);
     let mut folded = String::new();
@@ -803,7 +822,12 @@ pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) ->
         if !raw_tail.is_empty() {
             let seam: String = raw_tail
                 .chars()
-                .chain(fresh.chars().take(T3_MATCH_WINDOW_CHARS))
+                .chain(
+                    fresh
+                        .chars()
+                        .filter(|c| !is_invisible_for_matching(*c))
+                        .take(T3_MATCH_WINDOW_CHARS),
+                )
                 .collect();
             if observe(&fold_for_matching(&seam)) {
                 return true;
@@ -813,14 +837,20 @@ pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) ->
         if count > carry {
             folded = folded.chars().skip(count - carry).collect();
         }
-        raw_tail = fresh
+        let visible: String = fresh
             .chars()
-            .rev()
-            .take(FOLD_COMPOSITION_OVERLAP_CHARS)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
+            .filter(|c| !is_invisible_for_matching(*c))
             .collect();
+        if !visible.is_empty() {
+            raw_tail = visible
+                .chars()
+                .rev()
+                .take(FOLD_COMPOSITION_OVERLAP_CHARS)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+        }
     }
 }
 
