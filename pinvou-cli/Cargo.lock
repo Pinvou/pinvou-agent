@@ -29,6 +29,7 @@ name = "adapter-smoke"
 version = "0.1.0"
 dependencies = [
  "agent-backend-api",
+ "async-trait",
  "benchmark-core",
  "serde",
  "serde_json",

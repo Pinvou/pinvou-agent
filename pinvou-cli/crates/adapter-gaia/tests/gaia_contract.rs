@@ -1,6 +1,6 @@
 use adapter_gaia::{
-    GAIA_ADAPTER_VERSION, GAIA_DATASET_REVISION, GAIA_SCORER_REVISION, GAIA_SCORER_RUNTIME_PROFILE,
-    GAIA_SPLIT, GaiaAdapter, question_scorer,
+    GAIA_ADAPTER_VERSION, GAIA_DATASET_REVISION, GAIA_SCORER_REVISION, GAIA_SPLIT, GaiaAdapter,
+    question_scorer,
 };
 use benchmark_core::{BenchmarkAdapter, ExecutionKind};
 
@@ -80,11 +80,7 @@ fn official_question_scorer_uses_python_whole_string_lowercasing() {
 }
 
 #[test]
-fn scorer_runtime_profile_is_pinned_without_changing_the_official_revision() {
-    assert_eq!(
-        GAIA_SCORER_RUNTIME_PROFILE,
-        "hf-spaces-python-3.10-unicode-13.0"
-    );
+fn official_scorer_revision_is_pinned() {
     assert_eq!(
         GAIA_SCORER_REVISION,
         "1349a17979f0aca0ee9c46cd7ec26eb2fb41102e"

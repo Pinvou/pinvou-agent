@@ -282,7 +282,7 @@ impl ScorerView {
             prediction_type,
             handle.expose_to_adapter(),
         )?;
-        let (_version, content_type, binding, integrity, protected) = decode_envelope(&envelope)?;
+        let (content_type, binding, integrity, protected) = decode_envelope(&envelope)?;
         if binding != expected_binding {
             return Err(corrupt());
         }
@@ -346,32 +346,18 @@ fn encode_envelope(
     Ok(result)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EnvelopeVersion {
-    LegacyV2,
-    CurrentV3,
-}
-
-type DecodedEnvelope<'a> = (
-    EnvelopeVersion,
-    PrivatePredictionContentType,
-    &'a [u8],
-    &'a [u8],
-    &'a [u8],
-);
+type DecodedEnvelope<'a> = (PrivatePredictionContentType, &'a [u8], &'a [u8], &'a [u8]);
 
 fn decode_envelope(bytes: &[u8]) -> Result<DecodedEnvelope<'_>> {
     let header_len = 12 + INTEGRITY_BYTES;
     if bytes.len() < header_len {
         return Err(corrupt());
     }
-    let version = if &bytes[..4] == CURRENT_MAGIC && bytes[4] == CURRENT_SCHEMA_VERSION {
-        EnvelopeVersion::CurrentV3
-    } else if &bytes[..4] == LEGACY_MAGIC && bytes[4] == LEGACY_SCHEMA_VERSION {
-        EnvelopeVersion::LegacyV2
-    } else {
+    if !((&bytes[..4] == CURRENT_MAGIC && bytes[4] == CURRENT_SCHEMA_VERSION)
+        || (&bytes[..4] == LEGACY_MAGIC && bytes[4] == LEGACY_SCHEMA_VERSION))
+    {
         return Err(corrupt());
-    };
+    }
     let content_type = PrivatePredictionContentType::from_tag(bytes[5])?;
     let binding_len = usize::from(u16::from_le_bytes([bytes[6], bytes[7]]));
     let protected_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
@@ -381,7 +367,6 @@ fn decode_envelope(bytes: &[u8]) -> Result<DecodedEnvelope<'_>> {
         return Err(corrupt());
     }
     Ok((
-        version,
         content_type,
         &bytes[header_len..binding_end],
         &bytes[12..header_len],
@@ -421,7 +406,7 @@ fn random_hex<const N: usize>() -> String {
     value
 }
 
-fn validate_handle(handle: &str) -> Result<()> {
+pub(crate) fn validate_handle(handle: &str) -> Result<()> {
     if handle.len() != 64
         || !handle
             .bytes()

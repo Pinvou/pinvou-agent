@@ -6,19 +6,15 @@ use std::sync::Arc;
 use agent_backend_api::{
     AttachmentHandle, PrivateInputHandle, ResolvedAttachmentSource, SecretOutput, SecretText,
 };
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
-use arrow_schema::{DataType, Field, Fields, Schema};
 use async_trait::async_trait;
 use benchmark_core::{
     BenchmarkAdapter, BenchmarkService, ModelIdentity, RunContext, RunManifest, RunStore, Split,
     TaskOutcome, TaskRunner, TaskSelection, TaskStatus, ToolPolicyId, VerifiedDataset,
 };
-use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
 
-use crate::{
-    GAIA_DATASET_REVISION, GAIA_REVISION_MARKER, GaiaAdapter, GaiaDataset, GaiaPrivateInputs,
-};
+use crate::test_fixtures::{FixtureRow, FixtureSchema, write_fixture_schema};
+use crate::{GAIA_DATASET_REVISION, GaiaAdapter, GaiaDataset, GaiaPrivateInputs};
 
 const PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
 
@@ -51,74 +47,28 @@ impl Drop for TempSnapshot {
 
 fn verified_fixture() -> (TempSnapshot, GaiaDataset) {
     let snapshot = TempSnapshot::new();
-    let root = snapshot.path();
-    fs::create_dir_all(root.join("2023/validation")).unwrap();
-    fs::write(root.join(GAIA_REVISION_MARKER), GAIA_DATASET_REVISION).unwrap();
-    fs::write(
-        root.join("2023/validation/attachment.txt"),
-        b"FROZEN_SYNTHETIC_ATTACHMENT",
-    )
-    .unwrap();
-
-    let metadata_names = [
-        "Steps",
-        "Number of steps",
-        "How long did this take?",
-        "Tools",
-        "Number of tools",
-    ];
-    let metadata_fields = Fields::from(
-        metadata_names
-            .iter()
-            .map(|name| Field::new(*name, DataType::Utf8, true))
-            .collect::<Vec<_>>(),
+    let rows = [FixtureRow {
+        task_id: "safe-task-1",
+        question: "PRIVATE_QUESTION_SENTINEL",
+        level: 1,
+        reference: "PRIVATE_REFERENCE_SENTINEL",
+        file_name: Some("attachment.txt"),
+        file_path: Some("2023/validation/attachment.txt"),
+    }];
+    // The attachment keeps its own frozen sentinel bytes so the privacy
+    // assertions below prove it never leaks into public artifacts.
+    write_fixture_schema(
+        snapshot.path(),
+        GAIA_DATASET_REVISION,
+        &rows,
+        FixtureSchema {
+            attachment_bytes: Some(b"FROZEN_SYNTHETIC_ATTACHMENT"),
+            ..FixtureSchema::default()
+        },
     );
-    let metadata: ArrayRef = Arc::new(StructArray::new(
-        metadata_fields,
-        metadata_names
-            .iter()
-            .map(|_| Arc::new(StringArray::from(vec![Some("synthetic")])) as ArrayRef)
-            .collect(),
-        None,
-    ));
-    let arrays: Vec<(&str, ArrayRef)> = vec![
-        ("task_id", Arc::new(StringArray::from(vec!["safe-task-1"]))),
-        (
-            "Question",
-            Arc::new(StringArray::from(vec!["PRIVATE_QUESTION_SENTINEL"])),
-        ),
-        ("Level", Arc::new(Int64Array::from(vec![1]))),
-        (
-            "Final answer",
-            Arc::new(StringArray::from(vec!["PRIVATE_REFERENCE_SENTINEL"])),
-        ),
-        (
-            "file_name",
-            Arc::new(StringArray::from(vec![Some("attachment.txt")])),
-        ),
-        (
-            "file_path",
-            Arc::new(StringArray::from(vec![Some(
-                "2023/validation/attachment.txt",
-            )])),
-        ),
-        ("Annotator Metadata", metadata),
-    ];
-    let schema = Arc::new(Schema::new(
-        arrays
-            .iter()
-            .map(|(name, array)| Field::new(*name, array.data_type().clone(), true))
-            .collect::<Vec<_>>(),
-    ));
-    let batch =
-        RecordBatch::try_new(schema, arrays.into_iter().map(|(_, array)| array).collect()).unwrap();
-    let file = fs::File::create(root.join(PARQUET_PATH)).unwrap();
-    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
-    writer.write(&batch).unwrap();
-    writer.close().unwrap();
-    let parquet = fs::read(root.join(PARQUET_PATH)).unwrap();
+    let parquet = fs::read(snapshot.path().join(PARQUET_PATH)).unwrap();
     let mut dataset = GaiaDataset::verify_with_expected_parquet_for_tests(
-        root,
+        snapshot.path(),
         parquet.len() as u64,
         Sha256::digest(&parquet).into(),
     )
