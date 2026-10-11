@@ -709,3 +709,50 @@ T06 transaction. The isolated test publisher does not provide those owners.
 Specific-client trust proof, complete emergency deny/reconciliation and permanent
 Manifest archives remain separate work. Deployment remains deferred; downloads
 have no hard total or cumulative elapsed limit.
+
+
+T44 first lifecycle storage batch (2026-10-12) is committed as
+`1e9321b4b73559843cf9ed229a9e8abf60feddba` in the separate server repository on
+`feat/t44-lifecycle-kernel`. It introduces protected Session/Authorization,
+minimal consume reservation, initial Transaction and Outcome storage. Private
+SQL composes session fencing, unique active transaction, original cancellation/
+expiry outcomes and the actual T06 ledger result in one final owner transaction.
+Ordinary mutations require the current original StandardReplay owner/epoch/lease;
+OwnerReplay cannot replace the original 24-hour complete-response obligation.
+There is no runtime/PUBLIC first-consumption or new-authorization entry point.
+Future T17/T19 owners still need their actual eligibility/preparation/trust guards.
+
+Recovery persists only semantic digests and minimal bindings, never the full
+request, recovery secret or signed credentials. Internal status verifies all V1
+identity fields and the canonical 256-bit secret, returns state/transaction ID,
+closes at original authorizationExp+61d and cleans at +62d. Late terminal
+observation derives original stored state and cannot reconstruct a cleaned result.
+The additive schema preserves every previous migration and pinned V1 artifact.
+Explicit owner initialization and a restricted maintenance command scan original
+due authorization/cleanup state immediately and every 30 seconds. A session's
+future-action lifetime never ends an ongoing logical download.
+
+The final explicit real PostgreSQL suite passed (42.043s), with pure lifecycle
+tests (2.124s). Both independent roles passed the complete scoped production code,
+SQL, tests, CLI and design record after repairs. Tests cover consume/cancel races,
+zero-partial rollback, original result recovery, 61/62d and post-write crossing,
+lease/epoch/NULL fences, JCS integer equivalence, private/PUBLIC/SET-column rights,
+complete read sets and the actual restricted worker. The replay-policy control
+removes only the target SQL guard in an isolated database and then completes a
+legal OwnerReplay NULL result, so downstream rejection cannot mask the regression.
+The reference-byte test refuses 4006 refs below the item cap, independently of
+4097-item refusal. Original auth/session and temporal/mutation controls are
+explicit isolated fixtures, not production T17/T19 or physical trust evidence.
+Synthetic ciphertexts prove SQL atomicity, not future signed-response acceptance.
+
+Full default Go tests/vet, module verification, all four command builds, pinned
+artifact checks and client architecture guard passed. Default external opt-ins
+remain distinct from the explicit PostgreSQL run. No HTTP/browser, live OTP,
+physical platform, custody or deployment certification is inferred.
+This completes the scoped first storage/maintenance batch; full T44 remains in
+progress. ActiveValidate, 24-hour pending session/30-day transaction settlement,
+execution edges, staged/waiting ownership, safe activation successors and channel
+composition remain next. Activation stays closed without the actual waiting
+source. Undecidable client trust proof, platform/data/preparation-budget and
+migration bootstrap items remain deferred as requested. Deployment is deferred;
+downloads have no hard total or cumulative elapsed limit.
