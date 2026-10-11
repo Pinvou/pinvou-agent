@@ -2055,7 +2055,16 @@ mod tests {
         });
         let result = rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("load_locked must refuse a planted FIFO, not hang");
+            .unwrap_or_else(|_| {
+                // Round-27 review (minor): a regressed worker stays blocked
+                // holding the store lock — contain the cascade with a loud
+                // process death instead of hanging the serial lane.
+                eprintln!(
+                    "FAIL: load_locked still blocks on a planted FIFO — \
+                     aborting the test process to contain the leaked lock holder"
+                );
+                std::process::abort();
+            });
         assert!(
             result.is_err(),
             "a planted FIFO must be refused by the regular-file gate"
