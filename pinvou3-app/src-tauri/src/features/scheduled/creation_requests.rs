@@ -711,10 +711,17 @@ fn audit_request(
         .collect();
         detail["changed"] = serde_json::json!(changed);
     }
-    if let Some(target) = request.target_session.as_deref() {
+    if let Some(target) = request
+        .target_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         // A delivery target — set at create or moved by a retarget —
-        // redirects where every future prompt fires: the audit line must say
-        // where it goes either way.
+        // redirects where every future prompt fires: the audit line must
+        // say where it goes either way. Round-13 minor 7: the TRIMMED
+        // value (validation checks the trimmed form; writing the raw form
+        // let padded ids into the trail).
         detail["target_session"] = serde_json::json!(target);
     }
     if let Ok(roots) = sessions.session_roots(from) {
@@ -754,8 +761,13 @@ fn audit_request_shadow(
         "task_name": task_name,
         // The delivery destination belongs in the append-only trail too
         // (round-4 minor 7): a from_session-less retarget otherwise leaves
-        // the destination only in mutable state.
-        "target_session": request.target_session,
+        // the destination only in mutable state. Round-13 minor 7: the
+        // TRIMMED value (validation checks the trimmed form).
+        "target_session": request
+            .target_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty()),
         "spool_stem": spool_stem,
         "claimed_from_session": request.from_session,
         "claimed_from_session_verified": false,
