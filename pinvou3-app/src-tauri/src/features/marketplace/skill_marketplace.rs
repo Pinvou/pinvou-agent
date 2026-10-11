@@ -3295,104 +3295,80 @@ mod tests {
         });
     }
 
-    /// Body-slice scaffold shared by the structural pins below: locate the
-    /// fn whose source text starts at `signature_needle`, slice from there
-    /// to the next item (a 4-space-indented doc comment or a sibling
-    /// `pub fn`), and return the body with whole-line `//` comments
-    /// filtered out.
-    fn code_body_of_fn(source: &str, signature_needle: &str) -> String {
-        let start = source
-            .find(signature_needle)
-            .unwrap_or_else(|| panic!("{signature_needle:?} must exist"));
-        let rest = &source[start..];
-        let end = rest
-            .find("\n    /// ")
-            .or_else(|| rest.find("\n    pub fn "))
-            .expect("next item");
-        // Round-16 (review): match CODE, not comments — whole-line `//`
-        // comments are filtered before the assertions so a doc/comment
-        // mention of the lock or the strip can no longer satisfy the pin.
-        // (Only whole-line comments are filtered: stripping intra-line `//`
-        // would corrupt string literals such as URLs.)
-        rest[..end]
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// The skill lane's consent strip must run while the per-id import lock
-    /// is still held (round-12 review B2): a post-return strip can delete a
-    /// deny-first registration a concurrent same-id install just made. The
-    /// property is not behaviorally observable through the public API (the
-    /// broken shape also blocks on the lock, just earlier), so pin the
-    /// structure: the helper must acquire the lock itself and strip before
-    /// dropping it, and must NOT delegate to `uninstall` (whose guard would
-    /// drop at its return).
+    /// is still held (round-12 review B2): a strip that runs before the lock
+    /// is taken can delete a deny-first registration a concurrent same-id
+    /// install just made. Behavioral twin on the file's established
+    /// blocked-worker harness (`install_waits_for_the_per_id_import_lock`,
+    /// mod.rs's `uninstall_waits_for_the_cross_process_landing_lease`): a
+    /// real pack is installed, the owner row the strip must remove is
+    /// seeded, and the fixture holds the per-id lock while the
+    /// uninstall-and-strip runs on a worker. While parked the worker must
+    /// NOT have touched the row (the discriminator that catches a pre-lock
+    /// strip); after the release the teardown completes and the row is gone.
     #[test]
     fn uninstall_and_strip_scope_strips_under_import_lock() {
-        // `uninstall_and_strip_scope` is followed by the
-        // `/// Test-only scaffolding:` doc comment of the test-only zip
-        // import, so a 4-space-indented doc comment (or a sibling `pub fn`)
-        // ends the body slice exactly.
-        let body = code_body_of_fn(
-            include_str!("skill_marketplace.rs"),
-            "pub fn uninstall_and_strip_scope",
-        );
-        assert!(
-            body.contains("import_lock_for") && body.contains(".lock()"),
-            "the helper must hold the per-id import lock itself"
-        );
-        assert!(
-            body.contains("remove_bundle_from_disabled_scopes"),
-            "the strip must live inside the helper"
-        );
-        assert!(
-            !body.contains("self.uninstall("),
-            "the helper must not delegate to uninstall (its guard drops at return)"
-        );
-        // An explicit early drop of the import-lock guard before the strip
-        // would satisfy every literal above while un-doing the invariant —
-        // refuse the shape outright. The ban is name-agnostic on purpose:
-        // the guard's local binding carries a leading underscore
-        // (`_import_lock_guard`), which a literal `drop(import_lock` probe
-        // would miss (round-17 review). The body contains no legitimate
-        // `drop(`.
-        assert!(
-            !body.contains("drop("),
-            "the helper must not drop any guard before the strip"
-        );
-        assert!(
-            !body.contains("let _ = import_lock.lock()"),
-            "the helper must bind the import-lock guard to a name that outlives the strip"
-        );
-    }
+        with_temp_home("pinvou3-skill-strip-lock", || {
+            let id = "visualizer";
+            SkillMarketplaceManager::new()
+                .install(id)
+                .expect("fixture: the preset skill installs");
+            // The deny-first row the strip must remove, seeded under the
+            // same owner mapping the strip targets (round-26 MAJOR 1 exact
+            // form).
+            let owner = crate::features::marketplace::bundle::skill_owner_package(id);
+            crate::features::marketplace::scope::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain,
+                std::slice::from_ref(&owner),
+            )
+            .expect("fixture: the owner row seeds");
+            let plain_rows = || {
+                crate::features::marketplace::scope::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Plain,
+                )
+            };
+            assert!(
+                plain_rows().iter().any(|row| row == &owner),
+                "fixture: the owner row is live before the teardown"
+            );
 
-    /// Round-20 P2: the preset install lane must hold the per-id import lock
-    /// across its landing, mirroring the uninstall lanes above — a same-id
-    /// install interleaving with `uninstall_and_strip_scope`'s consent strip
-    /// used to leave stripped rows stripped while record+dir landed, and the
-    /// known-skip then suppressed every later gate run until the next
-    /// teardown. The property is not observable through the public API
-    /// without racing a real teardown, so pin the structure like the strip
-    /// pin: the landing must acquire the lock itself (after the
-    /// state-independent prechecks) with the guard bound to a name that
-    /// outlives the body.
-    #[test]
-    fn install_lands_under_the_per_id_import_lock() {
-        let body = code_body_of_fn(include_str!("skill_marketplace.rs"), "pub fn install(");
-        assert!(
-            body.contains("import_lock_for") && body.contains(".lock()"),
-            "install must hold the per-id import lock across the landing"
-        );
-        assert!(
-            !body.contains("let _ = import_lock.lock()"),
-            "the guard must be bound to a name that outlives the landing"
-        );
-        assert!(
-            !body.contains("drop("),
-            "install must not drop the guard before the landing completes"
-        );
+            // The peer-lane shape: hold the per-id import lock the helper
+            // must take before it strips.
+            let lock = crate::features::marketplace::plugin_import::import_lock_for(id);
+            let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = SkillMarketplaceManager::new().uninstall_and_strip_scope(id);
+                tx.send(result).expect("worker should send its result");
+            });
+            // Bounded: a regressed strip that runs before the lock completes
+            // here with the row already gone; a correct one stays parked on
+            // the mutex with the row untouched. The worker is always drained
+            // (and joined) BEFORE any assertion can panic, so the env
+            // restore can never race a still-running teardown onto the real
+            // home.
+            let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
+            let row_while_parked = plain_rows().iter().any(|row| row == &owner);
+            drop(guard);
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the uninstall completes once the lock is released");
+            worker.join().expect("worker should finish");
+            assert!(
+                parked,
+                "the uninstall-and-strip must wait while the fixture holds the per-id import lock"
+            );
+            assert!(
+                row_while_parked,
+                "the consent strip must not run before the import lock is held"
+            );
+            result.expect("the uninstall-and-strip succeeds after waiting out the peer lane");
+            assert!(
+                !plain_rows().iter().any(|row| row == &owner),
+                "the strip removed the owner row under the import lock"
+            );
+        });
     }
 
     /// round-21 review (P2): the preset install pipeline must hold the same

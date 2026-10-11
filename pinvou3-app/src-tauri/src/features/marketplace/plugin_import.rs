@@ -717,13 +717,6 @@ pub(crate) fn landing_in_progress(id: &str) -> bool {
     landing_mark_path(id).exists()
 }
 
-/// Cross-process landing lease path: `<journal>/<id>.landing.lock` (holds no
-/// user data). The name never carries the `.pending` suffix, so the
-/// reconcile's journal scan skips it by construction.
-fn landing_lease_path(id: &str) -> std::path::PathBuf {
-    landing_journal_dir().join(format!("{id}.landing.lock"))
-}
-
 /// Opens (creating if missing) the cross-process landing lease file for `id`.
 /// Same discipline as the scope lock's open: a hardened private open, with
 /// the parent directory created only on the cold NotFound path.
@@ -748,7 +741,10 @@ fn landing_lease_path(id: &str) -> std::path::PathBuf {
 /// holder exits or crashes; only a frozen holder blocks a blocking acquirer,
 /// the same accepted fail-stop tradeoff as the scope lock.
 pub(crate) fn open_landing_lease(id: &str) -> std::io::Result<fd_lock::RwLock<std::fs::File>> {
-    let path = landing_lease_path(id);
+    // `<journal>/<id>.landing.lock` (holds no user data). The name never
+    // carries the `.pending` suffix, so the reconcile's journal scan skips it
+    // by construction.
+    let path = landing_journal_dir().join(format!("{id}.landing.lock"));
     let open = || crate::platform::filesystem::open_private_lock_file(&path);
     match open() {
         Ok(file) => Ok(fd_lock::RwLock::new(file)),
@@ -1102,6 +1098,20 @@ pub fn import_plugin_package(
     import_plugin_package_gated(zip_path, display_name, &|_, _| Ok(()))
 }
 
+/// Refuses an id that an installed claimant's companion vocabulary folds
+/// onto (round-12 B1). Called once before the pre-land gate and once under
+/// the import lock (round-14 P2 TOCTOU re-check).
+fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
+    let folded = crate::features::marketplace::scope::to_package_id(id);
+    if folded == id {
+        Ok(())
+    } else {
+        Err(format!(
+            "包 id '{id}' 已被包 '{folded}' 的配套技能占用，请改用其它 id"
+        ))
+    }
+}
+
 /// Same pipeline with a pre-land gate hook: `pre_land` runs after the package
 /// id is fixed and fully validated but BEFORE any content lands on disk or
 /// replaces an existing installation. A `pre_land` refusal aborts the import
@@ -1349,12 +1359,7 @@ pub(crate) fn import_plugin_package_gated(
     // (`export_installed_plugin_allows_preset_named_id_without_preset_skill`)
     // intact. The skill-name half of the same collision is already rejected
     // by the component owner check below.
-    let folded = crate::features::marketplace::scope::to_package_id(&id);
-    if folded != id {
-        return Err(format!(
-            "包 id '{id}' 已被包 '{folded}' 的配套技能占用，请改用其它 id"
-        ));
-    }
+    ensure_package_id_self_mapping(&id)?;
     // Preset/companion/cross-package skill name collisions are rejected up
     // front, consistent with the two skill_marketplace channels (which sweep
     // duplicate copies after install — this pipeline never sweeps, so without
@@ -1513,12 +1518,7 @@ pub(crate) fn import_plugin_package_gated(
     // Nothing has landed at this point, so the refusal aborts with the home
     // untouched (the gate's earlier registration is an over-denial row on an
     // installed claimant — fail-closed).
-    let folded = crate::features::marketplace::scope::to_package_id(&id);
-    if folded != id {
-        return Err(format!(
-            "包 id '{id}' 已被包 '{folded}' 的配套技能占用，请改用其它 id"
-        ));
-    }
+    ensure_package_id_self_mapping(&id)?;
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -2179,98 +2179,51 @@ mod tests {
         });
     }
 
-    /// round-21 review (P3): every lease test held the lease as a FIXTURE —
-    /// deleting the pipeline's own acquisition (`open_landing_lease` +
-    /// blocking `write()` before the mark) broke no test, so the round-20
-    /// P1 fix's core span (lease held across mark→gate→land→register) was
-    /// regression-unsafe. The behavioral harness cannot spawn a second
-    /// process here, so pin the structure like the skill lane's
-    /// strips-under-import-lock pin: the pipeline body must acquire the
-    /// lease in CODE (not comments), before the mark, and must not drop it
-    /// early.
-    #[test]
-    fn import_pipeline_acquires_the_landing_lease_in_code() {
-        let source = include_str!("plugin_import.rs");
-        let start = source
-            .find("pub(crate) fn import_plugin_package_gated")
-            .expect("the gated pipeline must exist");
-        let rest = &source[start..];
-        // The pipeline is followed by the tests module; the next top-level
-        // `#[cfg(test)]` marker ends the production body slice.
-        let end = rest.find("\n#[cfg(test)]").expect("tests module follows");
-        // Match CODE, not comments — whole-line `//` comments are filtered
-        // before the assertions so a doc/comment mention of the lease can
-        // no longer satisfy the pin (round-16 review convention).
-        let body = rest[..end]
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let lease_open = body
-            .find("open_landing_lease(&id)")
-            .expect("the pipeline must open the landing lease itself");
-        let lease_lock = body
-            .find(".write()")
-            .expect("the pipeline must take the lease's write lock");
-        let mark = body
-            .find("mark_landing(&id)")
-            .expect("the pipeline must write the landing mark");
-        assert!(
-            lease_open < lease_lock && lease_lock < mark,
-            "the lease must be acquired (open then write-locked) BEFORE the mark"
-        );
-        assert!(
-            body.contains("_landing_lease_guard"),
-            "the lease guard must be bound to a name that outlives the import"
-        );
-        assert!(
-            !body.contains("drop("),
-            "the pipeline must not drop any guard before the import completes"
-        );
+    /// The two lease tests' shared demo combo-pack fixture: byte-identical
+    /// entries (plugin.json + mcp/manifest.json + mcp/server.py +
+    /// skills/demo/SKILL.md), written to each test's differing archive path.
+    fn write_demo_combo_zip(path: &std::path::Path) {
+        use std::io::Write;
+        let f = std::fs::File::create(path).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("plugin.json", opts).unwrap();
+        zw.write_all(
+            r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                .as_bytes(),
+        )
+        .unwrap();
+        zw.start_file("mcp/manifest.json", opts).unwrap();
+        zw.write_all(
+            r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                .as_bytes(),
+        )
+        .unwrap();
+        zw.start_file("mcp/server.py", opts).unwrap();
+        zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
+            .unwrap();
+        zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+        zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+        zw.finish().unwrap();
     }
 
-    /// Round-24 MAJOR 6: behavioral twin of the source-text pin above. The
-    /// literals it greps survive a scoped-block release
-    /// (`let _g = { let mut l = open_landing_lease(&id)?; l.write()? };` —
-    /// every literal present, ordering kept, no `drop(`), and its own
-    /// comment concedes every behavioral lease test holds the lease as a
-    /// fixture — so tenancy needs the suite's established blocked-worker
-    /// harness (fixture-held lease + production fn on a thread + bounded
-    /// `recv_timeout`, the uninstall/restore/reconcile lanes' shape): the
-    /// import pipeline must PARK while a peer holds the landing lease and
-    /// proceed only after release.
+    /// Round-24 MAJOR 6: the import pipeline must PARK while a peer holds
+    /// the landing lease and proceed only after release. Tenancy is not
+    /// observable by any structural pin — a scoped-block release
+    /// (`let _g = { let mut l = open_landing_lease(&id)?; l.write()? };`)
+    /// keeps every acquisition literal present and ordered — so the property
+    /// uses the suite's established blocked-worker harness (fixture-held
+    /// lease + production fn on a thread + bounded `recv_timeout`, the
+    /// uninstall/restore/reconcile lanes' shape).
     #[test]
     fn import_parks_while_a_peer_holds_the_landing_lease() {
         crate::platform::test_support::with_temp_home("pinvou-import-lease-park", || {
-            use std::io::Write;
             // The helper's temp home: both the fixture zip and the landed
             // layout are addressed relative to it.
             let dir = crate::platform::paths::pinvou3_home();
 
             let zip_path = dir.join("combo.zip");
-            {
-                let f = std::fs::File::create(&zip_path).unwrap();
-                let mut zw = zip::ZipWriter::new(f);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("plugin.json", opts).unwrap();
-                zw.write_all(
-                    r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                        .as_bytes(),
-                )
-                .unwrap();
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(
-                    r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                        .as_bytes(),
-                )
-                .unwrap();
-                zw.start_file("mcp/server.py", opts).unwrap();
-                zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
-                    .unwrap();
-                zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-                zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-                zw.finish().unwrap();
-            }
+            write_demo_combo_zip(&zip_path);
 
             // The peer-import shape: hold the landing lease on a second fd.
             let mut lease = open_landing_lease("demo").expect("fixture: the landing lease opens");
@@ -2311,41 +2264,17 @@ mod tests {
     /// stay held from acquisition through landing and registration, not
     /// merely be acquired before the mark. The park pin above cannot
     /// distinguish a scoped-block release (the worker parks identically at
-    /// acquire and lands after the peer releases), and the source-text pin's
-    /// own doc concedes that shape survives its greps, so this test drives
+    /// acquire and lands after the peer releases), so this test drives
     /// the production pipeline to the post-mark failpoint and asserts a
     /// peer's try-acquire FAILS mid-flight and only SUCCEEDS after the
     /// import completed.
     #[test]
     fn import_holds_the_landing_lease_across_the_whole_span() {
         crate::platform::test_support::with_temp_home("pinvou-import-lease-span", || {
-            use std::io::Write;
             let dir = crate::platform::paths::pinvou3_home();
 
             let zip_path = dir.join("span.zip");
-            {
-                let f = std::fs::File::create(&zip_path).unwrap();
-                let mut zw = zip::ZipWriter::new(f);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("plugin.json", opts).unwrap();
-                zw.write_all(
-                    r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                        .as_bytes(),
-                )
-                .unwrap();
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(
-                    r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                        .as_bytes(),
-                )
-                .unwrap();
-                zw.start_file("mcp/server.py", opts).unwrap();
-                zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
-                    .unwrap();
-                zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-                zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-                zw.finish().unwrap();
-            }
+            write_demo_combo_zip(&zip_path);
 
             // Arm the post-mark failpoint. The reset guard restores the
             // static however the test exits, so the serial lane can never
@@ -2371,8 +2300,8 @@ mod tests {
                 .expect("the import must reach the post-mark failpoint (mark + lease held)");
 
             // Mid-pipeline (mark written, nothing landed): a peer's
-            // try-acquire must FAIL — the observation neither the park pin
-            // nor the source-text pin can make.
+            // try-acquire must FAIL — the observation the park pin
+            // cannot make.
             let mut peer = open_landing_lease("demo").expect("the peer lease opens");
             assert!(
                 peer.try_write().is_err(),
@@ -2397,11 +2326,15 @@ mod tests {
             );
 
             // After completion (mark cleared, guards dropped) the lease is
-            // free again.
+            // free again. The probe's point is the `expect`ed acquisition
+            // itself; the must_use guard it returns is intentionally
+            // discarded, bound in an explicit drop to state that intent.
             let mut after = open_landing_lease("demo").expect("the post-completion lease opens");
-            after
-                .try_write()
-                .expect("the landing lease must be released once the import completes");
+            drop(
+                after
+                    .try_write()
+                    .expect("the landing lease must be released once the import completes"),
+            );
         });
     }
 
