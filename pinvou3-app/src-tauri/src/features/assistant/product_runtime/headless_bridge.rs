@@ -1375,14 +1375,11 @@ where
             // touched by a windowless host freezes a polluted "upgrade"
             // verdict, plain flips back to fully open, and later GUI starts
             // respect the already-frozen marker (review #455 blocking item 3).
-            let freeze_persist_failed =
-                crate::features::marketplace::scope::load_disabled_bundles_startup();
-            if freeze_persist_failed {
-                // Mirror the GUI host: the CRITICAL log fired inside the read
-                // and this host attaches no log plugin, so the startup
-                // timeline is the only durable channel (round-17 review).
-                crate::features::marketplace::scope::mirror_freeze_persist_failure();
-            }
+            // The shared helper also mirrors a freeze-persist failure onto
+            // the startup timeline: the CRITICAL log fired inside the read
+            // and this host attaches no log plugin, so the timeline is the
+            // only durable channel (round-17 review).
+            crate::features::marketplace::scope::load_disabled_bundles_startup_mirrored();
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }

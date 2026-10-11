@@ -788,11 +788,7 @@ pub fn run() {
             // persists the frozen fresh-vs-upgrade verdict, ahead of every
             // first-startup write.
             startup::mark("disabled_bundles_migration:start");
-            let freeze_persist_failed =
-                crate::features::marketplace::scope::load_disabled_bundles_startup();
-            if freeze_persist_failed {
-                crate::features::marketplace::scope::mirror_freeze_persist_failure();
-            }
+            crate::features::marketplace::scope::load_disabled_bundles_startup_mirrored();
             startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
@@ -1239,15 +1235,12 @@ pub fn run() {
             // restart. The unbounded
             // flock wait here is the documented
             // fail-stop boot tradeoff (scope lock module doc). A persist
-            // failure on THIS read mirrors onto the timeline like the
-            // hoisted site's does (round-20 review): the hoisted read's
-            // success does not cover a failure developing in between, and
-            // this mirror is the only durable channel that can name it.
-            let freeze_persist_failed =
-                crate::features::marketplace::scope::load_disabled_bundles_startup();
-            if freeze_persist_failed {
-                crate::features::marketplace::scope::mirror_freeze_persist_failure();
-            }
+            // failure on THIS read is mirrored by the shared helper onto the
+            // timeline like the hoisted site's does (round-20 review): the
+            // hoisted read's success does not cover a failure developing in
+            // between, and this mirror is the only durable channel that can
+            // name it.
+            crate::features::marketplace::scope::load_disabled_bundles_startup_mirrored();
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -1849,14 +1842,15 @@ mod startup_order_contract {
     #[test]
     fn disabled_bundles_migration_read_precedes_first_boot_writes() {
         // GUI host: the migration read at the top of the setup hook precedes
-        // the SessionStore boot. The needle pins the hoist call itself
-        // (fragment-concatenated to prevent a self-match — this test lives in
-        // the same lib.rs as the production call site, and include_str! scans
-        // the test module too, so a full needle appearing verbatim in the
-        // test would degenerate into a self-match, review #455 R4-S1). The
-        // old leg pinning the startup marks on both sides only preserved the
-        // mark sandwich: deleting or moving the hoist call between the two
-        // marks still passed (review #455 R5-S1). The later needle pins the
+        // the SessionStore boot. The needle pins the hoist call itself — the
+        // shared mirrored startup read — (fragment-concatenated to prevent a
+        // self-match — this test lives in the same lib.rs as the production
+        // call site, and include_str! scans the test module too, so a full
+        // needle appearing verbatim in the test would degenerate into a
+        // self-match, review #455 R4-S1). The old leg pinning the startup
+        // marks on both sides only preserved the mark sandwich: deleting or
+        // moving the hoist call between the two marks still passed (review
+        // #455 R5-S1). The later needle pins the
         // `SessionStore::boot_for_process_startup` call itself rather than
         // the adjacent startup-mark proxy (review #455 R8 nit). `find` takes
         // the first occurrence: the guarded regression is "hoist deleted or
@@ -1868,8 +1862,8 @@ mod startup_order_contract {
         assert_migration_read_precedes(
             include_str!("lib.rs"),
             &[
-                "crate::features::marketplace::scope::",
-                "load_disabled_bundles_startup()",
+                "crate::features::marketplace::scope::load_disabled_bundles_startup_",
+                "mirrored()",
             ]
             .concat(),
             &["SessionStore::", "boot_for_process_startup()"].concat(),
@@ -1879,7 +1873,11 @@ mod startup_order_contract {
         // SessionStore boot.
         assert_migration_read_precedes(
             include_str!("features/assistant/product_runtime/headless_bridge.rs"),
-            "marketplace::scope::load_disabled_bundles_startup()",
+            &[
+                "marketplace::scope::load_disabled_bundles_startup_",
+                "mirrored()",
+            ]
+            .concat(),
             "SessionStore::boot()",
             "headless_bridge.rs",
         );
@@ -1897,28 +1895,28 @@ mod startup_order_contract {
     /// durable channel naming the failure before the log plugin attaches
     /// (the windowless host attaches none at all) — but nothing pinned its
     /// existence, so deleting either host's mirror passed the whole suite.
-    /// lib.rs must keep the mirror call at BOTH startup reads (the hoisted
-    /// freeze and the second-chance re-read); headless keeps one. Cleanup:
-    /// the mirror copy itself now lives in the shared scope helper, so the
-    /// needles count the helper CALL per file instead of the message text.
-    /// Needle assembled from fragments so this test module's own source
-    /// (scanned together with lib.rs) cannot self-match — the established
-    /// review #455 R4-S1 trick.
+    /// lib.rs must keep the mirrored startup read at BOTH startup sites (the
+    /// hoisted freeze and the second-chance re-read); headless keeps one.
+    /// Cleanup: the read+mirror two-line dance collapsed into the shared
+    /// scope helper, so the needles count that combined CALL per file instead
+    /// of the mirror helper's message text. Needle assembled from fragments
+    /// so this test module's own source (scanned together with lib.rs)
+    /// cannot self-match — the established review #455 R4-S1 trick.
     #[test]
     fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts() {
-        let helper_call = ["mirror_", "freeze_persist_failure()"].concat();
-        let gui_mirrors = include_str!("lib.rs").matches(&helper_call).count();
+        let mirrored_read = ["load_disabled_bundles_startup_", "mirrored()"].concat();
+        let gui_mirrors = include_str!("lib.rs").matches(&mirrored_read).count();
         assert!(
             gui_mirrors >= 2,
-            "lib.rs must keep the freeze-persist failure mirrors at BOTH startup reads (the hoisted freeze and the second-chance re-read): found {gui_mirrors}"
+            "lib.rs must keep the mirrored startup read at BOTH startup sites (the hoisted freeze and the second-chance re-read): found {gui_mirrors}"
         );
         let headless_mirrors =
             include_str!("features/assistant/product_runtime/headless_bridge.rs")
-                .matches(&helper_call)
+                .matches(&mirrored_read)
                 .count();
         assert_eq!(
             headless_mirrors, 1,
-            "headless_bridge.rs must keep its freeze-persist failure mirror (this host attaches no log plugin)"
+            "headless_bridge.rs must keep its mirrored startup read (this host attaches no log plugin)"
         );
         // Round-26 review (minor): the console bin mirrors via eprintln (the
         // startup timeline is pub(crate) and this host has no window at all);

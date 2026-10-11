@@ -115,6 +115,11 @@ fn disabled_bundles_path() -> PathBuf {
 /// process's other threads while the mutex stays in front of it — the hot
 /// read's `try_write` can only ever be beaten by a *peer* process, and a
 /// write's load→modify→save is exclusive before the OS lock is even attempted.
+///
+/// Production never spells this path — both funnel reads (hot and startup)
+/// derive it from the data path — so this explicit spelling remains only for
+/// the lock-handshake tests below.
+#[cfg(test)]
 fn disabled_bundles_lock_path() -> PathBuf {
     paths::pinvou3_home().join("disabled_bundles.lock")
 }
@@ -123,6 +128,9 @@ fn disabled_bundles_lock_path() -> PathBuf {
 /// readers hit these paths on every turn, so a persistently unavailable lock
 /// or an unreadable data file must not print a line per read — the first
 /// occurrence per failure mode is enough to make the degradation diagnosable.
+/// (The lock-open/probe degradation of the hot read itself is latched by the
+/// shared funnel's own latch in `super::file_lock`; this one gates the
+/// recovery/freeze arms below.)
 static READ_FAILURE_LOGGED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Same latch at caller-chosen level: the freeze-persist CRITICAL lines log
@@ -140,8 +148,9 @@ fn log_scope_read_failure(level: log::Level, mode: u8, detail: &str) {
     }
 }
 
+/// The lock-acquisition degradation of the startup read (its hot-read twin
+/// is latched by `super::file_lock`'s own funnel latch).
 const LOG_LOCK_OPEN: u8 = 1 << 0;
-const LOG_LOCK_PROBE: u8 = 1 << 1;
 /// Recovery-arm observations (lost-store evidence, unconsumable legacy,
 /// unreadable original): their arms are reached on EVERY read while the
 /// condition persists — including degraded hot reads, which deliberately set
@@ -182,42 +191,22 @@ fn clear_scope_read_failure_log() {
 /// Tokio executor for them. Contention on either lock is a normal, silent
 /// degradation; an unexpected lock error is logged once per failure mode and
 /// degrades the same way.
+///
+/// The funnel itself is the shared
+/// `super::file_lock::try_file_lock_for_read_report_locked` — the same funnel
+/// the store / recycle-bin / connector reads run — with its reported flag
+/// feeding `read_disabled_bundles_file`'s `persist_repairs`. The closure
+/// never errs (read failures are recovered inside the read), so the error arm
+/// below is a belt-and-suspenders degrade to the unlocked snapshot.
 pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
-    let process_mutex = super::file_lock::process_mutex_for(&disabled_bundles_lock_path());
-    let _process_guard = match process_mutex.try_lock() {
-        Ok(guard) => guard,
-        // A local writer is inside its critical section (possibly parked on a
-        // frozen peer's OS lock): degrade exactly like peer contention.
-        Err(std::sync::TryLockError::WouldBlock) => return read_disabled_bundles_file(false),
-        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
-    };
-    match super::file_lock::open_lock_file(&disabled_bundles_lock_path()) {
-        Ok(file) => match fd_lock::RwLock::new(file).try_write() {
-            Ok(_guard) => read_disabled_bundles_file(true),
-            // Peer contention is the designed, silent degradation.
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                read_disabled_bundles_file(false)
-            }
-            Err(error) => {
-                log_scope_read_failure(
-                    log::Level::Warn,
-                    LOG_LOCK_PROBE,
-                    &format!(
-                        "cross-process lock probe failed; unlocked read without persist: {error}"
-                    ),
-                );
-                read_disabled_bundles_file(false)
-            }
-        },
-        Err(error) => {
-            log_scope_read_failure(
-                log::Level::Warn,
-                LOG_LOCK_OPEN,
-                &format!("cross-process lock unavailable; unlocked read without persist: {error}"),
-            );
-            read_disabled_bundles_file(false)
-        }
-    }
+    super::file_lock::try_file_lock_for_read_report_locked(
+        &disabled_bundles_path(),
+        |fully_locked| Ok(read_disabled_bundles_file(fully_locked)),
+    )
+    .unwrap_or_else(|error| {
+        log::warn!("[scope] locked read funnel error: {error}");
+        read_disabled_bundles_file(false)
+    })
 }
 
 // Windows: the data-file read opens with full share mode so a read in flight
@@ -729,15 +718,17 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
 /// degraded read here would discard the verdict, the app's own first-boot
 /// writes would pollute the wide upgrade signal, and the next locked read
 /// would flip plain to AllowAll permanently (the fail-open the freeze
-/// exists to prevent). The wait is the same no-timeout wait as every
-/// writer's (a peer's normal critical section is millisecond-scale; a
-/// FROZEN peer blocks boot indefinitely — the accepted fail-stop direction,
-/// see the module lock note), and at startup — before engines and
-/// commands — no executor is starved. If the lock file itself cannot be
-/// opened, or its acquisition keeps failing after the same bounded
-/// transient-error retry the write path uses (round-18 review — the Windows
-/// LockFileEx race skips a freeze just as it refuses a write), the read
-/// degrades (and logs once): an unsynchronized freeze would be worse.
+/// exists to prevent). The read therefore rides the shared write funnel
+/// `super::file_lock::with_file_lock` — the same no-timeout acquisition
+/// every writer takes (in-process mutex in front of the OS file lock, with
+/// the bounded transient-error retry; round-18 review — the Windows
+/// LockFileEx race skips a freeze just as it refuses a write). The wait is
+/// the documented fail-stop direction (a peer's normal critical section is
+/// millisecond-scale; a FROZEN peer blocks boot indefinitely, see the module
+/// lock note), and at startup — before engines and commands — no executor is
+/// starved. If the funnel refuses (the lock file itself cannot be opened, or
+/// its acquisition keeps failing after the bound), the read degrades (and
+/// logs once): an unsynchronized freeze would be worse.
 ///
 /// Returns whether the freeze verdict this boot relies on is NOT persisted
 /// on disk: either the persist failed during this read, or the read
@@ -752,56 +743,20 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
 /// file-using caller was a test whose disk-state asserts subsume the
 /// in-memory one.
 pub fn load_disabled_bundles_startup() -> bool {
-    let process_mutex = super::file_lock::process_mutex_for(&disabled_bundles_lock_path());
-    let _process_guard = process_mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _file = match super::file_lock::open_lock_file(&disabled_bundles_lock_path()) {
-        Ok(file) => {
-            let mut lock = fd_lock::RwLock::new(file);
-            // Some: the OS lock is held for the read below (freezes persist).
-            // None: acquisition failed — degrade to the unlocked,
-            // never-persisting read.
-            // Same bounded retry as the write funnel (round-18 review): the
-            // Windows blocking-LockFileEx transient race must not skip the
-            // boot freeze; a persistent failure still degrades fail-closed
-            // after the bound (the bounds are shared with the funnel; this
-            // caller degrades where the funnel refuses).
-            let mut startup_lock_retries = 0u32;
-            let os_guard = loop {
-                match lock.write() {
-                    Ok(guard) => break Some(guard),
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => {
-                        if startup_lock_retries < super::file_lock::LOCK_WRITE_TRANSIENT_RETRIES {
-                            startup_lock_retries += 1;
-                            std::thread::sleep(super::file_lock::LOCK_WRITE_RETRY_DELAY);
-                            continue;
-                        }
-                        log_scope_read_failure(
-                            log::Level::Warn,
-                            LOG_LOCK_OPEN,
-                            &format!("startup locked read degraded to unlocked: {error}"),
-                        );
-                        break None;
-                    }
-                }
-            };
-            // The guard stays held for the read: Some = fully locked read
-            // (freezes persist), None = the degraded, never-persisting read.
-            read_disabled_bundles_file(os_guard.is_some())
-        }
-        Err(error) => {
-            log_scope_read_failure(
-                log::Level::Warn,
-                LOG_LOCK_OPEN,
-                &format!(
-                    "cross-process lock unavailable at startup; unlocked read without persist: {error}"
-                ),
-            );
-            read_disabled_bundles_file(false)
-        }
-    };
+    // Fully locked read (freezes persist); a funnel refusal — lock file
+    // unavailable, or the bounded transient-retry ladder exhausted — is the
+    // single degrade path: the unlocked, never-persisting read, logged once.
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        Ok::<DisabledBundlesFile, String>(read_disabled_bundles_file(true))
+    })
+    .unwrap_or_else(|error| {
+        log_scope_read_failure(
+            log::Level::Warn,
+            LOG_LOCK_OPEN,
+            &format!("startup locked read degraded to unlocked: {error}"),
+        );
+        read_disabled_bundles_file(false)
+    });
     // The verdict this boot relies on is unpersisted when the persist
     // failed (the memo armed inside the read) or when the read degraded and
     // memoized the fresh shape (round-17 review) — surface both, even
@@ -820,8 +775,9 @@ pub fn load_disabled_bundles_startup() -> bool {
 /// Mirrors the freeze-persist failure onto the startup timeline — the CRITICAL
 /// log fires inside the read before any logger attaches (round-16 review), so
 /// the timeline file is the only durable channel naming the failure. Single
-/// source of the mirror copy: both GUI startup reads and the windowless host
-/// call this (pinned per host by lib.rs's
+/// source of the mirror copy: the hosts' startup reads funnel through
+/// [`load_disabled_bundles_startup_mirrored`], which calls this after each
+/// read (pinned per host by lib.rs's
 /// `freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts`);
 /// the console bin keeps its own eprintln (the timeline is `pub(crate)` and
 /// the tool has no window at all).
@@ -831,6 +787,21 @@ pub(crate) fn mirror_freeze_persist_failure() {
         "disabled_bundles_migration",
         "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
     );
+}
+
+/// The shared host-side shape of a startup read: run the fully locked freeze
+/// read and, when the verdict this boot relies on is not persisted, mirror
+/// the failure onto the startup timeline — one call per site instead of the
+/// hand-repeated two-line dance. The GUI host keeps this at BOTH startup
+/// reads (the hoisted freeze and the second-chance re-read) and the
+/// windowless host at its one (pinned per host by lib.rs's
+/// `freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts`);
+/// the console bin keeps the bare bool + its own eprintln (the timeline is
+/// `pub(crate)` and the tool has no window at all).
+pub(crate) fn load_disabled_bundles_startup_mirrored() {
+    if load_disabled_bundles_startup() {
+        mirror_freeze_persist_failure();
+    }
 }
 
 /// Read under the full lock: read-time repairs persist (serialized with every
@@ -1008,8 +979,7 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 /// a real write for a different pack" (the known-pack-shield edge).
 /// Round-33 MAJOR 2 (review #455): the ONE consent-sync failure marker the
 /// frontend keys its actionable-guidance template on (ToolStoreView's
-/// consentFailure matcher; pinned per emitter by
-/// `consent_failure_marker_matches_the_frontend_contract` in ima.rs and
+/// consentFailure matcher; pinned by
 /// `skill_gate_consent_failure_message_keeps_the_frontend_marker` in
 /// skill_gate.rs). Every connector shares the exact string so a backend
 /// rewording cannot silently degrade the localized guidance to generic copy.
@@ -3961,16 +3931,17 @@ mod tests {
         });
     }
 
+    /// Samples once after a bounded settle window instead of busy-polling:
+    /// a broken serialization lands the data write within microseconds of
+    /// the worker reaching the lock (well inside 250ms), while a working
+    /// lock keeps the write pending until the handshake drops it — so one
+    /// delayed assert pins the same property without the 2s poll.
     fn assert_data_file_absent_within() {
-        let window = std::time::Duration::from_secs(2);
-        let deadline = std::time::Instant::now() + window;
-        while std::time::Instant::now() < deadline {
-            assert!(
-                !disabled_bundles_path().exists(),
-                "data file written while the lock was still held — serialization is broken"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(
+            !disabled_bundles_path().exists(),
+            "data file written while the lock was held — serialization is broken"
+        );
     }
 
     fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
@@ -4067,51 +4038,6 @@ mod tests {
                 std::process::abort();
             }
         }
-    }
-
-    /// Round-17 review: the once-per-failure-mode latch must survive degraded
-    /// reads. Both clean-read tails used to clear every bit unconditionally,
-    /// so with a healthy data file but a persistently broken lock file every
-    /// per-turn hot read logged one warn — the exact per-read spam the latch
-    /// exists to prevent. A degraded read (data leg fine, lock leg failed)
-    /// must keep the bit armed; only a fully locked read re-arms.
-    #[test]
-    fn degraded_reads_keep_the_failure_latch_armed() {
-        with_temp_home("pinvou3-scope-latch-degraded", || {
-            use std::sync::atomic::Ordering;
-            READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
-            // Healthy store bytes so the read's data leg succeeds while the
-            // lock leg fails.
-            try_save_disabled_bundles_file(&DisabledBundlesFile::default())
-                .expect("the fixture store must save");
-            // A directory at the lock path makes the lock-file open fail on
-            // every platform (EISDIR / access denied) without touching
-            // permissions.
-            let lock_path = disabled_bundles_lock_path();
-            std::fs::create_dir(&lock_path).expect("plant the broken lock");
-
-            let _first = load_disabled_bundles_file();
-            assert!(
-                READ_FAILURE_LOGGED.load(Ordering::Relaxed) & LOG_LOCK_OPEN != 0,
-                "an unavailable lock file must latch the failure mode"
-            );
-
-            let _second = load_disabled_bundles_file();
-            assert!(
-                READ_FAILURE_LOGGED.load(Ordering::Relaxed) & LOG_LOCK_OPEN != 0,
-                "a degraded read over a healthy store must keep the latch armed — clearing it here logs one warn per hot read on a persistently broken lock"
-            );
-
-            // Heal the lock leg: a fully locked clean read re-arms the latch.
-            std::fs::remove_dir(&lock_path).expect("remove the planted dir");
-            let _third = load_disabled_bundles_file();
-            assert_eq!(
-                READ_FAILURE_LOGGED.load(Ordering::Relaxed),
-                0,
-                "a fully locked clean read re-arms the latch"
-            );
-            READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
-        });
     }
 
     /// Round-18 review (P2): a persistently failing quarantine (read-only
