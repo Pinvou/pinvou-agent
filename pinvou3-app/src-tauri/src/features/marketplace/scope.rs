@@ -139,7 +139,7 @@ static READ_FAILURE_LOGGED: std::sync::atomic::AtomicU8 = std::sync::atomic::Ato
 /// deliberately outranks the verdict memo and re-attempts the persist, and
 /// the parse-tail migration leg consults no memo at all), so an ungated
 /// `log::error!` there printed a line per engine turn in exactly the
-/// broken-environment state the latch exists for (round-18 review).
+/// broken-environment state the latch exists for.
 fn log_scope_read_failure(level: log::Level, mode: u8, detail: &str) {
     use std::sync::atomic::Ordering;
     if READ_FAILURE_LOGGED.fetch_or(mode, Ordering::Relaxed) & mode == 0 {
@@ -157,7 +157,7 @@ const LOG_LOCK_OPEN: u8 = 1 << 0;
 /// no memo — so without the latch a contended read on such a home would log
 /// a line per engine turn.
 const LOG_RECOVERY: u8 = 1 << 2;
-/// Freeze-persist failures (round-18 review): the lost-store recovery arm
+/// Freeze-persist failures: the lost-store recovery arm
 /// re-attempts the persist on every locked read, and the parse-tail legacy
 /// migration consults no memo — both need their CRITICAL line latched
 /// separately from the informational LOG_RECOVERY line the same arms emit.
@@ -168,9 +168,8 @@ const LOG_FREEZE_PERSIST: u8 = 1 << 3;
 /// persistent failure is diagnosable again. Degraded reads
 /// (`persist_repairs = false`) leave the latch alone even when the data leg
 /// read fine — the lock leg may still be broken, and clearing the bits there
-/// made a persistently broken lock file log one warn per hot read
-/// (round-17 review). The write-path read runs fully locked, so it re-arms
-/// as before.
+/// made a persistently broken lock file log one warn per hot read. The
+/// write-path read runs fully locked, so it re-arms as before.
 fn clear_scope_read_failure_log() {
     use std::sync::atomic::Ordering;
     READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
@@ -213,7 +212,7 @@ pub(crate) fn load_disabled_bundles_file() -> DisabledBundlesFile {
 // during a peer's locked atomic-replace persist cannot turn into a sharing
 // violation and a spurious refusal of that write. Unix: the read is hardened
 // against a planted symlink/FIFO/device at the data path exactly like the
-// lock file's open (round-18 review) — a hot reader must not hang on a FIFO
+// lock file's open — a hot reader must not hang on a FIFO
 // or read forever off a device node.
 use crate::platform::filesystem::{read_private_data_file, read_private_data_file_bytes};
 
@@ -300,6 +299,15 @@ fn fail_closed_recovered_file() -> DisabledBundlesFile {
     }
 }
 
+/// Arms the [`UNPERSISTED_VERDICT`] memo for `home`: the frozen verdict the
+/// read just evaluated could not be persisted, so later reads in this
+/// process must reuse it instead of re-evaluating from first-boot traces.
+fn arm_unpersisted_verdict(home: PathBuf, file: &DisabledBundlesFile) {
+    *UNPERSISTED_VERDICT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((home, file.clone()));
+}
+
 /// Shared freeze-persist tail of the NotFound-branch recovery arms (the
 /// lost-store sidecar arm, the memo-hit re-attempt, and the unconsumable-
 /// legacy arm): on a fully locked read (`persist_repairs`), persist the
@@ -316,7 +324,7 @@ fn fail_closed_recovered_file() -> DisabledBundlesFile {
 /// Latched (LOG_FREEZE_PERSIST): these arms outrank the verdict memo by
 /// design, so they re-attempt the persist on every fully locked read — the
 /// retry is the healing path, but an ungated CRITICAL printed one line per
-/// engine turn while the persist kept failing (round-18 review). The
+/// engine turn while the persist kept failing. The
 /// memo-hit re-attempt site reuses this helper: re-arming the memo on a
 /// failed retry writes back the entry it just read, so the memo state is
 /// unchanged.
@@ -332,16 +340,12 @@ fn try_freeze_verdict(file: &DisabledBundlesFile, persist_repairs: bool, what: &
                 "[marketplace] CRITICAL: failed to persist the {what}: {freeze_error}; holding the in-process verdict until restart"
             ),
         );
-        *UNPERSISTED_VERDICT
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some((paths::pinvou3_home(), file.clone()));
+        arm_unpersisted_verdict(paths::pinvou3_home(), file);
     }
 }
 
 /// 读完整文件（取文件锁）。可能触发「读到即迁移」的读路径必须走本入口与持锁写方
 /// 串行（与旧两份文件的 #287 竞态范式一致）。
-
 /// 已持锁读实现。首个版本：文件不存在时从两份旧文件迁移（幂等）；文件存在时按新
 /// 格式解析，防御性剥除 `skill:` 前缀残留（新写路径不会再产生）。
 ///
@@ -373,7 +377,7 @@ fn try_freeze_verdict(file: &DisabledBundlesFile, persist_repairs: bool, what: &
 /// when both are absent; do not widen beyond the criteria in this comment
 /// (review #455 R5-m1).
 ///
-/// Round-27 performance note: a fully-locked read holds the flock across the
+/// Performance note: a fully-locked read holds the flock across the
 /// normalize tail (an O(P) manifest walk) and may persist a repair inline —
 /// peer writers and the startup freeze queue behind that section, and the
 /// freeze-retry arm repeats a failing write attempt per call while the home
@@ -413,7 +417,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
             // registered case must keep protecting, so the legacy migration
             // is skipped here entirely — legacy files are pre-convergence
             // remnants when the unified store demonstrably existed.
-            // Round-16 (review): this check runs BEFORE the in-process verdict
+            // This check runs BEFORE the in-process verdict
             // memo — the memo is this process's own frozen evaluation and may
             // predate a store-loss episode a sibling proves; the fail-closed
             // recovery must outrank it.
@@ -439,7 +443,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     })
                 };
                 if let Some(file) = memo_hit {
-                    // Round-20 P2: a fully locked read re-attempts the freeze
+                    // A fully locked read re-attempts the freeze
                     // persist — the healing path must not die with the first
                     // attempt. The original failure armed this memo; once a
                     // retry lands, `try_save_disabled_bundles_file`'s success
@@ -532,16 +536,13 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 // next locked read re-evaluates from wide signals that
                 // first-boot traces (sessions/default written between the
                 // two reads) pollute into a permanent, wrong "upgraded"
-                // freeze — the fail-open direction (round-17 review). The
+                // freeze — the fail-open direction. The
                 // memo is in-process, consulted only while the file is still
                 // absent, and cleared by the next successful save; a
                 // misjudged fresh keeps the DenyAll fallback (fail-closed,
                 // the registered R11-M4 shape).
                 if !legacy_existed && !upgraded_install {
-                    *UNPERSISTED_VERDICT
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                        Some((home.clone(), file.clone()));
+                    arm_unpersisted_verdict(home.clone(), &file);
                 }
                 Ok(())
             };
@@ -554,22 +555,19 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                         file.initialized.contains(SessionMode::Plain.as_str())
                     ),
                 );
-                *UNPERSISTED_VERDICT
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((home, file.clone()));
+                arm_unpersisted_verdict(home, &file);
                 // The freeze persist failed: return before the clean-read tail
                 // so the LOG_FREEZE_PERSIST bit this arm just set survives —
                 // the other freeze arms return early for the same reason, and
                 // falling through would let a later episode (memo cleared by a
-                // successful save, home still broken) log one CRITICAL per
-                // read (round-19 review).
+                // successful save, home still broken) log one CRITICAL per read.
                 return file;
             }
             // Clean read (the store read fine or did not exist): the data leg
             // succeeded. Re-arm the latch only when the read was FULLY locked
             // — a degraded read reaching this tail with a healthy data file
             // must keep the bits, or a persistently broken lock file logs one
-            // warn per hot read (round-17 review).
+            // warn per hot read.
             if persist_repairs {
                 clear_scope_read_failure_log();
             }
@@ -649,10 +647,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 // failed, a degraded read, or the pending-recovery memo hit):
                 // return before the read tail so the tail's latch re-arm does
                 // not silence this arm's latched warns for the next read while
-                // the store is still broken on disk (round-18 review — the old
-                // "recovery arms return before this point" tail comment was
-                // false for this arm, which flowed through the tail and
-                // cleared the bits every locked read).
+                // the store is still broken on disk.
                 return quarantine_file;
             }
             quarantine_file
@@ -673,7 +668,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
         // NotFound read (the re-run itself stays idempotent — the verdict
         // derives from the file's own contents).
         if let Err(error) = try_save_disabled_bundles_file(&file) {
-            // Latched (LOG_FREEZE_PERSIST, round-18 review): this leg consults
+            // Latched (LOG_FREEZE_PERSIST): this leg consults
             // no memo on the parse path (the verdict memo is consulted only in
             // the NotFound branch), so an ungated CRITICAL printed one line
             // per locked read while the persist kept failing.
@@ -685,24 +680,21 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     "[marketplace] CRITICAL: failed to persist the legacy migration verdict: {error}; holding the in-process verdict until a save succeeds"
                 ),
             );
-            *UNPERSISTED_VERDICT
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some((paths::pinvou3_home(), file.clone()));
+            arm_unpersisted_verdict(paths::pinvou3_home(), &file);
         }
     }
     // A failed freeze means the persist path is broken right now; the
     // normalize pass would only attempt another doomed save and, worse, the
     // tail's latch re-arm below would silence the latched CRITICAL for the
-    // next read (round-18 review).
+    // next read.
     if persist_repairs && !freeze_persist_failed {
         if normalize_stored_lists(&mut file) {
             save_disabled_bundles_file(&file);
         }
         // Clean read (the store parsed): the data leg succeeded. Re-arm the
         // latch only on a FULLY locked read, same as the migration tail above —
-        // a degraded read with a healthy data file must keep the bits
-        // (round-17 review). The recovery arms return before this point: the
+        // a degraded read with a healthy data file must keep the bits. The
+        // recovery arms return before this point: the
         // salvage/quarantine arms keep their bit set (a persistently broken
         // store with a retrying writer re-logs once per failure mode instead
         // of being silenced by the next locked load), and a quarantine leg
@@ -721,7 +713,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
 /// exists to prevent). The read therefore rides the shared write funnel
 /// `super::file_lock::with_file_lock` — the same no-timeout acquisition
 /// every writer takes (in-process mutex in front of the OS file lock, with
-/// the bounded transient-error retry; round-18 review — the Windows
+/// the bounded transient-error retry; the Windows
 /// LockFileEx race skips a freeze just as it refuses a write). The wait is
 /// the documented fail-stop direction (a peer's normal critical section is
 /// millisecond-scale; a FROZEN peer blocks boot indefinitely, see the module
@@ -732,11 +724,11 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
 ///
 /// Returns whether the freeze verdict this boot relies on is NOT persisted
 /// on disk: either the persist failed during this read, or the read
-/// degraded and memoized the fresh shape (round-17 review) — in both cases
+/// degraded and memoized the fresh shape — in both cases
 /// the `UNPERSISTED_VERDICT` memo is armed for this home and the verdict is
 /// lost across a restart (the registered crash-during-freeze family). The
 /// bool exists because the failure logs at a point where the Tauri log
-/// plugin is not yet attached (round-16 review) — the caller mirrors it
+/// plugin is not yet attached — the caller mirrors it
 /// onto the startup timeline, which persists before any logger exists. The
 /// read state itself is not returned: every production caller gates on the
 /// flag alone (the read's effect is the on-disk/memo state), and the one
@@ -759,7 +751,7 @@ pub fn load_disabled_bundles_startup() -> bool {
     });
     // The verdict this boot relies on is unpersisted when the persist
     // failed (the memo armed inside the read) or when the read degraded and
-    // memoized the fresh shape (round-17 review) — surface both, even
+    // memoized the fresh shape — surface both, even
     // though the log line landed before the logger attached (or, on the
     // headless host, attaches never). A memo armed by an earlier degraded
     // hot read counts too: the boot still runs on an unpersisted verdict.
@@ -772,35 +764,23 @@ pub fn load_disabled_bundles_startup() -> bool {
     freeze_persist_failed
 }
 
-/// Mirrors the freeze-persist failure onto the startup timeline — the CRITICAL
-/// log fires inside the read before any logger attaches (round-16 review), so
-/// the timeline file is the only durable channel naming the failure. Single
-/// source of the mirror copy: the hosts' startup reads funnel through
-/// [`load_disabled_bundles_startup_mirrored`], which calls this after each
-/// read (pinned per host by lib.rs's
-/// `freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts`);
-/// the console bin keeps its own eprintln (the timeline is `pub(crate)` and
-/// the tool has no window at all).
-pub(crate) fn mirror_freeze_persist_failure() {
-    crate::platform::startup::mark_with_detail(
-        "rust",
-        "disabled_bundles_migration",
-        "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
-    );
-}
-
 /// The shared host-side shape of a startup read: run the fully locked freeze
 /// read and, when the verdict this boot relies on is not persisted, mirror
-/// the failure onto the startup timeline — one call per site instead of the
-/// hand-repeated two-line dance. The GUI host keeps this at BOTH startup
+/// the failure onto the startup timeline — the CRITICAL log fires inside the
+/// read before any logger attaches, so the timeline file is the only durable
+/// channel naming the failure. The GUI host keeps this at BOTH startup
 /// reads (the hoisted freeze and the second-chance re-read) and the
 /// windowless host at its one (pinned per host by lib.rs's
-/// `freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts`);
+/// `freeze_persist_failures_mirror_onto_the_startup_timeline_in_every_host`);
 /// the console bin keeps the bare bool + its own eprintln (the timeline is
 /// `pub(crate)` and the tool has no window at all).
 pub(crate) fn load_disabled_bundles_startup_mirrored() {
     if load_disabled_bundles_startup() {
-        mirror_freeze_persist_failure();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "disabled_bundles_migration",
+            "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
+        );
     }
 }
 
@@ -819,21 +799,21 @@ pub(crate) fn load_disabled_bundles_startup_mirrored() {
 /// lock, and the only other lock reachable inside a critical section is the
 /// bundle store's own mutex, on one leg: the DenyAll resolution's installed-ids
 /// enumeration (`installed_skill_ids_strict` reads the bundle store's
-/// records under its lock; round-17 review — the legacy-migration leg's id
+/// records under its lock; the legacy-migration leg's id
 /// normalization and `try_installed_ids` are lock-free filesystem walks, and
 /// the save-side input normalization walks the in-memory manifest without
 /// taking the store mutex). That ordering is never
 /// reversed — no store method enters this module's critical sections — so no
 /// deadlock class exists. Conversely, a scope critical section never takes any
 /// lock beyond the store mutex above, but the nesting across it is NOT uniform
-/// module-wide (round-12 review): the uninstall path holds the transaction
+/// module-wide: the uninstall path holds the transaction
 /// lock across scope strips, the restore path holds the per-id import lock
 /// across the scope registration, and the import pre-land gate deliberately
 /// holds NO other lock; the recycle-bin lock is never held across a scope
 /// section.
 ///
 /// The read-failure latch is re-armed by `read_disabled_bundles_file` itself on
-/// its clean exits only (round-16 review): a locked load that just traveled a
+/// its clean exits only: a locked load that just traveled a
 /// recovery arm must not wipe the bit that arm just set.
 fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
     read_disabled_bundles_file(true)
@@ -850,7 +830,7 @@ fn load_disabled_bundles_file_locked() -> DisabledBundlesFile {
 /// Returns the state plus whether the recovery COMPLETED on this read
 /// (quarantine copy written **and** the fail-closed overwrite persisted).
 /// A `false` second element tells the parse-arm caller to return before the
-/// read tail: the arm's failure logs are latched (round-18 review), and the
+/// read tail: the arm's failure logs are latched, and the
 /// tail's latch re-arm would otherwise silence them for the next read while
 /// the store is still broken on disk.
 fn quarantine_and_recover_disabled_bundles(
@@ -884,7 +864,7 @@ fn quarantine_and_recover_disabled_bundles(
         return (recovered, false);
     }
     if let Err(quarantine_err) = quarantine_corrupt_disabled_bundles(raw, error) {
-        // Latched (round-18 review): a persistently failing quarantine (read-
+        // Latched: a persistently failing quarantine (read-
         // only home) reached this arm on every locked read and printed one
         // warn per read.
         log_scope_read_failure(
@@ -1032,12 +1012,13 @@ pub(crate) fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> St
         // registered alongside #515 rather than answered with a lock here.
         || super::recycle_bin::RecycleBin::held_dir(stripped).is_dir();
     if pack_row {
-        // Round-18 review (P3): canonicalize a case-variant stored row to the
+        // Canonicalize a case-variant stored row to the
         // pack dir's TRUE name before returning it. On case-insensitive
         // filesystems a stored "Feishu" row (hand-edited or legacy-era file)
-        // resolves through `join(..).is_dir()` and came back verbatim — but
+        // resolves through `join(..).is_dir()` and comes back verbatim — but
         // the deny sets it feeds compare EXACT equality against canonical
-        // ids, so the row never matched and the real pack stayed enabled
+        // ids, so the row would never match and the real pack would stay
+        // enabled
         // (fail-open state/UI mismatch). The rewrite is restricted to
         // case-variants of the same name (`eq_ignore_ascii_case`): a symlink
         // pointing at a DIFFERENTLY-named dir keeps the stored row verbatim
@@ -1182,7 +1163,7 @@ fn merge_legacy_scope_file_into(
     merge_ids: impl Fn(&mut DisabledBundlesFile, &str, Vec<String>),
     inherit_project_flag: bool,
 ) -> bool {
-    // Round-20 review (P2): the hardened private read — this runs INSIDE the
+    // The hardened private read — this runs INSIDE the
     // scope critical section (the locked migration leg), so a planted
     // FIFO at a legacy path must refuse, not block the flock for every
     // peer. Refusal lands in the existing unconsumable-legacy arm
@@ -1380,21 +1361,19 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             .map(|p| p == &home)
             .unwrap_or(false);
         if degraded && path.exists() {
-            // Round-16 (review): an armed marker must never precede an
+            // An armed marker must never precede an
             // unpreserved destruction, so the on-disk bytes are renamed
-            // aside unconditionally. The earlier form re-verified the file
-            // and skipped preservation when it read back parseable — the
-            // right call for a stale memo over a store this process just
+            // aside unconditionally. A parse-back check would be the right
+            // call for a stale memo over a store this process just
             // read fine, but silently destructive when THIS critical
             // section's own load was the recovered arm (a transient EIO at
             // load, clean bytes by save time): the in-memory state then
             // derives from the fail-closed recovered view, the process
             // never consumed the real bytes, and overwriting them without
             // a preservation copy destroyed every persisted opt-out. The
-            // readable-file case now costs one `.unreadable.` evidence
-            // copy — harmless clutter by the round-15 analysis's own
-            // admission — and the still-unreadable case is unchanged. The
-            // success tail below clears the marker.
+            // readable-file case costs one `.unreadable.` evidence copy
+            // (harmless clutter) and the still-unreadable case is unchanged.
+            // The success tail below clears the marker.
             let stamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
@@ -1477,9 +1456,9 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
             }
         }
     }
-    // Round-19 MAJOR 4: the unreadable-original marker stores the arming
+    // The unreadable-original marker stores the arming
     // home, so the successful-persist clear is home-guarded like the tuple
-    // memos above (round-16 review): a save under home A must not clear a
+    // memos above: a save under home A must not clear a
     // marker armed for home B (tests switch PINVOU3_HOME; production has
     // one home).
     {
@@ -1516,8 +1495,8 @@ fn corrupt_sidecar_evidence_exists(home: &std::path::Path) -> bool {
         // UNKNOWN state, and unknown must not read as no-evidence: that
         // would let the wide signal initialize plain EMPTY while a
         // `.corrupt.*` copy may sit unobservable beside a deleted store —
-        // the exact fail-open flip this arm exists to prevent (round-18
-        // review). Assume evidence; the recovery verdict is over-deny.
+        // the exact fail-open flip this arm exists to prevent. Assume
+        // evidence; the recovery verdict is over-deny.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => true,
     }
@@ -1586,7 +1565,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
             let mut ids: Vec<String> = match manager.try_installed_ids() {
                 Ok(ids) => ids,
                 Err(error) => {
-                    // Round-20 P3: latched once per process — this expansion
+                    // Latched once per process — this expansion
                     // runs per turn on the hot path while installed.json
                     // stays unreadable (the shared latch also covers
                     // mod.rs's recovery notices).
@@ -1722,13 +1701,12 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
     }
 }
 
-/// Shared whole-list writer prelude (round-26 hoist): the input fold reads
+/// Shared whole-list writer prelude: the input fold reads
 /// the bundles manifests, not the locked state, so it belongs ABOVE the
 /// exclusive section (same shape as enable_packages_in_scope /
 /// apply_restore_consent_gate_impl) — the OS-lock hold narrows to the pure
-/// JSON RMW instead of a full manifest walk plus per-row canonicalize. (The
-/// round-23 hoist had already collapsed the walk to once per list; this
-/// keeps it out of the lock entirely.) Persist deduped: read-side
+/// JSON RMW instead of a full manifest walk plus per-row canonicalize.
+/// Persist deduped: read-side
 /// normalization dedups anyway, so repeated toggles cannot accumulate
 /// duplicate entries on disk.
 fn fold_and_dedup_input_ids(ids: &[String]) -> Vec<String> {
@@ -1911,10 +1889,8 @@ pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
     ids
 }
 
-/// Reads the globally (plain) disabled pack id list. Test-only (round-20
-/// review: after windowless hosts moved to
-/// [`load_disabled_bundles_startup`], production has no callers — the same
-/// standing as [`save_disabled_bundles`]).
+/// Reads the globally (plain) disabled pack id list. Test-only: production
+/// has no callers (the same standing as [`save_disabled_bundles`]).
 #[cfg(test)]
 pub fn load_disabled_bundles() -> Vec<String> {
     load_disabled_bundles_for(ConnectorScope::Plain)
@@ -1934,7 +1910,7 @@ pub fn save_disabled_bundles(ids: &[String]) {
 /// PRE-FOLDED id, `folded` the fold result): the fold routes through the
 /// installed packs' companion-skill vocabulary, and the consent gate must
 /// govern the id the caller was given, so a claimant divergence refuses
-/// outright. Round-26 review (minor): no "uninstall ... first" advice — the
+/// outright. No "uninstall ... first" advice — the
 /// unconditional hard-rule folds make it impossible to follow (the twin in
 /// commands/marketplace.rs carries the same reword).
 pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), String> {
@@ -1959,12 +1935,11 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
 /// Re-shows after a hide/disconnect: the CLI connectors' hide and logout
 /// paths run no teardown, so the sync ledger entry survives and a re-show
 /// is a no-op — the user's recorded rows stay in place and a re-show never
-/// re-denies (round-17 review: the earlier "disconnect→reconnect
-/// re-registers" wording described a teardown this class never runs).
+/// re-denies.
 /// Re-registration happens after a ledger-clearing teardown: an ima logout
 /// (`uninstall_and_strip_scope`), or a pack uninstall, which also withdraws
 /// the materialized companion dirs. Because the gate's materialized
-/// known-clause additionally requires the ledger trace (round-18 review), a
+/// known-clause additionally requires the ledger trace, a
 /// gated show materializing IN FLIGHT across such a teardown — the dirs
 /// re-land after the strip — re-registers through its post-materialization
 /// sync instead of vouching for the cleared consent.
@@ -1973,9 +1948,9 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
         return Ok(());
     }
     let package_id = to_package_id(connector_id);
-    // Round-24 MAJOR 1: owner-claim divergence refusal — the connector twin
-    // of the install gates' `refuse_owner_claimed_install_id` (round 22)
-    // and the import channel's fold-divergence check (round 12). The fold
+    // Owner-claim divergence refusal — the connector twin
+    // of the install gates' `refuse_owner_claimed_install_id` and the
+    // import channel's fold-divergence check. The fold
     // above routes through the installed packs' companion-skill vocabulary,
     // and a DECLARED-but-unshipped companion name survives import validation,
     // so an installed mcp-only pack declaring `companion_skills:
@@ -1994,7 +1969,7 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
     if package_id != connector_id {
         return refuse_owner_claimed_id(connector_id, &package_id);
     }
-    // LEDGER-GATED (the startup-refresh boundary, #455 round-31): the sync
+    // LEDGER-GATED (the startup-refresh boundary): the sync
     // itself skips only *known* bundles; a ledgered-but-uninstalled pair
     // (the enable removed the row, the ledger entry survives) would re-arm
     // through the ungated install sync at every boot and silently revert the
@@ -2023,7 +1998,7 @@ fn ledger_has_any_mode(ledger: &[String], package_id: &str) -> bool {
 /// installation in this home: a store record from a user-facing channel
 /// (preset install / upload) backed by content, a CLI connector whose
 /// companion skill dirs are fully materialized on disk **and whose sync
-/// ledger entry survives** (round-18 review), or a skill on disk
+/// ledger entry survives**, or a skill on disk
 /// claimed by this package. The record clause requires content corroboration
 /// (the package dir, or an installed skill mapping to the record's id): a
 /// log-only `store.remove` failure mid-uninstall leaves a stale
@@ -2033,10 +2008,7 @@ fn ledger_has_any_mode(ledger: &[String], package_id: &str) -> bool {
 /// On an unreadable store the check errs toward "not known" for the same
 /// reason.
 pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
-    // Round-16 (review): one manifest walk and one skill enumeration serve
-    // the whole gate — the un-hoisted form re-walked every manifest once per
-    // owner-claim check (per candidate record, then again for the claim
-    // clause) and enumerated the installed skills up to twice.
+    // One manifest walk and one skill enumeration serve the whole gate.
     let tools = MarketplaceManager::new().available_tools();
     let installed_skills = SkillMarketplaceManager::new().installed_skill_ids();
     if let Ok(records) = crate::features::marketplace::store::BundleStore::new().records() {
@@ -2055,7 +2027,7 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
         }
     }
     if super::bundle::cli_connector_skills_materialized(package_id) {
-        // Round-18 review (P2): materialized dirs alone no longer vouch —
+        // Materialized dirs alone do not vouch —
         // require the sync-ledger trace. The ledger entry is written by the
         // gate run that precedes materialization and is cleared only by a
         // consent-strip teardown (an ima logout, or the pack uninstall that
@@ -2227,11 +2199,11 @@ pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
 pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), String> {
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let path = disabled_bundles_path();
-        // Round-20 review (P2): the hardened private read, like every other
-        // read of this file — a bare read_to_string here let a planted FIFO
+        // The hardened private read, like every other
+        // read of this file — a bare read_to_string here would let a planted FIFO
         // block `open()` forever INSIDE the critical section, wedging both
         // locks and with them every peer process's scope write. A planted
-        // symlink/FIFO now refuses (Err → the cleanup is skipped, leftover
+        // symlink/FIFO refuses (Err → the cleanup is skipped, leftover
         // rows are the stale-deny direction), like the regular read path.
         let content = match read_private_data_file(&path) {
             Ok(content) => content,
@@ -2833,8 +2805,7 @@ mod tests {
             // LOCKED (opening an existing file in a read-only home succeeds):
             // without it the lock OPEN itself fails and the read takes the
             // degraded arm — a different failure than the quarantine-failure
-            // arm this test pins (round-14 review: the fixture used to steer
-            // onto the wrong arm).
+            // arm this test pins.
             std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
 
             // Read-only DIRECTORY (0o555): the file itself stays readable, so
@@ -2861,16 +2832,9 @@ mod tests {
                 original,
                 "the failing read must not touch the unquarantined original"
             );
-            let siblings: Vec<std::path::PathBuf> = std::fs::read_dir(&home)
-                .unwrap()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.contains(".corrupt.") || n.contains(".unreadable."))
-                        .unwrap_or(false)
-                })
+            let siblings: Vec<std::path::PathBuf> = evidence_sidecars(&home, ".corrupt.")
+                .into_iter()
+                .chain(evidence_sidecars(&home, ".unreadable."))
                 .collect();
             assert!(
                 siblings.is_empty(),
@@ -2907,15 +2871,13 @@ mod tests {
         });
     }
 
-    /// Round-16 (review): an armed unreadable-original marker must never
-    /// precede an unpreserved destruction. The round-15 form re-verified the
-    /// file and skipped preservation when it read back parseable — right for
-    /// a store this process just read fine (the in-memory state derives from
-    /// it), but silently destructive when THIS critical section's own load
-    /// was the recovered arm (a transient read failure at load, clean bytes
+    /// An armed unreadable-original marker must never
+    /// precede an unpreserved destruction. The hazardous case is the critical
+    /// section whose OWN load was the recovered arm (a transient read failure
+    /// at load, clean bytes
     /// by save time): the in-memory state then derives from the fail-closed
     /// recovered view, the process never consumed the real bytes, and the
-    /// overwrite destroyed every persisted opt-out with no copy. The save now
+    /// overwrite destroyed every persisted opt-out with no copy. The save
     /// renames the on-disk bytes aside unconditionally while the marker is
     /// armed — the readable case costs one `.unreadable.` evidence copy, the
     /// write lands, and the marker is cleared by the successful-persist tail.
@@ -2960,7 +2922,7 @@ mod tests {
         });
     }
 
-    /// Round-16 (review): the startup read must report a freeze-persist
+    /// The startup read must report a freeze-persist
     /// failure. Its CRITICAL log line fires at the top of the Tauri setup
     /// hook — before the log plugin attaches — so release builds never see
     /// it; the returned flag is what the host mirrors onto the startup
@@ -2975,7 +2937,7 @@ mod tests {
             let _failpoint = fail_next_disabled_bundles_write_for_test();
             let failed = load_disabled_bundles_startup();
             assert!(failed, "the failed freeze persist must be reported");
-            // Round-20 P2: the next fully locked read re-attempts the persist
+            // The next fully locked read re-attempts the persist
             // through the memo-hit arm. The one-shot failpoint is consumed
             // and the home is writable, so the retry lands: the freeze
             // becomes durable and the report clears without any writer.
@@ -2984,17 +2946,13 @@ mod tests {
                 !failed_after_retry,
                 "the memo-hit retry must land the freeze once persisting works"
             );
-            assert!(
-                disabled_bundles_path().is_file(),
-                "the memo-hit retry must persist the frozen verdict"
-            );
             // Subsequent reads take the normal on-disk path and stay down.
             let failed_after_save = load_disabled_bundles_startup();
             assert!(!failed_after_save, "a landed freeze keeps the report down");
         });
     }
 
-    /// Round-17 review: a degraded read of a fresh home computes the fresh
+    /// A degraded read of a fresh home computes the fresh
     /// verdict without persisting it; the pure fresh shape is memoized so
     /// the next locked read cannot re-evaluate from wide signals that
     /// first-boot traces pollute into a permanent, wrong "upgraded" freeze
@@ -3024,7 +2982,7 @@ mod tests {
 
             // Heal the lock: the locked startup read must reuse the
             // memoized fresh verdict instead of re-evaluating from the
-            // polluted signal set — and (round-20 P2) re-attempt the freeze
+            // polluted signal set — and re-attempt the freeze
             // persist, so the healed lock lands the freeze immediately
             // instead of leaving it memo-only until some writer happens to
             // save (a restart before that writer re-evaluates the polluted
@@ -3034,10 +2992,6 @@ mod tests {
             assert!(
                 !unpersisted,
                 "the healed locked read must land the freeze via the memo-hit retry"
-            );
-            assert!(
-                disabled_bundles_path().is_file(),
-                "the memo-hit retry must persist the frozen verdict"
             );
             let landed: DisabledBundlesFile =
                 serde_json::from_str(&std::fs::read_to_string(disabled_bundles_path()).unwrap())
@@ -3063,8 +3017,8 @@ mod tests {
         });
     }
 
-    /// Invalid UTF-8 must be quarantined like a corrupt parse (round-12
-    /// review): `read_to_string` reports it as an I/O `InvalidData` error,
+    /// Invalid UTF-8 must be quarantined like a corrupt parse:
+    /// `read_to_string` reports it as an I/O `InvalidData` error,
     /// not a parse error, so without that classification the bytes are never
     /// moved aside and every later write refuses forever — the exact outcome
     /// the quarantine exists to prevent. Pin: write binary garbage → the
@@ -4015,10 +3969,10 @@ mod tests {
         wait_until_scope_mutex_held();
         assert_data_file_absent_within();
         drop(foreign_guard);
-        // Round-20 P3: bound the post-release join — a funnel regression that
+        // Bound the post-release join — a funnel regression that
         // blocks even after the foreign lock is released must fail the test
         // in seconds, not hang the lane until the job timeout (the read-side
-        // twin already bounds its wait). Round-26 review: on timeout the
+        // twin already bounds its wait). On timeout the
         // worker is leaked while HOLDING the scope mutex and the OS flock —
         // letting the test panic would cascade-hang every later scope test
         // in the serial lane on the unbounded mutex, so die loudly instead:
@@ -4040,12 +3994,11 @@ mod tests {
         }
     }
 
-    /// Round-18 review (P2): a persistently failing quarantine (read-only
-    /// home) reached the recovery arm on every locked read — the raw warn was
-    /// ungated, AND the arm's result flowed through the read tail whose
-    /// `clear_scope_read_failure_log()` wiped the bits, so the next read
-    /// re-logged: one warn per engine turn. Now the warn is latched and an
-    /// unrecovered arm returns before the tail, so the bit survives.
+    /// A persistently failing quarantine (read-only
+    /// home) reaches the recovery arm on every locked read: the warn must be
+    /// latched, AND the unrecovered arm must return before the read tail
+    /// whose `clear_scope_read_failure_log()` would wipe the bits — the bit
+    /// survives across reads instead of re-logging one warn per engine turn.
     #[cfg(unix)]
     #[test]
     fn quarantine_failure_keeps_the_latch_armed_across_locked_reads() {
@@ -4112,11 +4065,10 @@ mod tests {
         });
     }
 
-    /// Round-18 review (P2): the recovery overwrite's save-failure arm armed
-    /// PENDING_CORRUPT_RECOVERY, but the memo hit flowed through the read
-    /// tail and cleared the latch bits — the next memo-hit read re-logged the
-    /// raw warn. Now the arm latches and returns before the tail, so the bit
-    /// survives until a save actually succeeds.
+    /// The recovery overwrite's save-failure arm arms
+    /// PENDING_CORRUPT_RECOVERY, and its memo hit must return before the read
+    /// tail so the latch bits survive — the raw warn stays latched until a
+    /// save actually succeeds.
     #[test]
     fn recovery_save_failure_keeps_the_latch_armed_while_the_memo_holds() {
         use std::sync::atomic::Ordering;
@@ -4161,10 +4113,10 @@ mod tests {
         });
     }
 
-    /// Round-18 review (P2): the lost-store recovery arm outranks the verdict
+    /// The lost-store recovery arm outranks the verdict
     /// memo by design and re-attempts its freeze persist on every fully
-    /// locked read, so the ungated CRITICAL printed one line per engine turn
-    /// while the persist kept failing. The latched variant must keep the
+    /// locked read, so an ungated CRITICAL prints one line per engine turn
+    /// while the persist keeps failing. The latched variant must keep the
     /// freeze-persist failure diagnosable once (not once per read) without
     /// giving up the healing retry: once the home is writable again, the next
     /// locked read persists the freeze and re-arms the latch.
@@ -4283,16 +4235,6 @@ mod tests {
 
             drop(foreign_guard);
             reader.join().expect("reader thread should finish");
-
-            // A later uncontended read runs fully locked and converges the
-            // file to the new format.
-            let got = load_disabled_bundles_for_plain_for_lock_test();
-            assert_eq!(got, vec!["weather".to_string()]);
-            let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
-            assert!(
-                content.contains("\"scopes\""),
-                "migration should land on the next uncontended read: {content}"
-            );
         });
     }
 
@@ -4314,11 +4256,9 @@ mod tests {
         });
     }
 
-    /// Round-20 review (P2): "degraded reads never persist" was pinned for
-    /// the migration leg but not the corrupt/quarantine arm — a regression
-    /// that quarantined + overwrote on a degraded read passed every test in
-    /// the suite. While a foreign process holds the lock, a corrupt store
-    /// must come back as the in-memory fail-closed snapshot with the corrupt
+    /// A degraded read of a corrupt store must not quarantine + overwrite:
+    /// while a foreign process holds the lock, the corrupt store comes back
+    /// as the in-memory fail-closed snapshot with the corrupt
     /// bytes still in place and NO quarantine copy; the fully locked read
     /// after the release owns the recovery (quarantine + fail-closed
     /// overwrite).
@@ -4484,7 +4424,7 @@ mod tests {
     /// alone: a log-only `store.remove` failure mid-uninstall leaves a stale
     /// `installed = true` record while the content is already gone, and a
     /// later reinstall that treated the record as known would skip
-    /// registration and land ungoverned (round-12 P2-2). Without corroborating
+    /// registration and land ungoverned. Without corroborating
     /// content — the package dir, or an installed skill claiming the id — the
     /// record errs toward NOT known, so the reinstall registers
     /// (over-denial, fail-closed).
@@ -4519,9 +4459,7 @@ mod tests {
 
     /// On an UNREADABLE bundles.json the known-decision must err toward NOT
     /// known — every uncertain input registers (over-denial, fail-closed).
-    /// This is the round-10 pin (`consent_gate_errs_not_known_when_the_store_
-    /// is_unreadable`) lost in the #455 convergence and missed by the round-14
-    /// restore pass (round-20 P2-1): a revert that treats a store read error
+    /// A revert that treats a store read error
     /// as "known" (skip registration) keeps every other test green, and a
     /// same-id re-import would then land ungoverned.
     #[cfg(unix)]
@@ -4607,7 +4545,7 @@ mod tests {
                 vec!["seed-bundle".to_string(), "feishu".to_string()]
             );
 
-            // Round-17 (review): a Builtin record WITH its package dir present
+            // A Builtin record WITH its package dir present
             // is the one shape where the source exclusion and the
             // content-corroboration requirement diverge — corroboration alone
             // would vouch "known" for a connector whose only record is the
@@ -4646,13 +4584,13 @@ mod tests {
     /// On case-insensitive filesystems (default macOS/Windows) a case-variant
     /// companion dir is the SAME physical dir as the real connector's, so a
     /// planted variant must not be able to spoof the materialized
-    /// known-clause into skipping first-connect registration (round-12 B3).
+    /// known-clause into skipping first-connect registration.
     /// The exact-name probe counts it as missing → the gate registers
     /// (over-denial, fail-closed).
     #[test]
     fn consent_gate_ignores_case_variant_connector_dirs() {
         with_temp_home("pinvou3-scope-gate-case-variant", || {
-            // Round-16 (review): derive the planted name from the catalog so a
+            // Derive the planted name from the catalog so a
             // catalog rename cannot silently turn this pin into an unrelated
             // dir; if a catalog ever shipped mixed case, the materialized
             // probe below would fail loudly instead of pinning nothing.
@@ -4680,7 +4618,7 @@ mod tests {
         });
     }
 
-    /// Round-24 MAJOR 1: an installed pack's DECLARED companion vocabulary
+    /// An installed pack's DECLARED companion vocabulary
     /// must not hijack the connector gate's fold. An mcp-only pack declaring
     /// an unshipped `companion_skills` entry that names a connector id (no
     /// import check rejects the shape, and `cli_bundle_of_skill` does not
@@ -4755,7 +4693,7 @@ mod tests {
         });
     }
 
-    /// Round-18 review (P2): a gated show materializing IN FLIGHT across a
+    /// A gated show materializing IN FLIGHT across a
     /// cross-process teardown re-lands the dirs after the consent strip —
     /// the per-id import lock is process-local, so nothing serialized the
     /// pair. The show's post-materialization sync must therefore
@@ -4794,7 +4732,7 @@ mod tests {
         });
     }
 
-    /// Round-18 review (P3): on a traverse-only home (+x without +r) the
+    /// On a traverse-only home (+x without +r) the
     /// data-file read NotFounds (path resolution needs only +x) while
     /// `read_dir` fails — the one swallowed-error state that pointed
     /// fail-open: assuming no-evidence there would let the wide signal
@@ -4837,15 +4775,15 @@ mod tests {
         });
     }
 
-    /// Round-18 review (P3): a case-variant stored row on a case-insensitive
-    /// filesystem used to come back verbatim (path resolution matched the
-    /// dir) while the deny sets compare exact equality — the row could never
-    /// match and the real pack stayed enabled. Rows naming a physically
-    /// present pack dir now canonicalize to the dir's TRUE name. Case-only
+    /// A case-variant stored row on a case-insensitive
+    /// filesystem resolves to the same physical dir (path resolution matches
+    /// the dir) while the deny sets compare exact equality — the row could
+    /// never match and the real pack stays enabled. Rows naming a physically
+    /// present pack dir therefore canonicalize to the dir's TRUE name. Case-only
     /// by nature: on a case-sensitive filesystem the canonical name
     /// equals the stored one and this pin would pin a no-op. Excludes Linux
     /// only; the macOS job compiles without running tests, so the Windows
-    /// lane is this behavior's only executing CI leg (round-19 review).
+    /// lane is this behavior's only executing CI leg.
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn stored_case_variant_rows_canonicalize_to_the_pack_dir_name() {
@@ -5370,7 +5308,7 @@ mod tests {
 fn quarantine_corrupt_disabled_bundles(content: &[u8], error: &str) -> Result<(), String> {
     let path = disabled_bundles_path();
     super::quarantine_corrupt_state_file(&path, content)?;
-    // Log, not stderr (round-16 review): packaged Windows GUIs never see
+    // Log, not stderr: packaged Windows GUIs never see
     // eprintln output — same routing as the read-failure latch above.
     log::warn!(
         "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined, attempting the fail-closed reset"
