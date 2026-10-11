@@ -1,6 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DesktopCapabilities {
-    pub(crate) os: &'static str,
     pub(crate) show_super_permission_settings: bool,
     pub(crate) uses_bundled_dependency_installer: bool,
     pub(crate) uses_homebrew_dependency_installer: bool,
@@ -9,7 +8,6 @@ pub(crate) struct DesktopCapabilities {
     pub(crate) codex_acp_supported: bool,
     pub(crate) browser_native_display: bool,
     pub(crate) browser_agent_automation: bool,
-    pub(crate) browser_cdp: bool,
     /// Native keyboard hook for the global Alt voice shortcut: implemented on
     /// Windows only (Alt+Space is intercepted by the system menu, so a native
     /// hook is required); on other platforms the native layer is a no-op and
@@ -37,7 +35,6 @@ pub(crate) fn browser_product_enabled() -> bool {
 
 pub(crate) fn current() -> DesktopCapabilities {
     DesktopCapabilities {
-        os: std::env::consts::OS,
         show_super_permission_settings: cfg!(target_os = "linux"),
         uses_bundled_dependency_installer: cfg!(target_os = "windows"),
         // macOS 用 Homebrew 安装依赖(对称 Windows 的 uses_bundled_dependency_installer),
@@ -51,7 +48,6 @@ pub(crate) fn current() -> DesktopCapabilities {
         // acceptance builds use this same semantic helper.
         browser_native_display: browser_product_enabled(),
         browser_agent_automation: browser_product_enabled(),
-        browser_cdp: cfg!(target_os = "windows"),
         voice_shortcut_native: cfg!(target_os = "windows"),
         paste_image_clipboard_read: cfg!(target_os = "linux"),
     }
