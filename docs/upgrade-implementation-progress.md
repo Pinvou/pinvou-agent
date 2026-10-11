@@ -1137,3 +1137,29 @@ All default tests/vet, module verification, command builds, pinned contracts,
 formatting, diff and client architecture checks passed.
 Full T47 remains in progress; continue other unblocked tasks and skip recorded
 owner/deployment decisions.
+
+### T09 first batch: bounded ZIP inspection (2026-10-12)
+
+The service artifact feature now inspects complete ZIP physical layout, portable
+relative paths and regular object types before decoding. It independently checks
+each actual expanded size, CRC and SHA-256, including descriptor-free zero CRC,
+and refuses unconsumed compressed tails. Nested ZIP layers share explicit input,
+file, total expansion, entry, ratio, depth, metadata and live-buffer capacities.
+The 32 MiB business-batch limit is not used as a package size policy, and no
+elapsed download cap is introduced.
+
+An isolated inspection command captures an exact bounded memory snapshot through
+explicit OS source adapters. Its report grants no Artifact validity, native
+authenticity, protected executable handoff, SBOM/pipeline approval or publication
+authority. ZIP64, split/prefixed archives and unsupported extensions/hosts fail
+explicitly. T09 remains in progress pending the remaining actual validation,
+immutable storage, upload workflow and T08 quarantine composition. Both
+independent roles passed the frozen code/test/docs after repairs. Actual rebuilt
+CLI E2E and Windows source controls passed; archive/source/CLI packages passed
+(2.137s/5.782s/8.853s). Final 30-second mutation fuzz passed 1,938,358 executions
+(31.232s). Default tests/vet, module verification, command builds, pinned
+contracts, formatting, diff, client architecture and version checks passed.
+Linux/macOS source and inspector compile checks passed; actual OS runs remain
+unverified. Host symlink and existing mapped-remote-source tests explicitly
+skipped for missing privileges/source. Production source certification and
+unaffected external database/provider/browser suites are not claimed here.
