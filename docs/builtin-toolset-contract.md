@@ -222,7 +222,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   Ask rule is the latent pin awaiting the approval-mode split, not the
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
   next boot; the done-marker window itself is the keyed-dedup horizon —
-  pruned after the 14-day retention, so a retried call older than that
+  pruned after the 7-day retention, so a retried call older than that
   re-delivers); a steer accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled (the
   `chat:steer_dropped` window is not yet correlated) or when the idle

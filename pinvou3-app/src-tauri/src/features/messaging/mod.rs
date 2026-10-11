@@ -510,9 +510,13 @@ fn rederive_sender_title(
     if let Some(from) = message.from_session.clone() {
         if let Ok(session) = store.load(&from) {
             let live_title = session.metadata.title;
-            if live_title.chars().count() <= MAX_TITLE_CHARS {
-                message.from_title = Some(live_title);
-            }
+            // Round-12 minor 2: an over-cap live title is TRUNCATED to the
+            // cap instead of keeping the spool claim — `set_title` is
+            // uncapped, so a live sender with a >200-char stored title
+            // otherwise ships the model-supplied (forgeable) title after
+            // all.
+            let truncated: String = live_title.chars().take(MAX_TITLE_CHARS).collect();
+            message.from_title = Some(truncated);
         }
     }
     message
@@ -839,7 +843,7 @@ fn read_record_for_audit(path: &Path) -> Option<SpooledMessage> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
-fn quarantine(path: &Path) {
+fn quarantine(path: &Path) -> bool {
     let _ = std::fs::create_dir_all(failed_dir());
     let mut target = failed_dir().join(path.file_name().unwrap_or_default());
     // Round-8 minor 5: the timestamp suffix has 1s resolution and the
@@ -861,12 +865,14 @@ fn quarantine(path: &Path) {
     if let Err(error) = std::fs::rename(path, &target) {
         // Terminal-path failure: the poison file stays in the spool and will
         // be re-processed (and re-logged) every poll — say so loudly instead
-        // of failing silently forever.
+        // of failing silently forever. Round-12 M2: the caller gates its
+        // audit/log/budget-clears on this — an audit line may only claim
+        // "quarantined" when the rename actually landed.
         log::warn!(
             "[messaging] quarantine rename failed for {:?}: {error}",
             path
         );
-        return;
+        return false;
     }
     // Round-8 minor 8: the rename preserves the spool file's mtime, so
     // evidence older than RETENTION pre-quarantine was pruned ~1h after
@@ -874,6 +880,7 @@ fn quarantine(path: &Path) {
     if let Ok(file) = std::fs::File::options().write(true).open(&target) {
         let _ = file.set_modified(std::time::SystemTime::now());
     }
+    true
 }
 
 /// The `session-messaging` feature switch, consulted live each poll: switch
@@ -909,6 +916,18 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     files.sort();
+    // Round-12 minor 1: entries for externally-vanished files (deleted
+    // between polls) leak — and a same-name keyed re-spool (sha256 names)
+    // inherits the stale count/episode state. Retain only what this poll
+    // actually listed.
+    let listed: std::collections::HashSet<String> = files
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+        .collect();
+    retries.attempts.retain(|name, _| listed.contains(name));
+    retries
+        .removal_failures
+        .retain(|name, _| listed.contains(name));
     // Pending cap: the sorted tail beyond the ceiling is hostile growth —
     // quarantine it with an audit record instead of delivering unbounded
     // unattended turns (the cap is on *pending* files, not on deliveries:
@@ -924,31 +943,37 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("<unnamed>");
-            log::warn!(
-                "[messaging] quarantining {name}: pending-file ceiling {} exceeded",
-                MAX_PENDING_FILES
-            );
             let record = read_record_for_audit(&path);
-            if let Some(record) = record.as_ref() {
-                audit_quarantine(
-                    store,
-                    Some(record),
-                    &format!("pending-file ceiling {MAX_PENDING_FILES} exceeded"),
+            // Round-12 M2: the audit fires only when the quarantine
+            // actually landed — a persisted rename failure must not append
+            // a "quarantined" line it never earned.
+            if quarantine(&path) {
+                log::warn!(
+                    "[messaging] quarantining {name}: pending-file ceiling {} exceeded",
+                    MAX_PENDING_FILES
                 );
-            }
-            quarantine(&path);
-            // Round-7 Q1: the quarantined tail's retry entries clear too —
-            // an orphaned entry leaks forever otherwise.
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                retries.attempts.remove(name);
+                if let Some(record) = record.as_ref() {
+                    audit_quarantine(
+                        store,
+                        Some(record),
+                        &format!("pending-file ceiling {MAX_PENDING_FILES} exceeded"),
+                    );
+                }
+                // Round-7 Q1: the quarantined tail's retry entries clear
+                // too — an orphaned entry leaks forever otherwise.
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    retries.attempts.remove(name);
+                    retries.removal_failures.remove(name);
+                }
             }
         }
     }
     // Round-2 SF2 + round-9 minor 16a: the switch gate sits after the
-    // spool-dir existence check and the listing (with no pending files the
-    // poll pays no settings.json read); round-11 minor 3: and after the
-    // pending cap, so a switched-off spool stays bounded.
-    if !messaging_switched_on() {
+    // spool-dir existence check and the listing; round-11 minor 3: after
+    // the pending cap; round-12 minor 3: an EMPTY listing returns before
+    // the consult (an idle poll pays no settings.json read — the old
+    // comment claimed that but the gate ran unconditionally).
+    if !files.is_empty() && !messaging_switched_on() {
         return;
     }
     for path in files {
@@ -1008,15 +1033,19 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         retries.clear(&name);
                         continue;
                     }
-                    log::warn!("[messaging] quarantining {name} after {count} panicking attempts");
-                    retries.clear(&name);
                     let record = read_record_for_audit(&path);
-                    audit_quarantine(
-                        store,
-                        record.as_ref(),
-                        &format!("delivery panicked {count} times"),
-                    );
-                    quarantine(&path);
+                    // Round-12 M2: audit/log/clear only on an actual move.
+                    if quarantine(&path) {
+                        log::warn!(
+                            "[messaging] quarantining {name} after {count} panicking attempts"
+                        );
+                        audit_quarantine(
+                            store,
+                            record.as_ref(),
+                            &format!("delivery panicked {count} times"),
+                        );
+                        retries.clear(&name);
+                    }
                 }
                 continue;
             }
@@ -1123,10 +1152,14 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     );
                     continue;
                 }
-                log::warn!("[messaging] quarantining {name}: {error:#}");
                 let record = read_record_for_audit(&path);
-                audit_quarantine(store, record.as_ref(), &format!("{error:#}"));
-                quarantine(&path);
+                // Round-12 M2: the audit fires only when the quarantine
+                // actually landed — a persisted rename failure must not
+                // append a "quarantined" line it never earned.
+                if quarantine(&path) {
+                    log::warn!("[messaging] quarantining {name}: {error:#}");
+                    audit_quarantine(store, record.as_ref(), &format!("{error:#}"));
+                }
             }
             Processed::Retry(original, error) => {
                 let count = retries.record(&name);
@@ -1143,17 +1176,22 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         retries.clear(&name);
                         continue;
                     }
-                    log::warn!(
-                        "[messaging] quarantining {name} after {count} delivery attempts: {error:#}"
-                    );
-                    retries.clear(&name);
                     let record = read_record_for_audit(&path);
-                    audit_quarantine(
-                        store,
-                        record.as_ref(),
-                        &format!("delivery failed after {count} attempts: {error:#}"),
-                    );
-                    quarantine(&path);
+                    // Round-12 M2: audit/log/clear only on an actual move —
+                    // the old shape cleared the budget BEFORE the move, so a
+                    // persistently failing rename re-bought 10 delivery
+                    // attempts against a target that already failed ten.
+                    if quarantine(&path) {
+                        log::warn!(
+                            "[messaging] quarantining {name} after {count} delivery attempts: {error:#}"
+                        );
+                        audit_quarantine(
+                            store,
+                            record.as_ref(),
+                            &format!("delivery failed after {count} attempts: {error:#}"),
+                        );
+                        retries.clear(&name);
+                    }
                 } else {
                     log::warn!(
                         "[messaging] delivery attempt {count} for {name} failed (will retry): {error:#}"
@@ -1665,17 +1703,31 @@ mod spool_pipeline_tests {
         std::fs::create_dir_all(failed_dir()).unwrap();
         std::fs::write(spool.join("pending.json"), record_json("pending", None)).unwrap();
         std::fs::write(spool.join("stray.tmp"), b"crash leftover").unwrap();
+        // Round-12 M3: the pending record is aged past the cutoff TOO — its
+        // survival must be the extension filter's doing, not its fresh
+        // mtime (the un-aged fixture shipped the filter-deletion mutation
+        // green).
         let stale = std::time::SystemTime::now() - RETENTION - std::time::Duration::from_secs(60);
         for path in [
             done_dir().join("stale.json"),
             failed_dir().join("stale.json"),
             spool.join("stray.tmp"),
+            spool.join("pending.json"),
         ] {
             std::fs::write(&path, b"x").unwrap();
             let file = std::fs::File::options().write(true).open(&path).unwrap();
             file.set_times(std::fs::FileTimes::new().set_modified(stale))
                 .unwrap();
         }
+        // Re-write the pending record AFTER aging (a queued message is
+        // live content), keeping its AGED mtime.
+        std::fs::write(spool.join("pending.json"), record_json("pending", None)).unwrap();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(spool.join("pending.json"))
+            .unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(stale))
+            .unwrap();
         prune_stale_state_at(stale + std::time::Duration::from_secs(30));
         assert!(
             spool.join("pending.json").exists(),
