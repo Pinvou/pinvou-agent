@@ -474,9 +474,13 @@ impl SessionAgentStore {
 
     /// 外部 Agent ACP 是可选能力，它的辅助索引损坏时不能阻断 Pinvou 主程序启动。
     ///
-    /// 加载失败时不主动覆盖原始文件；但随后任何一次 `persist`（包括启动时
-    /// `AcpPool::new` 恢复缺失的 ACP 记录、或用户创建/更新会话）都会用新内容
-    /// 替换它，损坏的内容不会长期保留。
+    /// 加载失败时不主动覆盖原始文件。Round-51 review 更正：自 round-48 起
+    /// 所有 mutator 都经 `lock_and_reload` 在锁下重读整个索引，损坏的索引
+    /// 会让它们 fail-closed 拒绝（防止 GUI 用解析不了的旧内容覆盖一次 CLI
+    /// rebind），而不是本注释旧版所说的「下一次 persist 自愈」——启动时的
+    /// restore/backfill 恢复路径持同一把锁，也被同一拒绝挡住。修复方式是
+    /// 按错误提示手工删除/修复 `session-agents.json`；本函数仅留给不写索引
+    /// 的只读调用方兜底启动。
     pub fn load_or_empty() -> Self {
         match Self::load() {
             Ok(store) => store,

@@ -319,10 +319,10 @@ impl ImportJobStore {
     /// so the caller must not park its collection at `pending` — a
     /// fully-indexed collection must not read as needing work with no
     /// self-healing path (`index resume` refuses a non-interrupted job).
-    /// A transaction/execute FAILURE also returns `false` (round-37 review:
-    /// never silently — both failure arms warn, so a busy-locked store
-    /// leaving the job `running` is diagnosable instead of reading as an
-    /// already-terminal race).
+    /// A transaction/execute/commit FAILURE also returns `false` (round-37
+    /// review: never silently — all failure arms warn, so a busy-locked store
+    /// or a rolled-back commit leaving the job `running` is diagnosable
+    /// instead of reading as an already-terminal race).
     pub fn interrupt(&self, job_id: &str) -> bool {
         let mut c = self.conn.lock();
         let Ok(tx) = c.transaction() else {
@@ -352,8 +352,20 @@ impl ImportJobStore {
                 log::warn!("knowledge import interrupt {job_id}: the transition failed: {error}");
                 false
             });
-        let _ = tx.commit();
-        applied
+        // Round-51 review: a rolled-back commit must not read as applied —
+        // the execute above ran INSIDE the transaction, so a commit failure
+        // (SQLITE_FULL / IOERR on a full disk) leaves the job `running`
+        // while the row count said otherwise. The result is decision-bearing
+        // (the caller parks its collection at `pending`), so the commit arm
+        // follows the function's own "never silently" policy.
+        tx.commit()
+            .map(|_| applied)
+            .unwrap_or_else(|error| {
+                log::warn!(
+                    "knowledge import interrupt {job_id}: the commit rolled back; the job stays running: {error}"
+                );
+                false
+            })
     }
 
     pub fn cancel(&self, job_id: &str) -> rusqlite::Result<()> {

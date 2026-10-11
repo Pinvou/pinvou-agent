@@ -746,10 +746,21 @@ pub async fn rebind_workspace_root(
                 format!("rebind_workspace_root: {msg}")
             }
         })?;
-    let prefix_outcome = acp_pool
-        .agents()
-        .rebind_workspace_prefix(&from, &to_display)
-        .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+    // Round-51 review: `rebind_workspace_prefix` holds the cross-process
+    // section lock across the whole translation + sidecar passes — join it
+    // on a blocking worker instead of parking this runtime worker (the
+    // store handle is a cheap Arc-field clone, same as the round-50 codex
+    // rollback conversion).
+    let agents = acp_pool.agents().clone();
+    let from_for_agents = from.clone();
+    let to_for_agents = to_display.clone();
+    let prefix_outcome = tauri::async_runtime::spawn_blocking(move || {
+        agents
+            .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
+            .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+    })
+    .await
+    .map_err(|error| format!("rebind_workspace_root 任务失败: {error}"))??;
     // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
     // of the batch planned above — the legacy table already carries the
     // plan's translations, so a fault here heals forward at the next boot. A
@@ -844,10 +855,17 @@ pub async fn rebind_workspace_root(
     .collect();
     let mut repaired_targets_folded: Vec<(String, PathBuf)> = Vec::new();
     if !stranded.is_empty() {
-        let repaired_ids = acp_pool
-            .agents()
-            .repair_stranded_index_records(&stranded)
-            .map_err(|e| format!("rebind_workspace_root: {e:#}"))?;
+        // Round-51 review: same cross-process section-lock rationale as the
+        // prefix rebind above — join on a blocking worker.
+        let agents = acp_pool.agents().clone();
+        let stranded_for_repair = stranded.clone();
+        let repaired_ids = tauri::async_runtime::spawn_blocking(move || {
+            agents
+                .repair_stranded_index_records(&stranded_for_repair)
+                .map_err(|e| format!("rebind_workspace_root: {e:#}"))
+        })
+        .await
+        .map_err(|error| format!("rebind_workspace_root 任务失败: {error}"))??;
         // SF-C (review #463 round-15): the repair re-keys the index onto the
         // sidecar's target, but the metadata loop computes its set_workspace
         // targets from the scan-time snapshot — and the repaired session was

@@ -414,6 +414,44 @@ pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> 
         .clone()
 }
 
+/// [`import_lock_for`] 的跨进程补充：进程内互斥表看不见另一个进程，而
+/// round-51 起 CLI 的 `plugins import` / `plugins skills install` /
+/// `skills uninstall` 会在第二个进程里调用这些 mutator，与 GUI 共享同一批
+/// 固定名 `.tmp` 暂存路径——两个写者会互相删掉对方的暂存内容，再把一份
+/// 静默残缺的包装进正式目录并回 exit-0（与定时任务定义暂存别名同类的
+/// 缺陷，那条已在上游以唯一暂存名修复；这里的根因修复在本地即可完成）。
+/// 每个市场 mutator 在自己的「冲突检查 → 原子 rename」整段临界区持有本
+/// 文件锁，位置一律在各自 `import_lock_for` 之后、store `file_lock` 之前，
+/// 锁序全仓一致：import_lock → 市场文件锁 → store file_lock。锁文件
+/// 不删除（崩溃不能楔住对端；进程死亡由内核释放锁），与 settings 部
+/// `SettingsFileLock` 同一纪律。
+pub(crate) struct MarketplaceWriteLock(std::fs::File);
+
+impl MarketplaceWriteLock {
+    pub(crate) fn acquire() -> std::io::Result<Self> {
+        let path = crate::platform::paths::bundles_root().join(".imports.lock");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        // 阻塞等待而非 try+busy：导入/安装本就是秒级用户动作，持锁方死亡
+        // 由内核释放，存活方只在各自的暂存窗口内持锁。
+        file.lock()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for MarketplaceWriteLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 /// 插件导入报告（统一上传路径的返回）。
 #[derive(Debug, Clone)]
 pub struct PluginImportReport {
@@ -1122,6 +1160,12 @@ pub fn import_plugin_package(
     // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
     let import_lock = import_lock_for(&id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+    // Round-51 review M2: the in-process mutex above cannot see the CLI's
+    // second process — hold the cross-process market lock for the whole
+    // conflict-check → rename window (lock order: import_lock → market
+    // file lock → store file lock, identical at every market mutator).
+    let _market_lock =
+        MarketplaceWriteLock::acquire().map_err(|e| format!("创建市场写入锁: {e}"))?;
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -2702,6 +2746,58 @@ mod tests {
                 && !dir.join("bundles").join("demo.old").exists(),
             "并发导入结束后不得残留 staged/.old 目录"
         );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-51 review M2: the cross-process market write lock must actually
+    /// exclude a second open file description — that is the whole point (the
+    /// CLI's plugins/skills lanes are a second process against the same
+    /// staging paths). flock conflicts are per open description, so a second
+    /// in-process handle hitting `WouldBlock` while the guard is held (and
+    /// succeeding after the drop) proves the exclusion with no threads and
+    /// no sleeps.
+    #[test]
+    fn marketplace_write_lock_excludes_a_second_handle() {
+        use crate::platform::paths::tests::{ENV_LOCK, unique_suffix};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-market-write-lock-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+        let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
+        assert!(
+            lock_path.exists(),
+            "the lock file must exist under bundles root"
+        );
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let conflict = second.try_lock();
+        assert!(
+            matches!(conflict, Err(std::fs::TryLockError::WouldBlock)),
+            "a second handle must be excluded while the guard is held: {conflict:?}"
+        );
+        drop(guard);
+        second
+            .try_lock()
+            .expect("a dropped guard must release the lock");
 
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

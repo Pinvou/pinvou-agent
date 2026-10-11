@@ -673,12 +673,15 @@ pub const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// request validator and the copier cannot drift apart.
 /// Deliberately an INDEPENDENT literal, not an alias of
 /// `files::file_ingest::MAX_FILE_BYTES`: the two caps guard different sides
-/// of the same handoff (validate before staging, bounded copy during), and
-/// the compile-time assert in `attachments.rs` is only meaningful while the
-/// constants are separate values — an alias can never drift and therefore
-/// can never fail the assert the comment there promises. Raise both
-/// together or the assert fires.
-pub const MAX_STAGED_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+/// of the same handoff (validate before staging, bounded copy during).
+/// Round-51 review: the constant moved to `attachments.rs` (an
+/// unconditionally compiled module) as the single definition — the old
+/// second literal here plus the benchmark-hooks-only compile-time assert
+/// left the tie unpinned in default GUI builds. This re-export keeps the
+/// established paths (`pinvou3_lib::headless_bridge::…` for the CLI's
+/// `agent_task`, the `agentic_task` import) valid; an alias can never
+/// drift.
+pub use crate::features::assistant::attachments::MAX_STAGED_ATTACHMENT_BYTES;
 /// Aggregate size cap across one attachment batch (100 MiB).
 pub const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 

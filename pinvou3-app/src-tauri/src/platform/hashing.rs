@@ -31,9 +31,12 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// file, and only regular files are hashed. NOT atomic with the open below
 /// (a path swapped in between still reaches `File::open`): it rejects the
 /// ordinary case, it does not close the race — the same scope statement
-/// `read_text_file_capped` makes on the CLI side. All callers verify
-/// downloads, staged archives or store files, where a non-regular path is
-/// exactly the plant this gate exists for.
+/// `read_text_file_capped` makes on the CLI side. The download / staged-archive
+/// / store-file callers hash app-controlled paths, where a non-regular path is
+/// exactly the plant this gate exists for; the one user-content caller (the
+/// codex workspace fingerprint lane) filters symlinks itself via
+/// `symlink_metadata` and skips them (`Ok(None)`), so a workspace dotfile
+/// link is a skip, never a failed capture.
 ///
 /// `pub` + the platform-root re-export: the headless CLI verifies connector
 /// CLI binaries and staged voice models with the app's own hashing instead of
