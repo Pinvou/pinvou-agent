@@ -578,12 +578,31 @@ pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
 /// either (round-18 review — the lock file got it with an explicit
 /// rationale; the data file a hot reader touches every turn is the same
 /// trust surface). The whole hardening is [`open_private_data_file`]'s;
-/// this body adds only the read.
+/// this body adds only the read, bounded by [`read_capped`] so a file
+/// appended past the cap after the open-time gate is refused too
+/// (round-28 review).
 pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
-    use std::io::Read as _;
     let mut file = open_private_data_file(path)?;
+    read_capped(&mut file, MAX_PRIVATE_DATA_READ_BYTES)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+}
+
+/// One bounded read: at most `cap` bytes, with a one-byte overshoot window
+/// so the overflow arm can distinguish "exactly cap" from "cap or more".
+/// The metadata gate in [`open_private_data_file`] bounds the read at open
+/// time only — a concurrent appender can grow the file between the gate and
+/// EOF (the fd pins the inode, so no swap is needed), and the former
+/// unbounded `read_to_end` would have read and allocated it whole.
+fn read_capped<R: std::io::Read>(reader: &mut R, cap: u64) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    reader.take(cap + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("exceeds the private-state read cap ({cap} bytes)"),
+        ));
+    }
     Ok(bytes)
 }
 
@@ -2517,7 +2536,7 @@ pub(crate) mod tests {
 
     use super::{
         atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
-        rotate_log_if_oversized,
+        read_capped, rotate_log_if_oversized,
     };
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file, open_private_lock_file};
@@ -2527,6 +2546,21 @@ pub(crate) mod tests {
         all(target_os = "linux", target_pointer_width = "64")
     ))]
     use super::{ensure_private_real_directory, open_private_file_directory};
+
+    /// Round-28 review: the open-time metadata gate bounds the read only at
+    /// open time — a file appended past the cap between the gate and EOF
+    /// (the fd pins the inode, so no swap is needed) must be refused by the
+    /// read itself instead of being read and allocated whole.
+    #[test]
+    fn read_capped_refuses_a_reader_grown_past_the_cap() {
+        let mut reader = std::io::repeat(b'x');
+        let error = read_capped(&mut reader, 16).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+        assert!(
+            error.to_string().contains("read cap"),
+            "the overflow must name the cap: {error}"
+        );
+    }
 
     #[test]
     fn rotate_log_deletes_oversized_file_when_no_suffix_requested() {
