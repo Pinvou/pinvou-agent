@@ -15,6 +15,15 @@ use super::secrets::{
     store_secret_value,
 };
 
+/// Reads a migration source through the hardened read primitive; NotFound is a no-op for migration sources.
+fn read_present_private_data_file(path: &std::path::Path) -> Result<Option<String>, String> {
+    match crate::platform::filesystem::read_private_data_file(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
+    }
+}
+
 /// 内置的"已知有明文密钥的工具"清单(迁移目标)。
 #[derive(Debug, Clone, Copy)]
 struct LegacyMcpSecretSpec {
@@ -88,10 +97,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // MARKETPLACE_TRANSACTION_LOCK(install_inner),probe→open 的 swap 窗口
         // 内被换成 FIFO 的 manifest 会楔死该进程的安装道。与 mcp.json 段同一
         // 加固原语;NotFound(被并发删走)按缺失条目无操作处理。
-        let content = match crate::platform::filesystem::read_private_data_file(path) {
-            Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("读取 {} 失败: {e}", path.display())),
+        let Some(content) = read_present_private_data_file(path)? else {
+            return Ok(());
         };
         let mut json: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
@@ -131,10 +138,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // hardened primitive refuses non-regular targets without blocking;
         // NotFound (raced away after the probe) stays a no-op like the
         // absent file.
-        let content = match crate::platform::filesystem::read_private_data_file(path) {
-            Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("读取 {} 失败: {e}", path.display())),
+        let Some(content) = read_present_private_data_file(path)? else {
+            return Ok(());
         };
         let mut json: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;

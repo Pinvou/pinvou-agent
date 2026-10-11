@@ -2738,13 +2738,8 @@ mod tests {
     #[test]
     fn recycle_manifest_load_failure_compensates_and_stays_retryable() {
         crate::platform::test_support::with_temp_home("pinvou3-recyclebin-load-compensate", || {
-            // The managed temp home: `tmp` keeps the body's path
-            // expressions (including the ones inside assertions)
-            // verbatim under the with_temp_home harness.
             let tmp = crate::platform::paths::pinvou3_home();
-            // Leg 1 stages the store legs inline (no helper): the bin
-            // manifest is corrupted BEFORE the recycle below, which must
-            // fail loud — the helper's recycle asserts success instead.
+            // Staged inline: the manifest must be corrupt before the recycle; bin_package asserts a successful recycle.
             let pkg = paths::bundles_root().join("load-comp");
             std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
             std::fs::write(
