@@ -22,8 +22,8 @@ use super::types::{
     CURRENT_FOCUS_ACTIVE_MAX_STORED, CURRENT_FOCUS_DEFAULT_TTL_DAYS, MemoryProfile,
     MemorySuggestion, MemoryTextPatch, MemoryWriteEvent, NEVER_MEMORY_MAX_STORED, NeverMemoryItem,
     PENDING_MEMORY_ACTIVE_MAX_STORED, PENDING_MEMORY_RESOLVED_MAX_STORED, PENDING_STATUS_CONFIRMED,
-    PENDING_STATUS_IGNORED, PENDING_STATUS_OBSERVED, PENDING_STATUS_PENDING, PROFILE_VERSION,
-    PendingMemoryItem, PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
+    PENDING_STATUS_IGNORED, PENDING_STATUS_PENDING, PROFILE_VERSION, PendingMemoryItem,
+    PreferenceFile, ProfilePatch, RECENT_ACTIVITY_ACTIVE_MAX_STORED,
     RECENT_ACTIVITY_DEFAULT_TTL_DAYS, RECENT_WORK_ACTIVE_MAX_STORED,
     RECENT_WORK_ARCHIVED_MAX_STORED, RECENT_WORK_DEFAULT_TTL_DAYS, RecentWorkItem,
     RuntimeMemorySnapshot, TIMED_MEMORY_ARCHIVED_MAX_STORED, TimedMemoryItem,
@@ -284,23 +284,10 @@ pub fn update_profile(patch: ProfilePatch) -> io::Result<MemoryProfile> {
 }
 
 pub fn load_recent_work() -> io::Result<Vec<RecentWorkItem>> {
-    let path = recent_work_path();
-    let raw = match read_text_recovering(&path, json_lines_are_valid::<RecentWorkItem>) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err),
-    };
-    let mut out = Vec::new();
-    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let Ok(mut item) = serde_json::from_str::<RecentWorkItem>(line) else {
-            continue;
-        };
-        normalize_recent_work(&mut item);
-        if !item.id.is_empty() && !item.title.is_empty() {
-            out.push(item);
-        }
-    }
-    Ok(out)
+    load_jsonl_recovering(&recent_work_path(), |item| {
+        normalize_recent_work(item);
+        !item.id.is_empty() && !item.title.is_empty()
+    })
 }
 
 /// Archive `id` wherever it appears: the legacy recent-work store and both
@@ -1071,27 +1058,16 @@ pub(super) fn delete_timed_memory_unlocked(kind: &str, id: &str) -> io::Result<b
 }
 
 fn load_timed_memory_file(path: &std::path::Path, kind: &str) -> io::Result<Vec<TimedMemoryItem>> {
-    let raw = match read_text_recovering(path, json_lines_are_valid::<TimedMemoryItem>) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err),
-    };
-    let mut out = Vec::new();
-    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let Ok(mut item) = serde_json::from_str::<TimedMemoryItem>(line) else {
-            continue;
-        };
+    let items = load_jsonl_recovering(path, |item: &mut TimedMemoryItem| {
         item.kind = normalize_timed_memory_kind(if item.kind.is_empty() {
             kind
         } else {
             &item.kind
         });
-        normalize_timed_memory(&mut item);
-        if !item.id.is_empty() && !item.text.is_empty() {
-            out.push(item);
-        }
-    }
-    Ok(dedupe_timed_memory_items(out))
+        normalize_timed_memory(item);
+        !item.id.is_empty() && !item.text.is_empty()
+    })?;
+    Ok(dedupe_timed_memory_items(items))
 }
 
 /// Shared JSONL store writer: serialize each item as one compact JSON line
@@ -1113,6 +1089,65 @@ fn write_jsonl_store<T: Serialize>(
         lines.push('\n');
     }
     write_text_atomic(path, &lines)
+}
+
+/// Shared JSONL store loader: read with recovery, then parse/normalize/filter
+/// each line. `normalize_and_validate` normalizes one item in place and
+/// returns whether it stays valid (id and key field non-empty); invalid lines
+/// are dropped. The per-store read-recover/parse loops differed only in item
+/// type and this closure, so they all route through here.
+fn load_jsonl_recovering<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    mut normalize_and_validate: impl FnMut(&mut T) -> bool,
+) -> io::Result<Vec<T>> {
+    let raw = match read_text_recovering(path, json_lines_are_valid::<T>) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let mut out = Vec::new();
+    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Ok(mut item) = serde_json::from_str::<T>(line) else {
+            continue;
+        };
+        if normalize_and_validate(&mut item) {
+            out.push(item);
+        }
+    }
+    Ok(out)
+}
+
+/// Shared two-bucket compaction skeleton behind the JSONL store writers:
+/// normalize-and-keep each item, sort most-recent-first, then keep at most
+/// `active_limit` items matching `is_active` and at most `overflow_limit` of
+/// the remainder, active bucket first. Single-bucket stores (never) pass an
+/// always-false `is_active` and an active limit of 0.
+fn compact_two_buckets<T>(
+    items: Vec<T>,
+    mut normalize_and_keep: impl FnMut(&mut T) -> bool,
+    sort: impl Fn(&T, &T) -> std::cmp::Ordering,
+    is_active: impl Fn(&T) -> bool,
+    active_limit: usize,
+    overflow_limit: usize,
+) -> Vec<T> {
+    let mut normalized: Vec<T> = items
+        .into_iter()
+        .filter_map(|mut item| normalize_and_keep(&mut item).then_some(item))
+        .collect();
+    normalized.sort_by(sort);
+    let mut active = Vec::new();
+    let mut overflow = Vec::new();
+    for item in normalized {
+        if is_active(&item) {
+            if active.len() < active_limit {
+                active.push(item);
+            }
+        } else if overflow.len() < overflow_limit {
+            overflow.push(item);
+        }
+    }
+    active.extend(overflow);
+    active
 }
 
 pub(super) fn write_timed_memory_file(
@@ -1144,31 +1179,26 @@ pub(super) fn compact_timed_memory_store_unlocked(kind: &str) -> io::Result<()> 
     write_timed_memory_file(&path, &items, &kind)
 }
 
-fn compact_timed_memory_items(mut items: Vec<TimedMemoryItem>, kind: &str) -> Vec<TimedMemoryItem> {
+fn compact_timed_memory_items(items: Vec<TimedMemoryItem>, kind: &str) -> Vec<TimedMemoryItem> {
     let kind = normalize_timed_memory_kind(kind);
-    items.sort_by(|a, b| {
-        parse_time(&b.last_hit)
-            .cmp(&parse_time(&a.last_hit))
-            .then_with(|| b.updated_at.cmp(&a.updated_at))
-    });
     let active_limit = if kind == "recent_activity" {
         RECENT_ACTIVITY_ACTIVE_MAX_STORED
     } else {
         CURRENT_FOCUS_ACTIVE_MAX_STORED
     };
-    let mut active = Vec::new();
-    let mut archived = Vec::new();
-    for item in items {
-        if item.status == "active" {
-            if active.len() < active_limit {
-                active.push(item);
-            }
-        } else if archived.len() < TIMED_MEMORY_ARCHIVED_MAX_STORED {
-            archived.push(item);
-        }
-    }
-    active.extend(archived);
-    active
+    // write_timed_memory_file 已在上一步完成 normalize + dedupe，这里只做分桶截断。
+    compact_two_buckets(
+        items,
+        |_| true,
+        |a, b| {
+            parse_time(&b.last_hit)
+                .cmp(&parse_time(&a.last_hit))
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        },
+        |item| item.status == "active",
+        active_limit,
+        TIMED_MEMORY_ARCHIVED_MAX_STORED,
+    )
 }
 
 fn dedupe_timed_memory_items(mut items: Vec<TimedMemoryItem>) -> Vec<TimedMemoryItem> {
@@ -1196,23 +1226,10 @@ fn dedupe_timed_memory_items(mut items: Vec<TimedMemoryItem>) -> Vec<TimedMemory
 }
 
 pub fn load_pending_memory() -> io::Result<Vec<PendingMemoryItem>> {
-    let path = pending_memory_path();
-    let raw = match read_text_recovering(&path, json_lines_are_valid::<PendingMemoryItem>) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err),
-    };
-    let mut out = Vec::new();
-    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let Ok(mut item) = serde_json::from_str::<PendingMemoryItem>(line) else {
-            continue;
-        };
-        normalize_pending_memory(&mut item);
-        if !item.id.is_empty() && !item.content.is_empty() {
-            out.push(item);
-        }
-    }
-    Ok(out)
+    load_jsonl_recovering(&pending_memory_path(), |item| {
+        normalize_pending_memory(item);
+        !item.id.is_empty() && !item.content.is_empty()
+    })
 }
 
 pub fn enqueue_memory_candidate(suggestion: MemorySuggestion) -> io::Result<PendingMemoryItem> {
@@ -1809,25 +1826,12 @@ fn blocked_by_never_memory_unlocked(content: &str) -> io::Result<bool> {
 }
 
 fn load_never_memory_unlocked() -> io::Result<Vec<NeverMemoryItem>> {
-    let path = never_memory_path();
-    let raw = match read_text_recovering(&path, json_lines_are_valid::<NeverMemoryItem>) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err),
-    };
-    let mut out = Vec::new();
-    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let Ok(mut item) = serde_json::from_str::<NeverMemoryItem>(line) else {
-            continue;
-        };
+    load_jsonl_recovering(&never_memory_path(), |item: &mut NeverMemoryItem| {
         item.id = clean_id(&item.id);
         item.pattern = clean_text(&item.pattern, 120);
         item.reason = clean_text(&item.reason, 80);
-        if !item.id.is_empty() && !item.pattern.is_empty() {
-            out.push(item);
-        }
-    }
-    Ok(out)
+        !item.id.is_empty() && !item.pattern.is_empty()
+    })
 }
 
 pub(super) fn write_never_memory_unlocked(items: &[NeverMemoryItem]) -> io::Result<()> {
@@ -1850,17 +1854,25 @@ fn compact_never_memory_items(items: &[NeverMemoryItem]) -> Vec<NeverMemoryItem>
         })
         .collect();
     normalized.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    let mut out: Vec<NeverMemoryItem> = Vec::new();
+    // 单桶 store：首见 pattern 去重后整体截断到容量上限（与原“去重 + break”
+    // 单趟循环等价），复用双桶骨架时 active 桶恒空。
+    let mut deduped: Vec<NeverMemoryItem> = Vec::new();
     for item in normalized {
-        if out.iter().any(|existing| existing.pattern == item.pattern) {
-            continue;
+        if !deduped
+            .iter()
+            .any(|existing| existing.pattern == item.pattern)
+        {
+            deduped.push(item);
         }
-        if out.len() >= NEVER_MEMORY_MAX_STORED {
-            break;
-        }
-        out.push(item);
     }
-    out
+    compact_two_buckets(
+        deduped,
+        |_| true,
+        |a, b| b.created_at.cmp(&a.created_at),
+        |_| false,
+        0,
+        NEVER_MEMORY_MAX_STORED,
+    )
 }
 
 pub(super) fn write_recent_work_unlocked(items: &[RecentWorkItem]) -> io::Result<()> {
@@ -1872,42 +1884,37 @@ pub(super) fn write_recent_work_unlocked(items: &[RecentWorkItem]) -> io::Result
 }
 
 fn compact_recent_work_items(items: &[RecentWorkItem]) -> Vec<RecentWorkItem> {
-    let mut normalized: Vec<RecentWorkItem> = items
-        .iter()
-        .filter_map(|item| {
-            let mut item = item.clone();
-            normalize_recent_work(&mut item);
-            (!item.id.is_empty() && !item.title.is_empty()).then_some(item)
-        })
-        .collect();
-    normalized.sort_by(|a, b| {
-        parse_time(&b.last_hit)
-            .cmp(&parse_time(&a.last_hit))
-            .then_with(|| b.updated_at.cmp(&a.updated_at))
-    });
-    let mut active = Vec::new();
-    let mut archived = Vec::new();
-    for item in normalized {
-        if item.status == "active" {
-            if active.len() < RECENT_WORK_ACTIVE_MAX_STORED {
-                active.push(item);
-            }
-        } else if archived.len() < RECENT_WORK_ARCHIVED_MAX_STORED {
-            archived.push(item);
-        }
+    compact_two_buckets(
+        items.to_vec(),
+        |item| {
+            normalize_recent_work(item);
+            !item.id.is_empty() && !item.title.is_empty()
+        },
+        |a, b| {
+            parse_time(&b.last_hit)
+                .cmp(&parse_time(&a.last_hit))
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        },
+        |item| item.status == "active",
+        RECENT_WORK_ACTIVE_MAX_STORED,
+        RECENT_WORK_ARCHIVED_MAX_STORED,
+    )
+}
+
+/// “active 或 archived”二值 status 归一化：recent_work 与 timed store 各有一份
+/// 相同的 match，收敛到这里避免两处漂移。
+fn normalize_status_active_or_archived(status: &str) -> String {
+    match clean_text(status, 20).as_str() {
+        "active" => "active".to_string(),
+        _ => "archived".to_string(),
     }
-    active.extend(archived);
-    active
 }
 
 fn normalize_recent_work(item: &mut RecentWorkItem) {
     item.id = clean_id(&item.id);
     item.title = clean_text(&item.title, 50);
     item.summary = clean_text(&item.summary, 80);
-    item.status = match clean_text(&item.status, 20).as_str() {
-        "active" => "active".to_string(),
-        _ => "archived".to_string(),
-    };
+    item.status = normalize_status_active_or_archived(&item.status);
     item.source = clean_text(&item.source, 40);
 }
 
@@ -1936,18 +1943,18 @@ fn normalize_timed_memory(item: &mut TimedMemoryItem) {
     item.topic = normalize_timed_memory_topic(&item.kind, &item.topic);
     item.text = clean_text(&item.text, TIMED_TEXT_MAX_CHARS);
     item.source = clean_text(&item.source, 40);
-    item.status = match clean_text(&item.status, 20).as_str() {
-        "active" => "active".to_string(),
-        _ => "archived".to_string(),
-    };
+    item.status = normalize_status_active_or_archived(&item.status);
     item.ttl_days = item.ttl_days.clamp(1, 90);
 }
 
+/// Timed store 的内容同一性 key：与 `pending_content_key` 一致用单空格拼接
+/// （旧的 "" 拼接会把 "a b" 和 "ab" 归并成同一个 key）。收紧后最激进的归并
+/// 由 `timed_memory_texts_are_related` 的 bigram 相似度兜底。
 fn timed_memory_text_key(text: &str) -> String {
     clean_text(text, 120)
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join("")
+        .join(" ")
         .to_lowercase()
 }
 
@@ -2109,7 +2116,6 @@ fn normalize_pending_memory(item: &mut PendingMemoryItem) {
     item.status = match clean_text(&item.status, 30).as_str() {
         PENDING_STATUS_CONFIRMED => PENDING_STATUS_CONFIRMED.to_string(),
         PENDING_STATUS_IGNORED => PENDING_STATUS_IGNORED.to_string(),
-        PENDING_STATUS_OBSERVED => PENDING_STATUS_OBSERVED.to_string(),
         _ => PENDING_STATUS_PENDING.to_string(),
     };
 }
@@ -2135,33 +2141,21 @@ pub(super) fn write_pending_memory_unlocked(items: &[PendingMemoryItem]) -> io::
 }
 
 fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemoryItem> {
-    let mut normalized: Vec<PendingMemoryItem> = items
-        .iter()
-        .filter_map(|item| {
-            let mut item = item.clone();
-            normalize_pending_memory(&mut item);
-            (!item.id.is_empty() && !item.content.is_empty()).then_some(item)
-        })
-        .collect();
-    normalized.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then_with(|| b.created_at.cmp(&a.created_at))
-    });
-    let mut active = Vec::new();
-    let mut resolved = Vec::new();
-    for item in normalized {
-        if matches!(
-            item.status.as_str(),
-            PENDING_STATUS_PENDING | PENDING_STATUS_OBSERVED
-        ) {
-            if active.len() < PENDING_MEMORY_ACTIVE_MAX_STORED {
-                active.push(item);
-            }
-        } else if resolved.len() < PENDING_MEMORY_RESOLVED_MAX_STORED {
-            resolved.push(item);
-        }
-    }
-    active.extend(resolved);
-    active
+    compact_two_buckets(
+        items.to_vec(),
+        |item| {
+            normalize_pending_memory(item);
+            !item.id.is_empty() && !item.content.is_empty()
+        },
+        |a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        },
+        // normalize_pending_memory 之后 status 只剩 pending/confirmed/ignored，
+        // 观察态（"observed"）无生产者，未知值一并落入 pending 桶。
+        |item| item.status == PENDING_STATUS_PENDING,
+        PENDING_MEMORY_ACTIVE_MAX_STORED,
+        PENDING_MEMORY_RESOLVED_MAX_STORED,
+    )
 }

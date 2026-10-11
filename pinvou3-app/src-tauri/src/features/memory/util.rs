@@ -26,11 +26,14 @@ pub(super) fn clean_scalar(value: &str) -> String {
     clean_text(value, 200)
 }
 
+/// 把连续空白折叠为单个空格（无字数上限）。`clean_text` = 本函数 + 截断；
+/// render 的快照行拼装只需要不截断的版本。
+pub(super) fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub(super) fn clean_text(value: &str, max_chars: usize) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    collapse_whitespace(value)
         .trim()
         .chars()
         .take(max_chars)
@@ -655,24 +658,40 @@ pub(super) fn looks_ongoing_work_status(value: &str) -> bool {
         .any(|needle| value.contains(needle))
 }
 
+/// “交付/工作已完成” CJK needles 的唯一数据源：定时库状态探测
+/// （`looks_completed_work_status`）与 LLM 复盘的交付触发器
+/// （`assistant_suggests_delivery_complete`）共用，保持一个 const 让两个
+/// 探针无法漂移（此前“已经交付”只触发了复盘触发器）。
+pub(super) const COMPLETED_WORK_STATUS_NEEDLES: [&str; 25] = [
+    "已完成",
+    "已经完成",
+    "完成了",
+    "刚完成",
+    "已生成",
+    "已经生成",
+    "生成了",
+    "写好了",
+    "写完",
+    "整理好了",
+    "已整理",
+    "已经整理",
+    "整理完",
+    "已实现",
+    "已经实现",
+    "实现了",
+    "已修复",
+    "已经修复",
+    "修复了",
+    "已交付",
+    "已经交付",
+    "交付了",
+    "已更新",
+    "已经更新",
+    "更新了",
+];
+
 pub(super) fn looks_completed_work_status(value: &str) -> bool {
-    [
-        "刚完成",
-        "已完成",
-        "完成了",
-        "已生成",
-        "生成了",
-        "已实现",
-        "实现了",
-        "已修复",
-        "修复了",
-        "已交付",
-        "交付了",
-        "写完",
-        "整理完",
-        "已整理",
-        "整理好了",
-    ]
-    .iter()
-    .any(|needle| value.contains(needle))
+    COMPLETED_WORK_STATUS_NEEDLES
+        .iter()
+        .any(|needle| value.contains(needle))
 }
