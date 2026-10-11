@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -191,23 +190,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn write_host_owner_claim(path: &std::path::Path, claim: &serde_json::Value) -> anyhow::Result<()> {
-    let temporary = path.with_extension("claim.tmp");
-    match std::fs::remove_file(&temporary) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary)?;
-    serde_json::to_writer(&mut file, claim)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    std::fs::rename(temporary, path)?;
-    Ok(())
+    // 凭据声明是首写文件：复用 TLS 模块的 0600 原子写入，不预删旧目标。
+    let mut bytes = serde_json::to_vec(claim)?;
+    bytes.push(b'\n');
+    pinvou_knowledge::tls::write_private_file(path, &bytes, false).map_err(anyhow::Error::msg)
 }

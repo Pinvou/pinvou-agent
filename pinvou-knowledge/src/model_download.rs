@@ -69,6 +69,8 @@ pub const KNOWLEDGE_MODEL_FILES: [KnowledgeModelFile; 5] = [
     },
 ];
 
+pub use crate::model_layout::{MODEL_ONNX_CANDIDATES, MODEL_TOKENIZER_FILES, find_onnx_in};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnowledgeModelDownloadStage {
     Download,
@@ -180,17 +182,12 @@ pub fn model_directory_is_complete(dir: &Path) -> bool {
     let Ok(dir) = std::fs::canonicalize(dir) else {
         return false;
     };
-    let onnx = dir.join("model.onnx").is_file()
-        || dir.join("onnx").join("model_int8.onnx").is_file()
-        || dir.join("onnx").join("model.onnx").is_file();
-    onnx && [
-        "tokenizer.json",
-        "config.json",
-        "special_tokens_map.json",
-        "tokenizer_config.json",
-    ]
-    .iter()
-    .all(|file| dir.join(file).is_file())
+    MODEL_ONNX_CANDIDATES
+        .iter()
+        .any(|file| dir.join(file).is_file())
+        && MODEL_TOKENIZER_FILES
+            .iter()
+            .all(|file| dir.join(file).is_file())
 }
 
 /// 恢复上次在目录切换窗口中中断的模型安装，并清理旧版服务遗留的随机备份。

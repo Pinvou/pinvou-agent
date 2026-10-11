@@ -25,17 +25,21 @@ impl Embedder {
         let read = |file: &str| -> Result<Vec<u8>, String> {
             std::fs::read(dir.join(file)).map_err(|error| format!("{file}: {error}"))
         };
-        let onnx = std::fs::read(dir.join("model.onnx"))
-            .or_else(|_| std::fs::read(dir.join("onnx").join("model_int8.onnx")))
-            .or_else(|_| std::fs::read(dir.join("onnx").join("model.onnx")))
-            .map_err(|error| {
-                format!("单文件 ONNX 未找到(model.onnx 或 onnx/model_int8.onnx): {error}")
-            })?;
+        // 目录布局（ONNX 候选与 tokenizer 文件）以下载清单所在的
+        // model_download 为准，避免装载路径与下载/完整性探测各自维护一份。
+        let onnx = std::fs::read(crate::model_layout::find_onnx_in(dir)?)
+            .map_err(|error| error.to_string())?;
+        let [
+            tokenizer_file,
+            config_file,
+            special_tokens_map_file,
+            tokenizer_config_file,
+        ] = crate::model_layout::MODEL_TOKENIZER_FILES;
         let tokenizer_files = TokenizerFiles {
-            tokenizer_file: read("tokenizer.json")?,
-            config_file: read("config.json")?,
-            special_tokens_map_file: read("special_tokens_map.json")?,
-            tokenizer_config_file: read("tokenizer_config.json")?,
+            tokenizer_file: read(tokenizer_file)?,
+            config_file: read(config_file)?,
+            special_tokens_map_file: read(special_tokens_map_file)?,
+            tokenizer_config_file: read(tokenizer_config_file)?,
         };
         let model =
             UserDefinedEmbeddingModel::new(onnx, tokenizer_files).with_pooling(Pooling::Cls);
