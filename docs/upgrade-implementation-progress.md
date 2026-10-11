@@ -1163,3 +1163,37 @@ Linux/macOS source and inspector compile checks passed; actual OS runs remain
 unverified. Host symlink and existing mapped-remote-source tests explicitly
 skipped for missing privileges/source. Production source certification and
 unaffected external database/provider/browser suites are not claimed here.
+
+
+### T09 second batch: signed Manifest and inventory binding (2026-10-12)
+
+The artifact feature captures the exact fixed root Manifest under the approved
+1 MiB bound while completing the whole ZIP inspection. Original closed Schema,
+canonical envelope signatures, complete scope, intrinsic Package semantics and
+current Root policy are reused. Root expiry, package-role denied keys and exact
+package subject denies refuse verification. Packages acquire no invented expiry.
+Outer ZIP, Manifest envelope and FullPack remain independent byte identities;
+SBOM/provenance exact signed names bind only to distinct outer files. Every signed
+native identity binds to direct FullPack member size/hash, without inventing
+source paths from installationTarget or authenticating publisher/format claims.
+
+An actual PostgreSQL source composes T07 continuous protected Root history and
+T08 complete deny in the same SERIALIZABLE transaction. It binds the actual SQL
+connection/database/login/current identity, committed schema digests and frozen
+shared namespace/table owner to the checked runtime source. A token marker or
+constructor check on another pool alone cannot grant source trust. SQL time is
+read at both boundaries; missing/corrupt source returns no facts.
+
+Real T05 dual approval, T06 owner, genesis and Root v1/v2 publication prepare an
+actual package policy before signed byte binding. Integrity/isolation controls
+use real PostgreSQL, including another complete protected database with the same
+runtime login. They do not manufacture Artifact validity or approved deny
+commands. Both independent roles passed the frozen complete code/test/docs after
+source boundary repairs. Final actual PostgreSQL regression passed (11.168s;
+source 5.35s, Manifest 3.85s). Affected archive/source/verification passed
+(6.265s/6.178s/3.902s), along with final default Go tests/vet, module verification,
+all command builds, pinned contracts, formatting/diff and client architecture/version
+checks. Unchanged provider/browser/deployment opt-ins are not claimed. Actual
+native/pipeline/SBOM content verification, storage, upload/error/recovery workflow,
+T46 evidence and T08 quarantine are subsequent
+work. Full T09 stays in progress; no download deadline is introduced.
