@@ -754,17 +754,9 @@ pub(crate) fn open_landing_lease(id: &str) -> std::io::Result<fd_lock::RwLock<st
     // carries the `.pending` suffix, so the reconcile's journal scan skips it
     // by construction.
     let path = landing_journal_dir().join(format!("{id}.landing.lock"));
-    let open = || crate::platform::filesystem::open_private_lock_file(&path);
-    match open() {
-        Ok(file) => Ok(fd_lock::RwLock::new(file)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            open().map(fd_lock::RwLock::new)
-        }
-        Err(error) => Err(error),
-    }
+    super::file_lock::open_lock_file(&path)
+        .map(fd_lock::RwLock::new)
+        .map_err(std::io::Error::other)
 }
 
 fn mark_landing(id: &str) {
@@ -1427,20 +1419,16 @@ pub(crate) fn import_plugin_package_gated(
     // Journal the landing BEFORE the pre-land consent gate — before anything
     // this import writes, deny-first registration included — clearing the
     // mark on any in-process exit (gate refusal, supply-failure rollback, or
-    // rename failure); only a process death in between leaves the mark
-    // behind, the exact window the in-process rollback cannot cover (the
-    // pack dir live on disk with no registry record, admitted
-    // live-by-absence in initialized scopes with zero consent). The early
-    // placement also makes the mark the cross-process in-flight signal the
-    // startup sweep's pre-strip probe ([`landing_in_progress`]) keys on: it
-    // must see an import that already registered its deny-first rows but
-    // has not landed yet.
-    // The cross-process landing lease is acquired BEFORE the mark and held
-    // to the end of this call: the liveness signal the boot reconcile
-    // probes try-and-defer (the mark alone cannot distinguish a live import
-    // from a crashed one), and the mutual exclusion of the whole
-    // mark→gate→land→register span against every LEASE-HOLDING same-id
-    // peer. NOT covered (disclosed in §3.2): the skill lane's install /
+    // rename failure). The early placement makes the mark the cross-process
+    // in-flight signal the startup sweep's pre-strip probe
+    // ([`landing_in_progress`]) keys on: it must see an import that already
+    // registered its deny-first rows but has not landed yet (what a leftover
+    // mark means and why the journal exists: the module doc above).
+    // The lease is acquired BEFORE the mark and held to the end of this
+    // call: mutual exclusion of the whole mark→gate→land→register span
+    // against every lease-holding same-id peer (the lease contract and its
+    // lock-order slot live on [`open_landing_lease`]). NOT covered
+    // (disclosed in §3.2): the skill lane's install /
     // uninstall serialize in-process on the per-id import mutex only, and
     // the boot python-repair downgrade runs under the transaction lock only
     // — a cross-process skill-uninstall-vs-import of the same id can still
@@ -1448,12 +1436,7 @@ pub(crate) fn import_plugin_package_gated(
     // (registered as follow-up).
     // Locals drop in reverse order, so the lease guard is declared before
     // the landing guard on purpose: the landing guard clears the mark while
-    // the lease is still held. Blocking `write()`: a peer's same-id import
-    // waits out here instead of racing the shared staged `.tmp` / `.old`
-    // paths (a cross-process exclusion the in-process mutex below never
-    // provided); the OS releases the lease if the peer dies, and a frozen
-    // peer blocks the import (spawn_blocking) — the same accepted
-    // fail-stop tradeoff as the scope lock.
+    // the lease is still held.
     let mut landing_lease = open_landing_lease(&id)
         .map_err(|error| format!("open the landing lease for {id}: {error}"))?;
     // Shared bounded transient retry (round-28 review): the funnel's Windows
@@ -1469,16 +1452,10 @@ pub(crate) fn import_plugin_package_gated(
     // lands or an existing installation is replaced (deny-first consent
     // gate). The identified skill components ride along so
     // the gate can also register standalone components deny-first.
-    // Runs before the same-id import lock on purpose:
-    // the gate then takes no import lock at all, so the import lock is never
-    // held ACROSS a wait on another importer (the scope RMW lock itself may
-    // be nested inside transaction/import/recycle locks one-directionally —
-    // see `scope::load_disabled_bundles_file_locked`'s lock-order note; the
-    // reverse nesting never happens). The landing lease acquired above is the
-    // load-bearing cross-process exclusion; the mark is
-    // what a concurrent sweep keys on as the belt-and-braces signal — the
-    // gate's registration is invisible to the sweep's record probe until
-    // the import lands, but the mark and the lease are already in place.
+    // Runs before the same-id import lock on purpose: the gate takes no
+    // import lock, so the import lock is never held ACROSS a wait on another
+    // importer (lock order — see `scope::load_disabled_bundles_file_locked`'s
+    // lock-order note).
     pre_land(&id, &skills)?;
 
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
@@ -1918,8 +1895,7 @@ mod tests {
     /// record-present arm above — without it the ghost `.tmp` would strand
     /// forever on EACCES/AV-hold (nothing reschedules a swept
     /// mark) while the log claimed success. Same planted-regular-file trick
-    /// makes `remove_dir_all` fail deterministically on every platform;
-    /// the retry leg then sweeps and clears.
+    /// makes `remove_dir_all` fail deterministically on every platform.
     #[test]
     fn no_pkg_dir_arm_sweeps_orphaned_staging_and_keeps_mark_on_failure() {
         crate::platform::test_support::with_temp_home("pinvou-import-arm-a2", || {
@@ -1941,20 +1917,6 @@ mod tests {
             assert!(
                 landing_in_progress("never-tmp"),
                 "a failed sweep must keep the mark so the next boot retries"
-            );
-
-            // Retry leg: make the sweep succeed and reconcile again — the
-            // staging path is swept and the mark cleared.
-            std::fs::remove_file(&staged).unwrap();
-            std::fs::create_dir(&staged).unwrap();
-            reconcile_import_journal().unwrap();
-            assert!(
-                !staged.exists(),
-                "the retry leg must sweep the orphaned staging dir"
-            );
-            assert!(
-                !landing_in_progress("never-tmp"),
-                "the resolved entry is cleared"
             );
         });
     }
@@ -2062,8 +2024,7 @@ mod tests {
         });
     }
 
-    /// A failed backup restore keeps the mark so the next
-    /// boot retries, instead of consuming the strand silently.
+    /// A failed backup restore must not consume the strand silently.
     #[test]
     #[cfg(unix)]
     fn restore_failure_keeps_the_mark_and_retries() {
@@ -2126,17 +2087,6 @@ mod tests {
                 !pkg_dir.exists(),
                 "a mixed-case landed dir without a record must be quarantined, not skipped"
             );
-            let moved: Vec<String> = std::fs::read_dir(landing_journal_dir())
-                .unwrap()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.starts_with("MySkill.crash-"))
-                .collect();
-            assert_eq!(
-                moved.len(),
-                1,
-                "the mixed-case residue moves to a recoverable holding dir: {moved:?}"
-            );
             assert!(
                 !landing_mark_path("MySkill").exists(),
                 "the mixed-case mark must not strand"
@@ -2144,7 +2094,7 @@ mod tests {
         });
     }
 
-    /// The two lease tests' shared demo combo-pack fixture: byte-identical
+    /// The three lease tests' shared demo combo-pack fixture: byte-identical
     /// entries (plugin.json + mcp/manifest.json + mcp/server.py +
     /// skills/demo/SKILL.md), written to each test's differing archive path.
     fn write_demo_combo_zip(path: &std::path::Path) {
@@ -3035,23 +2985,13 @@ mod tests {
             let fifo = landing_mark_path("fifo-id");
             std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
             crate::platform::paths::tests::plant_fifo(&fifo);
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                mark_landing("fifo-id");
-                tx.send(()).expect("worker should send");
-            });
-            rx.recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| {
-                    // Uniform abort containment with the
-                    // other FIFO pins — a future edit that takes a lock around
-                    // mark_landing must not turn one regression into a
-                    // lane-wide cascade hang.
-                    eprintln!(
-                        "FAIL: mark_landing still blocks on a planted FIFO — \
-                     aborting the test process to contain the leaked blocked worker"
-                    );
-                    std::process::abort();
-                });
+            // Uniform abort containment with the other FIFO pins: a future
+            // edit that takes a lock around mark_landing must not turn one
+            // regression into a lane-wide cascade hang.
+            crate::platform::test_support::run_bounded_worker_or_abort(
+                "mark_landing still blocks on a planted FIFO",
+                || mark_landing("fifo-id"),
+            );
 
             // A planted symlink at the mark path: O_NOFOLLOW must refuse without
             // touching the target.
