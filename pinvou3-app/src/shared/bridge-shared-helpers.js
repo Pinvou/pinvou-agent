@@ -2214,7 +2214,7 @@
 
   // web+tauriChat 共享. Block-aware part of queuedPayloadEnvelope: splits
   // <block><body> user text against a payload that really carries the block
-  // at its head. Returns undefined when the shape does not apply (no parser,
+  // at its head. Returns null when the shape does not apply (no parser,
   // no refs, refs-only text, prefixed payload, ambiguous body anchor).
   function blockAwarePayloadEnvelope(user, payload) {
     const splitMention = sessionMentionSplitter();

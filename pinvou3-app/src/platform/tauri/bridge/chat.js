@@ -744,14 +744,19 @@ function pinvouSharedtauriChatN31666() {
         // it a second time, including when recovery stays in a background buffer.
         // The mention injection block never re-enters any composer or buffer
         // (the chips were consumed by the send attempt) — restore the stripped
-        // body. A refs-only message strips to "": nothing is restorable, so
-        // resolve false and let the caller's non-dispatch recovery keep the
-        // chips armed instead of claiming "restored" (round-8 M1).
+        // body. A refs-only message strips to "": nothing is restorable, but
+        // the abort semantics are unchanged — the send never dispatched and
+        // the draft is still alive — so it resolves "restored" too (round-18
+        // MAJOR-1, superseding round-8 M1's false here): the caller's failure
+        // tail treats "restored" as the aborted-materialization verdict and
+        // clears the provisional draft→session mapping the scope effect
+        // recorded for the navigation, keeping the draft's chips scoped to
+        // the draft instead of arming them live in the unrelated session.
+        // (abandonToOwnSession below keeps false for refs-only: its mapping,
+        // when one exists, is a REAL materialization that must stand.)
         const restoredBody = stripMentionBlockForComposerRestore(text);
-        const restored = restoredBody
-          ? restoreTaskDraft(restoredBody, draftOwner)
-          : false;
-        return restored ? "restored" : false;
+        if (!restoredBody) return "restored";
+        return restoreTaskDraft(restoredBody, draftOwner) ? "restored" : false;
       }
     }
     const sid = state.activeSessionId;

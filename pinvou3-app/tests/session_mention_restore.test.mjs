@@ -71,7 +71,7 @@ function loadChatFeature(root) {
   return root.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
 }
 
-function makeHarness() {
+function makeHarness({ ensureSession } = {}) {
   const state = {
     activeSessionId: 'A',
     composerDraft: '',
@@ -89,6 +89,7 @@ function makeHarness() {
     state,
     sessionStates,
     invoke: () => Promise.resolve({}),
+    ensureSession,
     notify() {},
     bt(key) { return BT[key] === undefined ? key : BT[key]; },
     runSyncOnSession(sid, fn) { fn(); },
@@ -277,6 +278,44 @@ test('stripMentionBlockForComposerRestore: strips the block, keeps the body, emp
   assert.equal(shared.stripMentionBlockForComposerRestore(BLOCK_AND_BODY), '把配色用到 PPT 里');
   assert.equal(shared.stripMentionBlockForComposerRestore(REFS_ONLY_BLOCK), '');
   assert.equal(shared.stripMentionBlockForComposerRestore('纯文本'), '纯文本');
+});
+
+test('materialization abort resolves "restored" for a refs-only message (round-18 MAJOR-1)', async () => {
+  // The abort branch: the user navigated to an existing session while
+  // create_session was in flight, so ensureSession's materialization does
+  // not own the active scope. A refs-only message has nothing restorable —
+  // it must STILL resolve "restored" (not false): the caller's failure tail
+  // keys the provisional-mapping clear on this verdict, and a false here
+  // arms the draft's chips live in the unrelated session (the round-18
+  // defect). Drives the real sendMessage against the real shared helpers.
+  const { state, api } = makeHarness({
+    // Mid-create navigation: the user clicks an existing session while
+    // create_session is in flight, so the materialization does not own the
+    // active scope when it lands.
+    ensureSession: async () => {
+      state.activeSessionId = 'OTHER';
+      return 'CREATED-BUT-NOT-ACTIVE';
+    },
+  });
+  state.attachments = [];
+  state.activeSessionId = null;
+  state.draftEpoch = 7;
+  const verdict = await api.sendMessage(buildSessionMentionBlock(REFS));
+  assert.equal(verdict, 'restored', 'a refs-only aborted materialization resolves restored');
+  assert.equal(state.composerDraft, '', 'nothing is re-prefilled for a refs-only abort');
+  // A textful abort keeps the restore-and-verdict shape (round-8 M1's
+  // surviving half): the stripped body goes back under the draft ownership.
+  const { state: textState, api: textApi } = makeHarness({
+    ensureSession: async () => {
+      textState.activeSessionId = 'OTHER';
+      return 'CREATED-BUT-NOT-ACTIVE';
+    },
+  });
+  textState.attachments = [];
+  textState.activeSessionId = null;
+  textState.draftEpoch = 8;
+  const textful = await textApi.sendMessage(buildSessionMentionBlock(REFS) + '把配色用到 PPT 里');
+  assert.equal(textful, 'restored', 'a textful aborted materialization restores and resolves restored');
 });
 
 // The zap withdraw-window recovery test (round-10 M2) lives in

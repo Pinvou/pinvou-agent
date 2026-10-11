@@ -215,7 +215,9 @@ export function filterSessionMentionCandidates(sessions, options = {}) {
     if (isIsolatedSessionId(session.id)) continue;
     // Dirty data keyboard dead-end (round-17 m3): a >128-char id is listed
     // but un-pickable (dedupeSessionRefs drops it silently), and while the
-    // panel is open Enter/Tab never reach the send branch — never offer it.
+    // panel has CANDIDATES Enter/Tab never reach the send branch (an
+    // empty-candidates panel lets plain Enter fall through and send the
+    // literal @query text) — never offer it.
     if (session.id.length > MAX_SESSION_ID_LENGTH) continue;
     if (exclude.has(session.id)) continue;
     const title = String(session.title || '');

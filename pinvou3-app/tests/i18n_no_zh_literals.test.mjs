@@ -13,6 +13,13 @@ const files = [
   // shared/i18n (zh/en/ja); the injection contract in session-mention.js is
   // deliberately English model-context protocol, not UI copy.
   'src/features/chat/SessionMentionControls.jsx',
+  // ChatView is NOT listed (round-18 m10, attempted and reverted): the
+  // guard's scanner reports 12 pre-existing CJK literals in it — data-key
+  // comparisons against backend status labels ('已忽略'/'不再提示'/… at the
+  // review-status map, the '悟' transfer marker), not rendered UI copy, and
+  // all predate this PR. Extending the guard needs those keyed maps
+  // refactored to symbolic labels first; disclosed rather than smuggled
+  // past an allowlist.
   'src/features/chat/session-mention.js',
 ];
 // 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',

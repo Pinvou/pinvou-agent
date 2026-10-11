@@ -820,8 +820,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const materialization = chatBridgeSource2.slice(materializationStart, materializationEnd);
   assert.match(
     materialization,
-    /const restoredBody = stripMentionBlockForComposerRestore\(text\);[\s\S]*?restoreTaskDraft\(restoredBody, draftOwner\)[\s\S]*?return restored \? "restored" : false;/,
-    '物化中止必须按原草稿或已创建会话恢复、剥离会话引用注入块，返回 restored 阻止调用方二次恢复（issue #406）。round-8 M1：纯引用消息无可恢复文本，返回 false 让调用方的非派发恢复保留 chips，不再谎报 "restored"',
+    /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*if \(!restoredBody\) return "restored";\s*\n\s*return restoreTaskDraft\(restoredBody, draftOwner\) \? "restored" : false;/,
+    '物化中止必须按原草稿或已创建会话恢复、剥离会话引用注入块，返回 restored 阻止调用方二次恢复（issue #406）。round-18 MAJOR-1：纯引用消息同样返回 restored——中止语义未变（草稿仍存活），调用方按该判定清除临时的草稿→会话映射，chips 留在草稿；abandonToOwnSession 保留 false（其映射是真实物化）',
     // The strip gate must come from the shared helper (round-8 minor 10),
     // not a per-lane copy.
   );

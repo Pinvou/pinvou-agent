@@ -1287,9 +1287,24 @@ test('Rust mirror still carries the verbatim block contract (drift pin)', () => 
   const productionContract = [contract1, contract2, contract3]
     .map((line) => `    ${JSON.stringify(line)},`)
     .join('\n');
+  // Pin the FULL declaration — arity and terminator included (round-18
+  // MAJOR-2): a contiguous-substring match stayed green when the Rust side
+  // appended a fourth line and widened the arity, silently rejecting every
+  // genuine JS block.
   assert.ok(
-    productionRs.includes(productionContract),
-    'Rust production SESSION_MENTION_CONTRACT_LINES must match the JS module verbatim',
+    productionRs.includes(`const SESSION_MENTION_CONTRACT_LINES: [&str; 3] = [\n${productionContract}\n];`),
+    'Rust production SESSION_MENTION_CONTRACT_LINES must be exactly the 3 JS contract lines',
+  );
+  // Usage pin (round-18 m3): the stripper must iterate the pinned consts —
+  // replacing the loop with an altered inline literal list would otherwise
+  // keep the declaration pins green while the stripping drifts.
+  assert.ok(
+    productionRs.includes('for expected in SESSION_MENTION_CONTRACT_LINES'),
+    'strip_session_mention_block must iterate SESSION_MENTION_CONTRACT_LINES',
+  );
+  assert.ok(
+    productionRs.includes('SESSION_MENTION_BLOCK_HEADER'),
+    'strip_session_mention_block must compare against SESSION_MENTION_BLOCK_HEADER',
   );
 });
 
@@ -1585,12 +1600,14 @@ test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', (
   assert.equal((webSource.match(/return abandonToOwnSession\(\);/g) || []).length, 2);
   assert.match(chatSource, /function abandonToOwnSession\(\) \{\s*abandonPreparedAttachments\(\);\s*return restoreSteerText\(sid, text\) \? "restored" : false;/);
   assert.match(webSource, /function abandonToOwnSession\(\) \{\s*return restoreComposerText\(sid, text\) \? "restored" : false;/);
-  // Materialize abort: the scoped recovery restores the stripped body only;
-  // refs-only falls to the non-dispatch recovery instead of claiming
-  // "restored" (both lanes route through restoreTaskDraft with the original
-  // draft ownership).
-  assert.match(chatSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*const restored = restoredBody[\s\S]*?return restored \? "restored" : false;/);
-  assert.match(webSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*const restored = restoredBody[\s\S]*?return restored \? "restored" : false;/);
+  // Materialize abort: the scoped recovery restores the stripped body, and
+  // a refs-only message (nothing restorable) resolves "restored" as well —
+  // the abort semantics are unchanged and the caller's failure tail needs
+  // the verdict to clear the provisional draft→session mapping (round-18
+  // MAJOR-1; abandonToOwnSession above keeps false for refs-only because
+  // ITS mapping, when one exists, is a real materialization).
+  assert.match(chatSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*if \(!restoredBody\) return "restored";\s*\n\s*return restoreTaskDraft\(restoredBody, draftOwner\) \? "restored" : false;/);
+  assert.match(webSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*if \(!restoredBody\) return "restored";\s*\n\s*return restoreTaskDraft\(restoredBody, draftOwner\) \? "restored" : false;/);
   // The voice task lane carries the same dispatch-time chip semantics as
   // handleSend (refs-only double-send race / unmount resurrect).
   const chatViewSourceAll = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
@@ -1609,7 +1626,33 @@ test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', (
 test('composer drop validates the session id and dragOver gates on the switch (round-8 M4 + minor 3)', () => {
   const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
   assert.match(chatViewSource, /if \(!knownSessionMentionIds\.has\(sessionId\)\) return;/);
-  assert.match(chatViewSource, /if \(!isSessionRowDrag\(e\) \|\| !sessionMentionEnabled\) return;\s*\n\s*e\.preventDefault\(\); \/\/ allow the drop/);
+  assert.match(chatViewSource, /if \(!isSessionRowDrag\(e\) \|\| !sessionMentionEnabled\) return;\s*\n\s*if \(sessionRefs\.length >= MAX_SESSION_REFS\) return;\s*\n\s*e\.preventDefault\(\); \/\/ allow the drop/);
+});
+
+test('a full chip strip rejects the session drop up front (round-18 MAJOR-3)', () => {
+  const fn = extractChatViewFunction('const handleComposerSessionDrop = (e) =>');
+  const calls = { prevented: 0, added: [] };
+  const sandbox = {
+    isSessionRowDrag: () => true,
+    PROJECT_SESSION_DRAG_TYPE: 'application/x-pinvou-session',
+    sessionDropDepthRef: { current: 1 },
+    setSessionDropActive: (value) => { calls.deactivated = value; },
+    activeSessionId: 'current-session',
+    // a FULL strip: the drop must be consumed without a chip landing
+    sessionRefs: Array.from({ length: MAX_SESSION_REFS }, (_, i) => ({ sessionId: `s${i}`, title: `t${i}` })),
+    MAX_SESSION_REFS,
+    bs: { sessions: [{ id: 'fresh', title: '新会话' }] },
+    knownSessionMentionIds: new Set(['fresh', 'current-session']),
+    handleSelectMentionCandidate: (candidate) => { calls.added.push(candidate); },
+    console,
+  };
+  vm.runInNewContext(`${fn}\nthis.handleComposerSessionDrop = handleComposerSessionDrop;`, sandbox);
+  sandbox.handleComposerSessionDrop({
+    preventDefault: () => { calls.prevented += 1; },
+    dataTransfer: { getData: () => 'fresh' },
+  });
+  assert.equal(calls.prevented, 1, 'the drop is still consumed (no browser navigation)');
+  assert.deepEqual(calls.added, [], 'no chip lands from a full strip');
 });
 
 test('handleSend clears the refs at dispatch and restores them on non-acceptance (round-8 M5)', () => {
@@ -1771,28 +1814,31 @@ test('failure restores are stash-backed across unmount and draft materialization
         console,
       };
       const drive = lane.build(sandbox);
-      await drive();
-      assert.deepEqual(
-        store.calls.stashed.at(-1),
-        [expectStashKey, [...REFS]],
-        `${lane.name}: the settle tail stashes under ${expectStashKey}`,
-      );
-      assert.deepEqual(
-        restoreSessionMentionDraft(expectNotStashKey),
-        [],
-        `${lane.name}: nothing leaks under ${expectNotStashKey}`,
-      );
-      assert.deepEqual(
-        live.applied.at(-1) || [],
-        expectLive ? [...REFS] : [],
-        `${lane.name}: the live restore ${expectLive ? 'fires' : 'stays silent'} per the ledger-aware guard`,
-      );
-      // The ledger and the underlying draft store are module-level state
-      // shared across drives: scrub both keys so the next drive starts
-      // clean (a stale entry would leak into its restore assertions).
-      clearDraftMaterialization('draft:3');
-      stashSessionMentionDraft('draft:3', []);
-      stashSessionMentionDraft('session:sess-1', []);
+      try {
+        await drive();
+        assert.deepEqual(
+          store.calls.stashed.at(-1),
+          [expectStashKey, [...REFS]],
+          `${lane.name}: the settle tail stashes under ${expectStashKey}`,
+        );
+        assert.deepEqual(
+          restoreSessionMentionDraft(expectNotStashKey),
+          [],
+          `${lane.name}: nothing leaks under ${expectNotStashKey}`,
+        );
+        assert.deepEqual(
+          live.applied.at(-1) || [],
+          expectLive ? [...REFS] : [],
+          `${lane.name}: the live restore ${expectLive ? 'fires' : 'stays silent'} per the ledger-aware guard`,
+        );
+      } finally {
+        // The ledger and the underlying draft store are module-level state
+        // shared across drives: scrub both keys so a failed assertion does
+        // not leave the remaining drives running dirty (round-18 m6).
+        clearDraftMaterialization('draft:3');
+        stashSessionMentionDraft('draft:3', []);
+        stashSessionMentionDraft('session:sess-1', []);
+      }
     };
     for (const lane of lanes) {
       // (A) materialize-then-fail: stash under the session key, chips
