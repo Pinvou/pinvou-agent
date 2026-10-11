@@ -213,6 +213,10 @@ export function filterSessionMentionCandidates(sessions, options = {}) {
   for (const session of Array.isArray(sessions) ? sessions : []) {
     if (!session || typeof session.id !== 'string' || !session.id) continue;
     if (isIsolatedSessionId(session.id)) continue;
+    // Dirty data keyboard dead-end (round-17 m3): a >128-char id is listed
+    // but un-pickable (dedupeSessionRefs drops it silently), and while the
+    // panel is open Enter/Tab never reach the send branch — never offer it.
+    if (session.id.length > MAX_SESSION_ID_LENGTH) continue;
     if (exclude.has(session.id)) continue;
     const title = String(session.title || '');
     if (query && !title.toLowerCase().includes(query)) continue;

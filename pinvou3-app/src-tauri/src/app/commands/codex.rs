@@ -233,8 +233,9 @@ pub(crate) async fn codex_acp_prompt_with_attachments(
     // first send still titles after the attachment.
     // No fallback when there is nothing to fall back to: a refs-only first
     // send with no attachments keeps 「新对话」, mirroring the native chat
-    // path's None semantics (round-15 m6 — the unconditional "附件" floor
-    // titled attachment-less refs-only sends).
+    // path's None semantics (round-15 m6 removed the unconditional "附件"
+    // floor, which was unreachable dead code for attachment-less sends but
+    // inconsistent with the native path by construction).
     let title_source = super::sessions::first_send_title_source(
         &message,
         attachments
