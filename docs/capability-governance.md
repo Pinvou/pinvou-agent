@@ -179,7 +179,9 @@ fail-open direction).
 
 **The failure semantics are conservative throughout**: when
 the lock is unavailable or the write to disk fails, the write is **refused**
-with an error — from the caller's perspective "`Ok` means the change landed",
+with an error (a lock-unavailable refusal names `disabled_bundles.lock`;
+such windows are transient) — from the caller's perspective
+"`Ok` means the change landed",
 but the following designed no-op paths also return `Ok` (the known-bundle
 registration skip and its ledger variant, same-value toggle short-circuits,
 and cleanup/sync finding no change against the current set; plus three
@@ -213,8 +215,8 @@ preserved `.unreadable.<timestamp>` copy and recovers with a regular file;
 when the file is corrupt (a parse failure or invalid UTF-8), the locked path
 quarantines the corrupt bytes to a `*.corrupt.<timestamp>` backup and
 recovers fail-closed — the recovery flow and the quarantine backup's
-first-instance-only preservation (deleting the copy re-arms quarantine) are
-disclosed in §3.2's corrupt-recovery paragraph below, and the
+first-instance-only preservation are disclosed in §3.2's corrupt-recovery
+paragraph below, and the
 sibling-evidence branch (either a `.corrupt.*` quarantine backup or an
 `.unreadable.*` preserved copy — both count) that deliberately skips the
 legacy migration in §7's sibling-evidence bullet.
@@ -231,10 +233,6 @@ the recovered state (same-value toggle short-circuits etc. still return
 normally against the recovered state; no "guess persistence"); the exact
 cleanup channel's "no change means no action" rule for an unparseable state
 still refuses explicitly.
-
-**When the lock itself is unavailable**, every write
-entry point refuses (the error names `disabled_bundles.lock`); these states
-last only as long as the window.
 
 **Three disclosed boundaries**: (1) what the
 lock serializes is only the on-disk read-modify-write, not the UI snapshot —
@@ -298,7 +296,7 @@ effective mode is the lock file's own 0600, not the home root's 0700).
 **The global order among the file locks is likewise unsettled**:
 the ABBA crossing between the transaction lock and the per-id import lock
 is recorded in the comment at `MARKETPLACE_TRANSACTION_LOCK` — pre-existing
-on main, with one same-direction leg added by this PR (the retired-tool
+on main, with one same-direction leg added by #517 (the retired-tool
 sweep holds the import lock across its residue uninstall) and disclosed in
 the same comment, which also registers the one same-instance reverse
 theoretical window; this section must not be cited as proof of a settled
@@ -562,8 +560,10 @@ manual uninstall cleans it up; the marker itself survived the crash — which
 is what routed the case to this arm — and is cleared once the arm
 converges).
 
-**The lease/marker files hold no user data** and can be deleted while the app is closed; hand-deleting an active import's lease
-file amounts to giving up that id's cross-process mutual exclusion.
+**The lease/marker/lock/backup files' deletion rules are stated in one
+place: the runtime-data table of `工具市场.md`.** Its shared closing
+sentence governs the lease and marker artifacts this section describes,
+including any per-row exceptions stated there.
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
