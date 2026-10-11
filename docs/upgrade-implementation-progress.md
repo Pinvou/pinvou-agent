@@ -1019,3 +1019,32 @@ delta. Full actual lifecycle PostgreSQL regression passed (553.199s), along with
 default Go tests/vet, module verification, all commands, pinned contract checks,
 formatting/diff and client architecture guard. This closes B10 only; full T44
 and production composition stay open.
+
+### T44 batch 11: safe activation cancellation and waiting successor (2026-10-12)
+
+Private additive migration 11 confirms actual safe cancelled_before_install
+under OwnerReplay, preserving original activating content until separate
+successor/cleanup. StandardReplay rebuild repeats actual confirmed cancellation,
+original lineage, full stopped-owner/old identity/data/intact slot proof and
+the full immutable update. Fresh qualified metadata can consume/cancel, but
+selection-only equality cannot rebuild an old slot. Unique old cancelled/new
+waiting records commit together, with monotone revision and explicit successor/
+cancelled-transaction links, preserving original staged times and preinstall.
+New membership retains complete capture and mandatory expiry/cleanup reserves.
+
+Actual PostgreSQL tests passed atomic rollback and same-owner retry, original
+expiry, fresh metadata/full safety bindings, exact membership and scope reserve,
+private migration rights/digest, clock faults, concurrent rebuild/cancel-boundary
+winners, exact 32 MiB expiry projection and real T06 encrypted-result replay
+after engine restart. Later activation requires a new unprivileged Session and
+a newly verified restart edge; no old execution, preparation or backup revives.
+Current-channel/qualification/preparation source and final owner composition
+remain future work; private kernel fixtures do not certify those or deployment.
+Full regression and final independent evidence follow in the service plan.
+This batch does not complete full T44; continue remaining unblocked tasks.
+
+Both independent roles passed the complete frozen B11 code/test/documentation
+delta. Full actual lifecycle PostgreSQL regression passed (659.411s); default
+Go tests/vet, module verification, all commands, pinned contract inventory,
+formatting/diff and client architecture guard passed. Detailed evidence remains
+in the service plan. This closes B11 only; full T44 stays in progress.
