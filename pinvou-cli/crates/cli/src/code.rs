@@ -1107,11 +1107,7 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
     // character), so `code sessions info --workspace` with the id forgotten
     // would otherwise become an exit-1 store lookup for a session named
     // after the flag. Same discipline as `projects`' id guard.
-    if id.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "code: expected a session id, got flag-shaped {id:?}"
-        )));
-    }
+    require_non_flag_id(id, "session")?;
     if !crate::support::valid_session_id(id) {
         return Err(CliError::usage("invalid session id"));
     }
@@ -1502,28 +1498,19 @@ struct AgentProbe {
     authenticated: bool,
 }
 
-/// The CLI each agent probes is named after the agent id itself: parse's
-/// `require_agent` admits only codex|claude|kimi and the GUI's catalog lists
-/// the same three (`AgentBackend::ACP_BACKENDS`), so the former per-agent
-/// match spelled one identity arm per agent plus a codex fallback no
-/// reachable input could reach.
-fn agent_cli_name(agent: &str) -> &str {
-    agent
-}
-
 /// Mirror of `install::agent_cli_names`: the per-agent Windows candidate
 /// order — codex's npm `.cmd` shim wins there, the native runtimes prefer
 /// their `.exe`; Unix installs a single unadorned name.
-fn agent_cli_names<'a>(agent: &str, name: &'a str) -> Vec<std::borrow::Cow<'a, str>> {
+fn agent_cli_names(agent: &str) -> Vec<std::borrow::Cow<'_, str>> {
     if cfg!(windows) {
         match agent {
             "codex" => vec!["codex.cmd".into(), "codex.exe".into()],
             "claude" => vec!["claude.exe".into(), "claude.cmd".into()],
             "kimi" => vec!["kimi.exe".into(), "kimi.cmd".into()],
-            _ => vec![name.into()],
+            _ => vec![agent.into()],
         }
     } else {
-        vec![name.into()]
+        vec![agent.into()]
     }
 }
 
@@ -1531,9 +1518,9 @@ fn agent_cli_names<'a>(agent: &str, name: &'a str) -> Vec<std::borrow::Cow<'a, s
 /// before the next), matching `install::find_agent_cli_in_path` — a
 /// dir-major scan would pick dir1/codex.exe where the GUI picks dir2's
 /// codex.cmd.
-fn find_in_path(agent: &str, name: &str) -> Option<PathBuf> {
+fn find_in_path(agent: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    for candidate in agent_cli_names(agent, name) {
+    for candidate in agent_cli_names(agent) {
         let candidate = PathBuf::from(candidate.as_ref());
         if let Some(found) = std::env::split_paths(&path)
             .map(|dir| dir.join(&candidate))
@@ -1556,7 +1543,7 @@ fn find_in_path(agent: &str, name: &str) -> Option<PathBuf> {
 /// probe from the codex gate (see [`probe_override_gate`]) so the caller
 /// need not spawn the same `--version` twice; callers that only resolve a
 /// path discard it.
-fn resolve_agent_cli(agent: &str, name: &str) -> (Option<PathBuf>, Option<VersionProbe>) {
+fn resolve_agent_cli(agent: &str) -> (Option<PathBuf>, Option<VersionProbe>) {
     let override_var = match agent {
         "codex" => Some("PINVOU3_CODEX_PATH"),
         "claude" => Some("PINVOU3_CLAUDE_CLI_PATH"),
@@ -1612,7 +1599,7 @@ fn resolve_agent_cli(agent: &str, name: &str) -> (Option<PathBuf>, Option<Versio
         None
     };
     if let Some(dir) = managed_dir
-        && let Some(path) = agent_cli_names(agent, name)
+        && let Some(path) = agent_cli_names(agent)
             .iter()
             .map(|candidate| dir.join(candidate.as_ref()))
             .find(|candidate| nonempty_file(candidate))
@@ -1639,7 +1626,7 @@ fn resolve_agent_cli(agent: &str, name: &str) -> (Option<PathBuf>, Option<Versio
             return (Some(path), None);
         }
     }
-    (find_in_path(agent, name), None)
+    (find_in_path(agent), None)
 }
 
 /// Runs `executable args...` with a hard timeout. `Err` = the process could
@@ -2098,12 +2085,11 @@ fn kimi_data_root() -> PathBuf {
 }
 
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
-    let cli_name = agent_cli_name(agent);
     // The codex override gate hands back the verdict it already produced for
     // this exact binary, so the same `--version` is never spawned twice;
     // every other resolution path probes here. Banner-only codex output
     // classifies as a failed probe (see `classify_codex_probe`).
-    let (cli_path, override_probe) = resolve_agent_cli(agent, cli_name);
+    let (cli_path, override_probe) = resolve_agent_cli(agent);
     let probe = override_probe
         .or_else(|| cli_path.as_deref().map(probe_cli_version))
         .map(|probe| {
@@ -2591,7 +2577,7 @@ fn read_deferred_login_code() -> Option<String> {
 }
 
 fn login_executable(agent: &str) -> Result<PathBuf, CliError> {
-    let (cli_path, _) = resolve_agent_cli(agent, agent_cli_name(agent));
+    let (cli_path, _) = resolve_agent_cli(agent);
     cli_path.ok_or_else(|| {
         CliError::failed(format!(
             "code_login_cli_missing: {agent} CLI not found; install it first \
@@ -3090,7 +3076,7 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
     // Logout resolves the same binary as login but reports its own error: a
     // missing CLI on a logout action is "nothing to log out", not a
     // login-flow failure.
-    let (resolved, _) = resolve_agent_cli(agent, agent_cli_name(agent));
+    let (resolved, _) = resolve_agent_cli(agent);
     let executable = resolved.ok_or_else(|| {
         CliError::failed(format!(
             "code_logout_cli_missing: {agent} CLI not found; there is nothing to log \
@@ -3160,22 +3146,20 @@ fn logout(agent: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliE
 
 // ── providers ───────────────────────────────────────────────────────────────
 
-fn require_provider_agent(agent: &str) -> Result<(), CliError> {
-    match agent {
-        "codex" | "claude" | "kimi" => Ok(()),
-        other => Err(CliError::usage(format!(
-            "unknown agent '{other}'; valid agents are codex|claude|kimi"
-        ))),
-    }
-}
-
 fn providers_list(agent: Option<&str>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let manager = open_providers()?;
     let agents: Vec<String> = match agent {
-        Some(agent) => {
-            require_provider_agent(agent)?;
-            vec![agent.to_owned()]
-        }
+        // The list lane is the one provider command whose agent is not
+        // validated at parse, so the same codex|claude|kimi admission the
+        // parse-time `require_agent` applies elsewhere lives here.
+        Some(agent) => match agent {
+            "codex" | "claude" | "kimi" => vec![agent.to_owned()],
+            other => {
+                return Err(CliError::usage(format!(
+                    "unknown agent '{other}'; valid agents are codex|claude|kimi"
+                )));
+            }
+        },
         None => vec!["codex".to_owned(), "claude".to_owned(), "kimi".to_owned()],
     };
     let mut views = Vec::new();
@@ -3297,7 +3281,6 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
     let provider_id = provider_id.as_deref();
     let wire_api = wire_api.as_deref();
     let model_slots = model_slots.as_slice();
-    require_provider_agent(agent)?;
     // A key deletion is a destructive one-way credential action: mirror the
     // family's remove/require_yes convention so an unattended run cannot
     // drop stored keys (round-18 --yes gap).
@@ -3523,7 +3506,6 @@ fn providers_remove(
     yes: bool,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    require_provider_agent(agent)?;
     require_yes(yes)?;
     let manager = open_providers()?;
     // Pre-check in English, mirroring the update and switch lanes. The
@@ -3569,7 +3551,6 @@ fn providers_switch(
     provider_id: &str,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    require_provider_agent(agent)?;
     let manager = open_providers()?;
     // Pre-check the id so the common typo path reports in English instead of
     // surfacing the lib's untranslated store message (the update lane does
@@ -3644,7 +3625,6 @@ fn providers_switch(
 }
 
 fn providers_switch_official(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    require_provider_agent(agent)?;
     let manager = open_providers()?;
     manager
         .switch_official(agent)
@@ -3665,7 +3645,6 @@ fn providers_export(
     destination: Option<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    require_provider_agent(agent)?;
     let manager = open_providers()?;
     let content = manager
         .export(agent)
@@ -3773,7 +3752,6 @@ fn providers_export(
 }
 
 fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
-    require_provider_agent(agent)?;
     let manager = open_providers()?;
     let json = read_text_file_capped(
         path,
@@ -3902,6 +3880,25 @@ fn acp_session_model(model: &str) -> bool {
 fn is_code_chat_session(agents: &SessionAgentStore, id: &str, model: &str) -> bool {
     let record = agents.get(id);
     record.backend.is_acp() || record.mode.is_code() || acp_session_model(model)
+}
+
+/// The gate shared by `code sessions info` and `code sessions timeline`: both
+/// are code-session views, so a plain chat session is refused with the same
+/// stable error instead of rendering an empty view. The caller loads the
+/// session itself (the loaded type is not nameable from this crate) and feeds
+/// in the persisted model name, so the sidecar-lost fallback still applies.
+fn require_code_chat_session(
+    agents: &SessionAgentStore,
+    id: &str,
+    model: &str,
+) -> Result<(), CliError> {
+    if is_code_chat_session(agents, id, model) {
+        Ok(())
+    } else {
+        Err(CliError::failed(format!(
+            "code_session_not_found: session {id} is not a code session"
+        )))
+    }
 }
 
 fn agent_label(agents: &SessionAgentStore, id: &str, model: &str) -> (&'static str, &'static str) {
@@ -4062,11 +4059,7 @@ fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliErr
         .load(id)
         .map_err(|error| store_error("sessions info", id, error))?
         .metadata;
-    if !is_code_chat_session(&agents, id, &metadata.model) {
-        return Err(CliError::failed(format!(
-            "code_session_not_found: session {id} is not a code session"
-        )));
-    }
+    require_code_chat_session(&agents, id, &metadata.model)?;
     let record = agents.get(id);
     let info = code_workspace_info(&store, &agents, id, &metadata.model)?;
     let (agent_id, agent_name) = agent_label(&agents, id, &metadata.model);
@@ -4118,11 +4111,7 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
         .load(id)
         .map_err(|error| store_error("sessions timeline", id, error))?
         .metadata;
-    if !is_code_chat_session(&agents, id, &metadata.model) {
-        return Err(CliError::failed(format!(
-            "code_session_not_found: session {id} is not a code session"
-        )));
-    }
+    require_code_chat_session(&agents, id, &metadata.model)?;
     let path = paths::sessions_root().join(id).join("acp-timeline.jsonl");
     // Same 32 MiB cap as the sessions timeline reader: a runaway journal
     // must not be slurped whole into memory (the GUI streams this file).
@@ -5550,21 +5539,7 @@ fn workspace_diff_one(
         // with the app's own `untracked_diff`; round-48 root-fixed the app
         // side and mirrors the same canonicalize → containment →
         // read-canonical discipline here.
-        let canonical_root = std::fs::canonicalize(root).map_err(|error| {
-            CliError::failed(format!(
-                "code workspace diff: cannot resolve the workspace: {error}"
-            ))
-        })?;
-        let canonical = std::fs::canonicalize(&path).map_err(|error| {
-            CliError::failed(format!(
-                "code workspace diff: cannot resolve {relative}: {error}"
-            ))
-        })?;
-        if !canonical.starts_with(&canonical_root) {
-            return Err(CliError::failed(
-                "code workspace diff: path escapes the workspace through a symlink",
-            ));
-        }
+        let canonical = canonicalize_within_workspace(root, &path, &relative)?;
         // Round-46 review: file_kind and the open both used the ORIGINAL
         // spelling, so a workspace-local process could swap `path` to a
         // symlink after the containment check and route e.g. ~/.ssh/id_rsa
@@ -5604,14 +5579,16 @@ fn workspace_diff_one(
     Ok((relative, text, truncated))
 }
 
-fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, CliError> {
-    // Round-48 review MAJOR: resolve through symlinks and re-check
-    // containment BEFORE opening, then read the CANONICAL path — the
-    // lexical `root.join(relative)` let an untracked symlink planted in
-    // the agent-writable workspace (`notes.md -> ~/.ssh/id_ed25519`) dump
-    // the target's bytes as a synthetic "new file" diff. Root-fixed in the
-    // app's `untracked_diff` the same way (round-48), so the two surfaces
-    // keep their differential guarantee.
+/// The canonicalize → containment → read-canonical discipline shared by the
+/// non-git lane of `workspace_diff_one` and `untracked_diff`: resolve both
+/// ends through symlinks, refuse a path that escapes the workspace, and hand
+/// the canonical path back so the caller reads what was policy-checked. The
+/// two error strings are the byte-identical contract both lanes pin.
+fn canonicalize_within_workspace(
+    root: &Path,
+    path: &Path,
+    relative: &str,
+) -> Result<PathBuf, CliError> {
     let canonical_root = std::fs::canonicalize(root).map_err(|error| {
         CliError::failed(format!(
             "code workspace diff: cannot resolve the workspace: {error}"
@@ -5627,6 +5604,18 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
             "code workspace diff: path escapes the workspace through a symlink",
         ));
     }
+    Ok(canonical)
+}
+
+fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, CliError> {
+    // Round-48 review MAJOR: resolve through symlinks and re-check
+    // containment BEFORE opening, then read the CANONICAL path — the
+    // lexical `root.join(relative)` let an untracked symlink planted in
+    // the agent-writable workspace (`notes.md -> ~/.ssh/id_ed25519`) dump
+    // the target's bytes as a synthetic "new file" diff. Root-fixed in the
+    // app's `untracked_diff` the same way (round-48), so the two surfaces
+    // keep their differential guarantee.
+    let canonical = canonicalize_within_workspace(root, path, relative)?;
     if file_kind(&canonical) != "text" {
         return Ok("untracked binary files do not support diff preview".to_owned());
     }

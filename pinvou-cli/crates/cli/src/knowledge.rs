@@ -2503,7 +2503,11 @@ fn remote_errors_joined(errors: &[serde_json::Value]) -> String {
 fn remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_remote_service()?;
     if service.configured_connections().is_empty() {
-        return empty_remote_connections(output);
+        return Ok(success(render(
+            output,
+            "no remote knowledge connections".to_owned(),
+            &serde_json::json!({ "connections": [] }),
+        )));
     }
     let statuses = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
         service
@@ -2538,15 +2542,6 @@ fn remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> {
         "connections": serde_json::to_value(&statuses).unwrap_or_default(),
     });
     Ok(success(render(output, human, &value)))
-}
-
-#[cfg(feature = "product-backend")]
-fn empty_remote_connections(output: OutputMode) -> Result<CliOutcome, CliError> {
-    Ok(success(render(
-        output,
-        "no remote knowledge connections".to_owned(),
-        &serde_json::json!({ "connections": [] }),
-    )))
 }
 
 /// GUI `remote_kb_probe_private_endpoint`: the unauthenticated TLS-pinned

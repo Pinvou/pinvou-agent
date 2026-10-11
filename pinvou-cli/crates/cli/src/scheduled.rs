@@ -1427,10 +1427,6 @@ fn bool_field(value: &serde_json::Value, field: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn status_label(value: &serde_json::Value) -> String {
-    str_field(value, "status").unwrap_or("active").to_owned()
-}
-
 /// English schedule label for human output; JSON `scheduleLabel` carries the
 /// same value (the GUI renders Chinese labels; the CLI is an English tool).
 fn humanize_rrule(rrule: &str) -> String {
@@ -1645,7 +1641,7 @@ fn map_task(
         "prompt": str_field(def, "prompt").unwrap_or(""),
         "rrule": str_field(def, "rrule").unwrap_or(""),
         "scheduleLabel": humanize_rrule(str_field(def, "rrule").unwrap_or("")),
-        "status": status_label(def),
+        "status": str_field(def, "status").unwrap_or("active"),
         "nextRunAt": def.get("next_run_at").cloned().unwrap_or(serde_json::Value::Null),
         "lastRunAt": def.get("last_run_at").cloned().unwrap_or(serde_json::Value::Null),
         // Workspace selection is no longer a user-facing setting (GUI keeps
@@ -2365,12 +2361,14 @@ fn rollback_committed_update_definition(
         // re-resolution step exists to prevent. Pausing clears the slot,
         // trading a late fire for a disclosed paused task.
         let parked = if status == "active" {
-            store_holder.manager().and_then(|manager| {
-                manager
-                    .pause_automation(id)
-                    .map_err(|pause_error| CliError::failed(format!("{pause_error:#}")))
-            })
+            // Same park-through-foundation pause (manager + `pause_automation`,
+            // identical error bytes) as every other paused restore; passing
+            // "paused" selects `restore_automation_status`'s pause arm.
+            restore_automation_status(store_holder, id, "paused")
         } else {
+            // The non-active status was already restored paused above and that
+            // call failed; retrying the foundation here would add a second,
+            // side-effecting write this rollback never performed.
             Err(CliError::failed("status not active"))
         };
         match parked {
@@ -2841,29 +2839,18 @@ fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
             return Err(error);
         }
     };
-    let snapshot = serde_json::json!({
-        "schema_version": 2,
-        "tasks": {
-            id: {
-                "task": {
-                    "id": str_field(&def, "id").unwrap_or(id),
-                    "name": str_field(&def, "name").unwrap_or(""),
-                    "model": def.get("model").cloned().unwrap_or(serde_json::Value::Null),
-                },
-                "runs": runs,
-                "deleted_at": now_string(),
-            }
+    let entry = serde_json::json!({
+        "task": {
+            "id": str_field(&def, "id").unwrap_or(id),
+            "name": str_field(&def, "name").unwrap_or(""),
+            "model": def.get("model").cloned().unwrap_or(serde_json::Value::Null),
         },
+        "runs": runs,
+        "deleted_at": now_string(),
     });
-    if let Some(new_tasks) = snapshot["tasks"].as_object() {
-        let mut merged = existing_snapshot.clone();
-        merged.extend(
-            new_tasks
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
-        archive["tasks"] = serde_json::Value::Object(merged);
-    }
+    let mut merged = existing_snapshot.clone();
+    merged.insert(id.to_owned(), entry);
+    archive["tasks"] = serde_json::Value::Object(merged);
     // Round-40 review: the commit write carries the foreign-write stamp
     // guard like every other registry RMW — a GUI archive write landing
     // between the snapshot read and this rename would otherwise be
@@ -3557,20 +3544,14 @@ viewed"
     // Same opportunistic compaction as the GUI's `compact_viewed_runs`:
     // viewed ids outside the retained run list this command read (active
     // files or the deleted-task history archive) are dropped while writing.
-    {
-        let current: std::collections::HashSet<&str> =
-            runs.iter().filter_map(|run| str_field(run, "id")).collect();
-        if let Some(list) = read_state["viewed_runs"]
-            .get_mut(task_id)
-            .and_then(|value| value.as_array_mut())
-        {
-            list.retain(|value| {
-                value
-                    .as_str()
-                    .is_some_and(|marked| current.contains(marked))
-            });
-        }
-    }
+    // `list` above is already the `viewed_runs[task_id]` array itself.
+    let current: std::collections::HashSet<&str> =
+        runs.iter().filter_map(|run| str_field(run, "id")).collect();
+    list.retain(|value| {
+        value
+            .as_str()
+            .is_some_and(|marked| current.contains(marked))
+    });
     // Round-40 review: same foreign-write stamp guard as the other registry
     // RMW lanes — a GUI mark-viewed landing mid-read must not be reverted.
     write_json_atomic_checked(&read_state_path, &read_state, &read_state_stamp)?;

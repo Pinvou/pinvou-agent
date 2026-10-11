@@ -367,7 +367,9 @@ fn engine_binary_name() -> &'static str {
     "pinvou-asr"
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// `cfg!` is a bool literal, so one unconditioned fn compiles on every target:
+// q4 on Linux/macOS, q8 on Windows — the same verdicts the previous
+// `#[cfg]`-split copies produced.
 fn model_spec() -> AsrModelSpec {
     if cfg!(target_os = "windows") {
         // Windows ships the q8 model in the MSI (`platform/windows.rs`).
@@ -386,17 +388,6 @@ fn model_spec() -> AsrModelSpec {
             primary_url: "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf",
             mirror_url: "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf",
         }
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-fn model_spec() -> AsrModelSpec {
-    AsrModelSpec {
-        filename: "sense-voice-small-q4_k.gguf",
-        expected_size: 182_278_688,
-        sha256: "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b",
-        primary_url: "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf",
-        mirror_url: "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf",
     }
 }
 
@@ -1489,11 +1480,7 @@ fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
     let mut file = create_private_staging(&path)?;
     // Any failure after the exclusive create must not leak the (empty or
     // partial) staging file.
-    let staged = (|| -> std::io::Result<()> {
-        std::io::Write::write_all(&mut file, bytes)?;
-        Ok(())
-    })();
-    if let Err(error) = staged {
+    if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
         let _ = std::fs::remove_file(&path);
         return Err(CliError::failed(format!(
             "voice transcribe: cannot stage audio: {error}"

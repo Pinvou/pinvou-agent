@@ -1056,7 +1056,6 @@ mod tests {
     /// precedence relative to whatever the constant is, so drift of the
     /// VALUE itself must fail loudly here.
     #[test]
-    #[cfg(unix)]
     fn grace_window_value_is_pinned() {
         assert_eq!(imp::GRACE_MS, 5_000);
     }
@@ -1072,7 +1071,6 @@ mod tests {
     /// function and stays review-pinned, like the other interleaving
     /// properties in this module.
     #[test]
-    #[cfg(unix)]
     fn spawn_supervised_refuses_once_cleanup_has_started() {
         imp::test_set_cleanup_override(true);
         let mut command = std::process::Command::new("true");
@@ -1127,7 +1125,6 @@ mod tests {
     /// grace exists for). A child spawned while the spawner's mask blocks
     /// the family must therefore still die on a plain SIGTERM.
     #[test]
-    #[cfg(unix)]
     fn spawned_children_receive_signals_the_spawner_blocks() {
         let saved = imp::block_interrupt_signals();
         let mut command = std::process::Command::new("sleep");
@@ -1374,7 +1371,6 @@ mod tests {
     /// in the phase-3 re-raise; a fresh pipe exercises the same fd surface
     /// without one.
     #[test]
-    #[cfg(unix)]
     fn self_pipe_write_end_is_nonblocking_and_overflow_burst_does_not_block() {
         let Some((read_fd, write_fd)) = imp::create_self_pipe() else {
             panic!("pipe(2) must work in the test process");

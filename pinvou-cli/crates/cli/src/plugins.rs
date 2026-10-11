@@ -1186,7 +1186,7 @@ fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
     let Some(fields) = entry.as_object() else {
         return false;
     };
-    if mcp_entry_spells_both_header_aliases(fields) {
+    if fields.contains_key("env_headers") && fields.contains_key("env_http_headers") {
         return false;
     }
     const OPTIONAL_STRING: &[&str] = &[
@@ -1227,16 +1227,6 @@ fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
             true
         }
     })
-}
-
-/// `env_headers` / `env_http_headers`: serde accepts the value from either
-/// key but rejects a struct that spells both (duplicate field after alias
-/// resolution) — the desktop's one-shot parse fails and the server counts as
-/// absent, so the hand-mirror must refuse the entry too.
-fn mcp_entry_spells_both_header_aliases(
-    fields: &serde_json::Map<String, serde_json::Value>,
-) -> bool {
-    fields.contains_key("env_headers") && fields.contains_key("env_http_headers")
 }
 
 /// Degrading variant for `tools auth`: a status READ must not turn a damaged
@@ -1792,15 +1782,9 @@ fn export(
 ) -> Result<CliOutcome, CliError> {
     let dest = destination.unwrap_or_else(|| default_export_name(id));
     // Existence first: creating the destination directory for an unknown id
-    // would leave an empty tree behind on the failure path.
-    let installed = MarketplaceManager::new()
-        .installed_ids()
-        .iter()
-        .any(|pkg| pkg == id)
-        || SkillMarketplaceManager::new()
-            .installed_skill_ids()
-            .iter()
-            .any(|pkg| pkg == id);
+    // would leave an empty tree behind on the failure path. Same installed
+    // catalog `set_enabled` gates on.
+    let installed = known_installed_ids().iter().any(|pkg| pkg == id);
     if !installed {
         return Err(feature_error(
             "export",

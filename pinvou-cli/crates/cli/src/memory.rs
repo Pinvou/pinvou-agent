@@ -1034,25 +1034,14 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
                 "pending",
                 &pending.iter().map(render_pending).collect::<Vec<_>>(),
             );
-            for (topic, detail) in &cleanup_warnings {
-                // Round-40 review: the detail composes filesystem paths, so
-                // it goes through the same collapse as every other
-                // warning renderer — a control character in an unremovable
-                // file's name must not forge a human row.
-                lines.push(format!(
-                    "warning: memory_topic_cleanup_required ({topic}): {}",
-                    crate::support::collapse_control_characters(detail)
-                ));
-            }
+            // Round-40 review: the detail composes filesystem paths, so it
+            // goes through the same collapse as every other warning renderer
+            // — a control character in an unremovable file's name must not
+            // forge a human row.
+            let (warning_rows, warning_values) = cleanup_warning_rows(&cleanup_warnings);
+            lines.extend(warning_rows);
             let value = serde_json::json!({
-                "cleanup_warnings": cleanup_warnings
-                    .iter()
-                    .map(|(topic, detail)| serde_json::json!({
-                        "topic": topic,
-                        "code": "memory_topic_cleanup_required",
-                        "detail": detail,
-                    }))
-                    .collect::<Vec<_>>(),
+                "cleanup_warnings": warning_values,
                 "preferences": serde_json::to_value(preferences).unwrap_or_default(),
                 "work_context": serde_json::to_value(work_context).unwrap_or_default(),
                 "current_focus": serde_json::to_value(&current_focus).unwrap_or_default(),
@@ -1089,6 +1078,53 @@ fn cleanup_topic_items<T>(
     Ok((lines, value, warnings))
 }
 
+/// The five plain-store arms of [`load_store_items`] (current-focus,
+/// recent-activity, recent-work, pending, never) — the same read-render
+/// shape as [`cleanup_topic_items`] minus the cleanup sweep: the read's io
+/// error maps through `feature_error("list", ..)`, and the envelope carries
+/// an empty warning vec. The render closure owns the JSON half because this
+/// crate has no direct `serde` dependency (`serde_json` does not re-export
+/// `Serialize`), so the serialize call must see the concrete item type.
+fn plain_store_items<T>(
+    read: std::io::Result<Vec<T>>,
+    render: impl Fn(&[T]) -> (Vec<String>, serde_json::Value),
+) -> Result<TopicArmRender, CliError> {
+    let items = read.map_err(|error| feature_error("list", error))?;
+    let (lines, value) = render(&items);
+    Ok((lines, value, Vec::new()))
+}
+
+/// The cleanup-warning rendering pair shared by the aggregate `memory list`
+/// arm and the [`load_store_items`] tail: one collapsed human row per
+/// `(topic, detail)` warning — the detail composes filesystem paths, so it
+/// goes through the same collapse as every other warning renderer — plus the
+/// `cleanup_warnings` JSON array of `{topic, code, detail}` objects the DTO
+/// envelopes embed.
+fn cleanup_warning_rows(
+    cleanup_warnings: &[(String, String)],
+) -> (Vec<String>, serde_json::Value) {
+    let lines = cleanup_warnings
+        .iter()
+        .map(|(topic, detail)| {
+            format!(
+                "warning: memory_topic_cleanup_required ({topic}): {}",
+                crate::support::collapse_control_characters(detail)
+            )
+        })
+        .collect();
+    let values = cleanup_warnings
+        .iter()
+        .map(|(topic, detail)| {
+            serde_json::json!({
+                "topic": topic,
+                "code": "memory_topic_cleanup_required",
+                "detail": detail,
+            })
+        })
+        .collect::<Vec<_>>();
+    (lines, serde_json::Value::Array(values))
+}
+
 /// Loads one store for `memory list --store`, returning the human item lines,
 /// the human warning rows (kept SEPARATE so the caller's `(N)` header counts
 /// items only — round-45 review), and the JSON DTO array mirroring the GUI
@@ -1100,7 +1136,6 @@ fn cleanup_topic_items<T>(
 fn load_store_items(
     store: MemoryStore,
 ) -> Result<(Vec<String>, Vec<String>, serde_json::Value), CliError> {
-    let io_error = |error| feature_error("list", error);
     let (items, value, cleanup_warnings) = match store {
         MemoryStore::Preferences => cleanup_topic_items(
             "preferences",
@@ -1122,50 +1157,40 @@ fn load_store_items(
                 )
             },
         )?,
-        MemoryStore::CurrentFocus => {
-            let items = feature::load_current_focus().map_err(io_error)?;
+        MemoryStore::CurrentFocus => plain_store_items(feature::load_current_focus(), |items| {
             (
                 items.iter().map(render_timed).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
-                Vec::new(),
+                serde_json::to_value(items).unwrap_or_default(),
             )
-        }
-        MemoryStore::RecentActivity => {
-            let items = feature::load_recent_activity().map_err(io_error)?;
+        })?,
+        MemoryStore::RecentActivity => plain_store_items(feature::load_recent_activity(), |items| {
             (
                 items.iter().map(render_timed).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
-                Vec::new(),
+                serde_json::to_value(items).unwrap_or_default(),
             )
-        }
-        MemoryStore::RecentWork => {
-            let items = feature::load_recent_work().map_err(io_error)?;
+        })?,
+        MemoryStore::RecentWork => plain_store_items(feature::load_recent_work(), |items| {
             (
                 items.iter().map(render_recent_work).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
-                Vec::new(),
+                serde_json::to_value(items).unwrap_or_default(),
             )
-        }
-        MemoryStore::Pending => {
-            let items = feature::load_pending_memory().map_err(io_error)?;
+        })?,
+        MemoryStore::Pending => plain_store_items(feature::load_pending_memory(), |items| {
             (
                 items.iter().map(render_pending).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
-                Vec::new(),
+                serde_json::to_value(items).unwrap_or_default(),
             )
-        }
-        MemoryStore::Never => {
-            // Round-39 review: `memory pending never` writes this store while
-            // only `memory overview` read it back — the aggregate list gains
-            // the same visibility (patterns + reasons are the user's own
-            // bookkeeping, not secret state).
-            let items = feature::load_never_memory().map_err(io_error)?;
+        })?,
+        // Round-39 review: `memory pending never` writes this store while
+        // only `memory overview` read it back — the aggregate list gains
+        // the same visibility (patterns + reasons are the user's own
+        // bookkeeping, not secret state).
+        MemoryStore::Never => plain_store_items(feature::load_never_memory(), |items| {
             (
                 items.iter().map(render_never).collect(),
-                serde_json::to_value(&items).unwrap_or_default(),
-                Vec::new(),
+                serde_json::to_value(items).unwrap_or_default(),
             )
-        }
+        })?,
     };
     // Round-40 review: the aggregate `memory list` prints these warnings in
     // BOTH modes, while the per-store lane carried them in JSON only — a
@@ -1174,28 +1199,13 @@ fn load_store_items(
     // arm states why they must not be dropped at all). Same collapsed
     // warning row, same shape. Round-45 review: the rows come back in their
     // own vec so the caller's header counts items only.
-    let warning_lines: Vec<String> = cleanup_warnings
-        .iter()
-        .map(|(topic, detail)| {
-            format!(
-                "warning: memory_topic_cleanup_required ({topic}): {}",
-                crate::support::collapse_control_characters(detail)
-            )
-        })
-        .collect();
+    let (warning_lines, warning_values) = cleanup_warning_rows(&cleanup_warnings);
     Ok((
         items,
         warning_lines,
         serde_json::json!({
             "items": value,
-            "cleanup_warnings": cleanup_warnings
-                .iter()
-                .map(|(topic, detail)| serde_json::json!({
-                    "topic": topic,
-                    "code": "memory_topic_cleanup_required",
-                    "detail": detail,
-                }))
-                .collect::<Vec<_>>(),
+            "cleanup_warnings": warning_values,
         }),
     ))
 }

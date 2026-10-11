@@ -455,16 +455,16 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
 }
 
 fn require_connector(values: &[String], subcommand: &str) -> Result<ConnectorKind, CliError> {
-    let value = values.first().ok_or_else(|| {
-        CliError::usage(format!(
-            "connectors {subcommand} requires a connector ({ALL_CONNECTOR_IDS})"
-        ))
-    })?;
-    if value.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "connectors {subcommand} requires a connector ({ALL_CONNECTOR_IDS})"
-        )));
-    }
+    // A missing first argument and a flag-shaped first argument (`connectors
+    // ensure --json`) are the same user mistake, so both share one message.
+    let value = values
+        .first()
+        .filter(|value| !value.starts_with("--"))
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "connectors {subcommand} requires a connector ({ALL_CONNECTOR_IDS})"
+            ))
+        })?;
     ConnectorKind::parse(value)
 }
 
@@ -527,6 +527,18 @@ fn find_first_on_path(program: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// The platform default global npm prefix npm falls back to when neither
+/// `NPM_CONFIG_PREFIX` nor `npm_config_prefix` is set (`%APPDATA%\npm` on
+/// Windows, `~/.npm-global` on Unix); `None` when the base env var
+/// (`APPDATA`/`HOME`) is unset.
+fn default_npm_prefix() -> Option<PathBuf> {
+    if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("npm"))
+    } else {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npm-global"))
+    }
+}
+
 /// The npm global prefixes a GUI/CLI `npm install -g` writes binaries into,
 /// in the GUI's order: `$NPM_CONFIG_PREFIX`/`npm_config_prefix` first, then
 /// the platform default prefix (`~/.npm-global` on Unix, `%APPDATA%\npm` on
@@ -542,11 +554,7 @@ fn npm_prefix_candidates(program: &str) -> Vec<PathBuf> {
             }
         }
     }
-    let default_prefix = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("npm"))
-    } else {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npm-global"))
-    };
+    let default_prefix = default_npm_prefix();
     if let Some(prefix) = default_prefix
         && !prefixes.contains(&prefix)
     {
@@ -594,13 +602,10 @@ fn apply_user_npm_prefix(cmd: &mut std::process::Command) {
     if !cfg!(windows) && prefix_from_env.is_some() {
         return;
     }
-    let prefix = prefix_from_env.clone().map(PathBuf::from).or_else(|| {
-        if cfg!(windows) {
-            std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("npm"))
-        } else {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".npm-global"))
-        }
-    });
+    let prefix = prefix_from_env
+        .clone()
+        .map(PathBuf::from)
+        .or_else(default_npm_prefix);
     let Some(prefix) = prefix else {
         return;
     };
@@ -1496,22 +1501,19 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             // install recommendation; the note keeps the verdict (and the
             // remedy) while naming the uncertainty.
             if resolve_vendor_cli(spec).is_some() {
-                entry["probe"] = json!(format!(
-                    "unanswerable: the CLI is present but its --version probe failed, timed \
-                     out, or returned an unparseable version; `pinvou connectors \
-                     ensure-cli {}` re-checks the install",
-                    spec.id
-                ));
-                // The human row renders only `note` (same channel as
-                // `degrade_probe_failure` below), so the verdict and its
-                // remedy must land there too — stderr is invisible to a
+                // One message, two channels: `probe` carries the
+                // `unanswerable: ` verdict prefix for JSON consumers, the
+                // human row renders only `note` (same channel as
+                // `degrade_probe_failure` below) — stderr is invisible to a
                 // `--output json`-style consumer of the human table.
-                entry["note"] = json!(format!(
+                let detail = format!(
                     "the CLI is present but its --version probe failed, timed out, or \
                      returned an unparseable version; `pinvou connectors ensure-cli {}` \
                      re-checks the install",
                     spec.id
-                ));
+                );
+                entry["probe"] = json!(format!("unanswerable: {detail}"));
+                entry["note"] = json!(detail);
                 note!(
                     "[connectors] {} is present on disk or PATH, but its --version probe \
                      failed, timed out, or returned an unparseable version — reporting it as \
@@ -3291,33 +3293,28 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 )));
             }
             let payload = parse_json(&stdout).or_else(|| parse_json(&stderr));
-            let url = [
+            // The vendor's field naming drifted across releases, so each
+            // value is probed under both spellings in first-match order.
+            let first_str = |keys: &[&str]| {
+                keys.iter()
+                    .find_map(|key| {
+                        payload
+                            .as_ref()
+                            .and_then(|p| p.get(*key))
+                            .and_then(Value::as_str)
+                    })
+                    .map(str::to_owned)
+            };
+            let url = first_str(&[
                 "verification_uri_complete",
                 "verification_url",
                 "verificationUrl",
                 "url",
-            ]
-            .iter()
-            .find_map(|key| {
-                payload
-                    .as_ref()
-                    .and_then(|p| p.get(*key))
-                    .and_then(Value::as_str)
-            })
-            .map(str::to_owned)
+            ])
             .ok_or_else(|| CliError::failed("feishu auth login did not return a link"))?;
-            let device_code = ["device_code", "deviceCode"]
-                .iter()
-                .find_map(|key| {
-                    payload
-                        .as_ref()
-                        .and_then(|p| p.get(*key))
-                        .and_then(Value::as_str)
-                })
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    CliError::failed("feishu auth login did not return a device code")
-                })?;
+            let device_code = first_str(&["device_code", "deviceCode"]).ok_or_else(|| {
+                CliError::failed("feishu auth login did not return a device code")
+            })?;
             // Vendor-controlled URL into human output: same collapse as the
             // login link and version cells.
             let printable = crate::support::collapse_control_characters(&url);
@@ -4457,6 +4454,21 @@ mod tests {
     use crate::ExitCode;
     use std::ffi::OsString;
 
+    /// Unique temp root for this process: `<label>-<pid>-<nanos>` under the
+    /// system temp dir. Path construction only — callers keep their own
+    /// create/write/cleanup. (Deliberately NOT used where the path must key
+    /// by thread name, e.g. `VerdictEnvGuard`.)
+    fn unique_temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        ))
+    }
+
     // ── install-lane hash gate (round-38 review: the gate primitive had no
     // negative coverage — a refactor that verified after the rename or
     // dropped the archive check would have passed the whole suite) ──────
@@ -4464,14 +4476,7 @@ mod tests {
     const KNOWN_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256("")
 
     fn hash_fixture(name: &str, contents: &[u8]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "pinvou-connectors-hash-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = unique_temp_root(&format!("pinvou-connectors-hash-{name}"));
         std::fs::write(&path, contents).unwrap();
         path
     }
@@ -4655,14 +4660,7 @@ mod tests {
     /// create then fails loudly with the path named — the safe direction).
     #[test]
     fn stale_part_preclean_unlinks_links_without_following_and_leaves_directories() {
-        let workspace = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-part-preclean-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
+        let workspace = unique_temp_root("pinvou-cli-connectors-part-preclean");
         std::fs::create_dir_all(&workspace).expect("test workspace");
         // A directory at the path is not download debris; the best-effort
         // removal must not recurse.
@@ -4836,14 +4834,7 @@ mod tests {
             eprintln!("skipping tar selection test: tar binary not available");
             return;
         }
-        let workspace = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-safe-select-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
+        let workspace = unique_temp_root("pinvou-cli-connectors-safe-select");
         // The traversal bait lives two levels ABOVE the directory tar runs
         // from, so the member name `../../wecom-cli` points back into the
         // fixture while staying traversal-shaped in the archive listing.
@@ -4903,14 +4894,7 @@ mod tests {
             eprintln!("skipping tar separator test: tar binary not available");
             return;
         }
-        let workspace = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-tar-sep-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
+        let workspace = unique_temp_root("pinvou-cli-connectors-tar-sep");
         std::fs::create_dir_all(&workspace).expect("test workspace");
         let archive = workspace.join("a.tar");
         let member = "-dashmember.txt";
@@ -5064,14 +5048,7 @@ mod tests {
             let lock = crate::support::ENV_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let root = std::env::temp_dir().join(format!(
-                "pinvou-connectors-lock-home-{label}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
+            let root = unique_temp_root(&format!("pinvou-connectors-lock-home-{label}"));
             std::fs::create_dir_all(&root).unwrap();
             let previous = std::env::var_os("PINVOU3_HOME");
             // SAFETY: ENV_LOCK serializes every env access in this binary.
@@ -5203,14 +5180,7 @@ mod tests {
 
     #[cfg(unix)]
     fn debris_fixture(label: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "pinvou-connectors-debris-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = unique_temp_root(&format!("pinvou-connectors-debris-{label}"));
         std::fs::create_dir_all(&path).unwrap();
         path
     }

@@ -249,20 +249,23 @@ pub enum SettingsValue {
     OptionalBool(Option<bool>),
 }
 
-const MODEL_PRESETS: &[&str] = &[
-    "local_vllm",
-    "deepseek",
-    "kimi",
-    "openai_compatible",
-    "qwen",
-    "doubao",
-    "minimax",
-    "glm",
-    "mimo",
-    "openai",
-    "anthropic",
-    "gemini",
-    "xai",
+/// The CLI's accepted `models add/edit --preset` names. Deliberately
+/// narrower than `ModelPreset::as_str`'s full set (`openai_responses` is a
+/// GUI-only protocol value, not a `--preset`).
+const MODEL_PRESETS: &[(&str, ModelPreset)] = &[
+    ("local_vllm", ModelPreset::LocalVllm),
+    ("deepseek", ModelPreset::Deepseek),
+    ("kimi", ModelPreset::Kimi),
+    ("openai_compatible", ModelPreset::OpenaiCompatible),
+    ("qwen", ModelPreset::Qwen),
+    ("doubao", ModelPreset::Doubao),
+    ("minimax", ModelPreset::Minimax),
+    ("glm", ModelPreset::Glm),
+    ("mimo", ModelPreset::Mimo),
+    ("openai", ModelPreset::Openai),
+    ("anthropic", ModelPreset::Anthropic),
+    ("gemini", ModelPreset::Gemini),
+    ("xai", ModelPreset::Xai),
 ];
 
 /// Round-44 review: every `--api-key-env` value is an environment-variable
@@ -280,28 +283,17 @@ fn gate_env_var(value: Option<&str>) -> Result<Option<String>, CliError> {
 }
 
 fn parse_preset(raw: &str) -> Result<ModelPreset, CliError> {
-    let preset = match raw {
-        "local_vllm" => ModelPreset::LocalVllm,
-        "deepseek" => ModelPreset::Deepseek,
-        "kimi" => ModelPreset::Kimi,
-        "openai_compatible" => ModelPreset::OpenaiCompatible,
-        "qwen" => ModelPreset::Qwen,
-        "doubao" => ModelPreset::Doubao,
-        "minimax" => ModelPreset::Minimax,
-        "glm" => ModelPreset::Glm,
-        "mimo" => ModelPreset::Mimo,
-        "openai" => ModelPreset::Openai,
-        "anthropic" => ModelPreset::Anthropic,
-        "gemini" => ModelPreset::Gemini,
-        "xai" => ModelPreset::Xai,
-        other => {
-            return Err(CliError::usage(format!(
-                "unknown preset {other:?}; valid presets: {}",
-                MODEL_PRESETS.join(", ")
-            )));
-        }
-    };
-    Ok(preset)
+    match MODEL_PRESETS.iter().find(|(name, _)| *name == raw) {
+        Some((_, preset)) => Ok(*preset),
+        None => Err(CliError::usage(format!(
+            "unknown preset {raw:?}; valid presets: {}",
+            MODEL_PRESETS
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
 }
 
 fn parse_reasoning_effort(raw: &str) -> Result<String, CliError> {
@@ -5056,6 +5048,48 @@ mod tests {
             .to_owned()
     }
 
+    /// Edits one model's credential through the real `edit` lane with these
+    /// tests' common defaults (no field changes, no stdin, no activation,
+    /// human output). `clear` doubles as the destructive `--yes`
+    /// acknowledgment, exactly as every site pairs them.
+    fn edit_credential(
+        store: &RecordingStore,
+        id: &str,
+        api_key_env: Option<&str>,
+        clear: bool,
+    ) -> Result<CliOutcome, CliError> {
+        edit(
+            store,
+            id,
+            &ModelEdit::default(),
+            &api_key_env.map(str::to_owned),
+            false,
+            clear,
+            clear,
+            false,
+            OutputMode::Human,
+        )
+    }
+
+    /// Sets (or clears) one search provider's key through the real
+    /// `search_set` lane with these tests' common defaults (Metaso, human
+    /// output). `clear` doubles as the destructive `--yes` acknowledgment,
+    /// exactly as every site pairs them.
+    fn search_set_key(
+        store: &RecordingStore,
+        api_key_env: Option<&str>,
+        clear: bool,
+    ) -> Result<CliOutcome, CliError> {
+        search_set(
+            store,
+            SearchProvider::Metaso,
+            &api_key_env.map(str::to_owned),
+            clear,
+            clear,
+            OutputMode::Human,
+        )
+    }
+
     /// `add` stores the secret trimmed, `show --reveal-key` reads it back
     /// through the same seam, `edit --clear-api-key` deletes it after the
     /// commit, and the persisted model is marked missing, not configured.
@@ -5098,18 +5132,7 @@ mod tests {
         );
 
         // clear: the keyring delete runs after the commit, through the seam.
-        let outcome = edit(
-            &store,
-            &id,
-            &ModelEdit::default(),
-            &None,
-            false,
-            true,
-            true,
-            false,
-            OutputMode::Human,
-        )
-        .expect("edit succeeds");
+        let outcome = edit_credential(&store, &id, None, true).expect("edit succeeds");
         assert_eq!(outcome.exit_code, ExitCode::Success);
         assert!(
             store
@@ -5174,18 +5197,7 @@ mod tests {
         // clear with --yes through the same seam: the command succeeds, the
         // prefs record flips to missing, and the store sees NO operation —
         // in particular no `delete:` against a synthesized reference.
-        let outcome = edit(
-            &store,
-            &id,
-            &ModelEdit::default(),
-            &None,
-            false,
-            true,
-            true,
-            false,
-            OutputMode::Human,
-        )
-        .expect("edit succeeds");
+        let outcome = edit_credential(&store, &id, None, true).expect("edit succeeds");
         assert_eq!(outcome.exit_code, ExitCode::Success);
         // Round-42 review: no stored reference → nothing was cleared, so the
         // receipt says `unchanged` (the search lane's doctrine) instead of a
@@ -5287,18 +5299,8 @@ mod tests {
         // The rotation's store write fails: the failure surfaces as a save
         // error, the prefs record is untouched, and the old secret survives.
         let failing = RecordingStore::failing_sets();
-        let error = edit(
-            &failing,
-            &id,
-            &ModelEdit::default(),
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            false,
-            false,
-            false,
-            OutputMode::Human,
-        )
-        .expect_err("must fail: the keyring write fails");
+        let error = edit_credential(&failing, &id, Some("MODELS_UNIT_TEST_KEY"), false)
+            .expect_err("must fail: the keyring write fails");
         assert_eq!(error.exit_code(), ExitCode::Failed);
         assert!(
             error.to_string().contains("credential store unavailable"),
@@ -5351,17 +5353,7 @@ mod tests {
 
         // The rotation wrote the new key over the old one; the commit then
         // fails, so the rollback must put the OLD value back.
-        let result = edit(
-            &store,
-            &id,
-            &ModelEdit::default(),
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            false,
-            false,
-            false,
-            OutputMode::Human,
-        );
+        let result = edit_credential(&store, &id, Some("MODELS_UNIT_TEST_KEY"), false);
         // Restore write permission first so TempHome's cleanup can delete.
         std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
@@ -5500,22 +5492,12 @@ mod tests {
         // as `remove_defers_the_keyring_delete_until_after_the_commit`).
         std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
             .expect("make the data dir read-only");
-        let result = edit(
-            &store,
-            &id,
-            &ModelEdit::default(),
-            &None,
-            false,
-            true,
-            true,
-            false,
-            OutputMode::Human,
-        );
+        let result = edit_credential(&store, &id, None, true);
         // Restore write permission first so TempHome's cleanup can delete.
         std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
         let error = result.expect_err("must fail: the settings commit fails");
-        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert_eq!(error.exit_code, ExitCode::Failed);
         let operations = store.operations();
         assert!(
             !operations.iter().any(|op| op.starts_with("delete:")),
@@ -5537,15 +5519,7 @@ mod tests {
         let _key = TempEnv::set("METASO_API_KEY", "sk-search\n");
         let store = RecordingStore::new();
 
-        let outcome = search_set(
-            &store,
-            SearchProvider::Metaso,
-            &Some("METASO_API_KEY".to_owned()),
-            false,
-            false,
-            OutputMode::Human,
-        )
-        .expect("set succeeds");
+        let outcome = search_set_key(&store, Some("METASO_API_KEY"), false).expect("set succeeds");
         assert!(
             outcome.stdout.contains("credential: configured"),
             "{}",
@@ -5557,15 +5531,7 @@ mod tests {
             "the stored key must be trimmed like every other credential write"
         );
 
-        let outcome = search_set(
-            &store,
-            SearchProvider::Metaso,
-            &None,
-            true,
-            true,
-            OutputMode::Human,
-        )
-        .expect("clear succeeds");
+        let outcome = search_set_key(&store, None, true).expect("clear succeeds");
         assert_eq!(outcome.exit_code, ExitCode::Success);
         assert!(
             store
@@ -5591,29 +5557,14 @@ mod tests {
         let _key = TempEnv::set("METASO_API_KEY", "sk-search-defer");
         let store = RecordingStore::new();
 
-        let outcome = search_set(
-            &store,
-            SearchProvider::Metaso,
-            &Some("METASO_API_KEY".to_owned()),
-            false,
-            false,
-            OutputMode::Human,
-        )
-        .expect("set succeeds");
+        let outcome = search_set_key(&store, Some("METASO_API_KEY"), false).expect("set succeeds");
         assert!(outcome.stdout.contains("credential: configured"));
 
         // Same failure mechanism as the remove lane: a read-only data dir
         // blocks the atomic write's staging while reads keep working.
         std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
             .expect("make the data dir read-only");
-        let result = search_set(
-            &store,
-            SearchProvider::Metaso,
-            &None,
-            true,
-            true,
-            OutputMode::Human,
-        );
+        let result = search_set_key(&store, None, true);
         // Restore write permission first so TempHome's cleanup can delete.
         std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
@@ -5723,15 +5674,8 @@ mod tests {
         // false `no_api_key` verdict (the one lane the round-49 rollout
         // skipped); it must fail as `credential_unavailable` like every
         // other lane.
-        let outcome = search_set(
-            &store,
-            SearchProvider::Metaso,
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            false,
-            OutputMode::Human,
-        )
-        .expect("search set succeeds");
+        let outcome = search_set_key(&store, Some("MODELS_UNIT_TEST_KEY"), false)
+            .expect("search set succeeds");
         assert!(
             outcome.stdout.contains("credential: configured"),
             "{}",
