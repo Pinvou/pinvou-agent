@@ -1119,7 +1119,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       };
       const handleComposerSessionDragEnter = (e) => {
         // When the feature is off (§3.3 layer 1), a dropped session does not land as a chip and no drop hint appears.
+        // A full chip strip is equally undroppable (round-18 MAJOR-3): the
+        // cap is component state known before the drop, so gate the hint
+        // here instead of flashing a drop affordance the drop swallows.
         if (!isSessionRowDrag(e) || !sessionMentionEnabled) return;
+        if (sessionRefs.length >= MAX_SESSION_REFS) return;
         sessionDropDepthRef.current += 1;
         setSessionDropActive(true);
       };
@@ -1131,8 +1135,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const handleComposerSessionDragOver = (e) => {
         // Gate mirrors dragEnter (round-8 minor 3): with the feature off the
         // drop can never land, so offering the droppable cursor only to
-        // no-op the drop was a false affordance.
+        // no-op the drop was a false affordance. The cap gate likewise
+        // keeps the cursor honest for a full strip (round-18 MAJOR-3); the
+        // id-dependent cases (duplicate/self/unknown) are only decidable at
+        // drop time — the drop rejects those silently by design.
         if (!isSessionRowDrag(e) || !sessionMentionEnabled) return;
+        if (sessionRefs.length >= MAX_SESSION_REFS) return;
         e.preventDefault(); // allow the drop
       };
       const handleComposerSessionDrop = (e) => {
@@ -1147,9 +1155,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // renders a dead "Session deleted" card that read_session can never
         // resolve. Knownness plus the choke point's own acceptance decide:
         // a pick the @ panel would never offer (isolated prefix, oversized
-        // id — knownSessionMentionIds includes archived sessions) or a full
-        // chip strip must not show a drop hint it silently swallows
-        // (round-17 m4) — run the guarded add and let it reject.
+        // id — knownSessionMentionIds includes archived sessions) is
+        // rejected here at drop time (the id is unreadable before the
+        // drop); the cap is gated earlier, at dragEnter/dragOver
+        // (round-18 MAJOR-3).
         if (!knownSessionMentionIds.has(sessionId)) return;
         if (sessionRefs.some(ref => ref.sessionId === sessionId)) return;
         if (sessionRefs.length >= MAX_SESSION_REFS) return;
@@ -1927,6 +1936,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // closed-panel cost at the trigger check instead of a full scan.
       const mentionSessionSource = (bs && bs.sessions) || [];
       const mentionExcludeKey = `${activeSessionId || ''}|${sessionRefs.map(ref => ref.sessionId).join(',')}`;
+      // Key on the PRIMITIVE token/query (round-18 m8): the trigger object
+      // is fresh per render, so keying on it defeated the memo whenever a
+      // trailing @token existed — exactly the streaming-delta path the memo
+      // exists to protect.
+      const mentionQueryKey = mentionTrigger ? `${mentionTrigger.token}::${mentionTrigger.query}` : '';
       const mentionCandidates = useMemo(() => (
         sessionRefs.length >= MAX_SESSION_REFS ? [] : filterSessionMentionCandidates(mentionSessionSource, {
           query: mentionTrigger ? mentionTrigger.query : '',
@@ -1934,7 +1948,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           limit: 8,
         })
       // eslint-disable-next-line react-hooks/exhaustive-deps -- the exclude ids are keyed by their string form (a fresh array each render would defeat the memo); the session source is the bridge's structurally-shared snapshot
-      ), [mentionTrigger, mentionSessionSource, mentionExcludeKey, sessionRefs.length]);
+      ), [mentionQueryKey, mentionSessionSource, mentionExcludeKey, sessionRefs.length]);
       // Keyboard highlight: resets to 0 when the token changes (new trigger / kept typing); purely derived, no effect.
       const mentionIndex = mentionSelection.token === (mentionTrigger && mentionTrigger.token)
         ? Math.min(mentionSelection.index, Math.max(0, mentionCandidates.length - 1))

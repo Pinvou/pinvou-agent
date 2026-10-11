@@ -3890,16 +3890,17 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   }
 
   // Materialization-abort recovery: the scoped restore owns the stripped body
-  // (the mention injection block never re-enters any composer or buffer); a
-  // refs-only message strips to "" (nothing restorable), so the caller
-  // resolves false and keeps its chips armed instead of claiming "restored"
-  // (round-8 M1). Mirrors the tauri lane's inline branch.
+  // (the mention injection block never re-enters any composer or buffer). A
+  // refs-only message strips to "" (nothing restorable), but the abort
+  // semantics are unchanged — the send never dispatched and the draft is
+  // still alive — so it resolves "restored" too (round-18 MAJOR-1,
+  // superseding round-8 M1's false here): the caller's failure tail clears
+  // the provisional draft→session mapping and keeps the draft's chips
+  // scoped to the draft. Mirrors the tauri lane's inline branch.
   function restoreAbortedMaterialization(text, draftOwner) {
     const restoredBody = stripMentionBlockForComposerRestore(text);
-    const restored = restoredBody
-      ? restoreTaskDraft(restoredBody, draftOwner)
-      : false;
-    return restored ? "restored" : false;
+    if (!restoredBody) return "restored";
+    return restoreTaskDraft(restoredBody, draftOwner) ? "restored" : false;
   }
 
   // - "restored"   nothing dispatched, but the text is already back in the

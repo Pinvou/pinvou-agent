@@ -2059,5 +2059,17 @@ mod web_projection_tests {
             codex.contains(".or_else(|| workspace_references.first().map(String::as_str)),"),
             "the ACP first-send fallback must stay conditional — no unconditional 附件 floor (round-15 m6)"
         );
+        // Round-18 m4: pin the absence of the removed floor explicitly
+        // (re-appending unwrap_or("附件") must go red), and pin the
+        // attachment-basename argument at the native call site (dropping it
+        // restores the pre-round-9 refs-only+attachment no-op).
+        assert!(
+            !codex.contains("unwrap_or(\"附件\")"),
+            "the unconditional 附件 floor must stay removed"
+        );
+        assert!(
+            chat.contains(".map(|attachment| attachment.basename.as_str()),"),
+            "the native auto-title call site must pass the attachment basename"
+        );
     }
 }
