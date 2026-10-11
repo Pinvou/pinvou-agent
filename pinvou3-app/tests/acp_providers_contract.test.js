@@ -131,9 +131,21 @@ assert.ok(
   PROVIDERS_MOD.includes('pinvou3-bak'),
   '首次受管写入必须备份 .pinvou3-bak'
 );
+// round-52 fix wave: AcpConfigDefaultsStore::persist moved off its local
+// hand-rolled `json.tmp.{pid}` + rename staging onto the shared
+// `filesystem::atomic_write` (the hand-rolled pair carried no fsync, so a
+// power cut could land a truncated acp-agent-defaults.json). The pin
+// re-anchors on the shared helper — which carries the unique per-writer
+// staging, the fsync-before-rename, and the two-arm tmp cleanup — and now
+// also rejects a bare hand-rolled `fs::rename(` persist sneaking back into
+// the module outside the helper.
 assert.ok(
-  STORE.includes('json.tmp.{') && STORE.includes('fs::rename'),
-  'store 必须 pid 后缀 .tmp + fs::rename 原子写'
+  STORE.includes('crate::platform::filesystem::atomic_write'),
+  'store persist 必须走共享 atomic_write（唯一 staging + fsync + rename）'
+);
+assert.ok(
+  !/^\s*fs::rename\(/m.test(STORE),
+  'store 不得再留手写 fs::rename 暂存（统一走 atomic_write）'
 );
 for (const file of [CLAUDE, CODEX, KIMI]) {
   assert.ok(file.includes('atomic_write'), `${file} 必须经原子写助手落盘`);
