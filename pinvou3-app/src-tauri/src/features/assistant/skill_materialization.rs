@@ -199,7 +199,7 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
                 names.insert(name);
                 continue;
             }
-            // Preset id alias (round-8 review): a standalone preset directory
+            // Preset id alias: a standalone preset directory
             // carries the frontmatter skill_name, but its deny entry is stored
             // under the marketplace id (tencent-docs <-> tencent-docs-skill).
             // The id and the directory name can even collide with the owning

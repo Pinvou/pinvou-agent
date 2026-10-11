@@ -335,7 +335,7 @@ fn ima_connect_sync_with_store<S: CredentialStore>(
     let previous_api_key = store.get(&api_key_ref()).map_err(|e| e.user_message())?;
 
     let result = (|| -> Result<(), String> {
-        // Deny-first (#517 review round 4): register the deny entry BEFORE
+        // Deny-first: register the deny entry BEFORE
         // the credentials are touched or the skill content is replaced —
         // a refusal aborts with nothing changed at all. A connect
         // re-runs `install` over an existing skill, so an uninstall-based
@@ -349,7 +349,7 @@ fn ima_connect_sync_with_store<S: CredentialStore>(
         // cycle (architecture guard rust_feature_cycles).
         // The sync itself skips known bundles, so a reconnect of the
         // already-installed ima skill never re-runs the consent write and
-        // never needs the lock (review round 4 regression).
+        // never needs the lock.
         crate::features::marketplace::scope::sync_deny_all_scopes_after_install(IMA_SKILL_ID)?;
         store
             .set(&client_id_ref(), client_id.trim())
@@ -414,7 +414,7 @@ pub async fn ima_logout() -> Result<Value, String> {
 fn ima_logout_sync_with_store<S: CredentialStore>(store: &S) -> Result<Value, String> {
     let client_result = store.delete(&client_id_ref());
     let api_key_result = store.delete(&api_key_ref());
-    // Ordering disclosure (round-12 review B2): the credentials are deleted
+    // Ordering disclosure: the credentials are deleted
     // BEFORE the uninstall attempt — the same order the MCP tool lane's
     // uninstall uses (a failed uninstall leaves the credentials deleted
     // there too; the skill command lane keeps credentials entirely); a
@@ -424,24 +424,20 @@ fn ima_logout_sync_with_store<S: CredentialStore>(store: &S) -> Result<Value, St
     // leftover entries from every scope; the online-session composed catalogs
     // are rewritten by the command layer (connectors::ima_logout). The strip
     // itself runs inside the manager's `uninstall_and_strip_scope`, under
-    // the same per-id import lock as the teardown (round-12 review B2);
-    // marketplace::scope no longer needs to be referenced from here (the
-    // direct reference avoided a connectors -> assistant dependency cycle).
-    // A failed uninstall must KEEP the deny entries (round-6 review): the
+    // the same per-id import lock as the teardown.
+    // A failed uninstall must KEEP the deny entries: the
     // skill is still on disk, so clearing the entries here would silently
     // restore it to callable (fail-open). Keeping them fails closed (the
     // skill stays off) and converges on the next connect/uninstall.
     // A VACUOUS uninstall (nothing installed — no record, nothing on disk)
-    // must keep them too (round-10 review): stripping on `Ok(false)` would
+    // must keep them too: stripping on `Ok(false)` would
     // remove the deny-first entry a concurrent same-id connect may have just
     // registered (its install lands after the gate), re-enabling the skill as
     // it lands — the same guard as the tool/skill uninstall channels.
     match SkillMarketplaceManager::new().uninstall_and_strip_scope(IMA_SKILL_ID) {
         Ok(true) => {
-            // The scope strip already ran inside the helper, under the same
-            // per-id import lock as the teardown (round-12 review B2); a
-            // refused strip was logged there and keeps the entries
-            // (fail-closed).
+            // The strip already ran inside the helper; a refused strip was
+            // logged there and keeps the entries (fail-closed).
         }
         Ok(false) => {
             log::warn!(
@@ -450,8 +446,7 @@ fn ima_logout_sync_with_store<S: CredentialStore>(store: &S) -> Result<Value, St
             );
         }
         Err(error) => {
-            // Failed teardown logs and returns Ok (round-25 MAJOR 4's
-            // retryable-Err contract was inverted by deny-first): the
+            // Failed teardown logs and returns Ok: the
             // credentials are already gone, so retrying the logout command
             // cannot succeed differently — recovery runs through the
             // marketplace skill-uninstall lane instead. Keeping the entries
@@ -485,7 +480,7 @@ mod tests {
     use crate::platform::credential_store::MemoryCredentialStore;
 
     /// Temp-home harness for the connect regressions. Delegated to the
-    /// shared RAII helper (round 9): a failing assertion unwinds past a
+    /// shared RAII helper: a failing assertion unwinds past a
     /// straight-line env restore, which would leave PINVOU3_HOME pointed at
     /// a deleted temp dir and cascade unrelated failures.
     fn with_temp_home<F: FnOnce()>(f: F) {
@@ -558,7 +553,7 @@ mod tests {
         });
     }
 
-    /// Review round 4 (#517) + the reinstall-semantics fix: a RE-connect of
+    /// A RE-connect of
     /// the already-installed ima skill is a known-bundle operation — the
     /// consent gate skips the write entirely (even with the scope lock
     /// unavailable), so the reconnect proceeds and the recorded consent
@@ -673,14 +668,22 @@ mod tests {
         );
     }
 
-    /// Round-10 review: a VACUOUS logout (the skill was never installed —
-    /// no record, nothing on disk) must keep the deny entries. Stripping on
-    /// the vacuous `Ok(false)` would remove the deny-first entry a concurrent
-    /// same-id connect may have just registered (its install lands after the
-    /// gate) and re-enable the skill as it lands.
+    /// A logout must keep the deny entries whenever the uninstall does not
+    /// actually tear down an installed skill — both arms:
+    /// (1) a VACUOUS uninstall (the skill was never installed — no record,
+    /// nothing on disk): stripping on the vacuous `Ok(false)` would remove
+    /// the deny-first entry a concurrent same-id connect may have just
+    /// registered (its install lands after the gate) and re-enable the skill
+    /// as it lands;
+    /// (2) a FAILED uninstall (here: the bundle store is unreadable, which
+    /// `SkillMarketplaceManager::uninstall` refuses fail-closed): the
+    /// on-disk skill (if any) would otherwise be silently re-enabled in
+    /// initialized DenyAll scopes. The injected-store core makes both arms
+    /// reachable without touching the real system credential vault.
     #[test]
-    fn ima_logout_vacuous_uninstall_keeps_deny_entries() {
+    fn ima_logout_vacuous_and_failed_uninstall_keeps_deny_entries() {
         with_temp_home(|| {
+            // Phase 1: vacuous uninstall.
             init_code_scope(&[IMA_SKILL_ID]);
 
             let store = MemoryCredentialStore::default();
@@ -694,29 +697,16 @@ mod tests {
                 .contains(&"ima".to_string()),
                 "a vacuous logout must not strip the deny-first entry"
             );
-        });
-    }
 
-    /// Round-10 review: a logout whose uninstall FAILS (here: the bundle
-    /// store is unreadable, which `SkillMarketplaceManager::uninstall`
-    /// refuses fail-closed) must keep the deny entries — the on-disk skill
-    /// (if any) would otherwise be silently re-enabled in initialized
-    /// DenyAll scopes. Pins the keep-on-failure branch that round 8 added;
-    /// the extraction of `ima_logout_sync_with_store` makes it reachable
-    /// without touching the real system credential vault.
-    #[test]
-    fn ima_logout_failed_uninstall_keeps_deny_entries() {
-        with_temp_home(|| {
-            init_code_scope(&[IMA_SKILL_ID]);
-            // Make the bundle store unreadable: bundles.json becomes a
-            // directory, so the uninstall's fail-closed read refuses.
+            // Phase 2: failed uninstall — make the bundle store unreadable
+            // (bundles.json becomes a directory, so the uninstall's
+            // fail-closed read refuses).
             let bundles_json = crate::features::marketplace::store::BundleStore::new().file_path();
             if bundles_json.is_file() {
                 std::fs::remove_file(&bundles_json).unwrap();
             }
             std::fs::create_dir_all(&bundles_json).unwrap();
 
-            let store = MemoryCredentialStore::default();
             ima_logout_sync_with_store(&store)
                 .expect("logout must still succeed when only the skill teardown fails");
 
@@ -731,11 +721,8 @@ mod tests {
         });
     }
 
-    /// Happy-path end-state pin for a FRESH connect on a working lock (the
-    /// only observable residue of the deleted GateOrderProbe ordering probe —
-    /// the ordering proof lives on in
-    /// `connect_refused_sync_aborts_before_anything_lands` under the refusal
-    /// condition): the deny-first entry lands in the initialized Code scope
+    /// Happy-path end-state pin for a FRESH connect on a working lock:
+    /// the deny-first entry lands in the initialized Code scope
     /// ("ima-skills" normalizes to its owner-package id "ima" on save) and
     /// the credentials round-trip.
     #[test]

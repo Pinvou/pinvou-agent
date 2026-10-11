@@ -1351,7 +1351,7 @@ where
     // attaches no log plugin either, so without the file sink the
     // freeze-persist CRITICAL below would reach only stderr and the
     // "the startup timeline is the only durable channel" claim would be
-    // false exactly where it matters (round-19 review).
+    // false exactly where it matters.
     crate::platform::startup::init();
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1375,10 +1375,8 @@ where
             // touched by a windowless host freezes a polluted "upgrade"
             // verdict, plain flips back to fully open, and later GUI starts
             // respect the already-frozen marker (review #455 blocking item 3).
-            // The shared helper also mirrors a freeze-persist failure onto
-            // the startup timeline: the CRITICAL log fired inside the read
-            // and this host attaches no log plugin, so the timeline is the
-            // only durable channel (round-17 review).
+            // The shared helper mirrors a freeze-persist failure onto the
+            // startup timeline.
             crate::features::marketplace::scope::load_disabled_bundles_startup_mirrored();
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);

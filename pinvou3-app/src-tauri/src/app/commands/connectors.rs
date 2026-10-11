@@ -355,17 +355,13 @@ async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, S
 /// domain layer lands it on disk) → rewrites the online-session composition
 /// dirs (the skill dual-scope governance event-driven moment) + hot-refreshes
 /// the execpolicy rulesets (skill-script deny rules change with the dirs;
-/// four review rounds, M-6a). Failures split in two: a domain-layer
+/// M-6a). Failures split in two: a domain-layer
 /// credential/pre-install failure means the skill never landed and no
-/// rewrite was due; a **consent-gate refusal** (this PR's deny-first
+/// rewrite was due; a **consent-gate refusal** (deny-first
 /// semantics) means the gate ran before any credential write or content
 /// landed — the command returns `Err` with **nothing landed** (no
 /// credential, no skill dir, no record), so skipping this function's
-/// rewrite is harmless. The old stale-allow shape (skill installed but the
-/// consent row not persisted) can no longer be produced by this channel:
-/// since round-13 the gate precedes every landing and a refusal aborts; the
-/// `CONSENT_SYNC_FAILURE_MARKER` imaSkillsFailed frontend guidance branch
-/// only matters for session residue from older builds.
+/// rewrite is harmless.
 // The disallowed hot-refresh is required since the native-tool ownership gate:
 // the freshly installed package flips `ima_openapi` from denied to admitted
 // for DenyAll scopes' explicit-enable path, and online engines must see it.
