@@ -237,6 +237,67 @@ const refsSurvivingAcceptance = (refsAtSend, currentRefs, featureOn) => {
   return currentRefs.filter((ref) => ref && !sentIds.has(ref.sessionId));
 };
 
+// Single-sourced verdict/ledger tail for every send lane (round-19 M3):
+// rounds 12-18 fixed this logic four times in four copies — this factory is
+// the one place the acceptance/failure semantics live now; the lanes keep
+// only their own glue (text restore, voice ownership, in-flight draft-key
+// registration). Module-scope so the behavioral tests execute the same
+// code the component runs.
+const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef, setSessionRefs }) =>
+  (refsAtSend, draftKeyAtSend, verdict) => {
+    // Settle-time feature state (round-19 minor 2): the send closures
+    // capture the dispatch-time render value, but a mid-await re-enable
+    // plus a fresh pick must not be wiped by the stale OFF gate.
+    const featureOn = sessionMentionEnabledRef.current;
+    if (verdict === true) {
+      // Acceptance consumes exactly the serialized set; the live feature
+      // state decides whether mid-await picks (possibly made after a
+      // re-enable) survive or stale pre-toggle chips clear.
+      if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === resolveMaterializedDraftKey(draftKeyAtSend)) {
+        setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, featureOn));
+      } else {
+        const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
+        stashSessionMentionDraft(stashKey, refsSurvivingAcceptance(
+          refsAtSend, restoreSessionMentionDraft(stashKey), featureOn));
+      }
+      return;
+    }
+    if (verdict === 'restored') {
+      // Aborted materialization (round-16 MAJOR-2 + round-19 M1): undo the
+      // provisional supersession AND the carry — the scope effect misread
+      // the mid-await navigation as materialization and moved any chips
+      // picked in that window into the target's stash (and armed them live
+      // there). Migrate them back to the still-alive draft and disarm them
+      // in the misread scope.
+      const target = resolveMaterializedDraftKey(draftKeyAtSend);
+      if (target !== draftKeyAtSend) {
+        const carried = restoreSessionMentionDraft(target);
+        if (carried.length) {
+          stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+            [...restoreSessionMentionDraft(draftKeyAtSend), ...carried]));
+          stashSessionMentionDraft(target, []);
+          const carriedIds = new Set(carried.map(ref => ref && ref.sessionId));
+          if (mentionDraftKeyRef.current === target) {
+            setSessionRefs(current => current.filter(ref => ref && !carriedIds.has(ref.sessionId)));
+          }
+        }
+      }
+      clearDraftMaterialization(draftKeyAtSend);
+    }
+    // Failure / non-dispatch: restore the snapshot through the ledger (a
+    // stash key consumed by a REAL materialization resolves to the live
+    // session key; an aborted one was re-scoped to the draft above), live
+    // when the current scope resolves to the same key — including the user
+    // having navigated BACK to the draft while the mapping is still
+    // recorded (round-19 M2's discriminating race).
+    const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
+    if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
+      setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+    }
+    stashSessionMentionDraft(stashKey, dedupeSessionRefs(
+      [...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
+  };
+
 // Unified scene table after the design lane was merged into work: a scene
 // only expresses "the professional context of this message" and is
 // lane-independent; scene cards render below the empty-state greeting
@@ -1076,6 +1137,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // for the whole session — re-read once the connection reports the
       // desktop back online (round-13 minor 3; mirrors useBridge's listener).
       const [sessionMentionEnabled, setSessionMentionEnabled] = useState(true);
+      // Settle-time feature state (round-19 minor 2): the send closures
+      // capture the dispatch-time render value, but a mid-await re-enable
+      // plus a fresh pick must not be wiped by the stale OFF gate — the
+      // settle tail reads the CURRENT state through this ref.
+      const sessionMentionEnabledRef = useRef(sessionMentionEnabled);
+      sessionMentionEnabledRef.current = sessionMentionEnabled;
       useEffect(() => {
         let alive = true;
         const refresh = async () => {
@@ -1955,8 +2022,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         : 0;
       const knownSessionMentionIds = useMemo(
         // Archived sessions are still alive and openable (the card jumps to
-        // them and un-archives on switch), so they count as known; only a
-        // truly deleted session renders the unavailable state.
+        // them; the switch does NOT auto-un-archive — that stays a manual
+        // sidebar action), so they count as known; only a truly deleted
+        // session renders the unavailable state.
         () => new Set(
           [...((bs && bs.sessions) || []), ...((bs && bs.archivedSessions) || [])]
             .map(session => session.id),
@@ -2208,6 +2276,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           throw error;
         }
       }, [activeSessionId, dispatchChatMessage]);
+      // Single-sourced verdict/ledger tail for every send lane (round-19
+      // M3): rounds 12-18 fixed this logic four times in four copies — this
+      // is the one place the acceptance/failure semantics live now. The
+      // lanes keep only their own glue (text restore, voice ownership,
+      // registration of the in-flight draft key). The factory is
+      // module-scope so the behavioral tests execute the same code.
+      const settleSessionRefSend = useMemo(() => makeSettleSessionRefSend({
+        mentionDraftKeyRef,
+        sessionMentionEnabledRef,
+        setSessionRefs,
+      }), [setSessionRefs]);
       // Secondary send surfaces (welcome-card queries, plan-card option
       // answers) share the composer's mention semantics: picked refs ride the
       // message as the prepended injection block and are consumed once the
@@ -2229,65 +2308,25 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // the same armed refs as a duplicate queued message.
         if (refsAtSend.length) setSessionRefs([]);
         if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
-        // Scope guard for the restore below: switching sessions mid-send
-        // must not wipe the target scope's freshly picked chips — merge with
-        // whatever the switch cleanup stashed, never overwrite it. A stash
-        // key consumed by mid-await materialization resolves through the
-        // ledger so the snapshot follows the composer text into the real
-        // session key instead of a dead draft epoch (round-15 B1).
-        const restoreRefsOnFailure = (verdict) => {
-          // An aborted materialization ("restored": the user switched to an
-          // existing session mid-create, so the bridge put the text back
-          // into the draft) undoes the provisional supersession — the draft
-          // is alive again and the snapshot must stay scoped to it instead
-          // of leaking into the unrelated session (round-16 MAJOR-2).
-          if (verdict === 'restored') clearDraftMaterialization(draftKeyAtSend);
-          const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-          // Ledger-aware live guard (round-16 MAJOR-1): after a real
-          // materialization the composer's live chips were cleared at
-          // dispatch and the scope key has moved — resolving BOTH sides
-          // through the ledger recognizes the same scope and restores the
-          // chips live, so the next scope cleanup stashes a non-empty list
-          // instead of deleting the correctly-keyed snapshot.
-          if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
-            setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
-          }
-          // Merge into the draft store unconditionally (round-14): an
-          // unmount mid-await no-ops the live setSessionRefs and the scope
-          // cleanup has already stashed the post-dispatch [] — the remount
-          // would restore nothing.
-          stashSessionMentionDraft(stashKey, dedupeSessionRefs(
-            [...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
-        };
         const settlePendingDraftSend = () => {
           mentionPendingDraftSendsRef.current.delete(draftKeyAtSend);
         };
+        // The verdict/ledger tail lives in the shared settle helper
+        // (round-19 M3): acceptance consumes exactly the serialized set,
+        // failure/"restored" re-scope through the materialization ledger
+        // (an aborted materialization also rolls the mid-await carry back
+        // into the draft). Never rejects.
         return Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
-          // A non-true verdict (false / "restored" / undefined) is a
-          // non-dispatch: the text is back in the composer or queued, and
-          // the chips cleared at dispatch go back with it (merged with any
-          // chips picked meanwhile) — never silently dropped with their
-          // references consumed.
-          if (accepted === true) {
-            if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === resolveMaterializedDraftKey(draftKeyAtSend)) {
-              setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
-            } else {
-              const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-              stashSessionMentionDraft(stashKey, refsSurvivingAcceptance(
-                refsAtSend, restoreSessionMentionDraft(stashKey), sessionMentionEnabled));
-            }
-          } else {
-            restoreRefsOnFailure(accepted);
-          }
+          settleSessionRefSend(refsAtSend, draftKeyAtSend, accepted);
           settlePendingDraftSend();
           return accepted;
         }, (error) => {
           console.warn('[pinvou3][chat-ui] referenced send failed', error);
-          restoreRefsOnFailure();
+          settleSessionRefSend(refsAtSend, draftKeyAtSend);
           settlePendingDraftSend();
           return false;
         });
-      }, [sessionMentionEnabled, sessionRefs, sendChatMessage]);
+      }, [sessionMentionEnabled, sessionRefs, sendChatMessage, settleSessionRefSend]);
       // ConversationTimeline render-callback stabilization: ConversationTurn is React.memoized, so a
       // per-render callback identity would make every turn fully re-render each time. Callbacks only
       // rebuild identity when their inputs change; the latestArtifactIds Set is a fresh reference on
@@ -2359,68 +2398,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const scopedText = selectedDesignElement
           ? chatViewCopy.designAdjustSelected(elementLabel || chatViewCopy.designElementFallback, raw)
           : raw;
-        // Same mention semantics as handleSend: picked refs serialize into the
-        // prepended injection block (suppressed when the feature is off) and
-        // the chips are consumed once the send is accepted — otherwise refs
-        // picked before a design submit would go out unreferenced yet stay
-        // armed for the next plain composer send.
-        const refsAtSend = sessionMentionEnabled ? sessionRefs : [];
-        const mentionBlock = refsAtSend.length ? buildSessionMentionBlock(refsAtSend) : '';
-        const outgoingText = mentionBlock ? mentionBlock + scopedText : scopedText;
-        // Scope guard: the clear races a session switch during the await —
-        // chips picked in the NEW scope must survive (they restore from the
-        // per-scope draft store on return).
-        const draftKeyAtSend = mentionDraftKeyRef.current;
-        // Clear at dispatch and restore on non-acceptance, mirroring
-        // handleSend (round-12 R4): the design lane's sendChatMessage await
-        // covers capability installs, so an unmount mid-send must not stash
-        // the still-armed refs whose block already went out.
-        if (refsAtSend.length) setSessionRefs([]);
-        if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
-        // Stash key consumed by mid-await materialization resolves through
-        // the ledger (round-15 B1); the merge is unconditional (round-14)
-        // for the same unmount/staleness reasons as every other lane.
-        const restoreRefsOnFailure = (verdict) => {
-          // Same verdict-aware, ledger-aware tail as every other lane
-          // (round-16 MAJOR-1/2; see sendWithSessionRefs for the full
-          // rationale).
-          if (verdict === 'restored') clearDraftMaterialization(draftKeyAtSend);
-          const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-          if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
-            setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
-          }
-          stashSessionMentionDraft(stashKey, dedupeSessionRefs(
-            [...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
-        };
-        const settlePendingDraftSend = () => {
-          mentionPendingDraftSendsRef.current.delete(draftKeyAtSend);
-        };
-        void Promise.resolve(sendChatMessage(outgoingText)).then((accepted) => {
-          // Same acceptance semantics as handleSend: "restored" is a
-          // non-dispatch (truthy, but the text is back — not sent), and only
-          // the serialized refs are consumed; a non-acceptance puts the
-          // chips cleared at dispatch back (merged with mid-await picks).
-          if (accepted === true) {
-            if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === resolveMaterializedDraftKey(draftKeyAtSend)) {
-              setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
-            } else {
-              const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-              stashSessionMentionDraft(stashKey, refsSurvivingAcceptance(
-                refsAtSend, restoreSessionMentionDraft(stashKey), sessionMentionEnabled));
-            }
-          } else {
-            restoreRefsOnFailure(accepted);
-          }
-          settlePendingDraftSend();
-        }, (error) => {
-          // The lane previously had no rejection arm at all — a send
-          // rejection escaped as an unhandled rejection.
-          console.warn('[pinvou3][chat-ui] design send failed', error);
-          restoreRefsOnFailure();
-          settlePendingDraftSend();
-        });
+        // The design lane IS the secondary sender (round-19 M3): its former
+        // hand-maintained copy of the dispatch/settle tail differed from
+        // sendWithSessionRefs only in a variable name, an await, and a warn
+        // tag — every fix wave had to be applied twice and drifted once.
+        // Delegating keeps one source; failures inside the sender never
+        // reject (its rejection arm resolves false).
+        void sendWithSessionRefs(scopedText);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- deps reviewed manually: chatViewCopy only participates in copy concatenation; adding it would just rebuild the callback frequently
-      }, [selectedDesignElement, sendChatMessage, sessionMentionEnabled, sessionRefs]);
+      }, [selectedDesignElement, sendWithSessionRefs]);
       const primaryVoiceDisabled = !bridge.available || voiceBusy;
       const voiceAsrSetup = (bs && bs.voiceAsrSetup) || { open: false };
       const voiceAsrSetupPublicationReady = useRightDockOcclusion(
@@ -2852,55 +2838,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // must not wipe the target scope's freshly picked chips.
         const draftKeyAtSend = mentionDraftKeyRef.current;
         if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
-        // A stash key consumed by mid-await materialization resolves through
-        // the ledger so the snapshot follows the composer text into the real
-        // session key (round-15 B1); the merge into the draft store is
-        // unconditional (round-14): an unmount mid-await no-ops the live
-        // setSessionRefs and the scope cleanup has already stashed the
-        // post-dispatch [] — the remount would restore nothing. While
-        // mounted, the next scope cleanup overwrites the entry with the live
-        // list, so it never duplicates.
-        const restoreRefsOnFailure = (verdict) => {
-          // Verdict-aware and ledger-aware on both the stash key AND the
-          // live-restore guard (round-16 MAJOR-1/2): an aborted
-          // materialization ("restored") undoes the provisional
-          // supersession so the snapshot stays scoped to the still-alive
-          // draft; after a real materialization the guard resolves both
-          // sides through the ledger, restoring the chips live so the next
-          // scope cleanup stashes a non-empty list instead of deleting the
-          // correctly-keyed snapshot.
-          if (verdict === 'restored') clearDraftMaterialization(draftKeyAtSend);
-          const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-          if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
-            setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
-          }
-          stashSessionMentionDraft(stashKey, dedupeSessionRefs(
-            [...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
-        };
+        // The verdict/ledger tail lives in the shared settle helper
+        // (round-19 M3); this lane keeps only its text-restore glue.
         try {
           const accepted = await sendChatMessage(outgoingText);
-          // Consume chips once the send is TRULY accepted, even when the
-          // feature gate suppressed the block (stale chips from before the
-          // toggle must not linger). "restored" is a non-dispatch (the text
-          // is back in the composer, not sent — the voice lane maps it to
-          // false): its chips must survive like any other failure. Only the
-          // serialized refsAtSend are dropped; chips picked during the await
-          // were never sent and stay armed.
-          if (accepted === true) {
-            if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === resolveMaterializedDraftKey(draftKeyAtSend)) {
-              setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
-            } else {
-              // Scope changed mid-send: the cleanup stashed the outgoing
-              // scope's live chips (any picked during the await); consume
-              // only the serialized set from that stash (ledger-resolved so
-              // a materialized send consumes from the live session key).
-              const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-              stashSessionMentionDraft(stashKey, refsSurvivingAcceptance(
-                refsAtSend, restoreSessionMentionDraft(stashKey), sessionMentionEnabled));
-            }
-          } else {
-            restoreRefsOnFailure(accepted);
-          }
+          settleSessionRefSend(refsAtSend, draftKeyAtSend, accepted);
           if (!accepted) {
             if (inputTextRef.current === '') setInputText(text);
             else if (text) bridge.chat.prefillComposer(text, true);
@@ -2909,7 +2851,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // A throw is a post-dispatch failure (the aborted-materialization
           // outcome resolves "restored", never throws), so the provisional
           // ledger entry stands.
-          restoreRefsOnFailure();
+          settleSessionRefSend(refsAtSend, draftKeyAtSend);
           if (inputTextRef.current === '') setInputText(text);
           else if (text) bridge.chat.prefillComposer(text, true);
           // Swallow here: the bridge already surfaced the failure (notice +
@@ -3144,21 +3086,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // the new scope's chips must not be wiped by this send's cleanup.
           const draftKeyAtSend = mentionDraftKeyRef.current;
           if (draftKeyAtSend.startsWith('draft:')) mentionPendingDraftSendsRef.current.add(draftKeyAtSend);
-          // Stash key consumed by mid-await materialization resolves through
-          // the ledger (round-15 B1); the merge is unconditional (round-14)
-          // for the same unmount/staleness reasons as every other lane.
-          const restoreRefsOnVoiceFailure = (verdict) => {
-            // Verdict-aware and ledger-aware on both sides, like every other
-            // lane (round-16 MAJOR-1/2; the raw result reaches here before
-            // the "restored"→false mapping).
-            if (verdict === 'restored') clearDraftMaterialization(draftKeyAtSend);
-            const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-            if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
-              setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
-            }
-            stashSessionMentionDraft(stashKey, dedupeSessionRefs(
-              [...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
-          };
+          // The verdict/ledger tail lives in the shared settle helper
+          // (round-19 M3); this lane keeps its voice-ownership glue and
+          // passes the RAW result (before the "restored"→false mapping) so
+          // the aborted-materialization rollback can key on it.
           try {
             const result = await sendChatMessage(outgoingText, { ...context, draftOwner: owner });
             if (result === true) {
@@ -3169,21 +3100,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               // user typed during the await is newer input and stays.
               personalWorkbenchTemplateIdRef.current = null;
               setPersonalWorkbenchTemplateId(null);
-              // The voice send consumed the serialized chips at dispatch; the
-              // scope guard keeps a mid-send switch from wiping the target
-              // scope's chips, and chips picked during the await were never
-              // sent — they stay armed (round-9, same semantics as
-              // handleSend's acceptance tail).
-              if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === resolveMaterializedDraftKey(draftKeyAtSend)) {
-                setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, sessionMentionEnabled));
-              } else {
-                const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-                stashSessionMentionDraft(stashKey, refsSurvivingAcceptance(
-                  refsAtSend, restoreSessionMentionDraft(stashKey), sessionMentionEnabled));
-              }
-            } else {
-              restoreRefsOnVoiceFailure(result);
             }
+            settleSessionRefSend(refsAtSend, draftKeyAtSend, result);
             if (result === false && bridge.chat.restoreTaskDraft) {
               bridge.chat.restoreTaskDraft(constrained.text, owner);
             }
@@ -3191,7 +3109,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // is back, not sent); ordinary callers map it through to false.
             return result === 'restored' ? false : result;
           } catch (error) {
-            restoreRefsOnVoiceFailure();
+            settleSessionRefSend(refsAtSend, draftKeyAtSend);
             if (bridge.chat.restoreTaskDraft) bridge.chat.restoreTaskDraft(constrained.text, owner);
             console.warn('[voice-input] task send failed after writeback', error);
             return false;

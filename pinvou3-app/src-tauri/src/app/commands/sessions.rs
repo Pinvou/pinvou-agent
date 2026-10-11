@@ -247,7 +247,7 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     // Parser-floor note (deliberate divergence): serde_json is stricter than
     // the JS JSON.parse on lone-surrogate escapes ("\ud800"), extreme float
     // exponents, and nesting depth (serde_json refuses arrays nested deeper
-    // than 128 levels, which JSON.parse accepts), so a hand-forged block
+    // at 128 levels, which JSON.parse accepts), so a hand-forged block
     // carrying such content is `matched` on the JS side but fail-open
     // passthrough here. Unreachable through the real send path (Tauri's IPC
     // JSON rejects the escaped lone surrogate at the command boundary; real
