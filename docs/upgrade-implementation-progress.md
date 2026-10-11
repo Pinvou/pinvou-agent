@@ -903,3 +903,28 @@ internal byte limits only; downloads have no hard total/cumulative elapsed limit
 Final full integration and independent review evidence is in the service plan.
 Continue remaining lifecycle work and independent tasks while owner decisions
 and deployment remain recorded and skipped.
+
+
+### T44 batch 7: atomic waiting content (2026-10-12)
+
+Private additive migration 7 completes verified preinstall and creates one
+waiting slot with exact original bindings, safe-stop/slot evidence and actual
+OwnerReplay/scope CAS. SQL supplies original staged time; content expires at
+min(completion + 30 days, original hop end). Completion immediately releases
+active transaction occupancy; fixed expiry invalidates waiting content without
+inventing physical deletion or local failure. Complete scope reads retain staged
+history. Current T20 qualification/preparation guards and release still belong
+to its final same-transaction composition.
+
+Independent review repaired mandatory convergence reserves across older scope
+writers. Fixed additive overlays change only 13 revision writes in 12 old
+functions, with exact-equivalence tests and immutable migrations 1-6. Waiting
+reserves future invalidation, live terminal growth, missing outcomes, ref widths
+and terminal/cleanup revisions. Older ordinary events cannot consume the reserve;
+cancellation and expiry can use their own reserved writes. Targeted actual
+PostgreSQL tests passed (48.526s plus 13.430s); both independent roles passed,
+and the final full lifecycle PostgreSQL regression passed (404.978s). Baseline
+checks and detailed evidence are recorded in the service plan. No hard total/cumulative
+download timeout, physical/qualification certification or deployment is inferred.
+Continue activation/staged successors, channel invalidation and remaining tasks;
+undecidable owner choices remain recorded and skipped as requested.
