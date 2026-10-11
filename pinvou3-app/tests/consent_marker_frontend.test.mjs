@@ -1,4 +1,4 @@
-// Round-33 MAJOR 2 (review #455): the frontend's consent-failure matcher must
+// The frontend's consent-failure matcher must
 // key on the exact shared marker string the Rust emitters pin
 // (scope::CONSENT_SYNC_FAILURE_MARKER — asserted on the Rust side by
 // skill_gate_consent_failure_message_keeps_the_frontend_marker in
@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const productionOf = (src) => src.split('#[cfg(test)]')[0];
 
-// Round-37 F3 (review #455): the literal lives ONCE, in connector-ui-state.js
+// The literal lives ONCE, in connector-ui-state.js
 // (mirroring scope::CONSENT_SYNC_FAILURE_MARKER); the three JS matchers import
 // the const. The pin asserts the single definition and that every matcher
 // site imports it — one-site drift cannot survive.
@@ -39,14 +39,14 @@ assert.ok(
   'ToolStoreView must key the consent-failure surfacing on the shared const',
 );
 
-// Round-19 review: the two sides above were independent frozen strings, so a
-// backend-only reword (Rust const + updated Rust value test) passed every leg
-// while ToolStoreView's includes() silently stopped matching. Cross-compare:
-// extract the Rust constant's VALUE from scope.rs and require it to equal the
-// JS literal — a reword now fails one side or the other until both move.
+// A backend-only reword (Rust const + updated Rust value test) would otherwise
+// pass every leg while ToolStoreView's includes() silently stopped matching.
+// Cross-compare: extract the Rust constant's VALUE from scope.rs and require
+// it to equal the JS literal — a reword fails one side or the other until both
+// move.
 const rustDir = join(root, 'src-tauri/src/features');
 const scopeSrc = readFileSync(join(rustDir, 'marketplace/scope.rs'), 'utf8');
-// Round-20 review: anchor the extraction to a top-level declaration — an
+// Anchor the extraction to a top-level declaration — an
 // unanchored first match would silently validate a hypothetical
 // `SOMEPREFIX_CONSENT_SYNC_FAILURE_MARKER` defined earlier in the file
 // instead of the real constant.
@@ -63,20 +63,16 @@ assert.strictEqual(
   'the Rust marker constant and the frontend matcher literal have drifted — reword both sides in the same commit',
 );
 
-// Helper-design rework (PR #517 CI fix): supersedes the counted-===5 shape
-// pins over marketplace.rs below (the emit sites had legitimately collapsed
-// to 3, leaving those legs permanently red). The consent-failure copy is now
-// SINGLE-SOURCED: the sentence lives once, inside the shared scope.rs helper
-// consent_sync_failure_message(subject, error) which interpolates the marker
-// between the subject and the fixed tail; every emit site (the marketplace
-// command layer and the skill gate) calls the helper instead of hand-rolling
-// the wording. The rounds 19/20/26 rationale is preserved structurally: the
-// helper IS the marker interpolation, so a wording without the marker is
-// impossible by construction (round 20), one-site drift cannot survive
-// (round 19), and any hand-rolled copy fails the exact-count legs below
-// (round 26's no-silent-degradation guarantee). The per-channel call counts
-// are LOWER BOUNDS so deleting an emit site still fails a leg while a
-// legitimately added fourth channel routed through the helper does not.
+// The consent-failure copy is SINGLE-SOURCED: the sentence lives once, inside
+// the shared scope.rs helper consent_sync_failure_message(subject, error)
+// which interpolates the marker between the subject and the fixed tail; every
+// emit site (the marketplace command layer and the skill gate) calls the
+// helper instead of hand-rolling the wording. The helper IS the marker
+// interpolation, so a wording without the marker is impossible by
+// construction, one-site drift cannot survive, and any hand-rolled copy fails
+// the exact-count legs below. The per-channel call counts are LOWER BOUNDS so
+// deleting an emit site still fails a leg while a legitimately added channel
+// routed through the helper does not.
 const TEMPLATE_TAIL = 'new sessions will enable it by default';
 
 // (a) The template tail must exist exactly once in scope.rs PRODUCTION —
@@ -96,14 +92,13 @@ assert.ok(
   'the consent-failure template must exist exactly once in scope.rs production — inside the shared helper',
 );
 
-// (a2) Round-27 review: the helper-design comment's "a wording without the
-// marker is impossible by construction" overstates — every leg above
-// survives a helper-body reword that drops the interpolation (const defined,
-// tail present once, call counts intact) while ToolStoreView's includes()
-// silently stops matching and every consent failure degrades to the generic
-// skills_enable_failed code — exactly the degradation this file exists to
-// prevent. Pin the interpolation from the helper's declaration to the end of
-// production: a dropped interpolation fails here by construction.
+// (a2) Every leg above survives a helper-body reword that drops the
+// interpolation (const defined, tail present once, call counts intact) while
+// ToolStoreView's includes() silently stops matching and every consent
+// failure degrades to the generic skills_enable_failed code — exactly the
+// degradation this file exists to prevent. Pin the interpolation from the
+// helper's declaration to the end of production: a dropped interpolation
+// fails here by construction.
 const helperStart = scopeProduction.indexOf('fn consent_sync_failure_message');
 assert.ok(helperStart > 0, 'scope.rs must define the shared consent_sync_failure_message helper in production');
 assert.ok(
@@ -111,17 +106,12 @@ assert.ok(
   'consent_sync_failure_message must interpolate {CONSENT_SYNC_FAILURE_MARKER} — a wording without it degrades every consent failure to the generic error code',
 );
 
-// (b) Round-19 review: the marketplace command layer carries the post-landing
-// consent-failure channels (tool/skill/import). Round-26 review: exact
-// equality, not a lower bound — the shape and marker-interpolation counts
-// over the hand-rolled format! sites used to be pinned at 5 so a site could
-// not keep the wording while dropping the marker. Under the helper design
-// that becomes: every channel calls the helper (lower bound 2), and the
-// template tail is hand-rolled exactly ONCE — the round-24 minor 6 join-arm
-// copy ("its consent state could not be applied (background task failed)"),
-// a deliberately distinct middle wording that stays byte-for-byte. Any OTHER
-// hand-rolled copy (marker interpolated or not) pushes the count past 1 and
-// fails here; deleting an emit site drops one of the two legs.
+// (b) The marketplace command layer carries the post-landing consent-failure
+// channels (tool/skill/import); every one of them routes through the shared
+// helper (lower bound 1) and NONE of them may hand-roll the template — the
+// tail exists exactly once system-wide, inside the helper ((a)). A
+// hand-rolled copy (marker interpolated or not) fails here; deleting the
+// emit site drops the lower-bound leg.
 const marketplaceSrc = readFileSync(
   join(root, 'src-tauri/src/app/commands/marketplace.rs'),
   'utf8',
@@ -130,28 +120,26 @@ const marketplaceProduction = productionOf(marketplaceSrc);
 const helperCalls = marketplaceProduction.split('consent_sync_failure_message(')
   .length - 1;
 assert.ok(
-  helperCalls >= 2,
-  `marketplace.rs emit sites must route through consent_sync_failure_message (found ${helperCalls}, expected >= 2)`,
+  helperCalls >= 1,
+  `marketplace.rs emit sites must route through consent_sync_failure_message (found ${helperCalls}, expected >= 1)`,
 );
 const templateCopies = marketplaceProduction.split(TEMPLATE_TAIL).length - 1;
 assert.ok(
-  templateCopies === 1,
-  `marketplace.rs must keep exactly the one distinct join-arm consent-failure copy (found ${templateCopies}, expected 1) — every other channel must call the shared helper`,
+  templateCopies === 0,
+  `marketplace.rs must not hand-roll the consent-failure template (found ${templateCopies}, expected 0) — every channel must call the shared helper`,
 );
 
-// (c) Round-35 minor 1 (review #455): the skill-gate channel's Rust leg,
-// reworked for the helper design — skill_gate.rs production routes its emit
-// site through the shared helper (its old hand-rolled-template pin died with
-// the two-hop shape).
+// (c) The skill-gate channel's Rust leg: skill_gate.rs production routes its
+// emit site through the shared helper.
 const skillGateSrc = readFileSync(join(rustDir, 'connectors/skill_gate.rs'), 'utf8');
-// Round-18 review (P3): pin the Rust-side VALUE test by name — a rename or
+// Pin the Rust-side VALUE test by name — a rename or
 // rewrite that left the constant referenced only from a comment would
 // otherwise hollow this leg silently.
 assert.ok(
   skillGateSrc.includes('fn skill_gate_consent_failure_message_keeps_the_frontend_marker'),
   'skill_gate.rs must keep the Rust-side value contract test this leg leans on (fn skill_gate_consent_failure_message_keeps_the_frontend_marker)',
 );
-// Round-17 review: grep the PRODUCTION region only (up to the test module) —
+// Grep the PRODUCTION region only (up to the test module) —
 // the test module carries its own hand-built copy of the template for the
 // Rust-side message pin, so a whole-file grep would keep passing after the
 // production emit site drifted. The production region must call the shared

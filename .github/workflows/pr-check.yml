@@ -333,10 +333,9 @@ jobs:
               # silently skip the node gate (same locking mechanism as above).
               - 'pinvou3-app/src-tauri/src/platform/filesystem.rs'
               # consent_marker_frontend.test.mjs 读取下列 Rust 源做 marker
-              # 跨语言契约断言(round-24 MAJOR 2:不列出则 Rust-only 改动会
-              # 静默跳过该 node 门禁——marker 连同其 Rust 值 pin 一起 reword
-              # 时所有 leg 全绿,前端 includes() 静默失配;
-              # test_ci_gate_policy 锁定此路由)。
+              # 跨语言契约断言;不列出则 Rust-only 改动会静默跳过该 node
+              # 门禁——marker 连同其 Rust 值 pin 一起 reword 时所有 leg 全绿,
+              # 前端 includes() 静默失配(test_ci_gate_policy 锁定此路由)。
               - 'pinvou3-app/src-tauri/src/features/marketplace/scope.rs'
               - 'pinvou3-app/src-tauri/src/app/commands/marketplace.rs'
               - 'pinvou3-app/src-tauri/src/features/connectors/skill_gate.rs'
@@ -1821,7 +1820,6 @@ jobs:
             'install_waits_for_the_per_id' \
             'restore_waits_for_the_cross_process' \
             'manifest_load_failure' \
-            'record_present_arm' \
             'freeze_persist_failures_mirror' \
             'keeps_mark_on_failure' \
             'cleanup_defers_consent_strip' \

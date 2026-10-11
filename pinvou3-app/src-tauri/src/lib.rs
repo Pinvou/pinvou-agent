@@ -1221,25 +1221,14 @@ pub fn run() {
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
-            // Full-lock on purpose (round-17 review): a try-locked hot read
-            // cannot persist the freeze/recovery verdicts, so if the hoisted
-            // read above degraded under peer contention, this re-read is the
-            // second chance to persist the frozen verdict before setup
-            // continues — for the arms that consult no memo: the lost-store
-            // recovery arm (deliberately memo-outranking) and the parse-tail
-            // legacy-migration leg. The fresh-verdict arm's MEMO hit also
-            // re-attempts the persist on this fully locked re-read
-            // (scope.rs's memo-hit persist leg, the round-20/21 heal), so a
-            // freeze whose first-boot persist failed converges in-process on
-            // the next boot instead of waiting for a locked writer or a
-            // restart. The unbounded
-            // flock wait here is the documented
-            // fail-stop boot tradeoff (scope lock module doc). A persist
-            // failure on THIS read is mirrored by the shared helper onto the
-            // timeline like the hoisted site's does (round-20 review): the
-            // hoisted read's success does not cover a failure developing in
-            // between, and this mirror is the only durable channel that can
-            // name it.
+            // Fully locked on purpose: a try-locked hot read cannot persist the
+            // freeze/recovery verdicts, so this re-read is the second chance to
+            // persist them if the hoisted read degraded under peer contention
+            // (the unbounded flock wait is the documented fail-stop boot
+            // tradeoff). A persist failure on this read is mirrored by the
+            // shared helper onto the timeline: the hoisted read's success does
+            // not cover a failure developing in between, and this mirror is
+            // the only durable channel that can name it.
             crate::features::marketplace::scope::load_disabled_bundles_startup_mirrored();
             startup::mark("disabled_skills:done");
 
@@ -1891,7 +1880,7 @@ mod startup_order_contract {
         );
     }
 
-    /// Round-20 review (P2): the freeze-persist failure mirror is the only
+    /// The freeze-persist failure mirror is the only
     /// durable channel naming the failure before the log plugin attaches
     /// (the windowless host attaches none at all) — but nothing pinned its
     /// existence, so deleting either host's mirror passed the whole suite.
@@ -1903,7 +1892,7 @@ mod startup_order_contract {
     /// so this test module's own source (scanned together with lib.rs)
     /// cannot self-match — the established review #455 R4-S1 trick.
     #[test]
-    fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts() {
+    fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_every_host() {
         let mirrored_read = ["load_disabled_bundles_startup_", "mirrored()"].concat();
         let gui_mirrors = include_str!("lib.rs").matches(&mirrored_read).count();
         assert!(
@@ -1918,7 +1907,7 @@ mod startup_order_contract {
             headless_mirrors, 1,
             "headless_bridge.rs must keep its mirrored startup read (this host attaches no log plugin)"
         );
-        // Round-26 review (minor): the console bin mirrors via eprintln (the
+        // The console bin mirrors via eprintln (the
         // startup timeline is pub(crate) and this host has no window at all);
         // deleting that mirror passed every leg — pin it with the same
         // fragment needle (this leg still counts the message text itself,

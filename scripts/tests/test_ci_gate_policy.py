@@ -80,11 +80,10 @@ def _extract_consent_marker_read_targets(consent_test):
     """从 consent_marker_frontend.test.mjs 源码派生全部 src-tauri 读取目标。
 
     该测试的读取形态与 multiagent_plan_normalize 不同:`join(rustDir,
-    '<rel>.rs')`(rustDir = src-tauri/src/features)单文件读取、
+    '<rel>.rs')`(rustDir = src-tauri/src/features)与
     `join(root, 'src-tauri/<rel>.rs')`
-    (root = pinvou3-app)单文件读取,以及数组字面量里经
-    `join(rustDir, file)` 消费的 `<rel>.rs` 条目。统一按「以 .rs 结尾的
-    字符串字面量即一个 src-tauri 源读取」归一化——数组未来新增条目自动
+    (root = pinvou3-app)均为单文件读取。统一按「以 .rs 结尾的
+    字符串字面量即一个 src-tauri 源读取」归一化——未来新增读取自动
     纳入路由锁,不会 fail-open。
     """
     targets = set()
@@ -290,11 +289,10 @@ class CiGatePolicyTests(unittest.TestCase):
 
     def test_consent_marker_contract_reads_fully_routed(self):
         # consent_marker_frontend.test.mjs 读取三个 Rust 源做 marker 跨语言
-        # 契约断言(round-24 MAJOR 2:这三个文件此前都不在 frontend filter
-        # 里——Rust-only 改动把 marker 连同其 Rust 值 pin 一起 reword 时,
-        # rust-test 与该 node 门禁自身都全绿,而 ToolStoreView 的
-        # includes() 静默失配,告警降级为通用文案)。从测试源码派生全部
-        # .rs 读取目标逐一断言 frontend filter 覆盖;数组新增读取而未路由、
+        # 契约断言——Rust-only 改动把 marker 连同其 Rust 值 pin 一起 reword
+        # 时,rust-test 与该 node 门禁自身都全绿,而 ToolStoreView 的
+        # includes() 静默失配,告警降级为通用文案。从测试源码派生全部
+        # .rs 读取目标逐一断言 frontend filter 覆盖;新增读取而未路由、
         # 或已路由文件被挪走,都会在这里失败(本套件在 fast-gate 每个 PR
         # 必跑)。
         frontend_entries = _frontend_filter_entries(self.pr_workflow)
@@ -304,7 +302,7 @@ class CiGatePolicyTests(unittest.TestCase):
 
         targets = _extract_consent_marker_read_targets(consent_test)
 
-        # Round-26 review: the quoted-literal regex is the parser's contract —
+        # The quoted-literal regex is the parser's contract —
         # a refactor to template literals would silently shrink the target set
         # and unroute a source. A bare count fails just as loudly on that
         # shrinkage or regex rot, while legitimate growth stays fail-closed in
