@@ -1,5 +1,10 @@
 //! mcp.json 旧版明文密钥迁移:把早期写进 manifest/mcp.json 的明文 API Key 搬到
 //! 系统凭据库,文件里只留 `${ENV}` 占位符。
+// architecture-guard: allow-target-cfg -- the round-27 in-lock mcp.json FIFO
+// pin is cfg(unix)-gated: plant_fifo and the O_NONBLOCK refusal it exercises
+// are unix-only; the bounded worker fails a raw-read regression loudly
+// instead of hanging the lane on the held mcp.lock (test-only, same
+// exemption precedent as marketplace/store.rs).
 
 use crate::platform::paths;
 
