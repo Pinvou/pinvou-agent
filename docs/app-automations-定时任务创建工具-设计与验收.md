@@ -255,3 +255,51 @@
 | I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
 
 §6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析。
+
+
+---
+
+## 10. Implementation addendum: scheduled messages (the `session_message` kind, 2026-09-29; re-cut and translated 2026-10-06)
+
+On top of §9's CRUD, a third task kind: `session_message` (scheduled messages) — at fire time no new conversation is created; instead the task's prompt is delivered into the designated session (steer when busy, a new turn when idle, reusing features/messaging's delivery semantics).
+
+### 10.1 Design decisions
+
+| Decision | Outcome | Rationale |
+|---|---|---|
+| Shape | A task kind, not a new tool family | Scheduling/CRUD/panel/pause-resume/run history are all reused; a new scheduling loop would be duplication |
+| Kind derivation | On create, the presence of the `target_session` field means session_message; on update, `target_session` is only a retarget of an existing session_message task — an ordinary task cannot be converted | The tool surface and the panel express it the same way, with no half-specified state; an explicit kind parameter is mutually exclusive with it |
+| Target allowlist | Ordinary sessions only; sched-/aux-/eval_ rejected at every layer (server validation, watcher re-check, executor re-check before each delivery) | Waking an unattended session on a schedule is the recursion direction; the isolation-prefix semantics follow contract §5 |
+| Target storage | Reuses the task-kinds sidecar (entries gain an additive target_session field) | No new store file; old records stay compatible via serde defaults |
+| Message body | The task's prompt (≤32k, the same cap as the messaging channel) | The cap is validated at create and update, with a belt re-check before each executor delivery; the panel/details/run records display it naturally, with no new field |
+| Self-addressing | Allowed (target = the creating session is the main use case) | The product currently runs full-auto approval; the practical review surface is the timeline result card and the audit log; the full message text is visible in the timeline |
+| Run records | Thread-less (like memory_organize), with the result text naming the target session | The target session is the thing to open; known limitation: a run record is not yet click-to-jump to the target |
+| Dead targets | A deleted target session → that delivery's run is marked failed (the delivery channel's own error) | No silent retry loop; the next fire fails the same way and leaves a trace |
+| Steer-loss window | A steer accepted but then dropped by the foundation → the run records Completed while the message never landed | The same pre-existing window as features/messaging (documented in messaging/mod.rs); this kind inherits and discloses it honestly; it is a rare event |
+| Delivery bound | Steer + dispatch share one 30s budget (the messaging channel bounds each stage at 30s) | A slow cold engine start can time one delivery out into failure; the next fire retries (as covered under dead targets above) |
+
+### 10.2 Acceptance addendum
+
+| # | Scenario | Verification | Priority |
+|---|---|---|---|
+| J1 | Scheduled message delivers at fire time (busy → steer / idle → new turn) | ● Rust executor tests + manual | P0 |
+| J2 | Target allowlist enforced across the three layers | ● python + ● Rust (create rejection / watcher isolation+charset / executor gate test incl. the run-level pin) | P0 |
+| J3 | Kind is one-time: an ordinary task cannot be converted via update | ● Rust | P0 |
+| J4 | Retarget is limited to session_message tasks and the target must exist | ● Rust | P1 |
+| J5 | The watcher loop lands the kind+target sidecar | ● Rust | P0 |
+| J6 | Delivery run records are thread-less and the result names the target | ● Rust + manual | P1 |
+
+● = landed test (the round-3 review verified these by name; the earlier ◇ "planned" markers misread as unimplemented and are retired).
+
+### 10.3 Further disclosed boundaries (round 4)
+
+- **Misfire semantics**: a missed recurring fire within the 60s grace catches up; beyond it the fire is silently skipped (the next occurrence runs). A missed ONCE task delivers arbitrarily late with no staleness bound — surprising for a *message*, accepted for v1. And a FAILED ONCE delivery is worse than late (round-13 MAJOR 2): `next_after_slot` returns None, the task silently pauses, and the message is permanently lost — there is no next fire; recreate the task to resend.
+- **No origin envelope**: unlike features/messaging's delivered block, a scheduled delivery injects the raw task prompt as the target's opening instruction, with no machine-readable origin block; the audit trail and the run record are the provenance. An origin block is future work.
+- **ACP/code targets**: rejected at creation and per fire via the sidecar `session-agents.json` — NARROWER than messaging's twin gate (which consults the live AcpPool's metadata recovery; a double-faulted index plus failed boot recovery escapes this check) — deliver through the independent code page instead.
+- **Panel asymmetry**: the panel can neither create a session-message task nor retarget one (retargeting an ordinary task is impossible in the domain); target-setting is tool-only.
+- **Record-vs-reality windows (round 6)**: once `pool.steer` returns Ok the message cannot be recalled — a cancel landing between the enqueue and the next poll records **Canceled** while the message still lands; symmetrically the 30s timeout can record **Failed** while a just-submitted steer/dispatch lands. The run record is bookkeeping, not a delivery receipt.
+- **Model binding is display-only for this kind (round 6 minor 3)**: creation accepts `target_session` together with `model`/`model_id` and the DTO displays the binding, but delivery never consults it — steer uses the target's live engine, the dispatch fallback resolves the model exactly as the target session's own next turn would (`prepare_runtime_model` → session override else app default). The binding is retained for the DTO/panel display and for a future per-message model override.
+- **Poison taxonomy breadth (round 6 minor 8)**: `is_permanent_domain_error` sees only watcher-apply errors, so several of its markers ("Unsupported scheduled task kind", "pass target_session to create", "cannot be combined", "require memory to be enabled", "isolated and cannot", "cannot be blank") are a dead safety net from that call site — `build_create_input`/`build_update_input` cannot produce them (blanks die at watcher validate; kind is hardcoded). The classifier's live call-site set (round-14 minor 3 — the cap messages are unreachable here: the watcher caps prompts at the same 32768 bound first, so a cap record dies at validate) is: missing target ("target_session not found: …"), corrupt target ("could not be loaded"), the ACP/code rejection ("… is an ACP/code session…"), and a valid target on a non-message update ("only scheduled-message tasks…"). Additionally, the validate-stage bails (charset/isolation/blank) poison attempt 1 without ever reaching this classifier — attempt-1 poison overall is broader than this classifier's set. An update/delete of an UNKNOWN TASK does NOT poison on attempt 1 — the parent CRUD wraps its miss as "Failed to update/delete scheduled task '<id>': …" which matches no permanent marker, so it burns the full 3-attempt budget before quarantine (round-7 M-A reword: the round-6 sentence claimed attempt-1 quarantine for this class, which the code contradicts; both converge to quarantine, the budget differs).
+- **Delivery at-least-once / crash-replay window (round 7 minor 8)**: the delivery path has NO result marker — a crash between the engine accepting a turn and the run record persisting replays the message on the next process start (the foundation scheduler advances `next_run_at` only after the run persists). This is the delivery-path analogue of the CRUD spool's accepted marker window, but the window is foundation-owned.
+- **The 32k prompt cap is tool-stricter than the panel (round 7 minor 9)**: the server caps EVERY kind's prompt at 32k code points; the domain/panel cap session_message prompts only — the same deliberate-stricter posture as the rrule subset (CRON/minute-granular rejected at the tool layer), recorded so it does not read as drift.
+- **Feature switch scope (round 6 minor 4)**: disabling `scheduled-task-automation` removes the MCP tool surface but does NOT stop existing `session_message` tasks from firing — the scheduler/executor are app core and the panel remains the management surface (pause/delete there), same as every other task kind.

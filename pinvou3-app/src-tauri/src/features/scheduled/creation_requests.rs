@@ -169,6 +169,11 @@ pub(crate) struct SpooledCreationRequest {
     pub rrule: Option<String>,
     #[serde(default)]
     pub model_id: Option<String>,
+    /// `session_message` mode marker: when present, the task delivers its
+    /// prompt into this session at each fire instead of starting new
+    /// conversations.
+    #[serde(default)]
+    pub target_session: Option<String>,
     #[serde(default)]
     pub paused: Option<bool>,
     #[serde(default)]
@@ -234,7 +239,11 @@ fn check_optional_field(value: &Option<String>, label: &str, max_chars: usize) -
 impl SpooledCreationRequest {
     /// Server-side re-validation of a spool record, per kind (contract §4.4:
     /// errors are explicit; §5: the L1 write re-checks everything it was
-    /// told). Mirrors the MCP server's per-kind validation exactly.
+    /// told). Mirrors every MCP-server rule that is checkable without live
+    /// store access (shape, caps, charsets, isolation prefixes); the live
+    /// probes (task exists, target session exists) stay with the domain
+    /// layer; missing or corrupt targets poison on attempt 1 (the
+    /// permanent-domain classification), not retried failures.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported spool schema_version {}", self.schema_version);
@@ -261,6 +270,7 @@ impl SpooledCreationRequest {
                     && self.rrule.is_none()
                     && self.model_id.is_none()
                     && self.paused.is_none()
+                    && self.target_session.is_none()
                 {
                     bail!("update must provide at least one field to change");
                 }
@@ -273,6 +283,7 @@ impl SpooledCreationRequest {
                     ("prompt", &self.prompt),
                     ("rrule", &self.rrule),
                     ("model_id", &self.model_id),
+                    ("target_session", &self.target_session),
                 ] {
                     if field
                         .as_deref()
@@ -303,6 +314,30 @@ impl SpooledCreationRequest {
                 // clobber each other's pending request (mirrors the MCP
                 // server's validation).
                 bail!("idempotency_key requires from_session so the key is scoped to one sender");
+            }
+        }
+        check_optional_field(&self.target_session, "target_session", MAX_TASK_ID_LEN)?;
+        if let Some(target) = self
+            .target_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            // Same charset the server enforces: a hostile or padded target
+            // must poison immediately, not burn three transient retries
+            // inside the domain's own session lookup.
+            if target.len() > MAX_TASK_ID_LEN
+                || !target
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                bail!("invalid target_session id");
+            }
+            if is_sched_session_id(target)
+                || is_aux_session_id(target)
+                || target.to_ascii_lowercase().starts_with("eval_")
+            {
+                bail!("target_session {target} is an isolated or unattended session");
             }
         }
         check_sender_session_id(self.from_session.as_ref())?;
@@ -594,6 +629,7 @@ fn build_create_input(request: &SpooledCreationRequest) -> CreateScheduledTaskIn
         cwds: Vec::new(),
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         kind: None,
         mode: None,
         allow_shell: None,
@@ -611,6 +647,7 @@ fn build_update_input(request: &SpooledCreationRequest) -> UpdateScheduledTaskIn
         cwds: None,
         model: None,
         model_id: trimmed_non_empty(&request.model_id),
+        target_session: trimmed_non_empty(&request.target_session),
         mode: None,
         allow_shell: None,
         trust_mode: None,
@@ -666,12 +703,26 @@ fn audit_request(
             ("rrule", request.rrule.is_some()),
             ("model_id", request.model_id.is_some()),
             ("paused", request.paused.is_some()),
+            ("target_session", request.target_session.is_some()),
         ]
         .into_iter()
         .filter(|(_, present)| *present)
         .map(|(label, _)| label)
         .collect();
         detail["changed"] = serde_json::json!(changed);
+    }
+    if let Some(target) = request
+        .target_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        // A delivery target — set at create or moved by a retarget —
+        // redirects where every future prompt fires: the audit line must
+        // say where it goes either way. Round-13 minor 7: the TRIMMED
+        // value (validation checks the trimmed form; writing the raw form
+        // let padded ids into the trail).
+        detail["target_session"] = serde_json::json!(target);
     }
     if let Ok(roots) = sessions.session_roots(from) {
         crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
@@ -708,6 +759,15 @@ fn audit_request_shadow(
         "outcome": outcome,
         "task_id": task_id,
         "task_name": task_name,
+        // The delivery destination belongs in the append-only trail too
+        // (round-4 minor 7): a from_session-less retarget otherwise leaves
+        // the destination only in mutable state. Round-13 minor 7: the
+        // TRIMMED value (validation checks the trimmed form).
+        "target_session": request
+            .target_session
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty()),
         "spool_stem": spool_stem,
         "claimed_from_session": request.from_session,
         "claimed_from_session_verified": false,
@@ -880,7 +940,16 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 request.name.as_deref().unwrap_or_default(),
                 "apply-failed",
             );
-            Processed::Retry(anyhow::anyhow!(error))
+            let error = anyhow::anyhow!(error);
+            // Domain rejections that can never succeed on retry poison
+            // immediately instead of burning the transient budget
+            // (review round-3 domain minor: three doomed attempts ate ~3s
+            // of the MCP server's 5s sync window).
+            if is_permanent_domain_error(&format!("{error:#}")) {
+                Processed::Poison(error)
+            } else {
+                Processed::Retry(error)
+            }
         }
     }
 }
@@ -909,6 +978,7 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
         ("paused", serde_json::json!(normalized_paused)),
         ("prompt", serde_json::json!(&request.prompt)),
         ("rrule", serde_json::json!(&request.rrule)),
+        ("target_session", serde_json::json!(&request.target_session)),
         ("task_id", serde_json::json!(&request.task_id)),
     ]);
     use sha2::Digest;
@@ -937,6 +1007,33 @@ fn read_regular_bounded(path: &Path, cap: usize) -> Option<Vec<u8>> {
         return None;
     }
     Some(buf)
+}
+
+/// Validation-shaped domain errors (charset/isolation/caps/kind rules and
+/// missing targets) — retrying the same record can never fix them.
+fn is_permanent_domain_error(error: &str) -> bool {
+    const PERMANENT_MARKERS: [&str; 13] = [
+        "invalid target_session",
+        "cannot be blank",
+        "isolated or unattended",
+        "isolated and cannot",
+        "exceeds",
+        "cannot be combined",
+        "only scheduled-message tasks",
+        "require memory to be enabled",
+        "not found",
+        // A permanently corrupt target can never load — poison, don't burn
+        // the retry budget (round-4 minor 3).
+        "could not be loaded",
+        // Round-5 minor 1: the ACP/code disposition and the kind errors are
+        // permanent too — no retry can fix them.
+        "ACP/code session",
+        "pass target_session to create",
+        "Unsupported scheduled task kind",
+    ];
+    PERMANENT_MARKERS
+        .iter()
+        .any(|marker| error.contains(marker))
 }
 
 fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
@@ -1373,6 +1470,7 @@ mod tests {
             kind: SpoolRequestKind::Create,
             id: "irrelevant".to_string(),
             task_id: None,
+            target_session: None,
             name: Some("早报".to_string()),
             prompt: Some("汇总".to_string()),
             rrule: Some("FREQ=DAILY;BYHOUR=8".to_string()),
@@ -1384,7 +1482,7 @@ mod tests {
         };
         assert_eq!(
             spool_request_digest(&request),
-            "ee13de67c7837ccbb71afbf4c376e6f58bf80509bf7e79744c60c9ed6cd639fe"
+            "e3ee5656710820acad7daa187ed50fe7a2295020d3d66f5bd37fc7afea42f755"
         );
         let mut update = request;
         update.kind = SpoolRequestKind::Update;
@@ -1396,7 +1494,16 @@ mod tests {
         update.paused = Some(true);
         assert_eq!(
             spool_request_digest(&update),
-            "3e5a7833ac3bd752cf7cc5dd72b0ff4347a65c4155bbe2b69c0fb61673d9bf53"
+            "80d24d63000aa38aa3f4c1866155e42e91d57594189996443d336fc2754bfca6"
+        );
+        // Round-6 minor 6: a NON-NULL target_session vector — the first two
+        // hashed only the null form, so a value-normalization divergence
+        // (one side trimming/case-folding before hashing) stayed green.
+        let mut retarget = update.clone();
+        retarget.target_session = Some("sess-7777".to_string());
+        assert_eq!(
+            spool_request_digest(&retarget),
+            "87f414a68c6034ca1d625fc05f682c8f0811aef01752f9b4cf1d140a5aac6af3"
         );
     }
 
@@ -1879,6 +1986,280 @@ mod tests {
         assert_eq!(records.len(), 1, "the request itself is still honored");
     }
 
+    #[tokio::test]
+    async fn scheduled_message_request_lands_kind_and_target() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        // A real ordinary session file so the domain's existence probe passes.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(sessions_dir.join("reqsrc01").join("workspace")).unwrap();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("target001.json"),
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert_eq!(records.len(), 1, "the scheduled-message task is created");
+        assert_eq!(
+            state.task_kinds.kind_for(&records[0].id).as_deref(),
+            Some("session_message")
+        );
+        assert_eq!(
+            state
+                .task_kinds
+                .target_session_for(&records[0].id)
+                .as_deref(),
+            Some("target001"),
+            "the delivery target lands in the sidecar"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("msg.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["kind"], "create");
+        assert_eq!(marker["task_id"], records[0].id);
+        // The audit line names the delivery target: it redirects where every
+        // future prompt of this task fires.
+        let audit_path = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        let audit = std::fs::read_to_string(audit_path).expect("audit record");
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "scheduled_task_create");
+        assert_eq!(line["detail"]["target_session"], "target001");
+    }
+
+    /// Round-4 M5b: the target re-check runs for EVERY kind — an update-kind
+    /// record with a hostile target poisons too (the arm a create-only
+    /// mutation would leave unguarded).
+    #[tokio::test]
+    async fn update_kind_hostile_target_is_quarantined() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("upd-hostile.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!("t-1")),
+                ("target_session", serde_json::json!("sched-run9")),
+            ]),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(calls.clone()),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("upd-hostile.json").exists(),
+            "an update-kind hostile target must poison, not apply"
+        );
+        assert!(!spool.join("upd-hostile.json").exists());
+    }
+
+    #[tokio::test]
+    async fn tampered_message_target_is_quarantined() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // An unattended target smuggled past the server is the recursion
+        // direction — quarantined without creating anything. Round-6
+        // minor 7 (honest scope): this pins the SYSTEM invariant (nothing
+        // created, every shape quarantined) — it does NOT attribute the
+        // quarantine to the watcher's own checks, because the domain
+        // re-check poisons the same records; the watcher-only coverage is
+        // pinned by the unit tests on the individual check fns.
+        std::fs::write(
+            spool.join("selfwake.json"),
+            spool_record_json(&[("target_session", serde_json::json!("sched-run1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("selfwake-upper.json"),
+            spool_record_json(&[("target_session", serde_json::json!("AUX-side1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("selfwake-eval.json"),
+            spool_record_json(&[("target_session", serde_json::json!("EVAL_b1"))]),
+        )
+        .unwrap();
+        std::fs::write(
+            spool.join("padded.json"),
+            spool_record_json(&[("target_session", serde_json::json!("target 001"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(failed_dir().join("selfwake.json").exists());
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "no task may be created from a hostile target"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_only_update_spool_retargets_the_task() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        for id in ["target001", "target002"] {
+            let snapshot = format!(
+                r#"{{"schema_version":1,"metadata":{{"id":"{id}","title":"目标","created_at":"2026-09-29T00:00:00Z","updated_at":"2026-09-29T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"}},"messages":[],"system_prompt":null}}"#
+            );
+            std::fs::write(sessions_dir.join(format!("{id}.json")), snapshot).unwrap();
+        }
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("msg.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let created = state
+            .automations
+            .lock()
+            .await
+            .list_automations()
+            .unwrap()
+            .pop()
+            .expect("session-message task created");
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target001")
+        );
+
+        // The typical retarget call: an update whose ONLY changed field is
+        // target_session. Before the Update-arm fix this record died as
+        // poison with no marker while the caller was told "pending".
+        std::fs::write(
+            spool.join("retarget.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!(created.id)),
+                ("name", serde_json::Value::Null),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
+                ("paused", serde_json::Value::Null),
+                ("target_session", serde_json::json!("target002")),
+            ]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target002"),
+            "the target-only update retargeted the task"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("retarget.json")).expect("marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], true);
+        assert!(!spool.join("retarget.json").exists());
+    }
+
+    #[tokio::test]
+    async fn success_marker_suppresses_a_replayed_request() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        // A replay after a completed create: the spool file re-lands (the
+        // server rewrites it), but the success marker wins — no second
+        // task. Round-7 M1b (rebase onto #628's digest gate): the plant
+        // must be digest-BOUND to the record — the gate refuses bare
+        // {"ok":true} markers now.
+        let digest = spool_request_digest(
+            &serde_json::from_str::<SpooledCreationRequest>(&spool_record_json(&[])).unwrap(),
+        );
+        std::fs::write(
+            done_dir().join("replay.json"),
+            serde_json::json!({"ok": true, "task_id": "already-there", "request_digest": digest})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(spool.join("replay.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "the success marker suppresses the replay (C3)"
+        );
+        assert!(!spool.join("replay.json").exists(), "the replay is dropped");
+    }
+
     #[test]
     fn sender_validation_rejects_isolated_and_malformed_ids() {
         let mut request = valid_record();
@@ -1913,6 +2294,12 @@ mod tests {
             "paused-only update is a valid no-op field set"
         );
         request.paused = None;
+        request.target_session = Some("target001".to_string());
+        assert!(
+            request.validate().is_ok(),
+            "a target-only retarget is a valid update (the typical call)"
+        );
+        request.target_session = None;
         assert!(
             request.validate().is_err(),
             "update with no field to change is rejected"
@@ -1959,6 +2346,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
@@ -2030,6 +2418,7 @@ mod tests {
                 cwds: Vec::new(),
                 model: None,
                 model_id: None,
+                target_session: None,
                 kind: None,
                 mode: None,
                 allow_shell: None,
@@ -2292,6 +2681,9 @@ mod tests {
     /// must NOT overwrite the ok:true receipt (the last-resort idempotency
     /// defense for post-apply corruption; the round-8 guard was
     /// mutation-proven unpinned).
+    /// Round-9 M5 (#628): the receipt guard — apply a record (receipt
+    /// lands), corrupt the spool bytes to invalid JSON, re-drain: the
+    /// poison arm must NOT overwrite the ok:true receipt.
     #[tokio::test]
     async fn poisoned_record_never_overwrites_a_landed_ok_receipt() {
         let _home = TempHome::new();

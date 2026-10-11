@@ -265,6 +265,12 @@ def main():
     print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-app-automations-") as home:
+        # A plain session file for the scheduled-message target check.
+        Path(home, "sessions").mkdir(parents=True)
+        Path(home, "sessions", "tgt0001.json").write_text(
+            json.dumps({"metadata": {"id": "tgt0001", "title": "目标"}, "messages": []}),
+            encoding="utf-8",
+        )
         with RpcServer(MCP_ROOT / "app-automations", {"PINVOU3_HOME": home}) as rpc:
             # CRON/分钟级是产品子集外的硬拒（B2/B3）。
             cron = content_json(rpc.call("tools/call", {
@@ -342,6 +348,33 @@ def main():
             # 积压与在途都被排水，spool 清空、.done 留有两条标记。
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
             assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
+            # Scheduled-message mode: isolated targets are hard-rejected
+            # (self-wake = the recursion direction); a valid target carries
+            # target_session into the spool record.
+            isolated = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "自唤醒", "prompt": "x", "rrule": "FREQ=ONCE;AT=2099-06-01T09:30",
+                    "target_session": "sched-run1",
+                },
+            }))
+            assert "isolated" in isolated.get("error", ""), isolated
+            timeout2 = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "定时询问", "prompt": "问一下进展",
+                    "rrule": "FREQ=HOURLY;INTERVAL=6",
+                    "target_session": "tgt0001",
+                },
+            }))
+            assert timeout2.get("delivery") == "pending", timeout2
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            targets = []
+            for path in spooled:
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if record.get("target_session"):
+                    targets.append(record["target_session"])
+            assert targets == ["tgt0001"], (spooled, targets)
             # list：只投影安全字段，绝不带 prompt（§3.1）；watcher 未真建任务，store 为空。
             listed = content_json(rpc.call("tools/call", {"name": "list_scheduled_tasks"}))
             assert listed.get("ok") is True and listed.get("total") == 0, listed

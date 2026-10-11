@@ -36,7 +36,7 @@ export const scheduledTaskCreateSummary = (args, nameQuote) => {
  * Header summary for an update call: target id + the changed field names, so
  * the timeline shows what the model asked to touch without opening the card.
  */
-const UPDATE_FIELD_KEYS = ['name', 'prompt', 'rrule', 'model_id', 'paused'];
+const UPDATE_FIELD_KEYS = ['name', 'prompt', 'rrule', 'model_id', 'paused', 'target_session'];
 export const scheduledTaskUpdateSummary = args => {
   if (!args || typeof args !== 'object') return '';
   const target = typeof args.task_id === 'string' ? args.task_id.trim() : '';

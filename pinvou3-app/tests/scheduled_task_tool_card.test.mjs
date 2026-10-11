@@ -65,6 +65,13 @@ test('update summary shows target id and changed fields', () => {
     scheduledTaskUpdateSummary({ task_id: 't-1', name: '新名', paused: true }),
     't-1 · name/paused',
   );
+  // Round-12 M2: the target_session pin existed only as this assert's
+  // MESSAGE argument (never compared) — reverting the UPDATE_FIELD_KEYS
+  // line passed the whole suite. A real assertion pins it now.
+  assert.equal(
+    scheduledTaskUpdateSummary({ task_id: 't-1', target_session: 'sess-9' }),
+    't-1 · target_session',
+  );
   assert.equal(scheduledTaskUpdateSummary({ task_id: 't-1' }), 't-1');
   assert.equal(scheduledTaskUpdateSummary({}), '');
   assert.equal(scheduledTaskUpdateSummary(null), '');
