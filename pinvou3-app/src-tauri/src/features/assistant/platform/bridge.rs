@@ -2596,9 +2596,11 @@ impl Pinvou3Bridge {
         // enforcement point of the pending approval-mode split. It does not
         // prompt today — the engine consults ask rules for exec_shell and
         // the file tools only, and production sessions run full-auto — so
-        // the working gates are the app's mutating-tool approval posture at
-        // call time and features::messaging's watcher-side validation
-        // (isolated senders/targets). The audit trail is written by
+        // no call-time approval exists for this tool today; the working
+        // gates are features::messaging's layered validation (isolated
+        // senders/targets), the delivery-time audit trail, and the
+        // untrusted-content framing for anything a delivered message
+        // carries. The audit trail is written by
         // features::messaging at delivery time; the tool name is
         // single-sourced here (messaging imports it — dependency direction
         // messaging -> assistant, never the reverse).
