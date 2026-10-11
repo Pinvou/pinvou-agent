@@ -68,6 +68,16 @@
 //! - Per-id `import_lock` → file locks: the unified import path
 //!   (`import_lock → bundles.lock`), restore (`import_lock → recycle-bin.lock`,
 //!   `import_lock → TRANSACTION → mcp.lock`, `import_lock → bundles.lock`).
+//! - The cross-process marketplace write lock (`.imports.lock`,
+//!   `plugin_import::MarketplaceWriteLock`, round-51/52) sits ABOVE
+//!   `MARKETPLACE_TRANSACTION_LOCK`, not below it: every transaction entry
+//!   that can reach a market mutator takes it before the transaction mutex
+//!   (see `MARKETPLACE_TRANSACTION_LOCK`'s doc in `mod.rs` for the ABBA this
+//!   ordering prevents), and the mutator critical sections then re-enter it
+//!   by same-thread hold depth. Its critical sections DO enter the file
+//!   locks (import lands staged content, then registers under
+//!   `bundles.lock`), so unlike the three state-file locks it is not a
+//!   leaf — it is the topmost marketplace lock.
 //! - The scope lock (#517 — PR still open, landing separately from the
 //!   branch carrying this module — `disabled_bundles.lock`) → `bundles.lock`:
 //!   the scope critical sections' store legs — the DenyAll default

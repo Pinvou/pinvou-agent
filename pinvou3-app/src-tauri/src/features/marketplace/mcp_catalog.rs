@@ -203,9 +203,15 @@ pub fn release_package(id: &str) -> Result<Option<String>, String> {
     };
     // Round-51 review: the fixed `.mcp.tmp` staging and the remove-dest →
     // rename tail below are shared paths with the CLI's second process —
-    // hold the same cross-process market lock every market mutator holds
-    // (order: market file lock → store file lock; no in-process import_lock
-    // is taken here because every caller already serializes above it).
+    // hold the same cross-process market lock every market mutator holds.
+    // Round-52 review M1: every current caller enters holding that lock
+    // already (install_inner / repair / reconcile hoist it above the
+    // transaction lock; the skill uninstall lane holds it directly), so the
+    // acquire below joins by hold depth on the same thread — no fresh fd, no
+    // block. It stays as the cross-process fail-safe for a future caller,
+    // with one hard rule (see `MARKETPLACE_TRANSACTION_LOCK`'s doc): such a
+    // caller must NOT already hold the transaction lock — TXN→market is the
+    // ABBA direction this lock order exists to prevent.
     let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
     let mcp_dir = package_mcp_dir(id);
     // bundles/<id>/mcp is joined from bundles_root() and always has a parent;

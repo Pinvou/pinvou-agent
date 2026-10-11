@@ -235,6 +235,12 @@ impl RecycleBin {
     /// 全程持跨进程文件锁（store.rs `upsert` 同范式）：load → 目录搬移 → 条目
     /// 修改 → save 是一个临界区，并发回收/取回/彻底删除不会 lost update。锁内
     /// 只调 `load_locked`/`save_locked`，不得再调会取同一把锁的公开方法（死锁）。
+    ///
+    /// 回收搬移动的是 `bundles/<id>` 本身，属市场写面（round-52 review M2）：
+    /// 入口先取跨进程市场写锁再取回收站文件锁，保持 flock → store file_lock
+    /// 的全局顺序；卸载/降级修复等调用方已在外层持锁，这里按持有深度同线程
+    /// join。没有它，CLI `plugins recycle purge/restore` 一侧与 GUI 卸载一侧
+    /// 对同 id 的搬移会互相看不见（两侧各持不同的文件锁）。
     pub fn recycle_package(
         &self,
         pkg_id: &str,
@@ -245,6 +251,7 @@ impl RecycleBin {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
+        let _market_write_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         file_lock::with_file_lock(&self.file, || {
             let src = self.bundles_root.join(pkg_id);
             let dst = self.root.join(pkg_id);
@@ -387,6 +394,10 @@ impl RecycleBin {
         if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
             return Err(format!("非法包 id '{pkg_id}'"));
         }
+        // 取回把 `recycle-bin/<id>` 搬回 `bundles/<id>`，同 recycle_package 属
+        // 市场写面（round-52 review M2）：先市场写锁（restore_plugin 持锁进入
+        // 时同线程 join）再回收站文件锁，保持 flock → store file_lock 顺序。
+        let _market_write_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         file_lock::with_file_lock(&self.file, || {
             let mut file = load_locked(&self.file)?;
             let Some(index) = file.entries.iter().position(|e| e.id == pkg_id) else {
@@ -600,6 +611,14 @@ pub(crate) fn recycle_upload_package(
 /// `MARKETPLACE_TRANSACTION_LOCK`; the second crossing, `import_plugin_package`,
 /// is named there too — round-21 minor 4). Only this function's internal
 /// order is claimed here, not global consistency with the uninstall path.
+/// Round-52 review M2: what this function DID gain is the cross-process
+/// marketplace write lock (`.imports.lock`), taken right after the import
+/// lock and held across `take_back` + `install_upload` + the registration
+/// mirror — the CLI's `plugins recycle restore` is a second writer process
+/// against `bundles/<id>`, and without it a GUI/CLI import of the same id
+/// could rename the just-restored directory aside and destroy it with both
+/// operations exiting 0. The import lock serializes same-process only; the
+/// market lock is the piece the second process actually observes.
 pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // Builtin guard (review round-5 M2): restore is the one user-reachable
     // write path with no builtin check at all. A pre-PR recycled entry whose
@@ -640,6 +659,11 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
         .map_err(|error| format!("lock the landing lease for {pkg_id}: {error}"))?;
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+    // 锁序：import_lock → 市场写锁 → 回收站文件锁 → （restore 尾段的
+    // install_upload 内）事务锁。市场写锁覆盖整段恢复——取回搬移、供给与
+    // 登记镜像都是市场写面，CLI 侧的第二写者进程必须被排除在外（round-52
+    // review M2）；下文 take_back / install_upload 的同锁按深度 join。
+    let _market_write_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
     let bin = RecycleBin::new();
     if !bin.root.join(pkg_id).is_dir() {
         return Err(format!(

@@ -437,41 +437,102 @@ pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> 
 /// 静默残缺的包装进正式目录并回 exit-0（与定时任务定义暂存别名同类的
 /// 缺陷，那条已在上游以唯一暂存名修复；这里的根因修复在本地即可完成）。
 /// 每个市场 mutator 在自己的「冲突检查 → 原子 rename」整段临界区持有本
-/// 文件锁，位置一律在各自 `import_lock_for` 之后、store `file_lock` 之前，
-/// 锁序全仓一致：import_lock → 市场文件锁 → store file_lock。锁文件
+/// 文件锁（round-52 review M2 起含回收搬移/退役残留/布局迁移），位置一律
+/// 在各自 `import_lock_for` 之后、store `file_lock` 之前，锁序全仓一致：
+/// import_lock → 市场文件锁 → 事务锁 → store file_lock —— 凡事务临界区
+/// 会触及市场 mutator 的入口（install_inner / uninstall / repair /
+/// reconcile）都先持本锁再取事务锁，反向获取会与本锁外等事务的持锁路径
+/// 构成 ABBA（round-52 review M1）。同线程嵌套获取（import → install_upload
+/// → release_package 这条真实调用链）按持有深度 join，不再对新 fd 重复
+/// flock——flock 按 fd 排他，第二个 fd 会对自己的第一个 fd 阻塞。锁文件
 /// 不删除（崩溃不能楔住对端；进程死亡由内核释放锁），与 settings 部
-/// `SettingsFileLock` 同一纪律。
-pub(crate) struct MarketplaceWriteLock(std::fs::File);
+/// `SettingsFileLock` 同一纪律；0600 亦同（flock 只需读权限，世界可读的
+/// 锁文件会让共享宿主上的第二个本地用户无限期楔住全部市场写者）。
+pub(crate) struct MarketplaceWriteLock {
+    /// `Some`：本线程的最外层（真实）获取，持有进程内段锁与跨进程 fd。
+    /// `None`：同线程重入 join，不新增 fd。
+    real: Option<MarketplaceWriteGuard>,
+}
+
+struct MarketplaceWriteGuard {
+    // 字段顺序即释放顺序：先释放 fd（连同 flock），再放开进程内段锁让下
+    // 一个本进程等待者进入。
+    file: std::fs::File,
+    _section: std::sync::MutexGuard<'static, ()>,
+}
+
+impl std::ops::Drop for MarketplaceWriteGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+thread_local! {
+    /// 本线程持有深度：嵌套 `acquire` 按此 join（见类型文档）。真实守卫的
+    /// Drop 把深度清零，join 守卫的 Drop 递减——两条路径在展开（panic）时
+    /// 都会执行，不会留下幽灵持有者。
+    static LOCK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// 进程内段锁：本线程之外的获取者在此排队，胜者再做跨进程 flock。段锁随
+/// 真实守卫持有整个临界区——提前松开会让第二个线程重新 flock，把同进程的
+/// 互斥切成两段。
+static LOCK_SECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl MarketplaceWriteLock {
     pub(crate) fn acquire() -> std::io::Result<Self> {
+        if LOCK_DEPTH.get() > 0 {
+            LOCK_DEPTH.set(LOCK_DEPTH.get() + 1);
+            return Ok(Self { real: None });
+        }
+        let section = LOCK_SECTION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = crate::platform::paths::bundles_root().join(".imports.lock");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        #[allow(unused_mut)]
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         // 阻塞等待而非 try+busy：导入/安装本就是秒级用户动作，持锁方死亡
         // 由内核释放，存活方只在各自的暂存窗口内持锁。
         file.lock()?;
-        Ok(Self(file))
+        LOCK_DEPTH.set(1);
+        Ok(Self {
+            real: Some(MarketplaceWriteGuard {
+                file,
+                _section: section,
+            }),
+        })
     }
 
     /// [`Self::acquire`] + the uniform 「创建市场写入锁」 error mapping every
     /// market mutator returns; the literal is single-sourced here (the type's
-    /// home) so the six call sites cannot drift apart.
+    /// home) so the call sites cannot drift apart.
     pub(crate) fn acquire_map_err() -> Result<Self, String> {
         Self::acquire().map_err(|e| format!("创建市场写入锁: {e}"))
     }
 }
 
-impl Drop for MarketplaceWriteLock {
+impl std::ops::Drop for MarketplaceWriteLock {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        if self.real.is_some() {
+            LOCK_DEPTH.set(0);
+        } else {
+            LOCK_DEPTH.set(LOCK_DEPTH.get().saturating_sub(1));
+        }
     }
 }
 
@@ -3556,6 +3617,98 @@ mod tests {
             second
                 .try_lock()
                 .expect("a dropped guard must release the lock");
+        });
+    }
+
+    /// Round-52 review M1：同线程嵌套获取按持有深度 join，不再发起新的
+    /// flock——`import_plugin_package → install_upload → release_package` 这
+    /// 条真实调用链要求嵌套获取必须成功（flock 按 fd 排他，第二个 fd 会对
+    /// 自己阻塞）。join 释放后外层仍持锁；全部释放后锁空闲。排他本身由上
+    /// 面的裸 fd 用例证明，这里用同一探针复核 join 未削弱排他。
+    #[test]
+    fn marketplace_write_lock_joins_reentrantly_on_the_holding_thread() {
+        crate::platform::test_support::with_temp_home("pinvou-market-lock-reenter", || {
+            let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
+            let outer = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+            let inner = MarketplaceWriteLock::acquire()
+                .expect("a nested acquire on the holding thread must join, not block");
+            let probe = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            assert!(
+                matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+                "the joined hold must stay exclusive to other fds"
+            );
+            drop(inner);
+            assert!(
+                matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+                "dropping the inner join must keep the outer hold"
+            );
+            drop(outer);
+            probe
+                .try_lock()
+                .expect("dropping every guard must release the lock");
+        });
+    }
+
+    /// Round-52 review M1：跨线程仍是真实互斥——第二个线程先以裸 fd 探测
+    /// （确定性 WouldBlock，不靠时序），主线程释放后其阻塞获取必然完成，
+    /// 且它持有期间对第三个探针保持排他。这条用例守住段锁 + flock 的生命
+    /// 周期：section 随真实守卫跨线程移交，fd 随之释放与重取。
+    #[test]
+    fn marketplace_write_lock_excludes_a_second_thread_until_release() {
+        use std::sync::Arc;
+        crate::platform::test_support::with_temp_home("pinvou-market-lock-threads", || {
+            let lock_path = Arc::new(crate::platform::paths::bundles_root().join(".imports.lock"));
+            let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+            let path_for_thread = Arc::clone(&lock_path);
+            // 会合：先等对方线程完成「主线程仍持锁」的裸 fd 探测，再释放——
+            // 探针的 WouldBlock 断言因此是确定性的，不靠调度时序。
+            let (probe_done, probe_seen) = std::sync::mpsc::channel();
+            // 守卫含 MutexGuard（!Send），线程内完成全部探测后释放再返回。
+            let holder = std::thread::spawn(move || {
+                let probe = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&*path_for_thread)
+                    .unwrap();
+                let excluded = matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+                drop(probe);
+                probe_done
+                    .send(excluded)
+                    .expect("the main thread waits for this send before releasing");
+                // 主线程仍持锁（它在等 probe_seen），这里阻塞；主线程 drop 后
+                // 必然完成。
+                let acquired = MarketplaceWriteLock::acquire()
+                    .expect("the blocking acquire must finish once the first thread releases");
+                let reprobe = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&*path_for_thread)
+                    .unwrap();
+                assert!(
+                    matches!(reprobe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+                    "the second thread's own hold must exclude a fresh fd"
+                );
+                drop(acquired);
+                let free = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&*path_for_thread)
+                    .unwrap();
+                free.try_lock()
+                    .expect("the second thread's release must free the lock");
+            });
+            assert!(
+                probe_seen
+                    .recv()
+                    .expect("the probe thread must report before release"),
+                "the first thread's hold must exclude the second thread's raw fd"
+            );
+            drop(guard);
+            holder.join().expect("the second thread must not deadlock");
         });
     }
 
