@@ -540,7 +540,14 @@ mod imp {
             if !inherited_signal_is_ignored(libc::SIGINT) {
                 libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
             }
-            libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+            // Round-51 review: SIGTERM gets the same inherited-SIG_IGN probe
+            // as SIGINT/SIGHUP — a wrapper that deliberately ignores SIGTERM
+            // (some schedulers/daemonizers) used to be killed by cleanup +
+            // 128+15 where the pre-CLI process ignored TERM, the same
+            // detachment regression the SIGHUP probe exists to prevent.
+            if !inherited_signal_is_ignored(libc::SIGTERM) {
+                libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+            }
             if inherited_sighup_is_ignored() {
                 // Leave SIGHUP ignored, exactly as the caller arranged it.
             } else {

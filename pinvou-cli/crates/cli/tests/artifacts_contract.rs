@@ -614,6 +614,15 @@ fn artifacts_list_reports_unscannable_records_in_skipped_sessions() {
     // Not JSON and carrying neither the `artifacts` nor the `metadata` key,
     // so it reaches the serde parse and must be disclosed on failure.
     std::fs::write(sessions.join("junk.json"), b"not a session record").unwrap();
+    // Round-51 review: truncated AFTER the metadata region — the record
+    // carries `"metadata"` (which the artifact-less fast-skip used to trust)
+    // but is unparseable by construction (no closing brace). It must reach
+    // the parse and be disclosed, not silently skipped into a clean bill.
+    std::fs::write(
+        sessions.join("torn.json"),
+        br#"{"metadata":{"id":"s-torn"},"art"#,
+    )
+    .unwrap();
     // Over the scan cap: the stat probe skips it without reading. `set_len`
     // keeps the file sparse — the probe only stats the size.
     let over_scan = std::fs::File::create(sessions.join("huge.json")).unwrap();
@@ -624,8 +633,8 @@ fn artifacts_list_reports_unscannable_records_in_skipped_sessions() {
     assert_eq!(value["artifacts"].as_array().unwrap().len(), 1);
     assert_eq!(
         value["skipped_sessions"],
-        serde_json::json!(["huge", "junk"]),
-        "both unscannable records must be disclosed, sorted"
+        serde_json::json!(["huge", "junk", "torn"]),
+        "all unscannable records must be disclosed, sorted"
     );
 
     // The --session filter short-circuits on the file name before any read

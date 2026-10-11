@@ -65,7 +65,9 @@ use pinvou3_lib::features::codex_acp::{
     version_at_least,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
-use pinvou3_lib::platform::credential_store::{CredentialEditAction, SystemCredentialStore};
+use pinvou3_lib::platform::credential_store::{
+    CredentialEditAction, CredentialStore, SystemCredentialStore,
+};
 use pinvou3_lib::platform::paths;
 use wait_timeout::ChildExt;
 
@@ -1157,6 +1159,7 @@ fn parse_model_slot_pairs(
     repeated: &[(&str, &str)],
     label: &str,
 ) -> Result<Vec<(String, String)>, CliError> {
+    let mut seen_slots = std::collections::BTreeSet::new();
     repeated
         .iter()
         .map(|(_, value)| {
@@ -1171,6 +1174,15 @@ fn parse_model_slot_pairs(
             if slot.is_empty() || model.is_empty() {
                 return Err(CliError::usage(format!(
                     "code {label} --model-slot must be SLOT=MODEL"
+                )));
+            }
+            // Round-51 review: a repeated slot id used to be silently
+            // last-wins at the HashMap insert downstream — every other
+            // repeated flag in this parser refuses, and a dropped binding
+            // reads as a silent config change. Refuse at parse.
+            if !seen_slots.insert(slot.to_owned()) {
+                return Err(CliError::usage(format!(
+                    "code {label}: duplicate --model-slot for slot '{slot}'"
                 )));
             }
             Ok((slot.to_owned(), model.to_owned()))
@@ -3542,11 +3554,28 @@ fn providers_switch(
     // `is_ascii` by tests). Same read the store's switch gate makes
     // (`api_key` folds a credential-read error into "absent"), so the two
     // cannot disagree; the store re-checks authoritatively under its lock.
+    // Round-51 review: a folded keyring-read error must not read as "no
+    // stored API key" — `os_keyring_unreachable` re-classifies that miss as
+    // the honest `credential_unavailable` (the same doctrine the models
+    // family's `resolve_saved_model_key_honest` applies), so a script cannot
+    // conclude the key is gone and overwrite it.
     if manager
         .api_key(agent, provider_id)
         .unwrap_or(None)
         .is_none()
     {
+        let reference =
+            pinvou3_lib::platform::credential_store::CredentialReference::for_acp_provider(
+                agent,
+                provider_id,
+            );
+        if SystemCredentialStore::new().os_keyring_unreachable(&reference) {
+            return Err(CliError::failed(format!(
+                "credential_unavailable: the OS keyring holding the stored API key for \
+                 provider '{provider_id}' (agent {agent}) is unreachable from this \
+                 process; the stored key cannot be verified here"
+            )));
+        }
         return Err(CliError::failed(format!(
             "provider_api_key_missing: provider '{provider_id}' for agent {agent} has no \
              stored API key; save one first with `pinvou code providers update {provider_id} \
@@ -4096,27 +4125,38 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
             // AcpEventEnvelope serializes camelCase with `AcpEvent::event_type`
             // renamed to "type" (features/codex_acp/events.rs); the older
             // snake_case spellings are accepted so journals written by
-            // intermediate builds still render.
+            // intermediate builds still render. Round-51 review: the text
+            // cells go through the row sanitizer like every other store-fed
+            // render in this module — the journal is a user-home file any
+            // tool can write, and the row contract must not depend on which
+            // cell happened to be machine-made (JSON keeps verbatim bytes
+            // by design).
             format!(
                 "{}\t{}\t{}\t{}",
                 event
                     .get("seq")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0),
-                event
-                    .get("timestamp")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(""),
-                event
-                    .pointer("/event/type")
-                    .or_else(|| event.pointer("/event/event_type"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or(""),
-                event
-                    .get("turnId")
-                    .or_else(|| event.get("turn_id"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("-"),
+                crate::support::collapse_control_characters(
+                    event
+                        .get("timestamp")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(""),
+                ),
+                crate::support::collapse_control_characters(
+                    event
+                        .pointer("/event/type")
+                        .or_else(|| event.pointer("/event/event_type"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or(""),
+                ),
+                crate::support::collapse_control_characters(
+                    event
+                        .get("turnId")
+                        .or_else(|| event.get("turn_id"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("-"),
+                ),
             )
         })
         .collect::<Vec<_>>()
@@ -5436,10 +5476,21 @@ fn workspace_diff_one(
     let mut text = if at_git_root {
         // Capped like the untracked lane below: a modified multi-gigabyte
         // file must not buffer whole just to be truncated at DIFF_LIMIT.
+        // Round-51 review: `:(literal)` — `--` stops option parsing but not
+        // pathspec globbing, so a requested `a*x.txt` used to render the
+        // tracked `abx.txt`'s diff instead of its own. Mirrors the tracked-
+        // ness oracle's literal pathspec in this file.
         const GIT_READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
+        let literal = format!(":(literal){relative}");
         let (unstaged, unstaged_cut) = git_output_capped(
             root,
-            &["diff", "--no-ext-diff", "--no-color", "--", &relative],
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--",
+                literal.as_str(),
+            ],
             GIT_READ_CAP,
         )?;
         let (staged, staged_cut) = git_output_capped(
@@ -5450,7 +5501,7 @@ fn workspace_diff_one(
                 "--no-ext-diff",
                 "--no-color",
                 "--",
-                &relative,
+                literal.as_str(),
             ],
             GIT_READ_CAP,
         )?;
@@ -5632,7 +5683,17 @@ fn git_ls_files_tracked(root: &Path, relative: &str) -> bool {
     // small [`GIT_LS_FILES_CAPTURE_CAP`]. `git_command` still owns the
     // environment contract (stdin null, ambient git redirection variables
     // stripped) and the exit-code oracle below is unchanged.
-    let arguments = ["ls-files", "--error-unmatch", "--", relative];
+    // Round-51 review: the `:(literal)` pathspec prefix disables globbing —
+    // `--` stops option parsing but not wildcards, so an untracked `a*x.txt`
+    // used to match the tracked `abx.txt`, exit 0, and get misanswered
+    // "tracked" (its diff silently disappeared). Mirrors the app-side
+    // `ls_files_tracked` (round-51).
+    let arguments = [
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        &format!(":(literal){relative}"),
+    ];
     let (status, stdout_bytes) = match run_git_captured_capped(
         git_command(root, &arguments),
         &arguments,

@@ -69,13 +69,17 @@ fn main() {
     // below still runs on the panic path exactly as it does on every other
     // exit. `AssertUnwindSafe` is sound here: nothing observed after the
     // catch reads CLI state — the process exits.
-    if std::env::var_os("PINVOU_CLI_TEST_FORCE_PANIC").is_some() {
-        // Test seam (contract-pinned through the real binary): forces the
-        // panic path so the pin can hold the catch + park + 101 wiring
-        // together. No CLI behavior reads this variable.
-        panic!("forced by PINVOU_CLI_TEST_FORCE_PANIC");
-    }
     let code = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> i32 {
+        // Test seam (contract-pinned through the real binary): forces the
+        // panic path from INSIDE the closure so the pin actually holds the
+        // catch + park + 101 wiring together — a seam placed before
+        // `catch_unwind` (the round-50 shape) let the panic escape `main`
+        // directly, where std's own hook + 101-exit kept the pin green even
+        // with the whole catch/park wiring deleted (round-51 review). No
+        // CLI behavior reads this variable.
+        if std::env::var_os("PINVOU_CLI_TEST_FORCE_PANIC").is_some() {
+            panic!("forced by PINVOU_CLI_TEST_FORCE_PANIC");
+        }
         match pinvou_cli::parse_args(arguments).and_then(pinvou_cli::execute) {
             Ok(outcome) => pinvou_cli::support::emit_report(std::io::stdout(), &outcome),
             Err(error) => {

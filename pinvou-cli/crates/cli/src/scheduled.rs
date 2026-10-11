@@ -2106,9 +2106,24 @@ fn create(
         ));
     }
     // Same 4 MiB cap as the agent prompt read: `--prompt-file /dev/zero`
-    // must fail cleanly instead of reading forever.
+    // must fail cleanly instead of reading forever. Round-51 review: this is
+    // model context too (it becomes the unattended run's turn, with
+    // auto-approve forced), so it joins the credential-path gate every
+    // sibling lane applies (agent_task/memory/personas/feedback/voice/
+    // knowledge/artifacts): canonicalize first, gate the canonical form, and
+    // read the CANONICAL path so a post-gate symlink swap cannot re-route
+    // the read.
+    let prompt_canonical = std::fs::canonicalize(&prompt_file).map_err(|error| {
+        CliError::failed(format!(
+            "scheduled create --prompt-file: cannot resolve {}: {error}",
+            prompt_file.display()
+        ))
+    })?;
+    crate::artifacts::check_sensitive_path(&prompt_canonical).map_err(|reason| {
+        CliError::failed(format!("scheduled create: refusing prompt file: {reason}"))
+    })?;
     let prompt = crate::support::read_text_file_capped(
-        &prompt_file,
+        &prompt_canonical,
         4 * 1024 * 1024,
         "scheduled create --prompt-file",
     )?;
@@ -2131,14 +2146,23 @@ fn create(
     // refusal class the family's conventions dictate (exit 1, like `models
     // ... model not found:`).
     let (model, validated_model_id) = match model_id.as_deref().map(str::trim) {
-        Some(raw) if !raw.is_empty() => {
+        // Round-51 review: a whitespace-only value is a refusal, not a
+        // silent fall-through to the active model — every other invalid
+        // value in the family is a named refusal, and `parse_family_flags`
+        // only catches truly empty strings.
+        Some(raw) if raw.is_empty() => {
+            return Err(CliError::usage(
+                "scheduled create requires a non-empty --model-id",
+            ));
+        }
+        Some(raw) => {
             let prefs = UserPrefs::load();
             let selected = prefs
                 .model_by_id(raw)
                 .ok_or_else(|| CliError::failed(format!("model not found: {raw}")))?;
             (selected.model.clone(), Some(raw.to_owned()))
         }
-        _ => (default_automation_model(), None),
+        None => (default_automation_model(), None),
     };
     if kind == TaskKind::MemoryOrganize && !memory_feature::memory_enabled() {
         return Err(CliError::failed(
@@ -2362,7 +2386,14 @@ fn update(
     let mut model_update: Option<String> = None;
     let mut validated_model_id: Option<String> = None;
     match model_id.as_deref().map(str::trim) {
-        Some(raw) if !raw.is_empty() => {
+        // Round-51 review: a whitespace-only value is a refusal, not a
+        // silent no-op update.
+        Some(raw) if raw.is_empty() => {
+            return Err(CliError::usage(
+                "scheduled update requires a non-empty --model-id",
+            ));
+        }
+        Some(raw) => {
             let prefs = UserPrefs::load();
             let selected = prefs
                 .model_by_id(raw)
@@ -2370,7 +2401,7 @@ fn update(
             model_update = Some(selected.model.clone());
             validated_model_id = Some(raw.to_owned());
         }
-        _ => {}
+        None => {}
     }
     let mut request = UpdateAutomationRequest::default();
     if let Some(name) = name {
@@ -2383,8 +2414,19 @@ fn update(
         request.name = Some(name.to_owned());
     }
     if let Some(prompt_file) = prompt_file {
+        // Round-51 review: same credential-path gate as create (model
+        // context; canonicalize → gate → read canonical).
+        let prompt_canonical = std::fs::canonicalize(&prompt_file).map_err(|error| {
+            CliError::failed(format!(
+                "scheduled update --prompt-file: cannot resolve {}: {error}",
+                prompt_file.display()
+            ))
+        })?;
+        crate::artifacts::check_sensitive_path(&prompt_canonical).map_err(|reason| {
+            CliError::failed(format!("scheduled update: refusing prompt file: {reason}"))
+        })?;
         let prompt = crate::support::read_text_file_capped(
-            &prompt_file,
+            &prompt_canonical,
             4 * 1024 * 1024,
             "scheduled update --prompt-file",
         )?;
@@ -3446,7 +3488,17 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
             }
         }
     }
-    records.sort_by(|a, b| record_time(b, "scheduled_for").cmp(&record_time(a, "scheduled_for")));
+    // Round-51 review: decorate-sort like the archive prune above — the
+    // bare `sort_by` re-parsed the RFC3339 stamp on every comparison
+    // (O(n log n) parses instead of n; `record_sort_key`'s own comment
+    // documents the shape). The stable sort keeps the insertion-order
+    // tiebreak for equal stamps.
+    let mut keyed: Vec<(chrono::DateTime<chrono::Utc>, serde_json::Value)> = records
+        .into_iter()
+        .map(|run| (record_sort_key(&run), run))
+        .collect();
+    keyed.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut records: Vec<serde_json::Value> = keyed.into_iter().map(|(_, run)| run).collect();
     // Round-41 review: same default fan-out cap as `runs`; the per-task
     // push-down above reads the default cap plus the one-record probe, and
     // the global truncate + `truncated` marker disclose it.

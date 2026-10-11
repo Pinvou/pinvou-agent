@@ -885,10 +885,14 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
                 )
             ))
         })?;
-        steps.push("installed ffmpeg".to_owned());
         // Load-bearing verification, not a redundant probe: a "successful"
         // install that left no usable ffmpeg must still report honestly.
+        // Round-51 review: the step record lands AFTER the re-probe, so the
+        // human block can no longer print "installed ffmpeg" directly above
+        // an honest `"ffmpeg": false` (the deps sibling phrases this class
+        // as the installer's report, not a verified fact).
         ffmpeg_ok = ffmpeg_available();
+        steps.push("installer reported success for ffmpeg".to_owned());
     }
     if !model_available() {
         let path = download_asr_model()?;
