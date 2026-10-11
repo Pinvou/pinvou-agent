@@ -1197,3 +1197,31 @@ checks. Unchanged provider/browser/deployment opt-ins are not claimed. Actual
 native/pipeline/SBOM content verification, storage, upload/error/recovery workflow,
 T46 evidence and T08 quarantine are subsequent
 work. Full T09 stays in progress; no download deadline is introduced.
+
+
+### T47 second batch: local lifecycle and original StageFacts (2026-10-12)
+
+The bounded current-instance reducer binds the full protected frozen plan revision,
+canonical policy hash and complete scope. It derives first/strictly adjacent/final
+100% stages, preserves percentage and quality freezing across pause/resume, refuses
+terminal resurrection and retains distinct operator/parent abort causes. Original
+closed StageFact bytes preserve old window/watermark on pause/complete/abort and
+open new windows on start/advance/resume. Outputs own their pointers; final clock
+or source regression is refused and the last revision remains for termination.
+
+Ten actual Node signed-publication/quality fixture vectors compare canonical local
+instance and StageFact bytes against the original rollout model. The reducer has
+no SQL writer, production command or HTTP registration. Actual T14/T15/T21/T08
+read sets, baseline switch, publication, scope indexes and permanent observation
+window/history storage remain subsequent work. T23 release of quality freezing
+and historical recovery reasons cannot be replaced by ordinary resume. No new
+download deadline or full-task/deployment acceptance is introduced. Full T47
+remains in progress; continue the unblocked database/history batch.
+
+
+Both independent roles passed the second-batch frozen code/test/documentation
+review. Original Node/domain tests passed (4.690s; independent 7.557s/3.292s),
+as did default Go tests, full vet, module verification, all command builds,
+pinned artifacts and client architecture/version/diff checks. No SQL/provider
+behavior changed; actual database/provider opt-ins were not rerun for this batch.
+Service commit: `04e248a`.
