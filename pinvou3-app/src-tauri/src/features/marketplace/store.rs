@@ -839,6 +839,18 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
         // gate must not latch over an incomplete mirror (round-23 MAJOR-3 /
         // round-24 m2 class, per-entry form).
         let marker_path = dir.join(".installed-from");
+        if marker_path.is_dir() {
+            // Round-27 review (NIT): a planted DIRECTORY at the marker path
+            // fell through the is_file gate into the "no marker" skip below,
+            // silently latching the one-shot legacy_imported gate over a
+            // skipped mirror — the pre-round-20 shape failed closed with
+            // EISDIR, so restore that. Only the FIFO case (where open itself
+            // would hang) deserves the skip treatment.
+            return Err(format!(
+                "读取 {} 失败: 是目录而非标注文件",
+                marker_path.display()
+            ));
+        }
         let marker = if marker_path.is_file() {
             // Hardened read (round-20 P2): a non-regular entry (planted FIFO)
             // now reads as "no marker" (skip) instead of hanging the boot
@@ -1367,6 +1379,35 @@ mod tests {
             assert!(
                 err.contains(".installed-from") || err.contains("读取"),
                 "the unreadable marker must abort the import: {err}"
+            );
+            assert!(
+                !store.load().unwrap().legacy_imported,
+                "the one-shot gate must not latch over an aborted import"
+            );
+        });
+    }
+
+    /// Round-27 review (NIT): a planted DIRECTORY at `.installed-from` must
+    /// abort the legacy import exactly like the unreadable regular file —
+    /// the is_file gate reads it as "no marker", which would silently latch
+    /// the one-shot `legacy_imported` gate over a skipped mirror.
+    #[test]
+    fn legacy_import_marker_directory_aborts_before_gate_latches() {
+        with_temp_home("pinvou3-store-test", || {
+            let skills = paths::bundle_skills_dir();
+            let planted = skills.join("planted");
+            std::fs::create_dir_all(planted.join(".installed-from")).unwrap();
+            std::fs::write(
+                planted.join(".installed-from").join("keep"),
+                b"pinvou3-marketplace:legacy-a",
+            )
+            .unwrap();
+
+            let store = BundleStore::new();
+            let err = store.import_legacy().unwrap_err();
+            assert!(
+                err.contains(".installed-from"),
+                "the directory marker must abort the import: {err}"
             );
             assert!(
                 !store.load().unwrap().legacy_imported,
