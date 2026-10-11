@@ -201,6 +201,13 @@ pub fn release_package(id: &str) -> Result<Option<String>, String> {
     let Some(spec) = spec_for(id) else {
         return Ok(None);
     };
+    // Round-51 review: the fixed `.mcp.tmp` staging and the remove-dest →
+    // rename tail below are shared paths with the CLI's second process —
+    // hold the same cross-process market lock every market mutator holds
+    // (order: market file lock → store file lock; no in-process import_lock
+    // is taken here because every caller already serializes above it).
+    let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire()
+        .map_err(|e| format!("创建市场写入锁: {e}"))?;
     let mcp_dir = package_mcp_dir(id);
     // bundles/<id>/mcp is joined from bundles_root() and always has a parent;
     // still return an error as the fallback.

@@ -378,7 +378,16 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
 #[tauri::command]
 pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
     let model_id = model.id.clone();
-    save_model_inner(model, &SystemCredentialStore::new())?;
+    // Round-51 review: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O (the CLI's models family writes
+    // the same transaction from a second process), so the blocking body
+    // joins a spawn_blocking worker — the same rationale as round-50's
+    // codex.rs conversion: these runtime workers also drive the engine
+    // session pumps.
+    let store = SystemCredentialStore::new();
+    tauri::async_runtime::spawn_blocking(move || save_model_inner(model, &store))
+        .await
+        .map_err(|error| format!("save_model 任务失败: {error}"))??;
     pool.mark_model_updated(&model_id);
     Ok(())
 }
@@ -426,7 +435,13 @@ pub(super) fn save_model_inner(
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
-    delete_model_inner(&id, &SystemCredentialStore::new())
+    // Round-51 review: same cross-process settings-lock rationale as
+    // [`save_model`] — join the blocking transaction on a worker.
+    let store = SystemCredentialStore::new();
+    let id_for_worker = id.clone();
+    tauri::async_runtime::spawn_blocking(move || delete_model_inner(&id_for_worker, &store))
+        .await
+        .map_err(|error| format!("delete_model 任务失败: {error}"))?
 }
 
 pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Result<(), String> {
@@ -470,15 +485,21 @@ pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Resul
 /// 时的模型,想换在该会话的 chip 里切。
 #[tauri::command]
 pub async fn set_active_model(id: String) -> Result<(), String> {
-    UserPrefs::update_transaction(|prefs| {
-        if prefs.model_by_id(&id).is_none() {
-            return Err(format!("model not found: {id}"));
-        }
-        prefs.advanced.active_model_id = Some(id);
-        Ok(())
+    // Round-51 review: same cross-process settings-lock rationale as
+    // [`save_model`] — join the blocking transaction on a worker.
+    tauri::async_runtime::spawn_blocking(move || {
+        UserPrefs::update_transaction(|prefs| {
+            if prefs.model_by_id(&id).is_none() {
+                return Err(format!("model not found: {id}"));
+            }
+            prefs.advanced.active_model_id = Some(id);
+            Ok(())
+        })
+        .map(|_| ())
+        .map_err(|e| sanitize_command_error("set_active_model", e))
     })
-    .map(|_| ())
-    .map_err(|e| sanitize_command_error("set_active_model", e))
+    .await
+    .map_err(|error| format!("set_active_model 任务失败: {error}"))?
 }
 
 /// 切某会话当前模型(聊天 chip 热切):写 per-session 绑定 + evict 该会话 engine,
@@ -1358,7 +1379,12 @@ pub struct WebSettingsPatch {
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
 pub async fn update_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
-    persist_general_settings(patch)
+    // Round-51 review: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O — join the blocking body on a
+    // spawn_blocking worker like the sibling model commands.
+    tauri::async_runtime::spawn_blocking(move || persist_general_settings(patch))
+        .await
+        .map_err(|error| format!("update_settings 任务失败: {error}"))?
 }
 
 fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsPatch) {
@@ -1495,7 +1521,11 @@ pub(super) fn persist_web_settings_inner(
 /// 仅更新搜索配置。模型等其他偏好始终以磁盘最新值为准，避免前端旧快照整份回写。
 #[tauri::command]
 pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
-    persist_search_settings(search)
+    // Round-51 review: same cross-process settings-lock rationale as
+    // [`save_model`] — join the blocking transaction on a worker.
+    tauri::async_runtime::spawn_blocking(move || persist_search_settings(search))
+        .await
+        .map_err(|error| format!("update_search_settings 任务失败: {error}"))?
 }
 
 /// Unified post-save restart finalization. Restart bypasses RunEvent::Exit, so persist and close

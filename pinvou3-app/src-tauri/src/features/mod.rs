@@ -29,6 +29,14 @@ pub use connectors::{
     GITHUB_ASSET_MIRROR_PREFIX_ENV, append_cli_install_log, rotate_cli_install_log_if_oversized,
     write_managed_license,
 };
+// Round-51 review: the per-connector semantic-version floors are
+// single-sourced — the CLI's connectors family imports these instead of
+// re-declaring them, so a GUI-side raise to a lock baseline moves the
+// CLI's `upgrade_required` gates with it (the feishu floor is the live
+// one: round-49 raised it for the skill pack's command surface).
+pub use connectors::feishu::LARK_MIN_VERSION;
+pub use connectors::tmeet::TMEET_MIN_VERSION;
+pub use connectors::wecom::WECOM_MIN_VERSION;
 // `pub` for the headless CLI (`pinvou artifacts list`): the deliverable
 // extension whitelist and the category mapping must be ONE table shared
 // with the GUI surface — a copy there drifts silently (the CLI's forced

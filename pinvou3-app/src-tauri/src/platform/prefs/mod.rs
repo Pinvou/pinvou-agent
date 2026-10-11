@@ -1496,7 +1496,20 @@ impl UserPrefs {
             };
             match store.get(&reference) {
                 Ok(Some(value)) if !value.trim().is_empty() => model.mark_configured(reference),
-                Ok(_) => model.mark_missing(),
+                Ok(_) => {
+                    // Round-51 review: a miss against an unreachable OS
+                    // keyring (the file-fallback active) must not read as
+                    // `missing` — the honest state is `unavailable`, the
+                    // same doctrine the value lanes' `os_keyring_unreachable`
+                    // re-classification applies (a script acting on a false
+                    // `missing`/`has_secret: false` might overwrite a key
+                    // the store still holds).
+                    if store.os_keyring_unreachable(&reference) {
+                        model.mark_unavailable();
+                    } else {
+                        model.mark_missing();
+                    }
+                }
                 Err(_) => model.mark_unavailable(),
             }
         }
@@ -1520,7 +1533,15 @@ impl UserPrefs {
                 Ok(Some(value)) if !value.trim().is_empty() => {
                     credential.mark_configured(reference)
                 }
-                Ok(_) => credential.mark_missing(),
+                Ok(_) => {
+                    // Round-51 review: same unreachable-keyring honesty as
+                    // the models loop above.
+                    if store.os_keyring_unreachable(&reference) {
+                        credential.mark_unavailable();
+                    } else {
+                        credential.mark_missing();
+                    }
+                }
                 Err(_) => credential.mark_unavailable(),
             }
         }
@@ -3814,6 +3835,77 @@ mod tests {
         );
         let credential = &prefs.search.credentials[&SearchProvider::Tavily];
         assert_eq!(credential.credential_state, CredentialState::Missing);
+    }
+
+    /// Round-51 review: a `get` miss served by the file fallback (the OS
+    /// keyring unreachable) must classify as `Unavailable`, not `Missing` —
+    /// a false `missing`/`has_secret: false` is exactly what a script might
+    /// act on by overwriting a key the store still holds (the value lanes'
+    /// `os_keyring_unreachable` doctrine, now on the state lanes too).
+    #[test]
+    fn refresh_classifies_a_fallback_miss_as_unavailable_not_missing() {
+        struct FallbackStore;
+        impl crate::platform::credential_store::CredentialStore for FallbackStore {
+            fn get(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+            ) -> Result<Option<String>, crate::platform::credential_store::CredentialError>
+            {
+                Ok(None)
+            }
+            fn set(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+                _value: &str,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                unimplemented!("not used by the refresh");
+            }
+            fn delete(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+            ) -> Result<(), crate::platform::credential_store::CredentialError> {
+                unimplemented!("not used by the refresh");
+            }
+            fn os_keyring_unreachable(
+                &self,
+                _reference: &crate::platform::credential_store::CredentialReference,
+            ) -> bool {
+                true
+            }
+        }
+
+        let mut prefs = UserPrefs::default();
+        prefs.upsert_model(SavedModel {
+            id: "m1".to_string(),
+            name: "M1".to_string(),
+            alias: None,
+            preset: ModelPreset::Deepseek,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            reasoning_effort: None,
+            model: "deepseek-chat".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            provider_kind: None,
+            vendor: None,
+            endpoint_mode: None,
+            image_capability_override: ImageCapabilityOverride::default(),
+            vision_model_id: None,
+            api_key: String::new(),
+            credential_ref: Some(crate::platform::credential_store::CredentialReference {
+                service: "pinvou3-test".to_string(),
+                account: "m1".to_string(),
+                version: 1,
+            }),
+            credential_state: CredentialState::Missing,
+            has_secret: false,
+            credential_action: None,
+        });
+        prefs.refresh_credential_states_with_store(&FallbackStore);
+        assert_eq!(
+            prefs.advanced.saved_models[0].credential_state,
+            CredentialState::Unavailable,
+            "an unreachable-keyring miss must read as Unavailable"
+        );
     }
 
     #[test]

@@ -172,32 +172,31 @@ where
     Some(format!("{attachment_dir}/{candidate}"))
 }
 
+/// The single source of the headless attachment staging cap. Round-51
+/// review: this used to be a second `20 * 1024 * 1024` literal over in
+/// `headless_bridge`, pinned equal to `file_ingest::MAX_FILE_BYTES` by a
+/// compile-time assert that could only compile under `benchmark-hooks` —
+/// a default GUI build carried no pin at all, so raising one side silently
+/// diverged the other. The constant now lives HERE (an unconditionally
+/// compiled module, `pub` for the CLI's `agent_task` pre-boot total via the
+/// `headless_bridge` re-export below), and `headless_bridge` re-exports
+/// this one definition: there is nothing left to drift, so the assert is
+/// gone with the second literal.
+pub const MAX_STAGED_ATTACHMENT_BYTES: u64 = crate::features::files::file_ingest::MAX_FILE_BYTES;
+
 /// Stages an attachment into a workspace subdirectory under a controlled file
 /// name; shared by the GUI attachment commands and the headless eval
 /// attachment staging path.
 ///
 /// The copy is bounded by `features::files::file_ingest::MAX_FILE_BYTES`
 /// (the cap `file_ingest::ingest` enforces), which by value equals
-/// `headless_bridge::MAX_STAGED_ATTACHMENT_BYTES` (the cap `validate_attachments`
-/// hard-fails on) — two independent constants pinned equal at compile time
-/// below: if only one were raised, `validate_attachments` would admit
-/// sources whose staging then fails at copy time and the attachment would
-/// be silently dropped. The bound exists because a
+/// [`MAX_STAGED_ATTACHMENT_BYTES`] (the cap `validate_attachments`
+/// hard-fails on) — now one single definition instead of two constants
+/// pinned equal, so the staging copy can never be bounded tighter or looser
+/// than the validate gate. The bound exists because a
 /// caller-owned source can be swapped or grown between the size check and
 /// this copy (TOCTOU), and the oversized content must not land in the
 /// workspace.
-// The pin's cfg is the narrowest that compiles: `headless_bridge` itself
-// is `#[cfg(feature = "benchmark-hooks")]`, so the assert cannot
-// type-check anywhere the feature is off (a default `cargo test` does not
-// build the module at all). Scope verified against the module gates at
-// `assistant::mod` and `product_runtime::mod` (round-50 review); drift is
-// caught in the benchmark-hooks builds CI's eval legs run.
-#[cfg(feature = "benchmark-hooks")]
-const _: () = assert!(
-    crate::features::files::file_ingest::MAX_FILE_BYTES
-        == crate::features::assistant::product_runtime::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES
-);
-
 pub fn stage_file_in_workspace(
     src: &str,
     basename: &str,
