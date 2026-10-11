@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use super::IngestResult;
-use super::ingest_deps::{pdf_tool_command, system_tools};
+use super::ingest_deps::{pdftotext_extract, system_tools};
 use super::visual_preview::ocr_pdf;
 
 /// PDF 摄入主路径：pdftotext 抽正文；空白（扫描件）走 OCR 兜底。
@@ -29,40 +29,13 @@ pub(super) fn ingest_pdf(
             crate::platform::os::pdf_text_missing_message(),
         );
     }
-    // pdftotext -layout <path> -  → stdout
-    // 带 kill 的超时兜底:损坏/诡异封装的 PDF 可让 demuxer 挂死。
-    let mut command = pdf_tool_command("pdftotext");
-    command.arg("-layout").arg(path).arg("-");
-    let out = crate::platform::process::output_with_timeout_and_kill_tree(
-        command,
-        std::time::Duration::from_secs(60),
-    );
-    match out {
-        Ok(o) if o.status.success() => {
-            let content = String::from_utf8_lossy(&o.stdout).into_owned();
-            // 扫描件 PDF（图层 PDF）没有文字层，pdftotext 返回空白 —— 此时
-            // 走 OCR 兜底：pdftoppm 逐页转图再喂给 tesseract。
-            if content.trim().is_empty() {
-                return ocr_pdf(path, basename, path_str, byte_size);
-            }
+    // 扫描件 PDF（图层 PDF）没有文字层，pdftotext 返回空白 —— 此时
+    // 走 OCR 兜底：pdftoppm 逐页转图再喂给 tesseract。
+    match pdftotext_extract(path) {
+        Ok(content) if !content.trim().is_empty() => {
             IngestResult::with_markdown("pdf", &basename, path, byte_size, content)
         }
-        Ok(o) => IngestResult::warning(
-            "pdf",
-            &basename,
-            path,
-            byte_size,
-            format!(
-                "pdftotext 失败: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ),
-        ),
-        Err(e) => IngestResult::warning(
-            "pdf",
-            &basename,
-            path,
-            byte_size,
-            format!("pdftotext 调用失败: {e}"),
-        ),
+        Ok(_) => ocr_pdf(path, basename, path_str, byte_size),
+        Err(warning) => IngestResult::warning("pdf", &basename, path, byte_size, warning),
     }
 }

@@ -142,6 +142,26 @@ pub(super) fn pdf_tool_command(command: &str) -> Command {
     crate::platform::process::HiddenCommand::new(crate::platform::os::pdf_tool_path(command))
 }
 
+/// `pdftotext -layout <pdf> -` → stdout 文本，pdf 正文与演示稿转 PDF 后的
+/// 抽取共用。带 kill 的超时兜底（60s）：损坏/诡异封装的输入可让 demuxer 挂死。
+/// 失败文案沿用两处调用点的历史措辞（spawn 失败 → 「pdftotext 调用失败」，
+/// 非零退出 → 「pdftotext 失败」）；kind/warning 的 IngestResult 包装由调用方负责。
+pub(super) fn pdftotext_extract(pdf: &Path) -> Result<String, String> {
+    let mut command = pdf_tool_command("pdftotext");
+    command.arg("-layout").arg(pdf).arg("-");
+    match crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    ) {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(o) => Err(format!(
+            "pdftotext 失败: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => Err(format!("pdftotext 调用失败: {e}")),
+    }
+}
+
 pub(super) fn pandoc_tool_command() -> Command {
     crate::platform::process::HiddenCommand::new(crate::platform::os::pandoc_tool_path())
 }

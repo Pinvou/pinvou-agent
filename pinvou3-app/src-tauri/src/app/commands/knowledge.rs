@@ -260,10 +260,12 @@ sync_command_passthrough!(
     knowledge_domain,
     kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState
 );
-sync_command_passthrough!(
-    knowledge_domain,
-    kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState
-);
+// 纯透传命令不经 features/knowledge 的包装，直接调 `state.<method>`；
+// 其余 kb_* 命令带域层逻辑（spawn_db / 默认 roots / 门控刷新），仍走 passthrough。
+#[tauri::command]
+pub fn kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState {
+    state.status()
+}
 async_command_passthrough!(
     knowledge_domain,
     kb_type_counts(state: State<'_, KnowledgeService>) -> Result<Vec<TypeCount>, String>
@@ -316,38 +318,38 @@ sync_command_passthrough!(
         paths: Vec<String>,
     ) -> IndexState
 );
-sync_command_passthrough!(
-    knowledge_domain,
-    kb_index_status(state: State<'_, KnowledgeService>) -> IndexState
-);
-sync_command_passthrough!(
-    knowledge_domain,
-    kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String>
-);
-sync_command_passthrough!(
-    knowledge_domain,
-    kb_index_failed_files(
-        state: State<'_, KnowledgeService>,
-        job_id: String,
-        offset: usize,
-        limit: usize,
-    ) -> Result<FailedImportFilePage, String>
-);
-sync_command_passthrough!(
-    knowledge_domain,
-    kb_index_resume(
-        state: State<'_, KnowledgeService>,
-        job_id: String,
-    ) -> Result<IndexState, String>
-);
-sync_command_passthrough!(
-    knowledge_domain,
-    kb_index_retry_file(
-        state: State<'_, KnowledgeService>,
-        job_id: String,
-        item_id: i64,
-    ) -> Result<IndexState, String>
-);
+#[tauri::command]
+pub fn kb_index_status(state: State<'_, KnowledgeService>) -> IndexState {
+    state.index_status()
+}
+#[tauri::command]
+pub fn kb_index_cancel(state: State<'_, KnowledgeService>) -> Result<(), String> {
+    state.cancel_index()
+}
+#[tauri::command]
+pub fn kb_index_failed_files(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+    offset: usize,
+    limit: usize,
+) -> Result<FailedImportFilePage, String> {
+    state.failed_index_files(&job_id, offset, limit)
+}
+#[tauri::command]
+pub fn kb_index_resume(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+) -> Result<IndexState, String> {
+    state.resume_index(job_id)
+}
+#[tauri::command]
+pub fn kb_index_retry_file(
+    state: State<'_, KnowledgeService>,
+    job_id: String,
+    item_id: i64,
+) -> Result<IndexState, String> {
+    state.retry_index_item(job_id, item_id)
+}
 async_command_passthrough!(
     knowledge_domain,
     kb_documents(

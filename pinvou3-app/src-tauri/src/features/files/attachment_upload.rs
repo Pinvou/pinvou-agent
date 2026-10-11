@@ -407,22 +407,7 @@ async fn adopt_upload(
 
     if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
         let (_, target_file) = managed_completed_file(target_workspace, upload_id).await?;
-        // 与下方首次采纳分支一致：摄入跑 LibreOffice/pandoc 子进程（分钟级），
-        // 必须离开 async worker 线程。
-        let ingest_path = target_file.clone();
-        let ingest_result =
-            tokio::task::spawn_blocking(move || ingest_managed_file(&ingest_path)).await;
-        let result = match ingest_result {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => {
-                let _ = remove_dir_if_present(&target_dir).await;
-                return Err(error);
-            }
-            Err(error) => {
-                let _ = remove_dir_if_present(&target_dir).await;
-                return Err(format!("摄入任务失败：{error}"));
-            }
-        };
+        let result = ingest_managed_file_async(&target_file, &target_dir).await?;
         let _ = remove_dir_if_present(&upload_completed_dir(source_workspace, upload_id)).await;
         return Ok(result);
     }
@@ -443,21 +428,7 @@ async fn adopt_upload(
         let _ = remove_dir_if_present(&target_dir).await;
         return Err(format!("迁移附件草稿失败：{error}"));
     }
-    // 摄入跑 LibreOffice/pandoc 子进程（分钟级），离开 async worker 线程。
-    let ingest_path = target_file.clone();
-    let ingest_result =
-        tokio::task::spawn_blocking(move || ingest_managed_file(&ingest_path)).await;
-    let result = match ingest_result {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => {
-            let _ = remove_dir_if_present(&target_dir).await;
-            return Err(error);
-        }
-        Err(error) => {
-            let _ = remove_dir_if_present(&target_dir).await;
-            return Err(format!("摄入任务失败：{error}"));
-        }
-    };
+    let result = ingest_managed_file_async(&target_file, &target_dir).await?;
     if let Err(error) = remove_dir_if_present(&source_dir).await {
         eprintln!("[attachment] cleanup adopted draft failed: {error}");
     }
@@ -470,6 +441,28 @@ fn ingest_managed_file(path: &Path) -> Result<IngestResult, String> {
     // using the canonical path for containment validation above.
     let compatible = crate::platform::os::platform_compat_path(&path.to_string_lossy());
     file_ingest::ingest_attachment(&compatible)
+}
+
+/// 摄入跑 LibreOffice/pandoc 子进程（分钟级），必须离开 async worker 线程。
+/// join 失败或管线报错时删除 `cleanup_dir`（调用方各自的已采纳/已提交附件
+/// 目录）再返回错误；成功时保留该目录，由调用方自行收尾（如清理来源草稿）。
+async fn ingest_managed_file_async(
+    path: &Path,
+    cleanup_dir: &Path,
+) -> Result<IngestResult, String> {
+    let ingest_path = path.to_path_buf();
+    let cleanup_dir = cleanup_dir.to_path_buf();
+    match tokio::task::spawn_blocking(move || ingest_managed_file(&ingest_path)).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => {
+            let _ = remove_dir_if_present(&cleanup_dir).await;
+            Err(error)
+        }
+        Err(error) => {
+            let _ = remove_dir_if_present(&cleanup_dir).await;
+            Err(format!("摄入任务失败：{error}"))
+        }
+    }
 }
 
 /// Append one HTML5 drop chunk inside a session-owned workspace.
@@ -564,21 +557,7 @@ pub(crate) async fn append_chunk(
         .await
         .map_err(|error| format!("提交会话附件失败：{error}"))?;
     let completed_path = completed_dir.join(filename);
-    // 与 adopt_upload 一致：摄入跑 LibreOffice/pandoc 子进程（分钟级），
-    // 必须离开 async worker 线程。
-    let ingest_result =
-        tokio::task::spawn_blocking(move || ingest_managed_file(&completed_path)).await;
-    let result = match ingest_result {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => {
-            let _ = remove_dir_if_present(&completed_dir).await;
-            return Err(error);
-        }
-        Err(error) => {
-            let _ = remove_dir_if_present(&completed_dir).await;
-            return Err(format!("摄入任务失败：{error}"));
-        }
-    };
+    let result = ingest_managed_file_async(&completed_path, &completed_dir).await?;
     Ok(Some(result))
 }
 
