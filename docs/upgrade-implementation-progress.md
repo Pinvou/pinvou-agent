@@ -808,3 +808,28 @@ independent read-only roles passed the complete scoped final delta. Full default
 Go tests/vet, module verification, all command builds, pinned artifact checks,
 formatting/diff checks and the client architecture guard passed. No unfinished
 T44 work or deferred production decision is counted as accepted.
+
+
+### T44 batch 3: protected execution events (2026-10-12)
+
+The service now has additive migration 3, leaving committed migrations 1/2 and
+pinned wire contracts unchanged. Purpose-specific execution paths, initial
+consumed acknowledgement, sequence/revision, occurrence/reception windows,
+protected safe-stop evidence, earliest active boundary and original health anchor
+are repeated by private SQL. Actual T06 OwnerReplay fences both sides of the
+writes, and complete reads retain historical/terminal transaction membership.
+
+Both independent roles passed the complete repaired delta. Review corrected
+JSON integer spelling parity and the V1 upgrade fixture. Explicit real SQL tests
+cover Go/SQL body parity, atomic rollback, purpose/terminal closure, wrong event
+replay policy with an independent legal completion control, incomplete safety and
+boundary facts, health/fraction/null/unsafe failures with legal decimal/exponent
+controls, old-data V1/V2 upgrade/repeat, private grants and digest mismatch.
+Final whole-suite results are recorded in the service lifecycle plan.
+
+This scoped batch does not certify full T44 or absent T20 credential/deny/dedup
+owners. Single-record staging completion and activation terminal writes remain
+closed until staged/preparation composition exists. Continue session events,
+waiting slots/safe successors and channel invalidation without reopening deferred
+owner decisions. Downloads retain no hard total or cumulative elapsed limit;
+client trust proof, physical evidence/budgets and deployment remain deferred.
