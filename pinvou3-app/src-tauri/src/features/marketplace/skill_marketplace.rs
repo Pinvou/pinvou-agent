@@ -911,7 +911,7 @@ impl SkillMarketplaceManager {
     /// deny-first consent entry a concurrent same-id install may have just
     /// registered (its install record lands after the gate) and re-enable the
     /// skill as it lands. Same guard as the MCP tool uninstall's
-    /// `store_record.is_none()` early return.
+    /// `removed_install_record == false` legs.
     pub fn uninstall(&self, skill_id: &str) -> Result<bool, String> {
         let dir_name = self.precheck_uninstall(skill_id)?;
         // From here the same-id import lock is held to the end of the

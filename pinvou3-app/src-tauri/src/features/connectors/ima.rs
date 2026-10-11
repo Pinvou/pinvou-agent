@@ -429,11 +429,9 @@ fn ima_logout_sync_with_store<S: CredentialStore>(store: &S) -> Result<Value, St
     // skill is still on disk, so clearing the entries here would silently
     // restore it to callable (fail-open). Keeping them fails closed (the
     // skill stays off) and converges on the next connect/uninstall.
-    // A VACUOUS uninstall (nothing installed — no record, nothing on disk)
-    // must keep them too: stripping on `Ok(false)` would
-    // remove the deny-first entry a concurrent same-id connect may have just
-    // registered (its install lands after the gate), re-enabling the skill as
-    // it lands — the same guard as the tool/skill uninstall channels.
+    // A VACUOUS uninstall must keep them too — see the vacuous-`Ok(false)`
+    // contract on `SkillMarketplaceManager::uninstall` (the same guard as
+    // the tool/skill uninstall channels).
     match SkillMarketplaceManager::new().uninstall_and_strip_scope(IMA_SKILL_ID) {
         Ok(true) => {
             // The strip already ran inside the helper; a refused strip was
@@ -479,10 +477,8 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
-    /// Temp-home harness for the connect regressions. Delegated to the
-    /// shared RAII helper: a failing assertion unwinds past a
-    /// straight-line env restore, which would leave PINVOU3_HOME pointed at
-    /// a deleted temp dir and cascade unrelated failures.
+    /// Temp-home harness for the connect regressions. Delegates to the
+    /// shared RAII helper (see its doc for the unwind-restore rationale).
     fn with_temp_home<F: FnOnce()>(f: F) {
         crate::platform::test_support::with_temp_home("pinvou3-ima-connect", f);
     }
@@ -670,11 +666,9 @@ mod tests {
 
     /// A logout must keep the deny entries whenever the uninstall does not
     /// actually tear down an installed skill — both arms:
-    /// (1) a VACUOUS uninstall (the skill was never installed — no record,
-    /// nothing on disk): stripping on the vacuous `Ok(false)` would remove
-    /// the deny-first entry a concurrent same-id connect may have just
-    /// registered (its install lands after the gate) and re-enable the skill
-    /// as it lands;
+    /// (1) a VACUOUS uninstall (the skill was never installed): keeps them
+    /// per the vacuous-`Ok(false)` contract on
+    /// `SkillMarketplaceManager::uninstall`;
     /// (2) a FAILED uninstall (here: the bundle store is unreadable, which
     /// `SkillMarketplaceManager::uninstall` refuses fail-closed): the
     /// on-disk skill (if any) would otherwise be silently re-enabled in

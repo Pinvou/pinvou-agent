@@ -271,9 +271,8 @@ mod tests {
             load_disabled_bundles_for, save_disabled_bundles_for,
         };
 
-        // Shared RAII temp-home helper: a failing assertion unwinds
-        // past a straight-line env restore, which would leave PINVOU3_HOME
-        // pointed at a deleted temp dir and cascade unrelated failures.
+        // Uses the shared RAII helper (see its doc for the unwind-restore
+        // rationale).
         crate::platform::test_support::with_temp_home("pinvou3-skillgate-body", || {
             // Initialized (empty) Code scope so a fresh registration has
             // somewhere to land instead of vanishing into the default.
