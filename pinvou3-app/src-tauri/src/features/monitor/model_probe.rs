@@ -659,9 +659,13 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
     None
 }
 
-/// 按 base_url 主机段判后端类型:环回/私有 IP 段 = 本地推理引擎(`local`,自托管 vLLM,
-/// 有 Prometheus 指标);公网域名/IP = 云端 API(`remote`);空/解析失败 = 配置异常(`invalid`)。
+/// 按 base_url 主机段判后端类型:环回/私有 IP 段(含 docker 主机别名)= 本地推理引擎
+/// (`local`,自托管 vLLM,有 Prometheus 指标);公网域名/IP = 云端 API(`remote`);
+/// 空/解析失败 = 配置异常(`invalid`)。
 /// 前端监控卡的「本地模型/远端模型/配置异常」标签 + 指标适用性 + 小窗口告警都据此。
+/// 本地/私有判定与引擎路由共用 core 的 `base_url_uses_local_or_private`(同一真相,
+/// `local_native_display_window` 的门控也用它),不再各持一套字符串解析:
+/// host.docker.internal 等别名与带尾点的本机主机同判本地,而非误判云端。
 fn vllm_target_kind(upstream: &str) -> &'static str {
     let s = upstream.trim();
     if s.is_empty() {
@@ -682,16 +686,8 @@ fn vllm_target_kind(upstream: &str) -> &'static str {
     if host.is_empty() {
         return "invalid";
     }
-    if host == "localhost" || host == "::1" {
+    if crate::core::model_endpoint::base_url_uses_local_or_private(s) {
         return "local";
-    }
-    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
-        let o = ip.octets();
-        let private = o[0] == 127
-            || o[0] == 10
-            || (o[0] == 172 && (16..=31).contains(&o[1]))
-            || (o[0] == 192 && o[1] == 168);
-        return if private { "local" } else { "remote" };
     }
     // 域名或公网 IPv6 → 云端 API
     "remote"
@@ -801,6 +797,11 @@ mod tests {
         assert_eq!(vllm_target_kind("http://localhost:8000/v1"), "local");
         assert_eq!(vllm_target_kind("http://192.168.1.5:8000/v1"), "local");
         assert_eq!(vllm_target_kind("http://172.16.0.9:8000/v1"), "local");
+        // docker 主机别名(host.docker.internal):与引擎路由共用 core 分类器,同判本地
+        assert_eq!(
+            vllm_target_kind("http://host.docker.internal:8000/v1"),
+            "local"
+        );
         // 云端 API:公网域名 / 公网 IP
         assert_eq!(vllm_target_kind("https://api.deepseek.com/v1"), "remote");
         assert_eq!(vllm_target_kind("http://8.8.8.8:8000/v1"), "remote");
