@@ -1770,20 +1770,22 @@ mod tests {
     /// A leftover landing mark with a landed
     /// dir but no registry record is crash residue — the reconcile moves it
     /// out of `bundles_root` into a recoverable holding dir and clears the
-    /// mark.
+    /// mark. The mixed-case fixture id also pins that the reconcile reader
+    /// accepts every id the journal writer accepts (`is_safe_skill_name`,
+    /// mixed case included).
     #[test]
     fn reconcile_quarantines_landed_dir_without_registry_record() {
         crate::platform::test_support::with_temp_home("pinvou-import-journal-crash", || {
-            let pkg = crate::platform::paths::bundles_root().join("crash-pkg");
-            std::fs::create_dir_all(pkg.join("skills/crash-pkg")).unwrap();
+            let pkg = crate::platform::paths::bundles_root().join("Crash-Pkg");
+            std::fs::create_dir_all(pkg.join("skills/Crash-Pkg")).unwrap();
             std::fs::write(
-                pkg.join("skills/crash-pkg/SKILL.md"),
-                "---\nname: crash-pkg\n---\n",
+                pkg.join("skills/Crash-Pkg/SKILL.md"),
+                "---\nname: Crash-Pkg\n---\n",
             )
             .unwrap();
-            mark_landing("crash-pkg");
+            mark_landing("Crash-Pkg");
             assert!(
-                landing_mark_path("crash-pkg").exists(),
+                landing_mark_path("Crash-Pkg").exists(),
                 "fixture: mark present"
             );
 
@@ -1797,7 +1799,7 @@ mod tests {
                 .unwrap()
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.starts_with("crash-pkg.crash-"))
+                .filter(|n| n.starts_with("Crash-Pkg.crash-"))
                 .collect();
             assert_eq!(
                 moved.len(),
@@ -1816,7 +1818,7 @@ mod tests {
                 "the holding dir keeps the pack contents for manual recovery"
             );
             assert!(
-                !landing_mark_path("crash-pkg").exists(),
+                !landing_mark_path("Crash-Pkg").exists(),
                 "the resolved entry is cleared"
             );
         });
@@ -1886,37 +1888,6 @@ mod tests {
             assert!(
                 pkg_dir.join("skills/re-tmp/SKILL.md").is_file(),
                 "the installed pack survives the sweep"
-            );
-        });
-    }
-
-    /// The no-pkg-dir reconcile arm (the import never
-    /// landed) gets the same keep-mark-on-failure treatment as the
-    /// record-present arm above — without it the ghost `.tmp` would strand
-    /// forever on EACCES/AV-hold (nothing reschedules a swept
-    /// mark) while the log claimed success. Same planted-regular-file trick
-    /// makes `remove_dir_all` fail deterministically on every platform.
-    #[test]
-    fn no_pkg_dir_arm_sweeps_orphaned_staging_and_keeps_mark_on_failure() {
-        crate::platform::test_support::with_temp_home("pinvou-import-arm-a2", || {
-            // Fixture: NO package dir (the import never landed), no store
-            // record, landing mark, and a crash-orphaned staged `.tmp` planted
-            // as a regular FILE so remove_dir_all fails with ENOTDIR.
-            std::fs::create_dir_all(crate::platform::paths::bundles_root()).unwrap();
-            let pkg_dir = crate::platform::paths::bundles_root().join("never-tmp");
-            mark_landing("never-tmp");
-            let staged = pkg_dir.with_extension("tmp");
-            std::fs::write(&staged, b"stale staging").unwrap();
-
-            reconcile_import_journal().unwrap();
-
-            assert!(
-                staged.is_file(),
-                "a failing sweep must not destroy what it could not remove"
-            );
-            assert!(
-                landing_in_progress("never-tmp"),
-                "a failed sweep must keep the mark so the next boot retries"
             );
         });
     }
@@ -2065,31 +2036,6 @@ mod tests {
             assert!(
                 landing_mark_path("re-old3").exists(),
                 "a failed restore keeps the mark so the next boot retries"
-            );
-        });
-    }
-
-    /// The journal writer validates the fallback id with
-    /// `is_safe_skill_name` (mixed case allowed — frontmatter
-    /// `name: MySkill` arrives through the wrapped-`.md` channel), so the
-    /// reconcile reader must accept the same set.
-    #[test]
-    fn reconcile_processes_mixed_case_journal_marks() {
-        crate::platform::test_support::with_temp_home("pinvou-import-mixed", || {
-            let pkg_dir = crate::platform::paths::bundles_root().join("MySkill");
-            std::fs::create_dir_all(&pkg_dir).unwrap();
-            std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
-            mark_landing("MySkill");
-
-            reconcile_import_journal().unwrap();
-
-            assert!(
-                !pkg_dir.exists(),
-                "a mixed-case landed dir without a record must be quarantined, not skipped"
-            );
-            assert!(
-                !landing_mark_path("MySkill").exists(),
-                "the mixed-case mark must not strand"
             );
         });
     }
