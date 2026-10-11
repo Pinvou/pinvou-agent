@@ -1346,6 +1346,13 @@ where
     crate::install_rustls_provider();
     crate::ensure_release_env();
     crate::startup_process_env();
+    // Same as the GUI host (lib.rs run()): the startup timeline must be
+    // initialized before the freeze read in the setup closure — this host
+    // attaches no log plugin either, so without the file sink the
+    // freeze-persist CRITICAL below would reach only stderr and the
+    // "the startup timeline is the only durable channel" claim would be
+    // false exactly where it matters (round-19 review).
+    crate::platform::startup::init();
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(16 * 1024 * 1024)
@@ -1368,7 +1375,14 @@ where
             // touched by a windowless host freezes a polluted "upgrade"
             // verdict, plain flips back to fully open, and later GUI starts
             // respect the already-frozen marker (review #455 blocking item 3).
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
+            let freeze_persist_failed =
+                crate::features::marketplace::scope::load_disabled_bundles_startup();
+            if freeze_persist_failed {
+                // Mirror the GUI host: the CRITICAL log fired inside the read
+                // and this host attaches no log plugin, so the startup
+                // timeline is the only durable channel (round-17 review).
+                crate::features::marketplace::scope::mirror_freeze_persist_failure();
+            }
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
             }

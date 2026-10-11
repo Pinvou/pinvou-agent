@@ -427,9 +427,17 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
 /// empirically), so writes refuse and reads degrade — the accepted
 /// fail-closed directions; where flock does succeed (Linux), all peers
 /// opening the same path exclude on the same inode, so exclusion still
-/// holds — the file just is not the regular lock file. Windows relies
-/// on the owning profile directory's ACL,
-/// consistent with the rest of the application data tree.
+/// holds — the file just is not the regular lock file. A planted
+/// HARDLINK is likewise not refused (flock still excludes on the shared
+/// inode), but the stat-gated tighten then re-modes the linked victim's
+/// inode — disclosed, accepted for a private home (round-16 review).
+/// Deleting or replacing the file while a peer holds the lock splits
+/// exclusion across two inodes on BOTH platforms (Unix unlink is always
+/// possible; Windows opens the handle with the default share mode, which
+/// includes FILE_SHARE_DELETE) — do not delete the lock file while other
+/// Pinvou processes may be running. Cross-user protection on Windows relies
+/// on the owning profile directory's ACL, consistent with the rest of the
+/// application data tree.
 pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true);
@@ -463,14 +471,209 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
                     // (round-16 review on #517): deleting the file while a
                     // peer holds the flock splits exclusion across two
                     // inodes — the lost update the lock exists to prevent.
-                    std::io::Error::other(format!(
-                        "tighten {} to 0600: {error} (fix the file's permissions, or rename it aside while no other Pinvou process is running; it holds no data)",
-                        path.display()
-                    ))
+                    // The original ErrorKind is preserved (round-18 review)
+                    // so a future caller can branch on it (e.g. a
+                    // NotFound-style retry) instead of matching a flattened
+                    // `Other`.
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "tighten {} to 0600: {error} (fix the file's permissions, or rename it aside while no other Pinvou process is running; it holds no data)",
+                            path.display()
+                        ),
+                    )
                 })?;
         }
     }
     Ok(file)
+}
+
+/// Open a private-home DATA file for reading, hardened the same way
+/// [`open_private_lock_file`] hardens the lock file (round-18 review): on
+/// Unix the open carries `O_NOFOLLOW` (a planted symlink at the data path
+/// must fail the read rather than drag a hot reader into whatever the link
+/// points at) and `O_NONBLOCK` (a planted FIFO must not block the `open`),
+/// and an fstat gate refuses anything that is not a regular file (a FIFO or
+/// device node would otherwise feed the reader forever — `/dev/zero` is an
+/// unbounded read) plus anything larger than
+/// [`MAX_PRIVATE_DATA_READ_BYTES`] (a planted huge REGULAR file is the same
+/// unbounded-allocation shape on hot per-turn paths; round-26 review).
+/// Unlike the lock file this is read-intent: no create, no mode tightening.
+///
+/// Cohort note (round-26 review): a state file that is itself a symlink —
+/// a dotfile manager pointing it at a synced store — previously read
+/// through the link and now refuses (`ELOOP`): `disabled_bundles.json`
+/// recovers fail-closed (all packs off), `mcp.json` reads as unparseable
+/// and boot keeps its writers off. Deliberate: the planted-link threat
+/// model cannot distinguish a hostile link from a managed one; roaming the
+/// state via symlinks should point `PINVOU3_HOME` at the real location
+/// instead. Windows has no `O_NOFOLLOW` equivalent; the same documented
+/// residual applies (profile-directory ACL reliance, consistent with the
+/// rest of the application data tree).
+fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", path.display()),
+            ));
+        }
+        if metadata.len() > MAX_PRIVATE_DATA_READ_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} exceeds the private-state read cap ({MAX_PRIVATE_DATA_READ_BYTES} bytes); rename it aside if it is yours",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(file)
+}
+
+/// Upper bound for one private-state data read. The regular-file gate
+/// exists because `/dev/zero` is an unbounded read; a planted huge REGULAR
+/// file is the same shape (a full allocation per read on hot per-turn
+/// paths). Generous against every legitimate consumer — the family reads
+/// JSON state files, markers, and SKILL.md-sized bundle assets, nothing
+/// near this bound (round-26 review). Round-27: platform-general — the
+/// Windows leg used to read unbounded (the cap rationale does not stop at
+/// Unix), so the post-open metadata gate applies there too.
+const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read one of the private-home data files whose bytes are consent state,
+/// as UTF-8. Delegates to [`read_private_data_file_bytes`], whose body is
+/// the single hardened read (Unix symlink/FIFO/device refusal plus the
+/// Windows full-share-mode open); only the UTF-8 decode is added here.
+/// Disclosed delta vs the former inline `read_to_string`: an invalid-UTF-8
+/// refusal's message text comes from `FromUtf8Error` instead of std's
+/// stream text — the `ErrorKind` stays `InvalidData`, so kind-matched
+/// callers are unaffected.
+pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
+    read_private_data_file_bytes(path).and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    })
+}
+
+/// [`read_private_data_file`] for raw bytes: the salvage read that preserves
+/// a corrupt store's bytes before quarantine — and the single hardened body
+/// both readers share, so the salvage path must not hang on a planted FIFO
+/// either. That hardening (round-18 review — the lock file got it with an
+/// explicit rationale; the data file a hot reader touches every turn is the
+/// same trust surface) is the Unix symlink/FIFO/device refusal of
+/// [`open_private_data_file`], plus on Windows the full-share-mode open so a
+/// concurrent writer's atomic rename-replace (`MoveFileEx` persist) is never
+/// blocked by this reader — a missing `FILE_SHARE_DELETE` would turn a read
+/// in flight during a peer's locked persist into a sharing violation and a
+/// spurious refusal of that write after its retry budget. std's `OpenOptions`
+/// default share mode already includes all three flags; the `cfg(windows)`
+/// leg pins the requirement by name rather than relying on callers knowing
+/// the std default.
+pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        use std::io::Read as _;
+        let mut file = open_private_data_file(path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+    #[cfg(windows)]
+    {
+        use std::io::Read as _;
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        let mut file = options.open(path)?;
+        // Round-27: the same post-open gate the Unix leg applies — a planted
+        // non-regular target (reparse point followed to a device/pipe) or a
+        // multi-GB regular file must refuse instead of allocating unbounded
+        // on a hot per-turn read. Windows cannot carry the Unix pre-open
+        // O_NOFOLLOW|O_NONBLOCK flags, so the reparse-follow residual stays
+        // disclosed; this closes the unbounded-read shape itself.
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", path.display()),
+            ));
+        }
+        if metadata.len() > MAX_PRIVATE_DATA_READ_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} exceeds the private-state read cap ({MAX_PRIVATE_DATA_READ_BYTES} bytes); rename it aside if it is yours",
+                    path.display()
+                ),
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::fs::read(path)
+    }
+}
+
+/// Hardened CREATE+WRITE for private-home state files whose bytes are
+/// liveness/crash-recovery signals (the landing journal mark): the write runs
+/// under a cross-process lock, so a planted FIFO or symlink at the path must
+/// refuse, not block the lock holder's `open` (round-21 review — same trust
+/// surface and same consequence as the hardened reads above). Same Unix
+/// hardening as [`open_private_data_file`], plus create/truncate at 0600;
+/// the fstat gate runs BEFORE any byte is written, so a non-regular inode is
+/// refused untouched. Windows keeps plain create+write (no `O_NOFOLLOW`
+/// equivalent; the documented profile-ACL residual applies).
+pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", path.display()),
+            ));
+        }
+        // Round-26 review (minor): re-tighten a drifted mode like the lock
+        // file open does — a landing mark written by main's std::fs::write
+        // (0644) otherwise stayed world-readable forever. Stat-gated: the
+        // steady state pays one fstat and no chmod; a chmod failure refuses
+        // the write, the accepted fail-closed direction (the caller degrades
+        // loudly — e.g. the landing mark to live-by-absence with its warn).
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    use std::io::Write as _;
+    file.write_all(bytes)
 }
 
 #[derive(Clone)]
@@ -2357,14 +2560,12 @@ fn assert_private_mode_impl(path: &Path, expected: u32) {
 pub(crate) mod tests {
     use std::path::Path;
 
-    #[cfg(unix)]
-    use super::open_private_lock_file;
     use super::{
         atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
         rotate_log_if_oversized,
     };
     #[cfg(unix)]
-    use super::{create_secret_file, open_private_append_file};
+    use super::{create_secret_file, open_private_append_file, open_private_lock_file};
     #[cfg(any(
         windows,
         target_os = "macos",
@@ -3337,5 +3538,131 @@ pub(crate) mod tests {
             "the tighten must stay on the opened inode, never the symlink's target"
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"victim");
+    }
+
+    /// Round-18 review: the private-home DATA file read carries the same
+    /// planted-path hardening as the lock file. A symlink planted at the
+    /// data path must be refused (O_NOFOLLOW, ELOOP) instead of dragging a
+    /// hot reader into whatever the link points at.
+    #[cfg(unix)]
+    #[test]
+    fn private_data_read_refuses_a_planted_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("victim.txt");
+        std::fs::write(&target, b"victim").unwrap();
+
+        let data_path = temp.path().join("disabled_bundles.json");
+        std::os::unix::fs::symlink(&target, &data_path).expect("plant symlink");
+
+        assert!(
+            super::read_private_data_file(&data_path).is_err(),
+            "a planted symlink at the data path must be refused (O_NOFOLLOW)"
+        );
+        assert!(
+            super::read_private_data_file_bytes(&data_path).is_err(),
+            "the raw salvage read must refuse the planted symlink too"
+        );
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"victim",
+            "the symlink's target must be untouched"
+        );
+    }
+
+    /// Round-18 review: a planted FIFO must fail the data read fast (the
+    /// regular-file fstat gate) instead of hanging a hot reader thread.
+    #[cfg(unix)]
+    #[test]
+    fn private_data_read_refuses_a_fifo_without_hanging() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("disabled_bundles.json");
+        crate::platform::paths::tests::plant_fifo(&data_path);
+
+        // Bounded worker (round-26 review): a regression to an unhardened
+        // read blocks `open()` forever — the repo convention fails the test
+        // on a bounded receive instead of hanging the whole lane. The timed-
+        // out worker holds no lock, so the red does not cascade.
+        let refusal = |read: fn(&std::path::Path) -> std::io::Result<()>, label: &str| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let path = data_path.clone();
+            let worker = std::thread::spawn(move || {
+                let _ = tx.send(read(&path).is_err());
+            });
+            let refused = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    panic!("{label} must refuse a planted FIFO without hanging (5s bound)")
+                });
+            worker.join().unwrap();
+            assert!(refused, "{label} must be refused by the regular-file gate");
+        };
+        refusal(
+            |p| super::read_private_data_file(p).map(|_| ()),
+            "a planted FIFO read",
+        );
+        refusal(
+            |p| super::read_private_data_file_bytes(p).map(|_| ()),
+            "the raw salvage read",
+        );
+    }
+
+    /// Round-18 review: a regular data file reads back through the hardened
+    /// helpers byte-for-byte (the hardening must not perturb the normal
+    /// read).
+    #[test]
+    fn private_data_read_serves_a_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("disabled_bundles.json");
+        std::fs::write(&data_path, r#"{"scopes":{}}"#).unwrap();
+        assert_eq!(
+            super::read_private_data_file(&data_path).unwrap(),
+            r#"{"scopes":{}}"#
+        );
+        assert_eq!(
+            super::read_private_data_file_bytes(&data_path).unwrap(),
+            br#"{"scopes":{}}"#
+        );
+    }
+
+    /// Round-26 review: a planted huge REGULAR file must be refused by the
+    /// size cap instead of being read into memory in full (the same
+    /// unbounded-allocation shape the regular-file gate closes for
+    /// `/dev/zero`). The fixture uses a sparse file, so nothing is written.
+    #[test]
+    #[cfg(unix)]
+    fn private_data_read_refuses_an_oversized_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("huge.json");
+        let file = std::fs::File::create(&data_path).unwrap();
+        file.set_len(super::MAX_PRIVATE_DATA_READ_BYTES + 1)
+            .unwrap();
+        drop(file);
+        let error = super::read_private_data_file(&data_path)
+            .err()
+            .expect("an over-cap regular file must be refused");
+        assert!(
+            format!("{error}").contains("read cap"),
+            "the refusal must name the cap: {error}"
+        );
+        assert!(
+            super::read_private_data_file_bytes(&data_path).is_err(),
+            "the raw salvage read must honor the cap too"
+        );
+    }
+
+    /// Round-26 review: the hardened write re-tightens a drifted mode on an
+    /// existing file (a landing mark written by main's std::fs::write at
+    /// 0644 used to stay world-readable forever).
+    #[test]
+    #[cfg(unix)]
+    fn private_data_write_re_tightens_a_loose_existing_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mark.pending");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::write_private_data_file(&path, b"pending\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "a drifted mode must be re-tightened");
     }
 }

@@ -63,12 +63,52 @@ impl ConnectorGate {
     pub async fn apply_skills_command(&'static self) -> Result<Value, String> {
         let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
             let show = self.skills_should_show();
+            // Deny-first transaction boundary (#517 review): register the
+            // connector in the initialized DenyAll scopes BEFORE materializing
+            // skill files, so a refused gate sync aborts before `apply_skills`
+            // exposes anything — the connector can never end up enabled
+            // outside the deny list. The sync write can block on the
+            // cross-process flock (#515), hence inside spawn_blocking; a
+            // refused write (lock unavailable) fails the call so the safety
+            // default is never silently skipped.
+            crate::features::marketplace::deny_first_register_connector(self.id, show)?;
             if let Err(e) = self.apply_skills(show) {
                 // The card renders a localized category message only; the raw
                 // cause is logged here (stdout in dev runs, the app log in
                 // packaged builds — the backend attaches in all builds now).
                 log::warn!("[{}] apply skills failed: {e}", self.id);
                 return Err(e);
+            }
+            if show {
+                // Fail-visible belt-and-braces (review #455 R13-B3, preserved
+                // through the round-19 merge): deny-first above already
+                // registered the pair, and once the companion dirs are
+                // materialized the sync's known-clause skips it — this leg
+                // only acts (and its marker copy only surfaces) in the corner
+                // where the known-clause cannot vouch for a just-applied
+                // connector. Swallowing the error would let the connector go
+                // live with zero consent in that corner. It runs inside THIS
+                // spawn_blocking closure (the second hop it used to own was a
+                // pure wrapper with nothing between the two hops): still off
+                // the executor like the deny-first gate above, because the
+                // sync write can block on the cross-process flock (#515), and
+                // a frozen peer must not hang a Tokio worker. The fold merges
+                // the old hop's join-error branch into the single
+                // "apply skills task failed" log below (a JoinError no longer
+                // identifies its phase); the user-visible
+                // "spawn_blocking: {e}" copy is unchanged.
+                crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
+                    |e| {
+                        log::warn!(
+                            "[{}] persisting the default-off consent state failed: {e}",
+                            self.id
+                        );
+                        crate::features::marketplace::scope::consent_sync_failure_message(
+                            &format!("{} connected", self.id),
+                            &e,
+                        )
+                    },
+                )?;
             }
             Ok(show)
         })
@@ -80,21 +120,6 @@ impl ConnectorGate {
             log::warn!("[{}] apply skills task failed: {e}", self.id);
             format!("spawn_blocking: {e}")
         })??;
-        if show {
-            // Fail-visible persist (review #455 R13-B3, preserved through the
-            // round-19 merge): swallowing the error would let the connector go
-            // live with zero consent; the error text carries recovery guidance.
-            crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
-                |e| {
-                    log::warn!("[{}] persisting the default-off consent state failed: {e}", self.id);
-                    format!(
-                        "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: {e}",
-                        self.id,
-                        crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-                    )
-                },
-            )?;
-        }
         Ok(json!({ "visible": show }))
     }
 
@@ -116,8 +141,14 @@ impl ConnectorGate {
 
     /// `refresh_connector_auth_gates` 的单连接器步骤(在线程池里跑):
     /// 实时探测应否可见,按结果写 / 删技能目录。
+    /// Same deny-first boundary as `apply_skills_command` (#517 review
+    /// round 6): the auth-gate refresh and the startup backfill also
+    /// materialize skill files, so a connector flipping visible here must
+    /// register in the initialized DenyAll scopes first; a refused
+    /// registration fails the refresh before anything is exposed.
     pub fn refresh_step(&self) -> Result<bool, String> {
         let show = self.skills_should_show();
+        crate::features::marketplace::deny_first_register_connector(self.id, show)?;
         (self.apply_bundle_skills)(show)
             .map_err(|e| format!("刷新{}技能门控失败: {e}", self.display_name))?;
         if show {
@@ -221,6 +252,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// Marker "materialization": the closure cannot capture, so it touches the
+    /// (env-isolated) PINVOU3_HOME — exactly what the real apply fns do.
+    fn gate_apply_marker(visible: bool) -> std::io::Result<()> {
+        let marker = crate::platform::paths::pinvou3_home().join("gatetest-skills");
+        if visible {
+            std::fs::create_dir_all(marker)
+        } else {
+            let _ = std::fs::remove_dir_all(&marker);
+            Ok(())
+        }
+    }
+
+    /// Round-8 review: the deny-first wiring is pinned THROUGH the two
+    /// production command bodies (`apply_skills_command`, `refresh_step`),
+    /// not only through `deny_first_register_connector` driven directly — a
+    /// revert of these bodies to apply-then-swallow previously kept the
+    /// entire suite green. A directory at the lock path makes the gate write
+    /// refuse; nothing may materialize and the refusal must surface.
+    #[test]
+    fn command_bodies_register_deny_first_and_refusal_lands_nothing() {
+        use crate::features::marketplace::ConnectorScope;
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_for, save_disabled_bundles_for,
+        };
+
+        // Shared RAII temp-home helper (round 9): a failing assertion unwinds
+        // past a straight-line env restore, which would leave PINVOU3_HOME
+        // pointed at a deleted temp dir and cascade unrelated failures.
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-body", || {
+            // Initialized (empty) Code scope so a fresh registration has
+            // somewhere to land instead of vanishing into the default.
+            save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
+            let home = crate::platform::paths::pinvou3_home();
+            let lock_dir = home.join("disabled_bundles.lock");
+            // The save above created the lock FILE; replace it with a
+            // directory so every lock open fails.
+            let _ = std::fs::remove_file(&lock_dir);
+            std::fs::create_dir_all(&lock_dir).unwrap();
+            let marker = home.join("gatetest-skills");
+            // apply_skills_command takes &'static self (production gates are
+            // process-static table entries); leak the harness gate to match.
+            let gate: &'static ConnectorGate = Box::leak(Box::new(ConnectorGate {
+                id: "gatetest",
+                disabled_filename: "gatetest_disabled",
+                display_name: "GateTest",
+                ready_probe: || true,
+                apply_bundle_skills: gate_apply_marker,
+            }));
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            // Refused gate: both production bodies surface the refusal and
+            // land nothing.
+            let err = rt
+                .block_on(gate.apply_skills_command())
+                .expect_err("broken lock must refuse apply_skills_command");
+            assert!(
+                err.contains("disabled_bundles.lock"),
+                "refusal must name the lock: {err}"
+            );
+            assert!(!marker.exists(), "a refused gate must materialize nothing");
+            let err = gate
+                .refresh_step()
+                .expect_err("broken lock must refuse refresh_step");
+            assert!(
+                err.contains("disabled_bundles.lock"),
+                "refusal must name the lock: {err}"
+            );
+            assert!(
+                !marker.exists(),
+                "a refused refresh must materialize nothing"
+            );
+
+            // Lock available: both bodies proceed, register the fresh id, land.
+            std::fs::remove_dir_all(&lock_dir).unwrap();
+            let value = rt.block_on(gate.apply_skills_command()).unwrap();
+            assert_eq!(value["visible"], serde_json::json!(true));
+            assert!(marker.exists(), "the unrefused apply must materialize");
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Code).contains(&"gatetest".to_string()),
+                "the command body must register the fresh connector deny-first"
+            );
+            std::fs::remove_dir_all(&marker).unwrap();
+            assert!(gate.refresh_step().unwrap());
+            assert!(marker.exists(), "the unrefused refresh must materialize");
+        });
+    }
+
     /// 注册表恰好覆盖四个 CLI 连接器,且 id 与文件名前缀一一对应。
     #[test]
     fn gates_table_covers_the_four_cli_connectors() {
@@ -318,9 +439,16 @@ mod tests {
     /// failure copy carries the ONE shared frontend marker
     /// (`scope::CONSENT_SYNC_FAILURE_MARKER`) — the localized template on the
     /// store cards keys on exactly this string, so a rewording here must move
-    /// the frontend matcher in the same commit.
+    /// the frontend matcher in the same commit. The literal is asserted (not
+    /// reformatted and re-matched) so a marker rename fails here instead of
+    /// silently degrading the frontend guidance to generic copy.
     #[test]
     fn skill_gate_consent_failure_message_keeps_the_frontend_marker() {
+        assert_eq!(
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
+            "persisting their default-off consent state failed",
+            "the shipped marker is the string the frontend consentFailure matcher keys on"
+        );
         let message = format!(
             "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: store down",
             "wecom",

@@ -46,13 +46,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
+use crate::platform::filesystem::{read_private_data_file, read_private_data_file_bytes};
 use crate::platform::paths;
 
 /// installed.json, mcp.json, and managed Python environment liveness share one transaction
 /// domain. Install, uninstall, and startup repair must take this lock before reading committed
 /// state so cleanup never acts on a stale snapshot.
 ///
-/// Lock order vs `scope::DISABLED_BUNDLES_FILE_LOCK` (round-11 M1): the only
+/// Lock order vs the scope file's cross-process lock (`scope::`
+/// `disabled_bundles_lock_path()`, held via `file_lock::with_file_lock`)
+/// (round-11 M1): the only
 /// permitted nesting is TRANSACTION → FILE (e.g. uninstall's state cleanup
 /// re-enters the scope file lock). The reverse order is forbidden: scope
 /// read/write paths (DenyAll resolution, save_disabled_bundles_for) must
@@ -130,6 +133,12 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
     if let Ok(entries) = std::fs::read_dir(parent) {
         let identical_backup_exists = entries.flatten().any(|entry| {
             entry.file_name().to_string_lossy().starts_with(&prefix)
+                // Round-22 review: skip non-regular siblings before reading —
+                // a planted FIFO named like a backup would otherwise block
+                // this scan on the corrupt-recovery path. `file_type` does
+                // not follow symlinks, so a symlink sibling is skipped too
+                // (an extra evidence copy at worst, never a lost one).
+                && entry.file_type().is_ok_and(|t| t.is_file())
                 && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == content.as_bytes())
         });
         if identical_backup_exists {
@@ -157,6 +166,22 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
 /// self-healing transient hold into Integrity (which blocks every assistant startup) would be disproportionate (review 2026-08-28).
 const JOURNAL_REMOVE_ATTEMPTS: usize = 3;
 const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
+
+/// Round-20 P3: the corrupt/unreadable-installed.json recovery is reachable
+/// from every policy read (the DenyAll expansion runs per turn on the hot
+/// path, `recover_corrupt_installed` under the transaction lock) while the
+/// file stays broken — its notices must log once per process, not one line
+/// per read. Deliberately never resets (the degrade-once latch convention;
+/// recovery correctness is unaffected), and shared with scope.rs's DenyAll
+/// fallback warn so both reporters of the same condition honor one latch.
+static INSTALLED_RECOVERY_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn log_installed_recovery_once(message: String) {
+    if !INSTALLED_RECOVERY_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::warn!("{message}");
+    }
+}
 
 #[cfg(test)]
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
@@ -303,14 +328,35 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
     // exists, skip writing a new one — repeated reads of a file whose
     // recovery cannot complete (unverifiable mcp.json, failing save) must not
     // accumulate timestamped copies. One preserved copy is enough for manual
-    // recovery; deleting it re-arms the quarantine.
+    // recovery; deleting it re-arms the quarantine. Round-16 (review): only a
+    // non-empty REGULAR file counts as a preserved copy — a stray empty file
+    // or a planted directory with the prefix is not evidence, and treating it
+    // as one would skip the quarantine and let the caller overwrite the
+    // genuinely corrupt original with nothing preserved. A real copy is
+    // always write_atomic output (non-empty), so this cannot double-write
+    // over a legitimate copy.
+    // Round-20 review (P3): EXCEPT when the corrupt content itself is empty —
+    // its legitimate copy is a zero-byte file too, so under the strict rule
+    // every read of a persistently-unrecoverable empty file wrote another
+    // zero-byte copy without bound. For empty content there are no bytes to
+    // preserve, so any prefixed regular file counts and the accumulation
+    // stops; for non-empty content the strict rule stands.
     let sibling_prefix = format!("{name}.corrupt.");
+    let empty_content = content.is_empty();
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.flatten() {
             if entry
                 .file_name()
                 .to_string_lossy()
                 .starts_with(&sibling_prefix)
+                // One metadata() covers both predicates: a DirEntry's
+                // metadata does not traverse symlinks (the same lstat
+                // semantics the file_type() check had) and already carries
+                // the length, so the second syscall bought nothing.
+                && entry
+                    .metadata()
+                    .map(|m| m.is_file() && (m.len() > 0 || empty_content))
+                    .unwrap_or(false)
             {
                 return Ok(());
             }
@@ -329,7 +375,11 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
+    // Hardened read (round-20 P2): these snapshots cover installed.json and
+    // mcp.json — private-home consent-adjacent state — so the open must not
+    // hang on a planted FIFO or follow a swapped symlink while the
+    // transaction lock is held.
+    match read_private_data_file_bytes(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
@@ -341,6 +391,13 @@ fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
     }
+    // Round-24 minor: back to the platform layer's own private atomic write.
+    // The swap to the foundation's `deepseek_tui::utils::write_atomic` was
+    // behavior-preserving (both are private-mode tmp+rename) but it reached
+    // into the foundation crate's utils from a feature module and swapped a
+    // reviewed write primitive undisclosed; the app's platform primitive is
+    // the right dependency direction (features → platform/core) and the one
+    // this PR's write-path pins were reviewed against.
     crate::platform::filesystem::atomic_write_private(path, bytes)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
@@ -561,14 +618,18 @@ pub use types::{
 // scope.rs 统一落盘单一 `disabled_bundles.json`(取代 `disabled_connectors.json` /
 // `disabled_skills.json` 双文件)。这里 re-export 保留调用路径;连接器/技能/CLI 开关
 // 统一按包 id 落盘,`skill:` 前缀跨文件借道清除。
-// `save_disabled_bundles`（plain 快捷写）仅测试在用，随实现一并 cfg(test)。
-#[cfg(test)]
-pub use crate::features::marketplace::scope::save_disabled_bundles;
+// `save_disabled_bundles` (the plain shortcut write) and
+// `load_disabled_bundles` (the plain shortcut read; round-20 review: after
+// windowless hosts moved to the startup read, production has no callers)
+// are test-only now and are `cfg(test)` along with their implementations.
 pub use crate::features::marketplace::scope::{
-    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
-    sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh, unavailable_bundles_for,
+    deny_first_register_connector, load_disabled_bundles_for, load_disabled_bundles_startup,
+    load_hidden_bundles_for, remove_bundle_from_disabled_scopes, save_disabled_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh,
+    unavailable_bundles_for,
 };
+#[cfg(test)]
+pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
 
 /// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
 ///
@@ -698,11 +759,20 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
     // （M-8；锁见 file_lock.rs）。
     connectors::with_mcp_json_lock(|| {
         let mcp_path = paths::mcp_config_path();
-        if !mcp_path.is_file() {
-            return Ok(false);
-        }
-        let content =
-            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+        // Round-26 MAJOR 3: the read goes through the hardened private-data
+        // primitive. The raw `is_file()` + `read_to_string` pair was a
+        // check-then-act inside the mcp.lock critical section: a planted
+        // FIFO swapped in after the check blocked `open()` forever while
+        // HOLDING mcp.lock, wedging every mcp.json writer in every process —
+        // the exact class the round-22 P1 fix closed for recycle-bin.json.
+        // Absent stays `Ok(false)`; a refused read (FIFO/symlink/non-regular)
+        // now fails the migration loudly instead of silently skipping, the
+        // same fail-closed direction as the sibling in-lock reads.
+        let content = match crate::platform::filesystem::read_private_data_file(&mcp_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("读取 mcp.json 失败: {e}")),
+        };
         let mut mcp: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
         let mut changed = false;
@@ -831,6 +901,36 @@ impl Default for MarketplaceManager<SystemCredentialStore> {
     }
 }
 
+/// Withdraw a builtin CLI connector's materialized pack dir during uninstall
+/// (round-17 review). Every removal error propagates: the caller runs inside
+/// the uninstall transaction, so a failure rolls the whole uninstall back and
+/// the consent strip (which runs only after the transaction commits) never
+/// sees a partially withdrawn pack. `NotFound` on each step is tolerated — a
+/// connector without materialized `mcp/` or a re-entrant teardown treats the
+/// step as already done.
+fn withdraw_materialized_connector_dirs(tool_id: &str, pkg_dir: &Path) -> Result<(), String> {
+    for sub in ["mcp", "skills"] {
+        let dir = pkg_dir.join(sub);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "failed to withdraw the builtin connector's materialized dir ({tool_id}): {sub}: {e}"
+                ));
+            }
+        }
+    }
+    match std::fs::remove_dir(pkg_dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        // NotEmpty here means content outside the materialization subtrees
+        // survived (hand-placed files under the connector id): aborting keeps
+        // it undeleted instead of destroying it unrecycled.
+        Err(e) => Err(format!("failed to remove the pack dir ({tool_id}): {e}")),
+    }
+}
+
 impl MarketplaceManager<SystemCredentialStore> {
     pub fn new() -> Self {
         Self::with_store(SystemCredentialStore::new())
@@ -870,7 +970,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 if !manifest_path.is_file() {
                     continue;
                 }
-                match std::fs::read_to_string(&manifest_path) {
+                // Round-27 review: consent_gate_bundle_already_known runs this
+                // walk on every gate evaluation, so the read goes through the
+                // hardened private-data primitive like its spec_for sibling —
+                // a manifest swapped to a FIFO/symlink in the probe-to-read
+                // window refuses (log + skip the pack) instead of hanging the
+                // gate or reading unbounded.
+                match crate::platform::filesystem::read_private_data_file(&manifest_path) {
                     Ok(content) => match serde_json::from_str::<ToolManifest>(&content) {
                         Ok(manifest) => {
                             by_id.insert(manifest.id.clone(), manifest);
@@ -913,8 +1019,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// set unknown" (review #455 R5-B2). The corrupt recovery is **read-only
     /// here**: persistence is owned by writer callers under the marketplace
     /// transaction lock (round-11 B1), so this path never acquires
-    /// MARKETPLACE_TRANSACTION_LOCK — a read under DISABLED_BUNDLES_FILE_LOCK
-    /// (DenyAll resolution) must not block on the transaction lock, and a
+    /// MARKETPLACE_TRANSACTION_LOCK — a read under the scope file's
+    /// cross-process lock (DenyAll resolution) must not block on the
+    /// transaction lock, and a
     /// corrupt installed.json must not hang installs or the startup repair.
     pub(crate) fn try_installed_ids(&self) -> Result<Vec<String>, String> {
         self.read_installed(false)
@@ -942,14 +1049,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// (persist; the caller holds the transaction lock). Non-UTF-8 content is
     /// salvaged via the raw byte read and treated as corrupt (round-11 m2) —
     /// only a failing raw read stays "unreadable".
+    /// Both reads go through the hardened private-data primitives (round-21
+    /// review): this runs inside the scope lock's DenyAll expansion and under
+    /// the transaction lock, so a planted FIFO/symlink at the path must
+    /// refuse, not block the lock holder (same discipline as
+    /// disabled_bundles.json itself). NotFound semantics unchanged.
     fn read_installed(&self, writer: bool) -> Result<Vec<String>, String> {
-        let content = match std::fs::read_to_string(&self.installed_file) {
+        // Hardened read (round-20 P2): this file is consent-adjacent state
+        // read inside the scope critical section (the DenyAll expansion) and
+        // under the transaction lock — the open must not hang on a planted
+        // FIFO there.
+        let content = match read_private_data_file(&self.installed_file) {
             Ok(c) => c,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => {
                 // Salvage the raw bytes: invalid UTF-8 is a corrupt file (raw
                 // bytes readable), not an unreadable one (round-11 m2).
-                match std::fs::read(&self.installed_file) {
+                match read_private_data_file_bytes(&self.installed_file) {
                     Ok(bytes) => {
                         return self.recover_corrupt_installed(&bytes, "invalid UTF-8", writer);
                     }
@@ -987,9 +1103,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 "installed.json is invalid: {parse_error}; {quarantine_err}; installed set unknown, leaving the corrupt file untouched"
             )
         })?;
-        eprintln!(
+        log_installed_recovery_once(format!(
             "[marketplace] installed.json is invalid: {parse_error}; quarantined, rebuilding from mcp.json"
-        );
+        ));
         let recovered = self.recover_installed_ids_from_mcp().map_err(|recover_error| {
             format!(
                 "installed.json is invalid: {parse_error}; {recover_error}; installed set unknown, DenyAll gate falls back to the full catalog"
@@ -1000,10 +1116,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // never persist: the write half of the recovery belongs to the
             // next transaction-holding writer (install/uninstall/repair), so
             // no lock ordering between the two mutexes ever forms here.
-            eprintln!(
-                "[marketplace] installed.json corrupt recovery computed in memory ({:?} ids); persistence deferred to the next transaction-holding writer",
+            log_installed_recovery_once(format!(
+                "[marketplace] installed.json corrupt recovery computed in memory ({} ids); persistence deferred to the next transaction-holding writer",
                 recovered.len()
-            );
+            ));
             return Ok(recovered);
         }
         // A failed recovery overwrite is reported as Err: the corrupt
@@ -1371,7 +1487,18 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 卸载工具：从 installed.json + mcp.json 中移除，包目录按来源处置
     /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
-    pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
+    /// Uninstalls a marketplace tool: removes the mcp.json entry, the
+    /// installed.json id, the bundles.json mirror, and disposes the package
+    /// dir by source. Returns whether THIS call actually removed the install
+    /// record: a vacuous uninstall (no record — e.g. racing a same-id install
+    /// whose deny-first gate just registered the entries but whose record has
+    /// not landed yet) returns `Ok(false)` and must leave every scope entry
+    /// alone, or it would re-enable the package as it lands. Callers must
+    /// key every scope-strip decision on this outcome — never on their own
+    /// pre-uninstall probe, and never after this function returns (the
+    /// transaction lock is released; the in-transaction strip in
+    /// `cleanup_uninstalled_tool_state` is the only race-free one).
+    pub fn uninstall(&self, tool_id: &str) -> Result<bool, String> {
         // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
         // §3.1 server-side defense in depth): even if the frontend never
         // offers the action, a direct command/IPC call must be rejected here.
@@ -1384,6 +1511,60 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
             ));
         }
+        // Round-20 review (P2): serialize the whole uninstall against same-id
+        // imports landing in ANOTHER process too. The transaction lock and
+        // the per-id import mutex are process-local, so a cross-process
+        // reimport whose deny-first gate ran pre-uninstall (known-skip)
+        // could land after the in-lock strip, and its post-landing belt sync
+        // would skip again on the fresh record: live pack, zero consent
+        // rows. The landing lease is the import pipeline's own cross-process
+        // exclusion (see `plugin_import::open_landing_lease`): holding it
+        // here waits out a live peer import and excludes new ones for the
+        // span, so the import's gate either ran before this uninstall (its
+        // rows are stripped together with the record this call removes) or
+        // runs after it (a fresh registration lands governed). Blocks while
+        // a peer import is mid-flight — the OS releases the lease when the
+        // peer dies; the command already runs in spawn_blocking. Startup
+        // sweep callers that already hold the lease go through
+        // `uninstall_leased`.
+        // Round-22 review (the round-21 M2 residual): the lease file name is
+        // `<journal>/<id>.landing.lock`, derived from this id, and the lease
+        // opens BEFORE any other validation — `Path::join` lets an absolute
+        // id replace the journal base and a separator id escape it, planting
+        // an empty 0600 lock file outside the journal. Restore validates its
+        // id (`is_safe_skill_name`) and the import pipeline validates in
+        // `detect_components`; this was the last unguarded lease taker. The
+        // rejected subset is deliberately narrow (empty, path separators,
+        // Windows drive colon, NUL) so legit legacy ids pass, and the lease
+        // keys on the same stripped id the import pipeline uses, so the
+        // exclusion still pairs with the import it serializes against.
+        let lease_id = tool_id.strip_prefix("skill:").unwrap_or(tool_id);
+        // Windows keeps `:` in the hostile set (drive-relative paths / ADS).
+        // Unix filenames allow it, and legacy custom-MCP pack ids derived
+        // verbatim from such directory names (round-27 review minor) must
+        // stay removable — before this guard they uninstalled fine. `/` and
+        // NUL escape the journal path on every platform; `\` rides along as
+        // path-separator paranoia.
+        #[cfg(windows)]
+        let hostile = lease_id.is_empty() || lease_id.contains(&['/', '\\', ':', '\0'][..]);
+        #[cfg(not(windows))]
+        let hostile = lease_id.is_empty() || lease_id.contains(&['/', '\\', '\0'][..]);
+        if hostile {
+            return Err(format!("invalid tool id '{tool_id}'"));
+        }
+        let mut landing_lease = plugin_import::open_landing_lease(lease_id)
+            .map_err(|error| format!("open the landing lease for {lease_id}: {error}"))?;
+        let _landing_lease_guard = landing_lease
+            .write()
+            .map_err(|error| format!("lock the landing lease for {lease_id}: {error}"))?;
+        self.uninstall_leased(tool_id)
+    }
+
+    /// The uninstall body without the cross-process landing lease. Callers
+    /// that already hold the lease for `tool_id` (the startup retired-tool
+    /// sweep) call this directly — the lease is an flock, so re-acquiring it
+    /// on a fresh fd from the same process would self-block.
+    pub(crate) fn uninstall_leased(&self, tool_id: &str) -> Result<bool, String> {
         // 并发守护（M2）由事务锁承担：卸载全程持 MARKETPLACE_TRANSACTION_LOCK，
         // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
         // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的
@@ -1413,6 +1594,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .unwrap_or_default()
             .into_iter()
             .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
+        // Snapshot before the transaction closure moves `upload_record`: the
+        // in-lock cleanup needs to know whether companion dirs were recycled
+        // with the package (Upload path) to strip their entries in-lock.
+        let recycles_upload = upload_record.is_some();
 
         // Upload 整包回收 preflight（M2）：回收站不可用（同 id 目标残留/根目录不可
         // 建）时在拆任何供给面之前 fail loud —— 此前 secrets/installed.json/mcp.json
@@ -1454,6 +1639,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 覆盖 mcp.json / installed.json，bundles.json 镜像与包目录在快照之外，
         // 拒绝若发生在它们之后，回滚将不完整。调整顺序前先读这条。
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let mut removed_install_record = false;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
             let mut installed = self.try_installed_ids_for_writer()?;
@@ -1464,6 +1650,15 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
             // removed_by_us = 记录是否由本次调用删除：回收失败回滚仅以本次所删为限
             // 回写，不复活他人已删的记录。
+            // Snapshot the mirror record before the remove: the transaction
+            // rollback does not cover bundles.json, so a mid-transaction abort
+            // (the CLI-connector withdrawal leg below) restores the ORIGINAL
+            // record itself, like the recycle-failure leg. Unfiltered: a
+            // tombstone (installed=false) that store.remove takes is still the
+            // exact pre-uninstall state an aborted uninstall must leave
+            // behind — the installed-only filter used to drop it and silently
+            // erase the record from an aborted uninstall (round-19 review).
+            let pre_remove_record = store.get(tool_id).ok().flatten();
             let removed_by_us = match store.remove(tool_id) {
                 Ok(removed) => removed,
                 Err(e) => {
@@ -1471,6 +1666,39 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         "[marketplace] bundles.json 镜像删除失败（uninstall {tool_id}）: {e}"
                     );
                     false
+                }
+            };
+            removed_install_record = removed_by_us;
+
+            // Write-back core shared by both abort legs below: an aborted
+            // uninstall must leave the bundles.json mirror exactly as it
+            // found it, so the record THIS call removed is written back (and
+            // only that one — a record a concurrent actor already removed is
+            // never revived). The legs' log copies are pinned
+            // review-observable text (Chinese on the recycle leg, English on
+            // the round-17 withdrawal leg) and are deliberately NOT unified:
+            // `context` selects each leg's exact wording.
+            let write_back_removed_record = |record: Option<store::BundleRecord>, context: &str| {
+                match record {
+                    Some(record) => {
+                        if let Err(re) = store.upsert(record) {
+                            if context == "recycle" {
+                                log::warn!(
+                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
+                                );
+                            } else {
+                                log::warn!(
+                                    "[marketplace] record write-back after a failed withdrawal ({tool_id}): {re}"
+                                );
+                            }
+                        }
+                    }
+                    // Only the withdrawal leg restores an optional snapshot
+                    // (the recycle leg always holds its record), so the
+                    // missing-snapshot copy is withdrawal-worded.
+                    None => log::warn!(
+                        "[marketplace] record cannot be written back after a failed withdrawal ({tool_id}): no pre-uninstall record"
+                    ),
                 }
             };
 
@@ -1484,6 +1712,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // - 其余一律保留 `bundles/<id>/`（用户唯一副本）：手写自定义 MCP
             //   （migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
             //   Preset）、无记录、bundles.json 读失败。
+            // - Builtin CLI connector: withdraw the whole pack dir (English
+            //   per CONTRIBUTING — round-17 review): every file under
+            //   `bundles/<id>/` is companion-skill materialization from
+            //   embedded assets, nothing user-unique, and the DenyAll
+            //   consent gate's materialized-dirs known-clause keys on these
+            //   very files. Keeping them after the in-lock cleanup stripped
+            //   the consent rows and the sync ledger would let the gate
+            //   vouch for a consent state that no longer exists — a re-show
+            //   would skip registration for as long as the dirs stay. The
+            //   next gated show re-extracts and registers fresh.
             let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
             if let Some(record) = upload_record {
                 if pkg_dir.exists() {
@@ -1499,11 +1737,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // installed.json / mcp.json 由下方事务 rollback 恢复；
                         // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
                         if removed_by_us {
-                            if let Err(re) = store.upsert(record) {
-                                log::warn!(
-                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
-                                );
-                            }
+                            write_back_removed_record(Some(record), "recycle");
                         }
                         return Err(format!("移入回收站失败（{tool_id}）: {e}"));
                     }
@@ -1513,6 +1747,43 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     let _ = std::fs::remove_dir_all(pkg_dir.join("mcp"));
                     let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
                     let _ = std::fs::remove_dir(&pkg_dir);
+                }
+            } else if !source_may_be_upload && !bundle::cli_bundle_skill_dirs(tool_id).is_empty() {
+                // Builtin CLI connector (round-17 review): withdraw the
+                // materialized companion skills together with the record.
+                // Their presence is the consent gate's materialized-dirs
+                // known-clause evidence; leaving them while the in-lock
+                // cleanup just stripped the consent rows and the sync ledger
+                // would make every later show/refresh skip registration for
+                // a consent state that no longer exists. All content here is
+                // redeliverable embedded materialization — the next gated
+                // show re-extracts and registers fresh (fail-closed heal).
+                //
+                // Deletion failures propagate (round-18 review): the consent
+                // strip only runs after THIS transaction commits, so a failed
+                // withdrawal aborts the uninstall with the consent rows and
+                // the ledger intact — the exact invariant the swallowed
+                // errors used to break (a committed uninstall with stripped
+                // rows but surviving dirs lets the gate vouch for a consent
+                // state that no longer exists). A NotEmpty on the pack dir
+                // itself after both subtrees are gone means unexpected
+                // (non-materialized) content: failing closed keeps it
+                // undeleted rather than destroying it unrecycled.
+                if pkg_dir.exists() {
+                    if let Err(withdraw_error) =
+                        withdraw_materialized_connector_dirs(tool_id, &pkg_dir)
+                    {
+                        // The transaction rollback covers mcp.json /
+                        // installed.json but the mirror record and the pack
+                        // dir live outside its snapshot — restore the record
+                        // like the recycle-failure leg above, so the aborted
+                        // uninstall leaves the registration state exactly as
+                        // it found it.
+                        if removed_by_us {
+                            write_back_removed_record(pre_remove_record.clone(), "withdrawal");
+                        }
+                        return Err(withdraw_error);
+                    }
                 }
             }
             Ok(())
@@ -1532,7 +1803,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // fully usable instead of producing a half-uninstalled state.
         // Upload 组合包的 companion 目录已随整包搬离（false 分支的清理自然空转）；
         // 预置 companion 物理删除沿用既有语义（可重获得）。
-        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets, false, &companion_owners);
+        // Scope entries are consent state: strip them only when this call
+        // actually removed the install record. A vacuous uninstall (no record
+        // — e.g. racing a same-id install whose deny-first gate just
+        // registered the entries but whose record has not landed yet) must
+        // leave the entries alone, or it would re-enable the package as it
+        // lands. Only the scope legs are gated; secrets of a provisioned
+        // manifest still belong to this teardown. The strips here run under
+        // MARKETPLACE_TRANSACTION_LOCK — a registration a concurrent install
+        // makes after this point survives (round-11 P2-1); there is no
+        // post-return strip.
+        self.cleanup_uninstalled_tool_state(
+            tool_id,
+            &secret_targets,
+            false,
+            &companion_owners,
+            removed_install_record,
+            recycles_upload,
+        );
 
         // Environments and wheel caches are garbage-collected by reference to the still-installed MCPs.
         // A failed cleanup never rolls back the finished uninstall; the next uninstall retries, so a held file cannot leave the tool stuck in a half state where the config is gone but uninstall keeps erroring.
@@ -1541,7 +1829,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             log::warn!("[marketplace] prune Python dependencies failed: {error}");
         }
 
-        Ok(())
+        Ok(removed_install_record)
     }
 
     fn active_python_locks_from_committed_state(
@@ -1663,11 +1951,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         secret_targets: &[(String, String)],
         preserve_companion_skills: bool,
         companion_owners: &[(String, String)],
+        remove_scope_entries: bool,
+        strip_recycled_companions: bool,
     ) {
         for (target, key) in secret_targets {
             let reference = secrets::mcp_secret_reference(tool_id, target, key);
             let _ = self.credential_store.delete(&reference);
             secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
+        }
+        // Scope entries are consent state: strip them only when this call
+        // actually removed the install record. A vacuous uninstall (no record
+        // — e.g. racing a same-id install whose deny-first gate just
+        // registered the entries but whose record has not landed yet) must
+        // leave the entries alone, or it would re-enable the package as it
+        // lands. Only the scope legs are gated; secrets of a provisioned
+        // manifest still belong to this teardown.
+        if !remove_scope_entries {
+            return;
         }
         // Round-26 MAJOR 1 (review #455): `tool_id` is a pack id and this
         // cleanup runs after the dir is deleted/redeliverable-stripped — the
@@ -1701,33 +2001,85 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             .into_iter()
             .collect();
-        for skill_id in self.companion_skills(tool_id) {
-            if !unavailable.contains(&skill_id) {
-                continue;
-            }
-            // Round-28 MAJOR 1 (review #455): the owner comes from the
-            // pre-transaction snapshot threaded by the caller — re-resolving
-            // here would run against the post-commit world where this tool's
-            // claim is dead and the fallback can re-own the name onto a live
-            // foreign pack. Exact form on that snapshot; the best-effort
-            // swallow stays per this leg's policy.
-            let Some(owner) = companion_owners
-                .iter()
-                .find(|(sid, _)| sid == &skill_id)
-                .map(|(_, owner)| owner)
-            else {
-                // No pre-transaction snapshot (the companion list changed
-                // between snapshot and cleanup): keep the conservative no-op —
-                // without a claims-alive resolution this leg must not guess.
+        // Iterate the PRE-TRANSACTION snapshot, not the live manifest: an
+        // Upload recycle has already moved the package directory, so the
+        // manifest (and with it the live companion list) is gone by the time
+        // this cleanup runs — the snapshot is the only record of which
+        // companions existed (round-28 MAJOR 1, review #455).
+        for (skill_id, owner) in companion_owners.iter() {
+            let skill_id = skill_id.as_str();
+            let owner = owner.as_str();
+            // Round-26 review (minor): a residue manifest can declare the
+            // tool's OWN id in `companion_skills` (the manifest is read
+            // verbatim, never validated against the tool id). The physical
+            // uninstall below would then re-lock the per-id import mutex the
+            // retired-tool sweep already holds across `uninstall_leased` —
+            // a non-reentrant std Mutex on the boot thread, i.e. a boot
+            // hang. The tool's own teardown is this very call, so a
+            // self-companion entry is garbage: skip it loudly.
+            if skill_id == tool_id {
                 log::warn!(
-                    "[marketplace] no pre-transaction owner snapshot for companion '{skill_id}' of {tool_id}; skipping its consent cleanup"
+                    "[marketplace] residue manifest of {tool_id} declares itself as its own companion skill; skipping the self-companion cleanup entry"
                 );
                 continue;
-            };
-            let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(&owner) {
+            }
+            // On the Upload-recycle path the package directory (the
+            // companions' own copies included) has already moved into the
+            // recycle bin inside this transaction: there is nothing to
+            // uninstall, the live `unavailable` enumeration cannot see the
+            // companions, and a sweeping `SkillMarketplaceManager::uninstall`
+            // must NOT run — its candidate scan covers every
+            // `bundles/*/skills/<name>` copy and could delete a FOREIGN
+            // installed pack's same-named companion. Strip the consent rows
+            // directly; the physical copies left with the package. This leg
+            // deliberately skips the `unavailable` shared-claimant guard the
+            // else-branch keeps: the whole point is that the recycled copies
+            // are invisible to the live enumeration, and admission checks
+            // reject two live packs sharing a companion, so the snapshot
+            // owner can only be this pack's own (round-14 review: a foreign
+            // strip would require a poisoned owner snapshot).
+            if strip_recycled_companions {
+                Self::strip_companion_rows(tool_id, skill_id, owner);
+                continue;
+            }
+            if !unavailable.contains(skill_id) {
+                continue;
+            }
+            // Keep the deny entry when the skill teardown fails: the skill is
+            // still on disk, and clearing its entry here would silently
+            // re-enable it in initialized DenyAll scopes (same fail-closed
+            // policy as ima_logout's failed-uninstall branch and the eager
+            // twin's abort-on-failure). A vacuous uninstall (never installed)
+            // keeps them too.
+            match skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    log::warn!(
+                        "[marketplace] companion skill '{skill_id}' cleanup failed while uninstalling {tool_id}; keeping its deny entry (fail-closed): {error}"
+                    );
+                    continue;
+                }
+            }
+            Self::strip_companion_rows(tool_id, skill_id, owner);
+        }
+    }
+
+    /// Strips one companion's consent rows after a successful teardown: the
+    /// owner-pack rows (the deny-first registration's normalized id) and the
+    /// raw companion-skill-id rows (a standalone-era entry keyed by the skill
+    /// id itself — with the claim dead, read-time normalization can no longer
+    /// fold it onto the owner, so an owner-only strip would strand it).
+    fn strip_companion_rows(tool_id: &str, skill_id: &str, owner: &str) {
+        if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(owner) {
+            log::warn!(
+                "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
+            );
+        }
+        if owner != skill_id {
+            if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(skill_id) {
                 log::warn!(
-                    "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
+                    "[marketplace] persisting the standalone-era companion cleanup for '{skill_id}' of {tool_id} failed: {e}"
                 );
             }
         }
@@ -1773,22 +2125,38 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // IO，preflight 已在 recycle_package 内先行）不阻断修复降级，改为
                 // 跳过 companion 物理清理 —— 否则 cleanup 会对仍在盘上的技能目录
                 // remove_dir_all，销毁唯一副本（review P1：修复路径漏接回收站）。
+                // Round-20 P1: `strip_recycled_companions` is set only when the
+                // recycle actually moved the pack away. A preset/custom pack's
+                // repair downgrade does not remove the pack dir — the companion
+                // dirs are still on disk, so cleanup must take its else arm
+                // (the unavailable guard + physical uninstall, keeping the
+                // entries on failure); stripping the rows directly would land
+                // the on-disk skills into an initialized DenyAll scope with
+                // zero consent (main has a best-effort physical uninstall
+                // here, and this flag being hardcoded used to degrade that
+                // into a strip-only path with no uninstall).
+                let mut companions_moved_with_package = false;
                 let mut preserve_companions = false;
                 if let Ok(Some(record)) = store::BundleStore::new().get(tool_id) {
                     if matches!(record.source, store::BundleSource::Upload(_)) {
                         let pkg_dir = paths::bundles_root().join(tool_id);
-                        if pkg_dir.exists() {
+                        if !pkg_dir.exists() {
+                            companions_moved_with_package = true;
+                        } else {
                             let kind = recycle_bin::package_kind(&pkg_dir);
-                            if let Err(recycle_error) = recycle_bin::recycle_upload_package(
+                            match recycle_bin::recycle_upload_package(
                                 &recycle_bin::RecycleBin::new(),
                                 tool_id,
                                 &record,
                                 kind,
                             ) {
-                                log::warn!(
-                                    "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
-                                );
-                                preserve_companions = true;
+                                Ok(()) => companions_moved_with_package = true,
+                                Err(recycle_error) => {
+                                    log::warn!(
+                                        "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
+                                    );
+                                    preserve_companions = true;
+                                }
                             }
                         }
                     }
@@ -1798,6 +2166,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     &secret_targets,
                     preserve_companions,
                     &companion_owners,
+                    true,
+                    companions_moved_with_package,
                 );
                 if let Err(error) = store::BundleStore::new().remove(tool_id) {
                     log::warn!(
@@ -2364,7 +2734,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 新布局优先（上传包/解压包落盘 `bundles/<id>/mcp/manifest.json`）；
         // 内嵌预设回退到编译期 catalog。旧布局 `bundle/mcp-servers/` 已退役，不再回退读取。
         let new_path = mcp_catalog::package_mcp_dir(tool_id).join("manifest.json");
-        if let Ok(content) = std::fs::read_to_string(&new_path) {
+        // Hardened open (round-22 review): reachable from connect/oauth/
+        // dependency flows under the per-id import lock — a planted FIFO at
+        // the manifest path would otherwise block this read while the lock
+        // is held. Read failure falls through to the embedded catalog, as
+        // before.
+        if let Ok(content) = read_private_data_file(&new_path) {
             if let Ok(manifest) = serde_json::from_str(&content) {
                 return Some(manifest);
             }
@@ -2532,7 +2907,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// (the recovered set may legitimately be empty: mcp.json may simply have
     /// no packages registered).
     fn recover_installed_ids_from_mcp(&self) -> Result<Vec<String>, String> {
-        let content = match std::fs::read_to_string(paths::mcp_config_path()) {
+        // Hardened read (round-20 P2): same private-home consent-adjacent
+        // surface as read_installed.
+        let content = match read_private_data_file(&paths::mcp_config_path()) {
             Ok(c) => c,
             Err(error) => return Err(format!("mcp.json is missing or unreadable: {error}")),
         };
@@ -2566,7 +2943,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 // the lock is held across await only inside a current_thread runtime with no reentrant path,
 // so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore, MemoryCredentialStore,
@@ -2583,11 +2960,167 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
+    /// Count regular files named `{file}.corrupt.*` beside `path` — the
+    /// quarantine sibling-count assertion helper. Shared with scope.rs's
+    /// tests, which import it as
+    /// `crate::features::marketplace::tests::corrupt_sibling_count`.
+    #[cfg(test)]
+    pub(crate) fn corrupt_sibling_count(path: &std::path::Path) -> usize {
+        let parent = path.parent().unwrap();
+        let prefix = format!("{}.corrupt.", path.file_name().unwrap().to_string_lossy());
+        std::fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&prefix)
+                    && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Panic-safe cleanup for the two temp-home harnesses (round-11 P3): a
+    /// failing assertion unwinds past this guard, so a leaked in-process
+    /// secret registry or temp dir can no longer cascade unrelated failures
+    /// into every later test in the binary. Env vars are restored by the
+    /// paired `EnvVarGuard` (paths::tests); ENV_LOCK is held by the harness
+    /// throughout, so the drop order of the two guards is immaterial.
+    struct RestoreEnv {
+        prev_secrets: std::collections::HashMap<String, String>,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            secrets::restore_secret_values(std::mem::take(&mut self.prev_secrets));
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
     /// The in-process secret registry is snapshotted-cleared-restored the
     /// same way (secrets no longer land in the process env; the isolation
     /// point moves from env to the registry).
+    /// Round-8 review: the post-commit companion cleanup must keep a deny
+    /// entry when that skill's own teardown fails — the skill is still on
+    /// disk, so removing the entry would silently re-enable it. Broken
+    /// bundles.json makes the skill uninstall abort fail-closed while the
+    /// directory stays put; the store and scope files are independent, so
+    /// only the companion teardown is affected.
+    #[test]
+    fn companion_cleanup_keeps_deny_entry_when_skill_uninstall_fails() {
+        use crate::features::marketplace::ConnectorScope;
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_for, save_disabled_bundles_for,
+        };
+        with_temp_home(|| {
+            // The catalog's tencent-docs package declares companion
+            // tencent-docs-skill; give it the installed companion layout.
+            let skill_dir = paths::pinvou3_home()
+                .join("bundles")
+                .join("tencent-docs")
+                .join("skills")
+                .join("tencent-docs");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(skill_dir.join("SKILL.md"), "companion body").unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["tencent-docs-skill".to_string()])
+                .unwrap();
+
+            // Phase 1: broken store -> skill uninstall aborts fail-closed ->
+            // the deny entry must survive.
+            let store_path = paths::pinvou3_home()
+                .join("marketplace")
+                .join("bundles.json");
+            std::fs::create_dir_all(&store_path).unwrap();
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.cleanup_uninstalled_tool_state(
+                "tencent-docs",
+                &[],
+                false,
+                &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
+                true,
+                false,
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"tencent-docs-skill".to_string()),
+                "a failed post-commit companion uninstall must keep the deny entry (fail-closed)"
+            );
+
+            // Phase 2: store readable again -> teardown succeeds -> the entry
+            // is removed with the skill actually gone.
+            std::fs::remove_dir_all(&store_path).unwrap();
+            mgr.cleanup_uninstalled_tool_state(
+                "tencent-docs",
+                &[],
+                false,
+                &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
+                true,
+                false,
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"tencent-docs-skill".to_string()),
+                "a successful companion uninstall removes the deny entry as before"
+            );
+        });
+    }
+
+    /// Shared body of the two temp-home harnesses (`with_temp_home` /
+    /// `with_temp_home_async`): everything between their lock + verdict +
+    /// resolver setup and the test body. Extracted so the two copies cannot
+    /// drift again (they had: the async copy silently missed the sync copy's
+    /// verdict-memo clear).
+    ///
+    /// The caller must, in this order: hold `platform::paths::tests::ENV_LOCK`
+    /// (the SAFETY argument for the `set_var` calls below), clear the
+    /// UNPERSISTED_VERDICT memo, and install the secret resolver.
+    ///
+    /// Round-26 MAJOR 4 (review): restore main's hermeticity valve. The
+    /// rewritten harness had dropped the capture of
+    /// PINVOU3_TEST_KEYRING_FILE_FALLBACK + CODEWHALE_HOME, so every
+    /// `MarketplaceManager::new()` in a test body probed the real OS
+    /// keyring (on macOS a real-keyring read from an ad-hoc-signed test
+    /// binary can block indefinitely on the ACL consent dialog — see the
+    /// valve comment in platform::credential_store). The file fallback
+    /// resolves through CODEWHALE_HOME rather than PINVOU3_HOME, so it
+    /// must be pointed at the same temp dir — otherwise valved reads and
+    /// writes land in the developer's real ~/.codewhale/secrets/
+    /// secrets.json (and trigger its legacy migration).
+    ///
+    /// Drop order is load-bearing: bind the result as
+    /// `let (_env, _restore) = capture_hermetic_test_env(..)` so the
+    /// bindings are declared `_env` then `_restore`. `_restore` then drops
+    /// first — secret registry restored and the temp dir removed while
+    /// PINVOU3_HOME/CODEWHALE_HOME still point into it — then `_env`
+    /// restores the real env, and only afterwards does the caller release
+    /// ENV_LOCK (its guard is still held at the call site). Do not return
+    /// the ENV_LOCK guard from here; it must outlive both.
+    ///
+    /// `dir_prefix` keeps each harness's on-disk name exactly as before:
+    /// `pinvou3-mkt-test-{pid}` (sync) vs `pinvou3-mkt-test-async-{pid}`
+    /// (async).
+    fn capture_hermetic_test_env(dir_prefix: &str) -> (EnvVarGuard, RestoreEnv) {
+        let env = EnvVarGuard::capture(&[
+            "PINVOU3_HOME",
+            "CODEWHALE_HOME",
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+        ]);
+        let prev_secrets = secrets::snapshot_secret_values();
+        secrets::clear_secret_values_for_test();
+        let dir = std::env::temp_dir().join(format!("{dir_prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
+        let restore = RestoreEnv { prev_secrets, dir };
+        (env, restore)
+    }
+
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // The verdict memo is keyed by home directory, but temp dirs reuse
@@ -2600,35 +3133,11 @@ mod tests {
         // placeholders, and the test outcome would depend on whether the
         // bridge boot tests have already run (order coupling).
         super::install_mcp_secret_resolver();
-        let prev_secrets = secrets::snapshot_secret_values();
-        secrets::clear_secret_values_for_test();
-        // Opt the credential store into its file fallback for the body: the
-        // home redirect below cannot hermeticize the OS keyring, and on macOS
-        // the real keyring read blocks the headless test on the ACL consent
-        // dialog (see the valve comment in platform::credential_store). The
-        // file fallback resolves through CODEWHALE_HOME rather than
-        // PINVOU3_HOME, so it must be pointed at the same temp dir —
-        // otherwise valved reads and writes land in the developer's real
-        // ~/.codewhale/secrets/secrets.json (and trigger its legacy
-        // migration). EnvVarGuard restores all three vars on every exit
-        // path, including a panicking body.
-        let _env = EnvVarGuard::capture(&[
-            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
-            "CODEWHALE_HOME",
-            "PINVOU3_HOME",
-        ]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // Round-26 MAJOR 4 hermeticity valve: full story on
+        // capture_hermetic_test_env. Binding order (`_env` before
+        // `_restore`) is load-bearing — see there.
+        let (_env, _restore) = capture_hermetic_test_env("pinvou3-mkt-test");
         f();
-        secrets::restore_secret_values(prev_secrets);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// G4 回归：mcp.json 路径重写以新目录存在为前提——自定义 MCP 搬迁 kept
@@ -2667,6 +3176,50 @@ mod tests {
                 command.starts_with(&*new_dir.to_string_lossy()),
                 "重写后应指向新包目录，实际: {command}"
             );
+        });
+    }
+
+    /// Round-26 MAJOR 3: the in-lock mcp.json read goes through the hardened
+    /// private-data primitive. The raw `is_file()` + `read_to_string` pair
+    /// was check-then-act INSIDE mcp.lock — a planted FIFO swapped in after
+    /// the check blocked `open()` forever while holding the lock, wedging
+    /// every mcp.json writer in every process. The hardened read refuses, so
+    /// the migration fails loudly; the bounded worker makes a regression to
+    /// the raw read fail this test instead of hanging the lane while holding
+    /// the fixture lock.
+    #[test]
+    #[cfg(unix)]
+    fn migrate_mcp_json_paths_refuses_a_planted_fifo_without_hanging() {
+        with_temp_home(|| {
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = migrate_mcp_json_paths();
+                let _ = tx.send(result);
+            });
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    // Round-27 review (minor): the regressed worker stays
+                    // blocked while HOLDING mcp.lock — a plain panic would
+                    // cascade-hang every later mcp.lock test in the serial
+                    // lane, so die loudly and contain it (the scope.rs
+                    // funnel pins' convention).
+                    eprintln!(
+                        "FAIL: migrate still blocks on a planted mcp.json FIFO while holding mcp.lock — \
+                         aborting the test process to contain the leaked lock holder"
+                    );
+                    std::process::abort();
+                });
+            let error = result.expect_err("a planted FIFO must fail the migration loudly");
+            assert!(
+                error.contains("读取 mcp.json 失败"),
+                "the refusal must keep the migration's error shape: {error}"
+            );
+            worker.join().unwrap();
         });
     }
 
@@ -3573,32 +4126,22 @@ mod tests {
         Fut: Future<Output = ()>,
     {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Hermeticity unification with with_temp_home (the one deliberate
+        // delta of the extraction): this async copy had skipped the verdict
+        // clear, so an async test could inherit a stale UNPERSISTED_VERDICT
+        // from a prior sync test — temp dirs reuse the same pid prefix and
+        // the memo keys on the home path. Same order-coupling class as the
+        // round-26 MAJOR 4 valve regression (full story on
+        // capture_hermetic_test_env).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         // Same as with_temp_home: install the foundation resolver to avoid
         // test order coupling.
         super::install_mcp_secret_resolver();
-        let prev_secrets = secrets::snapshot_secret_values();
-        secrets::clear_secret_values_for_test();
-        // Same hermeticity valve as with_temp_home (see its comment): the
-        // file fallback goes through CODEWHALE_HOME, which is pointed at the
-        // same temp dir, and EnvVarGuard restores the env even on panic.
-        let _env = EnvVarGuard::capture(&[
-            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
-            "CODEWHALE_HOME",
-            "PINVOU3_HOME",
-        ]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        let dir =
-            std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // Same hermeticity valve as with_temp_home (round-26 MAJOR 4 — full
+        // story on capture_hermetic_test_env). Binding order (`_env` before
+        // `_restore`) is load-bearing — see there.
+        let (_env, _restore) = capture_hermetic_test_env("pinvou3-mkt-test-async");
         f().await;
-        secrets::restore_secret_values(prev_secrets);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     struct MockMcpServer {
@@ -4335,6 +4878,363 @@ mod tests {
             let transaction = MarketplaceStateTransaction::begin(&installed_file).unwrap();
             transaction.commit().expect("retry must absorb one failure");
             assert!(!marketplace_transaction_journal().exists());
+        });
+    }
+
+    /// Round-17 review: a CLI connector pack uninstall must withdraw the
+    /// materialized companion dirs together with the record. The DenyAll
+    /// consent gate's materialized-dirs known-clause keys on those very
+    /// files, while the in-lock cleanup strips the consent rows and the sync
+    /// ledger — keeping the dirs would let every later show/refresh skip
+    /// registration for a consent state that no longer exists, permanently
+    /// (the dirs never return on their own; the keep-dir branch is for
+    /// user-unique copies, which connector materialization is not).
+    #[test]
+    fn connector_uninstall_withdraws_materialized_dirs_so_a_reshow_registers() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // The connect-time shape: a Builtin install record (written
+            // before the consent gate ever runs) plus a fully materialized
+            // companion layout.
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "feishu",
+                    store::BundleSource::Builtin,
+                ))
+                .unwrap();
+            let skills_dir = paths::bundles_root().join("feishu").join("skills");
+            for dir in bundle::cli_bundle_skill_dirs("feishu") {
+                let dir = skills_dir.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
+            }
+            assert!(bundle::cli_connector_skills_materialized("feishu"));
+            // The connect-time ledger trace the gate run writes before
+            // materialization (round-18: the materialized known-clause
+            // requires it — dirs alone no longer vouch).
+            scope::sync_deny_all_scopes_after_install("feishu").unwrap();
+            assert!(scope::consent_gate_bundle_already_known("feishu"));
+
+            mgr.uninstall("feishu").unwrap();
+
+            assert!(
+                !paths::bundles_root().join("feishu").exists(),
+                "a CLI connector pack dir must be withdrawn with the record"
+            );
+            assert!(
+                !scope::consent_gate_bundle_already_known("feishu"),
+                "with the dirs withdrawn the gate must not vouch for the stripped consent — a re-show registers fresh"
+            );
+        });
+    }
+
+    /// Round-20 review (P2): the uninstall must serialize against a same-id
+    /// import landing in ANOTHER process — the landing lease is the only
+    /// cross-process exclusion the import pipeline offers (the per-id import
+    /// mutex and the transaction lock are process-local). While a peer holds
+    /// the lease the uninstall must not complete; once it is released the
+    /// uninstall proceeds and removes the record, so a peer's gate either ran
+    /// before it (rows stripped with the record) or runs after it (fresh
+    /// registration lands governed) — the resurrect-ungoverned window is
+    /// closed.
+    #[test]
+    fn uninstall_waits_for_the_cross_process_landing_lease() {
+        with_temp_home(|| {
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "weather-mock",
+                    store::BundleSource::Builtin,
+                ))
+                .unwrap();
+
+            // The peer-import shape: hold the landing lease on a second fd.
+            let mut lease = plugin_import::open_landing_lease("weather-mock")
+                .expect("fixture: the landing lease opens");
+            let guard = lease.write().expect("fixture: the landing lease acquires");
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+                let result = mgr.uninstall("weather-mock");
+                tx.send(result).expect("worker should send its result");
+            });
+            // Bounded: a regressed uninstall that ignores the lease completes
+            // here and fails this assertion with a diagnosable receive; a
+            // correct one stays parked on the lease.
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+                "the uninstall must wait while a peer import holds the landing lease"
+            );
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the uninstall completes once the lease is released")
+                .expect("the uninstall succeeds after waiting out the peer import");
+            worker.join().expect("worker should finish");
+            assert!(
+                !store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == "weather-mock" && record.installed),
+                "the uninstall removed the record after the lease released"
+            );
+        });
+    }
+
+    /// Review round 22 (the round-21 M2 residual): the landing-lease file
+    /// name is derived from the raw IPC id, so a hostile id must be rejected
+    /// BEFORE the lease opens — `Path::join` lets "/tmp/x" replace the
+    /// journal base and "../../x" escape the home. The refusal is the
+    /// id-shape check (narrow hostile subset), no lease file may land
+    /// anywhere, and the error must not leak an open/lock failure for the
+    /// escaped path.
+    #[test]
+    fn uninstall_refuses_hostile_ids_before_the_landing_lease() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // `C:evil` stays hostile on Windows only (see the guard's
+            // cfg-split): on Unix a colon is a legal filename byte.
+            #[cfg(windows)]
+            let hostile_ids = ["/tmp/x", "../../x", "a/b", "C:evil", "skill:a/b", ""];
+            #[cfg(not(windows))]
+            let hostile_ids = ["/tmp/x", "../../x", "a/b", "skill:a/b", ""];
+            for hostile in hostile_ids {
+                let error = mgr
+                    .uninstall(hostile)
+                    .err()
+                    .unwrap_or_else(|| panic!("'{hostile}' must be refused"));
+                assert!(
+                    error.contains("invalid tool id"),
+                    "the refusal must be the id-shape check: {error}"
+                );
+            }
+            let journal = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("import_journal");
+            assert!(
+                !journal.exists()
+                    || std::fs::read_dir(&journal)
+                        .expect("journal dir readable")
+                        .next()
+                        .is_none(),
+                "a refused id must not plant lease files in the journal"
+            );
+            assert!(
+                !crate::platform::paths::pinvou3_home()
+                    .join("x.landing.lock")
+                    .exists(),
+                "a traversal id must not escape the journal"
+            );
+            // Round-27 review follow-up: on Unix a colon-bearing legacy id
+            // must reach the not-installed path instead of the id-shape
+            // refusal (run last — the lease probe plants a journal file the
+            // emptiness assertion above must not see).
+            #[cfg(not(windows))]
+            {
+                let result = mgr.uninstall("C:evil");
+                assert!(
+                    !matches!(&result, Err(e) if e.contains("invalid tool id")),
+                    "a colon-bearing id is not hostile on unix: {result:?}"
+                );
+            }
+        });
+    }
+
+    /// Round-20 review (P3): a legitimate copy of EMPTY corrupt content is a
+    /// zero-byte file, so under the non-empty sibling rule every read of a
+    /// persistently-unrecoverable empty state file wrote another zero-byte
+    /// copy without bound. Empty content has no bytes to preserve, so any
+    /// prefixed regular file now counts as the sibling; non-empty content
+    /// keeps the strict rule (a planted empty file must not suppress a
+    /// genuine quarantine of real bytes).
+    #[test]
+    fn quarantine_of_empty_content_counts_an_empty_copy_as_sibling() {
+        with_temp_home(|| {
+            let path = paths::pinvou3_home().join("empty-state.json");
+            std::fs::write(&path, b"").unwrap();
+            quarantine_corrupt_state_file(&path, b"").unwrap();
+            assert_eq!(
+                corrupt_sibling_count(&path),
+                1,
+                "the first quarantine writes one copy"
+            );
+            quarantine_corrupt_state_file(&path, b"").unwrap();
+            assert_eq!(
+                corrupt_sibling_count(&path),
+                1,
+                "empty content must not accumulate zero-byte copies across reads"
+            );
+
+            // Non-empty content keeps the strict sibling rule: a planted
+            // EMPTY file with the prefix must not suppress the quarantine of
+            // real bytes (isolated under a second file name so the counts
+            // don't mix).
+            let nonempty_path = paths::pinvou3_home().join("nonempty-state.json");
+            let content = b"{ not json, but not empty }";
+            std::fs::write(&nonempty_path, content).unwrap();
+            let planted = nonempty_path.with_file_name(format!(
+                "{}.corrupt.0",
+                nonempty_path.file_name().unwrap().to_string_lossy()
+            ));
+            std::fs::write(&planted, b"").unwrap();
+            quarantine_corrupt_state_file(&nonempty_path, content).unwrap();
+            assert_eq!(
+                corrupt_sibling_count(&nonempty_path),
+                2,
+                "a planted empty file must not suppress the quarantine of real bytes (one planted + one fresh copy)"
+            );
+        });
+    }
+
+    /// Round-18 review (P2): the withdrawal's deletion failures must abort the
+    /// uninstall instead of being swallowed. A swallowed failure committed the
+    /// uninstall — record removed, consent rows and ledger stripped by the
+    /// in-lock cleanup — while the surviving materialized dirs kept the
+    /// gate's known-clause vouching forever: the exact fail-open state the
+    /// withdrawal exists to remove. With propagation the transaction rolls
+    /// back, so the record, the consent rows, and the pack dir all survive
+    /// and the uninstall reports failure (retrying is the USER's
+    /// re-uninstall, safe because the state is intact — no boot sweep
+    /// covers connector packs; 716592f corrected the same claim in the
+    /// governance doc).
+    #[cfg(unix)]
+    #[test]
+    fn failed_withdrawal_aborts_uninstall_and_keeps_consent_state() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "feishu",
+                    store::BundleSource::Builtin,
+                ))
+                .unwrap();
+            let skills_dir = paths::bundles_root().join("feishu").join("skills");
+            for dir in bundle::cli_bundle_skill_dirs("feishu") {
+                let dir = skills_dir.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
+            }
+            scope::save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()])
+                .unwrap();
+
+            // Make the skills subtree unremovable: a read-only skills dir
+            // refuses remove_dir_all of its children (macOS/Linux).
+            // Root probe (mode bits are no-ops for root): if a delete still
+            // succeeds, the failure path never runs — skip loudly.
+            let canary = skills_dir.join("withdraw-root-probe");
+            std::fs::write(&canary, b"probe").unwrap();
+            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            if std::fs::remove_file(&canary).is_ok() {
+                std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                eprintln!(
+                    "ROOT-SKIP[failed_withdrawal_aborts_uninstall_and_keeps_consent_state]: running as root - the read-only-dir fixture stays removable; NOT exercised"
+                );
+                return;
+            }
+
+            let result = mgr.uninstall("feishu");
+            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let error = result.expect_err(
+                "a failed withdrawal must abort the uninstall instead of committing it",
+            );
+            assert!(
+                error.contains("feishu"),
+                "the refusal must name the pack: {error}"
+            );
+            assert!(
+                store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == "feishu" && record.installed),
+                "the rolled-back transaction must keep the install record"
+            );
+            assert_eq!(
+                scope::load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["feishu".to_string()],
+                "the consent rows must survive a failed withdrawal"
+            );
+            assert!(
+                paths::bundles_root().join("feishu").is_dir(),
+                "the pack dir must survive a failed withdrawal"
+            );
+
+            // Heal: with the fixture writable again, the retry succeeds and
+            // the whole teardown completes (record gone, dirs withdrawn,
+            // consent rows stripped by the in-lock cleanup).
+            mgr.uninstall("feishu").unwrap();
+            assert!(!paths::bundles_root().join("feishu").exists());
+            assert!(
+                !store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == "feishu" && record.installed),
+                "the successful retry must remove the record"
+            );
+            assert!(
+                scope::load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+                "the successful retry's in-lock cleanup must strip the consent rows"
+            );
+        });
+    }
+
+    /// The withdrawal-abort restore must leave bundles.json exactly as it
+    /// found it — including a TOMBSTONE record. `store.remove` takes a
+    /// tombstone too, so an aborted uninstall used to silently erase it (the
+    /// restore leg filtered the pre-remove snapshot on `installed` and the
+    /// "no record" warn fired instead), dropping the record's source
+    /// provenance (round-19 review).
+    #[cfg(unix)]
+    #[test]
+    fn failed_withdrawal_restores_a_tombstone_record() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut tombstone =
+                store::BundleRecord::installed_now("feishu", store::BundleSource::Builtin);
+            tombstone.installed = false;
+            tombstone.content_fingerprint = Some("pre-uninstall-state".to_string());
+            store::BundleStore::new().upsert(tombstone).unwrap();
+            let skills_dir = paths::bundles_root().join("feishu").join("skills");
+            for dir in bundle::cli_bundle_skill_dirs("feishu") {
+                let dir = skills_dir.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
+            }
+
+            // Same failure injection and root-skip as the sibling test.
+            let canary = skills_dir.join("withdraw-root-probe");
+            std::fs::write(&canary, b"probe").unwrap();
+            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            if std::fs::remove_file(&canary).is_ok() {
+                std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+                eprintln!(
+                    "ROOT-SKIP[failed_withdrawal_restores_a_tombstone_record]: running as root - the read-only-dir fixture stays removable; NOT exercised"
+                );
+                return;
+            }
+
+            let result = mgr.uninstall("feishu");
+            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            result.expect_err("a failed withdrawal must abort the uninstall");
+
+            let restored = store::BundleStore::new()
+                .get("feishu")
+                .unwrap()
+                .expect("an aborted uninstall must restore the pre-uninstall record");
+            assert!(
+                !restored.installed,
+                "the restored record must be the tombstone, not a fabricated install"
+            );
+            assert_eq!(
+                restored.content_fingerprint.as_deref(),
+                Some("pre-uninstall-state"),
+                "the tombstone's provenance must survive the abort"
+            );
         });
     }
 
@@ -6591,6 +7491,10 @@ mod tests {
 
         with_temp_home(|| {
             let home = crate::platform::paths::pinvou3_home();
+            // Pre-create the cross-process lock file so the failure lands on
+            // the data-file write this test pins (creating the lock in a
+            // read-only home would fail earlier with a lock-path error).
+            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
             let probe = home.join(".root-probe");
             if std::fs::write(&probe, b"").is_ok() {
@@ -6908,6 +7812,46 @@ mod tests {
             assert_eq!(
                 MarketplaceManager::new().installed_ids(),
                 vec!["feishu".to_string()]
+            );
+        });
+    }
+
+    /// round-21 review: `read_installed` (via `try_installed_ids`) runs
+    /// inside the scope lock's DenyAll expansion and under the transaction
+    /// lock, so both its reads must route through the hardened primitives —
+    /// a planted FIFO at installed.json must refuse fast, not block the
+    /// lock holder's open. Bounded worker: a regressed bare read hangs here
+    /// and fails the recv_timeout instead of wedging the suite.
+    #[cfg(unix)]
+    #[test]
+    fn installed_json_read_refuses_a_planted_fifo() {
+        with_temp_home(|| {
+            let dir = crate::platform::paths::pinvou3_home().join("marketplace");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("installed.json");
+            crate::platform::paths::tests::plant_fifo(&path);
+
+            let manager = MarketplaceManager::new();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                tx.send(manager.try_installed_ids())
+                    .expect("worker should send its result");
+            });
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    // Round-27 review (minor): a regressed worker stays
+                    // blocked holding the store-side lock — contain the
+                    // cascade with a loud process death.
+                    eprintln!(
+                        "FAIL: the installed.json read still blocks on a planted FIFO — \
+                         aborting the test process to contain the leaked lock holder"
+                    );
+                    std::process::abort();
+                });
+            assert!(
+                result.is_err(),
+                "a planted FIFO must be refused by the regular-file gate"
             );
         });
     }
@@ -7980,6 +8924,80 @@ mod tests {
             assert_eq!(recycled.len(), 1, "回收清单应有记录");
             assert_eq!(recycled[0].kind, recycle_bin::KIND_BUNDLE);
             assert_eq!(recycled[0].display_name, "repair.zip");
+        });
+    }
+
+    /// Startup-repair downgrade (non-Upload pack): the pack dir is not moved
+    /// away and the companion dirs are still on disk — cleanup must take the
+    /// physical-uninstall arm (the unavailable guard +
+    /// `SkillMarketplaceManager::uninstall`, keeping the entries on failure),
+    /// not a bare row strip. `strip_recycled_companions` used to be hardcoded
+    /// true, leaving on-disk companion skills in an initialized DenyAll scope
+    /// with zero consent (round-20 P1; main has a best-effort physical
+    /// uninstall here).
+    #[test]
+    fn startup_repair_downgrade_physically_uninstalls_preset_companions() {
+        use crate::features::marketplace::ConnectorScope;
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_for, save_disabled_bundles_for,
+        };
+        with_temp_home(|| {
+            write_tool_manifest(
+                "preset-repair",
+                r#"{
+                    "id":"preset-repair","name":"PresetRepair","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["preset-repair-comp"]
+                }"#,
+            );
+            let skill_dir = crate::platform::paths::bundles_root()
+                .join("preset-repair/skills/preset-repair-comp");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: preset-repair-comp\n---\n",
+            )
+            .unwrap();
+            store::BundleStore::new()
+                .upsert(store::BundleRecord::installed_now(
+                    "preset-repair",
+                    store::BundleSource::Preset,
+                ))
+                .unwrap();
+            write_installed_ids(&["preset-repair".to_string()]);
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &[
+                    "preset-repair".to_string(),
+                    "preset-repair-comp".to_string(),
+                ],
+            )
+            .unwrap();
+
+            let mgr = MarketplaceManager::new();
+            mgr.mark_tool_uninstalled_locked("preset-repair").unwrap();
+
+            assert!(
+                !skill_dir.exists(),
+                "a non-Upload downgrade's companion skill must be physically uninstalled, not left on disk behind a stripped row (zero consent)"
+            );
+            let disabled = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                !disabled.contains(&"preset-repair".to_string()),
+                "the owner row must be stripped by the successful uninstall"
+            );
+            assert!(
+                !disabled.contains(&"preset-repair-comp".to_string()),
+                "the companion row must be stripped by the successful uninstall"
+            );
+            assert!(!mgr.installed_ids().contains(&"preset-repair".to_string()));
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("preset-repair")
+                    .join("skills/preset-repair-comp")
+                    .exists(),
+                "the companion dir must not survive"
+            );
         });
     }
 

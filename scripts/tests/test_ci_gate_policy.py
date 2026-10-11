@@ -76,6 +76,44 @@ def _extract_contract_read_targets(contract_test):
     return targets
 
 
+def _extract_consent_marker_read_targets(consent_test):
+    """从 consent_marker_frontend.test.mjs 源码派生全部 src-tauri 读取目标。
+
+    该测试的读取形态与 multiagent_plan_normalize 不同:`join(rustDir,
+    '<rel>.rs')`(rustDir = src-tauri/src/features)单文件读取、
+    `'../src-tauri/<rel>.rs'` 与 `join(root, 'src-tauri/<rel>.rs')`
+    (root = pinvou3-app)单文件读取,以及数组字面量里经
+    `join(rustDir, file)` 消费的 `<rel>.rs` 条目。统一按「以 .rs 结尾的
+    字符串字面量即一个 src-tauri 源读取」归一化——数组未来新增条目自动
+    纳入路由锁,不会 fail-open。
+    """
+    targets = set()
+    for literal in re.findall(r"['\"]([^'\"]*\.rs)['\"]", consent_test):
+        if literal.startswith("../src-tauri/"):
+            targets.add("pinvou3-app/" + literal[3:].lstrip("/"))
+        elif literal.startswith("src-tauri/"):
+            # join(root, 'src-tauri/<rel>.rs'):root 即 pinvou3-app/(测试
+            # 文件共享 hoisted root 常量后的形态),与 `../src-tauri/` 同义。
+            targets.add("pinvou3-app/" + literal)
+        else:
+            targets.add("pinvou3-app/src-tauri/src/features/" + literal)
+    return sorted(targets)
+
+
+def _frontend_filter_entries(workflow_text):
+    """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
+    changes = _without_yaml_comments(
+        workflow_text.split("\n  changes:", maxsplit=1)[1].split(
+            "\n  fast-gate:", maxsplit=1
+        )[0]
+    )
+    return _extract_quoted_paths(
+        changes.split("            frontend:", maxsplit=1)[1].split(
+            "            relay:", maxsplit=1
+        )[0]
+    )
+
+
 def _matches_paths_filter(path, patterns):
     """Model paths-filter v4 some-with-excludes routing for policy examples."""
     included = any(
@@ -184,14 +222,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # only run inside frontend-test, so their config files must be in the
         # frontend path filter; otherwise a config-only PR skips every gate
         # that consumes the file it changed.
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
-        frontend_paths = changes.split(
-            "            frontend:", maxsplit=1
-        )[1].split("            relay:", maxsplit=1)[0]
+        frontend_entries = _frontend_filter_entries(self.pr_workflow)
         for path in (
             "pinvou3-app/.oxlintrc.json",
             "pinvou3-app/biome.jsonc",
@@ -201,8 +232,8 @@ class CiGatePolicyTests(unittest.TestCase):
             "pinvou3-app/scripts/audit-compat.mjs",
         ):
             self.assertIn(
-                f"- '{path}'",
-                frontend_paths,
+                path,
+                frontend_entries,
                 f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
             )
 
@@ -213,14 +244,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # the frontend path filter, a Rust-only PR silently skips that node
         # gate — the same structural blind spot the static-analysis configs
         # above guard against.
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
-        frontend_paths = changes.split(
-            "            frontend:", maxsplit=1
-        )[1].split("            relay:", maxsplit=1)[0]
+        frontend_entries = _frontend_filter_entries(self.pr_workflow)
         for path in (
             "pinvou3-app/src-tauri/src/features/assistant/**",
             "pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs",
@@ -237,8 +261,8 @@ class CiGatePolicyTests(unittest.TestCase):
             "pinvou3-app/src-tauri/src/lib.rs",
         ):
             self.assertIn(
-                f"- '{path}'",
-                frontend_paths,
+                path,
+                frontend_entries,
                 f"跨语言契约测试读取的 Rust 源 {path} 不在 frontend filter 中,Rust-only PR 会静默跳过该 node 门禁",
             )
 
@@ -249,16 +273,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # 均归一化匹配),逐一断言 frontend filter 覆盖。给契约测试新增
         # Rust read 而不路由、或把已路由文件挪走,都会在这里失败(本套件
         # 在 fast-gate 每个 PR 必跑)。
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
-        frontend_entries = _extract_quoted_paths(
-            changes.split("            frontend:", maxsplit=1)[1].split(
-                "            relay:", maxsplit=1
-            )[0]
-        )
+        frontend_entries = _frontend_filter_entries(self.pr_workflow)
         contract_test = (
             ROOT / "pinvou3-app/tests/multiagent_plan_normalize.test.mjs"
         ).read_text(encoding="utf-8")
@@ -273,6 +288,46 @@ class CiGatePolicyTests(unittest.TestCase):
             self.assertTrue(
                 _is_covered_by_trigger(target, frontend_entries),
                 f"跨语言契约测试读取的 {target} 未被 frontend filter 覆盖,"
+                "Rust-only 改动会静默跳过该 node 门禁",
+            )
+
+    def test_consent_marker_contract_reads_fully_routed(self):
+        # consent_marker_frontend.test.mjs 读取四个 Rust 源做 marker 跨语言
+        # 契约断言(round-24 MAJOR 2:这四个文件此前都不在 frontend filter
+        # 里——Rust-only 改动把 marker 连同其 Rust 值 pin 一起 reword 时,
+        # rust-test 与该 node 门禁自身都全绿,而 ToolStoreView 的
+        # includes() 静默失配,告警降级为通用文案)。从测试源码派生全部
+        # .rs 读取目标逐一断言 frontend filter 覆盖;数组新增读取而未路由、
+        # 或已路由文件被挪走,都会在这里失败(本套件在 fast-gate 每个 PR
+        # 必跑)。
+        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        consent_test = (
+            ROOT / "pinvou3-app/tests/consent_marker_frontend.test.mjs"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_consent_marker_read_targets(consent_test)
+
+        # Round-26 review: the quoted-literal regex is the parser's contract —
+        # a refactor to template literals would silently shrink the target set
+        # and unroute a source. Pin the four exact routed sources instead of a
+        # bare count: assertIn fails just as loudly on shrinkage but tolerates
+        # legitimate growth (new array entries stay fail-closed in the
+        # coverage loop below until they are routed).
+        for target in (
+            "pinvou3-app/src-tauri/src/app/commands/marketplace.rs",
+            "pinvou3-app/src-tauri/src/features/connectors/ima.rs",
+            "pinvou3-app/src-tauri/src/features/connectors/skill_gate.rs",
+            "pinvou3-app/src-tauri/src/features/marketplace/scope.rs",
+        ):
+            self.assertIn(
+                target,
+                targets,
+                f"consent marker 契约测试应读取 {target},实际解析出: {sorted(targets)}",
+            )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_entries),
+                f"consent marker 契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
             )
 

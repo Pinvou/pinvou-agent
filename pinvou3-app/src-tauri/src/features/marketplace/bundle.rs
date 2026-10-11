@@ -86,6 +86,60 @@ pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
+/// Whether a CLI connector's companion skill dirs are FULLY materialized on
+/// disk (`bundles/<id>/skills/<dir>/`, the same layout and all-dirs-present
+/// bar as the startup visibility cache). The DenyAll consent gate's
+/// known-bundle decision uses this as ONE HALF of the CLI-connector evidence:
+/// the files can only have been written by an earlier gated show (or carried
+/// over from a pre-locking version, where a connected connector's visible
+/// skills were the recorded status quo), and the gate additionally requires
+/// the surviving sync-ledger trace (round-18 review) — the ledger entry is
+/// written by that gate run and cleared only by a consent-strip teardown or a
+/// fail-closed store recovery (whose re-registration is the accepted
+/// over-denial), so
+/// a stripped consent state (whose teardown also withdraws these dirs,
+/// round-17 review) can never keep vouching through them, not even when a
+/// gated show materializing in flight across the teardown re-lands the
+/// dirs. A partially materialized state (an interrupted show) errs toward
+/// "not known" — registration is over-denial, not exposure. Non-CLI ids are
+/// always false.
+///
+/// Case caveat (round-12 review): on case-insensitive filesystems the
+/// EXACT-name check makes a case-variant planted dir count as partial, so
+/// the gate registers (over-denial, fail-closed). A poisoned pre-upgrade
+/// state converges once the variant package is uninstalled — the next gated
+/// show re-extracts under the canonical names.
+pub(crate) fn cli_connector_skills_materialized(id: &str) -> bool {
+    let dirs = cli_bundle_skill_dirs(id);
+    !dirs.is_empty() && cli_connector_skill_dirs_present(id, dirs)
+}
+
+/// Exact-name materialization check for a CLI connector's companion dirs:
+/// every expected dir must exist UNDER ITS EXACT NAME (read_dir, not path
+/// resolution) with a SKILL.md file inside. Path resolution would let a
+/// case-variant directory planted on a case-insensitive filesystem
+/// (macOS/Windows) vouch for consent it never received (round-12 review
+/// B3); exact names cannot. The startup visibility cache
+/// (`cached_connector_skills_visible`) shares this helper so the two bars
+/// cannot diverge.
+pub(crate) fn cli_connector_skill_dirs_present(id: &str, dirs: &[&str]) -> bool {
+    let skills_dir = crate::platform::paths::bundles_root()
+        .join(id)
+        .join("skills");
+    let Ok(entries) = std::fs::read_dir(&skills_dir) else {
+        return false;
+    };
+    let present: std::collections::HashSet<std::ffi::OsString> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|entry| entry.file_name())
+        .collect();
+    dirs.iter().all(|dir| {
+        present.contains(std::ffi::OsStr::new(*dir))
+            && skills_dir.join(dir).join("SKILL.md").is_file()
+    })
+}
+
 /// CLI 连接器的二进制名（execpolicy 硬拦截按它构造 deny 规则）。
 pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
     BUILTIN_CLI_BUNDLES
@@ -95,10 +149,19 @@ pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
 }
 
 /// 技能目录名 → CLI 连接器 id（内置清单反查；非 CLI companion 返回 None）。
+///
+/// Case-folded like the exact-name bar of every other CLI identity claim: on
+/// case-insensitive filesystems (default macOS/Windows) a case-variant
+/// on-disk directory resolves to the connector's dir regardless of declared
+/// casing (round-12 review), so the reverse claim must fold the same way or
+/// the vocabulary guards and the consent gate would disagree about what
+/// counts as the connector's companion. On Linux this can only over-deny a
+/// hypothetical distinct package whose skill dir differs solely by case —
+/// the import pipeline rejects such names, so the fold converges.
 pub(crate) fn cli_bundle_of_skill(skill_dir: &str) -> Option<&'static str> {
     BUILTIN_CLI_BUNDLES
         .iter()
-        .find(|(.., dirs, _)| dirs.contains(&skill_dir))
+        .find(|(.., dirs, _)| dirs.iter().any(|d| d.eq_ignore_ascii_case(skill_dir)))
         .map(|(id, ..)| *id)
 }
 /// Skill dir name → owner pack id (manifest-claim semantics; the lens for
@@ -229,6 +292,16 @@ pub(crate) fn skill_gating_owner_with(tools: &[super::ToolManifest], skill_name:
 
 /// 包是否已安装：BundleStore 记录优先；store 不可读时回退 installed.json——
 /// 与 `list_bundles` 的 V5 认领判定同口径（Phase 2 过渡期 installed.json 仍权威）。
+///
+/// Round-20 review note (disclosed residual): the fallback consults the
+/// legacy `installed.json`, which is kept as read-only history after the
+/// one-shot legacy import — a stale id there keeps the V5 owner-claim alive
+/// while the store is unreadable. The claim additionally requires the
+/// owner's manifest to be physically present (the `available_tools` walk),
+/// and every manifest-on-disk state except a user enable also carries the
+/// owner's consent rows, so no exploitable fail-open chain is known; the
+/// direction is still fail-open-leaning compared with every other gate
+/// input. Do not extend this fallback to new callers.
 pub(crate) fn bundle_installed(id: &str) -> bool {
     match super::store::BundleStore::new().records() {
         Ok(records) => records.iter().any(|r| r.id == id && r.installed),
@@ -927,6 +1000,34 @@ mod tests {
         for legacy in crate::platform::connector_skills::WECOM_LEGACY_SKILL_DIRS {
             assert!(!dirs.contains(&legacy), "{legacy} 不应在现行表");
             assert_eq!(cli_bundle_of_skill(legacy), None, "{legacy} 反查应不命中");
+        }
+    }
+
+    /// Round-17 review: the CLI identity fold must hold for the REVERSE
+    /// claim too — a case-variant skill dir name resolves to the connector
+    /// so the vocabulary guards and the consent gate agree on what counts
+    /// as its companion (round-12 introduced the fold; this pins it).
+    /// Reverting the `eq_ignore_ascii_case` fold in `cli_bundle_of_skill`
+    /// turns this red (the exact-name materialization probe does not
+    /// exercise this function). Empty manifests keep it hermetic: the CLI
+    /// branch precedes manifest claims in `skill_owner_package_with`.
+    #[test]
+    fn cli_bundle_of_skill_folds_case_variant_dirs() {
+        for &dir in cli_bundle_skill_dirs("wecom") {
+            let variant = dir.to_ascii_uppercase();
+            if variant == dir {
+                continue;
+            }
+            assert_eq!(
+                cli_bundle_of_skill(&variant),
+                Some("wecom"),
+                "{variant} must fold onto the connector"
+            );
+            assert_eq!(
+                super::skill_owner_package_with(&[], &variant),
+                "wecom",
+                "{variant} owner claim must fold"
+            );
         }
     }
 

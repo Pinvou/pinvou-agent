@@ -30,8 +30,24 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let prev = std::env::var("PINVOU3_HOME").ok();
+    // Round-27 review (minor): keyring hermeticity rides along — the same
+    // trio the marketplace harness installs. A test reaching a real
+    // credential write through this harness otherwise lands in the
+    // developer's OS keychain (round-7 proved this class fires live:
+    // AMAP_KEY written to the real keychain), and on macOS the OS probe
+    // from an ad-hoc-signed test binary can block indefinitely on the ACL
+    // consent dialog. `PINVOU3_TEST_KEYRING_FILE_FALLBACK` exists only in
+    // test builds (credential_store reads it before probing the OS
+    // keyring); `CODEWHALE_HOME` rides to the temp dir so CodeWhale-side
+    // state stays hermetic too.
+    let prev_codewhale = std::env::var("CODEWHALE_HOME").ok();
+    let prev_valve = std::env::var("PINVOU3_TEST_KEYRING_FILE_FALLBACK").ok();
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+    unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
+    unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
 
     // Restore through Drop, not straight-line code after `f()`. A failing
     // assertion inside the closure unwinds, and with the restore written
@@ -41,6 +57,8 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     // signal stops meaning anything. Same RAII contract as `EnvRestore` below.
     struct TempHomeRestore {
         previous: Option<OsString>,
+        previous_codewhale: Option<OsString>,
+        previous_valve: Option<OsString>,
         dir: std::path::PathBuf,
     }
     impl Drop for TempHomeRestore {
@@ -51,6 +69,18 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
                 // SAFETY: the caller still holds ENV_LOCK for this scope.
                 None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
+            match self.previous_codewhale.take() {
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                Some(v) => unsafe { std::env::set_var("CODEWHALE_HOME", v) },
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
+            }
+            match self.previous_valve.take() {
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                Some(v) => unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", v) },
+                // SAFETY: the caller still holds ENV_LOCK for this scope.
+                None => unsafe { std::env::remove_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK") },
+            }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
@@ -58,6 +88,8 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     // test may observe the temporary value.
     let _restore = TempHomeRestore {
         previous: prev.map(OsString::from),
+        previous_codewhale: prev_codewhale.map(OsString::from),
+        previous_valve: prev_valve.map(OsString::from),
         dir: dir.clone(),
     };
     f();

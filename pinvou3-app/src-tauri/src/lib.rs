@@ -788,7 +788,11 @@ pub fn run() {
             // persists the frozen fresh-vs-upgrade verdict, ahead of every
             // first-startup write.
             startup::mark("disabled_bundles_migration:start");
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
+            let freeze_persist_failed =
+                crate::features::marketplace::scope::load_disabled_bundles_startup();
+            if freeze_persist_failed {
+                crate::features::marketplace::scope::mirror_freeze_persist_failure();
+            }
             startup::mark("disabled_bundles_migration:done");
             if let Ok(resource_dir) = app.path().resource_dir() {
                 crate::platform::paths::set_runtime_resource_dir(resource_dir);
@@ -1215,7 +1219,29 @@ pub fn run() {
             // 组合目录的物化在 engine spawn 时按会话进行(build_engine_config 注入
             // skills_dir 指向 ~/.pinvou3/sessions/<sid>/skills/)。
             startup::mark("disabled_skills:start");
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
+            // Full-lock on purpose (round-17 review): a try-locked hot read
+            // cannot persist the freeze/recovery verdicts, so if the hoisted
+            // read above degraded under peer contention, this re-read is the
+            // second chance to persist the frozen verdict before setup
+            // continues — for the arms that consult no memo: the lost-store
+            // recovery arm (deliberately memo-outranking) and the parse-tail
+            // legacy-migration leg. The fresh-verdict arm's MEMO hit also
+            // re-attempts the persist on this fully locked re-read
+            // (scope.rs's memo-hit persist leg, the round-20/21 heal), so a
+            // freeze whose first-boot persist failed converges in-process on
+            // the next boot instead of waiting for a locked writer or a
+            // restart. The unbounded
+            // flock wait here is the documented
+            // fail-stop boot tradeoff (scope lock module doc). A persist
+            // failure on THIS read mirrors onto the timeline like the
+            // hoisted site's does (round-20 review): the hoisted read's
+            // success does not cover a failure developing in between, and
+            // this mirror is the only durable channel that can name it.
+            let freeze_persist_failed =
+                crate::features::marketplace::scope::load_disabled_bundles_startup();
+            if freeze_persist_failed {
+                crate::features::marketplace::scope::mirror_freeze_persist_failure();
+            }
             startup::mark("disabled_skills:done");
 
             // Monitor 按需采样：state 只持有 session_uptime，sample 由前端调
@@ -1838,7 +1864,7 @@ mod startup_order_contract {
             include_str!("lib.rs"),
             &[
                 "crate::features::marketplace::scope::",
-                "load_disabled_bundles()",
+                "load_disabled_bundles_startup()",
             ]
             .concat(),
             &["SessionStore::", "boot_for_process_startup()"].concat(),
@@ -1848,7 +1874,7 @@ mod startup_order_contract {
         // SessionStore boot.
         assert_migration_read_precedes(
             include_str!("features/assistant/product_runtime/headless_bridge.rs"),
-            "marketplace::scope::load_disabled_bundles()",
+            "marketplace::scope::load_disabled_bundles_startup()",
             "SessionStore::boot()",
             "headless_bridge.rs",
         );
@@ -1856,9 +1882,55 @@ mod startup_order_contract {
         // (ensure_dirs / default settings.json first-startup writes).
         assert_migration_read_precedes(
             include_str!("bin/dump_system_prompt.rs"),
-            "load_disabled_bundles()",
+            "load_disabled_bundles_startup()",
             "Pinvou3Bridge::boot()",
             "dump_system_prompt.rs",
+        );
+    }
+
+    /// Round-20 review (P2): the freeze-persist failure mirror is the only
+    /// durable channel naming the failure before the log plugin attaches
+    /// (the windowless host attaches none at all) — but nothing pinned its
+    /// existence, so deleting either host's mirror passed the whole suite.
+    /// lib.rs must keep the mirror call at BOTH startup reads (the hoisted
+    /// freeze and the second-chance re-read); headless keeps one. Cleanup:
+    /// the mirror copy itself now lives in the shared scope helper, so the
+    /// needles count the helper CALL per file instead of the message text.
+    /// Needle assembled from fragments so this test module's own source
+    /// (scanned together with lib.rs) cannot self-match — the established
+    /// review #455 R4-S1 trick.
+    #[test]
+    fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_both_hosts() {
+        let helper_call = ["mirror_", "freeze_persist_failure()"].concat();
+        let gui_mirrors = include_str!("lib.rs").matches(&helper_call).count();
+        assert!(
+            gui_mirrors >= 2,
+            "lib.rs must keep the freeze-persist failure mirrors at BOTH startup reads (the hoisted freeze and the second-chance re-read): found {gui_mirrors}"
+        );
+        let headless_mirrors =
+            include_str!("features/assistant/product_runtime/headless_bridge.rs")
+                .matches(&helper_call)
+                .count();
+        assert_eq!(
+            headless_mirrors, 1,
+            "headless_bridge.rs must keep its freeze-persist failure mirror (this host attaches no log plugin)"
+        );
+        // Round-26 review (minor): the console bin mirrors via eprintln (the
+        // startup timeline is pub(crate) and this host has no window at all);
+        // deleting that mirror passed every leg — pin it with the same
+        // fragment needle (this leg still counts the message text itself,
+        // which the bin owns directly instead of calling the helper).
+        let mirror_needle = [
+            "CRITICAL: the fresh-vs-",
+            "upgraded verdict could not be persisted",
+        ]
+        .concat();
+        let bin_mirrors = include_str!("bin/dump_system_prompt.rs")
+            .matches(&mirror_needle)
+            .count();
+        assert!(
+            bin_mirrors >= 1,
+            "dump_system_prompt.rs must keep its freeze-persist failure eprintln mirror (this host has neither window nor log plugin)"
         );
     }
 }

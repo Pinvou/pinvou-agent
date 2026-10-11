@@ -1,5 +1,10 @@
 //! mcp.json 旧版明文密钥迁移:把早期写进 manifest/mcp.json 的明文 API Key 搬到
 //! 系统凭据库,文件里只留 `${ENV}` 占位符。
+// architecture-guard: allow-target-cfg -- the round-27 in-lock mcp.json FIFO
+// pin is cfg(unix)-gated: plant_fifo and the O_NONBLOCK refusal it exercises
+// are unix-only; the bounded worker fails a raw-read regression loudly
+// instead of hanging the lane on the held mcp.lock (test-only, same
+// exemption precedent as marketplace/store.rs).
 
 use crate::platform::paths;
 
@@ -113,8 +118,20 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     }
 
     fn migrate_mcp_json_file_locked(&self, path: &std::path::Path) -> Result<(), String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+        // Round-27 review MAJOR 1: this read sat INSIDE the mcp.lock critical
+        // section as a raw `read_to_string` — the check-then-act twin of the
+        // `migrate_mcp_json_paths` hole the round-26 fix closed (mod.rs): a
+        // planted FIFO swapped in after the caller's `is_file()` probe
+        // blocked `open()` forever while HOLDING mcp.lock, wedging every
+        // mcp.json reader/writer in every process sharing the home. The
+        // hardened primitive refuses non-regular targets without blocking;
+        // NotFound (raced away after the probe) stays a no-op like the
+        // absent file.
+        let content = match crate::platform::filesystem::read_private_data_file(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("读取 {} 失败: {e}", path.display())),
+        };
         let mut json: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
         let mut changed = false;
@@ -210,8 +227,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 #[cfg(test)]
 mod tests {
     use super::legacy_mcp_secret_specs;
-    use crate::features::marketplace::{mcp_catalog, secrets};
-
+    use crate::features::marketplace::{MarketplaceManager, mcp_catalog, secrets};
+    use crate::platform::credential_store::MemoryCredentialStore;
     /// Every legacy migration spec's key must be enumerable from the tool's
     /// embedded manifest. Otherwise `sync_secret_values` wipes the migrated
     /// credential from the in-process registry on the first restart and the
@@ -233,5 +250,53 @@ mod tests {
                 spec.target,
             );
         }
+    }
+
+    /// Round-27 review MAJOR 1: the read INSIDE the mcp.lock critical
+    /// section (`migrate_mcp_json_file` → `_locked`) must refuse a planted
+    /// FIFO through the hardened primitive instead of blocking `open()`
+    /// forever while HOLDING the cross-process mcp.lock (the caller's
+    /// `is_file()` probe only narrows this to a swap-in window — the raw
+    /// regression wedges every mcp.json reader/writer in every process
+    /// sharing the home). The bounded worker + abort containment mirror the
+    /// `migrate_mcp_json_paths` pin: a regression fails loudly and cannot
+    /// cascade-hang the serial lane on the held mcp.lock.
+    #[test]
+    #[cfg(unix)]
+    fn mcp_secret_migration_locked_read_refuses_a_planted_fifo() {
+        crate::platform::test_support::with_temp_home("pinvou3-mcp-migration", || {
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = mgr.migrate_mcp_json_file(&mcp_path);
+                let _ = tx.send(result);
+            });
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    eprintln!(
+                        "FAIL: the mcp secret migration still blocks on a planted mcp.json FIFO \
+                         while holding mcp.lock — the deadlock also wedges real users; \
+                         aborting the test process to contain the leaked lock holder"
+                    );
+                    std::process::abort();
+                });
+            let error = result.expect_err("a planted FIFO must fail the locked migration read");
+            assert!(
+                error.starts_with("读取 ")
+                    && error.contains(" 失败: ")
+                    && error.contains("mcp.json"),
+                "the refusal must keep the migration's error shape: {error}"
+            );
+            assert!(
+                error.contains("not a regular file"),
+                "the refusal must name the non-regular target: {error}"
+            );
+            worker.join().unwrap();
+        });
     }
 }

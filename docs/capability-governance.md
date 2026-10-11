@@ -166,7 +166,405 @@ cohort 得到相反的默认姿态，此句即为二者的登记。
   的落盘 opt-out 有定义（未初始化 scope 物化的是现算扩集，不存在可对抗的
   落盘行）；`not_applied` 则**只由未初始化的现算扩集臂产生**——请求 id 不在
   扩集中即上报；**已初始化** scope 没有等价信号，恒返回空（未知 id 视为
-  已开启且不上报——空 `not_applied` 在该状态下不是覆盖证明）。
+  已开启且不上报——空 `not_applied` 在该状态下不是覆盖证明）。round-27 勘误：
+  这两个信号字段属于 `enable_packages_in_scope` 的返回结构，不属于回收站
+  恢复门（恢复门返回 `Result<(), String>`）——原文段落位置紧随恢复门句块，
+  易误读为恢复门信号。
+
+**Cross-process consistency (#515)**: the GUI and headless hosts may share one
+`~/.pinvou3`; this file's read-modify-write is serialized by an in-process
+mutex plus an OS file lock (`~/.pinvou3/disabled_bundles.lock`, fd-lock), so
+two concurrent processes can no longer drop each other's updates in a
+read-modify-write race (the lost side is the user's explicit off — the
+fail-open direction). The failure semantics are conservative throughout: when
+the lock is unavailable or the write to disk fails, the write is **refused**
+with an error — from the caller's perspective "`Ok` means the change landed",
+but the following designed no-op paths also return `Ok` (the known-bundle
+registration skip and its ledger variant, same-value toggle short-circuits,
+and cleanup/sync finding no change against the current set; plus three
+applicability short-circuits — a connector hide (`show=false`) whose
+registration materializes nothing, the builtin exemption that never enters
+scope state, and an exact-cleanup whose target row is already gone —
+round-27 enumeration completion); they make no landed-on-disk claim.
+On the write side there is **no bounded wait** for an established file lock (a
+dying peer process releases the lock with its handle; only a frozen peer
+blocks indefinitely; every write entry point runs off the executor, and the
+residue sweep and repair writes inside the single-threaded startup window may
+wait the same way — a documented tradeoff); policy reads only try the locks
+and degrade under contention to an unlocked, never-persisting snapshot
+(engine-side per-turn reads never block on a peer; "never persisting" means no
+policy state is written — a degraded read at most creates the empty lock file
+itself on demand); the opens of both the data file and the lock file are
+hardened (round-18/20/21: on Unix `O_NOFOLLOW`/`O_NONBLOCK`, plus a
+regular-file fstat gate before any byte **on the data-file opens**, so
+FIFOs/devices/symlinks are refused there; the **lock-file** open has no
+regular-file gate — a planted FIFO that survives the open is locked on its
+own inode where flock works and fails flock where it does not, a deliberate
+platform-split outcome documented in platform/filesystem; Windows has no
+equivalent and keeps the documented profile-ACL residual — for Windows
+behavior see platform/filesystem's module docs); the hardening guards the
+final path component only — parent-directory symlinks are still followed,
+the same exposure as the rest of the private home's file access — the
+cost is that a legitimate dotfile/sync setup that makes
+`disabled_bundles.json` a symlink is treated as "unreadable" (the in-memory
+over-refusal direction), and the next write renames the symlink aside into a
+preserved `.unreadable.<timestamp>` copy and recovers with a regular file;
+when the file is corrupt (a parse failure or invalid UTF-8), the locked path
+quarantines the corrupt bytes to a backup (`*.corrupt.<timestamp>`; written
+only when no sibling copy exists — with one present no second backup is made,
+i.e. only the **first** instance of a corrupt file's original bytes is
+preserved, and deleting the copy re-arms quarantine). When sibling evidence
+exists (either a `.corrupt.*` quarantine backup or an `.unreadable.*`
+preserved copy — both count), the NotFound recovery branch deliberately skips
+the legacy migration (the sibling evidence proves the unified-store era
+existed and the old migration source is an even older snapshot); letting a
+re-import proceed would resurrect that stale snapshot (including its stale
+initialized marks) as the authoritative state and silently undo every disable
+entry recorded after the original migration. From then on the DenyAll scope
+is re-derived from the real migration defaults (uninitialized means "every
+installed pack off by default", fail-closed), and the original bytes stay
+preserved in the quarantine file. During a corrupt/unreadable window,
+unlocked policy reads uniformly return that over-deny guess (the disabled set
+covering every known pack id; the hidden set likewise emptied and
+`project_skills_enabled` likewise treated as off — the composer list is
+therefore affected beyond the deny decision). Locked write entry points never
+persist the guess: the load arm first quarantines the corrupt bytes and
+recovers the fail-closed state from migration defaults, and writes land on
+the recovered state (same-value toggle short-circuits etc. still return
+normally against the recovered state; no "guess persistence"); the exact
+cleanup channel's "no change means no action" rule for an unparseable state
+still refuses explicitly. When the lock itself is unavailable, every write
+entry point refuses (the error names `disabled_bundles.lock`); these states
+last only as long as the window. Three disclosed boundaries: (1) what the
+lock serializes is only the on-disk read-modify-write, not the UI snapshot —
+the connector toggle rewrites the whole per-scope table, and the submitted
+list comes from the snapshot taken when the composer page loaded; another
+process sharing the same home that registers deny-first entries for the same
+scope between the snapshot and the commit gets them overwritten by the
+whole-table rewrite (the user's own last-writer-wins surface; the overwrite
+does **not** self-heal — once registered the pack is "known", and while it
+stays installed no channel re-registers it, so the exposure lasts until the
+user toggles the pack by hand; uninstall→reinstall of the same id is the
+exception channel — uninstall clears the record, the entries, and the
+materialized connector companion directories (round-17 review), and
+reinstall registers afresh like a new install); (2) serialization requires
+every process sharing the home to run this version — binaries older than
+#515 do unlocked read-modify-writes, so during the upgrade window "old host +
+new GUI" still reproduces lost updates (the degraded direction is harmless:
+the lock file holds no data and old versions ignore every new sibling file);
+(3) the lock covers only this file — the other state files concurrently
+read-modify-written in the same two-process scenario (`bundles.json`,
+`mcp.json`, `recycle-bin.json`) serialize on their own per-file OS locks
+since main's #656 (`file_lock.rs`, closing #521), so the lost-update family
+this section's fix closed for `disabled_bundles.json` cannot reproduce
+there; `installed.json` is the one sibling still outside that guarantee — it
+serializes on the in-process marketplace transaction lock only
+(`MARKETPLACE_TRANSACTION_LOCK`), so two processes sharing the home can
+still drop each other's updates (round-24 review) — and it shares the
+follow-up registered below; the remaining boundary is structural — the
+funnel is a per-file helper family rather than one shared platform-layer
+primitive.
+Boundary (3)'s import family is likewise closed (round-20/21): the per-id
+landing lease gives the import pipeline's staged `bundles/<id>.tmp`, backup
+`bundles/<id>.old`, and registration write real cross-process mutual
+exclusion — same-id imports, the uninstall command, the retired-tool startup
+sweep, and the recycle-bin restore all serialize on
+`marketplace/import_journal/<id>.landing.lock`, and the boot reconcile probes
+the lease non-blockingly and defers contended entries (the landing-journal
+section below documents the arms). What deliberately remains open in this
+family: a persistent rename failure in the import pipeline's own rollback
+paths (landing failure, supply-failure rollback) can strand content in
+`<id>.old` after the journal mark has cleared — logged loudly, and invisible
+to the reconcile (which only scans marks), so recovery is manual; this is
+the rollback form of the crash-strand residue disclosed with the reconcile
+arms below. The boot python-repair downgrade lane
+(`repair_installed_python_tools` → `mark_tool_uninstalled_locked`) is the
+remaining lease-less same-id teardown: it removes the record and strips the
+owner consent rows under the in-process transaction lock only — no landing
+lease, no landing probe (round-24 review). Its reachable blast radius is
+currently closed: the downgrade resolves only embedded-catalog dependency
+ids, and the import channel rejects catalog-id collisions case-folded before
+landing, so a peer import cannot hold the id it strips; it is disclosed here
+as a defense-in-depth asymmetry rather than leased like the uninstall
+command. Two more same-family boundaries: flock provides no cross-host exclusion
+— multiple hosts sharing one network-mounted home are outside this module's
+threat model (for lock semantics on NFS-like filesystems see the lock-file
+line's note); the single-instance constraint is per user — when different
+users share one home, the second user gets write refusals/read degradation
+from the lock file's 0600 private mode (also the fail-closed direction;
+round-17 review: the effective mode is the lock file's own 0600, not the home
+root's 0700). The global order among the file locks is likewise unsettled:
+the ABBA crossing between the transaction lock and the per-id import lock
+is recorded in the comment at `MARKETPLACE_TRANSACTION_LOCK` — pre-existing
+on main, with one same-direction leg added by this PR (the retired-tool
+sweep holds the import lock across its residue uninstall) and disclosed in
+the same comment, which also registers the one same-instance reverse
+theoretical window; this section must not be cited as proof of a settled
+global lock order.
+
+Install/import paths follow a **transaction boundary** in the same direction
+(#517 review): DenyAll disabled-set registration happens BEFORE any content
+lands or replaces an existing install (deny-first) — when registration is
+refused, the whole install/import aborts before landing, never exposing an
+"installed but not in the disabled set" intermediate state and never letting
+the rollback uninstall destroy an existing user install (a reinstall/re-import
+overwrites the old copy in place, and a post-hoc rollback cannot restore it);
+the CLI connector enablement (`*_apply_skills` and the auth-gated refresh /
+startup backfill's skill materialization) likewise registers the DenyAll
+disabled set first and materializes skill files second, and a refusal aborts
+the connect before any skill materialization; recycle-bin restore is
+deny-first the same way (uninstall already cleared the old disabled entries,
+so restore is, in governance terms, "a not-installed pack becoming available
+again", not "returning to the pre-uninstall state") — when the destination
+already exists, restore refuses in front of the consent gate (a stale recycle
+entry must not be able, as the side effect of one restore destined to fail,
+to re-disable an install that was reinstalled and re-enabled); registration
+precedes any content move-back/landing, so a refusal leaves the pack in the
+recycle bin intact and retryable, and a successfully restored pack stays off
+by default in an initialized DenyAll scope (an uninitialized DenyAll scope is
+backstopped by "every installed pack off by default"). Restore registration
+runs **unconditionally**, without an "already installed → skip" check: the
+uninstall side's `bundles.json` mirror deletion only logs on failure while
+the recycle still continues, so a stale `installed=true` record may survive —
+if it participated in the skip check, the restored pack would land without
+its disabled entries (exactly the exposure this gate prevents); the reinstall
+channel's "known" check no longer blindly trusts that record either: the
+store-record clause already requires content corroboration (the pack
+directory exists, or an installed skill maps to the record), so a surviving
+stale record biases toward "unknown" (the over-refusal registration
+direction), aligned with the restore channel's unconditional registration;
+unconditional registration is idempotent over surviving residue entries. The
+`Builtin` registration record written at connect time does **not**
+participate in the "already installed → skip" check (it is written before the
+gate runs; counting it as known would skip the entire registration on first
+enablement), so a connector's first visibility always registers; once all
+companion skill directories have landed, the connector hits "known" (those
+skills are neither presets nor uploads, so owner-claim can never vouch for
+the connector; a full landing can only come from an earlier gated show, or be
+inherited verbatim from a pre-lock older version — at that time "the visible
+skills of connected connectors" was the recorded status quo; a partial
+landing is treated as "unknown", the over-refusal registration direction)
+and keeps the user's recorded authorization state — including every startup's
+auth-gated refresh; hide and re-show: the CLI connector hide/logout path does
+no teardown and the sync-ledger entry survives, so re-show is a no-op — the
+recorded authorization rows are kept verbatim, re-materialization stays
+governed by them, and they are never re-denied (round-17 review erratum). Re-registration happens only after a
+ledger-clearing teardown: the ima logout (`uninstall_and_strip_scope`), or a
+pack uninstall — the latter removes the materialized companion directories
+along with the pack and aborts the whole uninstall if that removal fails
+(transaction rollback, mirror registration write-back, authorization rows and
+ledger kept verbatim, left for the user to retry — the state is kept as-is,
+retry safe; the startup retry applies only to the retired-tool sweep leg;
+round-18/19). The materialized-"known" clause also requires the sync-ledger
+entry to exist (round-18): the ledger entry is written by the gated pass
+before materialization and cleared only by ledger-clearing teardowns, so
+"directory present while the ledger is cleared" is exactly the post-teardown
+state — a gated show that completes materialization mid-teardown across
+processes (the per-id import lock is in-process and cannot serialize a
+cross-process show/uninstall pair) re-registers in its post-materialization
+belt-and-braces sync, and the re-landed directory cannot vouch for the
+already-cleared authorization state; the residue is the microsecond-scale
+check-then-act between that sync's known check and its registration (same
+disclosed family). The CLI connector identity vocabulary is case-folded at
+the import guard: a pack id case-insensitively equal to a builtin CLI id is
+refused at import, and companion-name claims are folded through
+`cli_bundle_of_skill`; the materialization probe and the startup visibility
+cache share a `read_dir` exact-name check, so a case-variant directory counts
+only as a partial landing (the over-refusal registration direction) and never
+as authorized — a planted variant on default macOS/Windows filesystems
+therefore biases to over-refusal and converges once the variant pack is
+uninstalled (the next gated show re-materializes under the canonical name);
+on Linux that exact check behaves identically to the original-path check.
+Deny-first applies only to **newly installed** pack ids: a reinstall/update/
+re-import of an installed pack skips registration (`Ok`, no write) — the
+existing entries of an initialized scope are the user's authorization record;
+re-registering would both reset the user's explicit on on the success path
+and, on any failure after the gate (pip dependencies, disk full, content
+conflict, remote verification), silently disable an otherwise working install
+with no recovery path (the same contract as `update_marketplace_skill`'s
+"update keeps the user's enabled state"); the lazy disabled entries a failed
+new-install leaves behind still point fail-closed and converge at the next
+successful install. The uninstall side clears scope entries per channel: in
+the MCP tool channel, the strip of **the tool's own id and the companion
+skill entries of whole-pack Upload recycles** happens inside the transaction
+lock (the cleanup presumes the registrations this call actually removed);
+non-Upload combo packs' companion skill entries are cleared row by row with
+each skill teardown before the transaction starts (that leg holds the same
+round-12 B2 window — the strip runs after the corresponding teardown returns
+and outside any lock; an existing shape, disclosed; this fix also removed
+main's leftover post-transaction second strip on that channel, collapsing
+that leg's window to one hop after teardown); the ima disconnect channel goes
+through `uninstall_and_strip_scope` (`ima_logout` has moved to the same entry
+point) holding the per-id import lock across both the teardown and the scope
+cleanup, and the strip likewise completes inside the lock; the skill
+uninstall channel snapshots the owner before deletion (round-26: post-deletion
+normalization could be hijacked by a foreign claim) and clears rows exactly,
+after the `Ok(false)` no-op exemption — the strip runs after the uninstall
+returns and outside the import lock (the round-12 B2 window is still open
+here, a disclosed residue; the ima channel is unaffected). Round-27: the
+by-name command lane refuses a skill whose gating owner is ANOTHER live pack
+(companion claim or physical nesting — the same shape the tool lane refuses
+via its deny-row probe), so a hand uninstall can no longer delete the
+claimant's materialized dir and strip its consent rows; the teardown lanes
+(`uninstall_and_strip_scope`, the eager companion strip) call the manager
+directly and keep their on-behalf-of-the-owner semantics. The preset skill
+install channel (`SkillMarketplaceManager::install`) holds the same per-id
+import lock across its whole landing (the round-20 fix, stated in full with
+its residual window below), so a same-id install and an
+uninstall/disconnect teardown can no longer interleave — the residue
+collapses to one hop between the install channel's gate check / pre-steps
+(which read the store outside the lock; an ima reconnect includes credential
+writes) and taking the lock (same-family window, millisecond scale): when the
+gate check reads "known" before the teardown but the landing completes after
+it, the pack sits with zero consent rows until its next teardown (disclosed
+family; the fail-open direction is exactly this one window).
+Across the channels, a same-id deny-first registration that happens inside a
+critical section, in the window between the record/teardown commit and the
+strip, can still be cleared by that strip (microsecond-scale, fail-open,
+disclosed); the by-name install/connect gates' owner-claim divergence refusal
+shares the family — the refusal and the consent sync's own fold are two
+unsynchronized evaluations (the import channel re-checks under its lock; the
+install/connect channels read the package state twice around it), so a
+claimant installed inside that microsecond-scale gap can still swallow an
+already-approved registration into its known-bundle skip (round-24 minor,
+disclosed); a registration made after the critical section ends survives
+necessarily, except for the skill channel, the non-Upload companion leg, the
+install-rollback leg in the next sentence, and the retired-tool startup
+cleanup leg (round-18: its no-op-retry leg's landing-marker probe runs
+outside the scope lock — the strip body itself is inside the scope lock; when
+a same-id import landing marker is present the whole leg is deferred, and
+since round-20 the probe point and the strip body hold the landing lease
+together, so a same-id import cannot register between them — that leg has no
+residual window left). The install-rollback leg (clearing consent rows when
+the network verification fails after a successful install) also clears rows
+exactly, outside the lock, with the same window as above, and only clears the
+rows this install's own deny-first write created — a concurrent same-id
+registration can be cleared by mistake; a mistaken clear does not self-heal
+until the pack's next teardown passes the gate again (disclosed). The
+retired-tool startup cleanup leg (round-17 fix) branches on the uninstall
+outcome: when the uninstall rolls back, the pack is still registered and its
+disabled/hidden rows are current consent — kept, not cleared; only the
+success and no-op-retry legs clean up; while a same-id import is landing (the
+round-20 fix) the entire cleanup — the strip and the directory-deletion leg
+alike — is deferred to the next startup: the probe point is guarded by the
+landing lease (see below) together with the landing marker, so the import's
+landing→registration gap no longer has a deletion leg guarded only by record
+probing. The user uninstall command holds the same landing lease across its
+whole span (the round-20 fix): either the same-id import's gate runs before
+the uninstall and its rows are cleaned together with the records this
+uninstall removes, or the gate runs after the uninstall, re-registers as a
+new install, and the landing is governed — the cross-process window "import
+passes the gate (skips registration) → uninstall commits and clears rows →
+import lands ungoverned" on the tool/pack channel is closed. The remaining
+residue is the same-family microsecond check-then-act: the skip check reads
+the store outside the scope lock (same-id reinstall vs uninstall races; the
+tool/pack channel is closed by the landing lease, and the skill/ima channels'
+in-lock interleaving was closed by install holding the lock — the residue is
+one hop between the install channel's gate check / pre-steps (reading the
+store outside the lock; an ima reconnect includes credential writes) and
+taking the lock, plus the two channels' cross-process two-state cases: the
+import lock is in-process and the skill channel holds no cross-process
+lease), and between the probe points and the strip bodies of the strips that
+run outside locks (the install-rollback leg, the skill command channel) — all
+same-id, narrow, bounded; the reverse outcome — leaving a disabled entry
+behind for an uninstalled id — is fail-closed and converges. Round-20 fix
+(P2; the round-21 review pinned the lock tenancy behaviorally): the preset
+skill install/update pipeline (unpack, fingerprint,
+replace-on-disk, registration — the whole span) now holds the same per-id
+in-process import lock as uninstall/show-edit/unified import — previously
+that channel held no lock, and the in-process interleave "install passes the
+gate (skips registration) → uninstall commits and clears rows → install lands
+and revives" left a persistent fail-open ("directory + record both present,
+consent rows already cleared"; the known-clause vouches forever). The
+folded-detour residue previously listed alongside it was closed by the import
+pipeline's owner-claim-divergence refusal: a new import whose pack id, after
+`to_package_id` folding, lands on another installed claimant (a companion
+skill name, a CLI companion directory, `ima-skills`) is refused in the
+pipeline; with no claimant present the id maps to itself and stays
+importable (the export→re-import loop contract unchanged); old packs with
+such ids (imported before this fix) may still exist: they are refused at
+import (with a rename-retry hint); restoring an old pack containing a
+same-named skill directory is refused the same way (hinting to uninstall the
+claimant pack first) — a pure-MCP old pack (no `skills/` directory) is not
+refused at restore; its pack row is stored verbatim and self-maps on the read
+side after landing, the fail-closed direction. Self-mapping residue
+(disclosed in round-15): when a preset skill name is not occupied by the
+preset, a user-uploaded pack can take that id (self-mapping, a compliant
+import, registered normally under deny-first); when the preset skill is then
+installed, its consent gate hits "known" and skips (the upload record and the
+content directory corroborate), and the preset inherits the id's existing
+entries instead of re-registering — if the user had explicitly enabled the
+uploaded pack, the preset lands "enabled" (that authorization was not made
+for the preset); if it was never touched, what is inherited is exactly the
+default-off row deny-first would have written, so the state is identical.
+The gate cannot distinguish, in this context, "an upload with the same id"
+from "a historical install of that preset"; the install sweep may also
+consume the uploaded pack's directory. Uninstall-reinstall or an explicit
+toggle of that id returns the state to unambiguous. Combo-pack imports whose
+skill components are not declared in the MCP manifest's `companion_skills`
+are registered individually per component pack under deny-first (bounded
+inside an initialized scope); an uninitialized DenyAll scope is not a gap:
+its default set is also derived, as a union, through the physical-owner
+mapping (`skill_gating_owner_with`) over a `bundles/*/skills/` disk
+enumeration, so a landed independent component resolves to its owning pack id
+and falls inside the default-all-off (round-17 review erratum).
+
+**Import landing journal (introduced round-18/19, disclosed round-20)**: the
+unified import pipeline writes a landing marker
+(`marketplace/import_journal/<id>.pending`) before the deny-first gate, and a
+guard clears it when the call exits (a gate refusal, a supply-failure
+rollback, a rename failure); only "process death between the marker and the
+exit" leaves the marker on disk, for every startup's
+`reconcile_import_journal` to converge. The marker itself is only a hint — it
+cannot distinguish an in-flight import from a crashed one — the real
+liveness signal is the landing lease (introduced round-20): before writing
+the marker the pipeline takes the cross-process file lock on
+`marketplace/import_journal/<id>.landing.lock` (fd-lock, the same primitive
+as `disabled_bundles.lock`) and holds it until after the landing guard
+clears the marker; same-id cross-process imports therefore serialize on the
+lease (the shared staged `.tmp`/`.old` paths thereby gain real cross-process
+mutual exclusion — previously only in-process), and the user uninstall
+command, the retired-tool startup sweep, and the recycle-bin restore
+(round-21: restore is a same-id `bundles/<id>` writer — without the lease,
+the sweep's "record probe → directory delete" pair can delete the
+just-restored only copy in its take_back→registration gap, and a same-id
+import can replace the restored directory wholesale) each take the same
+lease, blocking or non-blocking respectively (when the sweep hits contention
+it defers wholly to the next startup, and the directory-deletion leg is no
+longer guarded by record probing alone; the blocking takers run in
+spawn_blocking and their span is local work only — staging, rename,
+registry, keyring deletes — so a peer import holds a same-id op for
+seconds at most, and a system-keychain prompt inside the uninstall
+span stalls peer same-id ops for the prompt's duration, the same
+accepted class as the scope lock's frozen-peer wait). The five startup-convergence arms:
+lease held (in-flight) → skip the whole thing, retry next startup; marker +
+no pack directory → restore the pre-import `<pack id>.old` backup first when
+one is present (round-26: a crash between a re-import's two renames leaves
+exactly this shape — pack dir in `.old`, staged copy not yet renamed in,
+record still installed — and the old sweep-then-clear converged it to
+"record installed, content gone, the only copy stranded in the
+scan-invisible `.old`" with no retry; the restore reuses the pipeline's own
+rollback rename, and a failed restore keeps the marker and retries), then
+sweep the staged `<id>.tmp` and clear the marker; marker + a registered
+record → sweep the crashed re-import's staged `<id>.tmp` (round-21: if the
+sweep fails, keep the marker and retry next startup), then clear only the
+marker; marker + a landed directory with no record → move the directory
+into the `import_journal/<id>.crash-<timestamp>` holding area (manual
+recovery), sweep the staged copy too, then clear the marker; a failed store
+read → keep the marker and retry next startup (no destructive recovery on
+an unreadable registry). Disclosed residuals: a failed IN-PROCESS
+landing/supply rollback (whose marker the exit guard clears) can still
+strand a `.old` invisibly — recorded at the arm, no marker survives to
+retry it; and a crash between the `install_upload` transaction commit and
+the bundles.json mirror landing falls into the record-absent arm — the
+directory is quarantined while `installed.json`/`mcp.json` are already
+committed, leaving a dead engine entry pointing at the moved directory (the
+fail-closed direction; no active scan will mistakenly adopt it, and a
+manual uninstall cleans it up; the marker itself survived the crash — which
+is what routed the case to this arm — and is cleared once the arm
+converges). The lease/marker files hold no user data and can
+be deleted while the app is closed; hand-deleting an active import's lease
+file amounts to giving up that id's cross-process mutual exclusion.
 
 每个模式的默认策略显式声明为**模式身份**（`core/session_mode.rs` 的
 `SessionMode::pack_default_policy()`），不再是存储层的硬编码分支：
@@ -335,9 +733,12 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   MAJOR 2 勘误：round-27 m8 曾把「仅 secret:true」的 `manifest_secret_targets`
   过滤误归到此函数——那是恢复同意门的凭据探测，另一条收敛路径），而
   `readiness_for` 对 Mcp/Bundle 只查 credentials 必填项
-  是否在系统凭据存储，因此远程包恒报 Ready。**无法用 readiness 门控 OAuth
-  授权是否完成**；授权态由 `connect`（flow=oauth）流程自理，UI 只能依赖
-  `oauth` 标记打徽标，不能给「未授权」态。
+  是否在系统凭据存储，因此今天的远程包恒报 Ready。round-27 勘误：这是清单
+  现状使然的观察不变量，**并非机制强制**——一个同时声明必填凭据与 `servers`
+  的远程包会让 `readiness_for` 如实报 NotReady（无任何地方排除该组合）。
+  机制上的边界不变：**无法用 readiness 门控 OAuth 授权是否完成**；授权态由
+  `connect`（flow=oauth）流程自理，UI 只能依赖 `oauth` 标记打徽标，不能给
+  「未授权」态。
 
 另有三条限制已随文或在此登记：
 
@@ -360,6 +761,28 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   companion 循环自始以 `?` 传播**。
 - 会话中关闭的上下文不可撤回边界（§3.3 末）、
   CLI 包真实执行面经 `bash` 的开放侧翼（§5 末）。
+- Same family: **hand-placed skills are not gated by deny-first** — skills
+  placed by hand under `user/skills/`, and directories under
+  `bundles/*/skills/` claimed by no installed pack, have no application-side
+  writer to register deny-first entries for them and no composer toggle; they
+  are governed only by the owner-claim vocabulary. The two placements'
+  exposures differ (round-17 wording fix): `user/skills/` is the only
+  placement with zero coverage in **every** scope shape — DenyAll's disk
+  backstop walks only `bundles/*/skills/`, and the owner mapping resolves a
+  hand-placed skill to itself; whereas unclaimed directories under
+  `bundles/*/skills/` are exposed only in initialized scopes **not yet
+  initialized by a materializing write** (an uninitialized DenyAll scope's
+  on-the-fly expansion covers those directories via the `bundles/*/skills/`
+  owner mapping; a scope initialized through the welcome-card/scene opt-in's
+  materializing initialization or the secrets-pack restore gate's
+  materializing initialization lands those unclaimed directories' owners as
+  stored rows too — in steady state that row survives the composer's
+  whole-table writes verbatim under the known-pack shield, and only the
+  stale-snapshot race between boundary (1)'s whole-table write and the
+  materializing-initialization write can overwrite and lose it, see boundary
+  (1) above),
+  and that exposure does not disappear across scope
+  migration.
 
 ## 8. 相关文件
 

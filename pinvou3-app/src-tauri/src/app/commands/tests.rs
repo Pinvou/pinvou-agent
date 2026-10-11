@@ -452,6 +452,155 @@ fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
     assert!(mcp["servers"].get(server_name).is_some());
 }
 
+/// Vacuous uninstall guard, both channels (the skill channel got the same
+/// guard as the tool channel in round-10 review): deny-first registers the
+/// consent entry before the install record lands, so a mid-install id has
+/// an entry but no record. An id with no install record and nothing on disk
+/// uninstalls nothing, so both sync cores must leave every deny entry alone
+/// — stripping there would remove the deny-first consent entry a concurrent
+/// same-id install just registered (its install record lands after the
+/// gate) and re-enable the tool/skill as it lands.
+#[test]
+fn vacuous_uninstall_keeps_fresh_consent_entries() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, save_disabled_bundles_for,
+    };
+
+    let _g = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _home = TempPinvou3Home::new("vacuous-uninstall-consent");
+    let both_ids = &[
+        "gate-race-probe".to_string(),
+        "gate-race-skill-probe".to_string(),
+    ];
+    save_disabled_bundles_for(ConnectorScope::Code, both_ids).unwrap();
+    save_disabled_bundles_for(ConnectorScope::Plain, both_ids).unwrap();
+
+    uninstall_marketplace_tool_sync("gate-race-probe").unwrap();
+    uninstall_marketplace_skill_sync("gate-race-skill-probe").unwrap();
+
+    for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
+        assert!(
+            load_disabled_bundles_for(scope).contains(&"gate-race-probe".to_string()),
+            "a vacuous uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
+        );
+        assert!(
+            load_disabled_bundles_for(scope).contains(&"gate-race-skill-probe".to_string()),
+            "a vacuous skill uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
+        );
+    }
+}
+
+/// Round-27 review (minor): the by-hand skill-uninstall lane must refuse a
+/// name that belongs to a live claimant pack (companion claim or physical
+/// nesting) — deleting it would remove the claimant's materialized dir and
+/// strip the claimant's own consent rows, re-enabling its still-installed
+/// MCP server in initialized scopes. Standalone names resolve to themselves
+/// and uninstall as before (positive control).
+#[test]
+fn uninstall_refuses_a_claimed_companion_name() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::save_disabled_bundles_for;
+    use crate::platform::paths;
+
+    crate::platform::test_support::with_temp_home("claimant-uninstall-refusal", || {
+        let nested = paths::bundles_root()
+            .join("claimant-pkg")
+            .join("skills")
+            .join("weather");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("SKILL.md"), "---\nname: weather\n---\n# w").unwrap();
+        // An initialized scope row for the CLAIMANT, so the assert below
+        // proves the refusal happened before any strip ran.
+        save_disabled_bundles_for(ConnectorScope::Code, &["claimant-pkg".to_string()]).unwrap();
+
+        let error = uninstall_marketplace_skill_sync("weather").unwrap_err();
+        assert!(
+            error.contains("claimant-pkg"),
+            "the refusal must name the live claimant pack: {error}"
+        );
+        assert!(
+            nested.join("SKILL.md").is_file(),
+            "the claimant's materialized dir must survive the refused uninstall"
+        );
+        assert!(
+            crate::features::marketplace::scope::load_disabled_bundles_for(ConnectorScope::Code)
+                .contains(&"claimant-pkg".to_string()),
+            "the claimant's consent row must be untouched"
+        );
+
+        // Positive control: with the physical claim gone the name resolves
+        // to itself and the by-hand lane proceeds (vacuous uninstall, no
+        // record → the entry-keeping Ok).
+        std::fs::remove_dir_all(nested).unwrap();
+        uninstall_marketplace_skill_sync("weather").unwrap();
+    });
+}
+
+#[test]
+fn standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir() {
+    use crate::features::assistant::skill_materialization as sm;
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        save_disabled_bundles_for, sync_deny_all_scopes_after_install,
+    };
+
+    // The round-8 vocabulary fix's end-to-end pin: the vendored preset's
+    // marketplace id (tencent-docs-skill) differs from its on-disk directory
+    // (tencent-docs). Deny-first gate first (nothing installed yet, so the
+    // registration is fresh), then the standalone install lands the directory.
+    crate::platform::test_support::with_temp_home("tencent-docs-alias-admission", || {
+        // An initialized (empty) Code deny set, so admission reads the explicit
+        // entry list instead of the uninitialized scope's full-deny default
+        // (which would mask a broken owner claim).
+        save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
+        sync_deny_all_scopes_after_install("tencent-docs-skill").unwrap();
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .install("tencent-docs-skill")
+            .unwrap();
+
+        assert!(
+            sm::disabled_skill_names_for(ConnectorScope::Code).contains("tencent-docs"),
+            "the deny entry stored under the marketplace id must exclude the preset's materialized directory"
+        );
+    });
+}
+
+#[test]
+fn standalone_preset_install_never_folds_package_ids_on_save_or_remove() {
+    use crate::features::marketplace::ConnectorScope;
+    use crate::features::marketplace::scope::{
+        load_disabled_bundles_for, remove_bundle_from_disabled_scopes, save_disabled_bundles_for,
+    };
+
+    // Negative half of the round-8 vocabulary fix (round-10 review): the
+    // preset-id alias lives ONLY on the admission side. Save/remove
+    // normalization must not fold the MCP package id "tencent-docs" onto the
+    // preset id "tencent-docs-skill" once the preset is materialized — a
+    // forward fold would rewrite one package's consent entry into the other's
+    // vocabulary and let a tool uninstall clear the wrong entry.
+    crate::platform::test_support::with_temp_home("tencent-docs-alias-no-forward-fold", || {
+        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .install("tencent-docs-skill")
+            .unwrap();
+
+        save_disabled_bundles_for(ConnectorScope::Code, &["tencent-docs".to_string()]).unwrap();
+        assert_eq!(
+            load_disabled_bundles_for(ConnectorScope::Code),
+            vec!["tencent-docs".to_string()],
+            "the MCP package id must be stored verbatim, never folded to the preset id"
+        );
+
+        remove_bundle_from_disabled_scopes("tencent-docs").unwrap();
+        assert!(
+            load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+            "removing the MCP package id must clear exactly that entry"
+        );
+    });
+}
+
 struct TestPinvouHome {
     root: std::path::PathBuf,
     previous: Option<String>,
