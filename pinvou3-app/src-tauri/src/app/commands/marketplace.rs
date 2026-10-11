@@ -787,18 +787,12 @@ fn install_marketplace_tool_gates(tool_id: &str) -> Result<(), String> {
         .map_err(|refused| refused_sync_error(&format!("tool '{tool_id}'"), refused))
 }
 
-/// Owner-claim divergence refusal for the two by-name install gates: the
-/// consent sync folds its id through the installed packs'
-/// companion-skill vocabulary (`to_package_id`), and a DECLARED-but-unshipped
-/// companion name survives import validation (`detect_components` checks only
-/// shipped components) — so an installed mcp-only pack declaring
-/// `companion_skills: ["weather"]` folds a later catalog install of "weather"
-/// onto the claimant, hits the known-bundle skip, and lands the tool ENABLED
-/// with zero consent rows in initialized DenyAll scopes (enforcement expands
-/// only the ids stored in the disabled lists). The import channel refuses
-/// this shape at its own boundary (its fold-divergence check); these
-/// gates are the remaining by-name channels. The check is state-dependent on
-/// purpose, like the import one: with no claimant installed the id self-maps
+/// Owner-claim divergence refusal for the two by-name install gates (the
+/// remaining by-name channels after the import boundary's own
+/// fold-divergence check); `scope::refuse_owner_claimed_id` is the
+/// single-sourced mechanism, and the worked hazard example lives on the
+/// connector gate's comment in `features/marketplace/scope.rs`. The check is
+/// state-dependent on purpose: with no claimant installed the id self-maps
 /// and installs normally, and a reinstall of the claimant's OWN pack id also
 /// self-maps (its pack dir exists), so the known-skip reinstall contract is
 /// untouched.
@@ -929,8 +923,7 @@ fn stable_stem_hash(stem: &str) -> String {
 /// 统一导入。frontmatter 有 `name` 用之；没有则用文件名 stem 兜底并注入最小
 /// frontmatter。返回 PluginImportReport（调用方负责热刷 skills 组合目录）。
 /// The unified import pipeline's pre-land hook is always the DenyAll
-/// deny-first gate (`deny_all_pre_land` below) — the former `pre_land`
-/// parameter existed only for that single call shape.
+/// deny-first gate (`deny_all_pre_land` below).
 fn import_skill_md_content(
     md: String,
     filename: &str,
@@ -972,11 +965,7 @@ fn import_skill_md_content(
     }
     // 展示名 = 原始文件名（写 bundles.json 的 upload 来源标记）。
     let display = sanitize_display_name(filename);
-    let result = crate::features::marketplace::plugin_import::import_plugin_package_gated(
-        &tmp.to_string_lossy(),
-        &display,
-        &deny_all_pre_land,
-    );
+    let result = import_plugin_package_sync(&tmp.to_string_lossy(), &display);
     let _ = std::fs::remove_file(&tmp); // 清理临时文件(含失败路径)
     result
 }
@@ -1272,7 +1261,7 @@ pub async fn uninstall_marketplace_skill(
 }
 
 pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
-    // Round-27 review (minor): the by-hand lane must not delete a live
+    // The by-hand lane must not delete a live
     // claimant's companion dir. `uninstall_locked`'s candidate scan finds
     // `bundles/<pkg>/skills/<name>` and deletes it, and the strip below
     // would remove the claimant pack's own consent rows — its still-
@@ -1300,11 +1289,9 @@ pub(super) fn uninstall_marketplace_skill_sync(skill_id: &str) -> Result<(), Str
     let torn_down = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
         .uninstall(skill_id)?;
     if !torn_down {
-        // Vacuous skill uninstall (no record, nothing on disk): there is
-        // nothing legitimate to clear — stripping here would remove the
-        // deny-first consent entry a concurrent same-id install just
-        // registered (its install record lands after the gate) and re-enable
-        // the skill as it lands.
+        // Vacuous skill uninstall (no record, nothing on disk): keep the deny
+        // entries — the concurrent-install rationale is single-sourced on
+        // `SkillMarketplaceManager::uninstall`'s contract doc.
         return Ok(());
     }
     // 已卸载的技能从两个 scope 的禁用集移除（避免残留 id，与连接器同语义）；
@@ -1631,10 +1618,7 @@ mod tests {
     /// Temp-home harness for the DenyAll transaction-boundary regressions:
     /// serializes on ENV_LOCK like the other PINVOU3_HOME mutators.
     fn with_temp_home<F: FnOnce()>(f: F) {
-        // Delegated to the shared RAII helper: a failing assertion
-        // unwinds past a straight-line env restore, which would leave
-        // PINVOU3_HOME pointed at a deleted temp dir and cascade unrelated
-        // failures for every later test in the process.
+        // Delegates to the shared RAII helper (see its doc for the unwind-restore rationale).
         crate::platform::test_support::with_temp_home("pinvou3-gate-rb", f);
     }
 
@@ -1652,26 +1636,15 @@ mod tests {
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             crate::platform::paths::tests::plant_fifo(&mcp_path);
 
-            let (tx, rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let result = marketplace_oauth_server_from_mcp_config("weather");
-                let _ = tx.send(result);
-            });
-            let result = rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or_else(|_| {
-                    eprintln!(
-                        "FAIL: the OAuth status read still blocks on a planted mcp.json FIFO — \
-                         aborting the test process to contain the leaked blocked reader"
-                    );
-                    std::process::abort();
-                });
+            let result = crate::platform::test_support::run_bounded_worker_or_abort(
+                "the OAuth status read still blocks on a planted mcp.json FIFO",
+                || marketplace_oauth_server_from_mcp_config("weather"),
+            );
             let error = result.expect_err("a planted FIFO must fail the status read loudly");
             assert!(
                 error.contains("读取 mcp.json 失败"),
                 "the refusal must keep the reader's error shape: {error}"
             );
-            worker.join().unwrap();
         });
     }
 
@@ -1686,33 +1659,9 @@ mod tests {
     #[test]
     fn uninstall_upload_recycle_strips_owner_and_companion_entries_in_lock() {
         with_temp_home(|| {
-            // Combo on disk + Upload record + Upload install record, mirroring
-            // the recycle fixture of
-            // uninstall_upload_bundle_via_command_recycles_companion_skills.
-            let manifest_dir =
-                crate::features::marketplace::mcp_catalog::package_mcp_dir("up-lock");
-            std::fs::create_dir_all(&manifest_dir).unwrap();
-            std::fs::write(
-                manifest_dir.join("manifest.json"),
-                r#"{"id":"up-lock","name":"UpLock","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-lock-skill"]}"#,
-            )
-            .unwrap();
-            let skill_dir =
-                crate::platform::paths::bundles_root().join("up-lock/skills/up-lock-skill");
-            std::fs::create_dir_all(&skill_dir).unwrap();
-            std::fs::write(
-                skill_dir.join("SKILL.md"),
-                "---\nname: up-lock-skill\n---\n",
-            )
-            .unwrap();
-            let mgr = crate::features::marketplace::MarketplaceManager::new();
-            mgr.install_upload(
-                "up-lock",
-                crate::features::marketplace::store::BundleSource::Upload(
-                    "up-lock.zip".to_string(),
-                ),
-            )
-            .unwrap();
+            // Combo on disk + Upload record + Upload install record (the
+            // shared upload-combo fixture).
+            seed_upload_combo("up-lock", "up-lock-skill");
 
             // Seed consent state directly: owner id, standalone-era companion
             // id, and an unrelated entry that must survive.
@@ -1751,17 +1700,53 @@ mod tests {
         .expect("code scope must initialize while the lock works");
     }
 
-    /// Make the lock file unopenable (a directory at its path) so every
-    /// consent-gate sync is refused.
-    fn break_scope_lock() {
+    fn init_code_scope_then_break_lock() {
+        init_code_scope();
+        // Make the lock file unopenable (a directory at its path) so every
+        // consent-gate sync is refused.
         let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
         std::fs::remove_file(&lock).unwrap();
         std::fs::create_dir_all(&lock).unwrap();
     }
 
-    fn init_code_scope_then_break_lock() {
-        init_code_scope();
-        break_scope_lock();
+    /// Shared Upload-combo fixture for the uninstall tests: writes the
+    /// package's MCP manifest (declaring `skill` as a companion) plus the
+    /// companion's SKILL.md, then registers the Upload install record.
+    /// Returns the companion skill dir.
+    fn seed_upload_combo(id: &str, skill: &str) -> std::path::PathBuf {
+        // Display name title-cases the id's dash-separated parts, matching
+        // the literal fixtures this helper replaces ("up-lock" → "UpLock").
+        let mut name = String::new();
+        for part in id.split('-') {
+            let mut chars = part.chars();
+            if let Some(first) = chars.next() {
+                name.extend(first.to_uppercase());
+                name.push_str(chars.as_str());
+            }
+        }
+        let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir(id);
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        std::fs::write(
+            manifest_dir.join("manifest.json"),
+            format!(
+                r#"{{"id":"{id}","name":"{name}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["{skill}"]}}"#
+            ),
+        )
+        .unwrap();
+        let skill_dir = crate::platform::paths::bundles_root().join(format!("{id}/skills/{skill}"));
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {skill}\n---\n"),
+        )
+        .unwrap();
+        crate::features::marketplace::MarketplaceManager::new()
+            .install_upload(
+                id,
+                crate::features::marketplace::store::BundleSource::Upload(format!("{id}.zip")),
+            )
+            .unwrap();
+        skill_dir
     }
 
     /// Shared zip-fixture builder for the import-channel tests: writes
@@ -2001,7 +1986,7 @@ mod tests {
         });
     }
 
-    /// Round-16 (review): a garbage direct-IPC id must fail on the existence
+    /// A garbage direct-IPC id must fail on the existence
     /// probe BEFORE the deny-first gate — otherwise the gate seeds phantom
     /// deny rows, default-off markers and ledger entries for a package that
     /// cannot exist (pure over-denial surviving until the next composer
@@ -2168,7 +2153,7 @@ mod tests {
         });
     }
 
-    /// Round-12 review B1: a package id that `to_package_id` folds onto an
+    /// A package id that `to_package_id` folds onto an
     /// INSTALLED claimant's consent vocabulary must be refused. With gongwen
     /// installed, the id `government-writing` (its declared companion skill
     /// name) folds onto `gongwen` inside the consent gate, so the gate's
@@ -2264,7 +2249,7 @@ mod tests {
         });
     }
 
-    /// Round-12 review B3 (import side): a case-variant spelling of a builtin
+    /// A case-variant spelling of a builtin
     /// CLI connector id must be refused. `cli_bundle_skill_dirs` matches the
     /// exact id only, so on a case-insensitive filesystem an id like
     /// `Dingtalk` would land at the same physical path as the connector's
@@ -2374,11 +2359,11 @@ mod tests {
                 list.iter().any(|id| id == "orphan-combo"),
                 "the package id must be deny-first registered: {list:?}"
             );
-            // Merged-world note: the deny-first entry for the undeclared
+            // The deny-first entry for the undeclared
             // component IS written pre-land (the sync ledger proves it), but
             // the persisted row is then folded onto the package id — the
             // component dir lands physically nested under the package, and
-            // the R17-MAJOR1 physical-aware owner maps "orphan-guide" to
+            // the physical-aware owner maps "orphan-guide" to
             // "orphan-combo" at the next normalization write. Coverage is the
             // invariant that matters: the normalized view is governed through
             // the package entry, and the ledger pins that the gate ran for
@@ -2510,7 +2495,7 @@ mod tests {
         });
     }
 
-    /// Three halves. (1) With the
+    /// (1) With the
     /// lock WORKING, a same-content re-import must skip the consent-gate
     /// write entirely: a regression to the old unconditional registration
     /// re-denies the landed package HERE and fails the deny-list assert —
@@ -2723,22 +2708,7 @@ mod tests {
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
 
         // 组合包落盘：mcp/manifest.json（声明 companion_skills）+ skills/<sid>/SKILL.md。
-        let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("up-cmd");
-        std::fs::create_dir_all(&manifest_dir).unwrap();
-        std::fs::write(
-            manifest_dir.join("manifest.json"),
-            r#"{"id":"up-cmd","name":"UpCmd","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-cmd-skill"]}"#,
-        )
-        .unwrap();
-        let skill_dir = crate::platform::paths::bundles_root().join("up-cmd/skills/up-cmd-skill");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: up-cmd-skill\n---\n").unwrap();
-        let mgr = crate::features::marketplace::MarketplaceManager::new();
-        mgr.install_upload(
-            "up-cmd",
-            crate::features::marketplace::store::BundleSource::Upload("up-cmd.zip".to_string()),
-        )
-        .unwrap();
+        let skill_dir = seed_upload_combo("up-cmd", "up-cmd-skill");
         assert!(
             skill_dir.join("SKILL.md").is_file(),
             "前置：companion 已落盘"

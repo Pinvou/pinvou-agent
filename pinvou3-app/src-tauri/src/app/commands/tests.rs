@@ -548,7 +548,7 @@ fn standalone_tencent_docs_preset_deny_entry_excludes_the_materialized_dir() {
         save_disabled_bundles_for, sync_deny_all_scopes_after_install,
     };
 
-    // The round-8 vocabulary fix's end-to-end pin: the vendored preset's
+    // End-to-end pin: the vendored preset's
     // marketplace id (tencent-docs-skill) differs from its on-disk directory
     // (tencent-docs). Deny-first gate first (nothing installed yet, so the
     // registration is fresh), then the standalone install lands the directory.
@@ -576,7 +576,7 @@ fn standalone_preset_install_never_folds_package_ids_on_save_or_remove() {
         load_disabled_bundles_for, remove_bundle_from_disabled_scopes, save_disabled_bundles_for,
     };
 
-    // Negative half of the round-8 vocabulary fix (round-10 review): the
+    // Negative half: the
     // preset-id alias lives ONLY on the admission side. Save/remove
     // normalization must not fold the MCP package id "tencent-docs" onto the
     // preset id "tencent-docs-skill" once the preset is materialized — a
