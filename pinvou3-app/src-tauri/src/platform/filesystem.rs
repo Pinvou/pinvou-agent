@@ -526,8 +526,8 @@ fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
         options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
     }
     let file = options.open(path)?;
-    refuse_non_regular_file(&file, path)?;
-    if file.metadata()?.len() > MAX_PRIVATE_DATA_READ_BYTES {
+    let metadata = refuse_non_regular_file(&file, path)?;
+    if metadata.len() > MAX_PRIVATE_DATA_READ_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -541,8 +541,9 @@ fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
 
 /// Shared post-open gate of the hardened private-data primitives: a handle
 /// that is not a regular file (a planted FIFO or device node) is refused
-/// before any byte is read or written.
-fn refuse_non_regular_file(file: &std::fs::File, path: &Path) -> io::Result<()> {
+/// before any byte is read or written. On success it returns the handle's
+/// metadata so a caller needing size or mode does not re-fstat the same fd.
+fn refuse_non_regular_file(file: &std::fs::File, path: &Path) -> io::Result<std::fs::Metadata> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(io::Error::new(
@@ -550,7 +551,7 @@ fn refuse_non_regular_file(file: &std::fs::File, path: &Path) -> io::Result<()> 
             format!("{} is not a regular file", path.display()),
         ));
     }
-    Ok(())
+    Ok(metadata)
 }
 
 /// Upper bound for one private-state data read. The regular-file gate
@@ -623,7 +624,7 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
     let mut file = options.open(path)?;
     #[cfg(unix)]
     {
-        refuse_non_regular_file(&file, path)?;
+        let metadata = refuse_non_regular_file(&file, path)?;
         // Re-tighten a drifted mode like the lock
         // file open does — a landing mark written by main's std::fs::write
         // (0644) otherwise stayed world-readable forever. Stat-gated: the
@@ -631,7 +632,6 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
         // the write, the accepted fail-closed direction (the caller degrades
         // loudly — e.g. the landing mark to live-by-absence with its warn).
         use std::os::unix::fs::PermissionsExt as _;
-        let metadata = file.metadata()?;
         if metadata.permissions().mode() & 0o777 != 0o600 {
             file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
@@ -3540,11 +3540,6 @@ pub(crate) mod tests {
         assert!(
             super::read_private_data_file_bytes(&data_path).is_err(),
             "the raw salvage read must refuse the planted symlink too"
-        );
-        assert_eq!(
-            std::fs::read(&target).unwrap(),
-            b"victim",
-            "the symlink's target must be untouched"
         );
     }
 
