@@ -71,11 +71,9 @@ fn status_is_logged_in(s: &str) -> bool {
     s.contains("Logged in")
 }
 
-/// `tmeet auth status` 判当前是否已登录。会 spawn tmeet。
+/// `tmeet auth status` 判当前是否已登录。会 spawn tmeet;未安装时 spawn
+/// 失败折叠为 false(单探测,同企微/飞书,不必先白跑一次 `--version`)。
 pub(crate) fn is_logged_in() -> bool {
-    if !tmeet_cli_present() {
-        return false;
-    }
     if let Ok((_, so, se)) = cc::run(tmeet(&["auth", "status"])) {
         return status_is_logged_in(&so) || status_is_logged_in(&se);
     }
@@ -106,10 +104,6 @@ fn auth_lines_say_already_logged_in(auth_lines: &std::collections::VecDeque<Stri
     auth_lines
         .iter()
         .any(|line| auth_output_says_already_logged_in(line))
-}
-
-fn safe_auth_log_line(line: &str) -> Option<String> {
-    cc::safe_auth_log_line(line, true)
 }
 
 fn install_tmeet_cli() -> Result<(), String> {
@@ -261,7 +255,7 @@ fn drain_for_auth_url<R: std::io::Read + Send + 'static>(
                     break;
                 }
             };
-            let safe = safe_auth_log_line(&line);
+            let safe = cc::safe_auth_log_line(&line, true);
             let url = TMEET_CTX.extract_url(&line);
             let _ = tx.send((url, safe));
         }
@@ -536,14 +530,17 @@ mod tests {
     #[test]
     fn safe_auth_log_line_redacts_tokens() {
         assert_eq!(
-            safe_auth_log_line("access_token=secret").as_deref(),
+            cc::safe_auth_log_line("access_token=secret", true).as_deref(),
             Some("[redacted credential line]")
         );
         assert_eq!(
-            safe_auth_log_line("Authorization: Bearer secret").as_deref(),
+            cc::safe_auth_log_line("Authorization: Bearer secret", true).as_deref(),
             Some("[redacted credential line]")
         );
-        assert_eq!(safe_auth_log_line("  hello  ").as_deref(), Some("hello"));
-        assert_eq!(safe_auth_log_line("   "), None);
+        assert_eq!(
+            cc::safe_auth_log_line("  hello  ", true).as_deref(),
+            Some("hello")
+        );
+        assert_eq!(cc::safe_auth_log_line("   ", true), None);
     }
 }
