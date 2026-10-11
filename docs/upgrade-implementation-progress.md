@@ -861,3 +861,25 @@ This is scoped kernel progress, not full T44 acceptance or physical certificatio
 Continue pending lifecycle cancellation, staged/waiting composition and channel
 invalidation while deferred client trust/platform/budget/deployment decisions
 remain recorded and skipped.
+
+
+### T44 batch 5: atomic pending lifecycle cancellation (2026-10-12)
+
+Private additive migration 5 cancels a writable update session and fences its
+original activeValidate in one actual StandardReplay/scope transaction. Original
+sequence, start and immutable identity remain unchanged. Already issued rights
+must use the shared authorization-end path. Ordinary telemetry cannot cancel;
+no local stop, cleanup or logical-download termination is inferred. The original
+validation's T06 response is not fabricated; the future T19 owner must use its
+own operation and compose current authority/cleanup/workflow effects atomically.
+
+Both independent roles passed the production delta and final test additions.
+Explicit PostgreSQL cases passed for original identity and Go/SQL parity, full
+rollback, rejection of old validation completion, null/stale CAS and wrong replay
+policy with legal control, competing registration, issued-authority closure with
+shared-end control, V4 data preservation/private grants/digest, final 24-hour
+crossing with the same owner/CAS positive control and safe highest terminal epoch.
+The final entire lifecycle integration and baseline results are recorded in the
+service lifecycle plan. No production credential/API, physical or deployment
+acceptance is implied. Continue the remaining kernel and independent task work;
+undecidable owner choices remain recorded and skipped as requested.
