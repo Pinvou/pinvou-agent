@@ -483,11 +483,16 @@ fn marketplace_oauth_server_from_mcp_config(
     server_name: &str,
 ) -> Result<Option<deepseek_tui::mcp::McpServerConfig>, String> {
     let mcp_path = crate::platform::paths::mcp_config_path();
-    if !mcp_path.is_file() {
-        return Ok(None);
-    }
-    let content =
-        std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+    // Round-27 review MAJOR 1: this was a bare `is_file()` + `read_to_string`
+    // pair — a FIFO swapped in after the probe blocked `open()` forever (the
+    // uninstall caller below holds the executor's spawn_blocking pool while
+    // it waits). The hardened private-data read refuses non-regular targets
+    // without blocking; NotFound keeps the "not configured" answer.
+    let content = match crate::platform::filesystem::read_private_data_file(&mcp_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("读取 mcp.json 失败: {e}")),
+    };
     let config: deepseek_tui::mcp::McpConfig =
         serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
     Ok(config.servers.get(server_name).cloned())
@@ -544,7 +549,17 @@ pub async fn get_marketplace_tool_auth_status(
     let mut auth_status = None;
 
     if let Some(name) = server_name.as_deref() {
-        match marketplace_oauth_server_from_mcp_config(name) {
+        // Round-27 review MAJOR 1: the mcp.json read inside the helper is a
+        // blocking file read — run it off the executor like the OAuth-login
+        // read above (a planted FIFO at mcp.json must refuse through the
+        // hardened read, not pin this worker).
+        let status = {
+            let name = name.to_string();
+            tokio::task::spawn_blocking(move || marketplace_oauth_server_from_mcp_config(&name))
+                .await
+                .map_err(|e| format!("任务执行失败: {e}"))?
+        };
+        match status {
             Ok(Some(server)) => {
                 mcp_configured = true;
                 auth_status =
@@ -1710,6 +1725,43 @@ mod tests {
         // PINVOU3_HOME pointed at a deleted temp dir and cascade unrelated
         // failures for every later test in the process.
         crate::platform::test_support::with_temp_home("pinvou3-gate-rb", f);
+    }
+
+    /// Round-27 review MAJOR 1: the OAuth status read must refuse a planted
+    /// mcp.json FIFO through the hardened private-data read instead of
+    /// blocking `open()` forever (the async status command would pin a Tokio
+    /// worker; the uninstall caller holds a spawn_blocking thread). The
+    /// bounded worker + abort containment follow the migration pin: a
+    /// regression fails loudly instead of hanging the lane.
+    #[test]
+    #[cfg(unix)]
+    fn oauth_status_read_refuses_a_planted_fifo_without_hanging() {
+        with_temp_home(|| {
+            let mcp_path = crate::platform::paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let result = marketplace_oauth_server_from_mcp_config("weather");
+                let _ = tx.send(result);
+            });
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    eprintln!(
+                        "FAIL: the OAuth status read still blocks on a planted mcp.json FIFO — \
+                         aborting the test process to contain the leaked blocked reader"
+                    );
+                    std::process::abort();
+                });
+            let error = result.expect_err("a planted FIFO must fail the status read loudly");
+            assert!(
+                error.contains("读取 mcp.json 失败"),
+                "the refusal must keep the reader's error shape: {error}"
+            );
+            worker.join().unwrap();
+        });
     }
 
     /// The Upload-recycle uninstall strips the owner's and the companions'
