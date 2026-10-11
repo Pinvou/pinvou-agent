@@ -172,6 +172,247 @@ def _matches_paths_filter(path, patterns):
     return included and not excluded
 
 
+JOB_HEADER = re.compile(r"^  (\S.*):\s*$")
+
+
+def _extract_job_block(text, job):
+    """提取单个 job 的完整 YAML 块:从它的 2 空格缩进键到下一个 job 键。
+
+    与 test_gate_jobs_do_not_swallow_their_exit_status 的 job_header 同一
+    判据:本文件里 job 键只出现在 2 空格缩进,且每个 job 名只允许定义一次。
+    """
+    lines = text.splitlines()
+    starts = [
+        number
+        for number, line in enumerate(lines)
+        if JOB_HEADER.match(line) and JOB_HEADER.match(line).group(1) == job
+    ]
+    if len(starts) != 1:
+        raise AssertionError(
+            f"expected exactly one {job} job definition, found {len(starts)}"
+        )
+    start = starts[0]
+    end = next(
+        (
+            number
+            for number in range(start + 1, len(lines))
+            if JOB_HEADER.match(lines[number])
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]) + "\n"
+
+
+def _extract_job_level_if(job_block):
+    """提取 job 级 `if:` 的值并按行 strip 归一化:单行 `${{ }}` 或折叠 `>-` 块。
+
+    只认 4 空格缩进的 `    if:`——job 级键;步骤级 `if:` 在 8 空格缩进,
+    不会命中。折叠块取其后所有缩进 >= 5 空格的行,遇到空行或下一个 job 级
+    键(缩进 <= 4)即止:截断会让调用方的全文比对红掉(fail closed),
+    而不是把残缺的值当作完整 pin 静默通过。
+    """
+    lines = job_block.splitlines()
+    starts = [number for number, line in enumerate(lines) if re.match(r"^    if:", line)]
+    if len(starts) != 1:
+        raise AssertionError(
+            "expected exactly one job-level `if:` in the job block, "
+            f"found {len(starts)}"
+        )
+    start = starts[0]
+    value = lines[start][len("    if:"):].strip()
+    if value != ">-":
+        return value
+    folded = []
+    for line in lines[start + 1:]:
+        stripped = line.strip()
+        if not stripped:
+            break
+        if len(line) - len(line.lstrip(" ")) <= 4:
+            break
+        folded.append(stripped)
+    return "\n".join(folded)
+
+
+# Round-52 review: 每个 required-gate 消费其结果的 job 的 job 级 `if:` 全文。
+# 折叠块(cli-test/cli-lint 等)的 `${{ }}` 末行(或单行形式的行尾)被追加
+# `&& false` 时,该腿静默 skip 而 required-gate 的 success|skipped 循环照单
+# 全收——下方 assertIn 级别的路由片段 pin 全绿。这里逐 job 断言提取出的
+# `if:` 值与钉死文本完全相等:任何追加、删支、改写都红。(commit-message/
+# version-consistency/changes 不在表内:它们的 skip 走的是 required-gate 的
+# `!= success` 基础检查,skip 即红,不属于本 bypass 类。)
+_CLI_LEG_JOB_IF = (
+    "${{\n"
+    "!cancelled() &&\n"
+    "github.event.action != 'closed' &&\n"
+    "(\n"
+    "github.event_name == 'push' ||\n"
+    "(\n"
+    "github.event_name == 'merge_group' &&\n"
+    "(\n"
+    "needs.changes.outputs.cli_rust == 'true' ||\n"
+    "needs.changes.outputs.rust_full == 'true'\n"
+    ")\n"
+    ") ||\n"
+    "(\n"
+    "github.event_name == 'pull_request' &&\n"
+    "github.event.pull_request.draft == false &&\n"
+    "(\n"
+    "needs.changes.outputs.cli_rust == 'true' ||\n"
+    "needs.changes.outputs.rust_full == 'true'\n"
+    ")\n"
+    ")\n"
+    ")\n"
+    "}}"
+)
+_RUST_FULL_JOB_IF = (
+    "${{\n"
+    "!cancelled() &&\n"
+    "(\n"
+    "github.event_name == 'push' ||\n"
+    "(\n"
+    "github.event_name == 'pull_request' &&\n"
+    "github.event.pull_request.draft == false &&\n"
+    "(\n"
+    "needs.changes.outputs.rust_full == 'true' ||\n"
+    "needs.changes.outputs.cli_rust == 'true' ||\n"
+    "(\n"
+    "needs.changes.outputs.rust_code == 'true' &&\n"
+    "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')\n"
+    ")\n"
+    ")\n"
+    ")\n"
+    ")\n"
+    "}}"
+)
+GATE_JOB_LEVEL_IFS = {
+    "fast-gate": (
+        "${{ (github.event_name == 'pull_request' && "
+        "github.event.action != 'closed') || "
+        "github.event_name == 'merge_group' }}"
+    ),
+    "frontend-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(github.event_name == 'pull_request' || "
+        "github.event_name == 'merge_group') && "
+        "(needs.changes.outputs.frontend == 'true' || "
+        "needs.changes.outputs.pet == 'true') }}"
+    ),
+    "relay-test": (
+        "${{ !cancelled() && needs.changes.outputs.relay == 'true' && "
+        "(github.event_name == 'merge_group' || (github.event_name == "
+        "'pull_request' && github.event.pull_request.draft == false)) }}"
+    ),
+    "release-contract-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "needs.changes.outputs.release_contract == 'true' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+    "knowledge-rust": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(needs.changes.outputs.knowledge_rust == 'true' || "
+        "needs.changes.outputs.knowledge_dependencies == 'true') }}"
+    ),
+    "rust-lint": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(needs.changes.outputs.rust_code == 'true' || "
+        "needs.changes.outputs.rust_dependencies == 'true') }}"
+    ),
+    "rust-test": (
+        "${{\n"
+        "!cancelled() &&\n"
+        "github.event.action != 'closed' &&\n"
+        "(\n"
+        "github.event_name == 'push' ||\n"
+        "(\n"
+        "github.event_name == 'merge_group' &&\n"
+        "needs.changes.outputs.rust_full == 'true'\n"
+        ") ||\n"
+        "(\n"
+        "github.event_name == 'pull_request' &&\n"
+        "github.event.pull_request.draft == false &&\n"
+        "(\n"
+        "needs.changes.outputs.rust_full == 'true' ||\n"
+        "(\n"
+        "needs.changes.outputs.rust_code == 'true' &&\n"
+        "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')\n"
+        ")\n"
+        ")\n"
+        ")\n"
+        ")\n"
+        "}}"
+    ),
+    "cli-test": _CLI_LEG_JOB_IF,
+    "cli-lint": _CLI_LEG_JOB_IF,
+    "windows-rust-test": _RUST_FULL_JOB_IF,
+    "macos-rust-check": _RUST_FULL_JOB_IF,
+    "macos-codex-runtime-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "needs.changes.outputs.acp_runtime == 'true' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+    "macos-cli-check": _CLI_LEG_JOB_IF,
+    "windows-codex-runtime-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(needs.changes.outputs.windows_codex == 'true' || "
+        "needs.changes.outputs.acp_runtime == 'true') && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+    "windows-rustup-repair-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "needs.changes.outputs.windows_rustup_repair == 'true' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+}
+
+# Round-52 review: 套件以 name+`if` assertIn 或 split 首个匹配钉住这些步骤,
+# 同名的诱饵副本会满足 pin 而真步骤的路由被关掉(经变异验证的 bypass 类)。
+# 每个被钉的步骤名必须在其 job 块内恰好出现一次。
+# windows-rust-test 不在表内:它的步骤名唯一性已由
+# test_windows_rust_test_parallel_phases_preserve_routing_and_coverage 的
+# round-45 duplicate-step 断言覆盖。
+PINNED_GATE_STEP_NAMES = {
+    "fast-gate": (
+        "Checkout (含 submodule,fork 为 public 直接拉)",
+        "workflow lint (actionlint)",
+    ),
+    "cli-test": (
+        "Install Tauri Linux system dependencies",
+        "Set up zram and swap",
+        "cargo test (all targets, no-fail-fast)",
+        "cargo compile check (push)",
+        "cargo test (adapter-gaia test-support)",
+        "cargo compile check (push, adapter-gaia test-support)",
+    ),
+    "cli-lint": (
+        "Install Tauri Linux system dependencies",
+    ),
+    "rust-test": (
+        "cargo test --lib --no-run（编译链接测试二进制）",
+        "cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）",
+        "cargo test --lib --no-run (push main 仅编译暖 cache)",
+    ),
+    "knowledge-rust": (
+        "cargo clippy (hard gate, lib/bins/tests + server)",
+    ),
+    "macos-rust-check": (
+        "macOS Rust all-targets check",
+        "macOS computer_use unit tests",
+        "macOS full lib tests (native regression, push only)",
+        "Install both targets (universal bundle smoke, push only)",
+        "Node.js (universal bundle smoke, push only)",
+        "Install frontend deps (universal bundle smoke, push only)",
+        "Cargo build (release-fast smoke, push only)",
+        "Tauri bundle smoke (verify dmg/app packaging, bundle-chain changes only)",
+        "Verify script (plist/usage-key/bundle targets checks, push only)",
+        "Probe and export the macOS lld link flags",
+    ),
+}
+
+
 class CiGatePolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -601,6 +842,20 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server --locked -- -D warnings",
             knowledge,
+        )
+        # Round-52 review: that step's `if` was unpinned — flipping it to a
+        # draft-gated (or constant-false) expression silently skips the
+        # -D-warnings clippy on PRs while the command pin above stays
+        # green. Pin the name+`if` pair end-anchored (trailing newline),
+        # the same pattern as the cli-test step pins.
+        self.assertIn(
+            "- name: cargo clippy (hard gate, lib/bins/tests + server)\n"
+            "        if: ${{ github.event_name != 'pull_request' || "
+            "github.event.pull_request.draft == false }}\n",
+            knowledge,
+            "the -D-warnings hard-gate step's routing drifted; an `if` "
+            "rewritten to never fire skips the clippy hard gate on PRs "
+            "while the run-command pins stay green",
         )
         self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
@@ -1674,6 +1929,185 @@ class CiGatePolicyTests(unittest.TestCase):
                     f"'{idiom}': the leg would report success on a real "
                     "compile or test failure and required-gate would accept it",
                 )
+            # Round-52 review: the spaced scan above only matches the spaced
+            # spellings, so the no-space swallow variants (`cmd||true`,
+            # `cmd||:`, `cmd;true`, `cmd&&true` — same last-command-status
+            # semantics, zero matches in every gate job today) slipped past
+            # it. Scan them as regexes with no required space.
+            for pattern in (r"\|\|true", r"\|\|:", r";true", r"&&true"):
+                self.assertNotRegex(
+                    block,
+                    pattern,
+                    f"{name} must not swallow a command's exit status with "
+                    f"the no-space idiom /{pattern}/: the leg would report "
+                    "success on a real compile or test failure and "
+                    "required-gate would accept it",
+                )
+            # A `set +e` scan was considered here and deliberately NOT
+            # added: the three current sites (windows-rust-test's submodule
+            # init timing probe and its two cargo-check timing steps) all
+            # capture `$?` explicitly, restore `set -e` immediately, and
+            # re-raise via `exit "$status"`, so a blanket ban would need
+            # per-site exemptions that rot. Revisit only if a `set +e`
+            # appears WITHOUT its paired restore-plus-explicit-status
+            # handling.
+
+    def test_gate_job_level_ifs_are_pinned_verbatim(self):
+        # Round-52 review: a job-level `if: >-` folded block can get
+        # `&& false` appended inside its `${{ }}` block (or after `}}` on
+        # the single-line form). The leg then skips while required-gate's
+        # success|skipped loop accepts it, and every routing pin above —
+        # which asserts SUBSTRINGS of the condition — stays green. Pin the
+        # exact full text of every gate job's job-level `if:` (extracted
+        # line-normalized, so pure re-indentation still matches but any
+        # content change does not): an appended `&& false`, a deleted
+        # routing branch, or a flipped draft gate fails here.
+        for job, expected in GATE_JOB_LEVEL_IFS.items():
+            with self.subTest(job=job):
+                actual = _extract_job_level_if(
+                    _extract_job_block(self.pr_workflow, job)
+                )
+                self.assertEqual(
+                    actual,
+                    expected,
+                    f"{job}'s job-level `if:` drifted from the pinned text; "
+                    "an appended `&& false` (or a deleted routing branch) "
+                    "silently skips the leg while required-gate accepts "
+                    "'skipped'",
+                )
+
+    def test_pinned_gate_step_names_are_unique_within_their_job(self):
+        # Round-52 review: the name+`if` step pins are assertIn — a decoy
+        # duplicate step carrying the pinned name (and the pinned `if`)
+        # satisfies them while the REAL step's `if` is flipped or its run
+        # body disabled; the job reports success without executing the
+        # pinned command (mutation-verified bypass on cli-test). Every
+        # step name this suite pins inside a gate job must occur EXACTLY
+        # ONCE in that job's block.
+        for job, names in PINNED_GATE_STEP_NAMES.items():
+            block = _without_yaml_comments(_extract_job_block(self.pr_workflow, job))
+            for name in names:
+                with self.subTest(job=job, step=name):
+                    occurrences = [
+                        line
+                        for line in block.splitlines()
+                        if line.strip() == f"- name: {name}"
+                    ]
+                    self.assertEqual(
+                        len(occurrences),
+                        1,
+                        f"{job}: pinned step name '{name}' must occur exactly "
+                        "once; a decoy duplicate satisfies the name+`if` "
+                        "assertIn pins while the real step is disabled",
+                    )
+
+    def test_required_gate_membership_triples_pin_the_unpinned_legs(self):
+        # Round-52 review: rust-test, frontend-test, relay-test, rust-lint
+        # and macos-codex-runtime-test had NO membership pins — unlike
+        # cli-test/cli-lint/knowledge-rust above. Unwiring one of them from
+        # required-gate (dropping the needs entry, the env backfill or the
+        # summary-loop entry) kept the whole suite green while the gate
+        # silently stopped consuming that leg. Pin the same triple for
+        # each: needs entry, `<JOB>_RESULT:` backfill, loop entry.
+        body = _without_yaml_comments(self.pr_workflow)
+        required_gate = body.split("\n  required-gate:", maxsplit=1)[1]
+        self.assertIn("name: required-gate", required_gate)
+        for job, result_env in (
+            ("rust-test", "RUST_RESULT"),
+            ("frontend-test", "FRONTEND_RESULT"),
+            ("relay-test", "RELAY_RESULT"),
+            ("rust-lint", "RUST_LINT_RESULT"),
+            ("macos-codex-runtime-test", "MACOS_CODEX_RESULT"),
+        ):
+            with self.subTest(job=job):
+                self.assertIn(
+                    f"- {job}",
+                    required_gate,
+                    f"{job} must stay in required-gate's needs list: without "
+                    "the wire the gate cannot consume the leg at all",
+                )
+                self.assertIn(
+                    f"{result_env}: ${{{{ needs.{job}.result }}}}",
+                    required_gate,
+                    f"{job}'s result must be backfilled into required-gate's "
+                    "summary env; a dropped line orphans the loop entry",
+                )
+                self.assertIn(
+                    f'"{job}:${result_env}"',
+                    required_gate,
+                    f"{job} must enter the failure loop "
+                    "(success|skipped accepted so path-filtered skips do "
+                    "not false-fail)",
+                )
+
+    def test_fast_gate_checkout_has_no_ref_indirection(self):
+        # Round-52 review: fast-gate RUNS this suite (the runner line is
+        # pinned above), so a `ref:` under its actions/checkout makes the
+        # whole gate — and every pin in this file — validate another
+        # commit (e.g. refs/heads/main) instead of the PR head, while
+        # required-gate stays green. Pin the checkout step's exact text
+        # (end-anchored by full equality, so an inserted `ref:` line or
+        # any other `with:` drift fails) plus an explicit `ref:` ban.
+        fast_gate = _extract_job_block(self.pr_workflow, "fast-gate")
+        self.assertEqual(
+            fast_gate.count("uses: actions/checkout"),
+            1,
+            "fast-gate must keep exactly one checkout step; a second one "
+            "could shadow the pinned head checkout",
+        )
+        checkout = fast_gate.split(
+            "- name: Checkout (含 submodule,fork 为 public 直接拉)",
+            maxsplit=1,
+        )[1].split("\n      - name:", maxsplit=1)[0].strip()
+        self.assertEqual(
+            checkout,
+            "uses: actions/checkout@v7\n"
+            "        with:\n"
+            "          submodules: false\n"
+            "          fetch-depth: 0",
+            "fast-gate's checkout arguments drifted from the pinned block: "
+            "a `ref:` here runs this whole gate suite against another "
+            "commit instead of the PR head",
+        )
+        self.assertNotIn(
+            "ref:",
+            checkout,
+            "fast-gate's checkout must not pin a `ref:` — the suite must "
+            "validate the commit under test, not a mutable branch",
+        )
+
+    def test_run_heavy_rust_checks_value_is_pinned(self):
+        # Round-52 review: the heavy-check switch was pinned by NAME
+        # presence only (assertIn in
+        # test_rust_modes_run_combined_full_regression_only_for_high_risk),
+        # so rewriting the value to a draft-gated (or constant-false)
+        # expression silently disabled the clippy/doc hard gates for
+        # draft PRs while every consumer pin (`env.RUN_HEAVY_RUST_CHECKS
+        # == 'true'`) stayed green. Pin the full value line, end-anchored
+        # by its trailing newline so an appended tail fails too, and keep
+        # the definition unique.
+        self.assertEqual(
+            len(
+                re.findall(
+                    r"^\s*RUN_HEAVY_RUST_CHECKS:",
+                    self.pr_workflow,
+                    flags=re.MULTILINE,
+                )
+            ),
+            1,
+            "RUN_HEAVY_RUST_CHECKS must be defined exactly once (rust-lint's "
+            "job env); a second definition could shadow the pinned value",
+        )
+        rust_lint = _extract_job_block(self.pr_workflow, "rust-lint")
+        self.assertIn(
+            "      RUN_HEAVY_RUST_CHECKS: "
+            "${{ github.event_name != 'pull_request' || "
+            "github.event.pull_request.draft == false }}\n",
+            rust_lint,
+            "RUN_HEAVY_RUST_CHECKS's value drifted: a draft-gated or "
+            "constant-false rewrite silently disables the clippy/doc hard "
+            "gates while the step pins still name the switch",
+        )
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
