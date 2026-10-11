@@ -145,6 +145,12 @@ pub fn is_safe_component_id(id: &str) -> bool {
 /// - 包内图标参与比对；磁盘侧 `mcp/`、`skills/` 下多出的文件（zip 已不再携带
 ///   的内容）同样判不同，但容忍 Python 运行缓存（`__pycache__/`、`*.pyc`）。
 /// 全部一致才视为同包重导（允许原子替换），任一不符视为不同包冲突。
+///
+/// Round-28 review MAJOR 2: 磁盘侧读取全部走加固原语。本函数的调用契约
+/// （下方 conflict-check doc）要求调用方持有 per-id 导入锁，生产调用点更在
+/// 跨进程 landing lease 之内——裸 `fs::read` 会在持锁期间阻塞在植入 FIFO 的
+/// `open()` 上，楔死同 id 导入道直至持有进程退出。加固原语拒绝非普通文件
+/// 而不阻塞；所有 Err 一律映射到既有的「判冲突」保守口径，语义不变。
 fn same_package_content(
     pkg_dir: &std::path::Path,
     archive: &mut zip::ZipArchive<std::fs::File>,
@@ -158,9 +164,11 @@ fn same_package_content(
         Some(bytes) => plugin_manifest_semantic_eq(&pkg_dir.join("plugin.json"), bytes),
         None => {
             let synth = serde_json::to_value(synthesized_manifest(det)).ok();
-            let disk = std::fs::read(pkg_dir.join("plugin.json"))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+            let disk = crate::platform::filesystem::read_private_data_file_bytes(
+                &pkg_dir.join("plugin.json"),
+            )
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
             match (disk, synth) {
                 (Some(disk), Some(synth)) => disk == synth,
                 _ => false,
@@ -192,8 +200,10 @@ fn same_package_content(
         let Ok(buf) = read_zip_entry_bounded(&mut entry, declared_size, path_str) else {
             return false; // 条目不可读/伪造头部 → 保守判冲突
         };
-        let Ok(existing) = std::fs::read(pkg_dir.join(&subdir).join(&rel)) else {
-            return false; // zip 有而磁盘无 → 内容不同
+        let Ok(existing) = crate::platform::filesystem::read_private_data_file_bytes(
+            &pkg_dir.join(&subdir).join(&rel),
+        ) else {
+            return false; // zip 有而磁盘无（或磁盘侧拒绝）→ 内容不同
         };
         if existing != buf {
             return false;
@@ -208,7 +218,9 @@ fn same_package_content(
         } else {
             "svg"
         };
-        match std::fs::read(pkg_dir.join(format!("icon.{ext}"))) {
+        match crate::platform::filesystem::read_private_data_file_bytes(
+            &pkg_dir.join(format!("icon.{ext}")),
+        ) {
             Ok(existing) if existing == *bytes => {}
             _ => return false,
         }
@@ -302,7 +314,7 @@ pub(crate) fn rename_dir_with_retry(
 /// 两侧各自解析为 `PluginManifest` 再序列化为 canonical Value 比较（键序/空白/
 /// default 字段差异不误判）；任一侧解析失败回退字节直比（保守）。
 fn plugin_manifest_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> bool {
-    let Ok(existing) = std::fs::read(disk_path) else {
+    let Ok(existing) = crate::platform::filesystem::read_private_data_file_bytes(disk_path) else {
         return false;
     };
     match (
