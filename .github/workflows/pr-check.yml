@@ -1776,6 +1776,11 @@ jobs:
             'restores_the_reimport_backup' \
             'restored_backup_quarantines' \
             'mixed_case_journal_marks' \
+            'restore_failure_keeps_the_mark' \
+            'holds_the_landing_lease_across' \
+            'crash_stranded_reimport_backup' \
+            'marker_directory_aborts' \
+            'claimed_companion_name' \
             'features::projects::tests::' \
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
