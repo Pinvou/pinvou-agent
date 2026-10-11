@@ -955,3 +955,36 @@ regression passed (411.633s); baseline checks passed and their evidence is
 recorded in the service plan. Full T44 and production/physical acceptance
 remain unfinished; continue remaining private lifecycle commands and unblocked
 tasks while existing owner decisions/deployment stay recorded and skipped.
+
+### T44 batch 9: atomic activation consumption (2026-10-12)
+
+Private additive migration 9 consumes only actual available activation
+authorization, authorized Session, original minimal attempt and waiting/
+completed-preinstall lineage. Scope/Auth/Session CAS, request/status bindings,
+five staged claims and complete frozen selection identity are re-read. Metadata
+references can refresh while original Package/object/mode/plans remain fixed.
+Auth consumed, Session fenced, new Transaction, minimal Outcome and staged
+activating commit together under StandardReplay, retaining original staged
+times and repeating owner/authorization/Session/staged/clock guards at the end.
+Activating preserves full member/byte/ref/counter and terminal convergence
+reserves; waiting expiry cannot interrupt an already consumed activation.
+
+Targeted actual PostgreSQL checks passed: basic/recovery/migration (9.660s),
+legal numeric spellings and exact complete member/32 MiB terminal-growth/scope
+revision controls (20.103s), full staged/selection bindings, fresh metadata and
+consume/cancel/expire races (11.453s). Available authorization creation remains
+an explicit isolated identity fixture; original waiting, new Session/restart,
+attempt registration, consumption and T06 commits are real private ports.
+Production issuance remains closed pending existing dependencies. T44 owns
+authorization storage/lifecycle, with actual T19 signature/current/preparation/
+freeze/backup guards in its same final transaction. Compound activation terminal,
+reporting timeout and safe successor remain subsequent work. Final complete
+regression and independent review evidence follows in the service plan; no
+physical, credential, current qualification or deferred deployment acceptance
+is inferred. Continue remaining unblocked tasks and record/skip owner decisions.
+
+Both independent roles passed this complete code/test/documentation batch. The
+frozen full actual lifecycle PostgreSQL regression passed (460.289s), including
+initial/final deadlines and races. Baseline tests/vet/build/module/pinned-contract
+and client architecture checks passed; detailed evidence is in the service plan.
+This closes B9 only and does not mark full T44 or dependent production complete.
