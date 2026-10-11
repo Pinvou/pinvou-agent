@@ -590,8 +590,10 @@ async fn run_session_lifecycle(
     setup_timed_out: bool,
 ) {
     let keep_session = keep_session_from_env();
+    // Every lane below drops this run's eval observation mark first, so the
+    // call is hoisted above the lane dispatch.
+    crate::features::assistant::timing::unregister_eval_observation(session_id);
     if existing_session {
-        crate::features::assistant::timing::unregister_eval_observation(session_id);
         // Reclaim the engine like the fresh+keep branch below. The process
         // exits right after this (`run_windowless_host` calls `exit(0)`), and
         // without the reclaim there is no shell-scope finalize, no Shutdown
@@ -608,7 +610,6 @@ async fn run_session_lifecycle(
     // clean sandbox and `one_shot_cleanup_decision` applies unchanged — the
     // same adoption and unreadable-record guards as for a submitted run.
     if setup_timed_out {
-        crate::features::assistant::timing::unregister_eval_observation(session_id);
         if keep_session {
             executor.teardown_evict(session_id).await;
             return;
@@ -638,7 +639,6 @@ async fn run_session_lifecycle(
     // regardless of `KEEP_SESSION`; an unloadable record also keeps (deleting
     // on unknown state is the unsafe direction).
     if !submitted {
-        crate::features::assistant::timing::unregister_eval_observation(session_id);
         // A rename away from the factory title is adoption — the one-shot
         // lane must not delete a record a GUI user took over. An unreadable
         // record is not proven factory-titled and keeps for the same reason.
@@ -678,7 +678,6 @@ async fn run_session_lifecycle(
         }
         return;
     }
-    crate::features::assistant::timing::unregister_eval_observation(session_id);
     if keep_session {
         executor.teardown_evict(session_id).await;
     } else {
@@ -2250,7 +2249,7 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, NeverStartedDisposition, PlanModeRestore,
+        MAX_ATTACHMENTS_TOTAL_BYTES, NeverStartedDisposition, PlanModeRestore,
         arm_retention_eviction_observer, ensure_existing_chat_session, ensure_model_exists,
         ensure_stage_size, fresh_session_id, keep_session_from_env, never_started_disposition,
         one_shot_cleanup_decision, refuse_ingest_without_a_surviving_copy, restore_plan_mode,

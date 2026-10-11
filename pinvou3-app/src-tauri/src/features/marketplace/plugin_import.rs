@@ -359,6 +359,27 @@ pub(crate) fn read_zip_entry_bounded(
 ///   兜底计量——头部声明可被伪造）。
 /// 返回净化后的条目路径（分隔符归一为 `/`），并把本条目声明大小累进
 /// `declared_total`。
+pub(crate) fn checked_zip_entry_path(
+    entry: &mut zip::read::ZipFile<'_, std::fs::File>,
+    declared_total: &mut u64,
+    max_bytes: u64,
+    label: &str,
+) -> Result<String, String> {
+    let Some(enclosed) = entry.enclosed_name() else {
+        return Err(REJECT_TRAVERSAL.to_string());
+    };
+    if let Some(mode) = entry.unix_mode() {
+        if mode & 0o170000 == 0o120000 {
+            return Err(REJECT_SYMLINK.to_string());
+        }
+    }
+    *declared_total = declared_total.saturating_add(entry.size());
+    if *declared_total > max_bytes {
+        return Err(reject_declared_cap(label, max_bytes));
+    }
+    Ok(enclosed.to_string_lossy().replace('\\', "/"))
+}
+
 /// The rejection literals carry the substrings the headless CLI's
 /// `translate_plugin_import_error` anchors on; they are single-sourced here
 /// so the anchor test below pins the production strings, not hand copies
@@ -385,27 +406,6 @@ pub(crate) fn reject_actual_cap(max_bytes: u64) -> String {
         "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
         max_bytes / 1024 / 1024
     )
-}
-
-pub(crate) fn checked_zip_entry_path(
-    entry: &mut zip::read::ZipFile<'_, std::fs::File>,
-    declared_total: &mut u64,
-    max_bytes: u64,
-    label: &str,
-) -> Result<String, String> {
-    let Some(enclosed) = entry.enclosed_name() else {
-        return Err(REJECT_TRAVERSAL.to_string());
-    };
-    if let Some(mode) = entry.unix_mode() {
-        if mode & 0o170000 == 0o120000 {
-            return Err(REJECT_SYMLINK.to_string());
-        }
-    }
-    *declared_total = declared_total.saturating_add(entry.size());
-    if *declared_total > max_bytes {
-        return Err(reject_declared_cap(label, max_bytes));
-    }
-    Ok(enclosed.to_string_lossy().replace('\\', "/"))
 }
 
 /// 进程内导入互斥锁表（按包 id，四轮评审 M-4）：同一包 id 的并发导入共享

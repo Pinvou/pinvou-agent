@@ -565,11 +565,6 @@ impl AcpProvidersStore {
         Self::persist_locked(&agents, &self.path)
     }
 
-    /// The GUI holds this store for the whole app lifetime, so a write the
-    /// CLI made after boot would otherwise be silently reverted by the next
-    /// whole-table persist — a delayed rollback minutes later, not a
-    /// same-instant race. Every mutator therefore runs reload → mutate →
-    /// persist inside ONE write-guard critical section.
     /// Reload the disk state into an ALREADY-HELD write guard. Callers run
     /// this inside the same critical section as their mutation AND their
     /// persist, so a peer mutator (which needs the same guard) can neither

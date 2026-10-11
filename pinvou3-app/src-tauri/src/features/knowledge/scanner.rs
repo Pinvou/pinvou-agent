@@ -20,12 +20,6 @@ const BATCH: usize = 2000;
 /// 每写一批后让步，避免后台扫描抢占前台 I/O/CPU（治「扫描时设备卡顿」）。
 const THROTTLE_MS: u64 = 4;
 
-/// 共享的剪枝遍历：walkdir + [`Excluder::is_skipped`] 逐层剪枝，不跟随软链。
-/// `scan`（全盘扫描）与知识库导入的 `expand_import_roots`（mod.rs）共用，
-/// 保证两条入口的排除语义一致。遍历错误（权限不足等）以 `Err` 透传给调用方
-/// 自行处置：全盘扫描把它们计入根的 walk 错误数（陈旧删除授权的否决项），
-/// 导入侧自行 flatten 跳过——两条入口对错误的处置不同，跳过语义因此不再
-/// 藏在这一层。
 /// Raw entries enumerated between `on_raw` heartbeats. Deliberately counted
 /// pre-prune: a tree of millions of disallowed files yields almost nothing
 /// countable, and the headless `scan start` stall bound (300 s default)
@@ -33,6 +27,12 @@ const THROTTLE_MS: u64 = 4;
 /// tree is indistinguishable from a wedged thread and gets killed mid-walk.
 const RAW_HEARTBEAT: u64 = 5000;
 
+/// 共享的剪枝遍历：walkdir + [`Excluder::is_skipped`] 逐层剪枝，不跟随软链。
+/// `scan`（全盘扫描）与知识库导入的 `expand_import_roots`（mod.rs）共用，
+/// 保证两条入口的排除语义一致。遍历错误（权限不足等）以 `Err` 透传给调用方
+/// 自行处置：全盘扫描把它们计入根的 walk 错误数（陈旧删除授权的否决项），
+/// 导入侧自行 flatten 跳过——两条入口对错误的处置不同，跳过语义因此不再
+/// 藏在这一层。
 pub(super) fn walk_pruned_with(
     root: &Path,
     ex: &Excluder,

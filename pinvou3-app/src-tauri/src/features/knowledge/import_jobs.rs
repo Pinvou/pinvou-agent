@@ -521,7 +521,7 @@ impl ImportJobStore {
         let c = self.conn.lock();
         let row = if let Some(id) = job_id {
             c.query_row(
-                "SELECT id,collection_id,state FROM knowledge_import_jobs WHERE id=?1",
+                "SELECT id,collection_id,state,updated_at FROM knowledge_import_jobs WHERE id=?1",
                 params![id],
                 read_job_row,
             )
@@ -530,7 +530,7 @@ impl ImportJobStore {
             // 当前运行/可恢复/有失败项的任务始终优先于普通历史任务，避免新的成功任务
             // 遮蔽仍需用户处理的旧失败任务。多个失败任务按更新时间依次处理即可。
             c.query_row(
-                "SELECT id,collection_id,state \
+                "SELECT id,collection_id,state,updated_at \
                  FROM knowledge_import_jobs ORDER BY \
                  CASE state \
                    WHEN 'preparing' THEN 0 WHEN 'running' THEN 0 \
@@ -541,16 +541,9 @@ impl ImportJobStore {
             )
             .optional()?
         };
-        let Some((id, collection_id, phase)) = row else {
+        let Some((id, collection_id, phase, updated_at)) = row else {
             return Ok(None);
         };
-        let updated_at: Option<i64> = c
-            .query_row(
-                "SELECT updated_at FROM knowledge_import_jobs WHERE id=?1",
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?;
         let (total, completed, skipped, failed): (i64, i64, i64, i64) = c.query_row(
             "SELECT COUNT(*),\
              COALESCE(SUM(CASE WHEN state='completed' THEN 1 ELSE 0 END),0),\
@@ -610,8 +603,8 @@ impl ImportJobStore {
     }
 }
 
-fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, String)> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+fn read_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, i64, String, Option<i64>)> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
 }
 
 pub(super) fn unique_existing_files(files: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {

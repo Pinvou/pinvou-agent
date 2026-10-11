@@ -151,10 +151,8 @@ pub const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 /// HTTPS gate anyway and never requested. Lives in platform so the candidate
 /// download loops of the connectors and marketplace features can share it
 /// (features must not depend on each other), and both must skip candidates
-/// the same way. `pub` for the crate-boundary re-export in `platform::mod`
-/// (round-40 review: the CLI's download aggregation consumes the same
-/// redactor instead of a drifting copy).
-pub fn redact_url_credentials(url_text: &str) -> String {
+/// the same way.
+pub(crate) fn redact_url_credentials(url_text: &str) -> String {
     let mut parsed = match reqwest::Url::parse(url_text) {
         Ok(parsed) => parsed,
         Err(_) => return "<invalid URL>".to_string(),

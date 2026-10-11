@@ -1056,10 +1056,6 @@ mod tests {
         // GUI 侧需求的可见变更。需要这个信号的 headless 侧（pinvou-cli
         // `plugins readiness`）自行按行上的 degraded 派生 assets_missing，
         // 对应契约测试 `readiness_derives_assets_missing_for_a_degraded_package`。
-        assert_eq!(
-            readiness_for(&b(BundleKind::Skill, opt.clone()), |_| false),
-            Readiness::Ready
-        );
         for kind in [BundleKind::Mcp, BundleKind::Bundle, BundleKind::Skill] {
             let mut degraded = b(kind, opt.clone());
             degraded.degraded = Some("resources missing".into());

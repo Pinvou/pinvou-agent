@@ -66,13 +66,17 @@ fn verify_workspace_binding(
 /// up to `SECTION_LOCK_TIMEOUT`; the sessions store its mutation guard), so
 /// the rollback joins on a blocking worker like the happy-path binds above
 /// — the async runtime workers here also drive the engine session pumps,
-/// and every caller sits on one. Takes owned handles so the closure is
-/// `'static`; both stores are cheap Arc-field clones.
+/// and every caller sits on one. Owned handles are cloned from the
+/// references at the top so the closure is `'static`; both stores are cheap
+/// Arc-field clones.
 async fn rollback_created_code_session(
-    session_id: String,
-    store: SessionStore,
-    agents: SessionAgentStore,
+    session_id: &str,
+    store: &SessionStore,
+    agents: &SessionAgentStore,
 ) {
+    let session_id = session_id.to_string();
+    let store = store.clone();
+    let agents = agents.clone();
     let joined = tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = agents.remove(&session_id) {
             log::warn!("[codex_acp] rollback Session Agent binding {session_id} failed: {error:#}");
@@ -88,20 +92,6 @@ async fn rollback_created_code_session(
         // caller's error path.
         log::warn!("[codex_acp] rollback task join failed: {error}");
     }
-}
-
-/// The rollback arms below all discard the half-created code session with
-/// the same triple; the macro keeps each arm to one line while expanding to
-/// the exact original argument expressions (the `…clone()` chains included)
-/// and the `.await`, so every expansion is behaviorally identical to the
-/// call sites it replaced. `$store` differs by lane: the ACP command lane
-/// passes `store.inner()` (a `State`), the native lane passes `&SessionStore`
-/// directly.
-macro_rules! rollback_created_session {
-    ($session:expr, $store:expr, $pool:expr) => {
-        rollback_created_code_session($session.clone(), $store.clone(), $pool.agents().clone())
-            .await
-    };
 }
 
 #[tauri::command]
@@ -835,16 +825,16 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
     .map_err(|error| anyhow::anyhow!("session store task join failed: {error}"))
     .and_then(|result| result)
     {
-        rollback_created_session!(session.metadata.id, store.inner(), acp_pool);
+        rollback_created_code_session(&session.metadata.id, store.inner(), acp_pool.agents()).await;
         return Err(format!("保存 Codex ACP 会话工作目录失败: {error:#}"));
     }
     if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
-        rollback_created_session!(session.metadata.id, store.inner(), acp_pool);
+        rollback_created_code_session(&session.metadata.id, store.inner(), acp_pool.agents()).await;
         return Err(error);
     }
     let baseline_workspace = acp_pool.workspace_info(&session.metadata.id);
     if baseline_workspace.is_err() {
-        rollback_created_session!(session.metadata.id, store.inner(), acp_pool);
+        rollback_created_code_session(&session.metadata.id, store.inner(), acp_pool.agents()).await;
     }
     let baseline_root = baseline_workspace
         .map_err(|error| format!("读取 Codex ACP 会话工作目录失败: {error:#}"))?
@@ -857,11 +847,11 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
     .map_err(|error| anyhow::anyhow!("工作区基线任务失败: {error}"))
     .and_then(|result| result)
     {
-        rollback_created_session!(session.metadata.id, store.inner(), acp_pool);
+        rollback_created_code_session(&session.metadata.id, store.inner(), acp_pool.agents()).await;
         return Err(format!("创建 Codex 工作区基线失败: {error:#}"));
     }
     if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
-        rollback_created_session!(session.metadata.id, store.inner(), acp_pool);
+        rollback_created_code_session(&session.metadata.id, store.inner(), acp_pool.agents()).await;
         return Err(error);
     }
     Ok(session.metadata)
@@ -908,13 +898,13 @@ async fn create_code_native_session(
     .map_err(|error| anyhow::anyhow!("session store task join failed: {error}"))
     .and_then(|result| result)
     {
-        rollback_created_session!(session.metadata.id, store, acp_pool);
+        rollback_created_code_session(&session.metadata.id, store, acp_pool.agents()).await;
         return Err(format!("保存原生代码会话标记失败: {error:#}"));
     }
     // 基线根：项目会话用项目目录（capture_baseline 对 git 仓库只指纹 dirty 文件，
     // 与 ACP 项目会话一致）；临时会话先确保私有目录存在。
     if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
-        rollback_created_session!(session.metadata.id, store, acp_pool);
+        rollback_created_code_session(&session.metadata.id, store, acp_pool.agents()).await;
         return Err(error);
     }
     // Dispatch on workspace presence consistently with kind: Some is the
@@ -928,14 +918,15 @@ async fn create_code_native_session(
             {
                 Ok(path) => path,
                 Err(error) => {
-                    rollback_created_session!(session.metadata.id, store, acp_pool);
+                    rollback_created_code_session(&session.metadata.id, store, acp_pool.agents())
+                        .await;
                     return Err(format!("解析原生代码会话临时工作目录失败: {error:#}"));
                 }
             };
             if let Err(error) =
                 ensure_codex_workspace_root(CodexWorkspaceKind::Temporary, &temporary_workspace)
             {
-                rollback_created_session!(session.metadata.id, store, acp_pool);
+                rollback_created_code_session(&session.metadata.id, store, acp_pool.agents()).await;
                 return Err(format!("{error:#}"));
             }
             temporary_workspace
@@ -949,11 +940,11 @@ async fn create_code_native_session(
     .map_err(|error| anyhow::anyhow!("工作区基线任务失败: {error}"))
     .and_then(|result| result)
     {
-        rollback_created_session!(session.metadata.id, store, acp_pool);
+        rollback_created_code_session(&session.metadata.id, store, acp_pool.agents()).await;
         return Err(format!("创建代码工作区基线失败: {error:#}"));
     }
     if let Err(error) = verify_workspace_binding(project_workspace.as_deref(), workspace_verifier) {
-        rollback_created_session!(session.metadata.id, store, acp_pool);
+        rollback_created_code_session(&session.metadata.id, store, acp_pool.agents()).await;
         return Err(error);
     }
     Ok(session.metadata)

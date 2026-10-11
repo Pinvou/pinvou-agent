@@ -372,12 +372,7 @@ impl KnowledgeService {
             .clone()
             .or_else(|| self.index_status().job_id);
         if let Some(job_id) = job_id {
-            let st = self.imports.state(&job_id).map_err(|e| e.to_string())?;
-            if st.running || st.resumable {
-                self.imports.cancel(&job_id).map_err(|e| e.to_string())?;
-                self.index_cancel.store(true, Ordering::Relaxed);
-                self.l1.set_collection_status(st.collection_id, "ready");
-            }
+            self.cancel_index_job(&job_id)?;
         }
         Ok(())
     }
@@ -1032,10 +1027,7 @@ const IMPORT_HEARTBEAT_ALIVE_SECS: i64 = 600;
 /// Shared verbatim by the `start_index` guard and
 /// [`refuse_fresh_foreign_running_import`].
 fn foreign_row_is_fresh(updated_at: Option<i64>) -> bool {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(i64::MAX);
+    let now_secs = now();
     let age_secs = updated_at
         .map(|updated| now_secs.saturating_sub(updated))
         // An unmeasurable row cannot prove liveness: fail open to
