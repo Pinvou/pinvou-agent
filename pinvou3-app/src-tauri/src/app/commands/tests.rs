@@ -467,30 +467,31 @@ fn vacuous_uninstall_keeps_fresh_consent_entries() {
         load_disabled_bundles_for, save_disabled_bundles_for,
     };
 
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("vacuous-uninstall-consent");
-    let both_ids = &[
-        "gate-race-probe".to_string(),
-        "gate-race-skill-probe".to_string(),
-    ];
-    save_disabled_bundles_for(ConnectorScope::Code, both_ids).unwrap();
-    save_disabled_bundles_for(ConnectorScope::Plain, both_ids).unwrap();
+    // Shared RAII temp-home helper: a failing assertion unwinds past a
+    // straight-line env restore, which would leave PINVOU3_HOME pointed at a
+    // deleted temp dir and cascade unrelated failures.
+    crate::platform::test_support::with_temp_home("vacuous-uninstall-consent", || {
+        let both_ids = &[
+            "gate-race-probe".to_string(),
+            "gate-race-skill-probe".to_string(),
+        ];
+        save_disabled_bundles_for(ConnectorScope::Code, both_ids).unwrap();
+        save_disabled_bundles_for(ConnectorScope::Plain, both_ids).unwrap();
 
-    uninstall_marketplace_tool_sync("gate-race-probe").unwrap();
-    uninstall_marketplace_skill_sync("gate-race-skill-probe").unwrap();
+        uninstall_marketplace_tool_sync("gate-race-probe").unwrap();
+        uninstall_marketplace_skill_sync("gate-race-skill-probe").unwrap();
 
-    for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
-        assert!(
-            load_disabled_bundles_for(scope).contains(&"gate-race-probe".to_string()),
-            "a vacuous uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
-        );
-        assert!(
-            load_disabled_bundles_for(scope).contains(&"gate-race-skill-probe".to_string()),
-            "a vacuous skill uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
-        );
-    }
+        for scope in [ConnectorScope::Code, ConnectorScope::Plain] {
+            assert!(
+                load_disabled_bundles_for(scope).contains(&"gate-race-probe".to_string()),
+                "a vacuous uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
+            );
+            assert!(
+                load_disabled_bundles_for(scope).contains(&"gate-race-skill-probe".to_string()),
+                "a vacuous skill uninstall (nothing installed) must not strip the deny-first entry a concurrent install just registered ({scope:?})"
+            );
+        }
+    });
 }
 
 /// Round-27 review (minor): the by-hand skill-uninstall lane must refuse a
@@ -2781,6 +2782,21 @@ async fn install_validation_failure_rollback_leaves_no_consent_rows() {
         .unwrap_or_else(|p| p.into_inner());
     let _home = TempPinvou3Home::new("install-validation-rollback");
     write_test_validating_marketplace_files("yuandian-rollback-test");
+    // The bundles.json mirror record a real install commits alongside the
+    // installed.json entry: the rollback uninstall's in-lock consent strip
+    // (`strip_uninstalled_scope_state`) is gated on removing THIS record, so
+    // without it the rollback would be vacuous at the mirror level and the
+    // seeded consent rows below would strand — the pin would hold only via
+    // the removed post-return strip instead of the in-lock teardown it
+    // exists to pin.
+    crate::features::marketplace::store::BundleStore::new()
+        .upsert(
+            crate::features::marketplace::store::BundleRecord::installed_now(
+                "yuandian-mcp".to_string(),
+                crate::features::marketplace::store::BundleSource::Preset,
+            ),
+        )
+        .unwrap();
 
     // Seed consent rows exactly where the pre-validation sync writes them:
     // `save_disabled_bundles_for` initializes both scopes with the pack

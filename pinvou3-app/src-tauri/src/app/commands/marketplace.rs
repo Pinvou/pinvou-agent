@@ -205,13 +205,13 @@ fn install_marketplace_tool_sync(
     // a garbage direct-IPC id would otherwise seed phantom deny rows, default-
     // off markers and ledger entries for a package that cannot exist (pure
     // over-denial surviving until the next composer full-list write). Same
-    // lookup as the install's own validation, and the error below is
-    // byte-identical to `MarketplaceManager::install`'s lookup error (keep
-    // them in lockstep), so the UX for a bad id is unchanged apart from
+    // lookup as the install's own validation, and the error below mirrors
+    // `MarketplaceManager::install`'s lookup error (single-sourced in
+    // `unknown_tool_error`), so the UX for a bad id is unchanged apart from
     // timing.
     match crate::features::marketplace::mcp_catalog::embedded_manifest(tool_id) {
         Ok(Some(_)) => {}
-        Ok(None) => return Err(format!("工具 '{tool_id}' 不存在")),
+        Ok(None) => return Err(unknown_tool_error(tool_id)),
         Err(error) => return Err(error),
     }
     install_marketplace_tool_gates(tool_id)?;
@@ -311,40 +311,18 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             mgr.validate_remote_connection(&tool_id).await
         } {
             let rollback_tool_id = tool_id.clone();
+            // Off the executor: the uninstall takes the cross-process
+            // marketplace transaction lock (#515). The consent rows this
+            // install's deny-first sync wrote are stripped by the uninstall's
+            // OWN in-lock teardown (`strip_uninstalled_scope_state`, gated on
+            // the record actually being removed); there is deliberately no
+            // post-return strip here — a strip after the uninstall returns
+            // would sit outside the transaction and import locks and could
+            // wipe a concurrent same-id install's fresh registration
+            // (round-11 P2-1), while a FAILED uninstall must keep the rows
+            // fail-closed (installed + denied).
             let rollback_result = tokio::task::spawn_blocking(move || {
-                let mgr = crate::features::marketplace::MarketplaceManager::new();
-                let result = mgr.uninstall(&rollback_tool_id);
-                // The consent rows were written by THIS install attempt's own
-                // deny-first gate milliseconds ago, so a SUCCEEDING rollback
-                // uninstall strips them even when it is vacuous at the record
-                // level (the manager's vacuous gate is a user-uninstall
-                // policy; the rollback owns these rows). On a FAILED
-                // uninstall the package stays installed — the rows must stay
-                // too (fail-closed: installed + denied beats installed +
-                // enabled), and the primary error surfaces for a retry.
-                // Round-16 disclosure (review): this strip runs after the
-                // uninstall returns, outside the transaction and import locks
-                // — the same round-12 B2 window shape the skill lane carries
-                // (see capability-governance §3.2): a concurrent same-id
-                // deny-first registration landing in the window can be wiped
-                // by this strip. Owned-rows-only by construction. Direction:
-                // fail-closed while the wiped registration's pack has NOT
-                // landed (the next gate run re-registers an unknown id), but
-                // fail-open once that pack's record and content exist — the
-                // known-bundle skip then suppresses every later gate run, so
-                // the wiped rows are not restored until a teardown
-                // (round-17 review; the strip is kept for the vacuous-rollback
-                // case, where it removes this install attempt's own rows).
-                if result.is_ok() {
-                    if let Err(e) = crate::features::marketplace::scope::
-                        remove_bundle_from_disabled_scopes_exact(&rollback_tool_id)
-                    {
-                        log::warn!(
-                            "[marketplace] rollback consent-row strip for {rollback_tool_id} failed (stale-deny residue): {e}"
-                        );
-                    }
-                }
-                result
+                crate::features::marketplace::MarketplaceManager::new().uninstall(&rollback_tool_id)
             })
             .await;
             // Best-effort compensation: LOG a rollback failure instead of
@@ -382,11 +360,12 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
             // normalizes to a DIFFERENT pack — its consent write is then a
             // real registration for that pack and must run deny-first,
             // BEFORE the install lands content, so a refused registration
-            // aborts with nothing touched (the post-landing sync below stays
-            // as the fail-visible belt; the known-clause makes it skip once
-            // the pre-land registration landed). The common case normalizes
-            // to the tool's own id, which the tool-level sync above already
-            // registered.
+            // aborts with nothing touched. The common case normalizes to the
+            // tool's own id, which the tool-level sync above already
+            // registered — its row is persisted durably by that pre-land
+            // gate, so no post-install re-sync is needed here (a second sync
+            // is a provable no-op in every reachable state: the known-clause
+            // skips a just-registered id, round-33 MAJOR 1 review #455).
             let divergent =
                 crate::features::marketplace::scope::to_package_id(&sid) != normalized_tool_id;
             if divergent {
@@ -395,8 +374,8 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
                         // Not the shared "before anything was installed" copy:
                         // this gate runs inside the post-install phase, so the
                         // parent tool's record and content have already
-                        // committed — word it like the post-landing arms
-                        // instead (round-19 review).
+                        // committed and the copy would be false (round-19
+                        // review).
                         format!(
                             "tool '{tool_id}' installed, but companion skill '{sid}' was not: DenyAll sync refused: {refused}"
                         )
@@ -407,34 +386,6 @@ pub(super) async fn install_marketplace_tool_post_install(tool_id: String) -> Re
                     .install(&sid)
             {
                 eprintln!("[marketplace] 配套技能 '{sid}' 安装失败: {e}");
-                continue;
-            }
-            if !divergent {
-                continue;
-            }
-            // A newly installed companion skill joins the DenyAll scope disabled
-            // sets by default (external capabilities are explicit opt-in, same
-            // semantics as the standalone install_marketplace_skill_sync).
-            // Round-33 MAJOR 1 (review #455): the sync is PROVABLY redundant —
-            // the arm the old comment's "must not fail the whole command"
-            // stance relied on — only when the companion normalizes to the
-            // tool's own package id (the tool-level sync above stored exactly
-            // that id). On the known-pack-shield edge (a standalone pack dir
-            // named like the companion) the normalized id differs and the
-            // sync is a real consent write for a different pack; a lost write
-            // there leaves the pack live with zero consent in initialized
-            // scopes with no boot reconciliation (the ledger-gated startup
-            // refresh covers only the four CLI connector gates). That edge
-            // therefore fails the command, exactly like the tool-level
-            // sync's fail-visible persist above.
-            if let Err(e) = crate::features::marketplace::scope::sync_deny_all_scopes_after_install(&sid)
-            {
-                return Err(
-                    crate::features::marketplace::scope::consent_sync_failure_message(
-                        &format!("companion skill '{sid}' installed"),
-                        &e,
-                    ),
-                );
             }
         }
         Ok::<(), String>(())
@@ -927,6 +878,23 @@ fn refused_sync_error(what: &str, refused: String) -> String {
     format!("{what}: DenyAll sync refused before anything was installed: {refused}")
 }
 
+/// The deny-first existence probes below must surface the same unknown-id
+/// copy the feature layer's own validation produces — the tool probe mirrors
+/// `MarketplaceManager::install`'s lookup error (features/marketplace/mod.rs)
+/// and the skill probe mirrors `SkillMarketplaceManager::install`'s
+/// unknown-preset error (features/marketplace/skill_marketplace.rs) — so the
+/// UX for a bad id is unchanged apart from timing. The feature layer does not
+/// export these literals, so each lives here as one named mirror instead of a
+/// hand-rebuilt inline format string; rewording either side without the other
+/// is a user-visible drift.
+fn unknown_tool_error(tool_id: &str) -> String {
+    format!("工具 '{tool_id}' 不存在")
+}
+
+fn unknown_preset_skill_error(skill_id: &str) -> String {
+    format!("未知预置技能 '{skill_id}'")
+}
+
 pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), String> {
     // 新装技能默认加入 DenyAll scope（当前 code）禁用集（与连接器同语义：
     // 外部能力显式开启）；组合目录由调用方在命令层重写（install_marketplace_skill）。
@@ -937,11 +905,11 @@ pub(super) fn install_marketplace_skill_sync(skill_id: &str) -> Result<(), Strin
     // the recorded consent), so a reinstall never re-runs the write.
     // Round-16 (review): existence probe first — same rationale as the tool
     // install's probe (a garbage id must not seed phantom deny rows); same
-    // lookup as the install's own validation, and the error below is
-    // byte-identical to `SkillMarketplaceManager::install`'s (keep them in
-    // lockstep).
+    // lookup as the install's own validation, and the error below mirrors
+    // `SkillMarketplaceManager::install`'s (single-sourced in
+    // `unknown_preset_skill_error`).
     if !crate::features::marketplace::skill_marketplace::is_preset_market_id(skill_id) {
-        return Err(format!("未知预置技能 '{skill_id}'"));
+        return Err(unknown_preset_skill_error(skill_id));
     }
     // Same divergence refusal as the tool gate above: a preset skill id is
     // foldable too, and a claimant pack declaring it as an (unshipped)
@@ -975,14 +943,6 @@ pub async fn update_marketplace_skill(
         if !installed {
             return Err(format!("技能 '{skill_id}' 非已安装预置技能,无法更新"));
         }
-        // DenyAll gate before the install replaces content (same seam as
-        // every other install channel): for a genuinely installed preset the
-        // known-bundle skip returns `Ok` without writing — its entries ARE
-        // the recorded consent — so today this is a no-op. It stays here so
-        // the no-exposure property is enforced by the gate itself, not by
-        // the list precondition above silently holding (round-11 P3).
-        crate::features::marketplace::sync_deny_all_scopes_after_install(&skill_id)
-            .map_err(|refused| refused_sync_error(&format!("skill '{skill_id}'"), refused))?;
         mgr.install(&skill_id)
     })
     .await
@@ -1174,14 +1134,6 @@ fn import_plugin_package_sync(
     )
 }
 
-/// Import + DenyAll gate for one wrapped-.md skill upload.
-fn import_skill_md_content_gated(
-    md: String,
-    filename: &str,
-) -> Result<crate::features::marketplace::plugin_import::PluginImportReport, String> {
-    import_skill_md_content(md, filename)
-}
-
 /// Upload safe default after an import lands (same contract as
 /// `install_marketplace_tool`): join the new id into the DenyAll scopes so
 /// new sessions do not enable it by default. Fail-visible persist (review
@@ -1242,7 +1194,7 @@ pub async fn import_plugin_package_cmd(
         if is_md {
             let md = std::fs::read_to_string(&path)
                 .map_err(|e| format!("读技能文件失败（{}）: {e}", path.display()))?;
-            import_skill_md_content_gated(md, &display)
+            import_skill_md_content(md, &display)
         } else {
             import_plugin_package_sync(&path.to_string_lossy(), &display)
         }
@@ -1350,11 +1302,10 @@ pub async fn import_skill_md_bytes(
     }
     let md = String::from_utf8(bytes).map_err(|e| format!("技能文件须为 UTF-8 文本: {e}"))?;
     let filename_for_import = filename.clone();
-    let report = tokio::task::spawn_blocking(move || {
-        import_skill_md_content_gated(md, &filename_for_import)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))??;
+    let report =
+        tokio::task::spawn_blocking(move || import_skill_md_content(md, &filename_for_import))
+            .await
+            .map_err(|e| format!("任务执行失败: {e}"))??;
     // Upload safe default: same as plugin import, joins the DenyAll scopes.
     persist_upload_consent_default("skill", &report.id).await?;
     // An imported id can collide with a package owning a native tool
@@ -2528,7 +2479,7 @@ mod tests {
     /// The wrapped-.md upload channel's deny-first wiring (round 9). The zip
     /// sibling above pins the unified pipeline through
     /// `import_plugin_package_sync`; without this test, reverting the `.md`
-    /// command's gated wrapper to the ungated pipeline — or moving its
+    /// command's pre-land gate to the ungated pipeline — or moving its
     /// pre-land hook after the landing — kept the entire suite green.
     /// Content assertions go through the bundles-root listing, which is
     /// robust to the bare-skill id derivation (frontmatter name vs hashed
@@ -2551,7 +2502,7 @@ mod tests {
             };
             let before = listing();
 
-            let error = import_skill_md_content_gated(
+            let error = import_skill_md_content(
                 "---\nname: gate-md-skill\ndescription: md upload\n---\nbody".to_string(),
                 "gate-md-skill.md",
             )
