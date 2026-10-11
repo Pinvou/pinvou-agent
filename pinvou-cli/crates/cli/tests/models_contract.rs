@@ -1,158 +1,55 @@
 //! Contract tests for the `models` + `settings` families (`pinvou models`,
 //! `pinvou settings` alias). Parse-level coverage runs against pure parser
 //! state; execute-level coverage is fully sandboxed: every test holds
-//! `ENV_LOCK` and a `SandboxHome`, which points `PINVOU3_HOME` at a
-//! throwaway directory AND forces the credential store onto the file backend
-//! inside it (`CODEWHALE_SECRET_BACKEND=file` plus sandboxed `CODEWHALE_HOME`
+//! `env_lock` and a sandbox home, which points `PINVOU3_HOME` at a throwaway
+//! directory AND forces the credential store onto the file backend inside it
+//! (`CODEWHALE_SECRET_BACKEND=file` plus sandboxed `CODEWHALE_HOME`
 //! / `HOME`), so no test reads or writes the real user keychain, settings, or
 //! fallback files. Network paths (connection probes) are `#[ignore]` only —
 //! see the bottom of this file.
 
-use std::sync::Mutex;
+mod common;
 
-use pinvou_cli::{ExitCode, execute, parse_args};
+use common::{EnvGuard, HomeGuard, Isolation, env_lock, execute_error, run, run_ok, usage_error};
+use pinvou_cli::{ExitCode, parse_args};
 use pinvou3_lib::features::sessions::SerializableMode;
 use pinvou3_lib::platform::credential_store::CredentialState;
 use pinvou3_lib::platform::prefs::{ColorScheme, ModelPreset, SearchProvider, Theme, UserPrefs};
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes
-/// them concurrently (same pattern as cli_contract.rs).
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Creates a unique temporary product home and points `PINVOU3_HOME` at it.
-/// Round-49 review: it ALSO establishes the hermetic credential fixture —
-/// `CODEWHALE_SECRET_BACKEND=file` with `CODEWHALE_HOME` / `HOME` inside the
-/// sandbox root — so execute-level credential operations write the throwaway
-/// file backend instead of the real OS keychain or the real home's plaintext
-/// fallback files (the file backend resolves `CODEWHALE_HOME`, then `HOME`).
-/// Restores every variable and removes the directory on drop so an assertion
-/// failure cannot leak environment state into other tests.
-///
-/// The caller MUST hold `ENV_LOCK` for the guard's whole lifetime: the
-/// constructor and `Drop` mutate process-global environment state. The lock
-/// is deliberately NOT taken here — every caller already holds it and
-/// `std::sync::Mutex` is not reentrant, so taking it would deadlock.
-struct SandboxHome {
-    root: std::path::PathBuf,
-    previous_home: Option<std::ffi::OsString>,
-    /// Secret-fixture variables established by [`Self::new`], saved for
-    /// restoration on drop (`(name, previous value)`).
-    secrets: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl SandboxHome {
-    fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-models-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create temporary PINVOU3_HOME");
-        let previous_home = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the guard's lifetime.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        let secrets_home = root.join("secrets-home");
-        let mut secrets = Vec::new();
-        for (name, value) in [
-            ("CODEWHALE_SECRET_BACKEND", std::ffi::OsStr::new("file")),
-            ("CODEWHALE_HOME", secrets_home.as_os_str()),
-            ("HOME", secrets_home.as_os_str()),
-        ] {
-            secrets.push((name, std::env::var_os(name)));
-            // SAFETY: the caller holds ENV_LOCK for the guard's lifetime.
-            unsafe { std::env::set_var(name, value) };
-        }
-        Self {
-            root,
-            previous_home,
-            secrets,
-        }
-    }
-}
-
-impl Drop for SandboxHome {
-    fn drop(&mut self) {
-        // SAFETY: ENV_LOCK is held by the owning test.
-        for (name, value) in self.secrets.drain(..) {
-            match value {
-                Some(value) => unsafe { std::env::set_var(name, value) },
-                None => unsafe { std::env::remove_var(name) },
-            }
-        }
-        match self.previous_home.take() {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-/// Restores an environment variable to its saved value on drop, so a panic
-/// between `set_var` and the assertions cannot leak state into other tests
-/// (same pattern as `RestoreHome` in sessions_contract.rs).
-struct RestoreEnvVar(&'static str, Option<std::ffi::OsString>);
-
-impl Drop for RestoreEnvVar {
-    fn drop(&mut self) {
-        // SAFETY: ENV_LOCK is held by the owning test.
-        match self.1.take() {
-            Some(value) => unsafe { std::env::set_var(self.0, value) },
-            None => unsafe { std::env::remove_var(self.0) },
-        }
-    }
+/// The models sandbox: the shared secrets-home preset
+/// ([`common::Isolation::SecretsHome`] — `PINVOU3_HOME` at the root, the file
+/// secret backend AND `$HOME` both at `<root>/secrets-home`; the file backend
+/// resolves `CODEWHALE_HOME`, then `HOME`). Restores every variable and
+/// removes the directory on drop so an assertion failure cannot leak
+/// environment state into other tests. The caller MUST hold [`env_lock`] for
+/// the guard's whole lifetime: the constructor and `Drop` mutate
+/// process-global environment state.
+fn sandbox_home(label: &str) -> HomeGuard {
+    HomeGuard::new("models", label, Isolation::SecretsHome)
 }
 
 /// Hermeticity against an ambient `DEEPSEEK_API_KEY`: it short-circuits
 /// `refresh_credential_states_with_store` to `env_override` for EVERY model,
 /// so keyless-"missing" and stored-credential assertions fail spuriously on
-/// any machine that exports it. Snapshots and clears the variable; the guard
-/// restores the previous value on drop (also covering a test that re-sets
+/// any machine that exports it. The guard snapshots and clears the variable
+/// and restores the previous value on drop (also covering a test that re-sets
 /// the variable mid-body, like the env_override half of the fresh-list test).
-fn clear_ambient_deepseek_key() -> RestoreEnvVar {
-    let guard = RestoreEnvVar("DEEPSEEK_API_KEY", std::env::var_os("DEEPSEEK_API_KEY"));
-    // SAFETY: ENV_LOCK is held by the owning test.
-    unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
-    guard
+fn clear_ambient_deepseek_key() -> EnvGuard {
+    EnvGuard::remove(&["DEEPSEEK_API_KEY"])
 }
 
 /// The env tier of the search-credential resolution must be empty for the
 /// providers that have env names, or `settings search test` would try to
-/// reach them. Snapshots and clears both variables; the guards restore the
-/// previous values on drop.
-fn clear_search_provider_keys() -> (RestoreEnvVar, RestoreEnvVar) {
-    let metaso = RestoreEnvVar("METASO_API_KEY", std::env::var_os("METASO_API_KEY"));
-    let baidu = RestoreEnvVar(
-        "BAIDU_SEARCH_API_KEY",
-        std::env::var_os("BAIDU_SEARCH_API_KEY"),
-    );
-    // SAFETY: ENV_LOCK is held by the owning test.
-    unsafe {
-        std::env::remove_var("METASO_API_KEY");
-        std::env::remove_var("BAIDU_SEARCH_API_KEY");
-    }
-    (metaso, baidu)
+/// reach them. The guard snapshots and clears both variables and restores
+/// the previous values on drop.
+fn clear_search_provider_keys() -> EnvGuard {
+    EnvGuard::remove(&["METASO_API_KEY", "BAIDU_SEARCH_API_KEY"])
 }
 
-fn usage_error(args: &[&str]) -> String {
-    let error = parse_args(args.to_vec()).expect_err("expected a usage error");
-    assert_eq!(error.exit_code(), ExitCode::Usage, "message: {error}");
-    error.to_string()
-}
-
-fn run_ok(args: &[&str]) -> String {
-    let parsed = parse_args(args.to_vec()).expect("valid command");
-    let outcome = execute(parsed).expect("execute succeeds");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    outcome.stdout
-}
-
+/// A command that fails at execute time; returns the rendered message and
+/// its exit class (not always `Failed`).
 fn run_err(args: &[&str]) -> (String, ExitCode) {
-    let parsed = parse_args(args.to_vec()).expect("valid command");
-    let error = execute(parsed).expect_err("execute fails");
+    let error = execute_error(args);
     (error.to_string(), error.exit_code())
 }
 
@@ -160,8 +57,7 @@ fn run_err(args: &[&str]) -> (String, ExitCode) {
 /// the result is a payload on stdout and the exit code is the verdict), as
 /// opposed to `run_err`'s commands that fail before producing one.
 fn run_outcome(args: &[&str]) -> (String, ExitCode) {
-    let parsed = parse_args(args.to_vec()).expect("valid command");
-    let outcome = execute(parsed).expect("a completed probe is an outcome, not an error");
+    let outcome = run(args).expect("a completed probe is an outcome, not an error");
     (outcome.stdout, outcome.exit_code)
 }
 
@@ -632,8 +528,8 @@ fn models_token_only_accepts_models_subcommands() {
 
 #[test]
 fn models_list_reports_fresh_default_model() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("list-fresh");
+    let _env = env_lock();
+    let _home = sandbox_home("list-fresh");
     let _restore_deepseek_key = clear_ambient_deepseek_key();
     let json = run_ok(&["pinvou", "--output", "json", "models", "list"]);
     let value: serde_json::Value = serde_json::from_str(&json).expect("single-line json");
@@ -686,8 +582,8 @@ fn default_preset_str() -> String {
 
 #[test]
 fn settings_get_all_and_single_key_round_trip() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("settings-roundtrip");
+    let _env = env_lock();
+    let _home = sandbox_home("settings-roundtrip");
 
     // All-settings get is JSON even in human mode.
     let all = run_ok(&["pinvou", "settings", "get"]);
@@ -759,8 +655,8 @@ fn settings_get_all_and_single_key_round_trip() {
 
 #[test]
 fn settings_enforces_the_memory_locale_policy_through_the_prefs_layer() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("memory-locale");
+    let _env = env_lock();
+    let _home = sandbox_home("memory-locale");
 
     // Non-zh-Hans language does not support memory: the prefs layer
     // normalizes memory_enabled back to false on save.
@@ -786,8 +682,8 @@ fn settings_enforces_the_memory_locale_policy_through_the_prefs_layer() {
 
 #[test]
 fn models_add_use_show_remove_round_trip_without_secrets() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("model-lifecycle");
+    let _env = env_lock();
+    let _home = sandbox_home("model-lifecycle");
     let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // Add without a key: must not touch the credential store.
@@ -873,8 +769,8 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
 /// nothing is written.
 #[test]
 fn models_remove_refuses_the_only_model_without_changes() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("remove-only-model");
+    let _env = env_lock();
+    let _home = sandbox_home("remove-only-model");
     let before = read_settings();
     let (message, code) = run_err(&["pinvou", "models", "remove", "default", "--yes"]);
     assert_eq!(
@@ -899,8 +795,8 @@ fn models_remove_refuses_the_only_model_without_changes() {
 
 #[test]
 fn models_add_set_active_and_unknown_ids() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("model-set-active");
+    let _env = env_lock();
+    let _home = sandbox_home("model-set-active");
 
     let stdout = run_ok(&[
         "pinvou",
@@ -952,8 +848,8 @@ fn models_add_set_active_and_unknown_ids() {
 
 #[test]
 fn models_add_reports_missing_secret_env_as_host_failure() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("missing-secret-env");
+    let _env = env_lock();
+    let _home = sandbox_home("missing-secret-env");
     let (message, code) = run_err(&[
         "pinvou",
         "models",
@@ -985,7 +881,7 @@ fn models_add_reports_missing_secret_env_as_host_failure() {
 fn home_settings_path() -> std::path::PathBuf {
     std::env::var_os("PINVOU3_HOME")
         .map(std::path::PathBuf::from)
-        .expect("PINVOU3_HOME set by SandboxHome")
+        .expect("PINVOU3_HOME set by the sandbox home")
         .join("settings.json")
 }
 
@@ -997,8 +893,8 @@ fn read_settings() -> String {
 
 #[test]
 fn probe_local_refuses_non_loopback_urls_with_usage_error() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("probe-local-guard");
+    let _env = env_lock();
+    let _home = sandbox_home("probe-local-guard");
 
     for url in [
         "https://api.deepseek.com/v1",
@@ -1067,8 +963,8 @@ fn probe_local_refuses_non_loopback_urls_with_usage_error() {
 /// Neither case reaches the network: both refusals happen before any request.
 #[test]
 fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failures() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("probe-local-active-model");
+    let _env = env_lock();
+    let _home = sandbox_home("probe-local-active-model");
 
     // No key is passed, so `models add` never touches the credential store.
     let stdout = run_ok(&[
@@ -1237,8 +1133,8 @@ fn models_rejects_empty_option_values() {
 /// test that would need an unserializable settings document to exist.
 #[test]
 fn settings_get_without_a_key_is_always_json_and_documented_as_such() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("settings-get-all");
+    let _env = env_lock();
+    let _home = sandbox_home("settings-get-all");
 
     for mode in [
         vec!["pinvou", "settings", "get"],
@@ -1269,8 +1165,8 @@ fn settings_get_without_a_key_is_always_json_and_documented_as_such() {
 
 #[test]
 fn settings_search_list_reports_defaults() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("search-list");
+    let _env = env_lock();
+    let _home = sandbox_home("search-list");
     let human = run_ok(&["pinvou", "settings", "search", "list"]);
     assert!(
         human.contains("provider: bing"),
@@ -1297,9 +1193,9 @@ fn settings_search_list_reports_defaults() {
 /// `src/models.rs`, which pins the request shapes.
 #[test]
 fn settings_search_test_without_a_key_verifies_only_credential_presence() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("search-test-no-key");
-    let (_restore_metaso, _restore_baidu) = clear_search_provider_keys();
+    let _env = env_lock();
+    let _home = sandbox_home("search-test-no-key");
+    let _restore_search_keys = clear_search_provider_keys();
 
     for provider in ["metaso", "bocha", "baidu", "tavily"] {
         let (stdout, code) = run_outcome(&[
@@ -1343,8 +1239,8 @@ fn settings_search_test_without_a_key_verifies_only_credential_presence() {
 /// honestly as `unchanged` instead of a success-shaped `cleared`.
 #[test]
 fn settings_search_set_clear_does_not_switch_the_active_provider() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("search-clear-active");
+    let _env = env_lock();
+    let _home = sandbox_home("search-clear-active");
     assert_eq!(
         load_prefs().search.provider,
         SearchProvider::Bing,
@@ -1409,8 +1305,8 @@ fn settings_search_set_clear_does_not_switch_the_active_provider() {
 /// observable end of the contract (exit codes, settings.json, output).
 #[test]
 fn models_edit_clear_api_key_requires_yes() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("edit-clear-api-key-yes");
+    let _env = env_lock();
+    let _home = sandbox_home("edit-clear-api-key-yes");
 
     // The bare form must refuse like `models remove`: a usage error whose
     // message names --yes, with nothing written.
@@ -1486,21 +1382,19 @@ fn models_edit_clear_api_key_requires_yes() {
 /// merely that prefs bookkeeping changed.
 #[test]
 fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("edit-clear-replace");
+    let _env = env_lock();
+    let _home = sandbox_home("edit-clear-replace");
     // An ambient DEEPSEEK_API_KEY would classify every model as env_override
     // and hide the stored-credential lane entirely.
     let _restore_deepseek_key = clear_ambient_deepseek_key();
-    let _first = RestoreEnvVar(
+    let _first = EnvGuard::set(&[(
         "PINVOU_CLI_TEST_ROTATE_A",
-        std::env::var_os("PINVOU_CLI_TEST_ROTATE_A"),
-    );
-    unsafe { std::env::set_var("PINVOU_CLI_TEST_ROTATE_A", "sk-rotate-first-1234567890") };
-    let _second = RestoreEnvVar(
+        Some("sk-rotate-first-1234567890"),
+    )]);
+    let _second = EnvGuard::set(&[(
         "PINVOU_CLI_TEST_ROTATE_B",
-        std::env::var_os("PINVOU_CLI_TEST_ROTATE_B"),
-    );
-    unsafe { std::env::set_var("PINVOU_CLI_TEST_ROTATE_B", "sk-rotate-second-1234567890") };
+        Some("sk-rotate-second-1234567890"),
+    )]);
 
     let stdout = run_ok(ADD_ARGS);
     let id = added_model_id(&stdout);
@@ -1572,8 +1466,8 @@ fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
 /// provider is never configured, so no keyring entry is ever touched.
 #[test]
 fn settings_search_set_clear_requires_yes() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("search-set-clear-yes");
+    let _env = env_lock();
+    let _home = sandbox_home("search-set-clear-yes");
 
     let before = read_settings();
     let (message, code) = run_err(&[
@@ -1630,8 +1524,8 @@ fn settings_search_set_clear_requires_yes() {
 /// `plugins` had the same gap and are collapsed now too.)
 #[test]
 fn models_list_and_show_collapse_control_characters_in_human_rows() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("models-row-hygiene");
+    let _env = env_lock();
+    let _home = sandbox_home("models-row-hygiene");
     let hostile = "ok\n*m_fake\tEvil";
     let stdout = run_ok(&[
         "pinvou",
@@ -1686,8 +1580,8 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
 /// but it must say WHY rather than report the key as absent.
 #[test]
 fn models_show_reveal_key_names_the_credential_source() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("reveal-key-source");
+    let _env = env_lock();
+    let _home = sandbox_home("reveal-key-source");
     let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // No credential reference at all: genuinely nothing stored.
@@ -1733,8 +1627,8 @@ fn models_show_reveal_key_names_the_credential_source() {
 /// same-facts claim. The fields render when set, before the reveal block.
 #[test]
 fn models_show_human_carries_the_writable_metadata_fields() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("show-metadata-fields");
+    let _env = env_lock();
+    let _home = sandbox_home("show-metadata-fields");
     let stdout = run_ok(METADATA_ADD_ARGS);
     let id = added_model_id(&stdout);
 
@@ -1771,8 +1665,8 @@ fn models_show_human_carries_the_writable_metadata_fields() {
 /// (`features/assistant/platform/bridge.rs`).
 #[test]
 fn models_add_writes_the_gui_form_metadata() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("models-add-metadata");
+    let _env = env_lock();
+    let _home = sandbox_home("models-add-metadata");
     let stdout = run_ok(METADATA_ADD_ARGS);
     let id = added_model_id(&stdout);
     let prefs = load_prefs();
@@ -1824,10 +1718,9 @@ fn models_add_writes_the_gui_form_metadata() {
 /// reports the unknown id, the regressed order reports the unset variable.
 #[test]
 fn models_edit_reports_unknown_id_before_resolving_the_credential() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("models-edit-order");
-    let _restore = RestoreEnvVar("PINVOU_MODELS_TEST_MISSING_KEY", None);
-    unsafe { std::env::remove_var("PINVOU_MODELS_TEST_MISSING_KEY") };
+    let _env = env_lock();
+    let _home = sandbox_home("models-edit-order");
+    let _restore = EnvGuard::remove(&["PINVOU_MODELS_TEST_MISSING_KEY"]);
     let (message, code) = run_err(&[
         "pinvou",
         "models",
@@ -1852,8 +1745,8 @@ fn models_edit_reports_unknown_id_before_resolving_the_credential() {
 /// pins. `models edit` must change everything EXCEPT the id.
 #[test]
 fn models_edit_mutates_in_place_and_preserves_the_id() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("models-edit");
+    let _env = env_lock();
+    let _home = sandbox_home("models-edit");
     let stdout = run_ok(&[
         "pinvou",
         "models",
@@ -1927,8 +1820,8 @@ fn models_edit_mutates_in_place_and_preserves_the_id() {
 
 #[test]
 fn models_edit_rejects_no_op_unknown_ids_and_conflicting_credential_flags() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("models-edit-guards");
+    let _env = env_lock();
+    let _home = sandbox_home("models-edit-guards");
 
     // No field flag at all: a mistyped command, not a successful no-op write.
     let message = usage_error(&["pinvou", "models", "edit", "default"]);
@@ -1974,8 +1867,8 @@ fn models_edit_rejects_no_op_unknown_ids_and_conflicting_credential_flags() {
 /// Reaches no network: every case below is refused before the first request.
 #[test]
 fn probe_local_model_flag_names_a_saved_credential() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("probe-local-model");
+    let _env = env_lock();
+    let _home = sandbox_home("probe-local-model");
 
     // --model is about WHICH saved credential to present, so it needs the
     // endpoint to present it to. Without --url the active model's own
@@ -2042,8 +1935,8 @@ fn probe_local_model_flag_names_a_saved_credential() {
 #[test]
 #[ignore = "network: run with `pinvou settings search test bing` against bing.com"]
 fn bing_probe_hits_live_endpoint() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("ignored-bing-test");
+    let _env = env_lock();
+    let _home = sandbox_home("ignored-bing-test");
     let stdout = run_ok(&["pinvou", "settings", "search", "test", "bing"]);
     assert!(
         stdout.contains("ok: true"),
@@ -2061,11 +1954,11 @@ fn bing_probe_hits_live_endpoint() {
 #[test]
 #[ignore = "network + quota: run with a real key, e.g. METASO_API_KEY=... pinvou settings search test metaso"]
 fn search_api_probe_validates_a_live_key() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = env_lock();
     // Round-37 review: an opted-in test must not run against the real
     // ~/.pinvou3 — a persisting `UserPrefs::load` can migrate a real key
     // into the keyring. Sandbox like every default-run test.
-    let _home = SandboxHome::new("ignored-search-probe");
+    let _home = sandbox_home("ignored-search-probe");
     let provider =
         std::env::var("PINVOU_CLI_SEARCH_TEST_PROVIDER").unwrap_or_else(|_| "metaso".to_owned());
     let (stdout, code) = run_outcome(&[
@@ -2088,8 +1981,8 @@ fn search_api_probe_validates_a_live_key() {
 #[test]
 #[ignore = "network (loopback): run with a local inference server on 127.0.0.1:8000"]
 fn probe_local_identifies_local_server() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("ignored-probe-local");
+    let _env = env_lock();
+    let _home = sandbox_home("ignored-probe-local");
     let stdout = run_ok(&[
         "pinvou",
         "models",
@@ -2110,8 +2003,8 @@ fn probe_local_identifies_local_server() {
 /// rejected value (round-38 review).
 #[test]
 fn models_reject_plaintext_secret_flags_instead_of_ingesting_them() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("argv-secret");
+    let _env = env_lock();
+    let _home = sandbox_home("argv-secret");
     let secret = "sk-argv-secret-value-1234567890";
     for lane in [
         vec![
@@ -2219,23 +2112,18 @@ fn settings_search_set_rejects_stray_positionals_without_echoing_them() {
 /// The no-reveal redaction gate had no test for the state where a leak would
 /// matter: a CONFIGURED model (a stored credential) shown WITHOUT
 /// `--reveal-key` must print neither the key bytes nor an api_key line, in
-/// human and JSON output alike. Hermeticity comes from `SandboxHome`'s
+/// human and JSON output alike. Hermeticity comes from the sandbox home's
 /// default fixture (file-backed secret store inside the sandbox), so the
 /// stored credential never touches the real keychain (round-38 review;
 /// default since round-49).
 #[test]
 fn configured_model_show_without_reveal_key_leaks_nothing() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("no-reveal");
+    let _env = env_lock();
+    let _home = sandbox_home("no-reveal");
     let secret = "sk-no-reveal-check-1234567890";
     let _restore_deepseek_key = clear_ambient_deepseek_key();
-    let _key_env = RestoreEnvVar(
-        "PINVOU_CLI_TEST_NOREVEAL_KEY",
-        Some(std::ffi::OsString::from(secret)),
-    );
-    // SAFETY: ENV_LOCK is held by the owning test; the guard above restores
-    // the previous value on every exit path.
-    unsafe { std::env::set_var("PINVOU_CLI_TEST_NOREVEAL_KEY", secret) };
+    // The guard restores the ambient value on every exit path.
+    let _key_env = EnvGuard::set(&[("PINVOU_CLI_TEST_NOREVEAL_KEY", Some(secret))]);
 
     let stdout = run_ok(&[
         "pinvou",
@@ -2297,15 +2185,15 @@ fn search_provider_surface_matches_gui() {
 /// (only recorded, never gated), the in-memory sanitize cleared the key, and
 /// `save_unlocked` rewrote the whole file without it, exit 0. The transaction
 /// now refuses like the GUI's own `prepare_prefs_for_save`, and the file
-/// keeps the key. The store is broken hermetically: `SandboxHome` already
+/// keeps the key. The store is broken hermetically: the sandbox home already
 /// puts the file backend inside the sandbox, and this test then points
 /// `CODEWHALE_HOME` at a RELATIVE path mid-run, which makes the file backend
 /// refuse the path and degrade to a write-refusing empty store, so
 /// `store.set` fails without touching any real keychain.
 #[test]
 fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_store_fails() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("m1-broken-store");
+    let _env = env_lock();
+    let home = sandbox_home("m1-broken-store");
     let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // A healthy store writes fine: add a keyless model so the CLI itself
@@ -2314,7 +2202,7 @@ fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_sto
     // the fixture cannot drift from the real serde shape).
     let stdout = run_ok(ADD_ARGS);
     let id = added_model_id(&stdout);
-    let settings = home.root.join("settings.json");
+    let settings = home.path().join("settings.json");
     let mut document: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     let model = document["advanced"]["saved_models"]
@@ -2329,8 +2217,7 @@ fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_sto
     // Break the store and write: the transaction refuses, naming the cause.
     // The sandbox value is restored on drop so the tail of the test (and any
     // future assertions) keep reading the sandboxed backend.
-    let _broken = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
-    unsafe { std::env::set_var("CODEWHALE_HOME", "relative-broken-home") };
+    let _broken = EnvGuard::set(&[("CODEWHALE_HOME", Some("relative-broken-home"))]);
     let (message, code) = run_err(&["pinvou", "settings", "set", "theme", "liquid-dark"]);
     assert_eq!(code, ExitCode::Failed);
     assert!(

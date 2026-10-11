@@ -19,116 +19,47 @@
 //!   foundation crate and is not reachable headless; the CLI surfaces that as
 //!   a deterministic exit-1 error which the default tests cover.
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
-use pinvou_cli::{ExitCode, execute, parse_args};
+use common::{
+    EnvGuard, HomeGuard, Isolation, env_lock, execute_error, run, run_json, run_ok, usage_error,
+};
+use pinvou_cli::{ExitCode, parse_args};
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes
-/// them concurrently (same pattern as cli_contract.rs / models_contract.rs).
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// Tests that mutate the process-global `PINVOU3_HOME` environment variable
+// hold [`env_lock`] for their whole body; [`HomeGuard::new`] with
+// [`Isolation::ProductHome`] is the throwaway product home (unique
+// `pinvou-cli-plugins-<label>-<pid>-<nanos>` root, panic-safe restore and
+// cleanup) the family's execute-level tests run against.
 
-/// Creates a unique temporary product home and points `PINVOU3_HOME` at it.
-/// Restores the previous value and removes the directory on drop so an
-/// assertion failure cannot leak environment state into other tests.
-struct SandboxHome {
-    root: PathBuf,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl SandboxHome {
-    fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-plugins-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create temporary PINVOU3_HOME");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { root, previous }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for SandboxHome {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn usage_error(args: &[&str]) -> String {
-    let error = parse_args(args.to_vec()).expect_err("expected a usage error");
-    assert_eq!(error.exit_code(), ExitCode::Usage, "message: {error}");
-    error.to_string()
-}
-
-/// Panic-safe restore for an env var an opt-in test sets (same pattern as
-/// models_contract.rs): without the Drop guard a failing assert would leak
-/// the variable into every later test in the binary.
-struct RestoreEnvVar(&'static str, Option<std::ffi::OsString>);
-
-impl Drop for RestoreEnvVar {
-    fn drop(&mut self) {
-        // SAFETY: the file-scoped ENV_LOCK is held for the whole test.
-        match self.1.take() {
-            Some(value) => unsafe { std::env::set_var(self.0, value) },
-            None => unsafe { std::env::remove_var(self.0) },
-        }
-    }
-}
+// Panic-safe restore for an env var an opt-in test sets: without the guard
+// a failing assert would leak the variable into every later test in the
+// binary. The common [`EnvGuard`] captures the previous value before the
+// write and restores exactly that state on drop.
 
 /// Points the credential store's file fallback at a fresh empty directory
 /// under the sandbox: a missing `secrets.json` loads as "no credentials" for
 /// every key, so a host whose ambient `~/.codewhale/secrets/secrets.json`
 /// carries real ima credentials still exercises the asserted zero state.
 /// Inert where the OS keyring wins the probe (the keyring has its own
-/// namespace). The previous value is snapshotted and restored on drop
-/// (including the panic path). Must be constructed while ENV_LOCK is held.
-fn isolate_credential_store(home: &Path) -> RestoreEnvVar {
-    let guard = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
-    // SAFETY: the file-scoped ENV_LOCK is held for the whole test.
-    unsafe { std::env::set_var("CODEWHALE_HOME", home.join("codewhale")) };
-    guard
+/// namespace) — so this deliberately does NOT force
+/// `CODEWHALE_SECRET_BACKEND=file`. The previous value is snapshotted and
+/// restored on drop (including the panic path). Must be constructed while
+/// ENV_LOCK is held.
+fn isolate_credential_store(home: &Path) -> EnvGuard {
+    EnvGuard::set_values(&[(
+        "CODEWHALE_HOME",
+        Some(home.join("codewhale").into_os_string()),
+    )])
 }
 
-fn run_ok(args: &[&str]) -> String {
-    let parsed = parse_args(args.to_vec()).expect("valid command");
-    let outcome = execute(parsed).expect("execute succeeds");
-    // Diagnostic messages deliberately stay free of command output: the
-    // shared CliOutcome can carry command-shaped strings (session ids,
-    // credential echoes), so tests report only the exit codes — assert_eq!
-    // already prints both sides on failure.
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    outcome.stdout
-}
-
+/// A command that fails at execute time; returns the rendered message and
+/// its exit class.
 fn run_err(args: &[&str]) -> (String, ExitCode) {
-    let parsed = parse_args(args.to_vec()).expect("valid command");
-    let error = execute(parsed).expect_err("execute fails");
+    let error = execute_error(args);
     (error.to_string(), error.exit_code())
-}
-
-/// Runs `args` with `--output json` inserted after argv[0] and parses the
-/// single-line JSON object from stdout.
-fn run_json(args: &[&str]) -> serde_json::Value {
-    let mut owned = args.to_vec();
-    owned.insert(1, "--output");
-    owned.insert(2, "json");
-    let stdout = run_ok(&owned);
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|error| panic!("json output did not parse: {error}"))
 }
 
 fn disabled_bundles_json(home: &Path) -> serde_json::Value {
@@ -485,8 +416,8 @@ fn plugins_usage_errors_exit_two() {
 
 #[test]
 fn import_directory_and_zip_show_up_in_skills_list() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-list");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-list", Isolation::ProductHome);
     let dir = fixture_skill_dir(home.path());
     let stdout = run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
     assert!(
@@ -530,8 +461,8 @@ fn import_directory_and_zip_show_up_in_skills_list() {
 /// rendering boundary like every sibling family.
 #[test]
 fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("skills-collapse");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "skills-collapse", Isolation::ProductHome);
     let dir = home.path().join("fixtures").join("collapse-hostile");
     std::fs::create_dir_all(&dir).unwrap();
     // The frontmatter value is taken verbatim (no YAML unescaping, no
@@ -572,8 +503,8 @@ fn skills_list_rows_collapse_control_characters_from_imported_manifests() {
 
 #[test]
 fn import_md_file_with_and_without_frontmatter() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-md");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-md", Isolation::ProductHome);
 
     let named = home.path().join("contract-md-skill.md");
     std::fs::write(&named, "---\nname: contract-md-skill\n---\nbody").unwrap();
@@ -602,8 +533,8 @@ fn import_md_file_with_and_without_frontmatter() {
 /// instead, so the second import failed with an id-exists error.
 #[test]
 fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-nonascii-dirs");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-nonascii-dirs", Isolation::ProductHome);
 
     let mut ids = Vec::new();
     for name in ["技能一", "技能二"] {
@@ -638,8 +569,8 @@ fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
 /// The raw name must feed the hash; the cleaned form is only the label.
 #[test]
 fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-invisible-dirs");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-invisible-dirs", Isolation::ProductHome);
 
     let mut ids = Vec::new();
     for name in ["技能", "技能\u{200B}"] {
@@ -662,8 +593,8 @@ fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
 
 #[test]
 fn import_rejects_missing_path_and_unsupported_extension() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-errors");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-errors", Isolation::ProductHome);
 
     let missing = home.path().join("nope.zip");
     let (message, code) = run_err(&["pinvou", "plugins", "import", missing.to_str().unwrap()]);
@@ -708,8 +639,8 @@ fn import_package_limit() -> u64 {
 /// directory channel by the at-cap test below).
 #[test]
 fn import_rejects_oversize_markdown_file() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-oversize-md");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-oversize-md", Isolation::ProductHome);
 
     let oversized = home.path().join("oversize.md");
     write_sparse(&oversized, import_package_limit() + 1);
@@ -726,8 +657,8 @@ fn import_rejects_oversize_markdown_file() {
 /// the product import limit is rejected during the walk.
 #[test]
 fn import_rejects_directory_over_cumulative_limit() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-oversize-dir");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-oversize-dir", Isolation::ProductHome);
     let dir = home.path().join("oversize-dir");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\nname: oversize-dir\n---\nbody").unwrap();
@@ -755,8 +686,8 @@ fn import_rejects_directory_over_cumulative_limit() {
 /// already pin.
 #[test]
 fn import_directory_at_the_cap_fails_preflight_with_the_limit_message() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-at-limit-dir");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-at-limit-dir", Isolation::ProductHome);
     let dir = home.path().join("at-limit-dir");
     std::fs::create_dir_all(&dir).unwrap();
     // A frontmatter-named SKILL.md keeps the wrap charge out of the picture:
@@ -790,8 +721,8 @@ fn import_directory_at_the_cap_fails_preflight_with_the_limit_message() {
 /// rejecting it with the CLI's own limit error.
 #[test]
 fn import_directory_counts_root_skill_md_once() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-skill-md-once");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-skill-md-once", Isolation::ProductHome);
     let dir = home.path().join("boundary-dir");
     std::fs::create_dir_all(&dir).unwrap();
     let skill_md = dir.join("SKILL.md");
@@ -807,9 +738,7 @@ fn import_directory_counts_root_skill_md_once() {
     drop(file);
     write_sparse(&dir.join("a.bin"), import_package_limit() - 12288);
 
-    let parsed = parse_args(vec!["pinvou", "plugins", "import", dir.to_str().unwrap()])
-        .expect("valid command");
-    match execute(parsed) {
+    match run(&["pinvou", "plugins", "import", dir.to_str().unwrap()]) {
         Ok(outcome) => {
             assert_eq!(outcome.exit_code, ExitCode::Success);
         }
@@ -846,8 +775,8 @@ fn assert_fifo_rejected(home: &Path, file_name: &str) {
 #[cfg(unix)]
 #[test]
 fn import_rejects_fifo_skill_file_without_reading() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-fifo");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-fifo", Isolation::ProductHome);
     assert_fifo_rejected(home.path(), "pipe.md");
 }
 
@@ -858,8 +787,8 @@ fn import_rejects_fifo_skill_file_without_reading() {
 /// package file itself) instead of after a full open.
 #[test]
 fn import_rejects_oversize_zip_package() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-oversize-zip");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-oversize-zip", Isolation::ProductHome);
 
     let oversized = home.path().join("oversize.zip");
     write_sparse(&oversized, import_package_limit() + 1);
@@ -874,8 +803,8 @@ fn import_rejects_oversize_zip_package() {
 #[cfg(unix)]
 #[test]
 fn import_rejects_fifo_zip_package_without_opening() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-fifo-zip");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-fifo-zip", Isolation::ProductHome);
     assert_fifo_rejected(home.path(), "pipe.zip");
 }
 
@@ -885,8 +814,8 @@ fn import_rejects_fifo_zip_package_without_opening() {
 #[cfg(unix)]
 #[test]
 fn import_directory_skips_fifo_entries() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-fifo-dir");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-fifo-dir", Isolation::ProductHome);
     let dir = home.path().join("fifo-dir");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("SKILL.md"), "---\nname: fifo-dir-skill\n---\nbody").unwrap();
@@ -905,8 +834,8 @@ fn import_directory_skips_fifo_entries() {
 
 #[test]
 fn meta_updates_upload_package_and_rejects_preset() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("meta");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "meta", Isolation::ProductHome);
     let dir = fixture_skill_dir(home.path());
     run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
 
@@ -954,8 +883,8 @@ fn meta_updates_upload_package_and_rejects_preset() {
 
 #[test]
 fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("scope-roundtrip");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "scope-roundtrip", Isolation::ProductHome);
 
     run_ok(&[
         "pinvou", "plugins", "disable", "weather", "--scope", "plain",
@@ -1020,8 +949,8 @@ fn disable_enable_scope_round_trip_persists_disabled_bundles_json() {
 // stayed disabled.
 #[test]
 fn toggles_verify_against_the_owner_package_for_remapped_ids() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("scope-companion-remap");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "scope-companion-remap", Isolation::ProductHome);
 
     let disabled = run_json(&[
         "pinvou",
@@ -1066,8 +995,8 @@ fn toggles_verify_against_the_owner_package_for_remapped_ids() {
 
 #[test]
 fn project_skills_round_trip() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("project-skills");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "project-skills", Isolation::ProductHome);
 
     assert!(!disabled_bundles_json_exists(home.path()));
     let stdout = run_ok(&["pinvou", "plugins", "project-skills", "on"]);
@@ -1097,8 +1026,8 @@ fn disabled_bundles_json_exists(home: &Path) -> bool {
 
 #[test]
 fn tools_list_shows_embedded_catalog_with_installed_state() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("tools-list");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "tools-list", Isolation::ProductHome);
 
     let human = run_ok(&["pinvou", "plugins", "tools", "list"]);
     for known in ["weather", "qcc", "obsidian", "pptx"] {
@@ -1136,8 +1065,8 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
 
 #[test]
 fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("tools-roundtrip");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "tools-roundtrip", Isolation::ProductHome);
 
     let stdout = run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     assert!(
@@ -1207,8 +1136,8 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
 
 #[test]
 fn tools_auth_reports_installed_and_oauth_states() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("tools-auth");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "tools-auth", Isolation::ProductHome);
 
     // Non-OAuth tool, not installed.
     let value = run_json(&["pinvou", "plugins", "tools", "auth", "obsidian"]);
@@ -1246,8 +1175,8 @@ fn tools_auth_reports_installed_and_oauth_states() {
 
 #[test]
 fn oauth_login_guards_and_cancel_behaviour() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("oauth-login");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "oauth-login", Isolation::ProductHome);
 
     // Tool without a remote OAuth declaration → the feature's own error.
     let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "obsidian"]);
@@ -1327,9 +1256,9 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
     // fails at execute (`resolve_secrets` runs before any marketplace or
     // network access), and the refusal names the missing variable plus the
     // KEY=ENV_VAR_NAME hint instead of anything value-shaped.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("tools-secret-unset-var");
-    let _amap = RestoreEnvVar("PINVOU_CLI_TEST_AMAP_KEY", None);
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "tools-secret-unset-var", Isolation::ProductHome);
+    let _amap = EnvGuard::remove(&["PINVOU_CLI_TEST_AMAP_KEY"]);
     let (message, code) = run_err(&[
         "pinvou",
         "plugins",
@@ -1352,13 +1281,9 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
 #[test]
 #[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn tools_install_with_secret_persists_credential() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("tools-secret");
-    let _amap = RestoreEnvVar(
-        "PINVOU_CLI_TEST_AMAP_KEY",
-        std::env::var_os("PINVOU_CLI_TEST_AMAP_KEY"),
-    );
-    unsafe { std::env::set_var("PINVOU_CLI_TEST_AMAP_KEY", "test-secret-value") };
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "tools-secret", Isolation::ProductHome);
+    let _amap = EnvGuard::set(&[("PINVOU_CLI_TEST_AMAP_KEY", Some("test-secret-value"))]);
 
     let stdout = run_ok(&[
         "pinvou",
@@ -1389,13 +1314,9 @@ fn tools_install_with_secret_persists_credential() {
 #[test]
 #[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn tools_install_warns_when_remote_validation_is_skipped() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("tools-validate");
-    let _patsnap = RestoreEnvVar(
-        "PINVOU_CLI_TEST_PATSNAP_KEY",
-        std::env::var_os("PINVOU_CLI_TEST_PATSNAP_KEY"),
-    );
-    unsafe { std::env::set_var("PINVOU_CLI_TEST_PATSNAP_KEY", "test-secret-value") };
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "tools-validate", Isolation::ProductHome);
+    let _patsnap = EnvGuard::set(&[("PINVOU_CLI_TEST_PATSNAP_KEY", Some("test-secret-value"))]);
 
     let stdout = run_ok(&[
         "pinvou",
@@ -1422,8 +1343,8 @@ fn tools_install_warns_when_remote_validation_is_skipped() {
 
 #[test]
 fn skills_preset_install_update_uninstall_round_trip() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("skills-preset");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "skills-preset", Isolation::ProductHome);
 
     // Update guard: only installed preset skills can be updated.
     let (message, code) = run_err(&["pinvou", "plugins", "skills", "update", "visualizer"]);
@@ -1476,8 +1397,8 @@ fn skills_preset_install_update_uninstall_round_trip() {
 
 #[test]
 fn export_installed_package_writes_zip_and_preset_is_rejected() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("export");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "export", Isolation::ProductHome);
 
     let dir = fixture_skill_dir(home.path());
     run_ok(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
@@ -1551,8 +1472,8 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
 
 #[test]
 fn recycle_round_trip_via_fixture() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("recycle");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "recycle", Isolation::ProductHome);
 
     let zip = fixture_skill_zip(home.path());
     run_ok(&["pinvou", "plugins", "import", zip.to_str().unwrap()]);
@@ -1653,8 +1574,8 @@ fn recycle_round_trip_via_fixture() {
 
 #[test]
 fn readiness_zero_state_reports_uninstalled_catalog() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("readiness");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "readiness", Isolation::ProductHome);
     // The ima row reads the credential store on every readiness run; the
     // redirect keeps a host with real ambient ima credentials in the
     // asserted zero state (inert where the OS keyring wins the probe).
@@ -1787,11 +1708,11 @@ fn seed_bundle_record(home: &std::path::Path, record_json: &str) {
 ///   code exists to prevent.
 #[test]
 fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
 
     // Cause 1: the routine disconnect reason both writers store verbatim.
     {
-        let home = SandboxHome::new("readiness-disconnected");
+        let home = HomeGuard::new("plugins", "readiness-disconnected", Isolation::ProductHome);
         seed_bundle_record(
             home.path(),
             r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"已断开授权：配套技能已随断开移除，重新连接即可恢复"}"#,
@@ -1810,7 +1731,7 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
 
     // Cause 2: the legacy asset check.
     {
-        let home = SandboxHome::new("readiness-degraded");
+        let home = HomeGuard::new("plugins", "readiness-degraded", Isolation::ProductHome);
         seed_bundle_record(
             home.path(),
             r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"CLI 二进制 SHA-256 与 lock 表不符，待重新下载"}"#,
@@ -1836,8 +1757,8 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
 /// limitation in `reason` + `probe` instead.
 #[test]
 fn readiness_never_claims_an_unprobed_cli_record_is_ready() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("readiness-cli-healthy");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("plugins", "readiness-cli-healthy", Isolation::ProductHome);
     seed_bundle_record(
         home.path(),
         r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z"}"#,
@@ -1870,8 +1791,8 @@ fn readiness_never_claims_an_unprobed_cli_record_is_ready() {
 /// verdict as unchanged (`Ready`); this one pins the headless verdict.
 #[test]
 fn readiness_derives_assets_missing_for_a_degraded_package() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("readiness-degraded-pkg");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("plugins", "readiness-degraded-pkg", Isolation::ProductHome);
     seed_bundle_record(
         home.path(),
         r#"{"id":"canva-mcp","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"resources missing"}"#,
@@ -1917,8 +1838,8 @@ fn readiness_derives_assets_missing_for_a_degraded_package() {
 /// exposure the sibling documents.
 #[test]
 fn readiness_ima_without_credentials_reports_the_gui_reason() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("readiness-ima-zero");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "readiness-ima-zero", Isolation::ProductHome);
     let _codewhale = isolate_credential_store(_home.path());
 
     let value = run_json(&["pinvou", "plugins", "readiness"]);
@@ -2003,12 +1924,11 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
         CredentialReference, CredentialStore, SystemCredentialStore,
     };
 
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("readiness-ima-connected");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "readiness-ima-connected", Isolation::ProductHome);
     // Isolate the file-fallback store (headless CI) so seeded secrets never
     // land in a real HOME; inert where the OS keyring wins the probe.
-    let _codewhale = RestoreEnvVar("CODEWHALE_HOME", std::env::var_os("CODEWHALE_HOME"));
-    unsafe { std::env::set_var("CODEWHALE_HOME", _home.path().join("codewhale")) };
+    let _codewhale = isolate_credential_store(_home.path());
 
     let store = SystemCredentialStore::new();
     let client_ref = CredentialReference::for_ima_secret("client_id");
@@ -2114,8 +2034,8 @@ fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
 /// those files.
 #[test]
 fn tools_auth_degrades_on_a_damaged_mcp_json() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("tools-auth-corrupt-mcp");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "tools-auth-corrupt-mcp", Isolation::ProductHome);
     run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     let mcp = home.path().join("bundle").join("mcp.json");
     assert!(mcp.is_file(), "installing qcc should write mcp.json");
@@ -2165,8 +2085,8 @@ fn tools_auth_degrades_on_a_damaged_mcp_json() {
 /// CLI keeps the strict reader there.
 #[test]
 fn oauth_login_propagates_a_damaged_mcp_json() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("oauth-login-corrupt-mcp");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "oauth-login-corrupt-mcp", Isolation::ProductHome);
     run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     std::fs::write(home.path().join("bundle").join("mcp.json"), "{ nope").unwrap();
 
@@ -2190,8 +2110,8 @@ fn oauth_login_propagates_a_damaged_mcp_json() {
 /// `bundles.json` (the CLI's was unbounded).
 #[test]
 fn import_display_name_matches_the_gui_sanitizer() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-display-name");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-display-name", Isolation::ProductHome);
 
     // 60 + 80 significant chars once the ZWSP and the backslash are dropped,
     // i.e. 140 > 128: the cap has to bite. A backslash is a legal file-name
@@ -2254,8 +2174,8 @@ fn import_display_name_matches_the_gui_sanitizer() {
 /// in the at-cap directory test above — can reject it.
 #[test]
 fn import_charges_the_wrapped_skill_md_against_the_limit() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("import-wrapped-charge");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "import-wrapped-charge", Isolation::ProductHome);
     let dir = home.path().join("wrapped-charge");
     std::fs::create_dir_all(&dir).unwrap();
     // No frontmatter name, so the wrapper runs.
@@ -2282,8 +2202,8 @@ fn import_charges_the_wrapped_skill_md_against_the_limit() {
 /// keeps its live engines on the previous whitelist.
 #[test]
 fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = SandboxHome::new("scope-reporting");
+    let _env = env_lock();
+    let _home = HomeGuard::new("plugins", "scope-reporting", Isolation::ProductHome);
 
     let value = run_json(&["pinvou", "plugins", "disable", "weather", "--scope", "both"]);
     assert_eq!(
@@ -2327,8 +2247,8 @@ fn scope_toggle_reports_applied_scopes_and_the_missing_hot_refresh() {
 /// test binary.
 #[test]
 fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = SandboxHome::new("builtin-refusal");
+    let _env = env_lock();
+    let home = HomeGuard::new("plugins", "builtin-refusal", Isolation::ProductHome);
 
     let (message, code) = run_err(&["pinvou", "plugins", "disable", "session-reader"]);
     assert_eq!(code, ExitCode::Failed, "{message}");

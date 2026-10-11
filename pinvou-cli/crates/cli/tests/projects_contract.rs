@@ -2,8 +2,8 @@
 //!
 //! Parse-level coverage runs against the typed command tree. Execute-level
 //! coverage is strictly hermetic: every test runs against a throwaway
-//! `PINVOU3_HOME` (ENV_LOCK serialization, same pattern as
-//! `personas_contract.rs`) and touches no network, model, engine, or display.
+//! `PINVOU3_HOME` (the shared `common` harness's `env_lock`) and touches no
+//! network, model, engine, or display.
 //! Move fixtures build a session through `SessionStore::boot()` in the test
 //! process — the same standalone constructor the CLI uses.
 //!
@@ -11,78 +11,25 @@
 //! shared with the GUI app, so assertions locate projects by the exact id a
 //! test created and never assume anything about other stores.
 
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+mod common;
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use std::path::{Path, PathBuf};
+
+use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use common::{HomeGuard, Isolation, env_lock, run, run_json, scratch_dir};
 
-/// Sets `PINVOU3_HOME` to a fresh throwaway directory for the duration of
-/// the test and restores the previous value on drop.
-struct HomeGuard {
-    previous: Option<OsString>,
-    root: PathBuf,
+/// `~/.pinvou3/projects/projects.json` — the single projects store file.
+trait ProjectsHome {
+    fn store_file(&self) -> PathBuf;
 }
 
-impl HomeGuard {
-    fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-projects-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { previous, root }
-    }
-
-    /// `~/.pinvou3/projects/projects.json` — the single projects store file.
+impl ProjectsHome for HomeGuard {
     fn store_file(&self) -> PathBuf {
-        self.root.join("projects").join("projects.json")
+        self.path().join("projects").join("projects.json")
     }
-
-    /// `~/.pinvou3/sessions` under the sandbox home.
-    fn sessions_root(&self) -> PathBuf {
-        self.root.join("sessions")
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed = parse_args(arguments).expect("arguments must parse");
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
 }
 
 /// Creates one empty chat session through `SessionStore` (the exact path the
@@ -165,23 +112,14 @@ impl Drop for TempRoot {
 
 /// Creates an absolute, existing directory to use as a project root.
 fn make_root_dir(label: &str) -> TempRoot {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "pinvou-cli-projects-root-{label}-{}-{nonce}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    TempRoot(dir)
+    TempRoot(scratch_dir(&format!("pinvou-cli-projects-root-{label}")))
 }
 
 // ── parse-level coverage ────────────────────────────────────────────────────
 
 #[test]
 fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     let valid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "projects", "list"],
         vec!["pinvou", "projects", "create", "--name", "N"],
@@ -302,8 +240,8 @@ fn json_output_mode_flows_through_every_projects_subcommand() {
 
 #[test]
 fn projects_list_zero_state_is_empty_and_leaves_no_store_file() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("zero-state");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "zero-state", Isolation::ProductHome);
 
     let outcome = run(&["pinvou", "projects", "list"]).expect("list must execute");
     assert_eq!(outcome.exit_code, ExitCode::Success);
@@ -329,8 +267,8 @@ fn projects_list_zero_state_is_empty_and_leaves_no_store_file() {
 
 #[test]
 fn projects_create_list_update_delete_round_trip_persists_the_store() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("crud-round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "crud-round-trip", Isolation::ProductHome);
 
     // create — generated prj- id, GUI list-DTO fields, no roots.
     let value = run_json(&["pinvou", "projects", "create", "--name", "Alpha"]);
@@ -451,8 +389,8 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
 
 #[test]
 fn projects_root_validation_errors_are_clean_failures() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("root-validation");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "root-validation", Isolation::ProductHome);
 
     // Relative roots are rejected by the feature's own validation.
     let error = run(&[
@@ -504,8 +442,8 @@ fn projects_root_validation_errors_are_clean_failures() {
 
 #[test]
 fn projects_move_assigns_sessions_and_reports_unknowns() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("move");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "move", Isolation::ProductHome);
     let session_id = create_session_fixture();
 
     let value = run_json(&["pinvou", "projects", "create", "--name", "Inbox"]);
@@ -729,8 +667,8 @@ fn projects_rebind_parses_two_positionals_and_the_yes_flag() {
 
 #[test]
 fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-from");
     let to_dir = make_root_dir("rebind-to");
     // Everything the lanes compare runs in the resolved display domain, so
@@ -896,8 +834,8 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
     // empty lane outcomes: `rebound 0 (0 failed)`, exit 0, stale metadata
     // pointing at the vanished `from` directory. The to-lane retry pass —
     // the GUI's `admit_rebind_retry_candidate` scan — is what converges it.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-retry");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-retry", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-retry-from");
     let to_dir = make_root_dir("rebind-retry-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1003,8 +941,8 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
     // destination must translate the two storage halves with the session's
     // PRE-sync metadata workspace — the run-global pair maps neither half,
     // both persist nothing, and the run would claim Rebound over dead paths.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-behind-binding");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-behind-binding", Isolation::ProductHome);
     let origin_dir = make_root_dir("rebind-behind-origin");
     let mid_dir = make_root_dir("rebind-behind-mid");
     let to_dir = make_root_dir("rebind-behind-to");
@@ -1106,8 +1044,8 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
     // classified metadata-behind-binding: the lane outcomes carry the
     // already-translated binding, so the GUI's stale-metadata detection
     // only holds when it runs against the PRE-translation binding.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-subpath");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-subpath", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-subpath-from");
     let to_dir = make_root_dir("rebind-subpath-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1199,8 +1137,8 @@ fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
     // The retry pass must admit only metadata that LAGS its binding: a
     // session created directly under `to` whose metadata already matches is
     // healthy, and reporting it would be a fabricated "rebound" entry.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("rebind-healthy");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "rebind-healthy", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-healthy-from");
     let to_dir = make_root_dir("rebind-healthy-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1226,8 +1164,8 @@ fn projects_rebind_to_lane_healthy_sessions_are_not_reported() {
 
 #[test]
 fn projects_rebind_without_yes_is_refused_before_any_store_access() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-yes");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-yes", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-yes-from");
     let to_dir = make_root_dir("rebind-yes-to");
 
@@ -1249,7 +1187,7 @@ fn projects_rebind_without_yes_is_refused_before_any_store_access() {
         "a refused rebind must not touch the projects store"
     );
     assert!(
-        !home.root.join("session-agents.json").exists(),
+        !home.path().join("session-agents.json").exists(),
         "a refused rebind must not touch the agent index"
     );
     assert!(
@@ -1260,8 +1198,8 @@ fn projects_rebind_without_yes_is_refused_before_any_store_access() {
 
 #[test]
 fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-shape");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-shape", Isolation::ProductHome);
     let to_dir = make_root_dir("rebind-shape-to");
 
     // One mirrored message covers empty, relative and filesystem-root `from`
@@ -1324,8 +1262,8 @@ fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
 
 #[test]
 fn projects_rebind_from_equal_to_is_a_reported_noop() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-same");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-same", Isolation::ProductHome);
     let dir = make_root_dir("rebind-same");
     let same = std::fs::canonicalize(&dir).unwrap();
 
@@ -1385,7 +1323,7 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
 /// `to.starts_with(from)` arm fails only that row.
 #[test]
 fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     let dir = make_root_dir("rebind-mirror-nested");
     let outer = std::fs::canonicalize(&dir).unwrap();
     let inner = outer.join("B");
@@ -1410,7 +1348,7 @@ fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
             outer.clone(),
         ),
     ] {
-        let home = HomeGuard::new("rebind-mirror-nested");
+        let home = HomeGuard::new("projects", "rebind-mirror-nested", Isolation::ProductHome);
         let value = run_json(&[
             "pinvou",
             "projects",
@@ -1469,8 +1407,8 @@ fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
 /// corrupt table itself must not be normalized away.
 #[test]
 fn projects_rebind_surfaces_an_unparseable_legacy_table() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-legacy-broken");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-legacy-broken", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-legacy-broken-from");
     let to_dir = make_root_dir("rebind-legacy-broken-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1552,8 +1490,8 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     // ones unrelated to the rebind) and reported success. The fix runs the
     // GUI's boot-time migration before the rewrite; this test pins the
     // survival of both the rebound entry and an unrelated one.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-legacy");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-legacy", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-legacy-from");
     let to_dir = make_root_dir("rebind-legacy-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1654,8 +1592,8 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
 /// exclusive.
 #[test]
 fn update_clear_roots_expresses_the_gui_empty_roots_form() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("clear-roots");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "clear-roots", Isolation::ProductHome);
     let root_dir = make_root_dir("clear-roots");
     let created = run_json(&[
         "pinvou",
@@ -1702,8 +1640,8 @@ fn update_clear_roots_expresses_the_gui_empty_roots_form() {
 /// assignment row for an aux id is a ghost entry no list can clear.
 #[test]
 fn projects_move_refuses_aux_session_ids_like_the_gui() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("move-aux-refusal");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "move-aux-refusal", Isolation::ProductHome);
     let store = SessionStore::boot().expect("boot session store");
     let aux = store
         .create_new("test-model".to_owned(), None, std::env::temp_dir())
@@ -1729,8 +1667,8 @@ fn projects_move_refuses_aux_session_ids_like_the_gui() {
 /// markers broke.
 #[test]
 fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-to-unusable");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-to-unusable", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-unusable-from");
     let from = std::fs::canonicalize(&from_dir).unwrap();
     let to = from
@@ -1782,8 +1720,8 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
 /// Like the missing-destination arm above, this arm had no contract test.
 #[test]
 fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("rebind-roots-conflict");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "rebind-roots-conflict", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-conflict-from");
     let to_dir = make_root_dir("rebind-conflict-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1853,8 +1791,8 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
 /// irreversible write silently diverging from the GUI.
 #[test]
 fn projects_move_ungroups_a_tier2_auto_grouped_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-tier2-ungroup");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-tier2-ungroup", Isolation::ProductHome);
     let root_dir = make_root_dir("rebind-tier2-root");
     let root = std::fs::canonicalize(&root_dir).unwrap();
 
@@ -1899,8 +1837,8 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
 ///   tier 2.
 #[test]
 fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_line() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("move-corrupt-index");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "move-corrupt-index", Isolation::ProductHome);
     let root_dir = make_root_dir("move-corrupt-index-root");
     let root = std::fs::canonicalize(&root_dir).unwrap();
 
@@ -1930,7 +1868,7 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
     // stderr, so this arm drives the real binary (same pattern as the
     // corrupt-index delete-cascade tests in sessions_contract.rs).
     let corrupt_id = bind_code_session(&root.join("sub"));
-    let agents_path = home.root.join("session-agents.json");
+    let agents_path = home.path().join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 
     let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
@@ -1972,8 +1910,8 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
 /// binary (same pattern as the corrupt-index move/delete tests).
 #[test]
 fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_chain() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rebind-corrupt-index");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-corrupt-index", Isolation::ProductHome);
     let from_dir = make_root_dir("rebind-corrupt-from");
     let to_dir = make_root_dir("rebind-corrupt-to");
     let from = std::fs::canonicalize(&from_dir).unwrap();
@@ -1982,7 +1920,7 @@ fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_
     // A healthy codex-lane binding first: its authoritative sidecar is what
     // "nothing was moved" is asserted against.
     let code_id = bind_code_session(&from);
-    let agents_path = home.root.join("session-agents.json");
+    let agents_path = home.path().join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 
     let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))

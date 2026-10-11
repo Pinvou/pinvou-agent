@@ -13,264 +13,46 @@
 //! model probes, one-shot ACP turns) are covered by `#[ignore]` opt-in tests
 //! or by asserting the stable honest error codes.
 
-use std::ffi::OsString;
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use common::{EnvGuard, HomeGuard, Isolation, env_lock, run, run_json, usage_error};
+use pinvou_cli::{CliError, ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace as app_workspace;
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
-/// Serialises tests that mutate the process-global environment variables
-/// (`PINVOU3_HOME`, `CODEWHALE_HOME`, `HOME`), preventing data races when the
-/// parallel test runner executes them concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+/// The family's sandbox home: the shared provider-home preset
+/// ([`common::Isolation::ProviderHome`] — the file secret backend under
+/// `<root>/codewhale`, `HOME`/`USERPROFILE`/`HOMEDRIVE`+`HOMEPATH` all at
+/// `<root>/home`), with the `$HOME` subtree pre-created the way the original
+/// guard did (the provider config writers root `~/.codex`/`~/.claude` there,
+/// and the gitconfig fixtures write into it directly). Tests that mutate the
+/// process-global environment hold [`common::env_lock`] for their whole body.
+fn sandbox_home(label: &str) -> HomeGuard {
+    let home = HomeGuard::new("code", label, Isolation::ProviderHome);
+    std::fs::create_dir_all(home.path().join("home")).unwrap();
+    home
+}
 
-/// Derives a uniquely-named scratch path under the system temp dir
-/// (`pinvou-cli-code-<label>-<pid>-<nanos>`) — the shared scaffold for
-/// fixture repositories, fake vendor binaries and the real-binary login
-/// fixtures. Does NOT create the path: most callers do, but the absent-home
-/// fixture must receive a nonexistent path.
+/// Derives a uniquely-named, NOT-yet-created scratch path under the system
+/// temp dir (`pinvou-cli-code-<label>-<pid>-<nanos>`) — the shared scaffold
+/// for fixture repositories, fake vendor binaries and the real-binary login
+/// fixtures. The absent-home fixture must receive a nonexistent path.
 fn scratch_root(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "pinvou-cli-code-{label}-{}-{nonce}",
-        std::process::id()
-    ))
-}
-
-/// The environment values `HomeGuard` snapshots in `new` and restores on
-/// drop, in snapshot order (PINVOU3_HOME, CODEWHALE_HOME, HOME, USERPROFILE,
-/// HOMEDRIVE, HOMEPATH, CODEWHALE_SECRET_BACKEND).
-type PreviousEnv = (
-    Option<OsString>,
-    Option<OsString>,
-    Option<OsString>,
-    Option<OsString>,
-    Option<OsString>,
-    Option<OsString>,
-    Option<OsString>,
-);
-
-/// Sets `PINVOU3_HOME`, `CODEWHALE_HOME`, and `HOME` to fresh throwaway
-/// directories for the duration of the test and restores the previous values
-/// on drop. `HOME` isolation keeps `ProviderManager`'s per-CLI config writers
-/// (`~/.codex`, `~/.claude`) and the kimi data root inside the sandbox.
-/// Round-40 review: the guard also forces `CODEWHALE_SECRET_BACKEND=file`,
-/// the same isolation the connectors/models contract guards apply — with the
-/// variable unset the credential store is keyring-first, and the keyring is
-/// an OS service no HOME redirection reaches, so the seeded `providers add`
-/// fixtures would write their fixture keys into the developer's real
-/// keychain on every run (the `KeyringCleanup` guards are best-effort
-/// cleanup, not isolation). The file backend roots inside the sandboxed
-/// `CODEWHALE_HOME`.
-struct HomeGuard {
-    previous: PreviousEnv,
-    root: PathBuf,
-}
-
-impl HomeGuard {
-    fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-code-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = (
-            std::env::var_os("PINVOU3_HOME"),
-            std::env::var_os("CODEWHALE_HOME"),
-            std::env::var_os("HOME"),
-            std::env::var_os("USERPROFILE"),
-            std::env::var_os("HOMEDRIVE"),
-            std::env::var_os("HOMEPATH"),
-            std::env::var_os("CODEWHALE_SECRET_BACKEND"),
-        );
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe {
-            std::env::set_var("PINVOU3_HOME", &root);
-            std::env::set_var("CODEWHALE_HOME", root.join("codewhale"));
-            std::env::set_var("HOME", root.join("home"));
-            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
-            // Round-39 review (M2): the app's `user_home_dir` reads
-            // USERPROFILE (then HOMEDRIVE+HOMEPATH) FIRST on Windows, and the
-            // provider manager roots the codex/claude config writers there —
-            // leaving the real values set meant a local Windows `cargo test`
-            // could strip real `pv-*` entries from the developer's actual
-            // `~/.codex/config.toml`/`~/.claude`. Redirect all three into the
-            // sandbox; on Unix nothing reads them, so setting is harmless.
-            std::env::set_var("USERPROFILE", root.join("home"));
-            std::env::set_var("HOMEDRIVE", "C:");
-            std::env::set_var("HOMEPATH", root.join("home"));
-        }
-        std::fs::create_dir_all(root.join("home")).unwrap();
-        Self { previous, root }
-    }
-
-    fn sessions_root(&self) -> PathBuf {
-        self.root.join("sessions")
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        let (pinvou, codewhale, home, profile, homedrive, homepath, secret_backend) = (
-            &self.previous.0,
-            &self.previous.1,
-            &self.previous.2,
-            &self.previous.3,
-            &self.previous.4,
-            &self.previous.5,
-            &self.previous.6,
-        );
-        // SAFETY: ENV_LOCK is held by the owning test.
-        unsafe {
-            match pinvou {
-                Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                None => std::env::remove_var("PINVOU3_HOME"),
-            }
-            match codewhale {
-                Some(value) => std::env::set_var("CODEWHALE_HOME", value),
-                None => std::env::remove_var("CODEWHALE_HOME"),
-            }
-            match home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match profile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-            match homedrive {
-                Some(value) => std::env::set_var("HOMEDRIVE", value),
-                None => std::env::remove_var("HOMEDRIVE"),
-            }
-            match homepath {
-                Some(value) => std::env::set_var("HOMEPATH", value),
-                None => std::env::remove_var("HOMEPATH"),
-            }
-            match secret_backend {
-                Some(value) => std::env::set_var("CODEWHALE_SECRET_BACKEND", value),
-                None => std::env::remove_var("CODEWHALE_SECRET_BACKEND"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-/// Captures one process environment variable and restores it on drop, so a
-/// failing assertion cannot leak an override into sibling tests.
-#[cfg(unix)]
-struct EnvVarGuard {
-    name: &'static str,
-    previous: Option<OsString>,
-}
-
-#[cfg(unix)]
-impl EnvVarGuard {
-    fn capture(name: &'static str) -> Self {
-        Self {
-            name,
-            previous: std::env::var_os(name),
-        }
-    }
-
-    /// Capture and REMOVE: for ambient credentials (`OPENAI_API_KEY` and
-    /// friends) whose presence alone changes production behavior (the codex
-    /// authenticated probe short-circuits on them) and would otherwise make
-    /// spawn-count assertions machine-dependent.
-    fn remove(name: &'static str) -> Self {
-        let guard = Self::capture(name);
-        // SAFETY: the owning test holds ENV_LOCK, so env writes are
-        // serialized in-process.
-        unsafe {
-            std::env::remove_var(name);
-        }
-        guard
-    }
-}
-
-#[cfg(unix)]
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        // SAFETY: the owning test holds ENV_LOCK, so env writes are
-        // serialized in-process.
-        unsafe {
-            match self.previous.take() {
-                Some(value) => std::env::set_var(self.name, value),
-                None => std::env::remove_var(self.name),
-            }
-        }
-    }
-}
-
-/// Captures one secret-lane environment variable and restores the previous
-/// value on drop, so a failing assertion cannot leak a seeded value into
-/// sibling tests. The non-`cfg(unix)` twin of `EnvVarGuard`, used by the
-/// providers fixtures whose tests compile on Windows too.
-struct KeyVar {
-    name: &'static str,
-    previous: Option<OsString>,
-}
-
-impl KeyVar {
-    fn capture(name: &'static str) -> Self {
-        Self {
-            name,
-            previous: std::env::var_os(name),
-        }
-    }
-}
-
-impl Drop for KeyVar {
-    fn drop(&mut self) {
-        // SAFETY: the owning test holds ENV_LOCK, so env writes are
-        // serialized in-process.
-        unsafe {
-            match self.previous.take() {
-                Some(value) => std::env::set_var(self.name, value),
-                None => std::env::remove_var(self.name),
-            }
-        }
-    }
+    common::unique_root(&format!("pinvou-cli-code-{label}"))
 }
 
 /// Removes a scratch directory on drop (panic-safe cleanup for fake CLI bins).
-#[cfg(unix)]
 struct ScratchDir(PathBuf);
 
-#[cfg(unix)]
 impl Drop for ScratchDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed =
-        parse_args(arguments).unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
-}
-
-fn usage_error(arguments: &[&str]) -> CliError {
-    parse_args(arguments.to_vec()).expect_err(arguments.join(" ").as_str())
 }
 
 /// A command error from either the parse or the execute lane — for pins
@@ -284,19 +66,15 @@ fn command_error(arguments: &[&str]) -> CliError {
 }
 
 /// Runs a command the family's `require_yes` gate must refuse: executes it and
-/// asserts the refusal is the usage-class error naming `--yes`, then returns
-/// the error. The per-command gate tests stay — this only collapses their
-/// shared assertion shape.
-fn yes_gate_error(arguments: &[&str]) -> CliError {
-    let parsed = parse_args(arguments.to_vec())
-        .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
-    let error = execute(parsed).expect_err("{arguments:?} must be refused without --yes");
-    assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+/// asserts the refusal is the usage-class error naming `--yes`. The
+/// per-command gate tests stay — this only collapses their shared assertion
+/// shape on top of the common usage helper.
+fn yes_gate_error(arguments: &[&str]) {
+    let message = common::assert_usage(arguments);
     assert!(
-        error.to_string().contains("--yes"),
-        "{arguments:?}: the refusal must name the flag: {error}"
+        message.contains("--yes"),
+        "{arguments:?}: the refusal must name the flag: {message}"
     );
-    error
 }
 
 /// Creates one chat session and binds it as a native code session (the same
@@ -470,7 +248,7 @@ fn add(agent: &'static str, extra: &[&'static str]) -> Vec<&'static str> {
 
 #[test]
 fn every_code_subcommand_parses() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let valid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "code", "agents", "list"],
         vec!["pinvou", "code", "agents", "status", "codex"],
@@ -740,7 +518,7 @@ fn every_code_subcommand_parses() {
 
 #[test]
 fn invalid_code_usage_exits_two_and_names_valid_values() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let invalid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "code"],
         vec!["pinvou", "code", "bogus"],
@@ -1041,19 +819,18 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
         ],
     ];
     for arguments in &invalid {
-        let error = usage_error(arguments);
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        // The common helper asserts the exit-2 usage class for every case.
+        usage_error(arguments);
     }
 
     // The agent error message names the valid agents.
-    let error = usage_error(&["pinvou", "code", "agents", "status", "gemini"]);
-    let message = error.to_string();
+    let message = usage_error(&["pinvou", "code", "agents", "status", "gemini"]);
     assert!(
         message.contains("codex") && message.contains("claude") && message.contains("kimi"),
         "unknown agent error must name codex|claude|kimi: {message}"
     );
     // The checkout mode error names the valid modes.
-    let error = usage_error(&[
+    let message = usage_error(&[
         "pinvou",
         "code",
         "workspace",
@@ -1063,7 +840,6 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
         "--mode",
         "discard",
     ]);
-    let message = error.to_string();
     assert!(
         message.contains("carry") && message.contains("stash") && message.contains("commit"),
         "mode error must name carry|stash|commit: {message}"
@@ -1072,16 +848,16 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
 
 #[test]
 fn rewind_without_yes_is_a_usage_error() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("rewind-needs-yes");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("rewind-needs-yes");
     let id = create_code_session_fixture(None);
     yes_gate_error(&["pinvou", "code", "checkpoints", "rewind", &id, "0"]);
 }
 
 #[test]
 fn logout_and_undo_without_yes_are_usage_errors() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("logout-undo-need-yes");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("logout-undo-need-yes");
     let id = create_code_session_fixture(None);
 
     // logout erases the vendor CLI's stored credentials, so it gates on --yes.
@@ -1095,8 +871,8 @@ fn logout_and_undo_without_yes_are_usage_errors() {
 
 #[test]
 fn code_sessions_list_zero_state_and_filters_code_sessions() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("sessions-list");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("sessions-list");
 
     // Zero state: empty listing, valid JSON shape.
     let outcome = run(&["pinvou", "code", "sessions", "list"]).expect("zero-state list");
@@ -1141,9 +917,9 @@ fn code_sessions_list_zero_state_and_filters_code_sessions() {
 
 #[test]
 fn code_sessions_info_and_timeline_read_persisted_state() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("sessions-info");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("sessions-info");
+    let project = home.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let id = create_acp_session_fixture(&project);
 
@@ -1215,13 +991,13 @@ fn code_sessions_info_and_timeline_read_persisted_state() {
 /// output keeps the verbatim path for scripts.
 #[test]
 fn code_sessions_human_output_collapses_control_characters_in_workspace_path() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("code-ws-path-controls");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("code-ws-path-controls");
 
     // A hostile (but POSIX-legal) project directory name; the fixture binds
     // it verbatim into the session-agents record, exactly where the
     // `workspace_path` cell is read from.
-    let project = home.root.join("project\tpoison\x1bdir").join("nested");
+    let project = home.path().join("project\tpoison\x1bdir").join("nested");
     std::fs::create_dir_all(&project).unwrap();
     let id = create_acp_session_fixture(&project);
     // The CLI resolves bound paths through canonicalize on read paths
@@ -1286,9 +1062,9 @@ fn code_sessions_human_output_collapses_control_characters_in_workspace_path() {
 /// run also proves the CLI never slurped the oversized file to decide.
 #[test]
 fn sessions_timeline_cap_is_enforced_at_the_boundary() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("timeline-cap-boundary");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("timeline-cap-boundary");
+    let project = home.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let id = create_acp_session_fixture(&project);
     let session_dir = home.sessions_root().join(&id);
@@ -1339,9 +1115,9 @@ fn sessions_timeline_cap_is_enforced_at_the_boundary() {
 /// journal reported as an empty timeline success.
 #[test]
 fn sidecar_lost_acp_session_is_listed_and_readable() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("sidecar-lost-acp");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("sidecar-lost-acp");
+    let project = home.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     // A plain chat session whose model name is the ACP sentinel: no
     // session-agents.json record is ever written for it.
@@ -1379,8 +1155,8 @@ fn sidecar_lost_acp_session_is_listed_and_readable() {
 /// an empty success for any existing session).
 #[test]
 fn sessions_info_and_timeline_refuse_plain_chat_sessions() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("info-timeline-gate");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("info-timeline-gate");
     let store = SessionStore::boot().unwrap();
     let plain = store
         .create_new("plain".to_owned(), None, std::env::temp_dir())
@@ -1400,9 +1176,9 @@ fn sessions_info_and_timeline_refuse_plain_chat_sessions() {
 
 #[test]
 fn workspace_list_search_preview_round_trip_with_fixture_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("workspace-read");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("workspace-read");
+    let project = home.path().join("project");
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::create_dir_all(project.join("node_modules")).unwrap();
     std::fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
@@ -1449,9 +1225,9 @@ fn workspace_list_search_preview_round_trip_with_fixture_session() {
 /// result list, mirroring the `truncated` flag of `workspace list`.
 #[test]
 fn workspace_search_reports_truncation_past_the_limit() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("search-truncated");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("search-truncated");
+    let project = home.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     // One match past the app module's SEARCH_LIMIT (300) plus one non-match.
     for index in 0..301 {
@@ -1472,8 +1248,8 @@ fn workspace_search_reports_truncation_past_the_limit() {
 
 #[test]
 fn workspace_git_changes_diff_branches_against_fixture_repo() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("workspace-git");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-git");
     let Some(project) = init_git_repo("changes") else {
         return; // git unavailable in the environment
     };
@@ -1561,8 +1337,9 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
     .unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed, "missing-branch");
 
-    // commit mode requires a non-empty --message (parse-level exit 2).
-    let error = usage_error(&[
+    // commit mode requires a non-empty --message (parse-level exit 2, the
+    // class the common helper asserts).
+    usage_error(&[
         "pinvou",
         "code",
         "workspace",
@@ -1572,7 +1349,6 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
         "--mode",
         "commit",
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Usage);
 }
 
 /// `workspace checkout` moves the user's working tree in every mode, so it
@@ -1588,8 +1364,8 @@ fn workspace_git_changes_diff_branches_against_fixture_repo() {
 /// as reporting whether the branch exists.
 #[test]
 fn workspace_checkout_requires_yes_before_touching_the_tree() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("checkout-yes");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("checkout-yes");
     let Some(project) = init_git_repo("checkout-yes") else {
         return;
     };
@@ -1669,8 +1445,8 @@ fn workspace_checkout_requires_yes_before_touching_the_tree() {
 // before the final truncation.
 #[test]
 fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("workspace-diff-cap");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-diff-cap");
     let Some(project) = init_git_repo("diff-cap") else {
         return; // git unavailable in the environment
     };
@@ -1709,8 +1485,8 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
 /// overhangs by 512 KiB and fails fast on a watchdog instead of hanging CI.
 #[test]
 fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("diff-cap-overhang");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("diff-cap-overhang");
     let Some(project) = init_git_repo("diff-cap-overhang") else {
         return; // git unavailable in the environment
     };
@@ -1753,8 +1529,8 @@ fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
 /// historically untested.
 #[test]
 fn per_file_diff_composes_staged_and_unstaged_sections() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("diff-staged");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("diff-staged");
     let Some(project) = init_git_repo("diff-staged") else {
         return; // git unavailable in the environment
     };
@@ -1801,20 +1577,15 @@ fn per_file_diff_composes_staged_and_unstaged_sections() {
 #[cfg(unix)]
 #[test]
 fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("diff-pin");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("diff-pin");
     // Both sides must resolve the user's config the same way, so no ambient
     // GIT_CONFIG_* may survive into either child: the app module removes these
     // keys, and so does the CLI, but the developer's shell could still define
     // them for *this* process and skew the `git config` probes run in-process.
-    let _git_global = EnvVarGuard::capture("GIT_CONFIG_GLOBAL");
-    let _git_nosystem = EnvVarGuard::capture("GIT_CONFIG_NOSYSTEM");
-    unsafe {
-        std::env::remove_var("GIT_CONFIG_GLOBAL");
-        std::env::remove_var("GIT_CONFIG_NOSYSTEM");
-    }
+    let _git_env = EnvGuard::remove(&["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]);
     std::fs::write(
-        home.root.join("home").join(".gitconfig"),
+        home.path().join("home").join(".gitconfig"),
         "[filter \"pinvoudemo\"]\n\tclean = sed s/v2/CLEANED/\n\tsmudge = cat\n",
     )
     .unwrap();
@@ -1907,9 +1678,9 @@ fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
 fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
     use std::os::unix::fs::symlink;
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("diff-symlink");
-    let project = home.root.join("project-diff-symlink");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("diff-symlink");
+    let project = home.path().join("project-diff-symlink");
     std::fs::create_dir_all(&project).unwrap();
     let id = create_code_session_fixture(Some(&project));
 
@@ -1925,7 +1696,7 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
     // The attack: a workspace path that resolves to the (simulated) secret
     // outside the workspace. The diff must refuse, naming the symlink, and
     // the secret must never reach the output.
-    let secret = home.root.join("home").join("secret.txt");
+    let secret = home.path().join("home").join("secret.txt");
     std::fs::write(&secret, "TOP SECRET\n").unwrap();
     symlink(&secret, project.join("leak.md")).unwrap();
     let parsed = parse_args(
@@ -1969,7 +1740,7 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
 fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     use std::os::unix::fs::symlink;
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let Some(project) = init_git_repo("diff-git-symlink") else {
         eprintln!(
             "skipping workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace: git unavailable"
@@ -2088,7 +1859,7 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
 #[cfg(unix)]
 #[test]
 fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let Some(project) = init_git_repo("diff-glob-filename") else {
         eprintln!(
             "skipping workspace_diff_diffs_an_untracked_glob_shaped_filename: git unavailable"
@@ -2210,15 +1981,10 @@ fn git_override_keys_kept_in_step_with_the_app_list() {
 #[cfg(unix)]
 #[test]
 fn workspace_checkout_honours_the_users_global_gitconfig() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("git-global-config");
-    let _git_global = EnvVarGuard::capture("GIT_CONFIG_GLOBAL");
-    let _git_nosystem = EnvVarGuard::capture("GIT_CONFIG_NOSYSTEM");
-    unsafe {
-        std::env::remove_var("GIT_CONFIG_GLOBAL");
-        std::env::remove_var("GIT_CONFIG_NOSYSTEM");
-    }
-    let guarded_home = home.root.join("home");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("git-global-config");
+    let _git_env = EnvGuard::remove(&["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]);
+    let guarded_home = home.path().join("home");
     std::fs::write(guarded_home.join("globalignore"), "ignored-by-global.txt\n").unwrap();
     std::fs::write(
         guarded_home.join(".gitconfig"),
@@ -2281,8 +2047,8 @@ fn workspace_checkout_honours_the_users_global_gitconfig() {
 fn whole_workspace_diff_reports_files_it_cannot_diff() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("diff-failure");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("diff-failure");
     let Some(project) = init_git_repo("diff-failure") else {
         return;
     };
@@ -2328,8 +2094,8 @@ fn whole_workspace_diff_reports_files_it_cannot_diff() {
 
 #[test]
 fn workspace_stash_mode_round_trips_dirty_changes() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("workspace-stash");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-stash");
     let Some(project) = init_git_repo("stash") else {
         return;
     };
@@ -2356,8 +2122,8 @@ fn workspace_stash_mode_round_trips_dirty_changes() {
 
 #[test]
 fn workspace_requires_a_code_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("workspace-gate");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-gate");
     // A plain (non-code) session is refused.
     let store = SessionStore::boot().unwrap();
     let plain = store
@@ -2378,9 +2144,9 @@ fn workspace_requires_a_code_session() {
 
 #[test]
 fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("checkpoints");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("checkpoints");
+    let project = home.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let id = create_code_session_fixture(Some(&project));
     seed_two_turn_transcript(&id);
@@ -2505,8 +2271,8 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
 
 #[test]
 fn checkpoints_refuse_non_native_code_sessions() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("checkpoints-gate");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("checkpoints-gate");
     // ACP sessions have no native checkpoints (by design in ACP).
     let project = scratch_root("acp-gate");
     std::fs::create_dir_all(&project).unwrap();
@@ -2551,16 +2317,13 @@ fn checkpoints_refuse_non_native_code_sessions() {
 
 #[test]
 fn providers_round_trip_against_temp_home() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("providers");
-    let _key = KeyVar::capture("PINVOU_CLI_TEST_ROUNDTRIP_KEY");
-    unsafe {
-        std::env::set_var(
-            "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
-            "sk-test-roundtrip-1234567890",
-        );
-    }
-    let store_path = home.root.join("acp-providers.json");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("providers");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
+        Some("sk-test-roundtrip-1234567890"),
+    )]);
+    let store_path = home.path().join("acp-providers.json");
 
     // Zero-state list is valid JSON for every agent.
     let value = run_json(&["pinvou", "code", "providers", "list"]);
@@ -2637,7 +2400,7 @@ fn providers_round_trip_against_temp_home() {
     );
 
     // import merges entries (no keys in the fixture file: hermetic).
-    let import_file = home.root.join("import.json");
+    let import_file = home.path().join("import.json");
     std::fs::write(
         &import_file,
         r#"[{"name":"Imported","baseUrl":"https://relay.example.com","wireApi":"anthropic"}]"#,
@@ -2731,7 +2494,7 @@ fn providers_round_trip_against_temp_home() {
     );
 
     // export writes the JSON payload to --output.
-    let export_file = home.root.join("export.json");
+    let export_file = home.path().join("export.json");
     let value = run_json(&[
         "pinvou",
         "code",
@@ -2785,8 +2548,8 @@ fn providers_round_trip_against_temp_home() {
 
 #[test]
 fn providers_switch_official_is_hermetic_without_state() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("providers-official");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("providers-official");
     // With no provider ever switched, restoring the official login is a
     // stateless no-op against the isolated CLI home (never the developer's).
     let outcome = run(&["pinvou", "code", "providers", "switch-official", "codex"])
@@ -2800,8 +2563,8 @@ fn providers_switch_official_is_hermetic_without_state() {
 
 #[test]
 fn engine_bound_paths_return_stable_honest_errors() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("host-bound");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("host-bound");
     let id = create_code_session_fixture(None);
 
     for (arguments, expected_code) in [
@@ -2916,8 +2679,8 @@ fn engine_bound_paths_return_stable_honest_errors() {
 #[test]
 #[ignore = "spawns the real vendor CLI and needs network; run explicitly with --ignored"]
 fn login_streams_vendor_cli_flow() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("ignored-login");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("ignored-login");
     let outcome = run(&["pinvou", "code", "login", "codex"]);
     match outcome {
         Ok(outcome) => assert!(outcome.stdout.contains("login codex")),
@@ -2968,14 +2731,14 @@ fn open_lock(path: &Path) -> fd_lock::RwLock<std::fs::File> {
 
 #[test]
 fn session_lock_reports_busy_for_every_mutating_command() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("lock-session-busy");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("lock-session-busy");
     let id = create_code_session_fixture(None);
     seed_two_turn_transcript(&id);
 
     // Hold the advisory lock a second CLI process would hold.
     let lock_path = home
-        .root
+        .path()
         .join("locks")
         .join(format!("code-session-{id}.lock"));
     let mut lock = open_lock(&lock_path);
@@ -3039,15 +2802,15 @@ fn session_lock_reports_busy_for_every_mutating_command() {
 /// review).
 #[test]
 fn lock_file_failures_report_the_stable_lock_codes() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("lock-file-broken");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("lock-file-broken");
     let id = create_code_session_fixture(None);
     seed_two_turn_transcript(&id);
 
     // Replace the locks directory with a regular file AFTER the fixtures
     // booted (the store may create it); every subsequent lock open fails
     // with ENOTDIR.
-    let locks = home.root.join("locks");
+    let locks = home.path().join("locks");
     std::fs::remove_dir_all(&locks).ok();
     std::fs::write(&locks, b"not a directory").unwrap();
 
@@ -3090,9 +2853,9 @@ fn lock_file_failures_report_the_stable_lock_codes() {
 
 #[test]
 fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("lock-root-busy");
-    let project = home.root.join("project");
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("lock-root-busy");
+    let project = home.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let id_a = create_code_session_fixture(Some(&project));
     let id_b = create_code_session_fixture(Some(&project));
@@ -3190,15 +2953,12 @@ impl Drop for KeyringCleanup {
 #[test]
 fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     use std::os::unix::fs::PermissionsExt;
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("export-refuse");
-    let _key = KeyVar::capture("PINVOU_CLI_TEST_EXPORT_KEY");
-    unsafe {
-        std::env::set_var(
-            "PINVOU_CLI_TEST_EXPORT_KEY",
-            "sk-test-export-key-1234567890",
-        );
-    }
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("export-refuse");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_EXPORT_KEY",
+        Some("sk-test-export-key-1234567890"),
+    )]);
 
     let added = run_json(&[
         "pinvou",
@@ -3232,7 +2992,7 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
     // CLI). The family now matches `sessions export` / `plugins export`:
     // an exclusive create, so a pre-existing file is refused untouched and
     // the refusal carries the family's Failed exit class.
-    let target = _home.root.join("pre-existing-export.json");
+    let target = _home.path().join("pre-existing-export.json");
     std::fs::write(&target, "do not destroy me\n").unwrap();
     let mode_before = std::fs::metadata(&target).unwrap().permissions().mode();
     let error = run(&[
@@ -3269,7 +3029,7 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
 
     // The fresh-create lane still lands 0600: `create_new` guarantees the
     // open is the create, so `mode` applies to exactly this file.
-    let fresh = _home.root.join("fresh-export.json");
+    let fresh = _home.path().join("fresh-export.json");
     let value = run_json(&[
         "pinvou",
         "code",
@@ -3320,7 +3080,7 @@ fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
     // The execute path reads environment variables (`--code-env` resolution)
     // while sibling tests set_var under ENV_LOCK, so this test must hold the
     // same lock.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let error = parse_args([
         "pinvou",
         "code",
@@ -3503,8 +3263,8 @@ fn write_fake_codex(label: &str, version_snippet: &str, login_snippet: &str) -> 
 #[test]
 #[cfg(unix)]
 fn login_drives_the_real_vendor_spawn_path() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("fake-login");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("fake-login");
     // A scripted codex stand-in driven through the real override-resolution
     // and spawn path: the override must pass the version gate (a real
     // `--version` probe), the login child must receive its argv exactly once
@@ -3524,11 +3284,12 @@ fn login_drives_the_real_vendor_spawn_path() {
     // spawning when any of these ambient credentials is exported, which
     // would break the exact spawn counts asserted below on a machine that
     // carries them. Round-36 review minor: remove all three for the run.
-    let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
-    let _codex_token = EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-    let _codex_access = EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-    let _codex_path = EnvVarGuard::capture("PINVOU3_CODEX_PATH");
-    unsafe { std::env::set_var("PINVOU3_CODEX_PATH", &script) };
+    let _ambient_keys = EnvGuard::remove(&[
+        "OPENAI_API_KEY",
+        "OPENAI_CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+    ]);
+    let _codex_path = EnvGuard::set(&[("PINVOU3_CODEX_PATH", Some(script.to_str().unwrap()))]);
 
     let outcome = run(&["pinvou", "code", "login", "codex", "--output", "json"])
         .expect("login against the fake codex must succeed");
@@ -3569,16 +3330,15 @@ fn login_drives_the_real_vendor_spawn_path() {
 #[test]
 #[cfg(unix)]
 fn login_failure_keeps_the_captured_login_url() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("login-failed-url");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("login-failed-url");
     let (bin, script) = write_fake_codex(
         "login-failure",
         "echo \"codex 1.2.0\"; exit 0",
         "echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; exit 3",
     );
     let _bin = ScratchDir(bin);
-    let _codex_path = EnvVarGuard::capture("PINVOU3_CODEX_PATH");
-    unsafe { std::env::set_var("PINVOU3_CODEX_PATH", &script) };
+    let _codex_path = EnvGuard::set(&[("PINVOU3_CODEX_PATH", Some(script.to_str().unwrap()))]);
 
     let error = run(&["pinvou", "code", "login", "codex"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -3599,13 +3359,12 @@ fn login_failure_keeps_the_captured_login_url() {
 #[test]
 #[cfg(unix)]
 fn version_probe_failure_is_reported_and_fails_the_gate() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("version-probe-failed");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("version-probe-failed");
     let (bin, _script) = write_fake_codex("probe-failure", "exit 7", "exit 1");
     // Resolve through PATH: the override route is rejected by the gate
     // itself before a probe failure could ever be reported.
-    let _path = EnvVarGuard::capture("PATH");
-    unsafe { std::env::set_var("PATH", &bin) };
+    let _path = EnvGuard::set(&[("PATH", Some(bin.to_str().unwrap()))]);
     let _bin = ScratchDir(bin);
 
     let value = run_json(&["pinvou", "code", "agents", "status", "codex"]);
@@ -3630,8 +3389,8 @@ fn version_probe_failure_is_reported_and_fails_the_gate() {
 #[test]
 #[cfg(unix)]
 fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("claude-login-stdin-flood");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("claude-login-stdin-flood");
     let bin = scratch_root("fake-claude-stdin-flood");
     std::fs::create_dir_all(&bin).unwrap();
     let script = write_fake_vendor(
@@ -3640,8 +3399,8 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
         "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  awk 'BEGIN{for(i=0;i<20000;i++) printf \"%s\", \"012345678901234567890123456789\"}'\n  echo\n  echo \"flood done\"\n  exit 0\nfi\nexit 1\n",
     );
     let _bin = ScratchDir(bin);
-    let _claude_path = EnvVarGuard::capture("PINVOU3_CLAUDE_CLI_PATH");
-    unsafe { std::env::set_var("PINVOU3_CLAUDE_CLI_PATH", &script) };
+    let _claude_path =
+        EnvGuard::set(&[("PINVOU3_CLAUDE_CLI_PATH", Some(script.to_str().unwrap()))]);
 
     // The claude flow consumes `--code` (written to stdin post-drain); the
     // post-login auth probe fails against the fake, which is fine — any
@@ -3821,8 +3580,8 @@ fn login_streams_the_link_and_device_code_before_the_child_exits() {
 /// "required field" message through `store_error`.
 #[test]
 fn providers_add_claude_rejects_a_partial_model_slot_set() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("claude-partial-slots");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("claude-partial-slots");
     let error = run(&[
         "pinvou",
         "code",
@@ -3857,8 +3616,8 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
 /// REQUIRED slots are present.
 #[test]
 fn providers_refuse_an_unknown_model_slot_naming_the_valid_set() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("claude-unknown-slot");
+    let _env_guard = env_lock();
+    let _home = sandbox_home("claude-unknown-slot");
     for arguments in [
         vec![
             "pinvou",
@@ -3912,13 +3671,15 @@ fn providers_refuse_an_unknown_model_slot_naming_the_valid_set() {
 /// deleting the merged-set gate went green.
 #[test]
 fn providers_update_claude_rejects_a_legacy_record_without_slots() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("claude-legacy-slots");
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("claude-legacy-slots");
     // The ADD lane (positive seeding) requires the secret env to be set; the
     // update refusal below never reaches the credential layer.
-    let _key = KeyVar::capture("PINVOU_CLI_TEST_SLOTS_KEY");
-    unsafe { std::env::set_var("PINVOU_CLI_TEST_SLOTS_KEY", "sk-test-slots-1234567890") };
-    let store_path = _home.root.join("acp-providers.json");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_SLOTS_KEY",
+        Some("sk-test-slots-1234567890"),
+    )]);
+    let store_path = _home.path().join("acp-providers.json");
 
     // Seed a CURRENT-build claude record (all five slots).
     let added = run_json(&[
@@ -4044,12 +3805,12 @@ fn strip_claude_slots(store: &mut serde_json::Value, provider_id: &str) -> bool 
 /// `store_error`.
 #[test]
 fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("providers-english-mirrors");
-    let _key = KeyVar::capture("PINVOU_CLI_TEST_RULES_KEY");
-    unsafe {
-        std::env::set_var("PINVOU_CLI_TEST_RULES_KEY", "sk-test-rules-1234567890");
-    }
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("providers-english-mirrors");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_RULES_KEY",
+        Some("sk-test-rules-1234567890"),
+    )]);
 
     // Refined model slots are claude-only (`--model-slot` on codex/kimi).
     let error = run(&[
@@ -4170,7 +3931,7 @@ fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
 /// named at parse time; every other `--`-prefixed message keeps working.
 #[test]
 fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
-    let error = usage_error(&[
+    let message = usage_error(&[
         "pinvou",
         "code",
         "workspace",
@@ -4182,8 +3943,6 @@ fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
         "--message",
         "--yes",
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    let message = error.to_string();
     assert!(
         message.contains("--message consumed --yes"),
         "the error must name the flag --message ate: {message}"
@@ -4472,13 +4231,14 @@ fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
 // stdin or network), mirroring `models edit --clear-api-key`'s ordering.
 #[test]
 fn providers_update_delete_key_requires_yes() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     // HomeGuard drops last, resetting PINVOU3_HOME itself.
-    let _home = HomeGuard::new("delete-key-gate");
+    let _home = sandbox_home("delete-key-gate");
     // Round-38 review: restore the variable on every exit path like the
-    // sibling secret lanes' KeyVar guards, instead of leaking the seeded
-    // value to parallel tests for the rest of the run.
-    let _key = KeyVar::capture("PINVOU_TEST_DELETE_KEY_SECRET");
+    // sibling secret lanes' guards, instead of leaking the seeded value to
+    // parallel tests for the rest of the run (the seed `set_var` below
+    // happens after this capture-and-remove).
+    let _key = EnvGuard::remove(&["PINVOU_TEST_DELETE_KEY_SECRET"]);
 
     // Seed one provider with a key, so `--delete-key` has a real target.
     // SAFETY: the suite's ENV_LOCK is held for the whole test (same contract

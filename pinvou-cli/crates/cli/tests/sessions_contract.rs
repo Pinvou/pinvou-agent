@@ -6,90 +6,15 @@
 //! engine, network, model, or display is involved anywhere in this file, so
 //! no `#[ignore]` opt-in tests are needed.
 
-use std::ffi::OsString;
+mod common;
+
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::sessions::SessionStore;
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Sets `PINVOU3_HOME` to a fresh throwaway directory for the duration of
-/// the test and restores the previous value on drop.
-struct HomeGuard {
-    previous: Option<OsString>,
-    root: PathBuf,
-}
-
-impl HomeGuard {
-    fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-sessions-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { previous, root }
-    }
-
-    /// `~/.pinvou3/sessions` under the sandbox home.
-    fn sessions_root(&self) -> PathBuf {
-        self.root.join("sessions")
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-/// Restores the previous `PINVOU3_HOME` on drop — the same contract as
-/// [`HomeGuard`]'s Drop, for tests that set the variable to a non-temp value
-/// themselves. The restore must survive a panicking assertion, otherwise the
-/// polluted value leaks into every later test in the process.
-struct RestoreHome(Option<OsString>);
-
-impl Drop for RestoreHome {
-    fn drop(&mut self) {
-        match self.0.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-    }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed = parse_args(arguments).expect("arguments must parse");
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
-}
+use common::{EnvGuard, HomeGuard, Isolation, env_lock, run, run_json};
 
 /// Creates one empty chat session through `SessionStore` (the exact path the
 /// CLI's `SessionStore::boot()` uses) and returns its id.
@@ -135,7 +60,7 @@ fn set_message_role(id: &str, index: usize, role: &str) {
 
 #[test]
 fn every_sessions_subcommand_parses_and_unknown_flags_exit_two() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     let valid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "sessions", "list"],
         vec!["pinvou", "sessions", "list", "--archived"],
@@ -203,7 +128,7 @@ fn every_sessions_subcommand_parses_and_unknown_flags_exit_two() {
 
 #[test]
 fn every_artifacts_subcommand_parses_and_unknown_flags_exit_two() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     let valid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "artifacts", "list"],
         vec!["pinvou", "artifacts", "list", "--session", "s-1"],
@@ -274,8 +199,8 @@ fn every_artifacts_subcommand_parses_and_unknown_flags_exit_two() {
 
 #[test]
 fn sessions_delete_without_yes_is_a_usage_error() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-needs-yes");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "delete-needs-yes", Isolation::ProductHome);
     let id = create_session_fixture();
     let parsed = parse_args(["pinvou", "sessions", "delete", &id]).unwrap();
     let error = execute(parsed).expect_err("delete without --yes must refuse");
@@ -294,8 +219,8 @@ fn sessions_delete_without_yes_is_a_usage_error() {
 /// with no garbage after it stays a legal output-mode position.
 #[test]
 fn rename_trailing_garbage_after_output_json_is_refused_and_leaves_the_store_unchanged() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("rename-output-garbage");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "rename-output-garbage", Isolation::ProductHome);
     let id = create_session_fixture();
     // A known title first, so "the store is unchanged" is observable.
     run_json(&["pinvou", "sessions", "rename", &id, "original", "title"]);
@@ -332,8 +257,8 @@ fn rename_trailing_garbage_after_output_json_is_refused_and_leaves_the_store_unc
 
 #[test]
 fn sessions_list_on_empty_store_returns_empty_output() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("list-empty");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "list-empty", Isolation::ProductHome);
     let outcome = run(&["pinvou", "sessions", "list"]).expect("list must succeed");
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert_eq!(outcome.stdout, "");
@@ -349,8 +274,8 @@ fn sessions_list_on_empty_store_returns_empty_output() {
 /// the real title.
 #[test]
 fn sessions_list_collapses_control_characters_in_human_titles() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("list-control-chars");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "list-control-chars", Isolation::ProductHome);
     let id = create_session_fixture();
     let raw_title = "line1\nline2\tcol\x07end";
     run_json(&["pinvou", "sessions", "rename", &id, raw_title]);
@@ -380,8 +305,8 @@ fn sessions_list_collapses_control_characters_in_human_titles() {
 
 #[test]
 fn sessions_metadata_round_trip_updates_list_and_state() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "round-trip", Isolation::ProductHome);
     let id = create_session_fixture();
     seed_transcript(&id, "hello", "hi there");
 
@@ -440,13 +365,13 @@ fn sessions_metadata_round_trip_updates_list_and_state() {
 /// would pass the whole suite. Pins the removal.
 #[test]
 fn sessions_delete_removes_the_session_agent_index_record() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-cascade");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "delete-cascade", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // Seed the auxiliary index the app's boot backfill consults. A record
     // with no fields is a valid entry (every field defaults).
-    let agents_path = home.root.join("session-agents.json");
+    let agents_path = home.path().join("session-agents.json");
     std::fs::write(
         &agents_path,
         serde_json::json!({ "version": 2, "sessions": { id.clone(): {} } }).to_string(),
@@ -475,8 +400,8 @@ fn sessions_delete_removes_the_session_agent_index_record() {
 /// corrupt record must keep refusing everything that needs to read it.
 #[test]
 fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-corrupt-record");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "delete-corrupt-record", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // Corrupt the record the way a crashed writer or a restored backup
@@ -536,15 +461,15 @@ fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
 
 #[test]
 fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-corrupt-index");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "delete-corrupt-index", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // Round-40 review: this process is a second writer of the index, so a
     // file it cannot parse must REFUSE the record cleanup instead of the
     // boot-owner bless-and-replace — whose empty-table persist dropped
     // every other record. The corrupt file is left in place for repair.
-    let agents_path = home.root.join("session-agents.json");
+    let agents_path = home.path().join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 
     let outcome = run(&["pinvou", "sessions", "delete", &id, "--yes"]);
@@ -608,8 +533,8 @@ fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table(
 /// `projects list`.
 #[test]
 fn sessions_delete_prunes_the_projects_assignment() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("delete-projects-prune");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "delete-projects-prune", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // Seed a projects.json assignment through the app-side store the GUI
@@ -641,8 +566,8 @@ fn sessions_delete_prunes_the_projects_assignment() {
 
 #[test]
 fn sessions_show_limits_and_exports_transcript() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("show-export");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "show-export", Isolation::ProductHome);
     let id = create_session_fixture();
     seed_transcript(&id, "hello", "hi there");
 
@@ -733,8 +658,8 @@ fn sessions_show_limits_and_exports_transcript() {
 
 #[test]
 fn sessions_timeline_reads_timing_events_and_tolerates_missing_file() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("timeline");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "timeline", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // No timing sidecar yet: empty output, no error.
@@ -782,8 +707,8 @@ fn sessions_timeline_reads_timing_events_and_tolerates_missing_file() {
 fn sessions_pin_and_archive_fail_when_the_sidecar_cannot_be_persisted() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("sidecar-readonly");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "sidecar-readonly", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // The pinned/hidden registries live next to the transcripts, so a
@@ -847,8 +772,8 @@ fn sessions_pin_and_archive_fail_when_the_sidecar_cannot_be_persisted() {
 /// its own header.
 #[test]
 fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("transcript-escapes");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "transcript-escapes", Isolation::ProductHome);
     let id = create_session_fixture();
     let hostile = "line1\n\tindented\x1b[2J\x1b]0;pwned\x07 tail\roverwrite";
     seed_transcript(&id, "hello", hostile);
@@ -909,8 +834,8 @@ fn sessions_show_and_export_strip_terminal_escapes_but_keep_transcript_layout() 
 fn sessions_export_output_file_is_owner_readable_only() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("export-mode");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "export-mode", Isolation::ProductHome);
     let id = create_session_fixture();
     seed_transcript(&id, "hello", "hi there");
 
@@ -955,8 +880,8 @@ fn sessions_export_output_file_is_owner_readable_only() {
 /// that arm (no transcript short-circuits to "queued" first).
 #[test]
 fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("subagents-columns");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "subagents-columns", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // The worker ledger the multiagent transcript listing reads, seeded at
@@ -1045,8 +970,8 @@ fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
 
 #[test]
 fn sessions_subagents_lists_read_only_and_folder_prints_session_path() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("subagents-folder");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "subagents-folder", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // A fresh session has dispatched no subagents: empty read-only listing.
@@ -1070,10 +995,10 @@ fn sessions_subagents_lists_read_only_and_folder_prints_session_path() {
 /// id/title, export's destination); JSON keeps the verbatim path.
 #[test]
 fn sessions_folder_human_path_collapses_control_characters_from_the_home_name() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     // The label lands in the sandbox root's directory name, so the tab here
     // puts a real control byte into the resolved session path.
-    let home = HomeGuard::new("folder\tpoison");
+    let home = HomeGuard::new("sessions", "folder\tpoison", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let expected = home.sessions_root().join(&id);
@@ -1103,8 +1028,8 @@ fn sessions_folder_human_path_collapses_control_characters_from_the_home_name() 
 
 #[test]
 fn artifacts_list_read_write_round_trip_with_fixture_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("artifacts-round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "artifacts-round-trip", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // Track the artifact on the session (same feature-layer call the GUI
@@ -1219,8 +1144,8 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
 /// verbatim bytes and the stored bytes are untouched.
 #[test]
 fn artifacts_list_human_row_survives_control_characters_in_record_fields() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("artifacts-columns");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "artifacts-columns", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // The artifact file exists on disk under a hostile (but POSIX-legal)
@@ -1304,8 +1229,12 @@ fn artifacts_list_human_row_survives_control_characters_in_record_fields() {
 /// it too, and that JSON keeps the verbatim value.
 #[test]
 fn artifacts_list_collapses_a_hostile_metadata_id() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("artifacts-columns-meta-id");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "sessions",
+        "artifacts-columns-meta-id",
+        Isolation::ProductHome,
+    );
     let id = create_session_fixture();
 
     // Hostile record: the artifact filename carries tab+newline+ESC (covered
@@ -1355,8 +1284,8 @@ fn artifacts_list_collapses_a_hostile_metadata_id() {
 
 #[test]
 fn artifacts_write_rejects_non_markdown_suffix() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("artifacts-md-only");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "artifacts-md-only", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let workspace_dir = home.sessions_root().join(&id).join("workspace");
@@ -1380,8 +1309,8 @@ fn artifacts_write_rejects_non_markdown_suffix() {
 
 #[test]
 fn artifacts_read_rejects_escape_outside_the_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("artifacts-containment");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "artifacts-containment", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // A session id is required to exist and the resolved path must stay
@@ -1409,8 +1338,8 @@ fn artifacts_read_rejects_escape_outside_the_session() {
 /// a credential the other surface will not touch.
 #[test]
 fn artifacts_refuses_credential_components_inside_the_session_workspace() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("artifacts-sensitive");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "artifacts-sensitive", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let workspace_dir = home.sessions_root().join(&id).join("workspace");
@@ -1453,11 +1382,11 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
 /// path reads these fine); writes stay sessions-root confined.
 #[test]
 fn artifacts_read_reaches_scheduled_run_workspace_artifacts() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("artifacts-sched");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("sessions", "artifacts-sched", Isolation::ProductHome);
     let session_id = "sched-artifactfix1";
     let task_workspace = home
-        .root
+        .path()
         .join("scheduled")
         .join("artifact-task")
         .join("workspace");
@@ -1476,7 +1405,7 @@ fn artifacts_read_reaches_scheduled_run_workspace_artifacts() {
     )
     .unwrap();
 
-    let profiles = home.root.join("scheduled-runs");
+    let profiles = home.path().join("scheduled-runs");
     std::fs::create_dir_all(&profiles).unwrap();
     std::fs::write(
         profiles.join("session-profiles.json"),
@@ -1542,7 +1471,7 @@ fn json_output_mode_flows_through_every_session_subcommand() {
 
 #[test]
 fn relative_pinvou3_home_is_rejected_before_any_store_access() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1550,16 +1479,14 @@ fn relative_pinvou3_home_is_rejected_before_any_store_access() {
     // Panic-safe restore: the guard captures the previous value before the
     // test overrides it, mirroring HomeGuard's Drop, so a failing assertion
     // cannot leak the relative PINVOU3_HOME into other tests.
-    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+    let relative = format!("pinvou-cli-rel-home-{}-{nonce}", std::process::id());
+    let _restore = EnvGuard::set(&[("PINVOU3_HOME", Some(relative.as_str()))]);
     // A relative PINVOU3_HOME violates the CLI sandbox contract; the shared
     // resolver (support::sandbox_home) must refuse it instead of resolving
     // store paths against the current working directory. The store may
     // create directories under the (relative) root before the refusal, so
     // clean up afterwards (best-effort: a leftover temp directory is
     // harmless, the restored environment is not).
-    let relative = format!("pinvou-cli-rel-home-{}-{nonce}", std::process::id());
-    // SAFETY: ENV_LOCK is held; env writes are serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", relative.as_str()) };
     let error = run(&["pinvou", "sessions", "folder", "abc"]).expect_err("relative home refused");
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("absolute"));
@@ -1593,8 +1520,8 @@ fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
 /// invisible in every list.
 #[test]
 fn metadata_lanes_refuse_aux_session_ids_like_the_gui() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("aux-refusal");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("sessions", "aux-refusal", Isolation::ProductHome);
     let store = SessionStore::boot().expect("boot session store");
     let aux = store
         .create_new("test-model".to_owned(), None, std::env::temp_dir())

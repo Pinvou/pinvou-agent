@@ -13,22 +13,15 @@
 //! `cargo test --no-default-features` (disclosed in docs/pinvou-cli.md,
 //! Known limitations).
 
+mod common;
+
 use pinvou_cli::{
     BenchmarkAvailability, BenchmarkCommand, CliCommand, ExitCode, OutputMode, benchmark_registry,
     execute, parse_args, render_list,
 };
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Restores the previous `PINVOU3_HOME` on drop, so the restore survives a
-/// panicking assertion instead of leaking the polluted value into every later
-/// test in the process.
-struct RestoreHome(Option<std::ffi::OsString>);
+use common::{HomeGuard, Isolation, env_lock};
 
 /// RAII restore for tests that change the process cwd: a failing assert
 /// panics before a manual restore line runs, leaving the binary's cwd in the
@@ -41,17 +34,6 @@ impl Drop for RestoreCwd {
     }
 }
 
-impl Drop for RestoreHome {
-    fn drop(&mut self) {
-        match self.0.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-    }
-}
-
 #[test]
 fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
@@ -59,18 +41,13 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
         BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId,
     };
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-gaia-manifest-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+    let _env_guard = env_lock();
+    // The throwaway PINVOU3_HOME is a HomeGuard: its Drop restores the
+    // variable and removes the tree on every exit path, so a failing
+    // assertion can no longer leak the fixture (the manual remove_dir_all
+    // epilogue this replaces was exactly the cleanup a panic skipped).
+    let home = HomeGuard::new("gaia", "manifest", Isolation::ProductHome);
+    let root = home.path();
     let adapter = GaiaAdapter::new();
     let expected = RunManifest::new(
         "gaia-manifest-probe",
@@ -119,7 +96,7 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
             1,
         )
         .unwrap();
-        let store = RunStore::create(&root, &manifest).unwrap();
+        let store = RunStore::create(root, &manifest).unwrap();
         let mut stored = serde_json::to_value(&expected).unwrap();
         stored["run_id"] = serde_json::json!(run_id);
         stored[field] = replacement;
@@ -130,8 +107,6 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
         let error = execute(parsed).expect_err("mutated manifest must be rejected before scoring");
         assert_eq!(error.to_string(), "gaia_run_manifest_mismatch", "{field}");
     }
-    drop(_restore);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -279,21 +254,11 @@ fn gaia_output_mode_remains_global_without_stealing_submission_destination() {
 
 #[test]
 fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = std::env::temp_dir().join(format!(
-        "pinvou-cli-home-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&home).unwrap();
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("gaia", "non-repo-home", Isolation::ProductHome);
     let previous_dir = std::env::current_dir().unwrap();
     let _restore_cwd = RestoreCwd(previous_dir);
-    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
-    std::env::set_current_dir(&home).unwrap();
-    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+    std::env::set_current_dir(home.path()).unwrap();
 
     let parsed = parse_args([
         "pinvou",
@@ -319,27 +284,14 @@ fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
         message.starts_with("gaia_"),
         "expected a gaia-family error for a missing snapshot, got: {message}"
     );
-
-    drop(_restore_cwd);
-    drop(_restore);
-    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[test]
 fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = std::env::temp_dir().join(format!(
-        "pinvou-cli-gaia-ready-gate-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let source = home.join("arbitrary-source");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("gaia", "ready-gate", Isolation::ProductHome);
+    let source = home.path().join("arbitrary-source");
     std::fs::create_dir_all(&source).unwrap();
-    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
-    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
     let parsed = parse_args([
         "pinvou",
@@ -353,9 +305,6 @@ fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     let error = execute(parsed).expect_err("incomplete raw snapshot must fail dataset validation");
     assert_eq!(error.to_string(), "gaia_verify_failed");
     assert!(!error.to_string().contains(source.to_str().unwrap()));
-
-    drop(_restore);
-    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[test]
@@ -444,7 +393,6 @@ fn gaia_parser_rejects_unpinned_or_noncomparable_modes() {
 // --all-targets`, see docs/pinvou-cli.md, Known limitations) but never RUNS
 // it, so the test stays dead in CI rather than failing everywhere;
 // do NOT remove this `cfg` to "revive" it.
->>>>>>> 797129dcd (feat(cli)!: product command families for the pinvou cli)
 #[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_run_requires_product_backend_without_exposing_error_chains() {
@@ -472,18 +420,9 @@ fn gaia_score_rejects_a_run_id_that_differs_from_the_stored_manifest() {
         BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId,
     };
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-gaia-run-id-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("gaia", "run-id-mismatch", Isolation::ProductHome);
+    let root = home.path();
     let adapter = GaiaAdapter::new();
     let manifest = RunManifest::new(
         "gaia-run-id-mismatch",
@@ -494,7 +433,7 @@ fn gaia_score_rejects_a_run_id_that_differs_from_the_stored_manifest() {
         1,
     )
     .unwrap();
-    let store = RunStore::create(&root, &manifest).unwrap();
+    let store = RunStore::create(root, &manifest).unwrap();
     let mut stored = serde_json::to_value(&manifest).unwrap();
     stored["run_id"] = serde_json::json!("different-run-id");
     std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
@@ -511,9 +450,6 @@ fn gaia_score_rejects_a_run_id_that_differs_from_the_stored_manifest() {
     let error = execute(parsed)
         .expect_err("a stored manifest whose run_id differs from the request must be rejected");
     assert_eq!(error.to_string(), "gaia_run_manifest_mismatch");
-
-    drop(_restore);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

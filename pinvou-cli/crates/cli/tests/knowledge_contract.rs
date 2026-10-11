@@ -2,7 +2,7 @@
 //!
 //! Parse-level tests cover every subcommand plus the invalid shapes that must
 //! map to exit-code 2 usage errors. Execute-level tests run against a temp
-//! `PINVOU3_HOME` (serialized through ENV_LOCK, following cli_contract.rs):
+//! `PINVOU3_HOME` (the shared `common` harness's `env_lock`):
 //! the KnowledgeService round-trips (collections CRUD, document listing, the
 //! scan pair, add-sources indexing, L0 stats/type-counts/search, model
 //! status) are offline — an empty `index.db` needs no model and no network,
@@ -45,50 +45,19 @@
 //! tests); `model download` keeps its stable `knowledge_backend_unavailable`
 //! code with the documented upstream blocker.
 
-use pinvou_cli::{ExitCode, execute, parse_args};
+mod common;
+
+use pinvou_cli::ExitCode;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use common::{
+    HomeGuard, Isolation, assert_usage, env_lock, execute_error, parsed_debug, run_json, run_ok,
+};
 
-struct TempHome {
-    root: PathBuf,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl TempHome {
-    fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-knowledge-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { root, previous }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempHome {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
+/// A throwaway `PINVOU3_HOME` for one test.
+fn temp_home(label: &str) -> HomeGuard {
+    HomeGuard::new("knowledge", label, Isolation::ProductHome)
 }
 
 /// Removes `PINVOU_KB_IMPORT_HOLD_FILE` on drop so a failing assertion
@@ -103,53 +72,10 @@ impl Drop for HoldEnvGuard {
     }
 }
 
-fn run_ok(arguments: &[&str]) -> String {
-    let parsed = parse_args(arguments.to_vec()).expect("valid knowledge command");
-    let outcome = execute(parsed).expect("successful knowledge command");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    outcome.stdout
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.push("--output");
-    owned.push("json");
-    let stdout = run_ok(&owned);
-    assert!(!stdout.contains('\n'), "json output must stay single-line");
-    serde_json::from_str(&stdout).expect("single-line json object")
-}
-
-fn execute_error(arguments: &[&str]) -> pinvou_cli::CliError {
-    let parsed = parse_args(arguments.to_vec()).expect("valid knowledge command");
-    execute(parsed).expect_err("expected execute failure")
-}
-
-/// Usage errors may surface from `parse` or from `execute`; both must carry
-/// the exit-code 2 usage marker.
-fn assert_usage(arguments: &[&str]) {
-    let error = match parse_args(arguments.to_vec()) {
-        Err(error) => error,
-        Ok(parsed) => execute(parsed).expect_err("expected usage error"),
-    };
-    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
-}
-
-/// The family command types are private to the crate, so parse-level
-/// assertions freeze the derived Debug shape of the parsed command (same
-/// convention as memory_contract.rs).
-fn parsed_debug(arguments: &[&str]) -> String {
-    format!(
-        "{:?}",
-        parse_args(arguments.to_vec())
-            .expect("valid knowledge command")
-            .command()
-    )
-}
-
 /// Creates a real session in the sandboxed home so the mount surface (which
 /// requires an existing session, like the GUI's open-session commands) has a
 /// valid target.
-fn create_session(home: &TempHome) -> String {
+fn create_session(home: &HomeGuard) -> String {
     let store = pinvou3_lib::features::sessions::SessionStore::boot().expect("boot session store");
     let workspace = home.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -163,7 +89,7 @@ fn create_session(home: &TempHome) -> String {
 /// import thread spends seconds per file (thousands of chunks with the
 /// per-batch checkpoint sleeps), so a SIGKILL mid-import deterministically
 /// strands the job with work still pending.
-fn write_bulk_sources(home: &TempHome, count: usize) -> Vec<PathBuf> {
+fn write_bulk_sources(home: &HomeGuard, count: usize) -> Vec<PathBuf> {
     (0..count)
         .map(|index| {
             let path = home.path().join(format!("bulk-{index}.txt"));
@@ -180,7 +106,7 @@ fn write_bulk_sources(home: &TempHome, count: usize) -> Vec<PathBuf> {
 /// hard-killed process (power loss, `kill -9`) leaves behind: a job row
 /// stranded `running` with no owner, the state no CLI lane may pretend to
 /// reconcile. Returns the stranded job's id.
-fn strand_running_job(home: &TempHome, id: i64, sources: &[PathBuf]) -> String {
+fn strand_running_job(home: &HomeGuard, id: i64, sources: &[PathBuf]) -> String {
     let bin = env!("CARGO_BIN_EXE_pinvou");
     let mut child = std::process::Command::new(bin)
         .arg("knowledge")
@@ -233,7 +159,7 @@ fn strand_running_job(home: &TempHome, id: i64, sources: &[PathBuf]) -> String {
 /// would) — the "some other owner" position a CLI lane must refuse to race.
 /// The two seed files set the import's lower time bound; returns (collection
 /// id, job id).
-fn seed_running_job(home: &TempHome, label: &str) -> (i64, String) {
+fn seed_running_job(home: &HomeGuard, label: &str) -> (i64, String) {
     let db = pinvou3_lib::features::knowledge::default_db_path();
     let service = pinvou3_lib::features::knowledge::KnowledgeService::new_without_recovery(&db)
         .expect("seed service");
@@ -312,7 +238,7 @@ fn poll_json_until(
 /// Runs the real binary as a child over `home` and returns its raw output —
 /// for the assertions that must observe a separate process (exit status,
 /// stderr), not the in-process dispatch the `run_ok`/`run_json` helpers use.
-fn run_child(home: &TempHome, args: &[&str]) -> std::process::Output {
+fn run_child(home: &HomeGuard, args: &[&str]) -> std::process::Output {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
     command
         .args(args)
@@ -326,7 +252,7 @@ fn run_child(home: &TempHome, args: &[&str]) -> std::process::Output {
 /// Every entry is walked by the importer with the excluder's per-entry name
 /// checks but yields zero files — the exact shape that used to look wedged.
 /// Returns the tree root.
-fn write_empty_stall_tree(home: &TempHome, name: &str) -> PathBuf {
+fn write_empty_stall_tree(home: &HomeGuard, name: &str) -> PathBuf {
     let root = home.path().join(name);
     for a in 0..30 {
         let band = root.join(format!("a{a:03}"));
@@ -351,7 +277,7 @@ fn write_empty_stall_tree(home: &TempHome, name: &str) -> PathBuf {
 /// negative twins pass 1 ms instead: each heartbeat segment then outlives
 /// the bound many times over and the trip is deterministic.
 fn stalled_add_sources(
-    home: &TempHome,
+    home: &HomeGuard,
     id: i64,
     root: &Path,
     stall_millis: &str,
@@ -387,7 +313,7 @@ fn stalled_add_sources(
 /// park, and the variable can go away before any assertion that could fail.
 /// Returns (hold guard, hold file, seeded job id); writing `release` to the
 /// hold file drains the import.
-fn hold_import_until_parked(home: &TempHome, label: &str) -> (HoldEnvGuard, PathBuf, String, i64) {
+fn hold_import_until_parked(home: &HomeGuard, label: &str) -> (HoldEnvGuard, PathBuf, String, i64) {
     let hold = home.path().join("import-hold");
     unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
     let guard = HoldEnvGuard;
@@ -789,8 +715,8 @@ fn destructive_subcommands_require_yes_before_anything_else() {
 /// id that does not exist either.
 #[test]
 fn mount_surface_refuses_without_booting_the_session_store() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("mounts-no-boot");
+    let _env_guard = env_lock();
+    let home = temp_home("mounts-no-boot");
     std::fs::write(home.path().join("sessions"), b"not a directory").unwrap();
 
     for arguments in [
@@ -819,8 +745,8 @@ fn mount_surface_refuses_without_booting_the_session_store() {
 
 #[test]
 fn mount_family_refuses_honestly_as_product_host_bound() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("mount-gate");
+    let _env_guard = env_lock();
+    let home = temp_home("mount-gate");
     let session_id = create_session(&home);
 
     // Mounted collections live in the desktop app's per-process memory and
@@ -860,8 +786,8 @@ fn model_download_keeps_its_stable_unavailable_code() {
 
 #[test]
 fn stats_type_counts_and_search_answer_zero_state_offline() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("l0-zero");
+    let _env_guard = env_lock();
+    let _home = temp_home("l0-zero");
 
     let stats = run_json(&["pinvou", "knowledge", "stats"]);
     assert_eq!(stats["totalFiles"], serde_json::json!(0));
@@ -878,8 +804,8 @@ fn stats_type_counts_and_search_answer_zero_state_offline() {
 
 #[test]
 fn collections_crud_round_trip_on_a_temp_home() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("collections-crud");
+    let _env_guard = env_lock();
+    let _home = temp_home("collections-crud");
 
     let first_id = create_collection("papers");
     let second = run_json(&[
@@ -952,8 +878,8 @@ fn collections_crud_round_trip_on_a_temp_home() {
 /// identical helper call.
 #[test]
 fn collections_human_list_collapses_control_characters_in_names() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("control-char-name");
+    let _env_guard = env_lock();
+    let _home = temp_home("control-char-name");
 
     let bell = '\u{0007}';
     run_json(&[
@@ -985,8 +911,8 @@ fn collections_human_list_collapses_control_characters_in_names() {
 
 #[test]
 fn documents_zero_state_and_remove_no_op() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("documents-zero");
+    let _env_guard = env_lock();
+    let _home = temp_home("documents-zero");
 
     let id = create_collection("empty");
 
@@ -1010,8 +936,8 @@ fn documents_zero_state_and_remove_no_op() {
 /// collection-addressing lane that skipped the family's existence gate.
 #[test]
 fn documents_unknown_collection_id_is_refused_not_empty() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("documents-unknown-collection");
+    let _env_guard = env_lock();
+    let _home = temp_home("documents-unknown-collection");
 
     let error = execute_error(&["pinvou", "knowledge", "documents", "424242"]);
     assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
@@ -1031,8 +957,8 @@ fn documents_unknown_collection_id_is_refused_not_empty() {
 /// fully offline.
 #[test]
 fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("index-roundtrip");
+    let _env_guard = env_lock();
+    let home = temp_home("index-roundtrip");
 
     let id = create_collection("notes");
 
@@ -1140,8 +1066,8 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
 /// behind.
 #[test]
 fn add_sources_refuses_to_race_a_running_job() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("index-resumable-guard");
+    let _env_guard = env_lock();
+    let home = temp_home("index-resumable-guard");
     let id = create_collection("guarded");
 
     let sources = write_bulk_sources(&home, 2);
@@ -1185,8 +1111,8 @@ fn add_sources_refuses_to_race_a_running_job() {
 /// can end it, and it must do so purely by cancelling the named job.
 #[test]
 fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("index-resume-precheck");
+    let _env_guard = env_lock();
+    let home = temp_home("index-resume-precheck");
     let id = create_collection("live");
 
     let sources = write_bulk_sources(&home, 2);
@@ -1284,8 +1210,8 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
 #[test]
 #[cfg(unix)]
 fn add_sources_preflights_the_source_paths() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("add-sources-preflight");
+    let _env_guard = env_lock();
+    let home = temp_home("add-sources-preflight");
     let id = create_collection("preflight");
 
     let fifo = home.path().join("preflight.fifo");
@@ -1336,8 +1262,8 @@ fn add_sources_preflights_the_source_paths() {
 /// before any job is created.
 #[test]
 fn add_sources_refuses_a_credential_path_source() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("add-sources-credential");
+    let _env_guard = env_lock();
+    let home = temp_home("add-sources-credential");
     let id = create_collection("credential-gate");
 
     let ssh = home.path().join(".ssh");
@@ -1369,8 +1295,8 @@ fn add_sources_refuses_a_credential_path_source() {
 /// job id: the CLI names the cause, like `index cancel` does.
 #[test]
 fn index_failed_names_an_unknown_job() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("index-failed-unknown");
+    let _env_guard = env_lock();
+    let _home = temp_home("index-failed-unknown");
     let error = execute_error(&["pinvou", "knowledge", "index", "failed", "missing-job"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
@@ -1387,8 +1313,8 @@ fn index_failed_names_an_unknown_job() {
 /// no-rows answer the same way `index failed` does).
 #[test]
 fn index_cancel_names_an_unknown_job() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("index-cancel-unknown");
+    let _env_guard = env_lock();
+    let _home = temp_home("index-cancel-unknown");
     let error = execute_error(&["pinvou", "knowledge", "index", "cancel", "missing-job"]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     let message = error.to_string();
@@ -1418,8 +1344,8 @@ fn index_cancel_names_an_unknown_job() {
 /// Asserted through the real binary.
 #[test]
 fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("index-resume-roundtrip");
+    let _env_guard = env_lock();
+    let home = temp_home("index-resume-roundtrip");
     let id = create_collection("resumable");
 
     // Two bulk sources: the strand needs a window with one item completed
@@ -1582,8 +1508,8 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
 /// terminal phase strictly.
 #[test]
 fn running_jobs_refuse_resume_retry_and_second_add_sources() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("running-job-refusal");
+    let _env_guard = env_lock();
+    let home = temp_home("running-job-refusal");
     // Deterministic live-owner window: the helper returns only once the
     // import thread is provably parked, and the owner stays live until the
     // hold file below is written.
@@ -1639,7 +1565,7 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     // and drain STRICTLY to a terminal phase: with the hold lifted, the
     // two-file import must actually finish — proceeding with a
     // non-terminal phase would mean the test measured the refusals against
-    // an import it never let finish, and TempHome must not unlink the
+    // an import it never let finish, and HomeGuard must not unlink the
     // store under a live thread.
     std::fs::write(&hold, b"release").unwrap();
     let state = poll_json_until(
@@ -1682,8 +1608,8 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
 /// interrupted/park machinery stays covered by the SIGKILL-strand tests.)
 #[test]
 fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("stall-timeout");
+    let _env_guard = env_lock();
+    let home = temp_home("stall-timeout");
     let id = create_collection("stall");
 
     // A wide-and-deep tree of EMPTY directories: every entry is traversed
@@ -1723,8 +1649,8 @@ fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
 /// which a fresh `index resume` completes without any recovery-owning boot.
 #[test]
 fn a_frozen_import_is_interrupted_and_resumable() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("stall-interrupt");
+    let _env_guard = env_lock();
+    let home = temp_home("stall-interrupt");
     let id = create_collection("stall-interrupt");
 
     // Same empty-directory shape as the negative test: 9000 traversed
@@ -1776,8 +1702,8 @@ fn a_frozen_import_is_interrupted_and_resumable() {
 /// and stays silent (and its JSON carries no note).
 #[test]
 fn index_cancel_discloses_the_staged_progress_destruction() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("cancel-disclosure");
+    let _env_guard = env_lock();
+    let home = temp_home("cancel-disclosure");
     let id = create_collection("cancel-disclosure");
     let sources = write_bulk_sources(&home, 2);
     let job_id = strand_running_job(&home, id, &sources);
@@ -1807,8 +1733,8 @@ fn index_cancel_discloses_the_staged_progress_destruction() {
 /// update rolls back with the job update).
 #[test]
 fn index_retry_names_a_bad_item_id_instead_of_the_job() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("retry-item-miss");
+    let _env_guard = env_lock();
+    let home = temp_home("retry-item-miss");
     let id = create_collection("retry-item-miss");
 
     // Same deterministic stall shape as the frozen-import test: 9000
@@ -1855,8 +1781,8 @@ fn index_retry_names_a_bad_item_id_instead_of_the_job() {
 /// resume lane carries.
 #[test]
 fn index_retry_requeues_the_failed_item_and_finishes_the_job_done() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("retry-success");
+    let _env_guard = env_lock();
+    let home = temp_home("retry-success");
     // Park the import thread between `prepare_items` (which stages and
     // promotes the row to `running`) and the first claim, so a staged source
     // can vanish while its item is still pending.
@@ -1930,8 +1856,8 @@ fn index_retry_requeues_the_failed_item_and_finishes_the_job_done() {
 /// `done` deterministically.
 #[test]
 fn scan_start_persists_its_completion_marker() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("scan-roundtrip");
+    let _env_guard = env_lock();
+    let home = temp_home("scan-roundtrip");
     let root = home.path().join("docs");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
@@ -1974,8 +1900,8 @@ fn scan_start_persists_its_completion_marker() {
 /// is the sweep's own contract, asserted by the regression test below.
 #[test]
 fn scan_start_refuses_a_missing_or_non_directory_root_before_any_wipe() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("scan-preflight");
+    let _env_guard = env_lock();
+    let home = temp_home("scan-preflight");
     let root = home.path().join("docs");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("note.txt"), "pinvou scan fixture").unwrap();
@@ -2038,8 +1964,8 @@ fn scan_start_refuses_a_missing_or_non_directory_root_before_any_wipe() {
 /// silently deleting everything indexed from A.
 #[test]
 fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("scan-root-scope");
+    let _env_guard = env_lock();
+    let home = temp_home("scan-root-scope");
     let docs_a = home.path().join("docsA");
     let docs_b = home.path().join("docsB");
     std::fs::create_dir_all(&docs_a).unwrap();
@@ -2122,8 +2048,8 @@ fn scan_start_on_an_unrelated_root_keeps_the_entries_indexed_from_another_root()
 #[cfg(unix)]
 #[test]
 fn scan_start_vetoes_the_stale_sweep_when_a_walked_root_has_an_unreadable_subtree() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("scan-walk-error-veto");
+    let _env_guard = env_lock();
+    let home = temp_home("scan-walk-error-veto");
     let docs = home.path().join("docs");
     std::fs::create_dir_all(docs.join("locked")).unwrap();
     std::fs::write(docs.join("kept.txt"), "stays while vetoed").unwrap();
@@ -2203,8 +2129,8 @@ fn scan_start_vetoes_the_stale_sweep_when_a_walked_root_has_an_unreadable_subtre
 #[test]
 #[cfg(unix)]
 fn scan_start_through_a_symlinked_root_neither_duplicates_nor_wipes_entries() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("scan-symlink-root");
+    let _env_guard = env_lock();
+    let home = temp_home("scan-symlink-root");
     let docs = home.path().join("docs");
     std::fs::create_dir_all(&docs).unwrap();
     std::fs::write(docs.join("linked-one.txt"), "first").unwrap();
@@ -2264,8 +2190,8 @@ fn scan_start_through_a_symlinked_root_neither_duplicates_nor_wipes_entries() {
 /// freshly seeded pdf — a raw FTS over the whole phrase would find nothing.
 #[test]
 fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("l0-seeded");
+    let _env_guard = env_lock();
+    let home = temp_home("l0-seeded");
     let docs = home.path().join("docs");
     std::fs::create_dir_all(&docs).unwrap();
     std::fs::write(docs.join("季度报告.pdf"), b"pinvou knowledge fixture").unwrap();
@@ -2341,8 +2267,8 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
 
 #[test]
 fn model_status_reports_disk_state_and_model_cancel_refuses_honestly() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("model-status");
+    let _env_guard = env_lock();
+    let _home = temp_home("model-status");
 
     let status = run_json(&["pinvou", "knowledge", "model", "status"]);
     assert_eq!(status["version"], serde_json::json!("bge-m3"));
@@ -2380,8 +2306,8 @@ fn model_status_reports_disk_state_and_model_cancel_refuses_honestly() {
 
 #[test]
 fn remote_connections_answer_offline_without_configured_servers() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("remote-empty");
+    let _env_guard = env_lock();
+    let _home = temp_home("remote-empty");
 
     let listed = run_json(&["pinvou", "knowledge", "remote", "connections"]);
     assert_eq!(listed["connections"], serde_json::json!([]));
@@ -2409,8 +2335,8 @@ fn remote_connections_answer_offline_without_configured_servers() {
            display needed, but the endpoint must be up); \
            command: pinvou knowledge host status"]
 fn host_status_reports_the_shared_host_snapshot() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("host-status");
+    let _env_guard = env_lock();
+    let _home = temp_home("host-status");
     let status = run_json(&["pinvou", "knowledge", "host", "status"]);
     assert_eq!(
         status["endpoint"],
@@ -2427,8 +2353,8 @@ fn host_status_reports_the_shared_host_snapshot() {
            dials a real endpoint over the network (run_bare_host: no display \
            needed); command: pinvou knowledge remote probe <url>"]
 fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = TempHome::new("remote-probe-dead");
+    let _env_guard = env_lock();
+    let _home = temp_home("remote-probe-dead");
     // The TLS-pinned identity handshake is a real network call now; a dead
     // endpoint must surface as a failed command, not a crash.
     let error = execute_error(&[
@@ -2447,8 +2373,8 @@ fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
             (run_bare_host: no display needed); \
             command: pinvou knowledge remote connections (configured server)"]
 fn remote_connections_probe_a_configured_server() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("remote-configured");
+    let _env_guard = env_lock();
+    let home = temp_home("remote-configured");
     let knowledge_dir = home.path().join("knowledge");
     std::fs::create_dir_all(&knowledge_dir).unwrap();
     // A configured-but-dead endpoint must surface as an offline connection
@@ -2476,8 +2402,8 @@ fn remote_connections_probe_a_configured_server() {
 /// against a SIGKILLed add-sources child's stranded job.
 #[test]
 fn index_cancel_targets_a_stranded_running_job() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("index-cancel-stranded");
+    let _env_guard = env_lock();
+    let home = temp_home("index-cancel-stranded");
     let id = create_collection("cancellable");
 
     let sources = write_bulk_sources(&home, 2);
@@ -2524,8 +2450,8 @@ fn index_cancel_targets_a_stranded_running_job() {
 /// the delete must succeed anyway, and must never report a mount sweep.
 #[test]
 fn collections_delete_never_boots_the_session_store() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("delete-no-session-store");
+    let _env_guard = env_lock();
+    let home = temp_home("delete-no-session-store");
     std::fs::write(home.path().join("sessions"), b"not a directory").unwrap();
     let id = create_collection("doomed");
 
@@ -2555,8 +2481,8 @@ fn collections_delete_never_boots_the_session_store() {
 /// produced by SIGKILLing a real add-sources child mid-import.
 #[test]
 fn collections_delete_cancels_its_own_stranded_job_and_deletes() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("delete-stranded-job");
+    let _env_guard = env_lock();
+    let home = temp_home("delete-stranded-job");
     let id = create_collection("stranded");
     let sources = write_bulk_sources(&home, 2);
     strand_running_job(&home, id, &sources);

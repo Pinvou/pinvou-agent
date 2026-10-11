@@ -14,62 +14,25 @@
 //! (`monitor status|snapshot` run on `run_bare_host` — no display — but
 //! still probe a live endpoint/GPU, so they stay opt-in.)
 
-use std::ffi::OsString;
+mod common;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use common::{EnvGuard, HomeGuard, Isolation, run, run_json};
+use pinvou_cli::{CliError, ExitCode, OutputMode, execute, parse_args};
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Sets `PINVOU3_HOME` to a fresh throwaway directory for the duration of
-/// the test and restores the previous value on drop.
-struct HomeGuard {
-    previous: Option<OsString>,
-    root: PathBuf,
-}
-
-impl HomeGuard {
-    fn new(label: &str) -> Self {
-        let root = sandbox_root(label);
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { previous, root }
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn sandbox_root(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "pinvou-cli-misc-{label}-{}-{nonce}",
-        std::process::id()
-    ))
-}
+// Tests that mutate the process-global `PINVOU3_HOME` environment variable
+// hold [`common::env_lock`] for their whole body; the product-home preset
+// ([`common::Isolation::ProductHome`]) is the throwaway `PINVOU3_HOME`
+// sandbox with panic-safe restore and cleanup.
 
 /// A scratch directory under the real `$HOME` for fixtures that must pass the
 /// feature's upload-location policy (`files ingest`). Cleaned up on drop.
+/// Stays local ON PURPOSE: unlike the sandbox guards it touches the
+/// developer's real home directory, so it must never be folded into the
+/// shared `HomeGuard` family.
 struct ScopedHomeDir {
     dir: PathBuf,
 }
@@ -96,18 +59,6 @@ impl Drop for ScopedHomeDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed = parse_args(arguments).expect("arguments must parse");
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
 }
 
 fn assert_usage(error: &CliError, context: &str) {
@@ -195,8 +146,8 @@ fn files_ingest_rejects_invalid_usage_with_exit_two() {
 
 #[test]
 fn files_ingest_round_trips_markdown_and_text_fixtures() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("files-ingest");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "files-ingest", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-ingest");
     let markdown_fixture = scoped.dir.join("notes.md");
     std::fs::write(&markdown_fixture, "# Heading\n\nBody line with 内容.\n").unwrap();
@@ -205,7 +156,7 @@ fn files_ingest_round_trips_markdown_and_text_fixtures() {
 
     // Markdown → --output file: extracted text lands in the file, summary on
     // stdout.
-    let output_file = home.root.join("extracted.md");
+    let output_file = home.path().join("extracted.md");
     let outcome = run(&[
         "pinvou",
         "files",
@@ -242,8 +193,8 @@ fn files_ingest_round_trips_markdown_and_text_fixtures() {
 
 #[test]
 fn files_ingest_missing_file_fails_at_execute_with_exit_one() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("files-missing");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "files-missing", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-missing");
     let missing = scoped.dir.join("does-not-exist.md");
     let error = run(&["pinvou", "files", "ingest", missing.to_str().unwrap()])
@@ -256,8 +207,8 @@ fn files_ingest_missing_file_fails_at_execute_with_exit_one() {
 /// the cwd first, like every other path input in the crate.
 #[test]
 fn files_ingest_resolves_a_relative_path_against_the_current_directory() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("files-relative");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "files-relative", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-relative");
     std::fs::write(scoped.dir.join("notes.md"), "# Relative\n").unwrap();
 
@@ -284,8 +235,8 @@ fn files_ingest_resolves_a_relative_path_against_the_current_directory() {
 /// itself in English rather than echoing the feature's `not under $HOME`.
 #[test]
 fn files_ingest_refuses_a_file_outside_the_home_directory() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("files-outside-home");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "files-outside-home", Isolation::ProductHome);
     // `HomeGuard` roots live under the system temp dir, which is outside the
     // real `$HOME` on unix — but on Windows `%TEMP%` normally sits under
     // `%USERPROFILE%`, which would turn the fixture into a false negative.
@@ -299,7 +250,7 @@ fn files_ingest_refuses_a_file_outside_the_home_directory() {
         eprintln!("skipping: the system temp dir lives under the real home on this machine");
         return;
     }
-    let outside = home.root.join("outside.md");
+    let outside = home.path().join("outside.md");
     std::fs::write(&outside, "# Outside\n").unwrap();
 
     let error = run(&["pinvou", "files", "ingest", outside.to_str().unwrap()])
@@ -324,8 +275,8 @@ fn files_ingest_refuses_a_file_outside_the_home_directory() {
 /// scoped home directory.
 #[test]
 fn files_ingest_translates_the_credential_component_refusal() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("files-credential");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "files-credential", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-credential");
     let key = write_credential_fixture(&scoped.dir, ".ssh", "leaked.md", "# pretend notes\n");
 
@@ -348,8 +299,8 @@ fn files_ingest_translates_the_credential_component_refusal() {
 /// in both output modes.
 #[test]
 fn files_ingest_translates_the_warning_chip_to_english() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("files-warning");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "files-warning", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-warning");
     // Unknown extension + a NUL byte: the feature's content sniffer classifies
     // this as binary and returns a warning placeholder. No external tool is
@@ -386,8 +337,8 @@ fn files_ingest_translates_the_warning_chip_to_english() {
 /// secret-placeholder warning shape in JSON.
 #[test]
 fn files_ingest_redacts_a_secret_extension_with_the_english_chip() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("files-secret-ext");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "files-secret-ext", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-secret-ext");
     let key = scoped.dir.join("server.key");
     // PEM-ish body: the class the extension classifier exists to keep out
@@ -603,68 +554,24 @@ fn voice_transcribe_refuses_option_shaped_positional_at_parse() {
 
 /// The ASR env overrides (like `PINVOU3_ASR_CMD`) configure engines without
 /// PATH; a hermetic voice test must clear them for the duration and restore
-/// them after. Caller holds ENV_LOCK.
+/// them after (the common [`EnvGuard`] both sets and removes with panic-safe
+/// restore). Caller holds ENV_LOCK.
 const ASR_ENV_NAMES: [&str; 3] = [
     "PINVOU3_ASR_CMD",
     "PINVOU3_DEEPSPEECH2_CMD",
     "PADDLESPEECH_BIN",
 ];
 
-/// Sets explicit env values (or clears named variables) for the duration of a
-/// test, restoring the previous values (or absence) on drop, including during
-/// panic unwinding. Caller holds ENV_LOCK.
-struct EnvOverrideGuard {
-    saved: Vec<(String, Option<OsString>)>,
-}
-
-impl EnvOverrideGuard {
-    fn set(pairs: &[(&str, &str)]) -> Self {
-        let mut saved = Vec::new();
-        for (name, value) in pairs {
-            saved.push(((*name).to_owned(), std::env::var_os(name)));
-            // SAFETY: ENV_LOCK is held by the owning test.
-            unsafe { std::env::set_var(name, value) };
-        }
-        Self { saved }
-    }
-
-    /// Saves the named variables and removes them for the duration of the
-    /// test.
-    fn clear(names: &[&str]) -> Self {
-        let mut saved = Vec::new();
-        for name in names {
-            saved.push(((*name).to_owned(), std::env::var_os(name)));
-            // SAFETY: ENV_LOCK is held by the owning test.
-            unsafe { std::env::remove_var(name) };
-        }
-        Self { saved }
-    }
-}
-
-impl Drop for EnvOverrideGuard {
-    fn drop(&mut self) {
-        for (name, value) in &self.saved {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            unsafe {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-    }
-}
-
 #[test]
 fn voice_asr_status_reports_hermetic_zero_state() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-status");
-    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "voice-status", Isolation::ProductHome);
+    let _asr_env = EnvGuard::remove(&ASR_ENV_NAMES);
     // Empty PATH makes the machine-dependent probes deterministic: no ffmpeg
     // on PATH and no external ASR CLI anywhere. Env writes are safe here
     // because ENV_LOCK serializes all tests in this process.
     let value = {
-        let _path = EnvOverrideGuard::set(&[("PATH", "")]);
+        let _path = EnvGuard::set(&[("PATH", Some(""))]);
         run_json(&["pinvou", "voice", "asr-status"])
     };
     // macOS reports the host Speech runtime (present by definition, exactly
@@ -708,11 +615,11 @@ fn voice_asr_status_reports_hermetic_zero_state() {
         value["asr_dir"]
             .as_str()
             .unwrap_or_default()
-            .starts_with(home.root.to_str().unwrap())
+            .starts_with(home.path().to_str().unwrap())
     );
     // The human output mirrors the same fields.
     let outcome = {
-        let _path = EnvOverrideGuard::set(&[("PATH", "")]);
+        let _path = EnvGuard::set(&[("PATH", Some(""))]);
         run(&["pinvou", "voice", "asr-status"]).unwrap()
     };
     if cfg!(target_os = "macos") {
@@ -728,14 +635,14 @@ fn voice_asr_status_reports_hermetic_zero_state() {
 
 #[test]
 fn voice_transcribe_reports_missing_engine_cleanly_without_asr() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-transcribe");
-    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "voice-transcribe", Isolation::ProductHome);
+    let _asr_env = EnvGuard::remove(&ASR_ENV_NAMES);
     // Empty PATH too: a developer with a real `pinvou-asr` on PATH must not
     // have an arbitrary external binary executed by a default test run.
     let error = {
-        let _path = EnvOverrideGuard::set(&[("PATH", "")]);
-        let wav = home.root.join("capture.wav");
+        let _path = EnvGuard::set(&[("PATH", Some(""))]);
+        let wav = home.path().join("capture.wav");
         // 44-byte header-only WAV: large enough to pass the empty-audio gate.
         std::fs::write(&wav, vec![0u8; 44]).unwrap();
         run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
@@ -760,9 +667,9 @@ fn voice_transcribe_reports_missing_engine_cleanly_without_asr() {
 #[test]
 #[ignore = "needs an installed local ASR runtime: cargo test --test misc_contract -- --ignored"]
 fn voice_transcribe_uses_installed_asr_runtime() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-transcribe-live");
-    let wav = home.root.join("capture.wav");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "voice-transcribe-live", Isolation::ProductHome);
+    let wav = home.path().join("capture.wav");
     std::fs::write(&wav, vec![0u8; 8000]).unwrap();
     let outcome = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect("transcription should run with an installed ASR runtime");
@@ -782,13 +689,6 @@ fn stage_fake_asr(home: &std::path::Path, script: &str) -> PathBuf {
     engine
 }
 
-/// Writes a WAV file of exactly `length` zero bytes. The process-tree tests
-/// pass 44: a header-only WAV, large enough to pass the empty-audio gate.
-#[cfg(unix)]
-fn write_wav(path: &std::path::Path, length: usize) {
-    std::fs::write(path, vec![0u8; length]).unwrap();
-}
-
 /// The ASR child is spawned as a process-group leader, so the timeout kill
 /// takes its descendants with it instead of orphaning them (the same
 /// contract as `pinvou connectors`'s vendor CLI spawns). The fake engine
@@ -797,23 +697,24 @@ fn write_wav(path: &std::path::Path, length: usize) {
 #[cfg(unix)]
 #[test]
 fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-transcribe-tree-kill");
-    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
-    let marker = home.root.join("descendant.pid");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "voice-transcribe-tree-kill", Isolation::ProductHome);
+    let _asr_env = EnvGuard::remove(&ASR_ENV_NAMES);
+    let marker = home.path().join("descendant.pid");
     let engine = stage_fake_asr(
-        &home.root,
+        home.path(),
         &format!(
             "#!/bin/sh\nsleep 300 &\necho $! > {}\nsleep 600\n",
             marker.display()
         ),
     );
-    let _overrides = EnvOverrideGuard::set(&[
-        ("PINVOU3_ASR_CMD", engine.to_str().unwrap()),
-        ("PINVOU3_ASR_TIMEOUT_SECS", "1"),
+    let _overrides = EnvGuard::set(&[
+        ("PINVOU3_ASR_CMD", Some(engine.to_str().unwrap())),
+        ("PINVOU3_ASR_TIMEOUT_SECS", Some("1")),
     ]);
-    let wav = home.root.join("capture.wav");
-    write_wav(&wav, 44);
+    let wav = home.path().join("capture.wav");
+    // 44-byte header-only WAV: passes the empty-audio gate.
+    std::fs::write(&wav, vec![0u8; 44]).unwrap();
 
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("the wedged fake engine must time out");
@@ -854,23 +755,24 @@ fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
 #[cfg(unix)]
 #[test]
 fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-transcribe-no-speech");
-    let _asr_env = EnvOverrideGuard::clear(&ASR_ENV_NAMES);
-    let marker = home.root.join("descendant.pid");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "voice-transcribe-no-speech", Isolation::ProductHome);
+    let _asr_env = EnvGuard::remove(&ASR_ENV_NAMES);
+    let marker = home.path().join("descendant.pid");
     // The descendant's own pipes go to /dev/null so it cannot hold the CLI's
     // capture pipes open past the exit; only the process-group membership
     // matters for this test.
     let engine = stage_fake_asr(
-        &home.root,
+        home.path(),
         &format!(
             "#!/bin/sh\nsleep 300 >/dev/null 2>&1 &\necho $! > {}\nexit 6\n",
             marker.display()
         ),
     );
-    let _overrides = EnvOverrideGuard::set(&[("PINVOU3_ASR_CMD", engine.to_str().unwrap())]);
-    let wav = home.root.join("capture.wav");
-    write_wav(&wav, 44);
+    let _overrides = EnvGuard::set(&[("PINVOU3_ASR_CMD", Some(engine.to_str().unwrap()))]);
+    let wav = home.path().join("capture.wav");
+    // 44-byte header-only WAV: passes the empty-audio gate.
+    std::fs::write(&wav, vec![0u8; 44]).unwrap();
 
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("exit code 6 is the no-speech failure");
@@ -907,9 +809,13 @@ fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
 /// the refusal precedes every host/model step.
 #[test]
 fn voice_postprocess_edit_refuses_a_blank_draft_before_booting_the_host() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-postprocess-blank-draft");
-    let blank = home.root.join("draft.txt");
+    let _env = common::env_lock();
+    let home = HomeGuard::new(
+        "misc",
+        "voice-postprocess-blank-draft",
+        Isolation::ProductHome,
+    );
+    let blank = home.path().join("draft.txt");
     std::fs::write(&blank, "  \n\t\n").unwrap();
     for draft in [
         vec!["--draft", "   "],
@@ -940,8 +846,12 @@ fn voice_postprocess_edit_refuses_a_blank_draft_before_booting_the_host() {
 #[cfg(unix)]
 #[test]
 fn voice_postprocess_draft_file_refuses_a_special_file() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("voice-postprocess-draft-special");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new(
+        "misc",
+        "voice-postprocess-draft-special",
+        Isolation::ProductHome,
+    );
     let error = run(&[
         "pinvou",
         "voice",
@@ -970,8 +880,8 @@ fn voice_postprocess_draft_file_refuses_a_special_file() {
 /// precedes the host boot.
 #[test]
 fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("voice-postprocess-empty");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "voice-postprocess-empty", Isolation::ProductHome);
     let value = run_json(&[
         "pinvou",
         "voice",
@@ -1033,9 +943,9 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
 fn voice_postprocess_refuses_credential_path_files() {
     // Round-48 review: `HomeGuard` mutates process-global env, so this test
     // must hold ENV_LOCK like every other HomeGuard user in this file.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("voice-postprocess-gate");
-    let secret = write_credential_fixture(&_home.root, ".ssh", "id_rsa.txt", "PRIVATE KEY")
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "voice-postprocess-gate", Isolation::ProductHome);
+    let secret = write_credential_fixture(_home.path(), ".ssh", "id_rsa.txt", "PRIVATE KEY")
         .to_str()
         .unwrap()
         .to_owned();
@@ -1082,8 +992,8 @@ fn voice_postprocess_refuses_credential_path_files() {
 fn voice_postprocess_calls_the_active_model() {
     // Round-37 review: sandbox the home — a windowless-host boot runs the
     // retention sweep against whatever PINVOU3_HOME names.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("ignored-voice-postprocess");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "ignored-voice-postprocess", Isolation::ProductHome);
     let parsed = parse_args([
         "pinvou",
         "voice",
@@ -1193,11 +1103,11 @@ fn voice_postprocess_retry_failure_is_an_error() {
     });
     let base_url = format!("http://{address}/v1");
 
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _overrides = EnvOverrideGuard::set(&[
-        ("DEEPSEEK_BASE_URL", base_url.as_str()),
-        ("DEEPSEEK_PROVIDER", "openai"),
-        ("DEEPSEEK_API_KEY", "mock-key"),
+    let _env = common::env_lock();
+    let _overrides = EnvGuard::set(&[
+        ("DEEPSEEK_BASE_URL", Some(base_url.as_str())),
+        ("DEEPSEEK_PROVIDER", Some("openai")),
+        ("DEEPSEEK_API_KEY", Some("mock-key")),
     ]);
     let error = run(&[
         "pinvou",
@@ -1265,8 +1175,8 @@ fn voice_postprocess_retry_failure_is_an_error() {
 #[cfg(target_os = "linux")]
 #[test]
 fn voice_asr_install_without_yes_exits_two_before_touching_the_system() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("voice-install-no-yes");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "voice-install-no-yes", Isolation::ProductHome);
     let error = run(&["pinvou", "voice", "asr-install"])
         .expect_err("install without --yes must be refused");
     assert_usage(&error, "voice asr-install without --yes");
@@ -1287,10 +1197,10 @@ fn voice_asr_install_without_yes_exits_two_before_touching_the_system() {
 #[cfg(target_os = "linux")]
 #[test]
 fn voice_asr_install_refuses_while_another_process_holds_the_install_lock() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("voice-install-lock");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "voice-install-lock", Isolation::ProductHome);
     // Hold the advisory lock a second CLI process would hold.
-    let lock_path = home.root.join("locks").join("voice-asr-install.lock");
+    let lock_path = home.path().join("locks").join("voice-asr-install.lock");
     std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -1318,8 +1228,12 @@ fn voice_asr_install_refuses_while_another_process_holds_the_install_lock() {
 #[test]
 fn voice_transcribe_rejects_special_and_oversized_files_before_the_asr_gate() {
     use std::io::Write as _;
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("voice-transcribe-input-gate");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new(
+        "misc",
+        "voice-transcribe-input-gate",
+        Isolation::ProductHome,
+    );
 
     let error = run(&["pinvou", "voice", "transcribe", "/dev/zero"])
         .expect_err("a character device must be refused");
@@ -1350,8 +1264,8 @@ fn voice_transcribe_rejects_special_and_oversized_files_before_the_asr_gate() {
 #[test]
 #[ignore = "needs network + pkexec: cargo test --test misc_contract -- --ignored"]
 fn voice_asr_install_downloads_model_with_network_and_pkexec() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("voice-install");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "voice-install", Isolation::ProductHome);
     // The consent gate is part of the command: the live install passes
     // --yes explicitly.
     let outcome = run(&["pinvou", "voice", "asr-install", "--yes"])
@@ -1395,8 +1309,8 @@ fn deps_rejects_invalid_usage_with_exit_two() {
 fn deps_install_without_yes_exits_two_before_touching_the_system() {
     // require_yes runs before any package-manager interaction, so this is a
     // hermetic usage-error check.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("deps-no-yes");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "deps-no-yes", Isolation::ProductHome);
     let error = run(&["pinvou", "deps", "install", "ffmpeg"])
         .expect_err("install without --yes must be refused");
     assert_usage(&error, "deps install without --yes");
@@ -1407,8 +1321,8 @@ fn deps_check_reports_the_platform_capability_table() {
     // check_dependencies is pure local detection; the sandbox keeps any state
     // reads off the developer's real home. Installed flags are
     // machine-dependent, so assertions target structure, not values.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("deps-check");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "deps-check", Isolation::ProductHome);
     let value = run_json(&["pinvou", "deps", "check"]);
     let items = value["items"].as_array().expect("items array");
     assert!(!items.is_empty(), "the capability table must not be empty");
@@ -1448,8 +1362,8 @@ fn deps_check_reports_the_platform_capability_table() {
 /// guards the install path's failure shape.
 #[test]
 fn deps_install_rejects_packages_outside_the_allowlist() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("deps-install-refusal");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "deps-install-refusal", Isolation::ProductHome);
     let error = run(&["pinvou", "deps", "install", "cowsay", "--yes"])
         .expect_err("a package outside every allowlist must fail");
     assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
@@ -1557,9 +1471,9 @@ fn feedback_rejects_invalid_usage_with_exit_two() {
 /// permanent copies of the user's free text.
 #[test]
 fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-submit");
-    let body = home.root.join("body.md");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-submit", Isolation::ProductHome);
+    let body = home.path().join("body.md");
     std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
 
     let value = run_json(&[
@@ -1589,7 +1503,7 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     assert_eq!(value["attachments"], serde_json::json!([]));
 
     // Nothing is left staged: the run concluded, so no package is pending.
-    let pending_dir = home.root.join("feedback").join("pending");
+    let pending_dir = home.path().join("feedback").join("pending");
     assert!(
         !pending_dir
             .join(format!("{feedback_id}.json"))
@@ -1609,7 +1523,7 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     // The receipt is the record, and it carries the request it answers so the
     // user still has their text to paste into the issue tracker.
     let receipt_path = home
-        .root
+        .path()
         .join("feedback")
         .join("receipts")
         .join(format!("{feedback_id}.json"));
@@ -1669,7 +1583,7 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     );
 
     // Attachments are registered in the request the receipt embeds.
-    let attachment = home.root.join("trace.log");
+    let attachment = home.path().join("trace.log");
     std::fs::write(&attachment, "log line\n").unwrap();
     let value = run_json(&[
         "pinvou",
@@ -1687,7 +1601,7 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
     let feedback_id = value["feedback_id"].as_str().unwrap();
     let receipt: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            home.root
+            home.path()
                 .join("feedback")
                 .join("receipts")
                 .join(format!("{feedback_id}.json")),
@@ -1736,11 +1650,11 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
 /// locations outright. The CLI must not be the way around that rule.
 #[test]
 fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-attach-secret");
-    let body = home.root.join("body.md");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-attach-secret", Isolation::ProductHome);
+    let body = home.path().join("body.md");
     std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
-    let key = write_credential_fixture(&home.root, ".ssh", "id_rsa", "PRIVATE KEY");
+    let key = write_credential_fixture(home.path(), ".ssh", "id_rsa", "PRIVATE KEY");
 
     let error = run(&[
         "pinvou",
@@ -1759,7 +1673,7 @@ fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("refusing attachment"), "{error}");
     // The refusal happens before anything is staged.
-    let pending_dir = home.root.join("feedback").join("pending");
+    let pending_dir = home.path().join("feedback").join("pending");
     assert!(!pending_dir.exists(), "nothing may be staged: {error}");
 }
 
@@ -1769,9 +1683,9 @@ fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
 /// This pins it on its own input.
 #[test]
 fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-body-secret");
-    let key = write_credential_fixture(&home.root, ".ssh", "id_rsa", "PRIVATE KEY");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-body-secret", Isolation::ProductHome);
+    let key = write_credential_fixture(home.path(), ".ssh", "id_rsa", "PRIVATE KEY");
 
     let error = run(&[
         "pinvou",
@@ -1788,7 +1702,7 @@ fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("refusing body file"), "{error}");
     // The refusal happens before anything is staged.
-    let pending_dir = home.root.join("feedback").join("pending");
+    let pending_dir = home.path().join("feedback").join("pending");
     assert!(!pending_dir.exists(), "nothing may be staged: {error}");
 }
 
@@ -1800,9 +1714,9 @@ fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
 #[cfg(feature = "product-backend")]
 #[test]
 fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("agent-prompt-cap");
-    let prompt = home.root.join("big-prompt.txt");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "agent-prompt-cap", Isolation::ProductHome);
+    let prompt = home.path().join("big-prompt.txt");
     std::fs::write(&prompt, vec![b'x'; 4 * 1024 * 1024 + 1]).unwrap();
 
     let error = run(&[
@@ -1835,10 +1749,10 @@ fn agent_run_refuses_an_oversized_prompt_file_before_any_host_boot() {
 #[cfg(feature = "product-backend")]
 #[test]
 fn agent_run_refuses_an_attachment_under_a_credential_path() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("agent-attach-secret");
-    let key = write_credential_fixture(&home.root, ".ssh", "id_rsa", "PRIVATE KEY");
-    let prompt = home.root.join("prompt.txt");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "agent-attach-secret", Isolation::ProductHome);
+    let key = write_credential_fixture(home.path(), ".ssh", "id_rsa", "PRIVATE KEY");
+    let prompt = home.path().join("prompt.txt");
     std::fs::write(&prompt, "summarize the report").unwrap();
 
     let error = run(&[
@@ -1864,10 +1778,10 @@ fn agent_run_refuses_an_attachment_under_a_credential_path() {
 #[cfg(feature = "product-backend")]
 #[test]
 fn agent_run_refuses_a_prompt_file_under_a_credential_path() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("agent-promptfile-secret");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "agent-promptfile-secret", Isolation::ProductHome);
     let credentials = write_credential_fixture(
-        &home.root,
+        home.path(),
         ".aws",
         "credentials",
         "[default]\naws_access_key_id = AKIAFAKE",
@@ -1893,13 +1807,13 @@ fn agent_run_refuses_a_prompt_file_under_a_credential_path() {
 /// module docs argue must never exist, since nothing retries it.
 #[test]
 fn feedback_submit_drops_the_staged_bundle_when_the_receipt_cannot_be_written() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-receipt-fail");
-    let body = home.root.join("body.md");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-receipt-fail", Isolation::ProductHome);
+    let body = home.path().join("body.md");
     std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
     // A regular file where the receipts directory belongs: `create_dir_all`
     // fails, so the receipt cannot land.
-    let feedback_dir = home.root.join("feedback");
+    let feedback_dir = home.path().join("feedback");
     std::fs::create_dir_all(&feedback_dir).unwrap();
     std::fs::write(feedback_dir.join("receipts"), "not a directory").unwrap();
 
@@ -1933,8 +1847,8 @@ fn feedback_submit_drops_the_staged_bundle_when_the_receipt_cannot_be_written() 
 
 #[test]
 fn feedback_submit_fails_cleanly_on_missing_body_file() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-missing");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-missing", Isolation::ProductHome);
     let error = run(&[
         "pinvou",
         "feedback",
@@ -1944,7 +1858,7 @@ fn feedback_submit_fails_cleanly_on_missing_body_file() {
         "--title",
         "t",
         "--body-file",
-        home.root.join("nope.md").to_str().unwrap(),
+        home.path().join("nope.md").to_str().unwrap(),
     ])
     .expect_err("missing body file must fail");
     assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -1955,9 +1869,9 @@ fn feedback_submit_refuses_a_body_file_over_the_read_limit() {
     // The 64 KiB read cap exists so a multi-GB file or an endless device
     // cannot be loaded into memory before the 5000-char validation runs;
     // an over-cap file must be a clean CLI failure, not an OOM.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-oversize");
-    let body = home.root.join("huge.md");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-oversize", Isolation::ProductHome);
+    let body = home.path().join("huge.md");
     std::fs::write(&body, vec![b'a'; 64 * 1024 + 1]).unwrap();
     let error = run(&[
         "pinvou",
@@ -2013,8 +1927,8 @@ fn monitor_rejects_invalid_usage_with_exit_two() {
 #[test]
 #[ignore = "needs a model endpoint probe: cargo test --test misc_contract -- --ignored"]
 fn monitor_status_reports_clean_zero_state_without_a_model() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("monitor-status");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "monitor-status", Isolation::ProductHome);
     let parsed = parse_args(["pinvou", "monitor", "status"]).unwrap();
     let outcome = execute(parsed).expect("status must not hard-fail without a model");
     assert_eq!(outcome.exit_code, ExitCode::Success);
@@ -2043,8 +1957,8 @@ fn monitor_status_reports_clean_zero_state_without_a_model() {
 #[test]
 #[ignore = "needs GPU/endpoint probing: cargo test --test misc_contract -- --ignored"]
 fn monitor_snapshot_produces_a_one_shot_sample() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("monitor-snapshot");
+    let _env = common::env_lock();
+    let _home = HomeGuard::new("misc", "monitor-snapshot", Isolation::ProductHome);
     let parsed = parse_args(["pinvou", "monitor", "snapshot"]).unwrap();
     let outcome = execute(parsed).expect("snapshot must produce a sample");
     assert_eq!(outcome.exit_code, ExitCode::Success);
@@ -2063,8 +1977,8 @@ fn monitor_snapshot_produces_a_one_shot_sample() {
 /// regular-file rule; the attachment lane now does too.
 #[test]
 fn feedback_attach_refuses_directories() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("feedback-dir-attach");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "feedback-dir-attach", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("feedback-dir-attach");
     let attachment_dir = scoped.dir.join("not-a-file");
     std::fs::create_dir_all(&attachment_dir).unwrap();
@@ -2091,7 +2005,7 @@ fn feedback_attach_refuses_directories() {
         "the refusal must carry the stable code: {error}"
     );
     // Nothing was registered: no receipt exists for a refused submit.
-    let receipts = home.root.join("feedback").join("receipts");
+    let receipts = home.path().join("feedback").join("receipts");
     assert!(
         !receipts.exists(),
         "a refused attachment must not leave a receipt: {}",
@@ -2104,12 +2018,12 @@ fn feedback_attach_refuses_directories() {
 /// the refusal pin, so deleting the refusal would have passed the suite.
 #[test]
 fn files_ingest_output_refuses_overwrite_and_cleans_up_on_failure() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("files-ingest-no-overwrite");
+    let _env = common::env_lock();
+    let home = HomeGuard::new("misc", "files-ingest-no-overwrite", Isolation::ProductHome);
     let scoped = ScopedHomeDir::new("files-ingest-no-overwrite");
     let markdown_fixture = scoped.dir.join("notes.md");
     std::fs::write(&markdown_fixture, "# Heading\n\nBody.\n").unwrap();
-    let output_file = home.root.join("extracted.md");
+    let output_file = home.path().join("extracted.md");
     std::fs::write(&output_file, "PRECIOUS EXISTING CONTENT\n").unwrap();
 
     let error = run(&[

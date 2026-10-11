@@ -5,7 +5,7 @@
 //! `delete` without `--yes`) lives here; the typed parse assertions live in
 //! the module's own `#[cfg(test)]` block (the command enum is not re-exported
 //! at the crate root). Execute-level tests run against a temp `PINVOU3_HOME`
-//! (serialized through ENV_LOCK, following cli_contract.rs) and assert
+//! (the shared `common` harness's `env_lock`) and assert
 //! through the same store files and `pinvou3_lib` types the GUI uses; they
 //! never touch the network, a model, or a display (AGENTS.md rule).
 //!
@@ -13,63 +13,32 @@
 //! active model). The chat-kind refusal is tested hermetically; the
 //! memory-organize execution is covered by an `#[ignore]`d opt-in test.
 
+mod common;
+
 use pinvou_cli::{CliCommand, ExitCode, execute, parse_args};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use common::{HomeGuard, Isolation, env_lock, run_ok, scratch_dir};
 
-struct TempHome {
-    root: PathBuf,
-    previous: Option<std::ffi::OsString>,
+/// The `AutomationManager::open(<home>/automations)` layout the GUI uses:
+/// definitions under `automations/automations`, runs under
+/// `automations/runs/<task_id>`.
+trait ScheduledHome {
+    fn def_path(&self, task_id: &str) -> PathBuf;
+    fn runs_dir(&self, task_id: &str) -> PathBuf;
 }
 
-impl TempHome {
-    fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-scheduled-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { root, previous }
-    }
-
-    fn path(&self) -> &Path {
-        &self.root
-    }
-
-    /// The `AutomationManager::open(<home>/automations)` layout the GUI uses:
-    /// definitions under `automations/automations`, runs under
-    /// `automations/runs/<task_id>`.
+impl ScheduledHome for HomeGuard {
     fn def_path(&self, task_id: &str) -> PathBuf {
-        self.root
+        self.path()
             .join("automations")
             .join("automations")
             .join(format!("{task_id}.json"))
     }
 
     fn runs_dir(&self, task_id: &str) -> PathBuf {
-        self.root.join("automations").join("runs").join(task_id)
-    }
-}
-
-impl Drop for TempHome {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
+        self.path().join("automations").join("runs").join(task_id)
     }
 }
 
@@ -79,9 +48,9 @@ impl Drop for TempHome {
 /// not block behind it).
 #[test]
 fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("store-busy");
-    let locks_dir = home.root.join("locks");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "store-busy", Isolation::ProductHome);
+    let locks_dir = home.path().join("locks");
     std::fs::create_dir_all(&locks_dir).unwrap();
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
@@ -125,67 +94,51 @@ fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
 }
 
 fn parsed_scheduled(arguments: &[&str]) -> CliCommand {
-    let owned: Vec<String> = std::iter::once("pinvou".to_owned())
-        .chain(arguments.iter().map(|value| value.to_string()))
-        .collect();
-    match parse_args(owned) {
+    match parse_args(with_program(arguments)) {
         Ok(parsed) => parsed.command().clone(),
         Err(error) => panic!("expected valid scheduled command: {error}"),
     }
 }
 
+// The `scheduled` helpers take argv WITHOUT the leading `pinvou` token
+// (every other contract file passes full argv); the wrappers below prepend
+// it over the shared harness and merge the json/human lanes into one
+// `run_with_mode`. The usage wrapper keeps this family's pin: BOTH
+// parse-time grammar refusals (rrules, including ONCE AT, run at parse
+// time) and execute-time usage gates (`delete` without `--yes`) must stay
+// in the exit-2 class — the code is pinned instead of accepting either
+// layer, so a regression to execute-time rejection (exit 1) fails the test.
+
+fn with_program<'a>(arguments: &'a [&'a str]) -> Vec<&'a str> {
+    std::iter::once("pinvou")
+        .chain(arguments.iter().copied())
+        .collect()
+}
+
+fn run_with_mode(arguments: &[&str], mode: &str) -> String {
+    let mut owned = with_program(arguments);
+    owned.extend(["--output", mode]);
+    run_ok(&owned)
+}
+
 fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
-        .chain(arguments.iter().map(|value| value.to_string()))
-        .collect();
-    owned.push("--output".to_owned());
-    owned.push("json".to_owned());
-    let parsed = parse_args(owned).expect("valid scheduled command");
-    let outcome = execute(parsed).expect("successful scheduled command");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    serde_json::from_str(&outcome.stdout).expect("single-line JSON output")
+    let stdout = run_with_mode(arguments, "json");
+    serde_json::from_str(&stdout).expect("single-line JSON output")
 }
 
 fn run_human(arguments: &[&str]) -> String {
-    let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
-        .chain(arguments.iter().map(|value| value.to_string()))
-        .collect();
-    owned.push("--output".to_owned());
-    owned.push("human".to_owned());
-    let parsed = parse_args(owned).expect("valid scheduled command");
-    let outcome = execute(parsed).expect("successful scheduled command");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    outcome.stdout
+    run_with_mode(arguments, "human")
 }
 
 fn expect_failed(arguments: &[&str]) -> String {
-    let owned: Vec<String> = std::iter::once("pinvou".to_owned())
-        .chain(arguments.iter().map(|value| value.to_string()))
-        .collect();
-    let parsed = parse_args(owned).expect("parseable scheduled command");
-    let error = execute(parsed).expect_err("expected host/runtime failure");
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
-    error.to_string()
+    common::expect_failed(&with_program(arguments)).to_string()
 }
 
-/// Asserts the usage exit-code class (2) for a refused argv and returns the
-/// message. Both parse-time grammar refusals (rrules, including ONCE AT, run
-/// at parse time) and execute-time usage gates (`delete` without `--yes`)
-/// must stay in this class — the code is pinned instead of accepting either
-/// layer, so a regression to execute-time rejection (exit 1) fails the test.
 fn assert_usage(arguments: &[&str]) -> String {
-    let mut owned: Vec<String> = std::iter::once("pinvou".to_owned())
-        .chain(arguments.iter().map(|value| value.to_string()))
-        .collect();
-    let error = match parse_args(owned.drain(..)) {
-        Err(error) => error,
-        Ok(parsed) => execute(parsed).expect_err("expected usage error"),
-    };
-    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
-    error.to_string()
+    common::assert_usage(&with_program(arguments))
 }
 
-fn write_prompt_file(home: &TempHome, name: &str, prompt: &str) -> PathBuf {
+fn write_prompt_file(home: &HomeGuard, name: &str, prompt: &str) -> PathBuf {
     let path = home.path().join(name);
     std::fs::write(&path, prompt).unwrap();
     path
@@ -197,8 +150,8 @@ const VALID_RRULE: &str = "FREQ=WEEKLY;BYDAY=MO,FR;BYHOUR=9;BYMINUTE=30";
 // `--prompt-file /dev/zero` cannot hang the CLI).
 #[test]
 fn create_refuses_an_oversized_prompt_file() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("prompt-cap");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "prompt-cap", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "big.md", &"x".repeat(4 * 1024 * 1024 + 1));
     let message = expect_failed(&[
         "scheduled",
@@ -216,7 +169,7 @@ fn create_refuses_an_oversized_prompt_file() {
     );
 }
 
-fn create_task(home: &TempHome, name: &str) -> serde_json::Value {
+fn create_task(home: &HomeGuard, name: &str) -> serde_json::Value {
     // The prompt FILE name stays derived from a sanitized label: a hostile
     // name carries \n/\t/ESC, which cannot form a file name on NTFS/Windows,
     // so the suite could never run green there (the sibling DST test gates
@@ -246,7 +199,7 @@ fn create_task(home: &TempHome, name: &str) -> serde_json::Value {
 /// end stamps, the foundation task id, the thread link), so the run is
 /// actually viewable and `mark-viewed` reaches the registry write. Returns
 /// the session id the record links to.
-fn seed_completed_run(home: &TempHome, task_id: &str, run_id: &str) -> String {
+fn seed_completed_run(home: &HomeGuard, task_id: &str, run_id: &str) -> String {
     let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
     let session = store
         .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
@@ -292,7 +245,7 @@ fn seed_completed_run(home: &TempHome, task_id: &str, run_id: &str) -> String {
 /// child-process `models add` against the fixture home (the child owns the
 /// models store bootstrap; `models add` prints the id on stdout) — and
 /// returns that id.
-fn add_saved_model(home: &TempHome, name: &str, wire: &str) -> String {
+fn add_saved_model(home: &HomeGuard, name: &str, wire: &str) -> String {
     let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
     add.args([
         "models",
@@ -333,7 +286,7 @@ fn add_saved_model(home: &TempHome, name: &str, wire: &str) -> String {
 /// their test sites: their broken shape is the pin.
 #[allow(clippy::too_many_arguments)]
 fn write_run_file(
-    home: &TempHome,
+    home: &HomeGuard,
     task_id: &str,
     file_name: &str,
     run_id: &str,
@@ -383,7 +336,7 @@ fn quarantine_copies(dir: &Path, stem: &str) -> Vec<String> {
 /// local-vllm record and a second DeepSeek record, mirroring the shape the
 /// GUI's model list persists (`migrate_models`/`normalize` run on load, so a
 /// raw settings.json fixture is the same store the app sees).
-fn write_saved_models(home: &TempHome) {
+fn write_saved_models(home: &HomeGuard) {
     std::fs::write(
         home.path().join("settings.json"),
         serde_json::json!({
@@ -417,7 +370,7 @@ fn write_saved_models(home: &TempHome) {
 
 #[test]
 fn rejects_invalid_usage_with_exit_code_two() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env_guard = env_lock();
     let invalid = [
         vec!["scheduled"],
         vec!["scheduled", "bogus"],
@@ -637,7 +590,7 @@ fn rejects_invalid_usage_with_exit_code_two() {
 
 #[test]
 fn every_subcommand_shape_parses() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env_guard = env_lock();
     for arguments in [
         vec!["scheduled", "list"],
         vec!["scheduled", "show", "t-1"],
@@ -695,8 +648,8 @@ fn every_subcommand_shape_parses() {
 
 #[test]
 fn empty_home_lists_nothing_and_chat_prompt_is_available() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("empty");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "empty", Isolation::ProductHome);
     let value = run_json(&["scheduled", "list"]);
     assert_eq!(value["tasks"].as_array().map(Vec::len), Some(0));
     assert!(run_human(&["scheduled", "list"]).contains("No scheduled tasks."));
@@ -721,8 +674,8 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
     // `pub(crate)` to `pinvou3_lib`, so the const cannot be referenced from
     // the CLI); these pins make copy drift a CI failure instead of a silent
     // divergence from the GUI's ONCE guidance.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("chat-prompt-once");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "chat-prompt-once", Isolation::ProductHome);
     let prompt = run_json(&["scheduled", "chat-prompt"]);
     let prompt = prompt["prompt"].as_str().unwrap();
     assert!(
@@ -743,8 +696,8 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
 /// automation …` read error.
 #[test]
 fn every_command_rejects_unknown_task_ids_with_the_stable_not_found() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("unknown-id");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "unknown-id", Isolation::ProductHome);
     for arguments in [
         vec!["scheduled", "show", "does-not-exist"],
         vec!["scheduled", "runs", "does-not-exist"],
@@ -767,8 +720,8 @@ fn every_command_rejects_unknown_task_ids_with_the_stable_not_found() {
 /// the same rule models/sessions/memory pin for their families.
 #[test]
 fn scheduled_list_and_show_collapse_control_characters_in_human_rows() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("collapse-hostile-name");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "collapse-hostile-name", Isolation::ProductHome);
 
     let hostile = "ok\n*m_fake\tEvil\u{1b}[2JEsc";
     let created = create_task(&home, hostile);
@@ -808,8 +761,8 @@ fn scheduled_list_and_show_collapse_control_characters_in_human_rows() {
 
 #[test]
 fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "round-trip", Isolation::ProductHome);
 
     // create: mirrors the persisted GUI shape (mode forced to yolo, trust and
     // auto-approve on, workspace-owned cwds kept out of the DTO).
@@ -944,8 +897,8 @@ fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
 
 #[test]
 fn create_rejects_memory_organize_kind_while_memory_is_disabled() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("memory-gate");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "memory-gate", Isolation::ProductHome);
     // Fresh home: memory is disabled by default, exactly like the GUI create
     // dialog's refusal for memory-organize tasks.
     let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
@@ -978,8 +931,8 @@ fn create_refuses_non_yolo_modes_like_the_app() {
     // `auto_approve` on) with the caller's choice discarded in silence. The
     // CLI used to accept both and throw them away, so pin the refusal, its
     // exit-code class, and the absence of a persisted task.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("mode-refusal");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "mode-refusal", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "mode.md", "Summarize the reports.");
     for refused in ["agent", "plan"] {
         let error = assert_usage(&[
@@ -1030,8 +983,8 @@ fn create_refuses_non_yolo_modes_like_the_app() {
 /// `require_object_run_record`.
 #[test]
 fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-record-type");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-record-type", Isolation::ProductHome);
     let created = create_task(&home, "Typechecked task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -1116,8 +1069,8 @@ fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
 /// bound the read, and both output channels name the truncation.
 #[test]
 fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("runs-truncation");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-truncation", Isolation::ProductHome);
     let created = create_task(&home, "Truncated task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let runs = home.runs_dir(&task_id);
@@ -1192,8 +1145,8 @@ fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
 /// numbers; `--limit` overrides in both directions.
 #[test]
 fn show_caps_the_rendered_runs_and_limit_overrides_the_default() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("show-render-cap");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "show-render-cap", Isolation::ProductHome);
     let created = create_task(&home, "Show cap task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let runs = home.runs_dir(&task_id);
@@ -1248,8 +1201,8 @@ fn show_caps_the_rendered_runs_and_limit_overrides_the_default() {
 /// index — and `truncated` stays exact (three read past the cap, two shown).
 #[test]
 fn runs_all_archived_prune_selects_the_newest_by_time_then_index() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("runs-all-prune");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-all-prune", Isolation::ProductHome);
     // A live task with no runs keeps the lane's active half exercised.
     create_task(&home, "Prune feed task");
 
@@ -1333,8 +1286,12 @@ fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
         }
     }
 
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("create-workspace-rollback");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "create-workspace-rollback",
+        Isolation::ProductHome,
+    );
     let scheduled_root = home.path().join("scheduled");
     std::fs::create_dir_all(&scheduled_root).unwrap();
     std::fs::set_permissions(&scheduled_root, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -1385,8 +1342,12 @@ fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
 /// agree with.
 #[test]
 fn read_commands_refuse_undecodable_definition_values_as_malformed() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("def-undecodable-values");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "def-undecodable-values",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Decodable task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let pristine: serde_json::Value =
@@ -1424,8 +1385,8 @@ fn read_commands_refuse_undecodable_definition_values_as_malformed() {
 
 #[test]
 fn chat_kind_run_refuses_headless_execution_with_stable_error() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("chat-run");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "chat-run", Isolation::ProductHome);
     let created = create_task(&home, "Chat task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let error = expect_failed(&["scheduled", "run", &task_id]);
@@ -1445,8 +1406,8 @@ fn chat_kind_run_refuses_headless_execution_with_stable_error() {
 /// the user at a run that would also fail) stayed green.
 #[test]
 fn run_refuses_a_present_but_unsupported_kind_with_the_app_remedy() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-unsupported-kind");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-unsupported-kind", Isolation::ProductHome);
     let created = create_task(&home, "Bogus kind task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // Hand-write a present-but-unsupported kind entry (the shape a
@@ -1480,8 +1441,8 @@ fn run_refuses_a_present_but_unsupported_kind_with_the_app_remedy() {
 
 #[test]
 fn delete_refuses_while_a_run_is_active() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-active");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-active", Isolation::ProductHome);
     let created = create_task(&home, "Busy task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A queued/running run left by the GUI-owned runtime (it carries the
@@ -1523,8 +1484,8 @@ fn delete_refuses_while_a_run_is_active() {
 
 #[test]
 fn run_reconciles_a_stranded_queued_record_before_running() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-reconcile");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-reconcile", Isolation::ProductHome);
     let created = create_task(&home, "Reconciled task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -1559,8 +1520,8 @@ fn run_reconciles_a_stranded_queued_record_before_running() {
 
 #[test]
 fn once_at_rejects_calendar_overflow_like_the_foundation() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-at-calendar");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-at-calendar", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
     // 2026-02-30 cannot exist; the foundation parser rejects it and one such
     // record would fail the GUI scheduler's whole sweep.
@@ -1595,8 +1556,8 @@ fn once_at_rejects_calendar_overflow_like_the_foundation() {
 
 #[test]
 fn mark_viewed_round_trip_over_completed_run() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("mark-viewed");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "mark-viewed", Isolation::ProductHome);
     let created = create_task(&home, "Watched task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -1656,8 +1617,8 @@ fn mark_viewed_round_trip_over_completed_run() {
 
 #[test]
 fn runs_all_merges_active_and_archived_runs_with_limit() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("runs-all");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-all", Isolation::ProductHome);
     let created = create_task(&home, "Feed task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     for (index, status) in ["completed", "failed"].iter().enumerate() {
@@ -1742,8 +1703,8 @@ fn runs_all_merges_active_and_archived_runs_with_limit() {
 #[ignore = "boots the windowless product host: needs a display/xvfb, an active model, and \
 memory enabled; opt in by creating a memory-organize task and running pinvou scheduled run"]
 fn run_executes_a_memory_organize_task_through_the_product_host() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-organize");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-organize", Isolation::ProductHome);
     // The GUI refuses memory-organize tasks while memory is disabled; enable
     // it through the same prefs the feature reads.
     std::fs::write(
@@ -1797,8 +1758,8 @@ fn run_executes_a_memory_organize_task_through_the_product_host() {
 /// tasks' entries.
 #[test]
 fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("mark-viewed-bad-shape");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "mark-viewed-bad-shape", Isolation::ProductHome);
     let created = create_task(&home, "Bad shape task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A completed run bound to a real scheduled-run session, so the run is
@@ -1808,8 +1769,8 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
     // `viewed_runs` as an array: a whole-file rewrite here would drop every
     // OTHER task's viewed-run state, so the mutation refuses and quarantines
     // instead of normalizing and persisting (round-28).
-    let read_state = home.root.join("scheduled-runs").join("read-state.json");
-    std::fs::create_dir_all(home.root.join("scheduled-runs")).unwrap();
+    let read_state = home.path().join("scheduled-runs").join("read-state.json");
+    std::fs::create_dir_all(home.path().join("scheduled-runs")).unwrap();
     std::fs::write(
         &read_state,
         serde_json::json!({ "schema_version": 2, "viewed_runs": [] }).to_string(),
@@ -1855,8 +1816,12 @@ fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
 /// on it for future-version refusals.
 #[test]
 fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("mark-viewed-versionless");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "mark-viewed-versionless",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Versioned read-state task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A completed run bound to a real scheduled-run session, so the run is
@@ -1864,8 +1829,8 @@ fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
     seed_completed_run(&home, &task_id, "done-1");
 
     // A legacy version-less read-state file (pre-versioning app build).
-    let read_state = home.root.join("scheduled-runs").join("read-state.json");
-    std::fs::create_dir_all(home.root.join("scheduled-runs")).unwrap();
+    let read_state = home.path().join("scheduled-runs").join("read-state.json");
+    std::fs::create_dir_all(home.path().join("scheduled-runs")).unwrap();
     std::fs::write(
         &read_state,
         serde_json::json!({ "viewed_runs": {} }).to_string(),
@@ -1893,8 +1858,12 @@ fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
 /// same way every other CLI writer stamps one.
 #[test]
 fn delete_cleanup_rewrite_adds_schema_version_to_a_versionless_registry() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-versionless-registry");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "delete-versionless-registry",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Versioned cleanup task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A legacy version-less kind registry holding this task's entry, so the
@@ -1927,8 +1896,12 @@ fn delete_cleanup_rewrite_adds_schema_version_to_a_versionless_registry() {
 /// dropping the history.
 #[test]
 fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-archive-missing-tasks");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "delete-archive-missing-tasks",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Archive task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     write_run_file(
@@ -1942,9 +1915,9 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
         &[],
     );
     // Valid JSON object, but no `tasks` key.
-    std::fs::create_dir_all(home.root.join("automations")).unwrap();
+    std::fs::create_dir_all(home.path().join("automations")).unwrap();
     std::fs::write(
-        home.root.join("automations").join("history-archive.json"),
+        home.path().join("automations").join("history-archive.json"),
         serde_json::json!({ "schema_version": 2 }).to_string(),
     )
     .unwrap();
@@ -1952,7 +1925,7 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
     run_json(&["scheduled", "delete", &task_id, "--yes"]);
 
     let archive: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.root.join("automations").join("history-archive.json"))
+        &std::fs::read_to_string(home.path().join("automations").join("history-archive.json"))
             .unwrap(),
     )
     .unwrap();
@@ -1971,8 +1944,8 @@ fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
 /// mutation.
 #[test]
 fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-id-mismatch");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-id-mismatch", Isolation::ProductHome);
     let created = create_task(&home, "Mismatched task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     write_run_file(
@@ -2006,7 +1979,7 @@ fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
     // swallowed the history.
     assert!(def_path.exists(), "the definition must stay untouched");
     if let Ok(raw) =
-        std::fs::read_to_string(home.root.join("automations").join("history-archive.json"))
+        std::fs::read_to_string(home.path().join("automations").join("history-archive.json"))
     {
         let archive: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert!(
@@ -2021,8 +1994,8 @@ fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
 
 #[test]
 fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-at-rfc3339");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-at-rfc3339", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "task.md", "Do the thing.");
     // The foundation parser (chrono) rejects these on both channels, and one
     // unparseable record stalls the GUI scheduler's whole sweep. Validation
@@ -2079,8 +2052,8 @@ fn leap_day_schedules_are_accepted_on_every_channel() {
     // channel, and a cron February-29 expression (kept realizable by the
     // foundation's leap-year date-space probe) must all be accepted — only
     // the rejections are pinned elsewhere.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("leap-day");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "leap-day", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "leap.md", "Summarize the reports.");
     for rrule in [
         "FREQ=ONCE;AT=2028-02-29T08:30",
@@ -2108,8 +2081,8 @@ fn once_at_rejects_past_times_like_the_gui() {
     // `next_after_with_anchor(now, now)` and fails with "no future run" for
     // a past stamp; the CLI used to accept it and let the first sweep tick
     // pause the task instead. Both channels must refuse up front.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-at-past");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-at-past", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "past.md", "Summarize the reports.");
     // An old absolute stamp (RFC3339 with offset) and a naive local stamp
     // that is unambiguously over (the test env's clock is well past 2030
@@ -2152,8 +2125,8 @@ fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
     // GUI creates a paused one-shot with an elapsed AT without complaint — a
     // drafted task the user edits and resumes later. `--paused` must not be
     // stricter in the CLI than on the surface it mirrors.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("paused-past-once");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "paused-past-once", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "paused-past.md", "Summarize the reports.");
     let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
     let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
@@ -2189,8 +2162,8 @@ fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
 /// bypassed by pausing the create.
 #[test]
 fn paused_create_still_validates_the_rrule_grammar() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("paused-grammar");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "paused-grammar", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "paused-grammar.md", "Summarize the reports.");
     for bad in ["FREQ=BOGUS", "FREQ=ONCE", "FREQ=HOURLY;INTERVAL=4000000000"] {
         assert_usage(&[
@@ -2220,8 +2193,8 @@ fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
     // schema_version is newer than supported; the CLI must refuse to
     // read-modify-write it instead of silently writing a hybrid format the
     // GUI would misread.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("sidecar-newer-schema");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "sidecar-newer-schema", Isolation::ProductHome);
     let created = create_task(&home, "Pinned task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -2250,8 +2223,8 @@ fn hourly_interval_beyond_scheduler_range_is_refused() {
     // unchecked `DateTime + Duration::hours(interval)` — an absurd INTERVAL
     // overflows chrono's range and panics the scheduler task, stalling every
     // GUI automation. The CLI must refuse the value up front.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("hourly-interval-bound");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "hourly-interval-bound", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "interval.md", "Summarize the reports.");
     let error = assert_usage(&[
         "scheduled",
@@ -2295,8 +2268,8 @@ fn rfc3339_once_accepts_lowercase_separator_like_the_foundation() {
     // RFC3339 §5.6 NOTE allows the lowercase date/time separator and the
     // foundation parses through chrono, which accepts it; the CLI must not
     // reject a stamp the GUI can create.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-lowercase-t");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-lowercase-t", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "lower.md", "Summarize the reports.");
     let created = run_json(&[
         "scheduled",
@@ -2317,8 +2290,8 @@ fn malformed_schema_version_is_refused_not_treated_as_legacy() {
     // GUI's typed deserialization kept failing on the file: the CLI must
     // refuse to operate on a record the app cannot read instead of
     // reporting success.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("schema-malformed");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "schema-malformed", Isolation::ProductHome);
     let created = create_task(&home, "Stringy schema");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let def_path = home.def_path(&task_id);
@@ -2336,8 +2309,12 @@ fn newer_schema_read_state_is_refused_not_merged_and_written_back() {
     // The read-state registry carries the viewed history; a newer app's
     // format must never be merged and written back (the GUI's
     // VersionedJsonStore quarantines the same situation).
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("read-state-newer-schema");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "read-state-newer-schema",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Watched task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let run_id = "completed-run-1";
@@ -2362,8 +2339,8 @@ fn newer_schema_history_archive_blocks_delete_and_restores_the_task() {
     // The archive gate must both refuse the write-back AND restore the
     // provisional pause, like every other blocked delete path — a caller
     // retrying after upgrading must not find the task paused.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("archive-newer-schema");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "archive-newer-schema", Isolation::ProductHome);
     let created = create_task(&home, "Archived task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -2385,8 +2362,8 @@ fn newer_schema_history_archive_blocks_delete_and_restores_the_task() {
 
 #[test]
 fn delete_blocked_restores_the_previous_status() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-restore");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-restore", Isolation::ProductHome);
     let created = create_task(&home, "Restore task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     write_run_file(
@@ -2417,8 +2394,8 @@ fn read_commands_refuse_non_object_definitions_uniformly() {
     // malformed message as the mutating commands (show used to render a
     // phantom empty task with exit 0 while list died on a confusing
     // safe_storage_id error).
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("non-object-read");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "non-object-read", Isolation::ProductHome);
     let created = create_task(&home, "Malformed task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     std::fs::write(home.def_path(&task_id), "5").unwrap();
@@ -2440,8 +2417,8 @@ fn read_commands_refuse_definitions_missing_required_fields() {
     // A def the GUI's typed `AutomationRecord` cannot deserialize (required
     // field missing) must refuse like a non-object one instead of rendering
     // a phantom task with exit 0.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("def-missing-fields");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "def-missing-fields", Isolation::ProductHome);
     let created = create_task(&home, "Incomplete task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     std::fs::write(
@@ -2473,15 +2450,7 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
     // real binary with a pinned timezone instead (UTC runners have no gap,
     // so the zone must be pinned regardless).
     let bin = env!("CARGO_BIN_EXE_pinvou");
-    let root = std::env::temp_dir().join(format!(
-        "pinvou-cli-scheduled-once-at-dst-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&root).unwrap();
+    let root = scratch_dir("pinvou-cli-scheduled-once-at-dst");
     let prompt = root.join("dst.md");
     std::fs::write(&prompt, "Summarize the reports.").unwrap();
     let run = |rrule: &str| {
@@ -2529,9 +2498,13 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
 
 #[test]
 fn mutations_fail_honestly_on_non_object_definitions() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env_guard = env_lock();
     for label in ["update", "pause", "resume", "delete"] {
-        let home = TempHome::new(&format!("non-object-{label}"));
+        let home = HomeGuard::new(
+            "scheduled",
+            &format!("non-object-{label}"),
+            Isolation::ProductHome,
+        );
         let created = create_task(&home, "Malformed task");
         let task_id = created["id"].as_str().unwrap().to_owned();
         std::fs::write(home.def_path(&task_id), "[]").unwrap();
@@ -2549,8 +2522,8 @@ fn mutations_fail_honestly_on_non_object_definitions() {
 
 #[test]
 fn run_writes_only_terminal_records() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-terminal-only");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-terminal-only", Isolation::ProductHome);
     let created = create_task(&home, "Terminal task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // No display/model here, so the run fails honestly — but it must never
@@ -2574,8 +2547,8 @@ fn run_writes_only_terminal_records() {
 
 #[test]
 fn failed_delete_restores_the_previous_status() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-restore");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-restore", Isolation::ProductHome);
     let created = create_task(&home, "Blocked task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // Make the archive commit fail: a directory at the archive path makes
@@ -2594,8 +2567,12 @@ fn failed_delete_restores_the_previous_status() {
 
 #[test]
 fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("delete-run-record-restore");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "delete-run-record-restore",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Run-record task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     // A run record the store refuses (newer schema) makes list_runs fail
@@ -2624,8 +2601,8 @@ fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
 
 #[test]
 fn unreadable_registries_are_quarantined_before_the_default_is_used() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("registry-quarantine");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "registry-quarantine", Isolation::ProductHome);
     let created = create_task(&home, "Quarantine task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let bindings = home.path().join("automations").join("model-bindings.json");
@@ -2646,12 +2623,16 @@ fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
     // deserialization rejects — valid JSON of the wrong shape included; the
     // CLI's read_registry must do the same instead of normalizing the value
     // in memory and letting the next write destroy the only on-disk copy.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env_guard = env_lock();
     for (label, payload) in [
         ("non-object", "[]"),
         ("wrong-typed-tasks", r#"{"tasks": []}"#),
     ] {
-        let home = TempHome::new(&format!("registry-shape-quarantine-{label}"));
+        let home = HomeGuard::new(
+            "scheduled",
+            &format!("registry-shape-quarantine-{label}"),
+            Isolation::ProductHome,
+        );
         let created = create_task(&home, "Shape task");
         let task_id = created["id"].as_str().unwrap().to_owned();
         // Seed a real saved model: `--model-id` is validated against
@@ -2710,8 +2691,12 @@ fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
     // bootstrap write here would be installed over it on the app's next
     // persist. A healthy write (the app's heal, or a manual repair) re-enables
     // mutations.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("registry-quarantine-heal");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "registry-quarantine-heal",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Heal task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let model_id = add_saved_model(&home, "Heal model", "heal-wire-name");
@@ -2784,8 +2769,12 @@ fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
     // slot passed would reinstate a past-due slot the sweep fires late. The
     // rollback must re-resolve through the foundation (resume recomputes a
     // future slot) instead of trusting the raw value.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("update-rollback-reresolve");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "update-rollback-reresolve",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Rollback task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let model_id = add_saved_model(&home, "Rollback model", "rollback-wire-name");
@@ -2851,8 +2840,8 @@ fn read_state_with_a_stray_tasks_key_stays_readable() {
     // read-state file carrying a stray `tasks` key must stay readable and
     // must NOT be quarantined (that would reset the user's viewed-run
     // state — the exact regression the per-type key split fixed).
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("read-state-stray-key");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "read-state-stray-key", Isolation::ProductHome);
     let created = create_task(&home, "Stray key task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let read_state = home.path().join("scheduled-runs").join("read-state.json");
@@ -2877,8 +2866,8 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
     // hand-edited def with a numeric `name` or a numeric timestamp must be
     // refused as malformed (the GUI's typed serde rejects the whole record),
     // not rendered as a phantom task with empty strings.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("wrong-typed-def");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "wrong-typed-def", Isolation::ProductHome);
     let created = create_task(&home, "Type check task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -2906,8 +2895,8 @@ fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
 /// left the definition's wire name alone, which the executor rejects).
 #[test]
 fn update_with_model_id_moves_both_the_definition_and_the_pin() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("model-id-update");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "model-id-update", Isolation::ProductHome);
     let created = create_task(&home, "Rebind task");
     let task_id = created["id"].as_str().unwrap().to_owned();
 
@@ -2934,8 +2923,12 @@ fn update_with_model_id_moves_both_the_definition_and_the_pin() {
 /// `scheduled_storage_unavailable`.
 #[test]
 fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("model-id-update-binding-failure");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "model-id-update-binding-failure",
+        Isolation::ProductHome,
+    );
     let created = create_task(&home, "Rollback task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let def_before: serde_json::Value =
@@ -2987,8 +2980,8 @@ fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
 /// the workspace stays untouched (the repair is idempotent).
 #[test]
 fn update_and_resume_persist_a_repaired_workspace_cwd() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("workspace-repair");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "workspace-repair", Isolation::ProductHome);
     let created = create_task(&home, "Repaired task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let expected = pinvou3_lib::platform::paths::scheduled_task_workspace_dir(&task_id);
@@ -3057,8 +3050,8 @@ fn update_and_resume_persist_a_repaired_workspace_cwd() {
 /// `once_tasks_with_a_past_anchor_are_refused_at_resume`).
 #[test]
 fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-eager");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-eager", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once-eager.md", "Summarize the reports.");
     let at = chrono::Local::now() + chrono::Duration::hours(26);
     let rrule = format!("FREQ=ONCE;AT={}", at.format("%Y-%m-%dT%H:%M"));
@@ -3104,8 +3097,8 @@ fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
 /// so the run fails for real — the exact lane the old contract misreported.
 #[test]
 fn run_reports_a_failed_memory_organize_pass_as_a_failed_command() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-exit-contract");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-exit-contract", Isolation::ProductHome);
     // The gate needs a memory-organize task; memory must be enabled to get
     // past the create-guard, and the run then fails at the host lane.
     std::fs::write(
@@ -3145,8 +3138,8 @@ fn run_reports_a_failed_memory_organize_pass_as_a_failed_command() {
 /// requires created_at), exactly like the GUI.
 #[test]
 fn runs_limit_returns_the_newest_records_in_order() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("runs-limit");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-limit", Isolation::ProductHome);
     let created = create_task(&home, "Limited task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     for index in 0..10 {
@@ -3182,8 +3175,8 @@ fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
     // The id doubles as the on-disk workspace directory name, so a def file
     // whose id is not a single path component is malformed (the store is
     // broken), not a usage error and never a directory join.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("path-shaped-id");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "path-shaped-id", Isolation::ProductHome);
     let created = create_task(&home, "Escaped id task");
     let task_id = created["id"].as_str().unwrap().to_owned();
     let mut def: serde_json::Value =
@@ -3194,7 +3187,7 @@ fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
     let shown = expect_failed(&["scheduled", "show", &task_id]);
     assert!(shown.contains("Failed to parse"), "{shown}");
     assert!(
-        !home.root.join("escape").exists(),
+        !home.path().join("escape").exists(),
         "the workspace join must never escape the scheduled root"
     );
     let _ = home;
@@ -3212,8 +3205,8 @@ fn create_model_id_round_trips_the_selected_records_wire_name() {
     // `model: selected.model, modelId: selected.id`; pre-fix, the CLI wrote
     // the active model's wire name against sel-1's id, and the task failed
     // on every run at the model-resolution check.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("model-id-round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "model-id-round-trip", Isolation::ProductHome);
     write_saved_models(&home);
     let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
     let created = run_json(&[
@@ -3260,8 +3253,8 @@ fn create_model_id_unknown_id_is_a_state_error() {
     // only decidable against `saved_models` (disk state), so the refusal is
     // exit 1 Failed like every other state-dependent gap on the family — not
     // Usage, which argv alone must decide (the family's exit-code rule).
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("model-id-unknown");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "model-id-unknown", Isolation::ProductHome);
     write_saved_models(&home);
     let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
     let error = expect_failed(&[
@@ -3294,8 +3287,8 @@ fn create_model_id_unknown_id_is_a_state_error() {
 
 #[test]
 fn once_tasks_persist_their_anchor_on_create_and_resume() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-anchor");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-anchor", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
     let at = "2027-06-01T09:30";
     let created = run_json(&[
@@ -3370,8 +3363,8 @@ fn once_tasks_with_a_past_anchor_are_refused_at_resume() {
     // The foundation's resume refuses the past anchor up front instead — the
     // same refusal `create` applies to a past AT on an active task — so the
     // user sees the honest error rather than a task that never fires.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("once-past-resume");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-past-resume", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once-past.md", "Summarize the reports.");
     let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
     let created = run_json(&[
@@ -3422,8 +3415,8 @@ fn run_reports_a_failed_run_through_a_nonzero_exit() {
     // following the family's completed-command-failed-result convention —
     // pre-fix the success line printed unconditionally, so a failed run
     // looked like a success to scripts.
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    let home = TempHome::new("run-failed-exit");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-failed-exit", Isolation::ProductHome);
     // zh-Hans as in the sibling run-exit test (line ~706): the memory gate is
     // locale-gated and a settings file without a language defaults to a
     // non-memory locale, which silently turns the fixture's memory_enabled
@@ -3529,8 +3522,12 @@ fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
 /// path must be refused before anything is persisted.
 #[test]
 fn create_refuses_a_credential_path_prompt_file() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = TempHome::new("create-credential-prompt");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "create-credential-prompt",
+        Isolation::ProductHome,
+    );
     let ssh = home.path().join(".ssh");
     std::fs::create_dir_all(&ssh).unwrap();
     let key = ssh.join("id_rsa");

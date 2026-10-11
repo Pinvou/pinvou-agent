@@ -2,8 +2,8 @@
 //!
 //! Parse-level coverage runs against the typed command tree. Execute-level
 //! coverage is strictly hermetic: every test runs against a throwaway
-//! `PINVOU3_HOME` (ENV_LOCK serialization, same pattern as
-//! `sessions_contract.rs`) and touches no network, model, engine, or display.
+//! `PINVOU3_HOME` (the shared `common` harness's `env_lock`) and touches no
+//! network, model, engine, or display.
 //! Equip fixtures build a session through `SessionStore::boot()` in the test
 //! process — the same standalone constructor the CLI uses.
 //!
@@ -13,77 +13,25 @@
 //! pools: cards are always located (or absence-checked) by the exact id a
 //! test created.
 
-use std::ffi::OsString;
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 use pinvou3_lib::features::sessions::SessionStore;
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use common::{HomeGuard, Isolation, env_lock, run, run_json};
 
-/// Sets `PINVOU3_HOME` to a fresh throwaway directory for the duration of
-/// the test and restores the previous value on drop.
-struct HomeGuard {
-    previous: Option<OsString>,
-    root: PathBuf,
+/// `~/.pinvou3/user/personas` — where user cards persist.
+trait PersonasHome {
+    fn user_personas_dir(&self) -> PathBuf;
 }
 
-impl HomeGuard {
-    fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-personas-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { previous, root }
-    }
-
-    /// `~/.pinvou3/user/personas` — where user cards persist.
+impl PersonasHome for HomeGuard {
     fn user_personas_dir(&self) -> PathBuf {
-        self.root.join("user").join("personas")
+        self.path().join("user").join("personas")
     }
-
-    /// `~/.pinvou3/sessions` under the sandbox home.
-    fn sessions_root(&self) -> PathBuf {
-        self.root.join("sessions")
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed = parse_args(arguments).expect("arguments must parse");
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
 }
 
 /// Creates one empty chat session through `SessionStore` (the exact path the
@@ -106,11 +54,11 @@ fn create_session_fixture() -> String {
 /// enumeration still reports the deletion with it.
 #[test]
 fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let home = HomeGuard::new("active-pool-fault");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "active-pool-fault", Isolation::ProductHome);
     let session_id = create_session_fixture();
     // A sidecar whose card does not resolve (never existed).
-    let sidecar_dir = home.root.join("sessions").join(&session_id);
+    let sidecar_dir = home.path().join("sessions").join(&session_id);
     std::fs::create_dir_all(&sidecar_dir).unwrap();
     std::fs::write(
         sidecar_dir.join("persona_equipped.json"),
@@ -121,7 +69,7 @@ fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
     let run_active = || {
         std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
             .args(["personas", "active", &session_id])
-            .env("PINVOU3_HOME", home.root.clone())
+            .env("PINVOU3_HOME", home.path())
             .env("PINVOU_NO_COLOR", "1")
             .output()
             .expect("active child runs")
@@ -140,7 +88,7 @@ fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
 
     // With a readable (empty) pool the miss is a confirmed deletion and the
     // sidecar cleanup remedy applies.
-    std::fs::create_dir_all(home.root.join("user").join("personas")).unwrap();
+    std::fs::create_dir_all(home.path().join("user").join("personas")).unwrap();
     let outcome = run_active();
     assert!(!outcome.status.success(), "the deletion shape must fail");
     let stderr = String::from_utf8_lossy(&outcome.stderr);
@@ -189,9 +137,9 @@ fn create_user_persona(name: &str, body: &Path) -> String {
 /// write.
 #[test]
 fn personas_create_refuses_a_credential_location_body_file() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("create-credential-body");
-    let file = home.root.join(".aws").join("credentials");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "create-credential-body", Isolation::ProductHome);
+    let file = home.path().join(".aws").join("credentials");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
         &file,
@@ -226,7 +174,7 @@ fn personas_create_refuses_a_credential_location_body_file() {
 
 #[test]
 fn every_personas_subcommand_parses_and_invalid_usage_exits_two() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = env_lock();
     let valid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "personas", "list"],
         vec!["pinvou", "personas", "list", "--source", "user"],
@@ -357,8 +305,8 @@ fn json_output_mode_flows_through_every_personas_subcommand() {
 
 #[test]
 fn personas_delete_without_yes_is_refused_before_any_state_change() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("delete-yes-gate");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("personas", "delete-yes-gate", Isolation::ProductHome);
 
     // The refusal runs against an ISOLATED home (never the developer's real
     // one) and is pinned behaviorally: the visible catalog is byte-identical
@@ -383,14 +331,14 @@ fn personas_delete_without_yes_is_refused_before_any_state_change() {
 /// embedded.)
 #[test]
 fn personas_list_prints_an_explicit_empty_line_in_human_mode() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("list-empty");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "list-empty", Isolation::ProductHome);
     // The user-pool cache reloads on a directory-stamp change; an ABSENT
     // personas dir fails open to whatever the previous test in this process
     // cached (the same fail-open that protects a real user's cards from a
     // transient read failure). Materialize the empty dir so this test's
     // stamp is a real, empty one.
-    std::fs::create_dir_all(home.root.join("user/personas"))
+    std::fs::create_dir_all(home.path().join("user/personas"))
         .expect("materialize the empty user persona dir");
 
     let outcome = run(&["pinvou", "personas", "list", "--source", "user"])
@@ -412,8 +360,8 @@ fn personas_list_prints_an_explicit_empty_line_in_human_mode() {
 
 #[test]
 fn personas_list_shows_builtin_catalog_and_source_filters() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("list-catalog");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("personas", "list-catalog", Isolation::ProductHome);
 
     let outcome = run(&["pinvou", "personas", "list"]).expect("list must succeed");
     assert_eq!(outcome.exit_code, ExitCode::Success);
@@ -470,8 +418,8 @@ fn personas_list_shows_builtin_catalog_and_source_filters() {
 
 #[test]
 fn personas_create_show_update_delete_round_trip_persists_user_card() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("crud-round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "crud-round-trip", Isolation::ProductHome);
     let body_path = write_body_file("crud", "# Expert\n\nmethodology body v1\n");
     let body = std::fs::read_to_string(&body_path).unwrap();
 
@@ -611,8 +559,8 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
 
 #[test]
 fn personas_equip_unequip_active_round_trip_with_fixture_session() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("equip-round-trip");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "equip-round-trip", Isolation::ProductHome);
     let session_id = create_session_fixture();
     let body_path = write_body_file("equip", "# Equip Expert\n\nbody\n");
 
@@ -740,8 +688,8 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
 /// untouched.
 #[test]
 fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-sidecar-sweep");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "delete-sidecar-sweep", Isolation::ProductHome);
     let session_a = create_session_fixture();
     let session_b = create_session_fixture();
     let body_path = write_body_file("sweep", "# Sweep Expert\n\nbody\n");
@@ -810,8 +758,12 @@ fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
 /// keeps the deleted persona "active" on the session.
 #[test]
 fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-sidecar-large-body");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "personas",
+        "delete-sidecar-large-body",
+        Isolation::ProductHome,
+    );
     let session_id = create_session_fixture();
     // 100 KiB: over the old 64 KiB sweep cap, far under the 4 MiB body cap.
     let big_body = format!("# Big Expert\n\n{}\n", "x".repeat(100 * 1024));
@@ -858,8 +810,8 @@ fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
 /// reach the terminal. JSON keeps the verbatim strings.
 #[test]
 fn personas_list_and_active_rows_survive_control_characters_in_card_text() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _home = HomeGuard::new("row-control-chars");
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("personas", "row-control-chars", Isolation::ProductHome);
     let session_id = create_session_fixture();
     let body_path = write_body_file("rows", "# Rows Expert\n\nbody\n");
     let hostile_name = "Alpha\tBeta\nGamma\x1b[31m";
@@ -922,8 +874,8 @@ fn personas_list_and_active_rows_survive_control_characters_in_card_text() {
 /// CLI alone.
 #[test]
 fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("orphan-sidecar");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "orphan-sidecar", Isolation::ProductHome);
     let session_id = create_session_fixture();
     let body_path = write_body_file("orphan", "# Orphan Expert\n\nbody\n");
 
@@ -981,8 +933,8 @@ fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
 /// with a NON-EMPTY list, so nothing pinned either half of the contract.
 #[test]
 fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("delete-sidecar-errors");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "delete-sidecar-errors", Isolation::ProductHome);
     let session_id = create_session_fixture();
     let body_path = write_body_file("sweep-errors", "# Stuck Expert\n\nbody\n");
 
@@ -1048,8 +1000,8 @@ fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
 /// helpers cannot pipe.
 #[test]
 fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("stdin-over-cap");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("personas", "stdin-over-cap", Isolation::ProductHome);
 
     // One byte past the cap, so the refusal is exactly the over-cap case and
     // an off-by-one in the cap cannot pass.
@@ -1062,7 +1014,7 @@ fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
         .args(["personas", "create", "--name", "Too Big", "--stdin"])
-        .env("PINVOU3_HOME", &home.root)
+        .env("PINVOU3_HOME", home.path())
         .stdin(std::fs::File::open(&body_path).unwrap())
         .output()
         .expect("the pinvou binary must run");

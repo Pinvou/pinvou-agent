@@ -15,67 +15,33 @@
 //! connect` against the live ima OpenAPI, and the successful legs of the
 //! vendor `connect` login flows, which need the real vendor CLIs.
 
-use std::ffi::OsString;
+mod common;
+
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // PermissionsExt imports live inside the #[cfg(unix)] tests that need them
 // (755, 1289, 1345, 1503): a module-level import compiles on unix even when
 // none of those tests is included, which is how this became an unused name.
-use pinvou_cli::{CliError, CliOutcome, ExitCode, execute, parse_args};
+use common::{EnvGuard, Isolation, run, run_json};
+use pinvou_cli::{ExitCode, parse_args};
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` / `PATH`
-/// environment variables, preventing data races when the parallel test runner
-/// executes them concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Sets `PINVOU3_HOME` to a fresh throwaway directory for the duration of
-/// the test and restores the previous value on drop.
-struct HomeGuard {
-    previous: Option<OsString>,
-    root: PathBuf,
-    /// The pre-test values, restored on drop. (`filter(|_| false)` keeps
-    /// this an always-None holder of the SAVED value, not the sandbox one.)
-    codewhale_home: Option<OsString>,
-    secret_backend: Option<OsString>,
-}
+/// The connectors sandbox: the shared file-secrets preset
+/// ([`common::Isolation::FileSecrets`] — `PINVOU3_HOME` at the root plus the
+/// file secret backend rooted in `<root>/codewhale-home`), so the ima
+/// credential reads never touch the real OS keyring. Tests that mutate the
+/// process-global environment hold [`common::env_lock`] for their whole body.
+/// The three path helpers below are the read seams the family's tests use on
+/// top of the shared guard.
+struct HomeGuard(common::HomeGuard);
 
 impl HomeGuard {
     fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        // Round-38 review: force the FILE secret backend rooted in the
-        // sandbox. The credential reads behind `ima status` (and any login
-        // lane's store write) go to `SystemCredentialStore::new()`, whose
-        // keyring is process-global and keyed by a fixed service name — on a
-        // dev machine with real ima credentials the zero-state assertions
-        // failed spuriously and every run risked a keychain prompt. The file
-        // backend honors `CODEWHALE_HOME`, so pointing it inside the
-        // throwaway root makes the store as hermetic as `PINVOU3_HOME`.
-        let codewhale_home = std::env::var_os("CODEWHALE_HOME");
-        let secret_backend = std::env::var_os("CODEWHALE_SECRET_BACKEND");
-        unsafe {
-            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
-            std::env::set_var("CODEWHALE_HOME", root.join("codewhale-home"));
-        }
-        Self {
-            previous,
-            root,
-            codewhale_home,
-            secret_backend,
-        }
+        Self(common::HomeGuard::new(
+            "connectors",
+            label,
+            Isolation::FileSecrets,
+        ))
     }
 
     /// The LEGACY `<id>_disabled` marker file `platform::connector_state`
@@ -83,111 +49,40 @@ impl HomeGuard {
     /// together with the `set_*_enabled` commands — so tests plant it by
     /// hand to pin the read-and-heal contract.
     fn disabled_marker(&self, id: &str) -> PathBuf {
-        self.root.join(format!("{id}_disabled"))
+        self.0.path().join(format!("{id}_disabled"))
     }
 
     /// The unified scope state that IS the connector switch on both
     /// surfaces (`set_disabled_connectors` in the GUI,
     /// the same plain-scope save here).
     fn disabled_bundles_file(&self) -> PathBuf {
-        self.root.join("disabled_bundles.json")
+        self.0.path().join("disabled_bundles.json")
     }
 
     /// `~/.pinvou3/bundles/<id>/skills` — the root the app's
     /// `apply_connector_skills` unpacks into and deletes from, and the one
     /// the CLI's hide direction must clear.
     fn connector_skills_dir(&self, id: &str) -> PathBuf {
-        self.root.join("bundles").join(id).join("skills")
+        self.0.path().join("bundles").join(id).join("skills")
     }
 }
 
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        // SAFETY: ENV_LOCK is held by the owning test.
-        match self.codewhale_home.take() {
-            Some(value) => unsafe { std::env::set_var("CODEWHALE_HOME", value) },
-            None => unsafe { std::env::remove_var("CODEWHALE_HOME") },
-        }
-        // SAFETY: ENV_LOCK is held by the owning test.
-        match self.secret_backend.take() {
-            Some(value) => unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", value) },
-            None => unsafe { std::env::remove_var("CODEWHALE_SECRET_BACKEND") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-/// Points `PATH` at an empty directory so no vendor connector CLI is
-/// resolvable, whatever the host has installed. Must be constructed while
-/// ENV_LOCK is held; restores the previous value on drop.
+/// Points `PATH` at a directory holding no vendor connector CLI (or the
+/// fake stand-ins the caller staged there), whatever the host has
+/// installed. Must be constructed while ENV_LOCK is held; restores every
+/// variable on drop and removes the throwaway directories it created (and,
+/// for [`Self::new_at`], the caller's staged directory — a test must NOT
+/// clean that one up itself).
 struct VendorCliGuard {
-    previous: Option<OsString>,
+    /// `PATH`, `HOME`, and the npm prefixes; drops (restores) first.
+    _env: EnvGuard,
     empty_bin: PathBuf,
-    /// The extra process-global state both constructor forms isolate (npm
-    /// prefixes resolve through these outside PATH).
-    isolated: Option<Vec<(&'static str, Option<OsString>)>>,
-    empty_home: Option<PathBuf>,
+    empty_home: PathBuf,
 }
 
 impl VendorCliGuard {
-    /// Isolation shared by both constructor forms: vendor-CLI resolution
-    /// also consults the npm global prefixes outside PATH (a real
-    /// `~/.npm-global/bin/dws` on the dev machine would defeat a fake
-    /// staged on PATH), so `HOME` is pointed at a throwaway directory and
-    /// the npm prefix envs are cleared. Returns the throwaway home (removed
-    /// on drop) and the state list `Drop` re-applies.
-    fn isolate_home_and_npm_prefixes() -> (PathBuf, Vec<(&'static str, Option<OsString>)>) {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let empty_home = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-empty-home-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&empty_home).unwrap();
-        let isolated = vec![
-            ("HOME", Some(empty_home.clone().into_os_string())),
-            ("NPM_CONFIG_PREFIX", None),
-            ("npm_config_prefix", None),
-        ];
-        for (key, value) in &isolated {
-            match value {
-                // SAFETY: the caller holds ENV_LOCK for the whole test.
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                // SAFETY: the caller holds ENV_LOCK for the whole test.
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-        (empty_home, isolated)
-    }
-
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let empty_bin = std::env::temp_dir().join(format!(
-            "pinvou-cli-connectors-empty-path-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&empty_bin).unwrap();
-        let (empty_home, isolated) = Self::isolate_home_and_npm_prefixes();
-        let previous = std::env::var_os("PATH");
-        // SAFETY: the caller holds ENV_LOCK for the whole test.
-        unsafe { std::env::set_var("PATH", &empty_bin) };
-        Self {
-            previous,
-            empty_bin,
-            isolated: Some(isolated),
-            empty_home: Some(empty_home),
-        }
+        Self::new_at_path(common::scratch_dir("pinvou-cli-connectors-empty-path"))
     }
 
     /// Points `PATH` at a caller-provided directory — the fake-vendor-CLI
@@ -196,92 +91,42 @@ impl VendorCliGuard {
     /// `~/.npm-global/bin/dws` or `$NPM_CONFIG_PREFIX/bin/tmeet` must not
     /// bypass the staged fake.
     fn new_at(bin: PathBuf) -> Self {
-        let (empty_home, isolated) = Self::isolate_home_and_npm_prefixes();
-        let previous = std::env::var_os("PATH");
-        // SAFETY: the caller holds ENV_LOCK for the whole test.
-        unsafe { std::env::set_var("PATH", &bin) };
+        Self::new_at_path(bin)
+    }
+
+    /// Vendor-CLI resolution also consults the npm global prefixes outside
+    /// PATH, so `HOME` is pointed at a throwaway directory and the npm
+    /// prefix envs are cleared alongside `PATH`.
+    fn new_at_path(empty_bin: PathBuf) -> Self {
+        let empty_home = common::scratch_dir("pinvou-cli-connectors-empty-home");
+        let env = EnvGuard::set_values(&[
+            ("PATH", Some(empty_bin.clone().into_os_string())),
+            ("HOME", Some(empty_home.clone().into_os_string())),
+            ("NPM_CONFIG_PREFIX", None),
+            ("npm_config_prefix", None),
+        ]);
         Self {
-            previous,
-            empty_bin: bin,
-            isolated: Some(isolated),
-            empty_home: Some(empty_home),
+            _env: env,
+            empty_bin,
+            empty_home,
         }
     }
 }
 
 impl Drop for VendorCliGuard {
     fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-        if let Some(isolated) = self.isolated.take() {
-            for (key, value) in isolated {
-                match value {
-                    // SAFETY: ENV_LOCK is held by the owning test.
-                    Some(value) => unsafe { std::env::set_var(key, value) },
-                    // SAFETY: ENV_LOCK is held by the owning test.
-                    None => unsafe { std::env::remove_var(key) },
-                }
-            }
-        }
-        if let Some(home) = self.empty_home.take() {
-            let _ = std::fs::remove_dir_all(&home);
-        }
+        // The EnvGuard field restores PATH/HOME/npm prefixes first (fields
+        // drop in declaration order); then the throwaway directories go.
+        let _ = std::fs::remove_dir_all(&self.empty_home);
         let _ = std::fs::remove_dir_all(&self.empty_bin);
     }
-}
-
-/// Sets one environment variable for the duration of the test and restores
-/// the previous value on drop (panic-safe, unlike an inline restore after the
-/// assertions). Must be constructed while ENV_LOCK is held.
-#[cfg(unix)]
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-}
-
-#[cfg(unix)]
-impl EnvVarGuard {
-    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
-        let previous = std::env::var_os(key);
-        // SAFETY: the caller holds ENV_LOCK for the whole test.
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed = parse_args(arguments).expect("arguments must parse");
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
 }
 
 // ── parse-level coverage ────────────────────────────────────────────────────
 
 #[test]
 fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let valid: Vec<Vec<&str>> = vec![
         vec!["pinvou", "connectors", "status"],
         vec!["pinvou", "connectors", "status", "feishu"],
@@ -457,7 +302,7 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
 
 #[test]
 fn connectors_status_zero_state_reports_every_connector_uninstalled_and_disabled_by_default() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let _home = HomeGuard::new("status-zero");
     let _path = VendorCliGuard::new();
 
@@ -529,7 +374,7 @@ fn connectors_status_zero_state_reports_every_connector_uninstalled_and_disabled
 
 #[test]
 fn connectors_enable_disable_switch_through_scope_state_only() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let home = HomeGuard::new("enable-disable");
     let _path = VendorCliGuard::new();
 
@@ -603,7 +448,7 @@ fn connectors_enable_disable_switch_through_scope_state_only() {
 
 #[test]
 fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let home = HomeGuard::new("legacy-marker");
     let _path = VendorCliGuard::new();
 
@@ -663,7 +508,7 @@ fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
 /// `install_lock_refusal_carries_the_code_prefix` instead.
 #[test]
 fn connectors_enable_failure_lane_reports_the_code_prefix_first() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let home = HomeGuard::new("marker-clear-failure");
     let _path = VendorCliGuard::new();
 
@@ -690,7 +535,7 @@ fn connectors_enable_failure_lane_reports_the_code_prefix_first() {
 
 #[test]
 fn connectors_logout_and_apply_skills_on_uninstalled_connector_degrade_like_the_gui() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let _home = HomeGuard::new("uninstalled-errors");
     let _path = VendorCliGuard::new();
 
@@ -739,7 +584,7 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_degrade_like_the_
 
 #[test]
 fn connectors_connect_without_vendor_cli_fails_fast_with_install_hint() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let _home = HomeGuard::new("connect-uninstalled");
     let _path = VendorCliGuard::new();
 
@@ -774,7 +619,7 @@ fn connectors_connect_without_vendor_cli_fails_fast_with_install_hint() {
 
 #[test]
 fn connectors_ima_reports_zero_state_and_missing_client_id_env() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env_guard = common::env_lock();
     let _home = HomeGuard::new("ima-zero");
     let _path = VendorCliGuard::new();
 
@@ -828,16 +673,7 @@ fn write_fake_cli(bin: &std::path::Path, name: &str, version: &str, body: &str) 
 /// test must NOT clean it up itself.
 #[cfg(unix)]
 fn fake_bin_dir(label: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let bin = std::env::temp_dir().join(format!(
-        "pinvou-cli-connectors-fake-bin-{label}-{}-{nonce}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&bin).unwrap();
-    bin
+    common::scratch_dir(&format!("pinvou-cli-connectors-fake-bin-{label}"))
 }
 
 /// Writes a scripted vendor CLI stand-in. Every invocation appends its argv
@@ -867,7 +703,7 @@ fn write_fake_cli_logged(
 #[test]
 #[cfg(unix)]
 fn vendor_cli_argv_is_passed_exactly_once() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("argv-once");
     let bin = fake_bin_dir("argv-once");
     let args_file = bin.join("seen-args.txt");
@@ -911,7 +747,7 @@ fn vendor_cli_argv_is_passed_exactly_once() {
 #[test]
 #[cfg(unix)]
 fn connect_failure_carries_the_captured_login_link() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("connect-note");
     let bin = fake_bin_dir("connect-note");
     // The fake login child prints the authorize link and then blocks (like
@@ -944,7 +780,7 @@ fn connect_failure_carries_the_captured_login_link() {
 #[test]
 #[cfg(unix)]
 fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("connect-no-code");
     let bin = fake_bin_dir("connect-no-code");
     // dws prints only the authorize link and exits 0 — no user code line, the
@@ -985,7 +821,7 @@ fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
 #[test]
 #[cfg(unix)]
 fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("connect-dingtalk-code");
     let bin = fake_bin_dir("connect-dingtalk-code");
     // dingtalk's login page needs the `user_code` the vendor CLI prints on a
@@ -1034,7 +870,7 @@ fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
 #[test]
 #[cfg(unix)]
 fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("wecom-qr");
     let bin = fake_bin_dir("wecom-qr");
     // The vendor writes `qr.png` into its working directory around the time
@@ -1070,7 +906,7 @@ fn wecom_connect_surfaces_the_qr_file_while_it_exists() {
 #[test]
 #[cfg(unix)]
 fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("connect-vendor-tail");
     let bin = fake_bin_dir("connect-vendor-tail");
     // The single commonest dingtalk onboarding blocker: the organization has
@@ -1115,7 +951,7 @@ fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
 #[test]
 #[cfg(unix)]
 fn logout_and_apply_skills_remove_the_companion_skill_directories() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let home = HomeGuard::new("logout-skill-hide");
     let bin = fake_bin_dir("logout-skill-hide");
     // `auth logout` succeeds; every other subcommand (notably `auth status`)
@@ -1183,7 +1019,7 @@ fn logout_and_apply_skills_remove_the_companion_skill_directories() {
 #[test]
 #[cfg(unix)]
 fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("logout-old-tmeet");
     let bin = fake_bin_dir("logout-old-tmeet");
     let args_file = bin.join("seen-args.txt");
@@ -1232,7 +1068,7 @@ fn logout_runs_the_real_auth_logout_for_a_below_minimum_tmeet() {
 #[test]
 #[cfg(unix)]
 fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("upgrade-gate-probe");
     let bin = fake_bin_dir("upgrade-gate-probe");
     // wecom 1.2.0 parses but sits below the 1.2.1 baseline; its status probe
@@ -1314,7 +1150,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
 #[test]
 #[cfg(unix)]
 fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("feishu-below-min");
     let bin = fake_bin_dir("feishu-below-min");
     // lark-cli 1.0.65 parses but sits below the 1.0.95 baseline; its status
@@ -1373,7 +1209,7 @@ fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
 #[test]
 #[cfg(unix)]
 fn feishu_with_an_unparseable_version_reports_not_installed() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("feishu-unparseable");
     let bin = fake_bin_dir("feishu-unparseable");
     // The `--version` prelude prints a line with no parseable number; every
@@ -1426,7 +1262,7 @@ fn feishu_with_an_unparseable_version_reports_not_installed() {
 #[test]
 #[cfg(unix)]
 fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let home = HomeGuard::new("enable-probe-error");
     let _path = VendorCliGuard::new();
 
@@ -1491,7 +1327,7 @@ fn enable_with_an_erroring_probe_leaves_the_skill_tree_in_place() {
 #[test]
 #[cfg(unix)]
 fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let home = HomeGuard::new("enable-not-connected");
     let bin = fake_bin_dir("enable-not-connected");
     // `--version` answers (the enable path does not gate on it, the probe
@@ -1549,7 +1385,7 @@ fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
 #[test]
 #[cfg(unix)]
 fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("drain-past-cap");
     let bin = fake_bin_dir("drain-past-cap");
     // `yes x | head -c 9961472` produces 9,961,472 bytes (8 MiB cap
@@ -1605,7 +1441,7 @@ fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
 fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("wedged-probe");
     let bin = fake_bin_dir("wedged-probe");
     // The self-wedge must chmod the absolute path (the CLI PATH-searches the
@@ -1670,7 +1506,7 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
 fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected() {
     use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("logout-success");
     let bin = fake_bin_dir("logout-success");
     let args_file = bin.join("seen-args.txt");
@@ -1751,7 +1587,7 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
 fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
     use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("logout-broken-probe");
     let bin = fake_bin_dir("logout-broken-probe");
     use std::os::unix::fs::PermissionsExt as _;
@@ -1810,7 +1646,7 @@ fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
 #[cfg(unix)]
 fn status_finds_a_gui_installed_npm_prefix_cli() {
     use std::os::unix::fs::PermissionsExt as _;
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("npm-prefix");
     // The GUI's tmeet install applies the user npm prefix, so a GUI-installed
     // tmeet lives in <prefix>/bin/tmeet — typically not on PATH. Resolution
@@ -1826,7 +1662,8 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     // Panic-safe restore: without the guard a failing assert would leak the
     // fixture prefix into the remaining tests in this process.
-    let _prefix = EnvVarGuard::set("NPM_CONFIG_PREFIX", prefix.as_os_str());
+    let _prefix =
+        EnvGuard::set_values(&[("NPM_CONFIG_PREFIX", Some(prefix.clone().into_os_string()))]);
 
     let outcome = run(&[
         "pinvou",
@@ -1863,7 +1700,7 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
 #[test]
 #[cfg(unix)]
 fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let home = HomeGuard::new("connect-scope-sync");
     let bin = fake_bin_dir("connect-scope-sync");
     // dingtalk (dws): a lock-table connector (unlike tmeet's npm lane — it
@@ -1956,7 +1793,7 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
 #[test]
 #[cfg(unix)]
 fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let home = HomeGuard::new("connect-probe-hiccup");
     let bin = fake_bin_dir("connect-probe-hiccup");
     let hidden = bin.join("lark-cli.off");
@@ -2077,7 +1914,7 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
 #[cfg(unix)]
 fn ensure_cli_never_reports_success_for_a_binary_that_cannot_execute() {
     use std::os::unix::fs::PermissionsExt as _;
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("ensure-cli-unexecutable");
     let bin = std::env::temp_dir().join(format!(
         "pinvou-cli-connectors-fake-bin-{}-{}",
@@ -2137,7 +1974,7 @@ fn connect_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
     use std::io::BufRead as _;
     use std::os::unix::fs::PermissionsExt as _;
 
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = common::env_lock();
     let _home = HomeGuard::new("interrupt-guard");
     let bin = std::env::temp_dir().join(format!(
         "pinvou-cli-connectors-interrupt-bin-{}-{}",

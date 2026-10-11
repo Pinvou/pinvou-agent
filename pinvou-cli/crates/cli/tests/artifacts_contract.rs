@@ -7,8 +7,8 @@
 //! save-cap refusal and its ordering, the credential-source gate on
 //! `--file`, the session-storage containment codes, and the
 //! `skipped_sessions` disclosure. Every default test runs against a
-//! throwaway `PINVOU3_HOME` (ENV_LOCK serialization, same pattern as
-//! `sessions_contract.rs`) and touches no network, model endpoint, display,
+//! throwaway `PINVOU3_HOME` (the shared `common` harness's `env_lock`) and
+//! touches no network, model endpoint, display,
 //! or real `$HOME`. The one process-global lane, `--stdin`, cannot be driven
 //! in-process (execute reads the test runner's own stdin), so it runs the
 //! real binary with a piped stdin — the house subprocess pattern from
@@ -34,15 +34,17 @@
 //! must catch. No `#[ignore]` opt-in tests are needed: nothing here needs a
 //! display host, a model, or a live endpoint.
 
-use std::ffi::OsString;
+mod common;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, execute, parse_args};
+use pinvou_cli::ExitCode;
 use pinvou3_lib::features::sessions::SessionStore;
+
+use common::{HomeGuard, Isolation, env_lock, expect_failed, run, run_json};
 
 /// The GUI artifact-editor save cap (`MAX_EDITABLE_MARKDOWN_BYTES`) that the
 /// write lane mirrors. Integration tests cannot import the crate-private
@@ -53,84 +55,15 @@ const SAVE_CAP_BYTES: usize = 10 * 1024 * 1024;
 /// pinned by value for the same reason.
 const SCAN_CAP_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
-/// variable, preventing data races when the parallel test runner executes them
-/// concurrently.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Sets `PINVOU3_HOME` to a fresh throwaway directory for the duration of
-/// the test and restores the previous value on drop.
-struct HomeGuard {
-    previous: Option<OsString>,
-    root: PathBuf,
+/// The ledger workspace relative artifact paths resolve against
+/// (`sessions_root/<id>/workspace` for a plain chat session fixture).
+trait HomeExt {
+    fn workspace_of(&self, id: &str) -> PathBuf;
 }
 
-impl HomeGuard {
-    fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-artifacts-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let previous = std::env::var_os("PINVOU3_HOME");
-        // SAFETY: the caller holds ENV_LOCK for the whole test, so env writes
-        // are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { previous, root }
-    }
-
-    /// `~/.pinvou3/sessions` under the sandbox home.
-    fn sessions_root(&self) -> PathBuf {
-        self.root.join("sessions")
-    }
-
-    /// The ledger workspace relative artifact paths resolve against
-    /// (`sessions_root/<id>/workspace` for a plain chat session fixture).
+impl HomeExt for HomeGuard {
     fn workspace_of(&self, id: &str) -> PathBuf {
         self.sessions_root().join(id).join("workspace")
-    }
-}
-
-impl Drop for HomeGuard {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: ENV_LOCK is held by the owning test.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: ENV_LOCK is held by the owning test.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn run(arguments: &[&str]) -> Result<CliOutcome, CliError> {
-    let parsed = parse_args(arguments).expect("arguments must parse");
-    execute(parsed)
-}
-
-fn run_json(arguments: &[&str]) -> serde_json::Value {
-    let mut owned = arguments.to_vec();
-    owned.extend(["--output", "json"]);
-    let outcome = run(&owned).expect("execute must succeed");
-    serde_json::from_str(&outcome.stdout).expect("json output must be a single serde_json line")
-}
-
-/// Runs the command and asserts the exit-1 (host failure) class, returning
-/// the error for message assertions.
-fn expect_failed(arguments: &[&str]) -> CliError {
-    match run(arguments) {
-        Ok(outcome) => panic!(
-            "expected a failed execution, got exit {:?}: {}",
-            outcome.exit_code, outcome.stdout
-        ),
-        Err(error) => {
-            assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
-            error
-        }
     }
 }
 
@@ -161,7 +94,7 @@ fn seeded_report(home: &HomeGuard, id: &str, content: &str) -> PathBuf {
 fn drive_binary(home: &HomeGuard, arguments: &[&str], stdin: &[u8]) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pinvou"))
         .args(arguments)
-        .env("PINVOU3_HOME", &home.root)
+        .env("PINVOU3_HOME", home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -188,8 +121,8 @@ fn drive_binary(home: &HomeGuard, arguments: &[&str], stdin: &[u8]) -> std::proc
 /// A mutation to any field name, shape, or the read-back content fails here.
 #[test]
 fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("happy");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "happy", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let report = seeded_report(&home, &id, "# Report\n\nfirst version\n");
@@ -239,7 +172,7 @@ fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
 
     // write --file overwrites the existing workspace artifact in place and
     // reports the byte count; a follow-up read observes the new content.
-    let source = home.root.join("source.md");
+    let source = home.path().join("source.md");
     std::fs::write(&source, "# Report\n\nsecond version\n").unwrap();
     let value = run_json(&[
         "pinvou",
@@ -294,8 +227,8 @@ fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
 /// strictly greater-than) and lands whole.
 #[test]
 fn artifacts_write_refuses_over_cap_sources_before_any_store_boot() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("over-cap");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "over-cap", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let report = seeded_report(&home, &id, "old\n");
@@ -303,7 +236,7 @@ fn artifacts_write_refuses_over_cap_sources_before_any_store_boot() {
     // One byte over the cap: refused with the exact stable wire code, and
     // the target is untouched. 0xFF bytes are not valid UTF-8 on purpose —
     // see the test's doc comment.
-    let over_cap = home.root.join("over-cap.md");
+    let over_cap = home.path().join("over-cap.md");
     std::fs::write(&over_cap, vec![0xFF_u8; SAVE_CAP_BYTES + 1]).unwrap();
     let error = expect_failed(&[
         "pinvou",
@@ -346,7 +279,7 @@ fn artifacts_write_refuses_over_cap_sources_before_any_store_boot() {
 
     // Boundary: exactly the cap is accepted (the probe is strictly `>`) and
     // the full payload lands.
-    let at_cap = home.root.join("at-cap.md");
+    let at_cap = home.path().join("at-cap.md");
     std::fs::write(&at_cap, vec![b'b'; SAVE_CAP_BYTES]).unwrap();
     let value = run_json(&[
         "pinvou",
@@ -376,16 +309,16 @@ fn artifacts_write_refuses_over_cap_sources_before_any_store_boot() {
 /// key (`id_rsa_notes.md`) is an ordinary file and must write.
 #[test]
 fn artifacts_write_file_gate_refuses_credential_source_paths() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("credential-gate");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "credential-gate", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let report = seeded_report(&home, &id, "old\n");
 
-    let ssh_key = home.root.join(".ssh").join("id_rsa");
+    let ssh_key = home.path().join(".ssh").join("id_rsa");
     std::fs::create_dir_all(ssh_key.parent().unwrap()).unwrap();
     std::fs::write(&ssh_key, "PRIVATE KEY\n").unwrap();
-    let dotenv = home.root.join(".env");
+    let dotenv = home.path().join(".env");
     std::fs::write(&dotenv, "TOKEN=secret\n").unwrap();
 
     for source in [&ssh_key, &dotenv] {
@@ -435,7 +368,7 @@ fn artifacts_write_file_gate_refuses_credential_source_paths() {
 
     // Components, not substrings: the blocked names are exact path
     // components, so a file whose name merely contains one stays writable.
-    let benign = home.root.join("id_rsa_notes.md");
+    let benign = home.path().join("id_rsa_notes.md");
     std::fs::write(&benign, "# notes on key handling\n").unwrap();
     let value = run_json(&[
         "pinvou",
@@ -463,13 +396,13 @@ fn artifacts_write_file_gate_refuses_credential_source_paths() {
 /// write refusal are pinned in `sessions_contract.rs`.)
 #[test]
 fn artifacts_write_error_lanes_pin_stable_codes() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("write-errors");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "write-errors", Isolation::ProductHome);
     let id = create_session_fixture();
 
     // A --file that does not exist: the source prefix, distinct from the
     // target lanes below.
-    let absent = home.root.join("absent-source.md");
+    let absent = home.path().join("absent-source.md");
     let error = expect_failed(&[
         "pinvou",
         "artifacts",
@@ -488,7 +421,7 @@ fn artifacts_write_error_lanes_pin_stable_codes() {
 
     // A real source but a missing target: `artifact_not_found`, and the
     // overwrite-only rule means the failed write must not create the file.
-    let source = home.root.join("plain.md");
+    let source = home.path().join("plain.md");
     std::fs::write(&source, "replacement\n").unwrap();
     let target = home.workspace_of(&id).join("new.md");
     let error = expect_failed(&[
@@ -520,8 +453,8 @@ fn artifacts_write_error_lanes_pin_stable_codes() {
 /// not-found ("is not a file"), not a crash.
 #[test]
 fn artifacts_read_error_lanes_pin_containment_codes() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("read-lanes");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "read-lanes", Isolation::ProductHome);
     let id_a = create_session_fixture();
     let id_b = create_session_fixture();
 
@@ -567,7 +500,7 @@ fn artifacts_read_error_lanes_pin_containment_codes() {
 
     // Outside sessions storage entirely (home root), and outside A's ledger
     // tree, so the writable=false ledger fallback cannot rescue it.
-    std::fs::write(home.root.join("outside.md"), "nope\n").unwrap();
+    std::fs::write(home.path().join("outside.md"), "nope\n").unwrap();
     let error = expect_failed(&["pinvou", "artifacts", "read", &id_a, "../../../outside.md"]);
     assert_eq!(error.to_string(), "artifact_outside_session_storage");
 
@@ -593,8 +526,8 @@ fn artifacts_read_error_lanes_pin_containment_codes() {
 /// unscannable left to disclose — `skipped_sessions` comes back empty.
 #[test]
 fn artifacts_list_reports_unscannable_records_in_skipped_sessions() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("skipped");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "skipped", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let report = seeded_report(&home, &id, "# Report\n");
@@ -646,8 +579,8 @@ fn artifacts_list_reports_unscannable_records_in_skipped_sessions() {
 /// rendering the truncation as "no deliverables".
 #[test]
 fn artifacts_list_empty_store_succeeds_and_unreadable_root_fails_loudly() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("root-states");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "root-states", Isolation::ProductHome);
 
     // Missing sessions root: the empty-index shape, not an error.
     let value = run_json(&["pinvou", "artifacts", "list"]);
@@ -675,8 +608,8 @@ fn artifacts_list_empty_store_succeeds_and_unreadable_root_fails_loudly() {
 /// cap+1 bytes cannot deadlock either direction.
 #[test]
 fn artifacts_write_stdin_lane_round_trips_and_refuses_over_cap_input() {
-    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let home = HomeGuard::new("stdin");
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "stdin", Isolation::ProductHome);
     let id = create_session_fixture();
 
     let report = seeded_report(&home, &id, "old\n");

@@ -1,13 +1,9 @@
-use pinvou_cli::{CliCommand, ExitCode, OutputMode, parse_args};
-use std::ffi::OsString;
-use std::path::PathBuf;
-use std::sync::Mutex;
+mod common;
 
-fn usage_error(args: &[&str]) -> String {
-    let error = parse_args(args).unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    error.to_string()
-}
+use pinvou_cli::{CliCommand, ExitCode, OutputMode, parse_args};
+use std::path::PathBuf;
+
+use common::{EnvGuard, env_lock, usage_error};
 
 #[test]
 fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
@@ -257,52 +253,7 @@ fn version_is_a_usable_subcommand_with_json_output() {
 // These live in an integration test, not in the lib's unit tests, on purpose:
 // the lib test binary already contains tests that overwrite `PINVOU3_HOME`
 // without taking any lock, and an integration test runs in its own process
-// where this file's ENV_LOCK is the only writer.
-
-/// Serialises the tests below, which mutate the process-global `PINVOU3_HOME`
-/// / `HOME` / `USERPROFILE` variables (same pattern as the other contract
-/// test files in this directory).
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-/// Panic-safe restore for the variables a test overwrites: the previous
-/// value is captured before the write and `Drop` puts back exactly that
-/// state (re-set, or removed when it was absent) on every exit path,
-/// including a failing assertion. Must be constructed while ENV_LOCK is
-/// held. `var_os`, not `var`: a host may legitimately hold a non-UTF-8
-/// value, and `var` would lose it.
-struct EnvGuard(Vec<(&'static str, Option<OsString>)>);
-
-impl EnvGuard {
-    fn set(entries: &[(&'static str, Option<&str>)]) -> Self {
-        let saved = entries
-            .iter()
-            .map(|(n, _)| (*n, std::env::var_os(n)))
-            .collect();
-        for (name, value) in entries {
-            match value {
-                // SAFETY: the caller holds ENV_LOCK for the whole test, so
-                // env writes are serialized in-process.
-                Some(value) => unsafe { std::env::set_var(name, value) },
-                // SAFETY: as above.
-                None => unsafe { std::env::remove_var(name) },
-            }
-        }
-        Self(saved)
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (name, value) in &self.0 {
-            match value {
-                // SAFETY: ENV_LOCK is held by the owning test.
-                Some(value) => unsafe { std::env::set_var(name, value) },
-                // SAFETY: ENV_LOCK is held by the owning test.
-                None => unsafe { std::env::remove_var(name) },
-            }
-        }
-    }
-}
+// where the shared harness's ENV_LOCK is the only writer.
 
 /// The CLI and the application must resolve one store root, never two. The
 /// CLI used to consult `USERPROFILE` before `HOME`, so a unix host with
@@ -311,7 +262,7 @@ impl Drop for EnvGuard {
 #[cfg(unix)]
 #[test]
 fn sandbox_home_ignores_userprofile_on_unix_like_the_application() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _lock = env_lock();
     let home = std::env::temp_dir().join(format!("pinvou-cli-home-{}", std::process::id()));
     let profile = std::env::temp_dir().join(format!("pinvou-cli-profile-{}", std::process::id()));
     let _guard = EnvGuard::set(&[
@@ -336,7 +287,7 @@ fn sandbox_home_ignores_userprofile_on_unix_like_the_application() {
 /// unset fallback to catch it.
 #[test]
 fn sandbox_home_refuses_every_non_absolute_store_root() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _lock = env_lock();
 
     {
         let _guard = EnvGuard::set(&[("PINVOU3_HOME", Some(""))]);
@@ -373,7 +324,7 @@ fn sandbox_home_refuses_every_non_absolute_store_root() {
 /// resolver produced it — the CLI validates, it does not re-derive.
 #[test]
 fn sandbox_home_returns_an_absolute_override_unchanged() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _lock = env_lock();
     let root: PathBuf =
         std::env::temp_dir().join(format!("pinvou-cli-store-{}", std::process::id()));
     let _guard = EnvGuard::set(&[("PINVOU3_HOME", root.to_str())]);
