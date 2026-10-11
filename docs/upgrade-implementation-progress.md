@@ -756,3 +756,55 @@ composition remain next. Activation stays closed without the actual waiting
 source. Undecidable client trust proof, platform/data/preparation-budget and
 migration bootstrap items remain deferred as requested. Deployment is deferred;
 downloads have no hard total or cumulative elapsed limit.
+
+
+### T44 batch 2: validation coordination and original time windows (2026-10-12)
+
+The separate service now has additive lifecycle migration 2. Migration 1 and the
+pinned V1 wire schemas remain unchanged. Private activeValidate registration and
+rebind repeat the actual T06 operation identity/owner, full scope, original
+preparation binding, session CAS and safe prospective fence. Failed coordination
+closes atomically; successful new authorization remains unavailable until actual
+credential, preparation, workflow and qualification owners exist.
+
+An optional trusted T06 reservation stage joins initial validation to ledger
+insertion/owner acquisition before their shared commit, and rebind to Execute or
+background recovery claim. It uses the earlier original lease/owner deadline and
+a final checkpoint fence. The actual-engine fixture verifies rollback of both
+sides, lost reservation acknowledgement, original-result takeover, fresh worker
+recovery, final owner fencing and bounded SQL wait cancellation. It uses real
+projection/result encryption; its fixed publisher is isolated and never registered
+in production. It cannot certify client trust or successful authorization.
+
+Fixed maintenance closes pending sessions/active validation at original start+24h
+and transaction reporting at original start+30d. Persistent reporting_timeout
+distinguishes missing reports from confirmed local failure; existing terminal
+records remain immutable. Session expiry fences future actions without modifying
+logical workflow download state or creating a synthetic committed T06 response.
+Complete capture refuses un-settled due scope projections before background scans.
+No retry resets the original deadline, and no hard download deadline is introduced.
+
+Independent review found and repaired first-registration atomicity, persistent
+reporting reason, due-read refusal, safe-integer fencing and reservation-stage
+lease bounds. Real PostgreSQL tests exercise additive v1-to-v2 upgrade/repeat,
+digest mismatch, closed private/PUBLIC privileges, null CAS, unique active races,
+original identity rebind, exact deadlines and post-write crossing, safe highest
+epoch, terminal immutability and zero partial writes. The full real T06/T44
+regression passed (314.536s/302.025s); the final reservation context test passed
+(24.534s) after the last guard delta. Final current-code verification is recorded
+in the service lifecycle plan. Default external opt-ins remain separate from
+explicit integration evidence.
+
+Full T44 still requires execution edges, staged completion/waiting slots, safe
+activation cancellation and channel invalidation, followed by integration with
+actual T17/T19/T20 owners. Platform/data certification, preparation measurement
+approval, specific-client current Root proof and deferred deployment are not
+silently approved through fixtures. Continue unblocked work rather than reopening
+owner decisions or claiming full-task acceptance.
+
+
+The final current-code full lifecycle PostgreSQL suite passed (167.554s); both
+independent read-only roles passed the complete scoped final delta. Full default
+Go tests/vet, module verification, all command builds, pinned artifact checks,
+formatting/diff checks and the client architecture guard passed. No unfinished
+T44 work or deferred production decision is counted as accepted.
