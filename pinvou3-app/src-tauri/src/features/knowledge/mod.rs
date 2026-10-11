@@ -17,6 +17,11 @@ mod l1;
 // app command layer (`app::commands::knowledge` owns the Tauri command
 // wrappers via the passthrough macros).
 pub mod model_download;
+// The headless CLI (`pinvou knowledge asr`-adjacent model checks) consumes
+// the completeness predicate through this re-export instead of a copy: it
+// cannot name the transitive `pinvou-knowledge` crate, and a copy silently
+// desynced the two surfaces every time the manifest changed.
+pub use pinvou_knowledge::model_download::model_directory_is_complete;
 mod query;
 mod scanner;
 mod store;
@@ -31,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -47,10 +52,18 @@ use store::{SearchQuery, Store};
 #[serde(rename_all = "camelCase")]
 pub struct ScanState {
     pub running: bool,
-    /// idle / scanning / done
+    /// idle / scanning / done / interrupted (a scan-thread panic
+    /// is caught and contained; see `finish_scan_after_panic`). The frontend
+    /// refreshes L0 only on `done`, so `interrupted` cannot read as
+    /// "scanned".
     pub phase: String,
     pub roots: Vec<String>,
     pub scanned: u64,
+    /// Raw entries enumerated pre-prune. The GUI ignores this; the headless
+    /// `scan start` stall bound watches it because a pruned-heavy tree can
+    /// legitimately spend the whole stall window between two countable
+    /// reports while walking healthily.
+    pub raw_seen: u64,
     pub finished_at: i64,
 }
 
@@ -330,6 +343,28 @@ impl KnowledgeService {
             .unwrap_or_default()
     }
 
+    /// Import state of the NAMED job (not "the latest job").
+    ///
+    /// [`Self::index_status`] goes through `ImportJobStore::latest_state`'s
+    /// priority ordering (preparing/running → interrupted → done_with_errors →
+    /// the rest, then updated_at descending): `cancelled` lands in the last
+    /// tier, so any earlier done_with_errors / interrupted job outranks it.
+    /// The GUI is unaffected — it only polls "the job currently most worth
+    /// showing the user", which is exactly what that ordering is designed to
+    /// answer; but the headless CLI's `index cancel <job-id>` /
+    /// `index status <job-id>` report the job they NAMED, and reading latest
+    /// after a cancel would cross-wire to another job's state (the human line
+    /// says B was cancelled, the JSON body carries A). Same entry point and
+    /// same semantics as the `imports.state(&job_id)` lookups that close out
+    /// `resume_index`/`retry_index_item`.
+    ///
+    /// A nonexistent job is reported as an error (the layer below surfaces
+    /// `QueryReturnedNoRows`), letting callers distinguish "the job is gone"
+    /// from "the job exists but its state row is empty".
+    pub fn index_job_state(&self, job_id: &str) -> Result<IndexState, String> {
+        self.imports.state(job_id).map_err(|e| e.to_string())
+    }
+
     pub fn cancel_index(&self) -> Result<(), String> {
         let job_id = self
             .active_import
@@ -348,9 +383,77 @@ impl KnowledgeService {
     }
 
     pub fn cancel_index_for_collection(&self, collection_id: i64) -> Result<(), String> {
+        // Round-41 review: cancel the job CAPTURED in this first read, not a
+        // re-derived "latest" — `cancel_index` re-derives the target from a
+        // second `index_status()` read, and in the window between the two
+        // reads the named job can terminalize while an older job of ANOTHER
+        // collection becomes latest (a CLI-owned import finishing mid-read):
+        // that cross-wired cancel deleted the other collection's staged
+        // checkpoints and relabeled it ready. The named entry point
+        // (`cancel_index_job`) re-checks the captured job's own state and
+        // can never be swapped for a different job.
         let status = self.index_status();
         if status.collection_id == collection_id && (status.running || status.resumable) {
-            self.cancel_index()?;
+            if let Some(job_id) = status.job_id.as_deref() {
+                self.cancel_index_job(job_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancels the NAMED import job to `cancelled` and returns its
+    /// pre-transition state.
+    ///
+    /// A named-job entry point isomorphic to [`Self::interrupt_index`] (the
+    /// only difference is the transition: this method goes through
+    /// ImportJobStore::cancel, applies to preparing/running/interrupted
+    /// and commits synchronously). The headless CLI's `index cancel
+    /// <job-id>` uses it instead of [`Self::cancel_index`]'s "latest job"
+    /// re-derivation: the CLI validates `active == job_id` before calling,
+    /// while `cancel_index` re-derives the target on its own — the window
+    /// between the two store reads could cancel a job the caller never
+    /// named. A nonexistent job is reported as an error (same as
+    /// `interrupt_index`), a finished job stays an idempotent no-op — the
+    /// named job can never be silently swapped for another.
+    pub fn cancel_index_job(&self, job_id: &str) -> Result<IndexState, String> {
+        let state = self.imports.state(job_id).map_err(|e| e.to_string())?;
+        if state.running || state.resumable {
+            self.imports.cancel(job_id).map_err(|e| e.to_string())?;
+            self.index_cancel.store(true, Ordering::Relaxed);
+            self.l1.set_collection_status(state.collection_id, "ready");
+        }
+        Ok(state)
+    }
+
+    /// Returns the NAMED import job to `interrupted` (resumable). The closing
+    /// entry point for the CLI's wait-timeout path: when the import thread is
+    /// dead or wedged, the job is left in interrupted (not running), so the
+    /// next `resume_index` can continue without waiting for the desktop app
+    /// to boot and recover it. Structurally the same defensive lookup as
+    /// [`Self::cancel_index`] — the named state is read first and an unknown
+    /// job is reported as an error (never a silent no-op); the transition
+    /// itself is delegated to `ImportJobStore::interrupt`: it only applies to
+    /// preparing/running (enforced in the SQL WHERE), and finished/interrupted
+    /// jobs are an idempotent no-op. The collection is only parked at
+    /// "pending" when the transition APPLIED: a job whose last item finished
+    /// between the state read and the interrupt must keep its collection at
+    /// "ready" instead of a permanently stale "pending" with no self-healing
+    /// path (`index resume` refuses a non-interrupted job).
+    pub fn interrupt_index(&self, job_id: &str) -> Result<(), String> {
+        let state = self.imports.state(job_id).map_err(|e| e.to_string())?;
+        if state.running {
+            let applied = self.imports.interrupt(job_id);
+            // The stall-timeout premise is that the import thread is gone or
+            // wedged, so `launch_import`'s close-out (which resets the
+            // "indexing" status this job set) will never run. Park the
+            // collection at "pending" — resumable, exactly like boot
+            // recovery relabels an interrupted job — instead of leaving the
+            // GUI a permanently "indexing" collection until the next
+            // resume/cancel.
+            if applied {
+                self.l1
+                    .set_collection_status(state.collection_id, "pending");
+            }
         }
         Ok(())
     }
@@ -376,6 +479,51 @@ impl KnowledgeService {
             if previous.resumable {
                 return previous;
             }
+            // Round-40 review: a RUNNING job this process does not own is a
+            // second-process importer (the CLI's knowledge family writes the
+            // same store). Starting here launched a second embedder over the
+            // same collection — two models in memory and interleaved
+            // upsert/chunk DELETE-INSERT on the same paths. The CLI guards
+            // its own lane against a running store; the GUI side of the
+            // two-writer world was unguarded. Liveness is the job-row
+            // heartbeat the import thread ticks on the walk and at every
+            // item claim (the same signal the CLI's stall watcher reads):
+            // refuse only while that row is FRESH, so a crashed CLI's frozen
+            // row degrades to a normal GUI start instead of pinning the
+            // collection forever — that regression risk is why the guard was
+            // one-sided until the heartbeat existed. The bound is 2× the
+            // CLI's default stall bound, generous against the one quiet
+            // window (a single file's parse); a false allow in that window
+            // is the previously-disclosed behavior, a false allow on a dead
+            // process is what the freshness check exists to prevent, and a
+            // false refusal is what 2× buys margin against.
+            if previous.running {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or(i64::MAX);
+                let age_secs = previous
+                    .updated_at
+                    .map(|updated| now_secs.saturating_sub(updated))
+                    // An unmeasurable row cannot prove liveness: fail open to
+                    // the pre-guard behavior instead of wedging the button.
+                    .unwrap_or(i64::MAX);
+                if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
+                    return previous;
+                }
+                // Round-43 review: a frozen running row is provably
+                // ownerless (its heartbeat is older than 2× the CLI stall
+                // bound), but leaving it in `running` while a new job starts
+                // makes the DEAD row the phantom "latest" import —
+                // `latest_state` ranks running above every other state, so
+                // the progress surface would report the dead job forever and
+                // every CLI writer on the store would be refused until an
+                // explicit cancel or an app restart. Collapse it to
+                // `interrupted` (tier 1) before creating the new job; a
+                // failed transition must not wedge the start (the degrade's
+                // whole premise is to un-pin the button), so it only notes.
+                interrupt_frozen_foreign_row(&self.imports, &self.l1, previous.job_id.as_deref());
+            }
         }
         let job_id = match self.imports.create(collection_id, &roots) {
             Ok(id) => id,
@@ -392,8 +540,9 @@ impl KnowledgeService {
     pub fn resume_index(&self, job_id: String) -> Result<IndexState, String> {
         let mut active = self.active_import.lock();
         if active.is_some() {
-            return Err("已有知识集导入任务正在运行".into());
+            return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
         }
+        refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
         self.imports.resume(&job_id).map_err(|e| e.to_string())?;
         *active = Some(job_id.clone());
         drop(active);
@@ -404,11 +553,20 @@ impl KnowledgeService {
     pub fn retry_index_item(&self, job_id: String, item_id: i64) -> Result<IndexState, String> {
         let mut active = self.active_import.lock();
         if active.is_some() {
-            return Err("已有知识集导入任务正在运行".into());
+            return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
         }
-        self.imports
-            .retry_item(&job_id, item_id)
-            .map_err(|e| e.to_string())?;
+        refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
+        self.imports.retry_item(&job_id, item_id).map_err(|error| {
+            // Strip the driver's "Invalid parameter name:" wrapper off
+            // the item-level miss marker (round-45) so the CLI's
+            // `knowledge_index_item_not_found` line reads cleanly.
+            let text = error.to_string();
+            if text.contains(INDEX_ITEM_NOT_FAILED_MARKER) {
+                format!("knowledge index item {item_id}{INDEX_ITEM_NOT_FAILED_MARKER}{job_id}")
+            } else {
+                text
+            }
+        })?;
         *active = Some(job_id.clone());
         drop(active);
         self.launch_import(job_id.clone());
@@ -427,6 +585,16 @@ impl KnowledgeService {
         let panic_imports = imports.clone();
         let panic_active = active.clone();
         let panic_job_id = job_id.clone();
+        let panic_l1 = self.l1.clone();
+        // Automation hold (`PINVOU_KB_IMPORT_HOLD_FILE`): sampled HERE, on
+        // the spawning thread, not inside the worker below. A test keeps
+        // the variable set only until it has observed the row `running` —
+        // state `prepare_items` publishes from inside the worker — so the
+        // capture must be ordered before the worker exists: read after
+        // `prepare_items`, a descheduled worker could miss a variable the
+        // test had already removed and skip the park. Unset (all
+        // production paths) this is a no-op.
+        let import_hold = std::env::var_os("PINVOU_KB_IMPORT_HOLD_FILE").map(PathBuf::from);
         thread::spawn(move || {
             // 导入线程处理任意用户文件（PDF/Office/图片 OCR 等），底层解析可能 panic。
             // 进程死亡已由启动时的 recover_interrupted 兜底，但进程内线程 panic 不会
@@ -452,18 +620,64 @@ impl KnowledgeService {
                         return Ok(());
                     }
                     let roots = imports.roots(&job_id)?;
-                    let files = expand_import_roots(&roots, &cancel);
+                    // Best-effort: a failed tick is one silent beat (the
+                    // store busy for a moment), never a false stall.
+                    let heartbeat = || {
+                        let _ = imports.touch(&job_id);
+                    };
+                    let files = expand_import_roots(&roots, &cancel, &heartbeat);
                     imports.prepare_items(&job_id, &files)
                 });
                 if prepare_result.is_err() {
                     imports.interrupt(&job_id);
                     infrastructure_error = true;
                 }
+                // Automation hold (captured before this worker existed,
+                // see `launch_import`): when set, the thread parks here —
+                // after `prepare_items` promoted the row to `running`,
+                // before the first item is claimed — until the path
+                // exists. This gives contract tests a deterministic
+                // live-owner window: the CLI's running-job refusals can be
+                // asserted against an owner that is provably alive instead
+                // of racing a large import's completion. The wait is
+                // bounded so a crashed harness cannot wedge the thread
+                // forever, and an interrupt/cancel breaks the park like
+                // any other stop.
+                if let Some(hold) = import_hold {
+                    let deadline = Instant::now() + Duration::from_secs(120);
+                    while !hold.exists() {
+                        if cancel.load(Ordering::Relaxed)
+                            || imports.is_stopped(&job_id) == Ok(true)
+                            || Instant::now() >= deadline
+                        {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
                 loop {
-                    if infrastructure_error
-                        || cancel.load(Ordering::Relaxed)
-                        || imports.is_cancelled(&job_id)
+                    // `is_stopped` covers an external interrupt AND a cancel
+                    // (both leave the runnable states): a slow-but-alive
+                    // thread must not keep claiming the items the interrupt
+                    // moved back to pending and end the job fully-ingested
+                    // yet `interrupted`.
+                    let stopped = imports.is_stopped(&job_id);
+                    if infrastructure_error || cancel.load(Ordering::Relaxed) || stopped == Ok(true)
                     {
+                        break;
+                    }
+                    if let Err(_) = stopped {
+                        // Round-45 review: a status read that keeps failing is
+                        // indistinguishable from a wedged store. Breaking
+                        // without `infrastructure_error` left the row
+                        // `running`, skipped `finish`, and parked the
+                        // collection at `ready` — the exact phantom-latest
+                        // shape this family's contract excludes. Route it
+                        // through the same interrupt + infrastructure-error
+                        // path as `claim_next`'s error arm so the job lands
+                        // `interrupted` and stays resumable.
+                        let _ = imports.interrupt(&job_id);
+                        infrastructure_error = true;
                         break;
                     }
                     let item = match imports.claim_next(&job_id) {
@@ -475,6 +689,18 @@ impl KnowledgeService {
                             break;
                         }
                     };
+                    // Round-40 review: mark the claim on the job row. The
+                    // embed-batch phase moves the item row per batch (the
+                    // CLI's stall tuple reads `current_chunks_done`), but
+                    // between the walk's last tick and the first batch the
+                    // job row was frozen across claim + parse start; a
+                    // best-effort touch here keeps the row honest about a
+                    // live thread. A single file whose PARSE alone outlasts
+                    // the stall bound stays frozen inside
+                    // `file_ingest::ingest` — the CLI's stall report names
+                    // that quiet phase and carries the in-flight path
+                    // instead of pretending the bound cannot hit it.
+                    let _ = imports.touch(&job_id);
                     match l1.ingest_import_item(
                         &job_id,
                         item.id,
@@ -509,7 +735,17 @@ impl KnowledgeService {
             if outcome.is_err() {
                 // panic 与正常退出走同样的中断+清理：把任务退回 interrupted，清空 active_import，
                 // 下次启动（或用户续作）仍可恢复，导入子系统不会卡死。
-                panic_imports.interrupt(&panic_job_id);
+                let state = panic_imports.state(&panic_job_id).ok();
+                let applied = panic_imports.interrupt(&panic_job_id);
+                // 与 `interrupt_index` 同款 applied-parking：中断落地时集合停回
+                // "pending"（可续作），而不是卡死在线程 panic 前已置上的
+                // "indexing"。interrupt 未落地说明最后一个条目恰好在读态与中断
+                // 之间完成，close-out 的语义仍然成立，集合保持原状。
+                if applied && state.as_ref().is_some_and(|s| s.running) {
+                    if let Some(state) = state {
+                        panic_l1.set_collection_status(state.collection_id, "pending");
+                    }
+                }
                 let mut current = panic_active.lock();
                 if current.as_deref() == Some(panic_job_id.as_str()) {
                     *current = None;
@@ -537,39 +773,103 @@ impl KnowledgeService {
 
         let store = self.store.clone();
         let scan_state = self.scan_state.clone();
+        // The panic backstop needs its own state handle that the closure
+        // cannot move away, otherwise there is no way to close out after a
+        // panic.
+        let panic_scan_state = self.scan_state.clone();
 
         thread::spawn(move || {
-            let ex = Excluder::default();
-            // 增量：载入现有快照，scanner 只写 mtime/size 变化的文件，未变的跳过。
-            let existing = store.load_index().unwrap_or_default();
-            let mut visited = std::collections::HashSet::new();
-            let mut scanned_total = 0u64;
-            for root in &roots {
-                let base = scanned_total;
-                let walked = scanner::scan(root, &store, &ex, &existing, &mut visited, |n| {
-                    scan_state.lock().scanned = base + n;
-                });
-                scanned_total = base + walked;
-                scan_state.lock().scanned = scanned_total;
-            }
+            // Scan-thread panic backstop (same semantics as the import
+            // thread in `launch_import`): `running` is only cleared by the
+            // normal close-out below, and `scan_state` is a parking_lot::Mutex
+            // — it cannot poison, so after a panic the lock stays lockable
+            // while the state is stuck at running:true forever. The GUI just
+            // shows a progress bar that stops advancing (lazy trigger, next
+            // visit rescans), but `pinvou knowledge scan start` is the one
+            // caller that BLOCKS on that flag and would hang with no output
+            // and no exit code.
+            let outcome = catch_unwind(AssertUnwindSafe(move || {
+                let ex = Excluder::default();
+                // Incremental: load the existing snapshot; the scanner only
+                // writes files whose mtime/size changed and skips the rest.
+                let existing = store.load_index().unwrap_or_default();
+                let mut visited = std::collections::HashSet::new();
+                let mut scanned_total = 0u64;
+                // Deletion authority is granted only for roots that were
+                // actually WALKED WITHOUT ERROR, not for roots that were
+                // REQUESTED (see `root_authorizes_deletion`): scanner::scan
+                // reports zero entries for a root it cannot walk, and the
+                // cleanup phase still runs — treating that root as a deletion
+                // boundary would wipe its whole indexed slice as "discovered
+                // missing". A walk ERROR under an otherwise walkable root is
+                // the same veto (an unreadable subtree's slice is just as
+                // undecidable), so the error count rides along.
+                let mut swept_roots: Vec<PathBuf> = Vec::with_capacity(roots.len());
+                for root in &roots {
+                    let base = scanned_total;
+                    let (walked, walk_errors) = scanner::scan(
+                        root,
+                        &store,
+                        &ex,
+                        &existing,
+                        &mut visited,
+                        |n| {
+                            scan_state.lock().scanned = base + n;
+                        },
+                        // Each heartbeat stands for RAW_HEARTBEAT enumerated
+                        // entries; counting ticks (not the per-root raw
+                        // value, which restarts at 0 for every root) keeps
+                        // the counter monotonic across roots with no
+                        // bookkeeping.
+                        |raw| {
+                            let _ = raw;
+                            scan_state.lock().raw_seen += 1;
+                        },
+                    );
+                    scanned_total = base + walked;
+                    scan_state.lock().scanned = scanned_total;
+                    if root_authorizes_deletion(root, walked, walk_errors) {
+                        swept_roots.push(root.clone());
+                    }
+                }
 
-            // Clean up files that "disappeared" (in the library last time, not walked this time).
-            let stale: Vec<String> = existing
-                .keys()
-                .filter(|p| !visited.contains(*p))
-                .cloned()
-                .collect();
-            if !stale.is_empty() {
-                let _ = store.delete_many(&stale);
-            }
+                // Clean up files that "disappeared" (indexed last time, not
+                // walked this time).
+                let stale = stale_entries(&existing, &visited, &swept_roots);
+                if !stale.is_empty() {
+                    let _ = store.delete_many(&stale);
+                }
 
-            // 去重(算 hash)不在扫描里跑——读盘昂贵、百万文件下永远跑不完且拖卡设备。去重功能已下线。
-            let finished_at = now();
-            let _ = store.set_last_scan_finished_at(finished_at);
-            let mut st = scan_state.lock();
-            st.running = false;
-            st.finished_at = finished_at;
-            st.phase = "done".into();
+                // Deduplication (hashing) no longer runs inside the scan — it is
+                // disk-expensive, unbounded on million-file libraries and stalls
+                // slow devices. The dedup feature itself is retired.
+                let finished_at = now();
+                let _ = store.set_last_scan_finished_at(finished_at);
+                let mut st = scan_state.lock();
+                st.running = false;
+                st.finished_at = finished_at;
+                st.phase = "done".into();
+            }));
+            if let Err(panic) = outcome {
+                // Same "never stall silently" rule as the idle patrol's
+                // single-round backstop: without this, a dead scan thread
+                // would only manifest as a stopped progress bar with
+                // nothing to trace.
+                //
+                // The state backstop runs FIRST: Rust ignores SIGPIPE, so
+                // with stderr closed the write itself panics and an
+                // `eprintln!` here would strand `running: true` — the
+                // exact stall this arm exists to prevent. The write's
+                // errors are ignored on purpose (assistant's `note_stderr`
+                // semantics, inlined so knowledge does not reach into
+                // another feature for two lines).
+                finish_scan_after_panic(&panic_scan_state);
+                use std::io::Write as _;
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[knowledge] scan thread panicked (contained; the stale sweep's outcome is unknown): {panic:?}"
+                );
+            }
         });
 
         self.scan_state.lock().clone()
@@ -610,10 +910,28 @@ impl KnowledgeService {
 /// 后台索引入口的补载实现已上收到 `KnowledgeService::
 /// reload_embedder_if_import_needed`（导入线程持有服务句柄，补载必须经
 /// install_embedder 启动空闲巡检，自由函数直写 l1 槽会绕过巡检启动）。
-/// 剪枝遍历复用 `scanner::walk_pruned`（与全盘扫描同一排除语义）。
-fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
+/// 剪枝遍历复用 `scanner::walk_pruned_with`（与全盘扫描同一排除语义）。
+fn expand_import_roots(
+    roots: &[PathBuf],
+    cancel: &AtomicBool,
+    heartbeat: &dyn Fn(),
+) -> Vec<PathBuf> {
     let ex = Excluder::default();
     let mut files = Vec::new();
+    // Round-37 review MAJOR: tick the job row while the walk runs. Nothing
+    // else observable moves during the walk (items are only staged
+    // afterwards), so a healthy walk used to be indistinguishable from a
+    // wedged thread and got killed by the CLI's stall bound — the same
+    // false-positive the scan lane fixed with its pre-prune raw heartbeat.
+    // Round-40 review MAJOR: the tick must be PRE-prune. Counting only the
+    // entries that survive the Excluder left a root that is one huge flat
+    // directory of excluded files (disk images, backups — the scan lane's
+    // `raw_heartbeat_ticks_on_a_pruned_heavy_tree` shape) enumerating for
+    // minutes with nothing to count: the job row stayed frozen and the
+    // CLI's stall bound interrupted a healthy walk on every attempt.
+    // `walk_pruned_with` invokes the callback on its own RAW_HEARTBEAT
+    // cadence over every enumerated entry, prune survivors or not; one
+    // callback = one job-row touch.
     for root in roots {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -622,7 +940,9 @@ fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
             files.push(root.clone());
             continue;
         }
-        for entry in scanner::walk_pruned(root, &ex) {
+        // 导入侧沿用「错误即跳过」：导入的目的是收录可读文件，单个不可读
+        // 子树不否定其余条目（与全盘扫描的删除授权不同，那边必须否决）。
+        for entry in scanner::walk_pruned_with(root, &ex, |_| heartbeat()).flatten() {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -633,6 +953,119 @@ fn expand_import_roots(roots: &[PathBuf], cancel: &AtomicBool) -> Vec<PathBuf> {
     }
     import_jobs::unique_existing_files(files)
 }
+
+/// Round-42 review: `resume_index`/`retry_index_item` launch an importer
+/// thread exactly like [`KnowledgeService::start_index`], so they carry the
+/// same cross-process freshness guard — a FRESH running job row means
+/// another process's importer is live, and a second importer here is the
+/// two-embedder/interleaved-upsert hazard the start_index guard names
+/// (the CLI's resume/retry lanes refuse a running job; the GUI's own
+/// `active_import` check only covers this process). A frozen row (crashed
+/// owner) degrades to allow: the store's state transitions plus the CLI's
+/// stall interruption stay the recovery paths. `requested_job` is exempt —
+/// resuming a job that is genuinely running is already refused by the
+/// store's state transitions, and returning that refusal instead would
+/// name the wrong remedy.
+fn refuse_fresh_foreign_running_import(
+    imports: &import_jobs::ImportJobStore,
+    parked_collections: &l1::L1Store,
+    requested_job: Option<&str>,
+) -> Result<(), String> {
+    if let Ok(Some(previous)) = imports.latest_state() {
+        let foreign = previous
+            .job_id
+            .as_deref()
+            .map(|id| Some(id) != requested_job)
+            .unwrap_or(true);
+        if previous.running && foreign {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(i64::MAX);
+            let age_secs = previous
+                .updated_at
+                .map(|updated| now_secs.saturating_sub(updated))
+                // An unmeasurable row cannot prove liveness: fail open to
+                // the pre-guard behavior instead of wedging the button.
+                .unwrap_or(i64::MAX);
+            if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
+                return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
+            }
+            // Round-43 review: same phantom-latest hazard as start_index —
+            // allowing a lane past a frozen row leaves the dead `running`
+            // row ranked above every real job. Collapse it before the
+            // caller proceeds.
+            interrupt_frozen_foreign_row(imports, parked_collections, previous.job_id.as_deref());
+        }
+    }
+    Ok(())
+}
+
+/// Collapse a provably-ownerless frozen `running` row to `interrupted` so it
+/// stops outranking live jobs in [`ImportJobStore::latest_state`]'s ordering
+/// (round-43 review). Failure only notes: every caller is on a degrade path
+/// whose premise is to un-pin the lane, not to trade a phantom refusal for a
+/// real one.
+fn interrupt_frozen_foreign_row(
+    imports: &import_jobs::ImportJobStore,
+    parked_collections: &l1::L1Store,
+    job_id: Option<&str>,
+) {
+    let Some(job_id) = job_id else {
+        return;
+    };
+    // The pre-transition state names the collection whose "indexing" badge
+    // the dead importer left behind.
+    let pre_state = imports.state(job_id).ok();
+    if !imports.interrupt(job_id) {
+        // Round-44 review: `interrupt` reports `false` for two different
+        // facts — the guarded UPDATE actually failing (the row genuinely
+        // stays `running`) and the benign 0-row race (the job terminalized
+        // between the freshness read and the interrupt, so there is nothing
+        // left to cancel). Only the first deserves the stale-row note.
+        match imports.state(job_id) {
+            Ok(state) if !state.running => {}
+            _ => eprintln!(
+                "[pinvou3-app] stale import job {job_id} could not be interrupted before the new \
+                 start; it stays in place until an explicit cancel"
+            ),
+        }
+        return;
+    }
+    // Round-44 review: mirror `interrupt_index` — the dead importer's
+    // close-out never runs, so park the collection at "pending" (resumable)
+    // instead of leaving it "indexing" with no live job until the next
+    // resume/cancel/restart.
+    if let Some(state) = pre_state {
+        parked_collections.set_collection_status(state.collection_id, "pending");
+    }
+}
+
+/// Freshness bound for the job-row heartbeat in [`KnowledgeService::start_index`]:
+/// a running job whose row moved within this window is treated as a LIVE
+/// second-process importer and a GUI start refuses; older (a crashed CLI) is
+/// stale and degrades to a normal start. 2× the CLI's default 300 s stall
+/// bound — see the start_index comment for the failure-direction trade.
+const IMPORT_HEARTBEAT_ALIVE_SECS: i64 = 600;
+
+/// Round-46 review: single-sourced so the CLI's error mapper can recognize
+/// the fresh-foreign-running refusal by marker instead of a verbatim string
+/// copy that drifts (the same single-sourcing discipline
+/// `CLI_DISCONNECTED_DEGRADED_REASON` uses). The CLI maps it to the stable
+/// `knowledge_index_busy` code — this refusal is otherwise the one
+/// zh-CN-only, codeless error class reachable through the CLI's
+/// resume/retry race path.
+pub const FOREIGN_IMPORT_RUNNING_MARKER: &str = "已有知识集导入任务正在运行";
+
+/// Round-50 review: single-sourced like `FOREIGN_IMPORT_RUNNING_MARKER` —
+/// the item-level retry miss is recognized by this phrase on all three
+/// surfaces (the producer's `InvalidParameterName` payload in
+/// `import_jobs.rs`, the strip-and-reformat in `KnowledgeService::retry_index_item`
+/// below, and the CLI's `knowledge_index_item_not_found` mapper); a wording
+/// change now fails the compile-time references instead of silently
+/// downgrading the CLI's stable code to the generic `knowledge index:`
+/// prefix.
+pub const INDEX_ITEM_NOT_FAILED_MARKER: &str = " is not a failed item of job ";
 
 /// `~/.pinvou3/knowledge/index.db`。
 pub fn default_db_path() -> PathBuf {
@@ -649,6 +1082,211 @@ pub fn model_dir() -> PathBuf {
         .join("knowledge")
         .join("models")
         .join("bge-m3")
+}
+
+/// Post-panic close-out for the scan thread: clears `running` and lands the
+/// phase on `interrupted`.
+///
+/// A distinct phase instead of reusing done/cancelled: the scan neither
+/// finished (`last_scan_finished_at` is not recorded, so the next visit still
+/// treats it as never-scanned) nor was it user-cancelled. The frontend
+/// refreshes L0 only on `done`, so `interrupted` cannot be mistaken for
+/// success; the blocking CLI caller uses it to report an error instead of
+/// announcing the scan complete.
+///
+/// `finished_at` is deliberately left at the previous COMPLETED scan's value:
+/// the GUI's lazy-autoscan cooldown gates on `finishedAt` regardless of
+/// phase (`KnowledgeView`), so stamping the abort here would suppress
+/// autoscan for a full cooldown window even though the round produced
+/// nothing — an aborted scan must not spend the budget of a finished one.
+fn finish_scan_after_panic(scan_state: &Mutex<ScanState>) {
+    let mut st = scan_state.lock();
+    st.running = false;
+    st.phase = "interrupted".into();
+}
+
+/// Whether THIS scan round is authorized to run "disappeared" deletions
+/// inside `root`.
+///
+/// `scanner::scan` reports zero entries for a root it cannot WALK: an
+/// unmounted drive, revoked permissions, or the root being deleted after the
+/// pre-flight all look identical to "0 entries walked". Handing that root to
+/// [`stale_entries`] as a deletion boundary would condemn its whole indexed
+/// slice as disappeared — `scan start --root /mnt/usb` after the drive drops
+/// would delete every entry under `/mnt/usb` and still report
+/// `phase: done`. The flavors that must NOT delete:
+/// - **Could not walk the root** (missing / not a directory / unreadable):
+///   the fate of that root's indexed entries is undecidable this round, so
+///   the round must not decide for it — skip (the next round cleans up
+///   naturally once the root is back).
+/// - **Walk errors under the root** (`walk_errors > 0`, the round-27 review
+///   gap): a top-level probe cannot see a subtree that failed mid-walk, but
+///   the slice under a chmod-000 subdirectory is just as undecidable — the
+///   entries are absent from `visited` because the walker could not read
+///   them, which is indistinguishable from "disappeared". `scanner::scan`
+///   therefore surfaces the walk-error count and any error vetoes the
+///   root's stale sweep for this round; the slice stays and the next fully
+///   readable round cleans it. The trade-off is disclosed: one permanently
+///   unreadable file pauses ghost cleanup for its whole root (the safe
+///   direction — lingering, not wiping).
+///
+/// The flavors that MUST delete:
+/// - **Walked, and it is empty** (the root is still a readable directory):
+///   the user really did empty it; the slice should be cleaned, otherwise
+///   ghost entries linger forever — this is why the deletion feature exists
+///   at all, so it cannot be switched off for safety.
+///
+/// One ambiguous corner remains: a static mountpoint whose unmount leaves a
+/// readable empty directory behind — filesystem-identical to "the user
+/// emptied the directory", indistinguishable by any pure path probe. That
+/// case is treated as "empty directory" (cleanup proceeds): it is the
+/// minority compared to the common forms where a dropped drive takes the
+/// mountpoint with it or makes it unreadable (udisks automounts, ESTALE/EIO
+/// after device removal, permission revocation), and it is at least not
+/// silent — deletion only ever happens inside a root the user NAMED.
+fn root_authorizes_deletion(root: &Path, walked: u64, walk_errors: u64) -> bool {
+    if walk_errors != 0 {
+        return false;
+    }
+    if walked > 0 {
+        return true;
+    }
+    // A root the walker refuses BY POLICY (its basename sits on the
+    // exclusion list — `build`, `dist`, `venv`, `.cache`, …) is not "walked
+    // and empty": `walk_pruned_with` subjects the depth-0 root to the same skip
+    // predicate as every entry, so a readable, non-empty excluded-name root
+    // also reports zero entries and zero errors. Authorizing the sweep here
+    // would delete the slice of a directory nobody ever looked at while
+    // reporting `done, scanned: 0`. The empty-looking exclusion-root round
+    // therefore vetoes, exactly like a walk error (the safe lingering
+    // direction); a root the user genuinely emptied AND renamed off the
+    // exclusion list sweeps on the next round.
+    if let Some(name) = root.file_name().and_then(|name| name.to_str())
+        && Excluder::default().is_skipped(name, true, None)
+    {
+        return false;
+    }
+    // A symlinked root is followed for traversal (walkdir's follow_root_links
+    // defaults to true; only the root ENTRY itself reports is_symlink and is
+    // skipped by the recorder), so a non-empty target yields walked > 0 and
+    // is authorized before this probe — correctly, since `visited` really
+    // covers the target's children. The corner this probe owns is the EMPTY
+    // target: it walks as zero entries, and authorizing it via read_dir
+    // alone would let the sweep run against a root whose readable surface
+    // (the link target) was never the indexed directory. A zero-walked root
+    // therefore authorizes only when it is a real (non-symlink) directory
+    // the probe can list.
+    let is_real_dir = std::fs::symlink_metadata(root)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    is_real_dir && std::fs::read_dir(root).is_ok()
+}
+
+/// Computes this round's "disappeared" entries: decided ONLY within the
+/// roots actually walked this round.
+///
+/// The old logic treated "indexed but not walked this time" as disappeared
+/// unconditionally. Under the GUI that is harmless — it only ever scans the
+/// single root of the user's home directory (`kb_start_scan(roots: null)`),
+/// every indexed entry lives under that root, so this function's result is
+/// identical to the old logic entry for entry. But the CLI's
+/// `knowledge scan start --root <DIR>` can scan any directory: while scanning
+/// directory B, entries indexed from directory A would be condemned as stale
+/// wholesale — a silent full-index wipe reported as `done`. Deletion
+/// therefore requires the entry to fall under a root WALKED this round —
+/// entries outside every walked root were never this round's responsibility,
+/// so their fate cannot be decided.
+///
+/// `roots` are the roots that were actually WALKED (filtered through
+/// [`root_authorizes_deletion`]), not the roots the caller requested: a
+/// TOCTOU stands between request and walk, and treating an unwalkable
+/// requested root as a boundary would wipe its whole slice.
+///
+/// Containment is compared by path COMPONENT via [`Path::starts_with`],
+/// never by string prefix: `/home/a` must not match `/home/abc`.
+fn stale_entries(
+    existing: &std::collections::HashMap<String, (i64, u64)>,
+    visited: &std::collections::HashSet<String>,
+    roots: &[PathBuf],
+) -> Vec<String> {
+    // Each root is canonicalized exactly once (falling back to the raw path
+    // on failure, e.g. the root was deleted between request and judgment).
+    // Both the raw and the canonicalized spellings participate in the
+    // comparison: store keys may have been written under either form.
+    let bounds: Vec<(PathBuf, PathBuf)> = roots
+        .iter()
+        .map(|root| {
+            let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            (root.clone(), canonical)
+        })
+        .collect();
+    let mut canonical_cache: std::collections::HashMap<PathBuf, Option<PathBuf>> =
+        std::collections::HashMap::new();
+    existing
+        .keys()
+        .filter(|path| !visited.contains(*path))
+        .filter(|path| {
+            within_scanned_roots(Path::new(path.as_str()), &bounds, &mut canonical_cache)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Whether the path falls under one of this round's scanned roots (the root
+/// itself included).
+///
+/// The raw in-memory comparison runs FIRST and short-circuits: the GUI has
+/// exactly one root (the home directory) and every indexed entry hits on
+/// this step, so the whole cleanup phase degrades to the old HashSet
+/// difference's cost. The reverse ordering (canonicalize every entry first)
+/// would fire one doomed syscall per entry — tens of thousands of them after
+/// a large directory deletion, all on the scan thread.
+///
+/// canonicalize is only the fallback: when a scanned root is a symlink, or
+/// the store's key itself is a relative/symlinked spelling, containment is
+/// only decidable after normalizing. Stale paths are usually already gone
+/// from disk (that is what stale means), so canonicalizing them necessarily
+/// fails — and failure answers "not inside a boundary": no deletion
+/// authority, the same semantics as the old version.
+fn within_scanned_roots(
+    path: &Path,
+    bounds: &[(PathBuf, PathBuf)],
+    canonical_cache: &mut std::collections::HashMap<PathBuf, Option<PathBuf>>,
+) -> bool {
+    if bounds.iter().any(|(raw_root, canonical_root)| {
+        path.starts_with(raw_root) || path.starts_with(canonical_root)
+    }) {
+        return true;
+    }
+    // The fallback normalizes a store key whose spelling diverges from the
+    // scanned roots (symlinked root, symlinked store key). Entries are
+    // sibling-dense, so canonicalization is cached per PARENT directory:
+    // one syscall per directory per round instead of one per file, and a
+    // gone file whose parent is also gone still answers from the cache.
+    let canonical: PathBuf = match path.parent() {
+        Some(parent) => {
+            let cached = canonical_cache
+                .entry(parent.to_path_buf())
+                .or_insert_with(|| std::fs::canonicalize(parent).ok());
+            let Some(canonical_parent) = cached else {
+                // The parent itself does not exist, so the child cannot have
+                // an alternative readable spelling: same answer as
+                // canonicalize failing on the child.
+                return false;
+            };
+            match path.file_name() {
+                Some(name) => canonical_parent.join(name),
+                // A path with no file name is a root spelling; the
+                // raw/canonical bound check above already covered it.
+                None => return false,
+            }
+        }
+        // No parent: nothing left to normalize.
+        None => return false,
+    };
+    bounds.iter().any(|(raw_root, canonical_root)| {
+        canonical.starts_with(raw_root) || canonical.starts_with(canonical_root)
+    })
 }
 
 fn now() -> i64 {
@@ -751,6 +1389,7 @@ pub async fn kb_collection_update(
     spawn_db(move || {
         l1.update_collection(id, &name, category.as_deref(), description.as_deref())
             .map_err(|e| e.to_string())
+            .map(|_changed| ())
     })
     .await
 }
@@ -828,7 +1467,12 @@ pub async fn kb_remove_document(
     doc_id: i64,
 ) -> Result<(), String> {
     let l1 = state.l1().clone();
-    spawn_db(move || l1.remove_document(doc_id).map_err(|e| e.to_string())).await?;
+    spawn_db(move || {
+        l1.remove_document(doc_id)
+            .map_err(|e| e.to_string())
+            .map(|_deleted| ())
+    })
+    .await?;
     refresh_kb_tool_gate(&pool).await;
     Ok(())
 }
@@ -955,6 +1599,335 @@ mod tests {
             Some("再次失败"),
             "后续失败覆盖旧诊断，状态不得停留在上一次的错误上"
         );
+    }
+
+    /// The named job's state must come from THAT job, never from
+    /// `latest_state`'s priority ordering. Regression scenario: old job A
+    /// finishes with one failed item → done_with_errors (second tier); new
+    /// job B gets cancelled and lands in the last tier, so A outranks B —
+    /// the CLI's `index cancel B` human line says "cancelled B" while the
+    /// JSON body carries A's state and A's jobId.
+    #[test]
+    fn index_job_state_reports_the_named_job_not_the_outranking_latest_one() {
+        let svc = service();
+        let older = svc
+            .l1
+            .create_collection("older", None, None)
+            .expect("older collection");
+        let newer = svc
+            .l1
+            .create_collection("newer", None, None)
+            .expect("newer collection");
+
+        // Old job: finishes after one failed item → done_with_errors
+        // (second tier of the ordering).
+        let old_job = svc.imports.create(older, &[]).expect("older job");
+        svc.imports
+            .prepare_items(&old_job, &[PathBuf::from("/nonexistent/older.txt")])
+            .expect("prepare older item");
+        let item = svc
+            .imports
+            .claim_next(&old_job)
+            .expect("claim older item")
+            .expect("one pending item");
+        svc.imports
+            .mark_failed(&old_job, item.id, "fixture failure");
+        svc.imports.finish(&old_job).expect("finish older job");
+
+        // New job: preparing at creation (tier zero), so it is the latest
+        // one.
+        let new_job = svc.imports.create(newer, &[]).expect("newer job");
+        assert_eq!(
+            svc.index_status().job_id.as_deref(),
+            Some(new_job.as_str()),
+            "a running/preparing new job must outrank an old done_with_errors"
+        );
+
+        svc.imports.cancel(&new_job).expect("cancel newer job");
+        // After the cancel, latest crosses over to the old job — this is
+        // exactly the misreport being fixed; pin it so nobody later assumes
+        // index_status() would have been good enough here.
+        assert_eq!(
+            svc.index_status().job_id.as_deref(),
+            Some(old_job.as_str()),
+            "cancelled falls to the last tier; latest_state is outranked by the old done_with_errors"
+        );
+
+        let named = svc
+            .index_job_state(&new_job)
+            .expect("the cancelled job must still be readable by id");
+        assert_eq!(named.job_id.as_deref(), Some(new_job.as_str()));
+        assert_eq!(named.collection_id, newer);
+        assert!(
+            named.cancelled,
+            "the named read must see the post-cancel state"
+        );
+        assert!(!named.running && !named.resumable);
+        assert!(
+            svc.index_job_state("kb-import-does-not-exist").is_err(),
+            "a nonexistent job must error, never degrade into another job's state"
+        );
+    }
+
+    /// A named cancel must cancel only THAT job and hand the pre-transition
+    /// state back to the caller (the CLI uses it to distinguish "a signal
+    /// was really sent" from "the job already finished, nothing to do").
+    /// Regression scenario: the old `cancel_index` path re-derived "the
+    /// latest job" after the CLI's validation, and a desktop-app job started
+    /// between the two store reads would be cancelled by mistake.
+    #[test]
+    fn cancel_index_job_cancels_only_the_named_job_and_reports_its_pre_state() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("cancel-by-id", None, None)
+            .expect("collection");
+
+        // A running job plus a later preparing job: the latter is the
+        // latest.
+        let older = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/a.txt")])
+            .expect("older job");
+        svc.imports
+            .prepare_items(&older, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare older item");
+        let item = svc
+            .imports
+            .claim_next(&older)
+            .expect("claim older item")
+            .expect("one pending item");
+        // Neither finishes: older stays in preparing/running (running=true).
+        let _ = item;
+        let newer = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/b.txt")])
+            .expect("newer job");
+        // Two simultaneously-live jobs (tied at the prepare tier) is
+        // exactly the race window: the old path
+        // `cancel_index` re-derived latest (updated_at has second-level
+        // precision, tie order undefined);
+        // the named path must look at job_id only.
+
+        // Cancel OLDER by name: it must hit older (pre-state running),
+        // with newer left untouched.
+        let pre = svc.cancel_index_job(&older).expect("cancel older job");
+        assert_eq!(pre.job_id.as_deref(), Some(older.as_str()));
+        assert!(pre.running, "the pre-transition state must be running");
+        let after = svc.index_job_state(&older).expect("older still readable");
+        assert!(after.cancelled && !after.running && !after.resumable);
+        let newer_state = svc
+            .index_job_state(&newer)
+            .expect("newer must stay untouched");
+        assert!(
+            !newer_state.cancelled,
+            "a job that was not named must not be cancelled"
+        );
+
+        // A finished/cancelled job is an idempotent no-op (the pre state
+        // is returned as-is).
+        let pre_again = svc
+            .cancel_index_job(&older)
+            .expect("second cancel is a no-op");
+        assert!(!pre_again.running && !pre_again.resumable);
+
+        // A nonexistent job is reported as an error, never silently
+        // retargeted.
+        assert!(svc.cancel_index_job("kb-import-does-not-exist").is_err());
+    }
+
+    /// `interrupt_index` parks the collection at `pending` only when the
+    /// interrupt actually APPLIED: a job whose last item finished between
+    /// the caller's state read and the interrupt must keep its collection
+    /// where it is — a fully-indexed collection must not read as needing
+    /// work with no self-healing path (`index resume` refuses a
+    /// non-interrupted job).
+    #[test]
+    fn interrupt_index_parks_the_collection_only_when_the_transition_applies() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("interrupt-by-id", None, None)
+            .expect("collection");
+        let collection_status = |svc: &KnowledgeService| {
+            svc.l1
+                .list_collections()
+                .expect("collections readable")
+                .into_iter()
+                .find(|c| c.id == collection)
+                .expect("collection row")
+                .status
+        };
+
+        // A job with one running item: the interrupt applies.
+        let job = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/a.txt")])
+            .expect("job");
+        svc.imports
+            .prepare_items(&job, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare one item");
+        let _item = svc
+            .imports
+            .claim_next(&job)
+            .expect("claim the item")
+            .expect("one running item");
+        svc.l1.set_collection_status(collection, "indexing");
+        svc.interrupt_index(&job).expect("interrupt applies");
+        let state = svc.index_job_state(&job).expect("state readable");
+        assert!(
+            state.resumable && !state.running,
+            "the job must land at interrupted"
+        );
+        assert_eq!(
+            collection_status(&svc),
+            "pending",
+            "an applied interrupt parks the collection at pending"
+        );
+
+        // A second interrupt on the interrupted job is a no-op for the
+        // collection too (it must not flap a ready collection back).
+        svc.l1.set_collection_status(collection, "ready");
+        svc.interrupt_index(&job)
+            .expect("a second interrupt is an idempotent no-op");
+        assert_eq!(
+            collection_status(&svc),
+            "ready",
+            "a no-op interrupt must not park the collection"
+        );
+
+        // The store-level lost race: a job that finished before the
+        // interrupt reports applied=false (the caller's state read said
+        // running, the transition no-oped) — the guard that keeps the
+        // collection honest.
+        let finished = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/b.txt")])
+            .expect("second job");
+        svc.imports
+            .prepare_items(&finished, &[PathBuf::from("/tmp/b.txt")])
+            .expect("prepare second item");
+        let item = svc
+            .imports
+            .claim_next(&finished)
+            .expect("claim second item")
+            .expect("one running item");
+        svc.imports
+            .mark_failed(&finished, item.id, "fixture failure");
+        svc.imports.finish(&finished).expect("finish second job");
+        assert!(
+            !svc.imports.interrupt(&finished),
+            "an interrupt that lost the race must report applied=false"
+        );
+    }
+
+    /// The deletion boundary for "disappeared" entries can only be roots
+    /// that were actually WALKED.
+    ///
+    /// `scanner::scan` silently returns 0 for an unwalkable root (drive
+    /// dropped / permissions revoked / root deleted); treating it as a
+    /// boundary all the same would condemn that root's whole indexed slice
+    /// as disappeared while reporting `done/scanned:0`. The legitimate path —
+    /// the user really emptied the directory — must keep working: a root
+    /// that is still there and still empty still cleans.
+    #[test]
+    fn stale_sweep_bounds_exclude_a_root_that_could_not_be_walked() {
+        let unique = format!("{}_{}", std::process::id(), now());
+        let walkable = std::env::temp_dir().join(format!("pinvou3_kb_stale_bounds_{unique}"));
+        std::fs::create_dir_all(&walkable).expect("create walkable root");
+        // A sibling directory, not a child: a child would be incidentally
+        // matched by `starts_with(walkable)` and could not test "an
+        // unwalkable root stays out of the boundary". The path is never
+        // created = the unwalkable root.
+        let vanished = std::env::temp_dir().join(format!("pinvou3_kb_stale_gone_{unique}"));
+
+        // Walked (walked>0) → authorized; walked 0 but the root is still a
+        // readable directory (the user emptied it) → authorized; walked 0
+        // and the root is unreadable (drive dropped / deleted / no
+        // permission) → not authorized; ANY walk error under the root →
+        // not authorized (the unreadable-subtree veto: the round-27 review
+        // gap, where a chmod-000 subtree's slice was wiped as "disappeared"
+        // because the top-level probe saw a walkable root).
+        assert!(root_authorizes_deletion(&walkable, 12, 0));
+        assert!(
+            root_authorizes_deletion(&walkable, 0, 0),
+            "an empty directory is genuinely empty; this slice must clean"
+        );
+        assert!(
+            !root_authorizes_deletion(&vanished, 0, 0),
+            "an unwalkable root must not authorize deletion"
+        );
+        assert!(
+            !root_authorizes_deletion(&walkable, 12, 1),
+            "a walk error under the root vetoes the stale sweep: the fate of everything under the unreadable subtree is undecidable"
+        );
+        assert!(
+            !root_authorizes_deletion(&walkable, 0, 3),
+            "the veto applies on the empty-root flavor too"
+        );
+
+        // End to end: two indexed slices in the store; only the walkable
+        // root enters the boundary.
+        let existing = std::collections::HashMap::from([
+            (
+                walkable.join("kept.txt").to_string_lossy().into_owned(),
+                (1i64, 1u64),
+            ),
+            (
+                vanished.join("kept.txt").to_string_lossy().into_owned(),
+                (1i64, 1u64),
+            ),
+        ]);
+        let visited = std::collections::HashSet::new();
+        let stale = stale_entries(&existing, &visited, std::slice::from_ref(&walkable));
+        assert_eq!(
+            stale,
+            vec![walkable.join("kept.txt").to_string_lossy().into_owned()],
+            "only walked roots may delete; under an unwalkable root everything must stay"
+        );
+
+        // Contrast: handing in the requested roots wholesale (including
+        // the unwalkable one) is exactly the pre-fix behavior.
+        let unscoped = stale_entries(&existing, &visited, &[walkable.clone(), vanished.clone()]);
+        assert_eq!(
+            unscoped.len(),
+            2,
+            "an unfiltered boundary would delete the unwalkable root too"
+        );
+
+        let _ = std::fs::remove_dir_all(&walkable);
+    }
+
+    /// Post-panic close-out for the scan thread: `running` must fall back
+    /// to false. `scan_state` is a parking_lot::Mutex (cannot poison), so
+    /// without the backstop it would stay at running:true forever — and
+    /// `pinvou knowledge scan start` is the one caller that blocks on that
+    /// flag and would hang.
+    #[test]
+    fn scan_panic_guard_always_clears_the_running_flag() {
+        let state = Mutex::new(ScanState {
+            raw_seen: 0,
+            running: true,
+            phase: "scanning".into(),
+            roots: vec!["/tmp".into()],
+            scanned: 7,
+            finished_at: 0,
+        });
+        finish_scan_after_panic(&state);
+        let st = state.lock();
+        assert!(
+            !st.running,
+            "running must be released after a panic or the blocking caller hangs"
+        );
+        assert_eq!(
+            st.phase, "interrupted",
+            "neither done (the frontend refreshes L0 only on done) nor cancelled (no user cancel)"
+        );
+        // finished_at stays at the previous COMPLETED scan's value: the
+        // GUI's autoscan cooldown gates on it regardless of phase, so an
+        // abort must not spend a cooldown window (the seed above is 0 and
+        // must still be 0).
+        assert_eq!(st.finished_at, 0);
     }
 
     /// Headless read contract (stats / type_counts / search): zero-state
@@ -1209,5 +2182,196 @@ mod tests {
             "after+before composes into a half-open window: {window:?}"
         );
         assert_eq!(window[0].name, "new.txt");
+    }
+
+    /// Round-42 review: resume/retry launch an importer thread exactly like
+    /// start_index, so a FRESH foreign running row must refuse (two
+    /// embedders, interleaved upsert/chunk DELETE-INSERT), a FROZEN row
+    /// (crashed owner) must degrade to allow, and the requested job's own
+    /// running row is exempt (the store's state transitions refuse it with
+    /// the accurate remedy).
+    #[test]
+    fn resume_and_retry_refuse_a_fresh_foreign_running_import() {
+        let db = Store::open_in_memory().unwrap();
+        let conn = db.conn_arc();
+        let jobs = import_jobs::ImportJobStore::new(conn.clone());
+        let l1store = l1::L1Store::new(conn);
+        let collection_id = l1store.create_collection("测试", None, None).unwrap();
+
+        // A live foreign importer: a preparing row promoted to running (the
+        // same promotion launch_import performs) ticks a fresh heartbeat.
+        let foreign = jobs
+            .create(collection_id, &[std::path::PathBuf::from("/tmp")])
+            .unwrap();
+        jobs.prepare_items(&foreign, &[std::path::PathBuf::from("/tmp/a.txt")])
+            .unwrap();
+        assert!(jobs.state(&foreign).unwrap().running);
+
+        let err = refuse_fresh_foreign_running_import(&jobs, &l1store, Some("other-job"))
+            .expect_err("a fresh foreign running import must refuse a resume");
+        assert!(
+            err.contains("正在运行"),
+            "the refusal names the running import: {err}"
+        );
+        assert!(refuse_fresh_foreign_running_import(&jobs, &l1store, None).is_err());
+
+        // The requested job itself is exempt: the store's state transitions
+        // (resume from `interrupted` only) give the accurate refusal.
+        assert!(refuse_fresh_foreign_running_import(&jobs, &l1store, Some(&foreign)).is_ok());
+
+        // A crashed owner's frozen row degrades to allow (recovery paths
+        // stay reachable) — and the degrade now COLLAPSES the zombie:
+        // a dead `running` row outranks every real job in `latest_state`'s
+        // ordering, so leaving it in place would make it the phantom
+        // "latest" import that blocks every CLI writer (round-43 review).
+        jobs.test_freeze_updated_at(&foreign, 1000);
+        assert!(
+            refuse_fresh_foreign_running_import(&jobs, &l1store, Some("other-job")).is_ok(),
+            "a frozen running row must not pin resume/retry forever"
+        );
+        let collapsed = jobs.state(&foreign).unwrap();
+        assert!(
+            !collapsed.running,
+            "the frozen zombie must be collapsed to interrupted, not left as the phantom latest"
+        );
+        assert!(collapsed.resumable);
+    }
+
+    /// Round-43 review wiring pin: the resume/retry ENTRY POINTS must run
+    /// the fresh-foreign guard (`refuse_fresh_foreign_running_import`) —
+    /// deleting the guard calls would leave the helper test green while two
+    /// embedders launch over one store. In a test process
+    /// `active_import` is empty, so the only way these entry points can
+    /// answer with the guard's running-import refusal is through the guard.
+    #[test]
+    fn resume_index_and_retry_item_refusals_come_from_the_fresh_foreign_guard() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("guard-wiring", None, None)
+            .expect("collection");
+
+        // A live foreign importer: a preparing row promoted to running.
+        let foreign = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp")])
+            .expect("job");
+        svc.imports
+            .prepare_items(&foreign, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare one item");
+        assert!(svc.imports.state(&foreign).unwrap().running);
+
+        // The requested job for the entry points: a resumable interrupted
+        // job, so the refusal can only come from the foreign-running guard.
+        let victim = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp/b.txt")])
+            .expect("victim job");
+        svc.imports
+            .prepare_items(&victim, &[PathBuf::from("/tmp/b.txt")])
+            .expect("prepare victim item");
+        let item = svc
+            .imports
+            .claim_next(&victim)
+            .expect("claim")
+            .expect("one item");
+        svc.imports.interrupt(&victim);
+        assert!(svc.imports.state(&victim).unwrap().resumable);
+
+        let err = svc
+            .resume_index(victim.clone())
+            .expect_err("a fresh foreign running import must refuse a resume");
+        assert!(err.contains("正在运行"), "{err}");
+        let err = svc
+            .retry_index_item(victim, item.id)
+            .expect_err("a fresh foreign running import must refuse a retry");
+        assert!(err.contains("正在运行"), "{err}");
+    }
+
+    /// Round-44 review pin: the `start_index` degrade path must collapse the
+    /// frozen zombie BEFORE creating the new job (deleting the collapse call
+    /// in `start_index` alone would leave the dead `running` row as the
+    /// phantom latest import — the resume/retry guard has its own wiring
+    /// pin above, this one pins the start arm). The new job launches over an
+    /// empty root, so the spawned import thread finishes without ever
+    /// touching the embedder.
+    #[test]
+    fn start_index_collapses_a_frozen_foreign_row_before_creating_the_new_job() {
+        let svc = service();
+        let collection = svc
+            .l1
+            .create_collection("start-collapse", None, None)
+            .expect("collection");
+        let empty_root = std::env::temp_dir().join(format!(
+            "pinvou3-kb-start-collapse-empty-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&empty_root).expect("empty root");
+
+        // A crashed owner's frozen `running` row: promoted, then heartbeats
+        // frozen far past the liveness bound.
+        let zombie = svc
+            .imports
+            .create(collection, &[PathBuf::from("/tmp")])
+            .expect("zombie job");
+        svc.imports
+            .prepare_items(&zombie, &[PathBuf::from("/tmp/a.txt")])
+            .expect("prepare zombie item");
+        assert!(svc.imports.state(&zombie).unwrap().running);
+        svc.imports.test_freeze_updated_at(&zombie, 1000);
+
+        let started = svc.start_index(collection, vec![empty_root]);
+        assert_ne!(started.job_id, Some(zombie.clone()), "a new job must start");
+        let collapsed = svc.imports.state(&zombie).unwrap();
+        assert!(
+            !collapsed.running,
+            "the frozen zombie must be collapsed before the new job is created"
+        );
+    }
+
+    /// Round-44 review: the collapse parks the zombie's collection badge at
+    /// "pending" (the dead importer's close-out never runs), and a second
+    /// call on the now-terminal row takes the benign 0-row arm instead of
+    /// treating the already-terminal job as an interrupt failure.
+    #[test]
+    fn interrupt_frozen_foreign_row_parks_the_collection_and_stays_honest_on_a_terminal_row() {
+        let db = Store::open_in_memory().unwrap();
+        let conn = db.conn_arc();
+        let jobs = import_jobs::ImportJobStore::new(conn.clone());
+        let l1store = l1::L1Store::new(conn);
+        let collection_id = l1store.create_collection("badge", None, None).unwrap();
+        l1store.set_collection_status(collection_id, "indexing");
+        let zombie = jobs
+            .create(collection_id, &[PathBuf::from("/tmp")])
+            .unwrap();
+        jobs.prepare_items(&zombie, &[PathBuf::from("/tmp/a.txt")])
+            .unwrap();
+        assert!(jobs.state(&zombie).unwrap().running);
+
+        interrupt_frozen_foreign_row(&jobs, &l1store, Some(&zombie));
+        assert!(!jobs.state(&zombie).unwrap().running);
+        let badge = l1store
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == collection_id)
+            .unwrap();
+        assert_eq!(
+            badge.status, "pending",
+            "the parked badge must be resumable"
+        );
+
+        // Benign arm: the row is terminal now, so the second interrupt lands
+        // 0 rows and must neither re-park nor treat the race as a failure.
+        l1store.set_collection_status(collection_id, "pending");
+        interrupt_frozen_foreign_row(&jobs, &l1store, Some(&zombie));
+        let badge = l1store
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == collection_id)
+            .unwrap();
+        assert_eq!(badge.status, "pending");
     }
 }

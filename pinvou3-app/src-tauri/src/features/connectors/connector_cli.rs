@@ -1,3 +1,7 @@
+// architecture-guard: allow-target-cfg -- the shared `cli-install.log` must carry
+// 0600 on every append (it can echo npmrc tokens), and creation mode alone leaves
+// the umask default whenever the other surface created the file first; the chmod is
+// unix-scoped like every other 0600 claim, and the helper is unit-pinned below.
 //! 通用 CLI 连接器管道 —— 抽自 `feishu.rs`,供飞书 / 企微等"官方 CLI 连接器"共享。
 //!
 //! 设计(开发方案 C):公共的"起子进程 / 抑黑窗 / 抓授权 URL / 出二维码 / 收发事件 /
@@ -240,21 +244,36 @@ pub fn run(cmd: Command) -> Result<(bool, String, String), String> {
 ///    preserves each stage's output of a multi-stage install (mirror retry
 ///    after the default registry fails); stage boundaries are distinguished
 ///    by the marker lines of [`append_cli_install_log`].
+/// Opens the shared `cli-install.log` for append and enforces 0600 on the
+/// opened handle (round-46 review: creation mode alone left the umask
+/// default whenever the desktop app created the log before the CLI's npm
+/// lane — or vice versa — and the log can echo npmrc tokens). The chmod is
+/// best-effort: a failure must not fail the install. Returns the handle and
+/// a clone for stdout/stderr redirection, or the open error.
+fn open_install_log_appender(
+    log_path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    let clone = file.try_clone()?;
+    Ok((file, clone))
+}
+
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
     let log_path = crate::platform::paths::pinvou3_home().join("cli-install.log");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     rotate_cli_install_log_if_oversized(&log_path);
-    let (out, err) = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(f) => match f.try_clone() {
-            Ok(f2) => (Stdio::from(f), Stdio::from(f2)),
-            Err(_) => (Stdio::null(), Stdio::null()),
-        },
+    let (out, err) = match open_install_log_appender(&log_path) {
+        Ok((f, f2)) => (Stdio::from(f), Stdio::from(f2)),
         Err(_) => (Stdio::null(), Stdio::null()), // 落不了盘也别卡,回退丢弃
     };
     cmd.stdin(Stdio::null()).stdout(out).stderr(err);
@@ -300,7 +319,8 @@ pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
 }
 
 /// Appends one stage marker line to `cli-install.log`. The log is
-/// append-only (see [`run_with_timeout`]); each stage's output of a
+/// append-only (see the module's `run_with_timeout`, which rotates and
+/// drives vendor children under the same budget); each stage's output of a
 /// multi-stage install (mirror retry after the default registry fails) is
 /// attributed via its marker line. Write failures are likewise silently
 /// dropped and never block the install flow.
@@ -314,6 +334,17 @@ pub fn append_cli_install_log(line: &str) {
         .append(true)
         .open(&log_path)
     {
+        // Round-47 review: this marker appender is the one `cli-install.log`
+        // writer left that created the file at umask default — the round-46
+        // 0600 tightening covered only the redirect appender above, so a log
+        // first created by a marker line stayed world-readable until a
+        // redirect append happened to tighten it. Same best-effort chmod:
+        // a failure must not fail the install.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
         let _ = writeln!(file, "{line}");
     }
 }
@@ -326,7 +357,11 @@ pub fn append_cli_install_log(line: &str) {
 /// still fully preserved.
 const CLI_INSTALL_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-fn rotate_cli_install_log_if_oversized(log_path: &Path) {
+/// Rotates `cli-install.log` to `.old` once it exceeds the 8 MiB budget.
+/// `pub` for the headless CLI's ensure-cli lane, which redirects npm stdio
+/// into the same log directly (`connectors.rs::run_npm_attempt`) and must
+/// enforce the same bound the GUI's `run_with_timeout` enforces here.
+pub fn rotate_cli_install_log_if_oversized(log_path: &Path) {
     rotate_cli_install_log_if_oversized_with(log_path, CLI_INSTALL_LOG_MAX_BYTES);
 }
 
@@ -758,16 +793,56 @@ pub fn bundle_store_on_connected(id: &str) {
 /// 删掉 companion 技能目录，包内容不完整，故按 §3.2 的 Degraded（登记在、资源缺）
 /// 标记；修复动作 = 重新连接（重解包技能），与预置重装/上传重导入同构。
 /// 记录不存在（从未连接成功过）时 mark_degraded 返回 false，天然无操作。
+///
+/// The reason copy written comes from the marketplace side's
+/// `CLI_DISCONNECTED_DEGRADED_REASON` (prefix-match judgment in
+/// `bundle.rs`), eliminating the two-literal drift; the connectors →
+/// marketplace dependency direction matches the standing boundary (see the
+/// comment in `bundle.rs`).
 pub fn bundle_store_on_disconnected(id: &str) {
-    if let Err(e) = crate::features::marketplace::store::BundleStore::new()
-        .mark_degraded(id, "已断开授权：配套技能已随断开移除，重新连接即可恢复")
-    {
+    if let Err(e) = crate::features::marketplace::store::BundleStore::new().mark_degraded(
+        id,
+        crate::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON,
+    ) {
         log::warn!("[connectors] bundles.json 镜像写入失败（disconnect {id}）: {e}");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// Round-46 review: the appender must enforce 0600 on a PRE-EXISTING
+    /// log file (creation mode alone left the umask default when the other
+    /// surface created the file first) — the scenario the file-top
+    /// allow-target-cfg exception documents.
+    #[cfg(unix)]
+    #[test]
+    fn install_log_appender_tightens_a_pre_existing_log_to_0600() {
+        // Scoped here (not at module top) because the only use of the
+        // helper in tests is this unix-only pin; a module-level import
+        // would be unused — and fail `-D unused-imports` — on Windows.
+        use super::open_install_log_appender;
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-log-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("cli-install.log");
+        std::fs::write(&log, b"gui wrote first").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let (_file, _clone) = open_install_log_appender(&log).unwrap();
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the append must tighten the shared log to 0600"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
     use super::*;
     use std::io::{Error, Read};
 

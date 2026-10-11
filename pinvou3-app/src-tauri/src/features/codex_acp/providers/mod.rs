@@ -4,6 +4,13 @@
 //! 维护 Provider 条目（base URL / wire 协议 / API key / 模型），一键切换并改写
 //! 各 CLI 自身的配置文件，支持恢复官方登录。API key 不落仓库、不落日志、不落
 //! 明文 JSON——只以 `CredentialReference` 存系统凭据库（导入导出文件除外）。
+//!
+// architecture-guard: allow-target-cfg -- the config backup must be created
+// with 0600 from the first byte (it copies the user's real plaintext-key
+// CLI config); the create-time mode bit is a unix-only OpenOptions flag,
+// and routing the create through a platform adapter would split the
+// create_new + AlreadyExists no-op semantics this backup's idempotence
+// relies on.
 
 mod claude;
 mod codex;
@@ -296,54 +303,235 @@ impl AcpProvidersStore {
             .cloned()
     }
 
+    /// The GUI holds this store for the whole app lifetime, so a write the
+    /// CLI made after boot would otherwise be silently reverted by the next
+    /// whole-table persist — a delayed rollback minutes later, not a
+    /// same-instant race. Every mutator therefore re-reads the disk state,
+    /// mutates, and persists inside ONE write-guard critical section (see
+    /// `persist_locked`): at any quiescent point the file is the latest
+    /// truth, and re-reading it can only pull in the other surface's writes.
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
+        let _section = self.section_lock();
+        self.upsert_locked(agent, record)
+    }
+
+    /// [`Self::upsert`] for a caller that already holds the cross-process
+    /// section lock: the config-writing decision paths below (`switch`,
+    /// `save`'s active arm) span several store primitives PLUS the
+    /// vendor-config apply, and those must run under ONE flock — taking a
+    /// fresh lock per primitive let a peer process land its own apply
+    /// between this switch's apply and its persist, splitting the CLI
+    /// config from `store.current` (round-37 review MAJOR). `pub(crate)`:
+    /// same-module decision paths only.
+    pub(crate) fn upsert_locked(&self, agent: &str, record: ProviderRecord) -> Result<()> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        if let Some(existing) = state
+            .providers
+            .iter_mut()
+            .find(|candidate| candidate.id == record.id)
         {
-            let mut agents = self.agents.write();
-            let state = agents.entry(agent.to_string()).or_default();
-            if let Some(existing) = state
-                .providers
-                .iter_mut()
-                .find(|candidate| candidate.id == record.id)
-            {
-                *existing = record;
-            } else {
-                state.providers.push(record);
-            }
+            *existing = record;
+        } else {
+            state.providers.push(record);
         }
-        self.persist()
+        Self::persist_locked(&agents, &self.path)
+    }
+
+    /// Atomic import insert: the absence check and the insert share ONE
+    /// section-lock critical section, so two concurrent importers cannot
+    /// both pass the fresh pre-check and silently replace each other (the
+    /// check→act window the pre-check alone leaves between its lock
+    /// release and `upsert`'s re-acquisition). Returns `false` when a
+    /// record with the same id already existed — nothing was written, and
+    /// the caller accounts the entry as an id conflict instead of
+    /// replacing the peer's record.
+    pub fn insert_if_absent(&self, agent: &str, record: ProviderRecord) -> Result<bool> {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        if agents.get(agent).is_some_and(|state| {
+            state
+                .providers
+                .iter()
+                .any(|candidate| candidate.id == record.id)
+        }) {
+            return Ok(false);
+        }
+        let state = agents.entry(agent.to_string()).or_default();
+        state.providers.push(record);
+        Self::persist_locked(&agents, &self.path)?;
+        Ok(true)
     }
 
     pub fn remove(&self, agent: &str, provider_id: &str) -> Result<Option<ProviderRecord>> {
-        let removed = {
-            let mut agents = self.agents.write();
-            let Some(state) = agents.get_mut(agent) else {
-                return Ok(None);
-            };
-            match state
-                .providers
-                .iter()
-                .position(|candidate| candidate.id == provider_id)
-            {
-                Some(index) => Some(state.providers.remove(index)),
-                None => None,
-            }
+        let _section = self.section_lock();
+        self.remove_locked(agent, provider_id)
+    }
+
+    /// [`Self::remove`] for a caller that already holds the section lock
+    /// (see [`Self::upsert_locked`]).
+    pub(crate) fn remove_locked(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Result<Option<ProviderRecord>> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let Some(state) = agents.get_mut(agent) else {
+            return Ok(None);
         };
-        self.persist()?;
+        let removed = match state
+            .providers
+            .iter()
+            .position(|candidate| candidate.id == provider_id)
+        {
+            Some(index) => Some(state.providers.remove(index)),
+            None => None,
+        };
+        Self::persist_locked(&agents, &self.path)?;
         Ok(removed)
     }
 
     pub fn set_current(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
-        {
-            let mut agents = self.agents.write();
-            let state = agents.entry(agent.to_string()).or_default();
-            state.current_provider_id = provider_id.map(str::to_string);
-        }
-        self.persist()
+        let _section = self.section_lock();
+        self.set_current_locked(agent, provider_id)
+    }
+
+    /// [`Self::set_current`] for a caller that already holds the section
+    /// lock (see [`Self::upsert_locked`]).
+    pub(crate) fn set_current_locked(&self, agent: &str, provider_id: Option<&str>) -> Result<()> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        state.current_provider_id = provider_id.map(str::to_string);
+        Self::persist_locked(&agents, &self.path)
+    }
+
+    /// Fresh read of `current` for the decision paths that gate a CLI-config
+    /// rewrite (`save`'s active-provider arm, `delete`'s revert arm). The
+    /// plain `current()` reads only the in-memory map, which a CLI process
+    /// can have stale-dated: deciding from the stale value rewrites (or
+    /// fails to revert) the config for a provider that is no longer current
+    /// — the config/store split-brain the reload-on-mutator fix closed for
+    /// writes. Reloads under the write guard so every later reader sees the
+    /// adopted state, exactly like the mutators. `pub(crate)`: the module
+    /// is private and even app callers sit behind `save`/`delete`/`switch`
+    /// — the CLI consumes the decision paths, never this raw read.
+    pub(crate) fn current_after_reload(&self, agent: &str) -> Option<String> {
+        let _section = self.section_lock();
+        self.current_fresh_locked(agent)
+    }
+
+    /// [`Self::current_after_reload`] for a caller that already holds the
+    /// section lock (see [`Self::upsert_locked`]).
+    pub(crate) fn current_fresh_locked(&self, agent: &str) -> Option<String> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
+            .get(agent)
+            .and_then(|state| state.current_provider_id.clone())
+    }
+
+    /// Fresh read of the whole per-agent state — the display/export input
+    /// `list`/`export` render. The plain `state` reads only the in-memory
+    /// map, which a CLI process can have stale-dated: a settings card or an
+    /// export taken after a concurrent CLI switch would contradict the
+    /// fresh `effective()` attribution rendered beside it. Reloads under
+    /// the write guard so every later reader sees the adopted state,
+    /// exactly like the mutators.
+    pub(crate) fn state_after_reload(&self, agent: &str) -> AgentProvidersState {
+        let _section = self.section_lock();
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents.get(agent).cloned().unwrap_or_default()
+    }
+
+    /// Fresh read of one provider record — the decision input `switch`
+    /// applies to the CLI config file, and the spawn-env injection consults
+    /// before naming a key. The plain `get` reads only the in-memory map,
+    /// which a CLI process can have stale-dated: applying a removed
+    /// provider's endpoint is the same config/store split-brain
+    /// `current_after_reload` closed for `save`/`delete`, and injecting a
+    /// removed provider's key strands the spawned session on a dead
+    /// credential. `pub` (round-43 review): the CLI's save/switch/remove
+    /// pre-checks are decision reads too — a stale pre-check either leaks
+    /// the store's untranslated refusal or lies about a lane's effect —
+    /// so the CLI mirrors this read instead of the boot-memory `get`.
+    pub fn record_after_reload(&self, agent: &str, provider_id: &str) -> Option<ProviderRecord> {
+        let _section = self.section_lock();
+        self.record_fresh_locked(agent, provider_id)
+    }
+
+    /// [`Self::record_after_reload`] for a caller that already holds the
+    /// section lock (see [`Self::upsert_locked`]).
+    pub(crate) fn record_fresh_locked(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Option<ProviderRecord> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents.get(agent).and_then(|state| {
+            state
+                .providers
+                .iter()
+                .find(|candidate| candidate.id == provider_id)
+                .cloned()
+        })
+    }
+
+    /// Fresh read of the current id AND its record in one critical section.
+    /// Deriving the revert target from a stale `current`/record pair
+    /// rewrites the config for a provider a peer already removed or
+    /// un-currented. (Round-40 review removed the `_after_reload` wrapper —
+    /// it had zero callers; the fresh-locked form is the only consumer.)
+    fn current_and_record_fresh_locked(
+        &self,
+        agent: &str,
+    ) -> (Option<String>, Option<ProviderRecord>) {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.get(agent);
+        let current = state.and_then(|state| state.current_provider_id.clone());
+        let record = current.as_deref().and_then(|id| {
+            state.and_then(|state| {
+                state
+                    .providers
+                    .iter()
+                    .find(|candidate| candidate.id == id)
+                    .cloned()
+            })
+        });
+        (current, record)
     }
 
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
         self.agents
             .read()
+            .get(agent)
+            .and_then(|state| state.official_default_model.clone())
+    }
+
+    /// Fresh read of the recorded official `default_model` — the value
+    /// `switch` writes back verbatim through `set_switch_state`. The plain
+    /// read is stale-datable the same way as `current_after_reload`: a
+    /// long-lived GUI whose in-memory copy predates a CLI switch would
+    /// decide "not recorded" from memory and persist that `None` over the
+    /// CLI-written value, breaking the later official-login restore the
+    /// field exists for (kimi's `default_model` is the concrete casualty).
+    pub(crate) fn official_default_model_after_reload(&self, agent: &str) -> Option<String> {
+        let _section = self.section_lock();
+        self.official_default_model_fresh_locked(agent)
+    }
+
+    /// [`Self::official_default_model_after_reload`] for a caller that
+    /// already holds the section lock (see [`Self::upsert_locked`]).
+    pub(crate) fn official_default_model_fresh_locked(&self, agent: &str) -> Option<String> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        agents
             .get(agent)
             .and_then(|state| state.official_default_model.clone())
     }
@@ -356,27 +544,119 @@ impl AcpProvidersStore {
         provider_id: Option<&str>,
         official_default_model: Option<&str>,
     ) -> Result<()> {
-        {
-            let mut agents = self.agents.write();
-            let state = agents.entry(agent.to_string()).or_default();
-            state.current_provider_id = provider_id.map(str::to_string);
-            state.official_default_model = official_default_model.map(str::to_string);
-        }
-        self.persist()
+        let _section = self.section_lock();
+        self.set_switch_state_locked(agent, provider_id, official_default_model)
     }
 
-    fn persist(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
+    /// [`Self::set_switch_state`] for a caller that already holds the
+    /// section lock (see [`Self::upsert_locked`]) — `switch`'s persist arm.
+    pub(crate) fn set_switch_state_locked(
+        &self,
+        agent: &str,
+        provider_id: Option<&str>,
+        official_default_model: Option<&str>,
+    ) -> Result<()> {
+        let mut agents = self.agents.write();
+        Self::reload_into(&mut agents, &self.path);
+        let state = agents.entry(agent.to_string()).or_default();
+        // 上面的 reload 可能带回并发方对目标 Provider 的 remove：把 current
+        // 钉到一个表里已不存在的 id（而 CLI 配置文件已写入它的 endpoint），
+        // 正是本 store 拒绝的配置/表分裂态。在此报错会走 switch 既有的
+        // 回滚臂还原配置写入——「失败 = 什么都没发生」。
+        if let Some(id) = provider_id
+            && !state.providers.iter().any(|candidate| candidate.id == id)
+        {
+            anyhow::bail!("切换目标 Provider 已在切换期间被移除: {id}");
+        }
+        state.current_provider_id = provider_id.map(str::to_string);
+        state.official_default_model = official_default_model.map(str::to_string);
+        Self::persist_locked(&agents, &self.path)
+    }
+
+    /// The GUI holds this store for the whole app lifetime, so a write the
+    /// CLI made after boot would otherwise be silently reverted by the next
+    /// whole-table persist — a delayed rollback minutes later, not a
+    /// same-instant race. Every mutator therefore runs reload → mutate →
+    /// persist inside ONE write-guard critical section.
+    /// Reload the disk state into an ALREADY-HELD write guard. Callers run
+    /// this inside the same critical section as their mutation AND their
+    /// persist, so a peer mutator (which needs the same guard) can neither
+    /// interleave between the read and the swap nor discard this thread's
+    /// committed-but-unpersisted change with a stale-disk reload — with the
+    /// persist outside the guard, that exact discard was possible. Best-
+    /// effort: an unreadable or unparsable file keeps the in-memory state
+    /// (the same stance `load_or_empty` takes, with its first-boot backup).
+    fn reload_into(agents: &mut HashMap<String, AgentProvidersState>, path: &Path) {
+        let Ok(raw) = fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(file) = serde_json::from_str::<AcpProvidersFile>(&raw) else {
+            // A file that turned corrupt AFTER boot (holding the other
+            // surface's writes this process never saw) would otherwise be
+            // destroyed by this process's next persist with no recoverable
+            // copy — `load_or_empty`'s `.pinvou3-bak` was taken at boot, or
+            // not at all in a CLI one-shot. Preserve it once, same shape as
+            // the boot backup: fixed `.invalid` sibling, never overwritten.
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(".invalid");
+            let quarantine = path.with_file_name(name);
+            if !quarantine.exists() {
+                let _ = fs::copy(path, &quarantine);
+            }
+            return;
+        };
+        *agents = file.agents;
+    }
+
+    /// Persist under the ALREADY-HELD write guard, so a mutator's committed
+    /// change is always part of its own persist: a peer mutator cannot run
+    /// between the mutation and the write (it needs the same guard), and its
+    /// later `reload_into` therefore always re-reads a file that already
+    /// contains every earlier commit. Persisting after the guard (the
+    /// previous shape) let a peer's reload replace the shared map from a
+    /// stale disk snapshot and discard the not-yet-persisted mutation
+    /// entirely. The file is small and mutations are human-frequency, so the
+    /// write under the lock costs readers (state()/get()) a sub-millisecond
+    /// wait on the paths that change anything.
+    fn persist_locked(agents: &HashMap<String, AgentProvidersState>, path: &Path) -> Result<()> {
+        // `atomic_write` stages inside the target's parent, so the directory
+        // must exist first (unchanged from the hand-rolled writer).
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
+        // Round-48 review: the hand-rolled pid-suffixed tmp+rename carried
+        // no fsync, so power loss could land a truncated/empty
+        // `acp-providers.json` (the boot-time `.pinvou3-bak` would then
+        // answer stale data). `atomic_write` provides the unique
+        // per-writer staging name this comment already demanded, the
+        // fsync-before-rename the sibling stores migrated for, and the
+        // same litter rule — `create_dir_all` included.
         let value = AcpProvidersFile {
             version: STORE_VERSION,
-            agents: self.agents.read().clone(),
+            agents: agents.clone(),
         };
-        fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
-        fs::rename(&tmp, &self.path)?;
-        Ok(())
+        crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(&value)?)
+            .map_err(Into::into)
+    }
+
+    /// Cross-process lock serializing the reload→mutate→persist section
+    /// against the other surface's mutators (the GUI holds this store for
+    /// its whole lifetime; every `pinvou code providers` command is another
+    /// process mutating the same file). The in-process write guard alone
+    /// left the read-write-rename window open: a peer process could commit
+    /// between this process's reload and rename and be silently erased.
+    /// The lock file carries no state and the OS releases it when the
+    /// holder dies, so a crash cannot wedge the store.
+    ///
+    /// Best-effort with an observable degrade (round-37 review): if the
+    /// lock file cannot be opened, the lock syscall fails, or a peer holds
+    /// the section longer than [`SECTION_LOCK_TIMEOUT`] (a stopped peer —
+    /// Ctrl-Z — would otherwise park a GUI settings action forever), the
+    /// caller proceeds unlocked — the pre-lock behavior — but every degrade
+    /// warns, so the lost-update window is never silent.
+    fn section_lock(&self) -> Option<fs::File> {
+        let lock_path = self.path.with_extension("json.lock");
+        super::cross_process_section_lock(&lock_path, "acp-providers")
     }
 }
 
@@ -390,7 +670,9 @@ fn validate_agent(agent: &str) -> Result<()> {
 /// Claude Code 细化模型槽位：槽位 id → 写入 settings.json env 的变量名。
 /// 槽位不填时 CC 的子 agent/辅助调用会回落官方模型（走官方流量），因此
 /// 保存 claude Provider 时以下槽位全部必填。
-pub(crate) const CLAUDE_MODEL_SLOTS: [(&str, &str); 5] = [
+/// `pub` 导出供同仓 `pinvou-cli` 直接引用：CLI 的 `providers add` 英文预检
+/// 与本保存逻辑使用同一槽位列表，消除手工副本漂移；GUI 语义不变。
+pub const CLAUDE_MODEL_SLOTS: [(&str, &str); 5] = [
     ("opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
     ("sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"),
     ("haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
@@ -441,8 +723,50 @@ fn backup_once(path: &Path) -> Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".pinvou3-bak");
     let backup = path.with_file_name(name);
-    if path.exists() && !backup.exists() {
-        fs::copy(path, &backup).with_context(|| format!("备份 {} 失败", path.display()))?;
+    if !path.exists() {
+        return Ok(());
+    }
+    // Exclusive create, not check-then-copy: the one-time backup must never
+    // be overwritten by a losing racer's late copy. Pre-diff only the GUI
+    // wrote this file; the CLI's `providers add/switch` is now a second
+    // concurrent writer of the same REAL config, and the old
+    // `exists()`-check → `fs::copy` let B's copy land after A's rename —
+    // replacing the pristine original with post-write content and silently
+    // defeating "find your original providers after a bad write".
+    // `AlreadyExists` from the peer that won the race is success: the backup
+    // exists, which is all this helper promises.
+    let permissions = fs::metadata(path).ok().map(|meta| meta.permissions());
+    let mut source = fs::File::open(path)?;
+    let mut destination = {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            // Round-40 review: the backup carries the user's REAL
+            // claude/codex/kimi CLI config (plaintext keys) — created with
+            // the default umask it was 0644 until the best-effort mode
+            // restore below ran, and stayed 0644 forever if the process
+            // died in between. Same no-0644-window rule the `atomic_write`
+            // tmp documents; mode applies at create time, and the restore
+            // below still gives the file the SOURCE's mode for parity.
+            options.mode(0o600);
+        }
+        match options.open(&backup) {
+            Ok(destination) => destination,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("备份 {} 失败", backup.display()));
+            }
+        }
+    };
+    std::io::copy(&mut source, &mut destination)
+        .with_context(|| format!("备份 {} 失败", path.display()))?;
+    // `io::copy` does not carry the source's mode the way `fs::copy` does;
+    // restore it best-effort (the backup's content is the promise, the mode
+    // is parity hygiene).
+    if let Some(permissions) = permissions {
+        let _ = fs::set_permissions(&backup, permissions);
     }
     Ok(())
 }
@@ -453,7 +777,13 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     backup_once(path)?;
-    let tmp = path.with_extension("tmp");
+    // The staging name carries the pid, exactly like `persist_locked`:
+    // a fixed `.tmp` name let two surfaces rename each other's half-written
+    // file into place — and unlike the store file, this helper writes the
+    // user's REAL claude/codex/kimi CLI config, now from two processes
+    // (GUI + the CLI's `providers add/switch`) since this diff made the
+    // mutators cross-surface.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     // 直接以 0600 创建临时文件（配置含明文 key，kimi/claude 的 CLI 配置），
     // 避免默认 umask 0644 让同机其他用户可读，也无「先 0644 写、后收紧」的
     // 暴露窗口（评审中危项 + 复审低危 4）。平台细节在 platform/filesystem.rs，
@@ -465,7 +795,10 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         file.write_all(content)
             .with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
     }
-    fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error).with_context(|| format!("替换 {} 失败", path.display()));
+    }
     Ok(())
 }
 
@@ -485,6 +818,95 @@ pub struct ProviderManager {
     /// per-agent 配置切换锁：apply 与 store 持久化之间互斥，防两个 switch 交错
     /// 导致 CLI 配置与 store.current 分裂（评审中危项）。按 agent 惰性建锁。
     switch_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<()>>>>>,
+    /// Round-48 test seam: when armed (tests only), `save` parks here
+    /// between its pre-lock record read and its under-lock fresh read — the
+    /// exact window the credential-divergence guard re-validates, which is
+    /// sub-millisecond in production and needs a rendezvous to inject a
+    /// peer store write into. Production construction leaves the gate idle
+    /// and the call is a no-op.
+    #[cfg(test)]
+    divergence_gate: Arc<DivergenceGate>,
+}
+
+/// Test-only rendezvous for the divergence-guard window (see the field doc
+/// on [`ProviderManager`]). Lifecycle: the test arms the gate, hands it to
+/// the worker's manager, awaits `Arrived` (the worker is now parked between
+/// the two reads), lands the peer write, then `Release`s.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct DivergenceGate {
+    state: Arc<(std::sync::Mutex<DivergenceGateState>, std::sync::Condvar)>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DivergenceGateState {
+    Idle,
+    Armed,
+    Arrived,
+    Released,
+}
+
+#[cfg(test)]
+impl Default for DivergenceGate {
+    fn default() -> Self {
+        Self {
+            state: Arc::new((
+                std::sync::Mutex::new(DivergenceGateState::Idle),
+                std::sync::Condvar::new(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+impl DivergenceGate {
+    fn arm(&self) {
+        *self.state.0.lock().unwrap() = DivergenceGateState::Armed;
+    }
+
+    /// Called from `save` under test: parks until the test releases, and is
+    /// a no-op unless the gate was armed.
+    fn wait_while_armed(&self) {
+        let (state, condvar) = &*self.state;
+        let mut state = state.lock().unwrap();
+        if *state == DivergenceGateState::Idle {
+            return;
+        }
+        *state = DivergenceGateState::Arrived;
+        condvar.notify_all();
+        while *state == DivergenceGateState::Arrived {
+            state = condvar.wait(state).unwrap();
+        }
+    }
+
+    /// Test side: block until the worker reaches the parked window (or the
+    /// deadline passes).
+    fn wait_until_arrived(&self, timeout: std::time::Duration) -> bool {
+        let (state, condvar) = &*self.state;
+        let deadline = std::time::Instant::now() + timeout;
+        let mut state = state.lock().unwrap();
+        while *state == DivergenceGateState::Armed {
+            let (woken, wait) = condvar
+                .wait_timeout(
+                    state,
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                )
+                .unwrap();
+            state = woken;
+            if wait.timed_out() {
+                return false;
+            }
+        }
+        *state == DivergenceGateState::Arrived
+    }
+
+    /// Test side: let the parked worker proceed.
+    fn release(&self) {
+        let (state, condvar) = &*self.state;
+        *state.lock().unwrap() = DivergenceGateState::Released;
+        condvar.notify_all();
+    }
 }
 
 impl ProviderManager {
@@ -497,7 +919,34 @@ impl ProviderManager {
             codex_root: home.join(".codex"),
             kimi_root: super::introspect::kimi_data_root(),
             switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            divergence_gate: Arc::default(),
         })
+    }
+
+    /// Round-48 test-only constructor: pairs the manager with an ARMED
+    /// divergence-window gate so a test can land a peer store write between
+    /// `save`'s pre-lock read and its under-lock fresh read. Returns the
+    /// gate for the test to await and release.
+    #[cfg(test)]
+    pub(crate) fn new_with_armed_divergence_gate(
+        credentials: SystemCredentialStore,
+    ) -> (Result<Self>, Arc<DivergenceGate>) {
+        let gate = Arc::new(DivergenceGate::default());
+        gate.arm();
+        let home = crate::platform::os::user_home_dir();
+        (
+            Ok(Self {
+                store: AcpProvidersStore::load_or_empty(),
+                credentials,
+                claude_root: home.join(".claude"),
+                codex_root: home.join(".codex"),
+                kimi_root: super::introspect::kimi_data_root(),
+                switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                divergence_gate: gate.clone(),
+            }),
+            gate,
+        )
     }
 
     /// 取（必要时创建）per-agent 配置切换锁。
@@ -578,7 +1027,10 @@ impl ProviderManager {
 
     pub fn list(&self, agent: &str) -> Result<AcpProvidersView> {
         validate_agent(agent)?;
-        let state = self.store.state(agent);
+        // Fresh read: this view is rendered beside `effective()`'s live
+        // config attribution, so a stale store card ("current: A" next to
+        // "active: B" after a CLI switch) is a self-contradicting UI.
+        let state = self.store.state_after_reload(agent);
         let (effective, config_unreadable) = self.effective(agent);
         // 配置文件的 relay 配置归因：codex/kimi 可反推 id 精确匹配；claude 的 env
         // 无法反推，只要 store 有当前 provider 且文件有 relay 配置即归因 App 写入。
@@ -617,6 +1069,26 @@ impl ProviderManager {
             },
             env_effective_entries: self.env_effective_entries(agent),
         })
+    }
+
+    /// Round-50 review: single home for the persist-failure take-back both
+    /// save arms share (round-49 introduced it on the current arm; the
+    /// non-current arm used to propagate with `?` and orphan the just-written
+    /// key under a reference no record names — a retry generates a new id, so
+    /// the orphan is never reclaimed). Narrowed read-compare-delete: the entry
+    /// is deleted only while it still equals what THIS call wrote — a peer
+    /// rotation landing in the window replaced that value and owns the entry
+    /// now, so it is left alone.
+    fn take_back_untouched_key(
+        &self,
+        wrote: Option<&CredentialReference>,
+        wrote_value: Option<&str>,
+    ) {
+        if let (Some(wrote), Some(wrote_value)) = (wrote, wrote_value) {
+            if self.credentials.get(wrote).ok().flatten().as_deref() == Some(wrote_value) {
+                self.credentials.delete(wrote).ok();
+            }
+        }
     }
 
     pub fn save(
@@ -682,7 +1154,7 @@ impl ProviderManager {
         let existing = match provider_id {
             Some(id) => Some(
                 self.store
-                    .get(agent, id)
+                    .record_after_reload(agent, id)
                     .with_context(|| format!("Provider 不存在: {id}"))?,
             ),
             None => None,
@@ -692,12 +1164,24 @@ impl ProviderManager {
             .map(|record| record.id.clone())
             .unwrap_or_else(generate_provider_id);
         let reference = CredentialReference::for_acp_provider(agent, &id);
+        // Round-40 review: track what THIS call wrote so the under-lock bail
+        // below can take it back — the credential work runs before the
+        // section lock (it can park on a keychain prompt), and a peer delete
+        // landing in that window must not leave the just-written key in the
+        // keychain under a reference no record names any more.
+        let mut written_credential: Option<CredentialReference> = None;
+        // The plaintext value THIS call wrote at `written_credential`. The
+        // persist-failure take-back below re-reads the entry and only deletes
+        // while it still holds this exact value (round-49 review).
+        let mut written_key_value: Option<String> = None;
         let credential = match api_key_action {
             CredentialEditAction::Replace => {
                 let key = api_key
                     .as_deref()
                     .with_context(|| "替换 Provider key 时 api_key 不能为空")?;
                 self.credentials.set(&reference, key)?;
+                written_credential = Some(reference.clone());
+                written_key_value = Some(key.to_string());
                 Some(reference)
             }
             CredentialEditAction::KeepExisting => match self.credentials.get(&reference)? {
@@ -705,6 +1189,8 @@ impl ProviderManager {
                 None => match api_key {
                     Some(key) => {
                         self.credentials.set(&reference, &key)?;
+                        written_credential = Some(reference.clone());
+                        written_key_value = Some(key.to_string());
                         Some(reference)
                     }
                     None => existing
@@ -717,7 +1203,7 @@ impl ProviderManager {
                 None
             }
         };
-        let record = ProviderRecord {
+        let mut record = ProviderRecord {
             id,
             name,
             base_url,
@@ -731,6 +1217,16 @@ impl ProviderManager {
                 .map(|record| record.created_at.clone())
                 .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
         };
+        // Round-44 review: the KeepExisting arms decide from the pre-lock
+        // keychain read and the pre-lock record clone (the credential work
+        // runs before the section lock because it can park on a keychain
+        // prompt). A peer `--delete-key` landing in that window removes the
+        // keychain entry AND clears the record's credential; re-derive the
+        // carried reference from the fresh record under the held lock so
+        // the upsert cannot resurrect a `has_credential: true` whose
+        // keychain entry is already gone.
+        let keep_existing_carry = matches!(api_key_action, CredentialEditAction::KeepExisting)
+            && written_credential.is_none();
         // 编辑**生效中**的 Provider 必须同步重写 CLI 配置，否则 base_url/模型
         // 不生效、生效区展示陈旧（评审中危项）。与 switch 同锁防交错；current
         // 判定必须移入锁内（复审 N1）：否则「锁外判定 current==A → 并发 switch
@@ -738,11 +1234,108 @@ impl ProviderManager {
         // store.current=B」的分裂态。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        if self.store.current(agent).as_deref() == Some(record.id.as_str()) {
+        // Round-37 review MAJOR: one flock across the fresh `current` read,
+        // the vendor-config apply AND the store persist — same split-brain
+        // closure as `switch` (a peer switch landing between the read and
+        // the persist used to leave config/store disagreeing).
+        let _section = self.store.section_lock();
+        // Round-39 review: the update pre-check ran outside this flock (the
+        // credential work between the two locks can park on a keychain
+        // prompt), so a peer delete landing in that window used to be
+        // resurrected by `upsert_locked` — reporting `has_credential: true`
+        // from the stale `existing` clone while the real credential was
+        // already gone. Re-validate under the held lock: updating a record a
+        // peer removed fails honestly instead.
+        // Round-48 test seam: parks a test worker here — between the
+        // pre-lock read above and the fresh re-read below — so the test can
+        // land a peer store write inside the exact window this guard
+        // re-validates. No-op unless the gate was armed by a test.
+        #[cfg(test)]
+        self.divergence_gate.wait_while_armed();
+        let fresh_record = if provider_id.is_some() {
+            self.store.record_fresh_locked(agent, record.id.as_str())
+        } else {
+            None
+        };
+        if provider_id.is_some() && fresh_record.is_none() {
+            // Take back exactly the key this call wrote (best-effort: the
+            // primary job of this path is the honest bail). The DELETE
+            // action already removed its key; KeepExisting without a write
+            // has nothing to remove.
+            if let Some(wrote) = &written_credential {
+                self.credentials.delete(wrote).ok();
+            }
+            anyhow::bail!("Provider 不存在: {}", record.id);
+        }
+        // Round-46 review: the removed-record guard above covers a peer
+        // deleting the whole record, but a peer `--delete-key` only clears
+        // the record's credential POINTER while the record survives —
+        // upserting our pre-lock pointer over it would resurrect
+        // `has_credential: true` whose keychain entry the peer already
+        // deleted (the round-44 fix closed this for the KeepExisting-carry
+        // arm only). A peer Replace re-points the reference at the SAME
+        // deterministic value, so only a genuine divergence lands here:
+        // take back the key THIS call wrote and fail honestly; the retry
+        // re-reads everything fresh.
+        // Round-48 review MAJOR: the divergence oracle is "did the stored
+        // pointer MOVE under us" (`fresh` vs the pre-lock `existing` clone),
+        // NOT "does it differ from what this call wrote" — this call's own
+        // upsert has not landed yet, so a record born keyless
+        // (`existing.credential: None`) never equals `Some(wrote)` and
+        // adding its first key used to deterministically bail here (and
+        // delete the key this call had just written) with no peer involved.
+        // Equal pointers — including both None — mean no peer credential
+        // move happened, whatever this call wrote.
+        if let (Some(wrote), Some(fresh)) = (&written_credential, fresh_record.as_ref()) {
+            let existing_pointer = existing
+                .as_ref()
+                .and_then(|record| record.credential.clone());
+            if fresh.credential != existing_pointer {
+                // Round-49 review: the reference is deterministic, so a
+                // genuine divergence only moves the pointer in one of two
+                // directions. `Some → None` (a peer cleared it) must take
+                // the written key back — the peer already deleted the
+                // keychain entry, so ours would be an orphan. `None → Some`
+                // is a peer FIRST-KEY save landing in this window: the entry
+                // at the reference is now the peer's committed, live pointer,
+                // and our value was clobbered anyway — deleting it would
+                // leave the peer's record with `has_credential: true` over an
+                // empty keychain, so the key SURVIVES this honest bail and
+                // the retry re-reads the peer's record fresh.
+                if fresh.credential.is_none() {
+                    self.credentials.delete(wrote).ok();
+                }
+                anyhow::bail!(
+                    "Provider {} 被并发修改（凭据已被另一端更改），请重试",
+                    record.id
+                );
+            }
+        }
+        if keep_existing_carry {
+            record.credential = fresh_record.and_then(|fresh| fresh.credential);
+        }
+        if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
+            // Round-46 note: this keychain read parks inside the section
+            // when the keychain prompts. Moving it pre-lock would apply a
+            // stale key value if a peer Replace landed in the window (the
+            // reference is deterministic, so there is no pointer change to
+            // re-validate against), so the read stays here; `spawn_blocking`
+            // at the command boundary keeps it off the async runtime, and
+            // the section-lock degrade remains the bounded safety valve.
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
             writer.apply(&ProviderTarget::from_record(&record, key))?;
-            if let Err(error) = self.store.upsert(agent, record.clone()) {
+            if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
+                // Round-49 review: a persist failure must not leave the
+                // just-written key behind either. The take-back is a narrowed
+                // read-compare-delete window: re-read the entry at the
+                // reference and delete only while it still equals what THIS
+                // call wrote — a peer rotation landing in the window replaced
+                // that value and owns the entry now, so it is left alone.
+                self.take_back_untouched_key(
+                    written_credential.as_ref(),
+                    written_key_value.as_deref(),
+                );
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
                 let mut context = "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试".to_string();
@@ -752,7 +1345,13 @@ impl ProviderManager {
                     }
                     _ => {
                         if let Err(rollback) = writer.restore_default_model(
-                            self.store.official_default_model(agent).as_deref(),
+                            // Fresh read under the held section lock: the
+                            // rollback restores the official login state,
+                            // which is whatever the disk holds now, not
+                            // what this process booted with.
+                            self.store
+                                .official_default_model_fresh_locked(agent)
+                                .as_deref(),
                         ) {
                             context =
                                 format!("{context}；写回官方 default_model 也失败: {rollback:#}");
@@ -762,7 +1361,20 @@ impl ProviderManager {
                 return Err(error.context(context));
             }
         } else {
-            self.store.upsert(agent, record.clone())?;
+            if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
+                // Round-50 review: the round-49 take-back covered only the
+                // current-provider arm; this arm propagated with `?` and
+                // left the just-written key behind under a reference no
+                // record names (a retry generates a new id, so the orphan
+                // is never reclaimed). Same narrowed read-compare-delete:
+                // a peer rotation landing in the window replaced that
+                // value and owns the entry now, so it is left alone.
+                self.take_back_untouched_key(
+                    written_credential.as_ref(),
+                    written_key_value.as_deref(),
+                );
+                return Err(error);
+            }
         }
         Ok(record)
     }
@@ -775,17 +1387,36 @@ impl ProviderManager {
         // 删除当前 Provider 会回退 CLI 配置：与 switch/save 同锁，防交错。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
-        let was_current = self.store.current(agent).as_deref() == Some(provider_id);
-        let removed = self.store.get(agent, provider_id);
+        // Round-37 review MAJOR: one flock across the whole decision — the
+        // `was_current` read, the revert arm AND the record removal. Under
+        // per-primitive locks a peer switch landing between the fresh read
+        // and the removal made the restart/revert decision stale (and its
+        // own config apply could interleave with this revert).
+        let _section = self.store.section_lock();
+        let was_current = self.store.current_fresh_locked(agent).as_deref() == Some(provider_id);
+        // Fresh read under the held section lock: the revert input must
+        // describe the record on disk, not the one at boot. A stale record
+        // survives the codex revert's equality gate (the top level `model`
+        // is only removed when it equals the reverted record's), leaving a
+        // removed provider's model name pointed at official auth.
+        let removed = self.store.record_fresh_locked(agent, provider_id);
         if was_current {
             match removed.as_ref() {
-                Some(record) => self.switch_official_after_removal(agent, record)?,
-                // 已持锁：调无锁实现，避免重复加锁死锁（parking_lot 非可重入）。
+                // 已持双锁：调 fresh 实现，避免重复加锁（flock 与
+                // parking_lot 都非可重入）。
+                Some(record) => self.switch_official_after_removal_fresh(agent, record)?,
                 None => self.switch_official_locked(agent)?,
             }
         }
-        let removed = self.store.remove(agent, provider_id)?;
+        let removed = self.store.remove_locked(agent, provider_id)?;
         if removed.is_some() {
+            // Round-46 note: this keychain delete intentionally stays inside
+            // the section. The reference is deterministic, so deleting it
+            // after releasing the lock would race a peer re-creating the
+            // same provider id — the peer's freshly set key would be
+            // deleted by this stale call. The delete targets an
+            // already-ACL'd item (no unlock prompt class), and the
+            // section-lock degrade remains the bounded safety valve.
             let reference = CredentialReference::for_acp_provider(agent, provider_id);
             self.credentials.delete(&reference).ok();
         }
@@ -803,24 +1434,56 @@ impl ProviderManager {
         // 交错（评审中危项）。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
+        // Round-37 review MAJOR: the cross-process flock now spans the WHOLE
+        // decision section — fresh reads, the vendor-config apply AND the
+        // store persist. Under one flock per store primitive, a peer
+        // process could land its own apply between this switch's apply and
+        // its persist: config.toml pointed at the peer's target while
+        // `store.current` recorded ours (the existence re-check could not
+        // catch it — the target still existed), and the next spawn injected
+        // this target's key into the peer's endpoint. The `*_locked` store
+        // primitives reuse the held flock instead of re-acquiring.
+        //
+        // Round-46 review MAJOR: the keychain read below used to run inside
+        // the section flock, so a parked keychain prompt (locked keychain,
+        // ACL re-authorization) held the flock for minutes and drove every
+        // peer past SECTION_LOCK_TIMEOUT into the proceed-unlocked degrade
+        // — the lost-update window the flock exists to close. The reference
+        // is deterministic (`for_acp_provider`), so the read needs no store
+        // state: fetch the key BEFORE the section and reuse it under the
+        // lock. Residual: a peer Replace landing inside the sub-second
+        // peek→lock window leaves this switch applying the previous key
+        // value; the next switch/save converges it (a visible 401, never a
+        // silent lost update).
+        let peek_key = self.api_key(agent, provider_id)?;
+        let _section = self.store.section_lock();
+        // Fresh read under the section lock: a stale in-memory record could
+        // apply a provider a peer process already removed (the CLI's boot
+        // can be hours old); the persist-side existence re-check below is
+        // the second half of the same guard.
         let record = self
             .store
-            .get(agent, provider_id)
+            .record_fresh_locked(agent, provider_id)
             .with_context(|| format!("Provider 不存在: {provider_id}"))?;
-        let key = self
-            .api_key(agent, provider_id)?
-            .with_context(|| "Provider 未配置 API key，无法切换；请先保存 API key")?;
+        let key =
+            peek_key.with_context(|| "Provider 未配置 API key，无法切换；请先保存 API key")?;
         let writer = self.writer_for(agent)?;
         // 官方 default_model 只在首次切换时记录；连切 A→B 时 config 的
         // default_model 已是受管值（读到 None），必须**保留 store 旧值**，
         // 否则恢复官方时登录态断裂（N5）。
         let official_default_model = match writer.current_default_model()? {
             Some(value) => Some(value),
-            None => self.store.official_default_model(agent),
+            // Fresh read: this value is persisted verbatim by
+            // `set_switch_state` below, so a stale in-memory `None` (the
+            // GUI booted before a CLI switch recorded the official model)
+            // would overwrite the disk value and break the later
+            // official-login restore — kimi's `default_model` is the
+            // concrete casualty.
+            None => self.store.official_default_model_fresh_locked(agent),
         };
         writer.apply(&ProviderTarget::from_record(&record, Some(key)))?;
         // 单次持久化写入切换状态（低危 3：两步 persist 会留下半切换态）。
-        let persisted = self.store.set_switch_state(
+        let persisted = self.store.set_switch_state_locked(
             agent,
             Some(provider_id),
             official_default_model.as_deref(),
@@ -855,38 +1518,51 @@ impl ProviderManager {
         // 出现「配置已回官方、store.current=B」的分裂态（复审 F2）。
         let lock = self.switch_lock(agent);
         let _switch_guard = lock.lock();
+        // Round-37 review MAJOR: the flock spans the reads and the config
+        // rewrite plus the store write, like `switch`.
+        let _section = self.store.section_lock();
         self.switch_official_locked(agent)
     }
 
-    /// 无锁内部实现：调用方必须已持 per-agent 切换锁（delete 持锁后调用）。
+    /// 无锁内部实现：调用方必须已持 per-agent 切换锁 AND the cross-process
+    /// section flock（delete / switch_official 持双锁后调用）。
+    /// store 读取走 reload 后的 fresh read（配置/表分裂态的同一纪律）。
     fn switch_official_locked(&self, agent: &str) -> Result<()> {
-        let current = self.store.current(agent);
-        let reverted = current
-            .as_deref()
-            .and_then(|id| self.store.get(agent, id))
-            .map(|record| ProviderTarget::from_record(&record, None));
-        let official_default_model = self.store.official_default_model(agent);
+        let (_current, record) = self.store.current_and_record_fresh_locked(agent);
+        let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
+        // Same fresh-read discipline as the revert target: this value is
+        // written back verbatim by `restore_default_model`, so deciding it
+        // from a stale memory copy would silently skip the restore (or, via
+        // `switch`, persist the stale `None` over a CLI-written value).
+        let official_default_model = self.store.official_default_model_fresh_locked(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(reverted.as_ref())?;
         writer.restore_default_model(official_default_model.as_deref())?;
-        self.store.set_current(agent, None)?;
+        self.store.set_current_locked(agent, None)?;
         Ok(())
     }
 
     /// 删除当前 Provider 后的回退：记录已从 store 移除，显式传入 removed 记录
     /// 供 revert 精确清理（例如 codex 顶层 model 只在与被删 Provider 的 model
     /// 相同时删除）。
-    pub fn switch_official_after_removal(
+    // Round-40 review: the public lock-then-delegate wrapper is gone —
+    // `delete`'s revert arm is the only caller and it already holds both
+    // locks, so the wrapper had no live caller and a second entry point
+    // into the locked region is one more way to bypass the discipline.
+    /// Revert-to-official for `delete`'s arm, a caller that already
+    /// holds both the per-agent switch lock and the section flock.
+    fn switch_official_after_removal_fresh(
         &self,
         agent: &str,
         removed: &ProviderRecord,
     ) -> Result<()> {
-        validate_agent(agent)?;
-        let official_default_model = self.store.official_default_model(agent);
+        // Fresh read under the held section lock: this restore decides the
+        // official login state the same way `switch_official_locked` does.
+        let official_default_model = self.store.official_default_model_fresh_locked(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(Some(&ProviderTarget::from_record(removed, None)))?;
         writer.restore_default_model(official_default_model.as_deref())?;
-        self.store.set_current(agent, None)?;
+        self.store.set_current_locked(agent, None)?;
         Ok(())
     }
 
@@ -909,7 +1585,7 @@ impl ProviderManager {
             api_key: Option<String>,
         }
         let mut entries = Vec::new();
-        for record in &self.store.state(agent).providers {
+        for record in &self.store.state_after_reload(agent).providers {
             entries.push(ExportEntry {
                 id: record.id.clone(),
                 name: record.name.clone(),
@@ -960,14 +1636,20 @@ impl ProviderManager {
                 continue;
             }
             // id 冲突（已存在或格式非法——仅前缀匹配不够，非法字符会写进 TOML
-            // 表名）时重新生成并告警。
+            // 表名）时重新生成并告警。冲突判定走 reload 后的 fresh read：仅读
+            // 内存会让本进程启动后对端新增的同 id 条目被静默覆盖。这里的
+            // 预检与其后的插入仍隔着自己的一小段窗口（两把锁之间），真正的
+            // 并发导入竞争由 `insert_if_absent` 的同锁原子检查兜底——输家
+            // 计入 id_conflicts，全程不触碰 keyring（凭据写入在赢得 id 之后，
+            // round-37 审阅：引用是 (agent, id) 的纯函数，输家若先写后删会
+            // 连带删掉赢家记录指向的共享条目）。
             let id = if entry.id.starts_with(PROVIDER_ID_PREFIX)
                 && entry.id.len() <= 64
                 && entry
                     .id
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && self.store.get(agent, &entry.id).is_none()
+                && self.store.record_after_reload(agent, &entry.id).is_none()
             {
                 entry.id.clone()
             } else {
@@ -1007,23 +1689,20 @@ impl ProviderManager {
             };
             let entry_name = entry.name.trim().to_string();
             // per-entry 错误收集：任一条目失败不中断整批，最后汇总（复审低危 2）。
-            let credential = match &entry.api_key {
-                Some(key) => match self.credentials.set(&reference, key) {
-                    Ok(()) => Some(reference.clone()),
-                    Err(error) => {
-                        result
-                            .errors
-                            .push(format!("写入 {entry_name} 密钥失败: {error:#}"));
-                        result.skipped += 1;
-                        continue;
-                    }
-                },
-                None => None,
-            };
-            match self.store.upsert(
+            // Round-37 review MAJOR: win the id FIRST, write the credential
+            // second. The credential reference is a pure function of
+            // (agent, provider_id), so when two importers race the same id
+            // they share ONE keyring entry — under the old
+            // credential-then-insert order the loser's cleanup deleted the
+            // shared entry the winner's record points at (and the loser's
+            // `set` had already overwritten the winner's key value).
+            // Insert-first means the loser never touches the keyring at
+            // all; the winner writes its key after its record landed.
+            let credential = entry.api_key.as_ref().map(|_| reference.clone());
+            match self.store.insert_if_absent(
                 agent,
                 ProviderRecord {
-                    id,
+                    id: id.clone(),
                     name: entry_name.clone(),
                     base_url: trim_base_url(&entry.base_url),
                     model: entry.model,
@@ -1034,18 +1713,54 @@ impl ProviderManager {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 },
             ) {
-                Ok(()) => result.imported += 1,
+                // Round-42 review: `imported` is counted only AFTER the
+                // credential write below — the rollback arm used to leave
+                // the pre-incremented count standing, so a credential
+                // failure reported the entry as both imported and skipped.
+                Ok(true) => {}
+                Ok(false) => {
+                    // Lost the check→act race (round-36 review): a peer
+                    // import landed the same id between this loop's fresh
+                    // pre-check and the insert's critical section. The
+                    // atomic insert wrote nothing and this path never
+                    // touched the keyring — the shared reference keeps the
+                    // WINNER's key intact (the previous order's loser
+                    // cleanup deleted it). Account the entry as an id
+                    // conflict plus a skip; the peer's record stands,
+                    // un-replaced.
+                    result.id_conflicts += 1;
+                    result.skipped += 1;
+                    continue;
+                }
                 Err(error) => {
-                    // store 落盘失败：删除刚写入的孤儿凭据，避免无记录的 keyring 残留
-                    if credential.is_some() {
-                        self.credentials.delete(&reference).ok();
-                    }
                     result
                         .errors
                         .push(format!("保存 {entry_name} 失败: {error:#}"));
                     result.skipped += 1;
+                    continue;
                 }
             }
+            // We won the id: materialize the credential the record now
+            // references. A failure rolls OUR record back together with the
+            // keyring entry. The id was ours alone at the insert, but the
+            // window is not microscopic (the keyring write itself can park
+            // on a keychain prompt), so a peer `save` addressing this id
+            // before the rollback lands can lose the record it just saw —
+            // the residual the round-38 review named; strictly narrower
+            // than the pre-round-37 order, where the keyring was touched
+            // before the id was won at all.
+            if let Some(key) = &entry.api_key
+                && let Err(error) = self.credentials.set(&reference, key)
+            {
+                let _ = self.store.remove(agent, &id);
+                let _ = self.credentials.delete(&reference);
+                result
+                    .errors
+                    .push(format!("写入 {entry_name} 密钥失败: {error:#}"));
+                result.skipped += 1;
+                continue;
+            }
+            result.imported += 1;
         }
         Ok(result)
     }
@@ -1111,6 +1826,8 @@ fn fixture_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
+    use std::sync::atomic::AtomicBool;
 
     fn tmp_store(dir: &Path) -> AcpProvidersStore {
         let path = dir.join("acp-providers.json");
@@ -1118,6 +1835,329 @@ mod tests {
             path,
             agents: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// The reload→mutate→persist section is serialized ACROSS processes:
+    /// while another process holds the section lock, a mutator here waits
+    /// instead of renaming its own snapshot over the peer's just-committed
+    /// write (the lost-update window the in-process write guard left open).
+    #[test]
+    fn mutators_wait_for_another_process_holding_the_section_lock() {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cli = tmp_store(&dir);
+
+        // An external "process" (any holder of the same lock file) owns the
+        // section.
+        let lock_path = dir.join("acp-providers.json.lock");
+        let holder = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        holder.lock().unwrap();
+
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let done_in = done.clone();
+        // The worker signals right before entering the mutator, so the
+        // bounded-wait assertion below cannot pass vacuously (a bare sleep
+        // lets the assertion pass when the worker has not reached the lock
+        // yet — round-37 review).
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let cli = cli;
+            ready_tx.send(()).unwrap();
+            cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
+            done_in.store(true, Ordering::SeqCst);
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must reach the mutator");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "the mutator must wait while the section lock is held elsewhere"
+        );
+        holder.unlock().unwrap();
+        worker.join().unwrap();
+        assert!(done.load(Ordering::SeqCst));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A file that turned corrupt after boot (holding writes this process
+    /// never saw) must be preserved before this process's persist replaces
+    /// it — `load_or_empty`'s boot-time `.pinvou3-bak` never saw it either.
+    #[test]
+    fn reload_into_quarantines_a_file_that_turned_corrupt_after_boot() {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acp-providers.json");
+        let store = tmp_store(&dir);
+
+        let corrupt = b"{ this never parses";
+        fs::write(&path, corrupt).unwrap();
+
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        store.upsert("codex", record("pv-a", "A")).unwrap();
+
+        let quarantine = dir.join("acp-providers.json.invalid");
+        assert_eq!(
+            fs::read(&quarantine).unwrap(),
+            corrupt,
+            "the pre-persist corrupt bytes must survive in the .invalid sibling"
+        );
+        // The store itself heals forward: the file now parses and carries
+        // the mutation.
+        let on_disk = fs::read_to_string(&path).unwrap();
+        assert!(
+            on_disk.contains("\"pv-a\""),
+            "the persist landed: {on_disk}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The decision primitive behind `save`'s active-provider arm and
+    /// `delete`'s revert arm: a long-lived side whose in-memory `current`
+    /// was stale-dated by a CLI process's `set_current` must answer the
+    /// disk's value, not its own stale one — deciding from the stale value
+    /// rewrote the CLI config for a provider that was no longer current
+    /// (the config/store split-brain).
+    #[test]
+    fn current_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        gui.set_current("codex", Some("pv-a")).unwrap();
+        // Both sides saw the same state so far; the memory answer agrees.
+        assert_eq!(cli.current_after_reload("codex").as_deref(), Some("pv-a"));
+
+        // The CLI process switches behind the GUI's back: disk now says
+        // pv-b while the GUI's memory still says pv-a.
+        cli.set_current("codex", Some("pv-b")).unwrap();
+        assert_eq!(
+            gui.current("codex").as_deref(),
+            Some("pv-a"),
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "the decision read must adopt the disk state"
+        );
+        // The record decision reads (spawn-env injection, session provider
+        // override validation) adopt the disk state the same way: a provider
+        // the CLI added is found and one it removed is gone, while the plain
+        // reads keep the stale memory values.
+        cli.upsert("codex", record("pv-cli", "CLI")).unwrap();
+        assert!(
+            gui.get("codex", "pv-cli").is_none(),
+            "precondition: the plain record read is the stale memory value"
+        );
+        assert!(
+            gui.record_after_reload("codex", "pv-cli").is_some(),
+            "the fresh record read must adopt the CLI-written provider"
+        );
+        cli.remove("codex", "pv-a").unwrap();
+        assert!(
+            gui.get("codex", "pv-a").is_some(),
+            "precondition: the plain record read keeps the removed provider"
+        );
+        assert!(
+            gui.record_after_reload("codex", "pv-a").is_none(),
+            "the fresh record read must drop the CLI-removed provider"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The `official_default_model` decision primitive behind `switch` (and
+    /// the official revert arms): the value read here is persisted verbatim
+    /// by `set_switch_state` / `restore_default_model`, so a long-lived side
+    /// whose in-memory copy was stale-dated by a CLI switch would persist
+    /// its stale `None` over the CLI-written value — erasing the recorded
+    /// official default model and breaking the later official-login restore
+    /// (kimi's `default_model` is the concrete casualty).
+    #[test]
+    fn official_default_model_after_reload_reads_the_disk_state_a_cli_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-10-03T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+
+        // A CLI process switches behind the GUI's back AFTER the GUI booted:
+        // its switch decided the official default model from its own fresh
+        // read and recorded it on disk, while the long-lived GUI's memory
+        // still holds the boot-time None.
+        cli.set_switch_state("codex", Some("pv-b"), Some("kimi-code/k3"))
+            .unwrap();
+        assert_eq!(
+            gui.official_default_model("codex"),
+            None,
+            "precondition: the plain read is the stale memory value"
+        );
+        assert_eq!(
+            gui.official_default_model_after_reload("codex").as_deref(),
+            Some("kimi-code/k3"),
+            "the decision read must adopt the disk state, not the stale memory"
+        );
+        // The mutator persists the decision value verbatim — which is why
+        // the decision read above must be fresh: a stale-None decision
+        // through the same mutator erases the recorded model.
+        cli.set_switch_state("codex", Some("pv-a"), None).unwrap();
+        assert_eq!(
+            cli.official_default_model_after_reload("codex"),
+            None,
+            "a None decision persists None — so the decision must be fresh-read"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The switch paths' half of the same split-brain discipline: a record
+    /// resolved for `switch` must come from the disk state (a peer may have
+    /// upserted after this process booted), and `set_switch_state` must
+    /// refuse to pin `current` to an id a concurrent `remove` erased between
+    /// the config write and the persist — that state (config carries the
+    /// provider, table does not) is exactly what the store refuses; the
+    /// error routes `switch` into its rollback arm.
+    #[test]
+    fn switch_decisions_read_the_disk_state_and_refuse_a_removed_target() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-a", "A")).unwrap();
+        gui.upsert("codex", record("pv-b", "B")).unwrap();
+        // A CLI process that booted BEFORE the table landed must still
+        // resolve its records: the plain `get` answers None from the empty
+        // boot memory.
+        assert!(
+            cli.get("codex", "pv-b").is_none(),
+            "precondition: the plain read is the stale memory view"
+        );
+        assert!(
+            cli.record_after_reload("codex", "pv-b").is_some(),
+            "the switch decision read must adopt the disk state"
+        );
+
+        // The switch persist itself: a peer remove landing between the config
+        // write and `set_switch_state` must refuse, not pin a dangling id.
+        gui.remove("codex", "pv-b").unwrap();
+        let error = cli
+            .set_switch_state("codex", Some("pv-b"), None)
+            .expect_err("a provider removed mid-switch must fail the persist");
+        assert!(
+            error.to_string().contains("pv-b"),
+            "the refusal names the removed id: {error}"
+        );
+        // The store must not carry the dangling current either.
+        assert_ne!(
+            gui.current_after_reload("codex").as_deref(),
+            Some("pv-b"),
+            "no refused switch may leave current pointing at the removed id"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Shared behavior contracts of the three CLI ConfigWriters, locked in one
@@ -1253,8 +2293,24 @@ mod tests {
             "我的中转"
         );
         assert_eq!(store.current("codex").unwrap(), "pv-1234567890ab");
-        // 原子写：无残留 .tmp 文件
-        assert!(!store.path.with_extension("json.tmp").exists());
+        // Atomic write: no leftover staging tmp file. persist goes through
+        // `atomic_write`, which stages as `.acp-providers.json.tmp-<pid>-<nanos>`
+        // in this directory; assert NO file of that prefix remains. The old
+        // assertion targeted a `json.<pid>.tmp` name nothing ever wrote —
+        // trivially true, so it pinned no leak.
+        let tmp_leftovers: Vec<std::path::PathBuf> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".acp-providers.json.tmp-"))
+            })
+            .collect();
+        assert!(
+            tmp_leftovers.is_empty(),
+            "persist must not leave staging tmp files behind: {tmp_leftovers:?}"
+        );
         // 从同一路径重新加载验证往返
         let reloaded = load_from_path(&store.path);
         assert_eq!(reloaded.state("codex").providers.len(), 1);
@@ -1262,6 +2318,153 @@ mod tests {
         let raw = fs::read_to_string(&store.path).unwrap();
         assert!(!raw.contains("api_key"));
         assert!(raw.contains("pinvou3-acp-provider-key"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The GUI holds one store for the app lifetime while the CLI builds a
+    /// fresh one per process; the long-lived side must pull the fresh
+    /// side's write in before its next whole-table persist, or that persist
+    /// silently reverts it minutes later.
+    /// Two in-process mutators racing through the same store: whichever
+    /// mutation commits, its own persist must carry it — the reload inside
+    /// the shared write guard can only see a file that already contains
+    /// every earlier commit, so no commit may vanish from the final disk
+    /// state (this is the discard the post-guard persist shape allowed).
+    #[test]
+    fn racing_mutators_never_lose_a_committed_write() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let store = std::sync::Arc::new(tmp_store(&dir));
+
+        let upserter = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                for round in 0..64 {
+                    store
+                        .upsert("codex", record("pv-a", &format!("upsert-{round}")))
+                        .unwrap();
+                }
+            })
+        };
+        let switcher = {
+            let store = std::sync::Arc::clone(&store);
+            std::thread::spawn(move || {
+                for round in 0..64 {
+                    store
+                        .set_current("codex", Some(if round % 2 == 0 { "pv-a" } else { "pv-b" }))
+                        .unwrap();
+                }
+            })
+        };
+        upserter.join().unwrap();
+        switcher.join().unwrap();
+
+        {
+            let committed = load_from_path(&dir.join("acp-providers.json"));
+            let names: Vec<String> = committed
+                .state("codex")
+                .providers
+                .iter()
+                .map(|r| r.name.clone())
+                .collect();
+            assert!(
+                names.contains(&"upsert-63".to_string()),
+                "the last committed upsert must be on disk: {names:?}"
+            );
+        }
+        store.upsert("codex", record("pv-b", "late")).unwrap();
+        let final_state = load_from_path(&dir.join("acp-providers.json"));
+        let state = final_state.state("codex");
+        let names: Vec<String> = state.providers.iter().map(|r| r.name.clone()).collect();
+        assert!(
+            names.contains(&"late".to_string()),
+            "the last upsert must survive: {names:?}"
+        );
+        let current = state.current_provider_id.as_deref();
+        assert!(
+            current == Some("pv-a") || current == Some("pv-b"),
+            "a committed current must survive: {current:?}"
+        );
+    }
+
+    #[test]
+    fn mutators_reload_the_disk_state_the_other_surface_wrote() {
+        fn record(id: &str, name: &str) -> ProviderRecord {
+            ProviderRecord {
+                id: id.into(),
+                name: name.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: None,
+                model_slots: None,
+                context_window: None,
+                wire_api: ProviderWireApi::Openai,
+                credential: None,
+                created_at: "2026-09-30T00:00:00Z".into(),
+            }
+        }
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acp-providers.json");
+        let gui = tmp_store(&dir);
+        let cli = tmp_store(&dir);
+
+        gui.upsert("codex", record("pv-gui", "GUI record")).unwrap();
+        // The CLI-side store never saw the GUI record; its own write must
+        // not wipe it.
+        cli.upsert("codex", record("pv-cli", "CLI record")).unwrap();
+        let on_disk = load_from_path(&path);
+        let names: Vec<String> = on_disk
+            .state("codex")
+            .providers
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert!(
+            names.contains(&"GUI record".to_string()) && names.contains(&"CLI record".to_string()),
+            "the CLI write must not revert the GUI record: {names:?}"
+        );
+
+        // A removal is equally authoritative: the long-lived side's next
+        // mutation reloads the removal instead of resurrecting the id.
+        cli.remove("codex", "pv-gui").unwrap();
+        gui.set_current("codex", Some("pv-cli")).unwrap();
+        let on_disk = load_from_path(&path);
+        let names: Vec<String> = on_disk
+            .state("codex")
+            .providers
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["CLI record".to_string()],
+            "the removed provider must stay removed: {names:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1341,5 +2544,417 @@ mod tests {
             ProviderWireApi::Openai
         );
         assert!(ProviderWireApi::parse(Some("bogus")).is_err());
+    }
+
+    /// Round-48 review MAJOR regression pin: adding a FIRST key to a
+    /// keyless provider must save. The round-46 divergence guard used to
+    /// compare the fresh record against what THIS call wrote — a comparison
+    /// the call can never satisfy before its own upsert lands — so a record
+    /// born keyless (`credential: None`) deterministically bailed and took
+    /// back the just-written key, on both the GUI form and the CLI's
+    /// `providers update --key`. Drives the real `ProviderManager::save`
+    /// over the file secret backend; no config writer is touched because
+    /// the provider is not `current`.
+    #[test]
+    fn save_adds_a_first_key_to_a_keyless_provider_and_rotates_it() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-keyless-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let store_path = home.join("acp-providers.json");
+
+        let manager =
+            ProviderManager::new(SystemCredentialStore::new()).expect("manager constructs");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::KeepExisting,
+            )
+            .expect("keyless create saves");
+        assert!(
+            created.credential.is_none(),
+            "the created record must be keyless"
+        );
+        assert!(store_path.exists(), "the create must persist the store");
+
+        // The regression: Replace with a key on the keyless record.
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        let updated = manager
+            .save(
+                "codex",
+                Some(&created.id),
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-first-key".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("adding the first key to a keyless provider must save");
+        assert!(updated.credential.is_some(), "the pointer must land");
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round48-first-key"),
+            "the just-written key must survive the save"
+        );
+
+        // Rotation on an existing key keeps working: fresh pointer equals
+        // the pre-lock pointer, so the divergence guard must not fire.
+        let rotated = manager
+            .save(
+                "codex",
+                Some(&created.id),
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-second-key".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("rotating the key on a keyed provider must save");
+        assert!(rotated.credential.is_some());
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round48-second-key"),
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The guard's intended target stays covered: a peer `--delete-key`
+    /// landing between this call's pre-lock read and its under-lock fresh
+    /// read (simulated by rewriting the store file while the section lock
+    /// is held) makes the save fail honestly AND take back the key this
+    /// call wrote, instead of upserting a `has_credential: true` whose
+    /// keychain entry the peer already deleted.
+    /// Round-50 review: the shared take-back helper's narrowed semantics,
+    /// pinned directly — it deletes only while the entry still equals what
+    /// THIS call wrote, so a peer rotation in the window survives, and the
+    /// `None` arms are honest no-ops. (The arm wiring — that both save arms
+    /// call it on persist failure — rides the compile-time call graph; a
+    /// hermetic persist-failure seam for the full save path does not exist,
+    /// since `atomic_write`'s staging token is pid+nanotime.)
+    #[test]
+    fn take_back_untouched_key_deletes_only_its_own_value() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-take-back-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let reference = CredentialReference::for_acp_provider("codex", "unit-take-back");
+
+        // Matching value: the entry this call wrote is taken back.
+        manager.credentials.set(&reference, "sk-mine").expect("set");
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        assert_eq!(
+            SystemCredentialStore::new().get(&reference).expect("get"),
+            None,
+            "the matching entry must be taken back"
+        );
+
+        // A peer rotation replaced the value first: the peer's entry survives.
+        manager.credentials.set(&reference, "sk-peer").expect("set");
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("get")
+                .as_deref(),
+            Some("sk-peer"),
+            "a peer's rotated value must be left alone"
+        );
+
+        // The `None` arms (nothing written / no recorded value) are no-ops.
+        manager.take_back_untouched_key(None, Some("sk-peer"));
+        manager.take_back_untouched_key(Some(&reference), None);
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("get")
+                .as_deref(),
+            Some("sk-peer"),
+        );
+        manager.credentials.delete(&reference).ok();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn save_takes_back_the_written_key_when_a_peer_clears_the_pointer() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-peer-clear-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let store_path = home.join("acp-providers.json");
+
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-peer-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let done = Arc::new(AtomicBool::new(false));
+        let done_in = done.clone();
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // The worker's manager carries an ARMED divergence gate, so its
+            // save parks between the pre-lock read (which saw the keyed
+            // record) and the under-lock fresh read — the exact window the
+            // guard re-validates.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            let worker_manager = worker_manager.expect("worker manager");
+            gate_tx.send(gate).unwrap();
+            let result = worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round48-peer-replacement".into()),
+                CredentialEditAction::Replace,
+            );
+            done_in.store(true, Ordering::SeqCst);
+            result
+        });
+
+        // The peer lands its `--delete-key` inside the parked window: the
+        // pointer is cleared on disk (the keychain entry the peer deleted
+        // is already gone).
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        file["agents"]["codex"]["providers"][0]["credential"] = serde_json::Value::Null;
+        fs::write(&store_path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Release only AFTER the rewrite is on disk: the worker's fresh
+        // re-read must observe it.
+        gate.release();
+
+        let result = worker.join().unwrap();
+        let error = result.expect_err("the diverged save must fail honestly");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("被并发修改"),
+            "the refusal must name the concurrent modification, got: {rendered}"
+        );
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read"),
+            None,
+            "the save must take back the key it wrote"
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-49 review, the mirror direction of the peer-clear test: a peer
+    /// FIRST-KEY save landing in the same parked window moves the pointer
+    /// `None → Some`, so the entry at the deterministic reference is now the
+    /// PEER's committed, live pointer. The save must still refuse honestly,
+    /// but must NOT take back the key it wrote — deleting it would leave the
+    /// peer's record with `has_credential: true` over an empty keychain (our
+    /// value was clobbered by the peer's write anyway).
+    #[test]
+    fn save_keeps_the_written_key_when_a_peer_commits_a_first_key() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-peer-first-key-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        let store_path = home.join("acp-providers.json");
+
+        // Bootstrap a KEYLESS record: both saves below are first-key saves.
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::KeepExisting,
+            )
+            .expect("keyless create saves");
+        assert!(
+            created.credential.is_none(),
+            "the bootstrapped record must be keyless"
+        );
+
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // Same parked window as the peer-clear test: the worker's save
+            // has written its key and read the keyless record, then parks
+            // before the under-lock fresh read.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            let worker_manager = worker_manager.expect("worker manager");
+            gate_tx.send(gate).unwrap();
+            worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyless Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round49-ours".into()),
+                CredentialEditAction::Replace,
+            )
+        });
+
+        // The peer lands its FIRST-KEY save inside the parked window: the
+        // keychain entry at the reference now holds the PEER's value and the
+        // store file carries the peer's committed `Some(reference)` pointer.
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        SystemCredentialStore::new()
+            .set(&reference, "sk-round49-peer-first-key")
+            .expect("peer keychain write");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        file["agents"]["codex"]["providers"][0]["credential"] =
+            serde_json::to_value(&reference).unwrap();
+        fs::write(&store_path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Release only AFTER the peer writes are on disk: the worker's fresh
+        // re-read must observe them.
+        gate.release();
+
+        let result = worker.join().unwrap();
+        let error = result.expect_err("the diverged save must fail honestly");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("被并发修改"),
+            "the refusal must name the concurrent modification, got: {rendered}"
+        );
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round49-peer-first-key"),
+            "the peer's live key must survive the refused save"
+        );
+        let _ = fs::remove_dir_all(&home);
     }
 }

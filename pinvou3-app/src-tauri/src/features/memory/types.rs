@@ -400,6 +400,19 @@ pub(super) fn normalize_profile_label(value: &str, topic: &str) -> String {
     clean_memory_label(&clean_profile_memory_content(value, topic)).unwrap_or_default()
 }
 
+/// Round-40 review: whether a submitted identity label would be silently
+/// EMPTIED by `normalize_profile_label` (over twelve characters after the
+/// punctuation/particle strip, question-shaped, sensitive/task-like, or
+/// emptied outright by the content filter). `memory profile set` must
+/// refuse this shape up front: `MemoryProfile::normalize` maps a rejected
+/// label to `""` and the update persists it, so without this check a
+/// misspelled or over-long call name destroyed the stored value with exit
+/// 0 and no note on any channel. `pub` for the CLI lane; the GUI save path
+/// shares the underlying gap and keeps its inline validation for now.
+pub fn profile_label_would_be_wiped(value: &str, topic: &str) -> bool {
+    !value.trim().is_empty() && normalize_profile_label(value, topic).is_empty()
+}
+
 pub(super) fn normalize_preference_topic(topic: &str) -> String {
     match clean_id(&clean_text(topic, 40)).as_str() {
         "answer_style" | "output_style" | "output_preference" | "reply_style" => {
@@ -452,7 +465,12 @@ pub(super) fn normalize_timed_memory_topic(kind: &str, _topic: &str) -> String {
     }
 }
 
-pub(super) fn looks_like_profile_preference_text(text: &str) -> bool {
+// `pub` (re-exported from the `features::memory` facade) so the CLI can probe
+// it before enqueueing a preference candidate: the confirm path silently skips
+// profile-shaped text (see `write_preference_unlocked`) while still marking
+// the candidate confirmed, so `memory add` must reject that content up front
+// instead of stranding a confirmed-but-unmaterialized pending entry.
+pub fn looks_like_profile_preference_text(text: &str) -> bool {
     let text = clean_text(text, 120);
     [
         "称呼用户",

@@ -1,0 +1,1453 @@
+//! Ctrl-C supervision for the vendor CLI children spawned in their own
+//! process groups.
+//!
+//! [`crate::support::set_process_group`] puts every long-running vendor child
+//! in a dedicated group so a *timeout* can kill its npm/shell descendants
+//! with it ([`crate::support::kill_process_tree`]). The same isolation is
+//! what orphans those children when the *terminal* is interrupted: nothing
+//! installs a SIGINT handler, so the default disposition terminates the CLI
+//! alone, and the group children — kimi logins that can run to 1800s, codex,
+//! a wedged `connectors connect` — keep running with no parent left to reap
+//! or kill them.
+//!
+//! [`install_signal_cleanup`] is the missing half, installed once as the
+//! first statement of `main`. It wires a self-pipe: the SIGINT/SIGTERM/SIGHUP
+//! handler does the one thing it may do — a `write(2)` of the signal number,
+//! async-signal-safe — while a watcher thread owns every non-signal-safe
+//! step: it raises the flag [`sigint_seen`] reports, forwards SIGTERM to
+//! every registered group, waits a bounded grace, escalates to SIGKILL for
+//! survivors, then restores the default disposition and re-raises the
+//! original signal so the process exits with the conventional 128+N status.
+//! SIGHUP is in the set because closing the terminal delivers it to the
+//! foreground group too — the most common real interruption of a long
+//! login — and leaving it at its default disposition would orphan the group
+//! children all the same.
+//!
+//! Spawn sites supervise a child by bracketing its lifetime through the
+//! registry — nothing in this module is per-call-site, so later waves wire
+//! spawn sites purely through this public surface:
+//!
+//! ```text
+//! let mut command = …;
+//! support::set_process_group(&mut command);        // existing call, unchanged
+//! let child = support::supervise::spawn_supervised(&mut command)?;
+//!                                                  // spawn + register happen
+//!                                                  // with the interrupt
+//!                                                  // signals blocked, so no
+//!                                                  // interrupt can slip the
+//!                                                  // window; bounded wait, on
+//!                                                  // timeout
+//!                                                  // support::kill_process_tree
+//! let group = support::supervise::GroupGuard::arm(child.id()); // RAII pair:
+//!                                                  // covers the ordinary
+//!                                                  // exits AND every panic
+//!                                                  // in between; a manual
+//!                                                  // forget_child_group()
+//!                                                  // answers the ordinary
+//!                                                  // exits only
+//! ```
+//!
+//! The CLI targets macOS/Linux, so the implementation is UNIX-only; every
+//! entry point collapses to a no-op elsewhere, the same split
+//! [`crate::support::set_process_group`] uses.
+
+/// Installs the SIGINT/SIGTERM/SIGHUP cleanup wiring. Idempotent. Must run
+/// before any supervised child exists, which is why `main` calls it as its
+/// first statement; nothing else may need to call it.
+pub fn install_signal_cleanup() {
+    #[cfg(unix)]
+    {
+        imp::install();
+    }
+    #[cfg(not(unix))]
+    {
+        // Not a CLI target; the unsupervised status quo is unchanged there.
+    }
+}
+
+/// Spawns `command` and registers the child's process group in one step,
+/// with the interrupt-family signals blocked on this thread for the
+/// spawn→register window. A raw `spawn()` followed by
+/// [`register_child_group`] leaves a window in which an interrupt forwards
+/// to nothing and re-raises with the fresh group child absent from the
+/// registry — the exact orphan this module exists to prevent. With the
+/// signals blocked, a pending interrupt stays pending until the unblock
+/// below and is delivered once, with the child already registered.
+///
+/// THREAD REQUIREMENT: this is the only form a non-main thread may use. The
+/// spawn→register window below is excluded from the interrupt snapshot via
+/// `imp::spawn_window`, so a signal arriving while any thread is inside the
+/// window is answered by a watcher snapshot that either already contains the
+/// fresh group or waits for the window to close first — the orphan window a
+/// raw `spawn()` + [`register_child_group`] pair would leave on a worker
+/// thread (where the block/unblock here is per-thread and defers nothing) is
+/// closed by that mutual exclusion on EVERY thread. On the main thread the
+/// sigmask block additionally keeps the pending signal parked until the
+/// unblock, so it is delivered once, with the child already registered.
+///
+/// The spawn→register window blocks the interrupt family on the spawning
+/// thread, and the child would inherit that mask across fork. Std does NOT
+/// guarantee an empty child mask at exec: on macOS (verified by probe,
+/// rustc 1.98) even the posix-spawn path keeps the blocked INT/TERM/HUP
+/// mask alive in the child, so a forwarded SIGTERM would pend forever and
+/// every Ctrl-C cleanup would ride the 5 s SIGKILL escalation — exactly the
+/// vendor-CLI-flushes-state case the grace window exists for. The child's
+/// mask is therefore reset EXPLICITLY, via a `pre_exec` closure running
+/// between fork and exec; the same closure restores SIGPIPE's default
+/// disposition, which the Rust runtime sets to SIG_IGN process-wide and an
+/// exec preserves (round-40 review).
+///
+/// Every supervised spawn site goes through this instead of a bare `spawn`.
+pub fn spawn_supervised(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the closure runs in the forked child before exec; it only
+        // calls sigprocmask with a zeroed-and-emptied set and `signal` to
+        // restore SIGPIPE's default disposition (no allocation, no locks
+        // held) and propagates the raw errno via the io::Result contract
+        // `pre_exec` requires.
+        unsafe {
+            command.pre_exec(|| {
+                let mut empty: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut empty);
+                if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Round-40 review: restore SIGPIPE's default disposition.
+                // The Rust runtime sets SIGPIPE to SIG_IGN process-wide,
+                // an IGNORED disposition survives exec, and std has no
+                // stable way to reset it — so without this, a vendor CLI
+                // whose own pipeline relies on default SIGPIPE death
+                // (`node … | head`, an npm wrapper chaining a filter)
+                // behaves differently under `pinvou` than standalone: the
+                // upstream write gets EPIPE instead of a signal kill and
+                // can spin or fail differently. SIG_DFL is async-signal-
+                // safe; the exec below resets everything else anyway.
+                if libc::signal(libc::SIGPIPE, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let saved = imp::block_interrupt_signals();
+        // The window guard makes the spawn→register pair atomic against the
+        // watcher's snapshots: on a worker thread the sigmask block above
+        // defers nothing (an interrupt is delivered to main's handler while
+        // this spawn is in flight), so the exclusion is what keeps the fresh
+        // group inside the cleanup's phase-1 forward instead of orphaned.
+        // The pre_exec closure still holds no lock IN THE CHILD: it runs
+        // between fork and exec and only calls sigprocmask.
+        let _window = imp::spawn_window();
+        // Round-41 review: a spawn racing cleanup by definition escapes every
+        // snapshot the watcher has already taken — the interrupt forward, the
+        // grace loop and the final sweep all read the registry before this
+        // point, so a group registering from here on is TERM/KILLed by no one
+        // and this process dies beside it. Refuse the spawn instead of
+        // manufacturing that orphan; the caller's normal not-found/failed
+        // handling reports it. (The `Err` also keeps a post-success probe from
+        // misreading an interrupt-torn login as `not_authenticated` forever —
+        // the process is dying either way.) Round-42 review: the check lives
+        // INSIDE the window — checked before acquiring it, a worker thread
+        // preempted in that stretch could acquire the window after the
+        // watcher's final sweep had already completed and spawn into a
+        // registry nobody will read. Inside the window the answer is final:
+        // either the flag is already set (refuse — holding the window for
+        // the instant the drop takes is harmless) or the register below
+        // lands before the watcher's blocked-on-window snapshot proceeds.
+        if imp::cleanup_started() {
+            // Round-42 review, corrected in the same wave (caught live by
+            // the connectors interrupt suite): the mask restore is
+            // load-bearing on EVERY exit path. Phase 3's re-raise targets
+            // the PROCESS because delivery needs a thread with the family
+            // unblocked — "the main thread, whose mask spawn_supervised
+            // always restores". A refusal that kept the mask left that
+            // invariant broken: the watcher completed phase 3, its kill
+            // pended forever on a fully-blocked process, and main parked on
+            // a process that could no longer die.
+            drop(_window);
+            imp::restore_interrupt_signals(saved);
+            return Err(std::io::Error::other(
+                "interrupt cleanup in progress; spawn refused",
+            ));
+        }
+        let spawned = command.spawn();
+        if let Ok(child) = &spawned {
+            // Round-41 review: the parent-side half of the double-setpgid
+            // protocol. `set_process_group(0)` is executed by the CHILD
+            // between fork and exec, so between the parent's fork return —
+            // which is when the group is registered below — and the child's
+            // first scheduler slot the registered pgid does not exist yet:
+            // a watcher snapshot racing that instant forwards `kill(-pgid)`
+            // to ESRCH, `group_alive` classifies the fresh group dead, the
+            // grace loop finishes immediately, and the vendor CLI is
+            // orphaned — exactly under the fork-storm load the supervisor
+            // exists to survive. With the parent-side call, the group's
+            // existence is a fact by the time `register` runs. SAFETY:
+            // setpgid(2) on our own just-forked child, no allocation, no
+            // locks held. The result is intentionally ignored: EACCES (the
+            // child already exec'd, so its own setpgid already ran) and
+            // ESRCH (the child already exited) are the expected benign
+            // races, and any other errno leaves the child's in-child
+            // `setpgid(0, 0)` as the authority for group creation.
+            unsafe {
+                let pid = child.id() as libc::pid_t;
+                let _ = libc::setpgid(pid, pid);
+            }
+            imp::register(child.id());
+        }
+        drop(_window);
+        imp::restore_interrupt_signals(saved);
+        spawned
+    }
+    #[cfg(not(unix))]
+    {
+        command.spawn()
+    }
+}
+
+/// Registers a live child process group so an interrupt later forwards to it.
+/// Call right after a successful `spawn` of a `set_process_group` child — the
+/// pgid is the child's pid — and pair every exit from the lifetime (normal
+/// completion, timeout kill) with [`forget_child_group`]. Main-thread only:
+/// the spawn→register exclusion lives inside [`spawn_supervised`], so a
+/// split spawn + register pair is safe only where the sigmask window defers
+/// the interrupt (see `spawn_supervised`'s thread requirement).
+pub fn register_child_group(pgid: u32) {
+    #[cfg(unix)]
+    {
+        imp::register(pgid);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+    }
+}
+
+/// Main's exit path calls this right before `std::process::exit`: once an
+/// interrupt cleanup has STARTED, the conventional 128+N exit belongs to the
+/// watcher's phase-3 re-raise, not to main's own exit code. Without this
+/// park, a vendor child that dies promptly on the forwarded SIGTERM lets
+/// main render and exit sub-millisecond — the watcher's re-raise usually
+/// loses that race and scripts observe the family's exit 1 instead of
+/// 128+N. Once cleanup has started the watcher is GUARANTEED to terminate
+/// the process (the grace loop is bounded and phase 3 reinstalls SIG_DFL
+/// and kills), so parking here cannot hang. No cleanup started: returns
+/// immediately, the normal path.
+pub fn park_while_interrupt_cleanup_concludes() {
+    #[cfg(unix)]
+    imp::park_while_cleanup_concludes();
+    #[cfg(not(unix))]
+    {
+        // No watcher on this platform; nothing to conclude.
+    }
+}
+
+/// Removes a process group from supervision. Call when the site has waited
+/// for the child (or killed it), so a later interrupt does not signal a pgid
+/// the OS may already have recycled for an unrelated process.
+///
+/// DISCIPLINE: registration is automatic inside [`spawn_supervised`], but
+/// the release half is per-site — a missed `forget` leaves a stale pgid in
+/// the registry. Since the round-41 liveness probe the watcher skips dead
+/// registrations when TERMing (no blind signal into a recycled group), but a
+/// stale entry still rides the grace loop and consumes its recycled pgid's
+/// SIGKILL if an unrelated group is reusing it mid-grace, so the pairing
+/// still matters. Prefer the RAII `GroupGuard` over a new manual pair: the
+/// manual pairs answer the ordinary return paths only, and a panic between
+/// spawn and the paired forget used to leave the group registered.
+pub fn forget_child_group(pgid: u32) {
+    #[cfg(unix)]
+    {
+        imp::forget(pgid);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pgid;
+    }
+}
+
+/// RAII handle over one registered child group: releases the registration on
+/// drop, so every exit — ordinary return AND unwind — is paired, and a panic
+/// between spawn and the explicit forget cannot leave the pgid registered
+/// for the OS to recycle onto an unrelated process. Sites that must release
+/// EARLY (before a drain grace, so an interrupt inside the grace window
+/// cannot forward-signal a recycled pgid) call [`GroupGuard::release`]
+/// explicitly; every other exit forgets at scope end, after whatever kill
+/// the arm performed.
+pub(crate) struct GroupGuard {
+    pgid: u32,
+    armed: bool,
+}
+
+impl GroupGuard {
+    /// Wrap a pgid that `spawn_supervised` just registered.
+    pub(crate) fn arm(pgid: u32) -> Self {
+        Self { pgid, armed: true }
+    }
+
+    /// Wrap a child spawned through `spawn_supervised` when the site needs
+    /// explicit early-release or scope-held registration semantics (voice's
+    /// ffmpeg/engine/ASR children). The supervised spawn already registered
+    /// the pgid inside its spawn window, so the `register_child_group` call
+    /// here is an idempotent belt — the reason to use this constructor is
+    /// the explicit guard, not the registration (round-40 review folded
+    /// voice's private `SupervisedGroup` twin into this type; round-44
+    /// review reworded the doc, which described a raw-spawn caller class
+    /// that no longer exists).
+    pub(crate) fn register(pgid: u32) -> Self {
+        register_child_group(pgid);
+        Self { pgid, armed: true }
+    }
+
+    /// Immediate paired release — the reaped-or-dead case where the forget
+    /// must happen NOW rather than at scope end.
+    pub(crate) fn release(mut self) {
+        self.armed = false;
+        forget_child_group(self.pgid);
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            forget_child_group(self.pgid);
+        }
+    }
+}
+
+/// True once an interrupt-family signal (SIGINT, SIGTERM or SIGHUP) has been
+/// observed by the watcher. Spawn sites and timeout code can poll it to
+/// unwind early instead of soldiering on in a process that is about to
+/// terminate.
+pub fn sigint_seen() -> bool {
+    #[cfg(unix)]
+    {
+        imp::seen()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// UNIX implementation. The unit tests drive everything except
+/// `install`/`watcher` (real signals and pipes in the test process would be
+/// a flake farm, not coverage).
+#[cfg(unix)]
+mod imp {
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::{Mutex, Once, OnceLock};
+    use std::time::Instant;
+
+    /// Bounded grace between SIGTERM and SIGKILL: a vendor child that traps
+    /// SIGTERM to flush state (a login writing its tokens) gets this long.
+    /// `pub(super)` so the grace unit tests pin the same constant the
+    /// watcher's loop runs with.
+    pub(super) const GRACE_MS: u64 = 5_000;
+    /// Poll cadence of the grace loop; also the longest the loop ever sleeps.
+    const POLL_MS: libc::c_int = 100;
+
+    /// Flag behind [`super::sigint_seen`]; set by the watcher, read by spawn
+    /// sites, the unit tests (through `note_seen`) included.
+    static SIGNAL_SEEN: AtomicBool = AtomicBool::new(false);
+
+    /// Write end of the self-pipe as seen inside the handler, `-1` until
+    /// installed. The handler must not touch locks, so this is the only
+    /// handler-visible state — and it is written once, before any signal can
+    /// be handled, then only read.
+    static PIPE_WRITE: AtomicI32 = AtomicI32::new(-1);
+
+    /// Registered child groups in registration order. `Mutex<Vec>` rather
+    /// than a lock-free structure: the registry is cold (two calls per child
+    /// lifetime) and tiny, and the codebase's caches use the same
+    /// `OnceLock<Mutex<…>>` shape (voice.rs, models.rs).
+    static CHILD_GROUPS: OnceLock<Mutex<Vec<libc::pid_t>>> = OnceLock::new();
+
+    /// Excludes a spawn→register window (held inside `spawn_supervised`)
+    /// from the watcher's registry snapshots: a fresh group is either in the
+    /// registry before a snapshot runs, or the snapshot waits for the window
+    /// to close first. Contention is bounded by one fork+exec, never by a
+    /// child's runtime.
+    static SPAWN_WINDOW: Mutex<()> = Mutex::new(());
+
+    static INSTALL: Once = Once::new();
+    /// Set by the signal handler the moment an interrupt is taken (and
+    /// re-stored by the watcher when it wakes). Storing it in the handler —
+    /// not only in the watcher — closes the store-visibility window: the
+    /// watcher's first store used to wait on a thread wake behind the
+    /// self-pipe read, so a main thread that reached its exit path in that
+    /// gap observed `false`, won the race to `std::process::exit`, and killed
+    /// the watcher before phase 1 ever forwarded a signal — orphaning every
+    /// registered vendor group and robbing scripts of the 128+N status.
+    /// Main's exit path parks forever once this is set: the watcher's
+    /// phase 3 always terminates the process (bounded by the grace +
+    /// escalation), so the park cannot hang — it only stops main from
+    /// winning the race to `std::process::exit` and robbing the 128+N
+    /// re-raise of its conventional exit status.
+    static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
+
+    // Test-only override consulted first by [`cleanup_started`]
+    // (thread-local, so parallel spawn tests are untouched). Plain comments:
+    // rustdoc does not generate documentation for macro invocations, so the
+    // doc form only produced an `unused doc comment` warning.
+    #[cfg(test)]
+    thread_local! {
+        static TEST_CLEANUP_OVERRIDE: std::cell::Cell<Option<bool>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// Whether the watcher's cleanup has begun (round-41 review): supervised
+    /// spawns refuse once it has, since a group registering from that point
+    /// on is in no snapshot the forward/grace/sweep passes will take.
+    pub(super) fn cleanup_started() -> bool {
+        #[cfg(test)]
+        if TEST_CLEANUP_OVERRIDE
+            .with(|cell| cell.get())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        CLEANUP_STARTED.load(Ordering::Acquire)
+    }
+
+    /// Test seam for the round-42 refusal test: a THREAD-LOCAL override, so
+    /// only the calling thread's `spawn_supervised` sees the flagged state —
+    /// parallel tests that spawn real children are unaffected, unlike a
+    /// global-flag flip which would refuse their in-flight spawns.
+    #[cfg(test)]
+    pub(super) fn test_set_cleanup_override(value: bool) {
+        TEST_CLEANUP_OVERRIDE.with(|cell| cell.set(Some(value)));
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_clear_cleanup_override() {
+        TEST_CLEANUP_OVERRIDE.with(|cell| cell.set(None));
+    }
+
+    /// Bounded grace in a test-free zone: `Once` guards double installs from
+    /// repeated `main` calls in tests; every install failure degrades to the
+    /// unsupervised status quo instead of panicking inside `main`'s first
+    /// statement.
+    pub(super) fn install() {
+        INSTALL.call_once(real_install);
+    }
+
+    /// Creates the self-pipe the handler writes and the watcher reads. Split
+    /// from `real_install` so the unit tests can pin the descriptor flags
+    /// and the overflow behavior without installing the real handler — whose
+    /// watcher would consume a test byte as its cleanup trigger and end the
+    /// test process in the phase-3 re-raise.
+    ///
+    /// CLOEXEC on both ends: vendor children `exec` through
+    /// `std::process`, and inherited ends would let a child hold this
+    /// CLI's watcher open (and would hand the write end to every
+    /// child, where a stray close is harmless but a stray write is
+    /// not — a child writing the byte could raise this CLI's flag).
+    ///
+    /// Round-49: O_NONBLOCK on the WRITE end only. The watcher reads only
+    /// the first byte, so with a blocking write end, ≥64 KiB of signal
+    /// deliveries inside one grace window would fill the pipe and park the
+    /// signaled thread INSIDE the handler on write(2) — exactly what
+    /// async-signal-safety forbids. Non-blocking turns the overflow into
+    /// EAGAIN, which [`write_signal_byte`] reports as "already requested"
+    /// (a full pipe means an earlier byte is still queued for the watcher).
+    /// The READ end stays blocking: the watcher parks in read(2) between
+    /// interrupts by design.
+    pub(super) fn create_self_pipe() -> Option<(libc::c_int, libc::c_int)> {
+        // SAFETY: pipe(2) into a two-element array, then fcntl probes/sets
+        // the flags of the descriptors just created. No allocation, no
+        // locks, no memory touched beyond the fd array.
+        unsafe {
+            let mut fds = [0 as libc::c_int; 2];
+            if libc::pipe(fds.as_mut_ptr()) != 0 {
+                return None;
+            }
+            for fd in fds {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+            let flags = libc::fcntl(fds[1], libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            Some((fds[0], fds[1]))
+        }
+    }
+
+    fn real_install() {
+        let Some((read_end, write_end)) = create_self_pipe() else {
+            // Every failure path leaves the process exactly as it was before
+            // this module: no handler installed means default SIGINT
+            // termination (the old behavior), not a broken one.
+            return;
+        };
+        PIPE_WRITE.store(write_end, Ordering::SeqCst);
+        // The watcher is spawned BEFORE the handlers go live. In the other
+        // order a failed spawn would leave the handlers installed with no
+        // reader: every later interrupt would write one byte into an unread
+        // pipe and return — SIGINT/SIGTERM/SIGHUP permanently trapped,
+        // registered children never signaled, the CLI stoppable only by
+        // SIGQUIT/SIGKILL. That is strictly worse than the uninstalled
+        // status quo, so a failed spawn here restores the pre-install state
+        // (an inert pipe, default dispositions) instead.
+        let watcher = std::thread::Builder::new()
+            .name("pinvou-child-supervisor".to_owned())
+            .spawn(move || watcher(read_end));
+        if watcher.is_err() {
+            // The failed spawn also never ran the closure that captured
+            // `read_end` (a Copy fd: the binding stays valid). Close both
+            // ends — resetting PIPE_WRITE alone leaks the descriptors for
+            // the process lifetime — and return to the pre-install state.
+            let write_end = PIPE_WRITE.swap(-1, Ordering::SeqCst);
+            // SAFETY: both are the pipe(2) fds this function created; the
+            // watcher thread owns neither (it never started).
+            unsafe {
+                libc::close(read_end);
+                if write_end >= 0 {
+                    libc::close(write_end);
+                }
+            }
+            return;
+        }
+        // BSD-semantic `signal(2)`: SA_RESTART for the restarted calls.
+        // The handler itself never depends on that — see `on_signal`.
+        // The double cast (fn item → raw pointer → sighandler_t) is the
+        // lint-approved spelling of "handler address"; a direct
+        // fn-to-integer cast is the shape the lint exists for.
+        // SIGTERM installs unconditionally: nothing but the caller's own
+        // kill sends it, and the cleanup it drives is the contract.
+        // SIGINT probes first (round-40 review): POSIX requires a
+        // non-interactive shell without job control to start background
+        // commands with SIGINT ignored — `sh -c 'pinvou code login kimi &'`
+        // in a CI step runs exactly that way, and installing the handler
+        // made the shell's `^C` (shared foreground process group) tear down
+        // a job the caller deliberately detached. The SIGHUP branch below
+        // exists for the same class of reason and now has its sibling.
+        // SIGHUP is the one that must RESPECT an inherited SIG_IGN:
+        // `nohup pinvou connectors connect …` in the foreground runs with
+        // SIGHUP ignored by the caller's explicit choice, and installing
+        // the handler here made terminal-close kill a job the user
+        // deliberately detached (a round-27 review regression against the
+        // pre-CLI status quo).
+        // SAFETY: signal(2) with a plain handler address; no preconditions.
+        // The disposition probe (null sigaction) reads without installing.
+        unsafe {
+            if !inherited_signal_is_ignored(libc::SIGINT) {
+                libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+            }
+            // Round-51 review: SIGTERM gets the same inherited-SIG_IGN probe
+            // as SIGINT/SIGHUP — a wrapper that deliberately ignores SIGTERM
+            // (some schedulers/daemonizers) used to be killed by cleanup +
+            // 128+15 where the pre-CLI process ignored TERM, the same
+            // detachment regression the SIGHUP probe exists to prevent.
+            if !inherited_signal_is_ignored(libc::SIGTERM) {
+                libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+            }
+            if inherited_sighup_is_ignored() {
+                // Leave SIGHUP ignored, exactly as the caller arranged it.
+            } else {
+                libc::signal(libc::SIGHUP, on_signal as *const () as libc::sighandler_t);
+            }
+        }
+    }
+
+    /// Whether `signal` arrived at this process with SIG_IGN installed (a
+    /// null sigaction probe reads the disposition without touching it).
+    fn inherited_signal_is_ignored(signal: libc::c_int) -> bool {
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(signal, std::ptr::null(), &mut action) != 0 {
+                // A failing probe must not silently downgrade cleanup:
+                // install the handler as before.
+                return false;
+            }
+            action.sa_sigaction as usize == libc::SIG_IGN as usize
+        }
+    }
+
+    /// Whether SIGHUP arrived at this process with SIG_IGN installed
+    /// (`nohup`, a daemonizing shell, `setsid`). Read via `sigaction` with a
+    /// null act — a pure probe, no disposition is changed. Split out so a
+    /// unit test can pin both answers without real terminal state.
+    pub(super) fn inherited_sighup_is_ignored() -> bool {
+        // SAFETY: sigaction with a null act only WRITES the old disposition
+        // into the out-param; no handler state is modified.
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) != 0 {
+                // The probe itself failed: install the handler (the
+                // conventional behaviour) rather than guess.
+                return false;
+            }
+            // SIG_IGN is 1 on every supported platform; compare the stored
+            // handler address.
+            old.sa_sigaction == libc::SIG_IGN as usize
+        }
+    }
+
+    /// The handler. Async-signal-safe by construction: one `write(2)` of the
+    /// signal number — a 1-byte pipe write is atomic under PIPE_BUF — and
+    /// nothing else: no locks, no allocation, and errno saved around the
+    /// write ([`write_signal_byte`]) so a failed one cannot leave its error
+    /// code with the thread the handler interrupted.
+    extern "C" fn on_signal(sig: libc::c_int) {
+        let fd = PIPE_WRITE.load(Ordering::Relaxed);
+        if fd < 0 {
+            return;
+        }
+        let byte = sig as u8;
+        // Publish the interrupt when it is RECORDED — the byte landed, or
+        // the write hit EAGAIN (round-49: the pipe is full, meaning an
+        // earlier byte is still queued and the watcher will wake for it, so
+        // this request is already in flight). Main's exit-path gate parks on
+        // a watcher that wakes on exactly that byte, so storing
+        // CLEANUP_STARTED on anything else would park forever on a watcher
+        // that never wakes; a real failure keeps today's degrade — main
+        // exits normally instead — which is what the old comment promised
+        // and the code now matches.
+        if write_signal_byte(fd, byte) {
+            // An async-signal-safe `AtomicBool` store, so main's exit-path
+            // gate observes it even if the watcher thread has not been
+            // scheduled yet (see [`CLEANUP_STARTED`]).
+            CLEANUP_STARTED.store(true, Ordering::Release);
+        }
+    }
+
+    /// The handler's one syscall, split out so the unit tests can pin its
+    /// errno hygiene without real signals: a failing `write(2)` inside a
+    /// handler sets errno, and the interrupted thread classifies its EINTR
+    /// off errno (`read_terminated`) — a foreign value left behind would
+    /// misread the interrupted call's cause. Saved before, restored after:
+    /// the standard self-pipe discipline. `pub(super)` for the tests, like
+    /// the other pinned internals.
+    ///
+    /// Returns whether the interrupt is RECORDED, not whether this byte
+    /// landed: the write end is O_NONBLOCK (round-49, see
+    /// [`create_self_pipe`]), so a pipe already full of earlier deliveries
+    /// fails with EAGAIN — and a full pipe means an earlier byte is still
+    /// queued for the watcher, i.e. this interrupt is already requested and
+    /// the cleanup it drives is already coming. Any other failure (fd gone,
+    /// EPIPE) reports false and keeps the degrade path.
+    pub(super) fn write_signal_byte(fd: libc::c_int, byte: u8) -> bool {
+        // SAFETY: write(2) is reentrant; the buffer outlives the call. The
+        // errno location is dereferenced only on this thread, around the
+        // write itself.
+        unsafe {
+            let errno = errno_location();
+            let saved = *errno;
+            let written = libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+            let failed_with = *errno;
+            *errno = saved;
+            written == 1 || (written < 0 && failed_with == libc::EAGAIN)
+        }
+    }
+
+    /// Thread-local errno location for [`write_signal_byte`]. macOS spells
+    /// the libc helper `__error`; Linux — the other CLI target — spells it
+    /// `__errno_location`, so the difference stays behind this seam instead
+    /// of inside the handler.
+    #[cfg(target_os = "macos")]
+    pub(super) fn errno_location() -> *mut libc::c_int {
+        // SAFETY: the location call has no preconditions and no effect
+        // beyond returning the thread-local address.
+        unsafe { libc::__error() }
+    }
+
+    /// Non-macos spelling of [`errno_location`].
+    #[cfg(not(target_os = "macos"))]
+    pub(super) fn errno_location() -> *mut libc::c_int {
+        // SAFETY: as above.
+        unsafe { libc::__errno_location() }
+    }
+
+    /// The watcher thread: converts the handler's byte into the slow,
+    /// signal-unsafe cleanup sequence, then the conventional exit.
+    fn watcher(read_fd: libc::c_int) {
+        // This thread blocks the interrupt family for its whole life: with
+        // the signals blocked on the spawner inside [`super::
+        // spawn_supervised`]'s window too, a signal arriving during a
+        // spawn→register gap stays pending process-wide instead of being
+        // delivered HERE (where it would run the cleanup with the fresh
+        // child not yet registered — the window the blocking exists to
+        // close). Delivery to the main thread after the unblock runs the
+        // handler normally. The re-raise below accounts for this mask by
+        // targeting the process, not this thread.
+        let _saved = block_interrupt_signals();
+
+        // The first byte is the signal that started cleanup; it is also the
+        // signal re-raised at the end, so the 128+N status names the right
+        // one when both arrive.
+        let Some(first) = read_terminated(read_fd) else {
+            return;
+        };
+        CLEANUP_STARTED.store(true, Ordering::Release);
+        note_seen();
+
+        // Phase 1 — ask every registered group to stop. The snapshot closes
+        // the spawn window (see `snapshot_spawn_safe`): a group whose
+        // spawning thread was mid-fork is either already registered here or
+        // the snapshot waited for the register to land.
+        let phase1: Vec<libc::pid_t> = snapshot_spawn_safe();
+        for pgid in &phase1 {
+            // Round-41 review: probe before the TERM. Some lanes hold the
+            // registration past the reap through their drain graces (the
+            // voice engine/CLI lanes, the code auth probe), so a snapshot
+            // entry can be fully dead by the time an interrupt lands — and
+            // TERMing blind would signal whatever unrelated process group
+            // has recycled that pgid in the seconds-wide window. ESRCH
+            // (every member gone) is exactly the case the probe skips; a
+            // group that dies between the probe and the kill is the
+            // pre-existing sub-second residual, and EPERM still counts as
+            // alive (the signal-0 convention above).
+            if !group_alive(*pgid) {
+                continue;
+            }
+            // SAFETY: kill(2) to a group we registered; ESRCH (already gone)
+            // is fine to ignore.
+            unsafe {
+                libc::kill(-*pgid, libc::SIGTERM);
+            }
+        }
+
+        // Phase 2 — bounded grace. The policy is `grace_decision`, a pure
+        // function the unit tests pin; this loop is only its effect.
+        let started = Instant::now();
+        // Groups already asked to stop: the phase-1 snapshot. Since the
+        // round-41 liveness probe that is a superset of "the set phase 1
+        // actually TERMed" — phase 1 skips dead groups without signaling
+        // them but still seeds them here, so if such a pgid is recycled by
+        // an unrelated group mid-grace, the fresh group is treated as
+        // already-asked and rides to the deadline's SIGKILL instead of
+        // receiving its own polite TERM. Seeding from a second, fresh
+        // snapshot instead marked every group registering in the
+        // between-snapshots window as already-asked without anyone having
+        // TERMed it — the same lost-polite-TERM class, wider (round-39
+        // review), so the narrower seed stays.
+        let mut asked: std::collections::HashSet<libc::pid_t> = phase1.into_iter().collect();
+        loop {
+            // Same spawn-window discipline as phase 1: a spawn completing
+            // during the grace is registered before this snapshot sees it.
+            let survivors: Vec<libc::pid_t> = snapshot_spawn_safe()
+                .into_iter()
+                .filter(|pgid| group_alive(*pgid))
+                .collect();
+            for pgid in &survivors {
+                if asked.insert(*pgid) {
+                    // SAFETY: kill(2) to a group we registered; ESRCH is
+                    // fine to ignore — the same first ask phase 1 gave the
+                    // earlier registrants.
+                    unsafe {
+                        libc::kill(-*pgid, libc::SIGTERM);
+                    }
+                }
+            }
+            match grace_decision(
+                started.elapsed().as_millis() as u64,
+                GRACE_MS,
+                survivors.len(),
+                second_signal_waiting(read_fd),
+            ) {
+                GraceAction::Finish => break,
+                GraceAction::Continue => continue,
+                GraceAction::Escalate => {
+                    for pgid in survivors {
+                        // SAFETY: as above; SIGKILL to a survivor that just
+                        // ignored SIGTERM (or outlived the user's patience).
+                        unsafe {
+                            libc::kill(-pgid, libc::SIGKILL);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Round-38 review: the process is about to die by its own hand
+        // (phase 3 below). A group registered inside the final
+        // snapshot→re-raise window is in no snapshot any loop will take
+        // again — without this sweep it is orphaned exactly when every
+        // earlier registrant was killed. The group had the whole grace to
+        // exit on its TERM, so this last pass escalates directly; ESRCH
+        // (already gone) is fine to ignore.
+        for pgid in snapshot_spawn_safe() {
+            if group_alive(pgid) {
+                // SAFETY: kill(2) to a group we registered.
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
+        }
+
+        // Phase 3 — conventional exit, 128+N: restore the default disposition
+        // for the original signal and re-raise it, so parent scripts observe
+        // the death they expect from an interrupted process (`wait` macros,
+        // `trap` handlers, `128+$?` arithmetic).
+        //
+        // `kill(getpid())` rather than `raise()`: this thread keeps the
+        // interrupt family blocked for life (see the top of this function),
+        // and a blocked raise would pend here forever instead of killing the
+        // process. Targeting the process lets the kernel deliver to a thread
+        // with the signal unblocked — the main thread, whose mask
+        // `spawn_supervised` always restores — so a death that races a
+        // spawn window is merely deferred to the unblock, never lost.
+        // SAFETY: kill(2) to this process with SIG_DFL installed; it does
+        // not return.
+        unsafe {
+            libc::signal(first as libc::c_int, libc::SIG_DFL);
+            libc::kill(libc::getpid(), first as libc::c_int);
+        }
+    }
+
+    /// Blocks SIGINT/SIGTERM/SIGHUP on the calling thread and returns the
+    /// previous mask for [`restore_interrupt_signals`]. Used in two places:
+    /// `spawn_supervised` (the spawn→register window) and the watcher's
+    /// first step (so a window-deferred signal cannot be delivered here and
+    /// run the cleanup before the fresh child is registered).
+    pub(super) fn block_interrupt_signals() -> libc::sigset_t {
+        // SAFETY: sigset construction and pthread_sigmask have no
+        // preconditions; the returned mask is a plain value.
+        unsafe {
+            let mut blocked: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, libc::SIGINT);
+            libc::sigaddset(&mut blocked, libc::SIGTERM);
+            libc::sigaddset(&mut blocked, libc::SIGHUP);
+            let mut previous: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous);
+            previous
+        }
+    }
+
+    /// Restores a mask returned by [`block_interrupt_signals`], delivering
+    /// anything that went pending while it was blocked.
+    pub(super) fn restore_interrupt_signals(previous: libc::sigset_t) {
+        // SAFETY: the mask came from block_interrupt_signals on this thread.
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+        }
+    }
+
+    /// See [`super::park_while_interrupt_cleanup_concludes`]. A plain
+    /// sleep-loop: this runs at most once per process lifetime, on a path
+    /// whose only exit is the watcher killing the process.
+    pub(super) fn park_while_cleanup_concludes() {
+        // Flush any interrupt already pended for this thread: the block
+        // window makes a delivered signal pend, and POSIX runs the handler
+        // during the restore — setting CLEANUP_STARTED before the gate load
+        // below. (The block does NOT bracket the load; a signal delivered
+        // after it still races main's exit, which the later comment covers.)
+        let previous = block_interrupt_signals();
+        restore_interrupt_signals(previous);
+        // Round-37 review MAJOR: the gate must be read AFTER the restore.
+        // POSIX delivers a pending unblocked signal BEFORE `pthread_sigmask`
+        // returns, so a signal that pended during the blocked window runs
+        // the handler during `restore_interrupt_signals` — the flag is set
+        // by the time we get here, and the pre-restore snapshot read `false`
+        // that whole time. Returning on the stale snapshot sent main into
+        // `std::process::exit(code)` with the family's own 0/1/2, dropping
+        // the watcher's cleanup phases (group re-kill, phase-3 re-raise) and
+        // the conventional 128+N status exactly when a signal raced the
+        // exit — the race this park exists to close. (A signal landing after
+        // this load still races main's exit; that window is the process
+        // tearing down by definition and is not closable here.)
+        if !CLEANUP_STARTED.load(Ordering::Acquire) {
+            return;
+        }
+        while CLEANUP_STARTED.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Blocking read of the cleanup-start byte; `None` on a dead pipe (never
+    /// installed, or the write end closed — cleanup has nothing to drive it).
+    fn read_terminated(read_fd: libc::c_int) -> Option<u8> {
+        let mut buf = [0u8; 1];
+        loop {
+            // SAFETY: read(2) into a 1-byte buffer that outlives the call.
+            let count = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+            if count == 1 {
+                return Some(buf[0]);
+            }
+            // EINTR: re-read — poll-style calls are not restarted even under
+            // SA_RESTART. Anything else (EOF, real error): no supervisor left.
+            if count < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return None;
+        }
+    }
+
+    /// True if another signal byte is already queued. Sleeps up to POLL_MS in
+    /// poll(2) — the grace loop's pace — and reports readiness only on
+    /// POLLIN, so an errored or spurious poll cannot fake a second Ctrl-C.
+    fn second_signal_waiting(read_fd: libc::c_int) -> bool {
+        let mut fds = [libc::pollfd {
+            fd: read_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        // SAFETY: fixed-size array, fixed nfds.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, POLL_MS) };
+        ready > 0 && (fds[0].revents & libc::POLLIN) != 0
+    }
+
+    /// Probes a group with signal 0 (kill(2) existence check): ESRCH means
+    /// every member exited or was reaped, which ends the wait early. EPERM
+    /// means a member exists that may not be signalled (a setuid/setgid
+    /// descendant of the vendor CLI) — the app's documented convention
+    /// (`platform/os/posix.rs`: success and EPERM both mean the process
+    /// exists). Counting EPERM as dead would end the grace with the
+    /// survivor un-KILLed, exactly the orphan this module exists to
+    /// prevent.
+    fn group_alive(pgid: libc::pid_t) -> bool {
+        let Some(signed) = signalable_group(pgid as u32) else {
+            return false;
+        };
+        // SAFETY: probe with signal 0; sends nothing.
+        unsafe {
+            let rc = libc::kill(-signed, 0);
+            rc == 0 || (rc == -1 && *errno_location() == libc::EPERM)
+        }
+    }
+
+    /// What the grace loop does next. Split from the effect so the unit
+    /// tests pin the policy, not the timing.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum GraceAction {
+        /// Survivors remain and grace remains: keep waiting at POLL_MS pace.
+        Continue,
+        /// No group survived SIGTERM: the wait is over, nothing to kill.
+        Finish,
+        /// Grace exhausted, or a second signal demanded it: SIGKILL time.
+        Escalate,
+    }
+
+    /// Pure policy behind the grace loop. Precedence, pinned by the unit
+    /// tests: no survivors first (nothing left to wait for); then a second
+    /// signal (the user's "stop waiting"); then the deadline; otherwise wait.
+    pub(super) fn grace_decision(
+        elapsed_ms: u64,
+        grace_ms: u64,
+        survivors: usize,
+        escalate_now: bool,
+    ) -> GraceAction {
+        if survivors == 0 {
+            GraceAction::Finish
+        } else if escalate_now || elapsed_ms >= grace_ms {
+            GraceAction::Escalate
+        } else {
+            GraceAction::Continue
+        }
+    }
+
+    /// kill(2) group-name guard. pid 0 names the caller's own group, pid 1
+    /// belongs to init, and -1 names *every* process the user may signal,
+    /// while a pgid above `i32::MAX` wraps negative under a plain `as`, so
+    /// negating it targets an unrelated process. Same guards, same reasons,
+    /// as [`crate::support::kill_process_tree`]; kept at every kill(2) site
+    /// so a bad registry value cannot reach the syscall.
+    pub(super) fn signalable_group(pgid: u32) -> Option<libc::pid_t> {
+        i32::try_from(pgid).ok().filter(|signed| *signed > 1)
+    }
+
+    /// Flag access for [`super::sigint_seen`].
+    pub(super) fn seen() -> bool {
+        SIGNAL_SEEN.load(Ordering::SeqCst)
+    }
+
+    /// Internal setter: the watcher's first step, and the path the unit
+    /// tests use to toggle the flag without raising real signals.
+    pub(super) fn note_seen() {
+        SIGNAL_SEEN.store(true, Ordering::SeqCst);
+    }
+
+    /// Test-only: leaves the flag down so later tests in this binary start
+    /// from the documented false. `pub(super)` for the sibling tests module
+    /// at file level, like every other imp item it drives.
+    #[cfg(test)]
+    pub(super) fn reset_seen_for_tests() {
+        SIGNAL_SEEN.store(false, Ordering::SeqCst);
+    }
+
+    /// Registry slot; lock poisoning cannot cancel an interrupt cleanup, so
+    /// a poisoned lock is recovered, the same convention the contract tests
+    /// use for ENV_LOCK.
+    fn child_groups() -> &'static Mutex<Vec<libc::pid_t>> {
+        CHILD_GROUPS.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    /// Registers a group; double registration (retry loops at a site) must
+    /// not double-signal the group later, hence the contains-check.
+    pub(super) fn register(pgid: u32) {
+        let Some(signed) = signalable_group(pgid) else {
+            return;
+        };
+        let mut groups = child_groups().lock().unwrap_or_else(|p| p.into_inner());
+        if !groups.contains(&signed) {
+            groups.push(signed);
+        }
+    }
+
+    /// Drops a group from supervision, wherever it sits in the list.
+    pub(super) fn forget(pgid: u32) {
+        let Some(signed) = signalable_group(pgid) else {
+            return;
+        };
+        child_groups()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|group| *group != signed);
+    }
+
+    /// Registration-order snapshot for the watcher's forward phase and the
+    /// registry unit tests' lookups.
+    pub(super) fn snapshot() -> Vec<libc::pid_t> {
+        child_groups()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Held across a supervised spawn→register pair (inside
+    /// `spawn_supervised`), and briefly by the watcher around each snapshot
+    /// via [`snapshot_spawn_safe`].
+    pub(super) fn spawn_window() -> std::sync::MutexGuard<'static, ()> {
+        SPAWN_WINDOW.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Registry snapshot with the spawn window closed: the returned list is
+    /// the complete set of groups at an instant where no thread sits between
+    /// spawn and register, so an interrupt cleanup cannot miss a fresh child.
+    pub(super) fn snapshot_spawn_safe() -> Vec<libc::pid_t> {
+        let _window = spawn_window();
+        snapshot()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+
+    /// The inherited-SIG_IGN probe: `nohup` (SIG_IGN) must be respected —
+    /// the handler must NOT be installed over a caller's explicit detach —
+    /// while the default disposition installs normally. The test saves and
+    /// restores the process-wide SIGHUP disposition, and flips it through
+    /// SIG_IGN and SIG_DFL to drive both probe answers without real
+    /// terminal state.
+    #[test]
+    fn sighup_probe_reads_the_inherited_disposition() {
+        use super::imp::inherited_sighup_is_ignored;
+        // SAFETY: sigaction with a null act only reads the disposition;
+        // the installs below are restored before returning.
+        unsafe {
+            let mut saved: libc::sigaction = std::mem::zeroed();
+            assert_eq!(
+                libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut saved),
+                0,
+                "the disposition probe must work in-process"
+            );
+            // SIG_IGN inherited (what nohup arranges) → the caller sees it.
+            // The handler field is the same sighandler_t the installer
+            // writes (same double cast).
+            let mut ign: libc::sigaction = std::mem::zeroed();
+            ign.sa_sigaction = libc::SIG_IGN as *const () as libc::sighandler_t as usize;
+            assert_eq!(libc::sigaction(libc::SIGHUP, &ign, std::ptr::null_mut()), 0);
+            assert!(inherited_sighup_is_ignored());
+
+            // Default disposition → install normally.
+            let mut dfl: libc::sigaction = std::mem::zeroed();
+            dfl.sa_sigaction = libc::SIG_DFL as *const () as libc::sighandler_t as usize;
+            assert_eq!(libc::sigaction(libc::SIGHUP, &dfl, std::ptr::null_mut()), 0);
+            assert!(!inherited_sighup_is_ignored());
+
+            // Restore exactly what the process had (an installed handler
+            // from a previous test's real_install must survive this test).
+            assert_eq!(
+                libc::sigaction(libc::SIGHUP, &saved, std::ptr::null_mut()),
+                0
+            );
+        }
+    }
+    use super::imp;
+    use super::{forget_child_group, spawn_supervised};
+
+    /// The grace value itself is load-bearing (a vendor CLI that traps
+    /// SIGTERM to flush state gets this long); the decision tests above pin
+    /// precedence relative to whatever the constant is, so drift of the
+    /// VALUE itself must fail loudly here.
+    #[test]
+    #[cfg(unix)]
+    fn grace_window_value_is_pinned() {
+        assert_eq!(imp::GRACE_MS, 5_000);
+    }
+
+    /// Round-41/42 review: a spawn racing cleanup must be REFUSED instead of
+    /// registering a group no watcher pass will ever read. The refusal is
+    /// exercised through a thread-local override (a global-flag flip would
+    /// refuse parallel tests' in-flight spawns): the override proves the
+    /// refusal path itself is wired and names its cause. The check's
+    /// POSITION — inside the spawn window, so a worker thread preempted
+    /// between a pre-window check and the acquisition cannot spawn after the
+    /// watcher's final sweep (round-42) — is order-of-operations inside one
+    /// function and stays review-pinned, like the other interleaving
+    /// properties in this module.
+    #[test]
+    #[cfg(unix)]
+    fn spawn_supervised_refuses_once_cleanup_has_started() {
+        imp::test_set_cleanup_override(true);
+        let mut command = std::process::Command::new("true");
+        let error =
+            spawn_supervised(&mut command).expect_err("a spawn during cleanup must be refused");
+        imp::test_clear_cleanup_override();
+        assert!(
+            error.to_string().contains("interrupt cleanup"),
+            "the refusal names the cause: {error}"
+        );
+        // The override is cleared: the refusal is lifted (the `true` child
+        // exits immediately and the guard reaps it).
+        let mut command = std::process::Command::new("true");
+        spawn_supervised(&mut command)
+            .expect("with the override cleared, the refusal must be lifted");
+
+        // The refusal must leave this thread's interrupt family UNBLOCKED:
+        // phase 3's process-targeted re-raise is deliverable only to a
+        // thread with the family unblocked, so a refusal that kept the
+        // spawner's mask would pend the watcher's final kill forever (the
+        // observed hang: watcher done, flag set, main parked, process
+        // immortal).
+        imp::test_set_cleanup_override(true);
+        let mut command = std::process::Command::new("true");
+        let _ = spawn_supervised(&mut command).expect_err("refused again");
+        imp::test_clear_cleanup_override();
+        // SAFETY: a null act reads this thread's current mask into `now`;
+        // the probe changes nothing.
+        let mut now: libc::sigset_t = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::sigprocmask(libc::SIG_BLOCK, std::ptr::null(), &mut now) },
+            0,
+            "the mask probe must work"
+        );
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            assert_eq!(
+                unsafe { libc::sigismember(&now, signal) },
+                0,
+                "a refused spawn must restore the interrupt family on this thread \
+                 (signal {signal} must not stay blocked)"
+            );
+        }
+    }
+
+    /// The `pre_exec` mask reset in `spawn_supervised` is load-bearing: std
+    /// does not guarantee an empty child mask at exec, and on macOS the
+    /// blocked INT/TERM/HUP mask verifiably survives into the child, which
+    /// would make every forwarded SIGTERM undeliverable (all cleanups would
+    /// ride the SIGKILL escalation, destroying the flush-on-TERM case the
+    /// grace exists for). A child spawned while the spawner's mask blocks
+    /// the family must therefore still die on a plain SIGTERM.
+    #[test]
+    #[cfg(unix)]
+    fn spawned_children_receive_signals_the_spawner_blocks() {
+        let saved = imp::block_interrupt_signals();
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        command.stdout(std::process::Stdio::null());
+        command.stderr(std::process::Stdio::null());
+        let mut child = spawn_supervised(&mut command).expect("spawn under a blocked mask");
+        imp::restore_interrupt_signals(saved);
+        forget_child_group(child.id());
+
+        // SAFETY: kill to this test's own fresh child; sleep installs no
+        // TERM handler, so delivery means immediate default-disposition death.
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let exited = loop {
+            match child.try_wait().expect("waitable child") {
+                Some(status) => break Some(status),
+                None if std::time::Instant::now() >= deadline => break None,
+                None => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        };
+        // Reap regardless so the sleeper never outlives the test.
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            exited.is_some(),
+            "SIGTERM must reach a child spawned under a blocked spawner mask;              the pre_exec reset regressed"
+        );
+    }
+
+    /// The `pre_exec` SIGPIPE reset is load-bearing (round-40 review): the
+    /// Rust runtime sets SIGPIPE to SIG_IGN process-wide, an IGNORED
+    /// disposition survives exec, and std offers no stable reset — without
+    /// the pre_exec restore, a vendor CLI whose own pipeline relies on
+    /// default SIGPIPE death (`node … | head`) behaves differently under
+    /// `pinvou` than standalone. Linux publishes each process's
+    /// ignored-signal mask in `/proc/<pid>/status`; SIGPIPE is signal 13,
+    /// i.e. bit 13 (0x2000) of `SigIgn`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn spawned_children_start_with_default_sigpipe() {
+        use std::io::Read as _;
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg("grep '^SigIgn:' /proc/self/status");
+        command.stdout(std::process::Stdio::piped());
+        command.stderr(std::process::Stdio::null());
+        let mut child = spawn_supervised(&mut command).expect("spawn sh");
+        let mut output = String::new();
+        child
+            .stdout
+            .take()
+            .expect("piped stdout")
+            .read_to_string(&mut output)
+            .expect("read child stdout");
+        let _ = child.wait();
+        forget_child_group(child.id());
+        let line = output
+            .lines()
+            .find_map(|l| l.strip_prefix("SigIgn:"))
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned();
+        let mask = u64::from_str_radix(&line, 16).expect("hex SigIgn mask");
+        assert_eq!(
+            mask & (1 << libc::SIGPIPE),
+            0,
+            "supervised child must not inherit SIGPIPE=SIG_IGN (SigIgn={line})"
+        );
+    }
+
+    /// Decision precedence: no survivors ends the wait no matter how much
+    /// grace is left — even at t=0, even with a second signal pending.
+    #[test]
+    fn grace_decision_finishes_as_soon_as_no_group_survives() {
+        assert_eq!(
+            imp::grace_decision(0, imp::GRACE_MS, 0, false),
+            imp::GraceAction::Finish
+        );
+        assert_eq!(
+            imp::grace_decision(4_999, imp::GRACE_MS, 0, true),
+            imp::GraceAction::Finish
+        );
+        // A test double-check that Finish is reported even past the deadline.
+        assert_eq!(
+            imp::grace_decision(60_000, imp::GRACE_MS, 0, false),
+            imp::GraceAction::Finish
+        );
+    }
+
+    /// A second signal means "stop waiting": escalation outranks both the
+    /// deadline and the remaining grace.
+    #[test]
+    fn grace_decision_escalates_immediately_on_a_second_signal() {
+        assert_eq!(
+            imp::grace_decision(10, imp::GRACE_MS, 3, true),
+            imp::GraceAction::Escalate
+        );
+    }
+
+    /// The deadline: at or past the grace with survivors, escalate; one tick
+    /// before it, keep waiting.
+    #[test]
+    fn grace_decision_escalates_at_the_deadline_and_waits_before_it() {
+        assert_eq!(
+            imp::grace_decision(4_999, imp::GRACE_MS, 2, false),
+            imp::GraceAction::Continue
+        );
+        assert_eq!(
+            imp::grace_decision(imp::GRACE_MS, imp::GRACE_MS, 2, false),
+            imp::GraceAction::Escalate
+        );
+        assert_eq!(
+            imp::grace_decision(60_000, imp::GRACE_MS, 2, false),
+            imp::GraceAction::Escalate
+        );
+        // Zero grace must not spin: with survivors it escalates at t=0.
+        assert_eq!(
+            imp::grace_decision(0, 0, 2, false),
+            imp::GraceAction::Escalate
+        );
+    }
+
+    /// The kill(2) guard: pgid 0 is the CLI's own group and would suicide the
+    /// supervisor's forward phase; 1 belongs to init; `u32::MAX` wraps
+    /// negative under `as i32` and would target an unrelated process. Only
+    /// ordinary child pgids pass.
+    #[test]
+    fn signalable_group_refuses_the_kill2_special_arguments() {
+        assert_eq!(imp::signalable_group(0), None);
+        assert_eq!(imp::signalable_group(1), None);
+        assert_eq!(imp::signalable_group(u32::MAX), None);
+        assert_eq!(imp::signalable_group(2), Some(2));
+        assert_eq!(imp::signalable_group(42), Some(42));
+        assert_eq!(imp::signalable_group(i32::MAX as u32), Some(i32::MAX));
+    }
+
+    /// Registry add/remove/lookup: registration order is preserved, double
+    /// registration does not duplicate, and `forget` removes exactly the
+    /// dropped group. The fake pgids (2_000_000+) are below `i32::MAX`, above
+    /// every plausible real pid, and used by no other test, so parallel
+    /// tests cannot mix their registrations in.
+    #[test]
+    fn registry_adds_looks_up_and_forgets_groups() {
+        const A: u32 = 2_000_001;
+        const B: u32 = 2_000_002;
+        // Start and end from a clean slate: forget first (a previous run of
+        // this very test may have left them behind via an early return).
+        imp::forget(A);
+        imp::forget(B);
+
+        // Guarded values must not register at all.
+        imp::register(0);
+        imp::register(1);
+        imp::register(u32::MAX);
+        let registered = imp::snapshot();
+        assert!(
+            !registered.contains(&0) && !registered.contains(&1),
+            "the kill(2) special arguments must never sit in the registry"
+        );
+
+        imp::register(A);
+        imp::register(A); // duplicate is dropped, not stored twice
+        imp::register(B);
+        let registered = imp::snapshot();
+        let a = registered.iter().filter(|pgid| **pgid == A as i32).count();
+        let b = registered.iter().filter(|pgid| **pgid == B as i32).count();
+        assert_eq!(
+            a, 1,
+            "double registration must not duplicate: {registered:?}"
+        );
+        assert_eq!(b, 1, "the second group must be present: {registered:?}");
+        assert!(
+            registered.iter().position(|pgid| *pgid == A as i32)
+                < registered.iter().position(|pgid| *pgid == B as i32),
+            "registration order must be preserved for the forward phase: {registered:?}"
+        );
+
+        imp::forget(A);
+        let registered = imp::snapshot();
+        assert!(
+            !registered.contains(&(A as i32)),
+            "a forgotten group must not be signaled later: {registered:?}"
+        );
+        assert!(
+            registered.contains(&(B as i32)),
+            "forgetting one group must not drop the others: {registered:?}"
+        );
+
+        imp::forget(B);
+        assert!(
+            !imp::snapshot().contains(&(B as i32)),
+            "the last group must leave the registry too"
+        );
+    }
+
+    /// `sigint_seen` toggling through the internal setter path — the same
+    /// `note_seen` the watcher runs as its first step, not some test-only
+    /// shortcut with different semantics.
+    #[test]
+    fn sigint_seen_toggles_through_the_internal_setter_path() {
+        assert!(!imp::seen(), "the documented start state is false");
+        assert!(!super::sigint_seen());
+        imp::note_seen();
+        assert!(
+            imp::seen(),
+            "note_seen (the watcher's path) raises the flag"
+        );
+        assert!(super::sigint_seen());
+        // Leave the flag down for whatever runs later in this binary.
+        imp::reset_seen_for_tests();
+        assert!(!imp::seen());
+    }
+
+    /// The handler's errno hygiene, pinned without real signals: a failing
+    /// self-pipe write (fd -1 is always EBADF) must leave the interrupted
+    /// thread's errno exactly as it was — `read_terminated` classifies EINTR
+    /// off errno, so a leaked handler error would misread the interrupted
+    /// call's cause.
+    #[test]
+    fn handler_write_preserves_errno_of_the_interrupted_thread() {
+        let errno = imp::errno_location();
+        // SAFETY: thread-local errno; the sentinel (EAGAIN) only has to be
+        // a value the failed write below does not decide, and the assert is
+        // about the restore, not the sentinel.
+        unsafe { *errno = libc::EAGAIN };
+        imp::write_signal_byte(-1, libc::SIGINT as u8);
+        // SAFETY: the same thread-local location as above.
+        assert_eq!(
+            unsafe { *errno },
+            libc::EAGAIN,
+            "a failed handler write must not leak its errno"
+        );
+    }
+
+    /// Round-49: the self-pipe WRITE end is O_NONBLOCK (pinned through
+    /// `create_self_pipe`, the exact constructor `real_install` runs), and a
+    /// burst of handler-path writes LARGER than the pipe capacity (64 KiB on
+    /// Linux, smaller-but-growing on macOS — 128 KiB clears both) completes
+    /// promptly instead of blocking once the pipe fills. With a regression
+    /// to a blocking write end, ≥64 KiB of deliveries inside one grace
+    /// window would park the signaled thread INSIDE the handler. The real
+    /// install is deliberately NOT driven here: its watcher would consume
+    /// the first test byte as its cleanup trigger and end the test process
+    /// in the phase-3 re-raise; a fresh pipe exercises the same fd surface
+    /// without one.
+    #[test]
+    #[cfg(unix)]
+    fn self_pipe_write_end_is_nonblocking_and_overflow_burst_does_not_block() {
+        let Some((read_fd, write_fd)) = imp::create_self_pipe() else {
+            panic!("pipe(2) must work in the test process");
+        };
+        // SAFETY: fcntl on descriptors this test just created.
+        let flags = unsafe { libc::fcntl(write_fd, libc::F_GETFL) };
+        assert!(flags >= 0, "F_GETFL must work on the write end: {flags}");
+        assert_ne!(
+            flags & libc::O_NONBLOCK,
+            0,
+            "the write end must carry O_NONBLOCK; F_GETFL={flags:#x}"
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(read_fd, libc::F_GETFL) } & libc::O_NONBLOCK,
+            0,
+            "the READ end stays blocking — the watcher parks in read(2) by design"
+        );
+
+        // The burst runs on a worker behind a watchdog join: with a
+        // regression to a blocking write end the worker parks in write(2)
+        // forever, the timeout below fires the assertion instead of hanging
+        // the whole test binary, and the leaked worker dies with the process.
+        const BURST: usize = 128 * 1024;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut recorded = 0usize;
+            for _ in 0..BURST {
+                // The handler's exact write path: every write must come back
+                // recorded — landed, or EAGAIN on the full pipe (already
+                // requested).
+                if imp::write_signal_byte(write_fd, libc::SIGINT as u8) {
+                    recorded += 1;
+                }
+            }
+            // SAFETY: closing this test's own pipe ends.
+            unsafe {
+                libc::close(write_fd);
+                libc::close(read_fd);
+            }
+            let _ = done_tx.send(recorded);
+        });
+        match done_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(recorded) => assert_eq!(
+                recorded, BURST,
+                "every burst write must be recorded (landed, or EAGAIN on a full pipe)"
+            ),
+            Err(_) => panic!(
+                "the 128 KiB handler-write burst blocked — the write end lost \
+                 O_NONBLOCK (the parked worker leaks until the test binary exits)"
+            ),
+        }
+        worker.join().expect("the burst worker must finish");
+    }
+}

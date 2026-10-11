@@ -572,18 +572,23 @@ fn normalize_stored_lists(file: &mut DisabledBundlesFile) -> bool {
 /// `skill_gate_consent_failure_message_keeps_the_frontend_marker` in
 /// skill_gate.rs). Every connector shares the exact string so a backend
 /// rewording cannot silently degrade the localized guidance to generic copy.
-pub(crate) const CONSENT_SYNC_FAILURE_MARKER: &str =
-    "persisting their default-off consent state failed";
+pub const CONSENT_SYNC_FAILURE_MARKER: &str = "persisting their default-off consent state failed";
 
 pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
 
-/// [`to_package_id`] over a pre-walked tool snapshot (round-23 MINOR 3
+/// `to_package_id` over a pre-walked tool snapshot (round-23 MINOR 3
 /// hoist): one `available_tools()` walk serves the whole id list instead of
 /// one per entry. `pub(crate)` since round-37 P3 (review #455): the builtin
 /// writer guard hoists the same snapshot for its normalization loop.
-pub(crate) fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
+/// `pub` since round-38: the CLI's `plugins enable/disable` normalize two id
+/// lists per scope and hoist the same snapshot instead of re-walking per
+/// entry (the anti-pattern this hoist exists for). The wrapper above is
+/// spelled out rather than intra-doc-linked because it is `pub(crate)` — a
+/// public doc linking a private item fails the `-D warnings` rustdoc gate
+/// (round-40 review).
+pub fn to_package_id_with(tools: &[super::ToolManifest], raw: &str) -> String {
     let stripped = raw.strip_prefix("skill:").unwrap_or(raw);
     // Known-pack shield (review #455 round-23 MINOR 1): a stored entry that
     // names a physically present pack dir IS that pack and must not be
@@ -635,6 +640,10 @@ pub fn resolve_pack_owner_id(raw_id: &str) -> String {
 fn migration_keeps_id(id: &str) -> bool {
     !crate::features::marketplace::builtin::is_builtin_tool(id)
 }
+
+// Round-40 review: the CLI-facing duplicate of `resolve_pack_owner_id` is
+// gone — the CLI now imports that name, so one operation has one public
+// symbol and the two cannot drift.
 
 /// 读时归一：存储条目按**当前**认领状态重映射为包 id 并去重（保序）。
 /// 认领（`skill_owner_package`）随安装态时变：条目可能在 companion MCP 未装时

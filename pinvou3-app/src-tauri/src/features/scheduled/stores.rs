@@ -1,14 +1,21 @@
 //! 版本化 JSON store:3 个定时注册表的泛型持久化。
 //!
+// architecture-guard: allow-target-cfg -- the failed-boot-read stamp test
+// needs a chmod-000 fixture (a unix permission bit) to make the read fail
+// while the file stays in place; the seen=None semantics under test are
+// platform-independent, only the fixture cannot be expressed portably.
+//!
 //! Wave 1 1d 建立的 `VersionedRegistry` trait + `VersionedJsonStore<T>` 泛型,
 //! 收敛 scheduled run read / model binding / UI metadata 三个同构 store。
 //! 从 tasks.rs 抽离,通过 `use super::*` 复用 facade 的导入。
 
 use std::path::Path;
+use std::time::SystemTime;
 
 use parking_lot::RwLock;
 
 use super::*;
+use crate::platform::filesystem::{FileIdentity, metadata_file_identity};
 
 fn scheduled_run_read_state_schema_version() -> u32 {
     SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION
@@ -265,59 +272,503 @@ pub(crate) trait VersionedRegistry:
 pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
     pub(crate) path: Arc<PathBuf>,
     pub(crate) registry: Arc<RwLock<T>>,
+    /// Identity of the file contents this handle last read or wrote, used by
+    /// [`Self::reload_if_changed`] to skip a re-read that cannot teach it
+    /// anything. `None` means "unknown", which always forces a read;
+    /// `Some(ABSENT)` prices in a confirmed absence (see the reload failure
+    /// path), so repeated lookups cost one stat instead of a failed read.
+    seen: Arc<RwLock<Option<FileStamp>>>,
+    /// Set when a read QUARANTINED (renamed aside) this store's file under
+    /// the Rename strategy: the canonical path is now absent while this
+    /// handle's memory may be the only healthy copy left. A later absent-file
+    /// read must then answer "keep memory", not "empty registry" — otherwise
+    /// the next reload after a quarantine would install `T::default()` over
+    /// the healthy registry and the next persist would write the emptying
+    /// through. Cleared by a successful persist (the file is healthy again)
+    /// and by a successful read of a present file.
+    quarantined: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Cheap change detector for the registry file: a `stat` is orders of
+/// magnitude cheaper than read + parse + lock swap, and every writer of these
+/// files (this handle and the `pinvou` CLI) goes through an atomic
+/// write-and-rename, so a new payload always lands as a new inode with a
+/// fresh mtime. On Unix the stamp carries that file identity: a foreign write
+/// can preserve the byte length (same-shape payload) and, on coarse-mtime
+/// filesystems, the timestamp, and only `dev`/`ino` tells the two files
+/// apart, so it must take part in the equality check. Non-Unix keeps the
+/// plain len+mtime behaviour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    /// File identity: an atomic rename always replaces the inode, so equal
+    /// len+mtime on a different inode is still a different write. `None` on
+    /// platforms without a portable identity — those compare len+mtime only
+    /// (the `cfg` lives in `platform::filesystem`, keeping this file
+    /// unconditionally compiled).
+    identity: Option<FileIdentity>,
+}
+
+impl FileStamp {
+    /// Reserved sentinel for "this handle has priced in the file's absence":
+    /// no real file can have `u64::MAX` length, so equality against a fresh
+    /// `FileStamp::of` (which answers `None` for an absent path) can never
+    /// be confused with a real stamp.
+    const ABSENT: Self = Self {
+        len: u64::MAX,
+        modified: None,
+        identity: None,
+    };
+
+    /// `None` when the file cannot be stat'ed at all (missing, or a metadata
+    /// error) — treated as "unknown", never as "unchanged".
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            identity: metadata_file_identity(&meta),
+        })
+    }
+}
+
+/// The stamp to record after this handle wrote `payload` to `path`, or `None`
+/// when the file on disk cannot be proven to carry it.
+///
+/// The proof cannot come from the stamp alone: a foreign write landing
+/// between our `atomic_write_private` write and the stat replaces the
+/// path with its own inode, and a same-length foreign payload is
+/// indistinguishable from ours by length (and, within one mtime tick, by
+/// timestamp) — recording it as "ours" would freeze this handle's stale
+/// memory until the file changed again, which is exactly the state
+/// `reload_if_changed` exists to repair. Reading the bytes back closes that
+/// window: only a file whose content is our payload is recorded, and the
+/// recorded stamp carries the file identity, so a same-length foreign write
+/// is detected as changed by the next check and re-read. Any doubt — failed
+/// stat, failed read, different bytes — records "unknown", which forces the
+/// re-read that merges the foreign payload in instead of dropping it.
+///
+/// Cost note (round-49 review): the read-back makes every persist O(file)
+/// in extra reads. The history archive grows monotonically, so each archive
+/// mutation pays roughly 2× its size in I/O; this is deliberate — the
+/// alternative (recording a hash without reading back) cannot detect a
+/// same-length foreign write that landed between the rename and the stat,
+/// which is exactly the lost-update this guard exists to close.
+fn stamp_of_our_write(path: &Path, payload: &[u8]) -> Option<FileStamp> {
+    let stamp = FileStamp::of(path)?;
+    if stamp.len != payload.len() as u64 {
+        // Different length: definitely not our payload, no read needed.
+        return None;
+    }
+    (std::fs::read(path).ok().as_deref() == Some(payload)).then_some(stamp)
+}
+
+/// Outcome of one disk read of a store's file.
+enum DiskRead<T> {
+    /// A usable payload as-is (possibly the default because the file is
+    /// absent — a missing sidecar is an empty registry, not a failure).
+    Loaded(T),
+    /// Usable after an on-read migration; the caller owns persisting the
+    /// migrated form back.
+    Migrated(T),
+    /// Unusable (I/O error, invalid JSON, or a newer-than-supported schema).
+    /// [`VersionedJsonStore::open`] fails open to an empty registry there
+    /// (existing startup behaviour), while [`VersionedJsonStore::reload`]
+    /// keeps its previous state so the next check retries once the file is
+    /// repaired. `quarantined`: the unusable payload was RENAMED aside, so
+    /// the canonical path is absent after this read — a later absent-file
+    /// read must not read as an empty registry while memory may hold the
+    /// only healthy copy. `io_error`: the failure was an I/O read error, not
+    /// a byte-level verdict — the bytes on disk may be healthy, so the
+    /// failure is NOT deterministic and the round-37 review forbids pricing
+    /// this read's stamp (pricing it would freeze memory over a file this
+    /// handle never successfully read).
+    Failed { quarantined: bool, io_error: bool },
 }
 
 impl<T: VersionedRegistry> VersionedJsonStore<T> {
-    pub(crate) fn open(path: PathBuf) -> Result<Self> {
-        let mut migrated = false;
-        let registry = match std::fs::read_to_string(&path) {
+    /// Round-48 review: the CLI lane caps registry reads at
+    /// `SCHEDULED_REGISTRY_MAX_BYTES` (128 MiB — the pinvoy-cli `scheduled.rs`
+    /// twin of this constant) because the history archive grows monotonically
+    /// and an unbounded `read_to_string` on a runaway/corrupt archive is an
+    /// OOM hazard; the GUI poll re-reads on every stamp change and must honor
+    /// the same bound. An over-cap or unreadable file answers like any other
+    /// failed read (fail-open to the caller's existing degrade, never a
+    /// half-registry), matching the CLI's `scheduled_store_unreadable`
+    /// refusal on its write paths.
+    const REGISTRY_READ_MAX_BYTES: u64 = 128 * 1024 * 1024;
+
+    /// `read_to_string` under the registry read cap: a file at or over the
+    /// cap reads only the first byte past the allowance and is refused with
+    /// `InvalidData` (same classification an over-cap CLI read uses), so a
+    /// multi-gigabyte file can never buffer fully.
+    fn read_registry_capped(path: &Path) -> std::io::Result<String> {
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > Self::REGISTRY_READ_MAX_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "registry file {} is {} bytes, over the {}-byte read cap",
+                    path.display(),
+                    metadata.len(),
+                    Self::REGISTRY_READ_MAX_BYTES
+                ),
+            ));
+        }
+        use std::io::Read as _;
+        let file = std::fs::File::open(path)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        let mut capped = file.take(Self::REGISTRY_READ_MAX_BYTES);
+        capped.read_to_end(&mut bytes)?;
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+
+    /// Read, parse and migrate the payload at `path`, applying this store's
+    /// quarantine policy to an unusable one, and report whether the payload
+    /// was migrated on read (the caller owns writing the migrated form back).
+    ///
+    /// Extracted so [`Self::open`] and [`Self::reload`] cannot drift: the
+    /// reload path exists precisely because a foreign process may have
+    /// rewritten the file, so it must honour the same version, migration and
+    /// quarantine rules the initial read applies.
+    fn read_from_disk(
+        path: &Path,
+        quarantined_flag: &std::sync::atomic::AtomicBool,
+        had_seen_file: bool,
+    ) -> DiskRead<T> {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        match Self::read_registry_capped(path) {
             Ok(raw) => match serde_json::from_str::<T>(&raw) {
-                Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => registry,
+                Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => {
+                    quarantined_flag.store(false, AtomicOrdering::Release);
+                    DiskRead::Loaded(registry)
+                }
                 Ok(registry) if registry.schema_version() < T::SUPPORTED_VERSION => {
-                    migrated = true;
-                    registry.migrate()
+                    quarantined_flag.store(false, AtomicOrdering::Release);
+                    DiskRead::Migrated(registry.migrate())
                 }
                 Ok(registry) => {
-                    Self::handle_invalid(
-                        &path,
+                    // Raise the flag BEFORE the rename inside handle_invalid:
+                    // a concurrent same-handle reload whose read_to_string
+                    // observes NotFound after the rename but samples the
+                    // flag before this store would otherwise answer
+                    // `Loaded(default)` and install it over healthy memory.
+                    // Not cleared on a failed rename — the file either went
+                    // away (a sibling quarantine's rename won the race, flag
+                    // true is then the fact) or is still there (the next
+                    // successful read clears the flag); both directions keep
+                    // memory, which is the safe side.
+                    if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
+                        quarantined_flag.store(true, AtomicOrdering::Release);
+                    }
+                    let quarantined = Self::handle_invalid(
+                        path,
                         &format!(
                             "schema v{} is newer than supported v{}",
                             registry.schema_version(),
                             T::SUPPORTED_VERSION
                         ),
                     );
-                    T::default()
+                    DiskRead::Failed {
+                        quarantined,
+                        io_error: false,
+                    }
                 }
                 Err(error) => {
-                    Self::handle_invalid(&path, &format!("invalid JSON: {error}"));
-                    T::default()
+                    // Same pre-rename flag discipline as the schema arm above.
+                    if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
+                        quarantined_flag.store(true, AtomicOrdering::Release);
+                    }
+                    let quarantined = Self::handle_invalid(path, &format!("invalid JSON: {error}"));
+                    DiskRead::Failed {
+                        quarantined,
+                        io_error: false,
+                    }
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => T::default(),
-            Err(error) => {
-                log::warn!(
-                    "Unable to read {} {}: {error}{}",
-                    T::LABEL,
-                    path.display(),
-                    T::WARN_SUFFIX
-                );
-                T::default()
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // An absent file is an empty registry EXCEPT when this handle
+                // has proven the file real before: a previous read that
+                // quarantined it away (the flag), or a foreign process
+                // removing/quarantining it after this handle loaded it (the
+                // CLI quarantines a corrupt sidecar on EVERY command,
+                // read-only ones included). In both cases memory may be the
+                // only healthy copy, and installing the default over it
+                // (and writing that through on the next persist) would
+                // silently empty the store. Keep memory instead; the next
+                // mutator's persist rewrites the healthy registry and heals
+                // the file (which also clears the flag).
+                if quarantined_flag.load(AtomicOrdering::Acquire) || had_seen_file {
+                    DiskRead::Failed {
+                        quarantined: true,
+                        io_error: false,
+                    }
+                } else {
+                    DiskRead::Loaded(T::default())
+                }
             }
-        };
+            Err(error) => {
+                // Round-40 review: rate-limit this warn. In a persistently
+                // unreadable environment (a restore that left the store
+                // root un-chownable, say) every reload re-fails here, and
+                // the GUI poll's several lookups per tick turned one
+                // environment problem into warn spam for the process's
+                // whole lifetime — base warned once at boot and never
+                // re-read, while the stamping deliberately re-consults. A
+                // 60-second cooldown per store type keeps the failure
+                // visible without the amplification. The static inside
+                // this generic fn monomorphizes per `T`, so each store
+                // type carries its own clock.
+                static LAST_WARN_MS: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0);
+                let last = LAST_WARN_MS.load(std::sync::atomic::Ordering::Relaxed);
+                if now_ms.saturating_sub(last) > 60_000 {
+                    LAST_WARN_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                    log::warn!(
+                        "Unable to read {} {}: {error}{}",
+                        T::LABEL,
+                        path.display(),
+                        T::WARN_SUFFIX
+                    );
+                }
+                DiskRead::Failed {
+                    quarantined: false,
+                    io_error: true,
+                }
+            }
+        }
+    }
+
+    pub(crate) fn open(path: PathBuf) -> Result<Self> {
+        // Stat before read, matching `reload`: a foreign write landing between
+        // the two leaves the stamp older than memory, which at worst costs one
+        // extra read later — never the reverse (memory stale under a stamp
+        // that matches).
+        let stamp = FileStamp::of(&path);
+        let quarantined_flag = std::sync::atomic::AtomicBool::new(false);
+        // Startup has not seen a file yet, so an absent file legitimately
+        // boots the empty default (fail-open); only established handles keep
+        // memory over a confirmed absence.
+        let (registry, migrated, failed_read) =
+            match Self::read_from_disk(&path, &quarantined_flag, false) {
+                // Fail open to an empty registry as before: existing startup
+                // behaviour kept (there is no previous state to preserve here).
+                DiskRead::Loaded(registry) => (registry, false, false),
+                DiskRead::Migrated(registry) => (registry, true, false),
+                DiskRead::Failed { .. } => (T::default(), false, true),
+            };
         let store = Self {
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
+            // Round-37 review MAJOR: a failed boot read must NOT install the
+            // pre-read stamp as `seen` — memory would hold the default while
+            // `seen` matches the real file, and `reload_if_changed` would
+            // skip every future miss-consult for the process lifetime (a
+            // CLI-created kind record would never merge). `None` is the
+            // never-read state: the first miss pays one re-read and, if it
+            // succeeds, re-records the stamp normally.
+            seen: Arc::new(RwLock::new(if failed_read { None } else { stamp })),
+            quarantined: Arc::new(std::sync::atomic::AtomicBool::new(
+                quarantined_flag.load(std::sync::atomic::Ordering::Acquire),
+            )),
         };
         if migrated {
-            if let Err(error) = store.persist(&store.registry.read()) {
-                log::warn!(
-                    "Unable to persist migrated {} {}: {error:#}",
-                    T::LABEL,
-                    store.path.display()
-                );
-            }
+            // persist() refreshes `seen` from the file it just wrote; on a
+            // failed write the pre-read stamp stays, which only forces a
+            // (cheap) re-read later.
+            store.persist_migrated();
         }
         Ok(store)
+    }
+
+    /// Handle over an in-memory registry that was never read from `path`, for
+    /// tests that plant a deliberately unwritable path. `seen` stays unknown so
+    /// any later read is forced rather than skipped as unchanged.
+    #[cfg(test)]
+    pub(crate) fn from_registry(path: PathBuf, registry: T) -> Self {
+        Self {
+            path: Arc::new(path),
+            registry: Arc::new(RwLock::new(registry)),
+            seen: Arc::new(RwLock::new(None)),
+            quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Re-read the on-disk registry and swap it into the in-memory copy.
+    ///
+    /// Disk — not memory — is the authority: every mutation here persists while
+    /// holding the write lock (and rolls back when the write fails), so the
+    /// file is never behind this handle, while a *foreign* process (the
+    /// `pinvou` CLI writes the same sidecars) can put it ahead.
+    pub(crate) fn reload(&self) {
+        self.reload_with_gap(|| ());
+    }
+
+    /// [`Self::reload`] with a seam between the disk read and the locked
+    /// swap, so a test can interleave this handle's own mutator commit in
+    /// the exact window the lock swap must not lose.
+    fn reload_with_gap(&self, gap: impl FnOnce()) {
+        // Stat before read: if a foreign write lands between the two, the
+        // stamp ends up older than memory, which at worst costs this handle
+        // one extra read later. Stating after the read produced the reverse —
+        // memory behind the file while the stamp matched — which made
+        // `reload_if_changed` skip the re-read that would have fixed it.
+        let stamp = FileStamp::of(self.path.as_ref());
+        let had_seen_file = self.seen.read().is_some();
+        let (registry, migrated) =
+            match Self::read_from_disk(self.path.as_ref(), &self.quarantined, had_seen_file) {
+                DiskRead::Loaded(registry) => (registry, false),
+                DiskRead::Migrated(registry) => (registry, true),
+                // Unusable payload: keep the previous in-memory registry. Swapping
+                // in `T::default()` here (the pre-fix behaviour) resolved every
+                // miss to a plain chat task and recorded the stamp so the damage
+                // never healed; how `seen` is priced below depends on WHY the
+                // read failed.
+                DiskRead::Failed {
+                    quarantined,
+                    io_error,
+                } => {
+                    if quarantined {
+                        // The canonical file was renamed away: until a persist
+                        // (or a repaired external write) makes the path exist
+                        // again, an absent-file read must keep this memory, not
+                        // install the empty default over it.
+                        self.quarantined
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        // Price the confirmed absence in: repeated lookups then
+                        // cost one stat (answered by the ABSENT sentinel in
+                        // `reload_if_changed`) instead of a failed read-and-swap
+                        // each. A foreign write that recreates the file yields a
+                        // real stamp, which never equals the sentinel.
+                        if FileStamp::of(self.path.as_ref()).is_none() {
+                            *self.seen.write() = Some(FileStamp::ABSENT);
+                        }
+                    } else if io_error {
+                        // Round-37 review MAJOR: a transient I/O error (a
+                        // Windows sharing violation, an EACCES after a
+                        // restore, EIO on a network home) says nothing about
+                        // the bytes on disk — they may parse perfectly. The
+                        // failure is NOT deterministic, so `seen` must stay
+                        // untouched: the next miss consults again, and once
+                        // the error clears the re-read lands normally.
+                        // Pricing the head-of-reload stamp here would freeze
+                        // this (possibly default) memory over a file this
+                        // handle never successfully read — the exact
+                        // lost-consult the stamping exists to prevent.
+                    } else {
+                        // The file stayed in place and the failure is a
+                        // byte-level verdict (LogInPlace quarantine of
+                        // invalid JSON or a newer schema): deterministic
+                        // given unchanged bytes, so without pricing the
+                        // corrupt file's stamp every lookup re-reads,
+                        // re-parses, re-fails and re-warns for as long as
+                        // it stays corrupt (the GUI task-list poll reads
+                        // the UI metadata registry per row). Recording the
+                        // stamp answers "unchanged" until something
+                        // actually rewrites the file — the stamp moving IS
+                        // the repair signal, and the next read retries
+                        // then. `stamp` is the head-of-reload stat (an
+                        // Option: None means the stat itself failed, which
+                        // keeps retrying — the safe direction).
+                        *self.seen.write() = stamp.clone();
+                    }
+                    return;
+                }
+            };
+        gap();
+        {
+            // The stat / read / swap above is not atomic against this
+            // handle's own mutators. A mutator whose write lock is taken
+            // after our read can already have applied its change in memory,
+            // persisted it, and advanced `seen` — installing the pre-read
+            // payload over that would regress the registry to the stale
+            // file AND set `seen` back to a stamp the file has moved past,
+            // the exact lost-update this store's reload discipline exists
+            // to prevent. So the swap re-stats under the write lock and
+            // installs only a payload the file still provably carries: a
+            // file identical to the pre-read stamp means no mutator (or
+            // foreign writer) committed while we read. Anything else drops
+            // the read — a mutator has already advanced memory and `seen`,
+            // and the foreign-writer case pays one redundant re-read on the
+            // next check, never a skipped one.
+            //
+            // Scoped short hold: persist_migrated() below takes a read
+            // lock, and parking_lot locks are not reentrant.
+            let mut state = self.registry.write();
+            // One re-stat serves both checks below (round-40 review): the
+            // equality gate AND the never-created ABSENT pricing — binding
+            // it once halves the stats this already-held write lock pays.
+            let current = FileStamp::of(self.path.as_ref());
+            if current != stamp {
+                return;
+            }
+            *state = registry;
+            // A read that landed on a confirmed absence prices it in with
+            // the ABSENT sentinel — the same pricing the quarantine arm
+            // below the Failed read does. The plain never-created case used
+            // to leave `seen` unknown here, so every `reload_if_changed` on
+            // a never-created sidecar paid the full failed read the
+            // sentinel exists to skip (the GUI task-list poll runs three
+            // compacts per poll, forever on chat-only installs). The
+            // re-stat under the lock above already proved the file is still
+            // absent; a foreign write that recreates it yields a real
+            // stamp, which never equals the sentinel.
+            if stamp.is_none() && current.is_none() {
+                *self.seen.write() = Some(FileStamp::ABSENT);
+            } else {
+                *self.seen.write() = stamp;
+            }
+            self.quarantined
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        if migrated {
+            self.persist_migrated();
+        }
+    }
+
+    /// [`Self::reload`], but only when the file looks different from the one
+    /// this handle last saw.
+    ///
+    /// Lookup misses are the common case, not the rare one — every ordinary
+    /// chat task misses the kind registry — so an unconditional reload would
+    /// turn a task listing into one read-and-parse per row. A `stat` per miss
+    /// keeps the foreign-writer guarantee at a fraction of the cost. The
+    /// comparison fails open: an unreadable stamp on either side forces the
+    /// read, so the worst case is the behaviour we would have had anyway.
+    pub(crate) fn reload_if_changed(&self) {
+        let current = FileStamp::of(self.path.as_ref());
+        let seen = *self.seen.read();
+        let unchanged = match (current, seen) {
+            (Some(current), Some(seen)) => current == seen,
+            // An absence this handle has already priced in (its own or a
+            // foreign quarantine kept memory over it): a re-read cannot
+            // teach it anything, and the sentinel answers without the
+            // failed read the old shape paid on every miss.
+            (None, Some(seen)) => seen == FileStamp::ABSENT,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        self.reload();
+    }
+
+    /// Best-effort write-back of a registry that was migrated on read; a
+    /// failure only means the migration is redone next time, so it warns.
+    fn persist_migrated(&self) {
+        if let Err(error) = self.persist(&self.registry.read()) {
+            log::warn!(
+                "Unable to persist migrated {} {}: {error:#}",
+                T::LABEL,
+                self.path.display()
+            );
+        }
     }
 
     pub(crate) fn persist(&self, registry: &T) -> Result<()> {
@@ -325,14 +776,68 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {} dir {}", T::LABEL, parent.display()))?;
         }
+        // Foreign-write collision guard: `seen` is the stamp this handle
+        // observed at its last reload or persist, and `registry` was mutated
+        // on top of that snapshot. Every mutator reloads first, so a stamp
+        // mismatch here means a foreign writer (the CLI or a second app
+        // instance) landed between that reload and this persist — renaming
+        // this whole-file payload now would silently destroy the foreign
+        // write, the exact lost update the reload discipline otherwise
+        // prevents. Refuse instead: the mutator's rollback keeps memory
+        // consistent, the error tells the caller to retry, and the retry's
+        // reload merges the foreign content before re-applying. (The
+        // Windows non-identity corner stays as disclosed: len+mtime stamps
+        // can alias a same-length same-tick write. Unix has an analogous
+        // residual, round-37 review: `write_atomic`'s rename frees the old
+        // inode and the NEXT writer's temp file can receive it, so a
+        // same-length foreign write landing in the same mtime tick with a
+        // reused inode is likewise invisible to the stamp — rare on
+        // ns-granularity local filesystems, plausible on FAT/exFAT or
+        // network mounts. `stamp_of_our_write`'s content read-back is the
+        // stronger alternative if this ever needs closing.)
+        let current = FileStamp::of(self.path.as_ref());
+        let seen = *self.seen.read();
+        let unchanged = match (current, seen) {
+            (Some(current), Some(seen)) => current == seen,
+            // Absence priced in explicitly (post-quarantine keep) or never
+            // seen at all (fresh open on a not-yet-created file): this
+            // handle may create. A file that APPEARED in the window is the
+            // (Some, _) arm below and still refuses.
+            (None, Some(seen)) => seen == FileStamp::ABSENT,
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            return Err(anyhow::anyhow!(
+                "{} changed on disk after this handle last read it (a concurrent \
+                 writer landed between the reload and this persist); refusing to \
+                 overwrite it — retry the operation to re-apply it on the merged state",
+                T::LABEL
+            ));
+        }
         let payload = serde_json::to_vec_pretty(registry)
             .with_context(|| format!("serialize {}", T::LABEL))?;
         crate::platform::filesystem::atomic_write_private(self.path.as_ref(), &payload)
-            .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))
+            .with_context(|| format!("write {} {}", T::LABEL, self.path.display()))?;
+        // Record what we just wrote so `reload_if_changed` does not mistake
+        // this handle's own write for a foreign one and re-read it — and so
+        // a foreign write that DID land in the window is never recorded in
+        // its place. See `stamp_of_our_write`: only a file proven (by
+        // content) to carry our payload is recorded, identity included;
+        // anything else stays "unknown" and forces the next check to
+        // re-read, which merges the foreign payload in — never drops it.
+        *self.seen.write() = stamp_of_our_write(self.path.as_ref(), &payload);
+        self.quarantined
+            .store(false, std::sync::atomic::Ordering::Release);
+        Ok(())
     }
 
-    /// Apply this store's quarantine policy to an invalid payload at `path`.
-    pub(crate) fn handle_invalid(path: &Path, reason: &str) {
+    /// Applies this store's quarantine policy and reports whether the
+    /// canonical file was renamed AWAY (Rename strategy, rename succeeded) —
+    /// the fact the absent-file read arm needs to keep memory over an empty
+    /// default. (Round-40 review: the stale first summary line that used to
+    /// sit above this one is gone.)
+    pub(crate) fn handle_invalid(path: &Path, reason: &str) -> bool {
         match T::QUARANTINE {
             QuarantineStrategy::LogInPlace => {
                 log::warn!(
@@ -340,6 +845,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     T::LABEL,
                     path.display()
                 );
+                false
             }
             QuarantineStrategy::Rename => {
                 let timestamp = std::time::SystemTime::now()
@@ -353,19 +859,25 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 let quarantine_path =
                     path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
                 match std::fs::rename(path, &quarantine_path) {
-                    Ok(()) => log::warn!(
-                        "Quarantined {} {} to {} ({reason}){}",
-                        T::LABEL,
-                        path.display(),
-                        quarantine_path.display(),
-                        T::WARN_SUFFIX
-                    ),
-                    Err(error) => log::warn!(
-                        "Invalid {} {} ({reason}) could not be quarantined: {error}{}",
-                        T::LABEL,
-                        path.display(),
-                        T::WARN_SUFFIX
-                    ),
+                    Ok(()) => {
+                        log::warn!(
+                            "Quarantined {} {} to {} ({reason}){}",
+                            T::LABEL,
+                            path.display(),
+                            quarantine_path.display(),
+                            T::WARN_SUFFIX
+                        );
+                        true
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Invalid {} {} ({reason}) could not be quarantined: {error}{}",
+                            T::LABEL,
+                            path.display(),
+                            T::WARN_SUFFIX
+                        );
+                        false
+                    }
                 }
             }
         }
@@ -407,7 +919,13 @@ where
     /// Remove one automation's entry; a missing key is a no-op (idempotent
     /// delete), and a failed persist rolls the in-memory map back so it never
     /// diverges from disk.
+    ///
+    /// The sidecar is co-owned by the `pinvou` CLI, which rewrites the whole
+    /// file on its own writes; `remove` must therefore merge with whatever the
+    /// foreign process left on disk before persisting, or its own write-back
+    /// quietly drops the foreign entries.
     pub(crate) fn remove(&self, automation_id: &str) -> Result<()> {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let Some(previous) = registry.tasks_map().remove(automation_id) else {
             return Ok(());
@@ -423,15 +941,35 @@ where
 
     /// Keep only the given automation ids; unchanged maps skip the disk write,
     /// and a failed persist restores the pre-compact snapshot.
-    pub(crate) fn compact(&self, automation_ids: &HashSet<String>) -> Result<()>
+    ///
+    /// The GUI task-list poll fires this every few seconds against a sidecar
+    /// the `pinvou` CLI also rewrites; reloading only when the file's stamp
+    /// moved keeps the poll a `stat` when nothing changed, while a CLI write
+    /// in the window is merged into the compacted map instead of being
+    /// overwritten by this handle's stale copy.
+    ///
+    /// `is_live` is the deletion oracle for ids NOT in `automation_ids`: the
+    /// listing is a snapshot taken BEFORE this call, so a CLI task created
+    /// between the listing and the merge would be merged in and then
+    /// immediately retain-deleted — for the kind registry that silently
+    /// downgrades the task to an unattended full-permission chat run (the
+    /// exact hazard [`ScheduledTaskKindLookup`] exists to prevent). The
+    /// caller confirms liveness against the definitions still on disk; the
+    /// predicate only runs for ids the listing does not already keep.
+    pub(crate) fn compact(
+        &self,
+        automation_ids: &HashSet<String>,
+        is_live: impl Fn(&str) -> bool,
+    ) -> Result<()>
     where
         T::Entry: PartialEq,
     {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let before = registry.tasks_map().clone();
         registry
             .tasks_map()
-            .retain(|id, _| automation_ids.contains(id));
+            .retain(|id, _| automation_ids.contains(id) || is_live(id));
         if *registry.tasks_map() == before {
             return Ok(());
         }
@@ -591,6 +1129,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
             );
         }
         let automation_id = task.id.clone();
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(&automation_id).cloned();
         registry.tasks.insert(
@@ -613,10 +1152,17 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
     }
 
     pub(crate) fn archived_tasks(&self) -> Vec<ArchivedScheduledTask> {
+        // Same stamp-gated read as the other cross-surface paths: a CLI
+        // `scheduled delete` archives runs into this file under its own
+        // lock, and without the reload a GUI sidebar would keep showing the
+        // pre-archive list until an unrelated GUI mutation happened to
+        // reload. Unchanged is one `stat`.
+        self.reload_if_changed();
         self.registry.read().tasks.values().cloned().collect()
     }
 
     pub(crate) fn runs_for(&self, automation_id: &str) -> Option<Vec<AutomationRunRecord>> {
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks
@@ -629,6 +1175,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         automation_id: &str,
         session_id: &str,
     ) -> Option<AutomationRunRecord> {
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks
@@ -647,6 +1194,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         automation_id: &str,
         run_id: &str,
     ) -> Result<Option<RemovedArchivedRun>> {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let Some(previous) = registry.tasks.get(automation_id).cloned() else {
             return Ok(None);
@@ -681,6 +1229,7 @@ impl VersionedJsonStore<ScheduledHistoryArchiveRegistry> {
         if !archived_task_is_valid(&automation_id, &archived) {
             bail!("invalid scheduled history archive entry for {automation_id}");
         }
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.insert(automation_id.clone(), archived);
         if let Err(error) = self.persist(&registry) {
@@ -702,6 +1251,10 @@ pub(crate) struct RemovedArchivedRun {
 
 impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
     pub(crate) fn metadata_for(&self, automation_id: &str) -> (bool, Option<String>) {
+        // Same foreign-writer discipline as the mutators beside which this
+        // read is rendered: a CLI-written pin must not be invisible to the
+        // GUI display until some other miss heals memory.
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks
@@ -716,6 +1269,7 @@ impl VersionedJsonStore<ScheduledTaskUiMetadataRegistry> {
             bail!("scheduled automation id cannot be empty");
         }
         let now = chrono::Utc::now().to_rfc3339();
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         if pinned {
@@ -776,14 +1330,43 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
     }
 
     /// Executor-facing tri-state lookup; see [`ScheduledTaskKindLookup`].
+    ///
+    /// A miss consults the disk before it answers `Chat`. This registry is read
+    /// once at `open()`, but the same file is co-owned by a foreign process:
+    /// `pinvou scheduled create --kind memory-organize` writes a kind record
+    /// while the app is running, and the foundation's sweep re-reads task
+    /// *definitions* from disk on every tick — so the scheduler will happily
+    /// fire a task whose kind this handle has never seen. Answering `Chat`
+    /// there is the unsafe direction (the executor would run the
+    /// kind-specific prompt as an unattended full-permission Yolo
+    /// conversation), so a miss pays a `stat` and re-reads only when the file
+    /// actually changed; a hit stays lock-only with no IO, which is the hot
+    /// path for every already-known task. Round-38 review note: the hit path
+    /// never re-consults disk, so a FOREIGN edit to an already-known id's
+    /// kind stays unseen until some miss, mutator, or poll reloads — bounded
+    /// staleness in the safe direction (the unknown→miss path always
+    /// reloads; a kind can only degrade Chat→organize, never the reverse,
+    /// without passing through a miss).
     pub(crate) fn kind_lookup_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
-        match self.registry.read().tasks.get(automation_id) {
-            None => ScheduledTaskKindLookup::Chat,
-            Some(entry) => match entry.kind.as_str() {
+        if let Some(lookup) = self.stored_kind(automation_id) {
+            return lookup;
+        }
+        self.reload_if_changed();
+        self.stored_kind(automation_id)
+            .unwrap_or(ScheduledTaskKindLookup::Chat)
+    }
+
+    /// Classify the in-memory entry, or None when this handle has no record
+    /// for the id at all (the only case the disk can still contradict).
+    fn stored_kind(&self, automation_id: &str) -> Option<ScheduledTaskKindLookup> {
+        self.registry
+            .read()
+            .tasks
+            .get(automation_id)
+            .map(|entry| match entry.kind.as_str() {
                 SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
                 other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
-            },
-        }
+            })
     }
 
     /// None removes the task's kind record (back to an ordinary chat task).
@@ -794,6 +1377,7 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
         let kind = kind
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         match kind {
@@ -826,7 +1410,21 @@ pub(crate) type ScheduledTaskModelBindingStore =
     VersionedJsonStore<ScheduledTaskModelBindingRegistry>;
 
 impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
+    /// Same foreign-writer miss path as the task-kind store's
+    /// `kind_lookup_for`: `pinvou scheduled create/update --model-id` rebinds
+    /// this sidecar while the app is running, and a handle opened before that
+    /// would silently drop the binding and run the task on the bare wire model
+    /// name. That is a correctness bug rather than a safety one, so the fix
+    /// stays the same size: a miss re-reads once, a hit never touches the disk.
     pub(crate) fn model_id_for(&self, automation_id: &str, model: &str) -> Option<String> {
+        if let Some(model_id) = self.bound_model_id(automation_id, model) {
+            return Some(model_id);
+        }
+        self.reload_if_changed();
+        self.bound_model_id(automation_id, model)
+    }
+
+    fn bound_model_id(&self, automation_id: &str, model: &str) -> Option<String> {
         self.registry
             .read()
             .tasks
@@ -850,6 +1448,7 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
         let model = model
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         match (model_id, model) {
@@ -883,6 +1482,9 @@ pub(crate) type ScheduledRunReadStore = VersionedJsonStore<ScheduledRunReadRegis
 
 impl VersionedJsonStore<ScheduledRunReadRegistry> {
     pub(crate) fn is_viewed(&self, automation_id: &str, run_id: &str) -> bool {
+        // Same foreign-writer discipline as `mark_viewed` beside it: the
+        // read must see a peer's persisted mark, not this handle's boot view.
+        self.reload_if_changed();
         self.registry
             .read()
             .viewed_runs
@@ -894,6 +1496,7 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
         if automation_id.trim().is_empty() || run_id.trim().is_empty() {
             bail!("scheduled automation and run ids cannot be empty");
         }
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let inserted = registry
             .viewed_runs
@@ -920,6 +1523,7 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
         automation_id: &str,
         current_run_ids: &HashSet<String>,
     ) -> Result<()> {
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let Some(existing) = registry.viewed_runs.get(automation_id).cloned() else {
             return Ok(());
@@ -946,5 +1550,875 @@ impl VersionedJsonStore<ScheduledRunReadRegistry> {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod foreign_writer_tests {
+    //! Tests live in the same file as the production code: they target the
+    //! three defect classes of `VersionedJsonStore` (foreign writers such as
+    //! the CLI, corrupt files, and stat ordering) and reuse stores.rs's
+    //! private visibility.
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_home() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-store-tests-{}-{}",
+            std::process::id(),
+            DIR_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn kind_store(path: &std::path::Path) -> ScheduledTaskKindStore {
+        ScheduledTaskKindStore::open(path.to_path_buf()).expect("open kind store")
+    }
+
+    fn kind_entry_json() -> serde_json::Value {
+        serde_json::json!({
+            "kind": SCHEDULED_TASK_KIND_MEMORY_ORGANIZE,
+            "updated_at": "2026-01-01T00:00:00Z",
+        })
+    }
+
+    /// A kind-registry payload with the given tasks, written straight to
+    /// `path` without going through any handle — what a foreign process does.
+    fn write_kind_registry(path: &std::path::Path, tasks: serde_json::Value) {
+        let payload = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": SCHEDULED_TASK_KIND_SCHEMA_VERSION,
+            "tasks": tasks,
+        }))
+        .expect("serialize kind registry");
+        // Stage via temp+rename like every real writer (the foundation's
+        // write_atomic, the CLI's write_json_atomic): an in-place write
+        // keeps the inode, so a test that means to prove identity-based
+        // detection would only ever prove mtime detection.
+        let staging = path.with_extension("json.tmp-fixture");
+        std::fs::write(&staging, payload).expect("write staging kind registry");
+        std::fs::rename(&staging, path).expect("rename kind registry");
+    }
+
+    fn memory_organize() -> String {
+        SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()
+    }
+
+    /// The listing compact keeps by is a snapshot taken before the merge: a
+    /// CLI task created between the listing and compact would be merged in
+    /// and then retain-deleted — for the kind registry that silently
+    /// downgrades the task to an unattended full-permission chat run, the
+    /// hazard `kind_lookup_for`'s disk-consult exists to prevent. Compact
+    /// must confirm liveness against the definitions still on disk before
+    /// deleting an unlisted id, and must still collect ids whose definition
+    /// is confirmed gone.
+    #[test]
+    fn compact_confirms_liveness_before_deleting_an_unlisted_id() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        // The GUI poll's snapshot: only its own task. The CLI's task exists
+        // on disk but landed after the listing was taken.
+        write_kind_registry(&path, serde_json::json!({ "gui-task": kind_entry_json() }));
+        let store = kind_store(&path);
+
+        // The CLI lands its kind record between the listing and compact;
+        // compact's stamp merge pulls it into this handle's map.
+        let mut with_cli = serde_json::json!({ "gui-task": kind_entry_json() });
+        with_cli["cli-task"] = kind_entry_json();
+        write_kind_registry(&path, with_cli);
+
+        let listing: HashSet<String> = ["gui-task".to_string()].into();
+        // Definition still on disk (the closure the task-list poll passes):
+        // the merged foreign entry must survive the compact.
+        store
+            .compact(&listing, |id| id == "cli-task")
+            .expect("compact");
+        assert_eq!(
+            store.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a listing-missing task whose definition exists must not be compacted away"
+        );
+        assert_eq!(
+            store.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Definition confirmed gone (the task was really deleted): the
+        // sidecar entry garbage-collects exactly as before.
+        let store = kind_store(&path);
+        store.compact(&listing, |_id| false).expect("compact");
+        assert_eq!(
+            store.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::Chat,
+            "a task whose definition is gone must still garbage-collect"
+        );
+        assert_eq!(
+            store.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-37 review MAJOR: a failed boot read (file present but
+    /// unreadable) must boot the default with `seen` unknown. If it priced
+    /// the pre-read stamp, this handle would freeze its default view for
+    /// the process lifetime — every miss-consult skipped while the file's
+    /// (len, mtime, identity) never change — and a CLI-created kind record
+    /// would never merge, the unsafe Chat downgrade. Red on the pre-fix
+    /// code: `seen` was installed from the head-of-boot stat regardless of
+    /// the read outcome, so the healed-permissions lookup answered from the
+    /// frozen default.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_boot_read_does_not_price_the_stamp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "cli-task": kind_entry_json() }));
+        let make_unreadable = |mode: u32| {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(mode);
+            std::fs::set_permissions(&path, perms).unwrap();
+        };
+        make_unreadable(0o000);
+        if std::fs::read_to_string(&path).is_ok() {
+            // Running as root (or an ACL that ignores the mode bits): the
+            // EACCES cannot be simulated here; skip rather than pin a pass
+            // that proves nothing.
+            make_unreadable(0o644);
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let store = kind_store(&path);
+        // Heal the permissions. chmod touches neither len nor mtime, so a
+        // priced stamp would still match and the consult would stay frozen.
+        make_unreadable(0o644);
+        assert_eq!(
+            store.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the first miss after a healed boot-read failure must consult the disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A foreign write that lands between this handle's last read and its
+    /// persist must not be silently destroyed by the whole-file rename: the
+    /// persist re-checks the file's stamp and refuses. The refusal is
+    /// recoverable — the next mutation's reload merges the foreign content
+    /// and the re-applied write lands beside it.
+    #[test]
+    fn persist_refuses_when_a_foreign_write_landed_since_the_last_read() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // The foreign writer lands between our read and our persist.
+        write_kind_registry(
+            &path,
+            serde_json::json!({ "t1": kind_entry_json(), "t2": kind_entry_json() }),
+        );
+        let error = store
+            .persist(&store.registry.read())
+            .expect_err("a stale persist must refuse instead of clobbering");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("changed on disk"),
+            "the error must name the collision: {rendered}"
+        );
+
+        // The foreign content is intact on disk, and a retry (whose reload
+        // merges it) lands without destroying it.
+        store
+            .persist(&store.registry.read())
+            .expect_err("the stamp has not moved; the persist must still refuse");
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the lookup miss reloads and merges the foreign write"
+        );
+        store
+            .persist(&store.registry.read())
+            .expect("the merged persist must go through");
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the merged persist must carry the foreign entry"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The absent corner: a handle that priced in the file's absence must
+    /// refuse to create it if a foreign writer created one in the window —
+    /// creating would install this handle's payload over foreign content.
+    #[test]
+    fn persist_refuses_when_a_file_appeared_in_the_absent_window() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+
+        let error = store
+            .persist(&store.registry.read())
+            .expect_err("creating over an appeared file must refuse");
+        assert!(
+            format!("{error:#}").contains("changed on disk"),
+            "{error:#}"
+        );
+
+        // The retry path merges the appeared content first.
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the lookup miss reloads the appeared file"
+        );
+        store
+            .persist(&store.registry.read())
+            .expect("the merged persist must go through");
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the appeared content must survive the merge"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Own writes must not trip the collision guard: back-to-back mutations
+    /// on one handle (each persist advances `seen` to the stamp of the
+    /// payload it proved) go through without a reload in between.
+    #[test]
+    fn sequential_own_persists_pass_the_collision_guard() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        store
+            .set_kind("t1", Some(memory_organize()))
+            .expect("first persist creates the file");
+        store
+            .set_kind("t2", Some(memory_organize()))
+            .expect("the second persist must not read as a collision");
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (g) A quarantined store must not degrade to the empty default once
+    /// the file is gone: the rename-aside quarantine leaves the canonical
+    /// path ABSENT while this handle's memory may be the only healthy copy.
+    /// A later reload seeing the absent file must keep memory (the pre-fix
+    /// behaviour installed `T::default()` over the healthy registry, and the
+    /// next persist wrote that emptying through); the next mutator's persist
+    /// rewrites the healthy registry and heals the file.
+    #[test]
+    fn quarantined_store_keeps_memory_after_the_file_is_gone() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Corrupt on disk, then reload: the quarantine renames the file away
+        // and memory keeps the healthy registry.
+        std::fs::write(&path, b"{not json").unwrap();
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a corrupt file must not empty a healthy memory"
+        );
+        assert!(
+            !path.exists(),
+            "the Rename strategy must have removed the canonical file"
+        );
+
+        // The absent-file reload: the pre-fix behaviour answered
+        // Loaded(default) here and swapped the empty registry in.
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "an absent file after a quarantine must keep memory, not the \
+             empty default"
+        );
+
+        // The next mutator's persist rewrites the healthy registry: the file
+        // is healed and a fresh handle reads the same content.
+        store
+            .set_kind("t2", Some(memory_organize()))
+            .expect("healing persist");
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the healed file carries the healthy registry, not the default"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A FOREIGN quarantine must not defeat the keep-memory guarantee: the
+    /// CLI renames a corrupt sidecar aside on every command (read-only ones
+    /// included), so this handle can observe the absence without ever having
+    /// quarantined anything itself. Pre-fix, the absent-file read answered
+    /// `Loaded(default)` for that case and the next persist wiped the only
+    /// healthy copy; the keep now rides on the handle having proven the file
+    /// real before, not on whose quarantine won.
+    #[test]
+    fn foreign_quarantine_before_reload_keeps_healthy_memory() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // The foreign CLI flow: corrupt on disk, then quarantine the corrupt
+        // payload aside — the canonical path is absent again before this
+        // handle's next reload.
+        std::fs::write(&path, b"{not json").unwrap();
+        let invalid = path.with_extension(format!(
+            "json.invalid-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::rename(&path, &invalid).expect("foreign quarantine rename");
+        assert!(!path.exists(), "the foreign quarantine removed the file");
+
+        // This handle's mutator reloads first: it must keep memory (never
+        // install the default), and its persist must heal the file with the
+        // FULL healthy registry, not the empty default.
+        store
+            .set_kind("t2", Some(memory_organize()))
+            .expect("mutator after a foreign quarantine");
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a foreign quarantine must not empty healthy memory"
+        );
+        let fresh = kind_store(&path);
+        assert_eq!(
+            fresh.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the healed file carries the healthy registry, not the default"
+        );
+        assert_eq!(
+            fresh.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // The priced-in absence keeps repeated lookups at one stat: reload
+        // again while the (healed) file is untouched — the stamp comparison,
+        // not the sentinel, must short-circuit here because the file exists
+        // again with a real stamp.
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_file(&invalid);
+    }
+
+    /// (a) Two store instances share one file: a resident handle's writes
+    /// (compact / set_kind / remove) must not erase changes a foreign
+    /// handle has already written.
+    #[test]
+    fn two_handles_over_one_file_do_not_erase_each_others_writes() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // Seed one entry via a disposable handle, then open the two long-lived
+        // handles over the same file: `gui` is the running app's (its poll
+        // fires compact every few seconds), `cli` is the foreign process.
+        kind_store(&path)
+            .set_kind("doomed", Some(memory_organize()))
+            .expect("seed kind entry");
+        let gui = kind_store(&path);
+        let cli = kind_store(&path);
+
+        // The foreign handle rewrites the sidecar: drops "doomed", writes a
+        // kind for a task the app never created.
+        cli.remove("doomed").expect("foreign delete");
+        cli.set_kind("cli-task", Some(memory_organize()))
+            .expect("foreign create");
+
+        // The GUI poll compacts for its listing, which includes the
+        // foreign-created task. Pre-fix, the GUI persisted its stale
+        // in-memory map and erased the foreign kind write.
+        gui.compact(&HashSet::from(["cli-task".to_string()]), |_id| false)
+            .expect("gui compact");
+        assert_eq!(
+            gui.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "compact must not rewrite the file from a stale in-memory map"
+        );
+        let after_compact = kind_store(&path);
+        assert_eq!(
+            after_compact.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a fresh handle must read the foreign kind from disk"
+        );
+
+        // A GUI-side set_kind must merge with, not overwrite, the foreign entry.
+        gui.set_kind("gui-task", Some(memory_organize()))
+            .expect("gui set kind");
+        let after_set = kind_store(&path);
+        assert_eq!(
+            after_set.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "set_kind must not erase the foreign entry"
+        );
+        assert_eq!(
+            after_set.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // A GUI-side remove must not take the foreign entry with it.
+        gui.remove("gui-task").expect("gui remove");
+        let after_remove = kind_store(&path);
+        assert_eq!(
+            after_remove.kind_lookup_for("cli-task"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "remove must not erase the foreign entry"
+        );
+        assert_eq!(
+            after_remove.kind_lookup_for("gui-task"),
+            ScheduledTaskKindLookup::Chat,
+            "only the GUI's own entry is removed"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (a2) The plain never-created case prices its absence in too (round-36
+    /// review): `open` on a not-yet-created sidecar boots the empty default
+    /// with `seen` unknown, and the Loaded install used to leave it unknown,
+    /// so every `reload_if_changed` kept paying the full failed read the
+    /// ABSENT sentinel exists to skip. After the fix the confirmed absence
+    /// records the sentinel, the next checks answer from it, and a file that
+    /// later appears carries a real stamp that never equals the sentinel —
+    /// so the foreign write is still picked up.
+    #[test]
+    fn never_created_sidecar_prices_its_absence_in_after_the_first_read() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        assert!(
+            !path.exists(),
+            "precondition: the sidecar was never created"
+        );
+
+        store.reload();
+        assert_eq!(
+            *store.seen.read(),
+            Some(FileStamp::ABSENT),
+            "a confirmed absence must be priced in, not left unknown"
+        );
+
+        // A later foreign write is still seen: a real stamp never equals
+        // the sentinel. The payload is a valid registry (the store's own
+        // serde shape), so the reload READS it instead of quarantining.
+        let foreign = ScheduledTaskKindRegistry::default();
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&foreign).expect("serialize the empty kinds registry"),
+        )
+        .expect("plant the foreign file");
+        store.reload_if_changed();
+        assert_ne!(
+            *store.seen.read(),
+            Some(FileStamp::ABSENT),
+            "a real file must replace the sentinel with its stamp"
+        );
+        assert_eq!(
+            *store.seen.read(),
+            FileStamp::of(&path),
+            "the reload must adopt the foreign file's stamp"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (b) A reload that reads a corrupt file keeps the in-memory state and
+    /// `reload_if_changed` picks the file up again once it is repaired. The
+    /// quarantine renames the corrupt file away, so the failed read prices
+    /// the confirmed ABSENCE in (`FileStamp::ABSENT`) — repeated checks then
+    /// cost one stat instead of a failed read each — while a repaired file
+    /// carries a real stamp that never equals the sentinel, so the retry is
+    /// preserved. Before the sentinel, the failed read left the pre-corruption
+    /// stamp in place, which made every subsequent check re-read the (absent)
+    /// file; the sentinel is the priced-in version of the same retry promise.
+
+    #[test]
+    fn reload_on_a_corrupt_file_keeps_state_and_retries_after_repair() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        store
+            .set_kind("t1", Some(memory_organize()))
+            .expect("seed valid state");
+
+        // A crashed / hand-editing writer leaves an unusable file behind the
+        // handle's back.
+        std::fs::write(&path, "{ definitely-not-json").expect("write corrupt payload");
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a failed read must keep the previous in-memory state"
+        );
+        // The quarantine removed the canonical file; the absence is priced in.
+        assert_eq!(
+            *store.seen.read(),
+            Some(FileStamp::ABSENT),
+            "a quarantined-away file must be recorded as priced-in absence"
+        );
+        assert!(
+            !path.exists(),
+            "the Rename strategy must have removed the corrupt file"
+        );
+        // While the file stays absent, repeated checks answer from memory
+        // without re-reading (the sentinel short-circuits) — and the kind
+        // lookup must still see the healthy registry.
+        store.reload();
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the priced-in absence must keep memory on repeat checks"
+        );
+        // Quarantine note: the kind store renamed the corrupt file away
+        // (Rename strategy) inside handle_invalid; the in-memory state still
+        // must not degrade while the file is unusable.
+
+        // Repaired behind the handle's back: the next miss must re-read and
+        // pick the new content up instead of failing forever.
+        write_kind_registry(
+            &path,
+            serde_json::json!({
+                "t1": kind_entry_json(),
+                "t2": kind_entry_json(),
+            }),
+        );
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a repaired file must be picked up on the next check"
+        );
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (c) stat-before-read by construction: the real window (a foreign write
+    /// landing exactly between the stat and the read) cannot be injected
+    /// mid-call, so the test drives the same interleaving manually with
+    /// reload's own primitives in reload's own order, asserting the resulting
+    /// state does not mask subsequent changes and that the stamp lags memory
+    /// in the safe direction.
+
+    #[test]
+    fn reload_stats_the_file_before_reading_it() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // v1 on disk (only t1); a handle loaded on it.
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // Step 1 — reload's stat, taken BEFORE its read.
+        let stamp = FileStamp::of(&path).expect("v1 must be stat'able");
+        // Step 2 — the racing write lands here: v2 adds t2.
+        write_kind_registry(
+            &path,
+            serde_json::json!({ "t1": kind_entry_json(), "t2": kind_entry_json() }),
+        );
+        // Step 3 — reload's read of v2, then the swap, in reload's order.
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        match VersionedJsonStore::<ScheduledTaskKindRegistry>::read_from_disk(&path, &flag, false) {
+            DiskRead::Loaded(registry) | DiskRead::Migrated(registry) => {
+                *store.registry.write() = registry;
+            }
+            DiskRead::Failed { .. } => panic!("v2 must be readable"),
+        }
+        *store.seen.write() = Some(stamp);
+
+        // The interleaved state: memory carries the racing write (v2) while
+        // `seen` still describes v1 — never the reverse, which is what
+        // statting after the read produced.
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the write that landed between stat and read must be in memory"
+        );
+
+        // A further foreign write must not be masked by the older recorded
+        // stamp: the next check compares unequal and re-reads.
+        write_kind_registry(
+            &path,
+            serde_json::json!({
+                "t1": kind_entry_json(),
+                "t2": kind_entry_json(),
+                "t3": kind_entry_json(),
+            }),
+        );
+        assert_eq!(
+            store.kind_lookup_for("t3"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the stale recorded stamp must force a re-read, not a skip"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn two_same_length_foreign_writes_between_reloads_are_both_seen() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // v1 seeds the handle's stamp: {t1}.
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        // Platforms without identity (length+mtime is the only signal) cannot
+        // deterministically distinguish two same-length writes at the same
+        // instant; this case is only meaningful where identity exists (the
+        // Windows build compiles but does not execute it).
+        let seeded_identity = std::fs::metadata(&path)
+            .ok()
+            .and_then(|meta| metadata_file_identity(&meta));
+        if seeded_identity.is_none() {
+            return;
+        }
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        // The store's `seen` stamp describes v1 right now; capture the same
+        // stat for the aliasing guard below.
+        let seeded_stamp = FileStamp::of(&path);
+
+        // Two foreign writes, equal byte length, different key: renaming the
+        // key keeps the payload shape (and thus length) identical while the
+        // content differs.
+        write_kind_registry(&path, serde_json::json!({ "ta": kind_entry_json() }));
+        let first_write = FileStamp::of(&path);
+        write_kind_registry(&path, serde_json::json!({ "tb": kind_entry_json() }));
+        let second_write = FileStamp::of(&path);
+        // The identity signal can be aliased by the environment itself: an
+        // atomic rename hands the freed tmp inode number to the NEXT write's
+        // tmp file, and a coarse mtime tick hides the ordering — two writes
+        // (or a write and the seeded v1, whose two-char keys share the byte
+        // length) then carry an identical stamp, and the store's "no change"
+        // verdict is correct for the signal it has. That is the same aliasing
+        // the no-identity guard above acknowledges, one layer up: the test can
+        // only demand second-write visibility where the environment actually
+        // provides a signal distinguishing the second write from BOTH the
+        // first one and the seeded v1 the handle recorded.
+        if let (Some(first), Some(second)) = (first_write, second_write) {
+            if first == second || Some(second) == seeded_stamp {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        // The next miss must re-read and land on the SECOND write, not skip
+        // because every version shares the same byte length.
+        assert_eq!(
+            store.kind_lookup_for("tb"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the second same-length foreign write must be visible"
+        );
+        assert_eq!(
+            store.kind_lookup_for("ta"),
+            ScheduledTaskKindLookup::Chat,
+            "memory must reflect the second write, not the first"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (e) A stamp whose len+mtime match but whose identity (dev/ino)
+    /// differs must not be treated as "unchanged" — an atomic rename always
+    /// changes the inode, so identity must participate in the equality
+    /// comparison; on coarse-mtime filesystems only identity can distinguish
+    /// two same-length writes at the same instant. The seen identity field is
+    /// forged directly, so the case runs identically on platforms with and
+    /// without identity (on the latter a real stamp is always None and the
+    /// identity comparison never fires).
+    #[test]
+    fn file_identity_participates_in_stamp_comparison() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+
+        // Foreign rewrite (a new inode via the same atomic-rename shape every
+        // writer uses), then forge a `seen` that matches the new file's
+        // len+mtime but carries a different identity — exactly what a
+        // coarse-mtime filesystem would hand a len+mtime-only comparison.
+        write_kind_registry(&path, serde_json::json!({ "t2": kind_entry_json() }));
+        let current = FileStamp::of(&path).expect("stat the rewritten file");
+        let forged_identity = current.identity.unwrap_or(FileIdentity {
+            device: 0,
+            inode: 0,
+        });
+        *store.seen.write() = Some(FileStamp {
+            len: current.len,
+            modified: current.modified,
+            identity: Some(FileIdentity {
+                device: forged_identity.device.wrapping_add(1),
+                inode: forged_identity.inode,
+            }),
+        });
+        assert_ne!(*store.seen.read(), Some(current));
+
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "an identity mismatch must force the re-read even at equal len+mtime"
+        );
+        // The reload records the real stamp, so the next check skips again.
+        assert_eq!(*store.seen.read(), Some(current));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (f) The persist-side "is the on-disk content our write?" judgment:
+    /// the disclosed freeze scenario is a same-length foreign write landing
+    /// exactly between the atomic write and the stamp being recorded — neither
+    /// length nor even mtime can catch it, only a content comparison can.
+    /// Only a stamp proven to be our write is recorded; anything else —
+    /// mismatch or un-stat-able — records unknown, forcing a re-read on the
+    /// next check, never treating it as "unchanged".
+    #[test]
+    fn persist_records_only_a_proven_own_write() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+
+        // A clean write records its own stamp.
+        let ours = b"{\n  \"payload\": ours\n}";
+        std::fs::write(&path, ours).expect("seed our payload");
+        assert!(
+            stamp_of_our_write(&path, ours).is_some(),
+            "a file carrying our payload must be recorded as ours"
+        );
+
+        // The disclosed race, driven manually: our write lands, then a
+        // same-length foreign payload replaces it before the stamp is
+        // recorded. The length check alone would bless the foreign file.
+        let foreign = b"{\n  \"payload\": user\n}";
+        assert_eq!(foreign.len(), ours.len(), "fixture must be same-length");
+        std::fs::write(&path, foreign).expect("foreign same-length clobber");
+        assert!(
+            stamp_of_our_write(&path, ours).is_none(),
+            "a same-length foreign clobber must not be recorded as ours"
+        );
+
+        // Unstat'able stays "unknown", never "unchanged" (existing
+        // semantics).
+        std::fs::remove_file(&path).expect("remove the file");
+        assert!(stamp_of_our_write(&path, ours).is_none());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// (f) The lock-swap half of the reload race, closed in the round-21
+    /// review (M1): a reload that has already read the file when a mutator
+    /// on this handle commits must not afterwards install the stale payload
+    /// over the mutator's state. The seam `reload_with_gap` exposes makes
+    /// this interleaving — impossible to hit through the public surface on
+    /// demand — deterministic.
+    #[test]
+    fn reload_does_not_overwrite_a_mutator_that_committed_during_its_read() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        // v2 is what the file carries by the time reload's read returns.
+        write_kind_registry(&path, serde_json::json!({ "t1": kind_entry_json() }));
+        let store = kind_store(&path);
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+
+        // The gap replays the pre-fix interleaving end to end: reload stats
+        // and reads v2; while its swap waits on the write lock, the mutator
+        // takes the lock first, applies its change, persists v3 and advances
+        // `seen`. reload's swap then runs — with the fix it drops the stale
+        // v2 read; pre-fix it would have regressed memory to v2 and dragged
+        // `seen` back to a stamp the file had already moved past.
+        let mut pre_read_stamp = None;
+        store.reload_with_gap(|| {
+            // The file still carries v2 here: this is exactly the stamp
+            // reload took before its read, and the one the pre-fix swap
+            // would have written into `seen`.
+            pre_read_stamp = FileStamp::of(&path);
+            store
+                .set_kind("t2", Some(memory_organize()))
+                .expect("mutator commits inside the read-to-swap window");
+        });
+
+        // The mutator's committed change must survive in memory …
+        assert_eq!(
+            store.kind_lookup_for("t2"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "the mutator that committed during the read must not be overwritten"
+        );
+        assert_eq!(
+            store.kind_lookup_for("t1"),
+            ScheduledTaskKindLookup::MemoryOrganize
+        );
+        // … and `seen` must not end up describing the state reload read,
+        // which the file has already moved past — that is the half of the
+        // race that turns a transient regression into a masked one.
+        assert_ne!(
+            *store.seen.read(),
+            pre_read_stamp,
+            "`seen` must carry the mutator's own record, not the stale pre-read stamp"
+        );
+        // … and the file on disk must still carry the mutator's v3 payload —
+        // nothing rewrote it behind the mutator's back.
+        let on_disk = std::fs::read_to_string(&path).expect("read the kind registry");
+        assert!(
+            on_disk.contains("\"t2\""),
+            "the mutator's persisted payload must remain on disk"
+        );
+        assert!(
+            on_disk.contains("\"t1\""),
+            "the pre-read payload's entry must be merged, not clobbered"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

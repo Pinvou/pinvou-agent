@@ -29,6 +29,22 @@ paths = [
 regexes = ['''sk-(?:test|legacy|custom|once)-secret-1234567890''']
 
 [[allowlists]]
+description = "CLI provider-slot tests use an explicit non-production test key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou-cli/crates/cli/tests/code_contract\.rs$''']
+regexes = ['''sk-test-slots-1234567890''']
+
+[[allowlists]]
+description = "CLI models keyring rotation tests use explicit non-production test keys"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou-cli/crates/cli/tests/models_contract\.rs$''']
+regexes = ['''sk-rotate-(?:first|second)-1234567890''']
+
+[[allowlists]]
 description = "File-ingest tests and detectors intentionally contain private-key header literals"
 targetRules = ["private-key"]
 condition = "AND"
@@ -91,3 +107,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^pinvou3-app/src-tauri/src/features/marketplace/mod\.rs$''']
 regexes = ['''PINVOU3_MCP_SECRET_PATSNAP_KEY''']
+
+[[allowlists]]
+description = "Credential redaction unit-test corpus uses deliberately synthetic Slack token shapes"
+targetRules = ["slack-legacy-workspace-token"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^pinvou3-app/src-tauri/src/platform/credential_store\.rs$''']
+regexes = ['''xox[ar]-shortexample''']

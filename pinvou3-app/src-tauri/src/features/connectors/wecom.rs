@@ -43,7 +43,9 @@ const WECOM_CTX: CliCtx = CliCtx {
 /// 1.2.1 and every platform lock pins 1.2.1, so the minimum is 1.2.1 —
 /// installs below it must be replaced, while a minimum above a platform's
 /// lowest pinned version would cause a replace/upgrade loop on that platform.
-const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
+/// `pub` + the facade re-export: single-sourced with the CLI's connectors
+/// family (round-51 review, same rationale as `LARK_MIN_VERSION`).
+pub const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
 
 fn wecom(args: &[&str]) -> std::process::Command {
     WECOM_CTX.cli(args)

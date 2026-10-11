@@ -32,8 +32,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::marketplace::bundle::BundleKind;
 
-/// 插件包解压累计上限（自带运行时可能较大，放宽到 200 MiB）。
-pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
+/// Cumulative unarchive cap for a plugin package (bundled runtimes can be
+/// large, hence the relaxed 200 MiB). `pub`: headless callers (the CLI's
+/// plugins-import pre-wrap reads) bound themselves by the same limit and
+/// reference this constant directly, so the two sides cannot drift.
+pub const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 
 /// plugin.json 清单（插件包的权威声明）。未知字段 flatten 保留（前向兼容）。
 /// 不再有「spanner 独立组件」入口；skill 包的 `tools[]` + `runtime` 可执行协议
@@ -327,9 +330,7 @@ pub(crate) fn read_zip_entry_bounded(
         .read_to_end(&mut buf)
         .map_err(|e| format!("读{what}: {e}"))?;
     if buf.len() as u64 > declared_size {
-        return Err(format!(
-            "{what} 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝"
-        ));
+        return Err(format!("{what}{}", REJECT_FORGED_HEADER));
     }
     Ok(buf)
 }
@@ -342,6 +343,34 @@ pub(crate) fn read_zip_entry_bounded(
 ///   兜底计量——头部声明可被伪造）。
 /// 返回净化后的条目路径（分隔符归一为 `/`），并把本条目声明大小累进
 /// `declared_total`。
+/// The rejection literals carry the substrings the headless CLI's
+/// `translate_plugin_import_error` anchors on; they are single-sourced here
+/// so the anchor test below pins the production strings, not hand copies
+/// (round-38 review: the copies had drifted from being a test of anything).
+pub(crate) const REJECT_TRAVERSAL: &str = "zip 含不安全路径(穿越),拒绝";
+pub(crate) const REJECT_SYMLINK: &str = "zip 含 symlink,拒绝";
+pub(crate) const REJECT_FORGED_HEADER: &str =
+    " 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
+
+/// Declared-size cap rejection (the head-declared budget `checked_zip_entry_path`
+/// enforces). `label` names the entry; the fixed halves carry the substrings
+/// the headless CLI's `translate_plugin_import_error` anchors on (解压+上限).
+pub(crate) fn reject_declared_cap(label: &str, max_bytes: u64) -> String {
+    format!("{label}解压超过 {} MiB 上限", max_bytes / 1024 / 1024)
+}
+
+/// Actual-size cap rejection (the zip-bomb backstop on the real bytes read).
+/// Same anchor contract as [`reject_declared_cap`]; the two hand-copied
+/// format sites (pass-1 read and pass-2 write) now share this helper
+/// (round-39 review: rewording either site silently reverted the CLI's cap
+/// rejection to verbatim Chinese while the anchor test stayed green).
+pub(crate) fn reject_actual_cap(max_bytes: u64) -> String {
+    format!(
+        "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+        max_bytes / 1024 / 1024
+    )
+}
+
 pub(crate) fn checked_zip_entry_path(
     entry: &mut zip::read::ZipFile<'_, std::fs::File>,
     declared_total: &mut u64,
@@ -349,19 +378,16 @@ pub(crate) fn checked_zip_entry_path(
     label: &str,
 ) -> Result<String, String> {
     let Some(enclosed) = entry.enclosed_name() else {
-        return Err("zip 含不安全路径(穿越),拒绝".to_string());
+        return Err(REJECT_TRAVERSAL.to_string());
     };
     if let Some(mode) = entry.unix_mode() {
         if mode & 0o170000 == 0o120000 {
-            return Err("zip 含 symlink,拒绝".to_string());
+            return Err(REJECT_SYMLINK.to_string());
         }
     }
     *declared_total = declared_total.saturating_add(entry.size());
     if *declared_total > max_bytes {
-        return Err(format!(
-            "{label}解压超过 {} MiB 上限",
-            max_bytes / 1024 / 1024
-        ));
+        return Err(reject_declared_cap(label, max_bytes));
     }
     Ok(enclosed.to_string_lossy().replace('\\', "/"))
 }
@@ -386,6 +412,44 @@ pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> 
         .entry(id.to_string())
         .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
         .clone()
+}
+
+/// [`import_lock_for`] 的跨进程补充：进程内互斥表看不见另一个进程，而
+/// round-51 起 CLI 的 `plugins import` / `plugins skills install` /
+/// `skills uninstall` 会在第二个进程里调用这些 mutator，与 GUI 共享同一批
+/// 固定名 `.tmp` 暂存路径——两个写者会互相删掉对方的暂存内容，再把一份
+/// 静默残缺的包装进正式目录并回 exit-0（与定时任务定义暂存别名同类的
+/// 缺陷，那条已在上游以唯一暂存名修复；这里的根因修复在本地即可完成）。
+/// 每个市场 mutator 在自己的「冲突检查 → 原子 rename」整段临界区持有本
+/// 文件锁，位置一律在各自 `import_lock_for` 之后、store `file_lock` 之前，
+/// 锁序全仓一致：import_lock → 市场文件锁 → store file_lock。锁文件
+/// 不删除（崩溃不能楔住对端；进程死亡由内核释放锁），与 settings 部
+/// `SettingsFileLock` 同一纪律。
+pub(crate) struct MarketplaceWriteLock(std::fs::File);
+
+impl MarketplaceWriteLock {
+    pub(crate) fn acquire() -> std::io::Result<Self> {
+        let path = crate::platform::paths::bundles_root().join(".imports.lock");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        // 阻塞等待而非 try+busy：导入/安装本就是秒级用户动作，持锁方死亡
+        // 由内核释放，存活方只在各自的暂存窗口内持锁。
+        file.lock()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for MarketplaceWriteLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 /// 插件导入报告（统一上传路径的返回）。
@@ -854,10 +918,7 @@ pub fn import_plugin_package(
         let buf = read_zip_entry_bounded(entry, declared_size, what)?;
         actual_total = actual_total.saturating_add(buf.len() as u64);
         if actual_total > MAX_PLUGIN_SIZE_BYTES {
-            return Err(format!(
-                "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-            ));
+            return Err(reject_actual_cap(MAX_PLUGIN_SIZE_BYTES));
         }
         Ok(buf)
     };
@@ -1099,6 +1160,12 @@ pub fn import_plugin_package(
     // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
     let import_lock = import_lock_for(&id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+    // Round-51 review M2: the in-process mutex above cannot see the CLI's
+    // second process — hold the cross-process market lock for the whole
+    // conflict-check → rename window (lock order: import_lock → market
+    // file lock → store file lock, identical at every market mutator).
+    let _market_lock =
+        MarketplaceWriteLock::acquire().map_err(|e| format!("创建市场写入锁: {e}"))?;
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -1160,10 +1227,7 @@ pub fn import_plugin_package(
             // （zip bomb 兜底，二轮评审 M-4）。超限由调用方清 staged 拒收。
             actual_total = actual_total.saturating_add(buf.len() as u64);
             if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
+                return Err(reject_actual_cap(MAX_PLUGIN_SIZE_BYTES));
             }
             std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
         }
@@ -1367,6 +1431,46 @@ pub fn import_plugin_package(
 
 #[cfg(test)]
 mod tests {
+    // Round-37 review anti-drift pin: the CLI's error translation keys on
+    // substrings of the rejection strings below (不安全路径 / symlink /
+    // 伪造头部 / 解压+上限). Rewording any of them silently reverts the
+    // headless surface to verbatim Chinese on exactly the zip-slip/bomb
+    // refusals; if you must reword, update
+    // pinvou-cli/crates/cli/src/plugins.rs `translate_plugin_import_error`
+    // in the same change.
+    const CLI_TRANSLATION_ANCHORS: [(&str, &[&str]); 4] = [
+        ("zip-slip traversal", &["不安全路径"]),
+        ("symlink entry", &["symlink"]),
+        ("forged header / zip bomb", &["伪造头部", "解压"]),
+        ("extraction cap", &["解压", "上限"]),
+    ];
+
+    /// The literal rejection messages must keep carrying the substrings the
+    /// CLI translator searches for. Asserts on the PRODUCTION constants
+    /// (round-38 review: hand-copied strings made this vacuous — rewording
+    /// the real messages passed while the translator silently stopped
+    /// matching). The extraction-cap arms are pinned through the production
+    /// `reject_*_cap` helpers, whose formatted output is what the CLI's
+    /// 解压+上限 branch actually sees (round-39 review: the cap branch was
+    /// claimed here but never anchored).
+    #[test]
+    fn cli_error_translation_anchors_are_present_in_the_messages() {
+        let joined = format!(
+            "{REJECT_TRAVERSAL}{REJECT_SYMLINK}x{REJECT_FORGED_HEADER}x{}x{}",
+            reject_declared_cap("条目 x", MAX_PLUGIN_SIZE_BYTES),
+            reject_actual_cap(MAX_PLUGIN_SIZE_BYTES),
+        );
+        for (_, anchors) in CLI_TRANSLATION_ANCHORS {
+            for anchor in anchors {
+                assert!(
+                    joined.contains(anchor),
+                    "the CLI translator anchors on '{anchor}', which no longer appears in the \
+                     rejection messages"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     /// Round-32 minor 6 (review #455): a leftover landing mark with a landed
@@ -2521,6 +2625,62 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// zip-slip regression: an entry whose name escapes the package root via
+    /// `../` (and one with an absolute path) must be rejected wholesale by the
+    /// pass1 `enclosed_name()` safety check — before any detection, extraction,
+    /// or disk writes. The guard existed since the unified pipeline landed;
+    /// this test pins it so refactors cannot silently drop the enforcement.
+    #[test]
+    fn import_rejects_zip_slip_traversal_entries() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-zip-slip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        // Entry names are written verbatim by the zip writer, so the archive
+        // carries the traversal / absolute paths exactly as a malicious
+        // package would.
+        let zip_path = dir.join("zipslip.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("../outside.txt", opts).unwrap();
+            zw.write_all(b"traversal").unwrap();
+            zw.start_file("/abs/evil.txt", opts).unwrap();
+            zw.write_all(b"absolute").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "zipslip.zip").unwrap_err();
+        assert!(
+            err.contains("不安全路径"),
+            "zip-slip traversal entry must be rejected, got: {err}"
+        );
+        assert!(
+            !dir.join("bundles").exists(),
+            "rejected package must not land any bundle directory"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 并发互斥（四轮评审 M-4）：两线程同时导入同 id 同内容包，按 id 的进程内
     /// 互斥锁必须保证双方成功且落盘完整、无 staged/.old 残留（修复前线程 B 的
     /// `remove_dir_all(staged)` 可删线程 A 的在建目录，冲突检查与 rename 间为
@@ -2586,6 +2746,58 @@ mod tests {
                 && !dir.join("bundles").join("demo.old").exists(),
             "并发导入结束后不得残留 staged/.old 目录"
         );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-51 review M2: the cross-process market write lock must actually
+    /// exclude a second open file description — that is the whole point (the
+    /// CLI's plugins/skills lanes are a second process against the same
+    /// staging paths). flock conflicts are per open description, so a second
+    /// in-process handle hitting `WouldBlock` while the guard is held (and
+    /// succeeding after the drop) proves the exclusion with no threads and
+    /// no sleeps.
+    #[test]
+    fn marketplace_write_lock_excludes_a_second_handle() {
+        use crate::platform::paths::tests::{ENV_LOCK, unique_suffix};
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-market-write-lock-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+        let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
+        assert!(
+            lock_path.exists(),
+            "the lock file must exist under bundles root"
+        );
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let conflict = second.try_lock();
+        assert!(
+            matches!(conflict, Err(std::fs::TryLockError::WouldBlock)),
+            "a second handle must be excluded while the guard is held: {conflict:?}"
+        );
+        drop(guard);
+        second
+            .try_lock()
+            .expect("a dropped guard must release the lock");
 
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.

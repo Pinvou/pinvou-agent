@@ -13,7 +13,11 @@ use deepseek_tui::session_manager::SessionManager;
 
 /// 生成 URL-safe session id（短 8 字节 timestamp + nanos hash）。
 /// 上游 `validated_session_path` 只允许 `[A-Za-z0-9_-]`，所以走 base32-like 字符集。
-pub(crate) fn validate_session_id(id: &str) -> Result<()> {
+/// `pub` for the pinvou-cli `projects` family: the rebind orphan probe
+/// validates an id before joining it into a sessions-root path (the same
+/// fail-closed rule the GUI path applies), through the `features::sessions`
+/// re-export. The GUI itself keeps calling the crate-private path.
+pub fn validate_session_id(id: &str) -> Result<()> {
     validate_id_charset(id, "session")
 }
 
@@ -47,7 +51,12 @@ pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
 /// every case-sensitive prefix test misses it, running a full-tool turn over
 /// the aux session. Every is-aux decision must go through this helper so the
 /// gates hold regardless of filesystem case semantics.
-pub(crate) fn is_aux_session_id(id: &str) -> bool {
+///
+/// `pub` for the pinvou-cli families that mirror the same gates headless: the
+/// `projects` move guard, the `artifacts` list aux-skip, and the `sessions`
+/// show/delete gates, through the `features::sessions` re-export. The GUI
+/// keeps calling the crate-private path.
+pub fn is_aux_session_id(id: &str) -> bool {
     // `get(..4)` instead of slicing: byte slicing panics when the index falls
     // inside a multibyte UTF-8 char, and these guards run on client-supplied
     // ids before any charset validation (e.g. the delete_session cascade

@@ -1244,8 +1244,9 @@ where
     let Some(bundle) = reg.bundle(&bundle_id) else {
         return Err(format!("未知能力包 '{bundle_id}'"));
     };
-    // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
-    // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
+    // CLI 包的 installed/degraded 以 BundleStore 记录为准（registry 真值，非占位），
+    // 此处再用连接器 status 的实时字段覆盖，保证桌面卡片反映当下授权态；headless
+    // 侧（bundle.rs readiness_for 的回退）则直接消费这份 store 值。
     let (installed, ready, reason) = match bundle.kind {
         BundleKind::Cli => {
             let status = match bundle_id.as_str() {
@@ -1388,6 +1389,35 @@ pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The removed `unreachable!()` in `bundle.rs::readiness_for` used to
+    /// fail loudly if a Cli-kind bundle ever reached the headless fallback;
+    /// its replacement is a conservative verdict, so the invariant now lives
+    /// here: the command layer's `BundleKind::Cli` dispatch must enumerate
+    /// EVERY CLI-kind bundle the registry declares. A new CLI bundle without
+    /// a dispatch arm would otherwise answer the desktop card with a runtime
+    /// "未知 CLI 包" error (and the headless card with the conservative
+    /// fallback) instead of failing at review time.
+    #[test]
+    fn every_cli_kind_bundle_has_a_live_dispatch_arm() {
+        let registry = crate::features::marketplace::bundle::BundleRegistry::new();
+        let cli_ids: Vec<String> = registry
+            .list_bundles()
+            .into_iter()
+            .filter(|bundle| bundle.kind == crate::features::marketplace::bundle::BundleKind::Cli)
+            .map(|bundle| bundle.id)
+            .collect();
+        assert!(
+            !cli_ids.is_empty(),
+            "the registry declares no CLI bundles; if the kind was retired, retire the dispatch arm with it"
+        );
+        for id in &cli_ids {
+            assert!(
+                matches!(id.as_str(), "feishu" | "wecom" | "dingtalk" | "tmeet"),
+                "CLI bundle '{id}' has no arm in bundle_readiness_with_store's status dispatch; add one (or update this pin) — otherwise the readiness card falls to the conservative fallback"
+            );
+        }
+    }
 
     /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。
     /// 凭据存在性经 `bundle_readiness_with_store` 注入 MemoryCredentialStore 现算，

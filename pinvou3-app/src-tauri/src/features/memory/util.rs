@@ -26,7 +26,11 @@ pub(super) fn clean_scalar(value: &str) -> String {
     clean_text(value, 200)
 }
 
-pub(super) fn clean_text(value: &str, max_chars: usize) -> String {
+/// `pub` + re-exported from `features::memory` (round-41 review): the CLI's
+/// `memory add` predicts the enqueue normalization from the ORIGINAL input,
+/// so it needs the very function the queue runs — a local copy drifted the
+/// moment either side changed.
+pub fn clean_text(value: &str, max_chars: usize) -> String {
     value
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -402,7 +406,7 @@ pub(super) fn invalid_data(err: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err.to_string())
 }
 
-pub(super) fn clean_candidate_sentence(value: &str, max_chars: usize) -> String {
+pub fn clean_candidate_sentence(value: &str, max_chars: usize) -> String {
     let cleaned = value
         .trim()
         .trim_start_matches("请记住")
@@ -476,10 +480,18 @@ pub(super) fn looks_sensitive_or_task_like(value: &str) -> bool {
 /// `<pinvou_user_memory>` block in render.rs): content containing one could
 /// forge or prematurely close that boundary inside the runtime memory block,
 /// turning the model-visible "memory" into an injection channel. Shared by
-/// the organize validator and the review sanitizer; matching content is
-/// always dropped.
-pub(super) fn contains_memory_block_marker(content: &str) -> bool {
-    content.contains("pinvou_user_memory")
+/// the organize validator, the review sanitizer, and (round-45 review) the
+/// CLI's content-entry lanes, which refuse such text instead of storing it;
+/// matching content is always dropped.
+///
+/// Round-46 review: the match is ASCII-case-insensitive — models treat the
+/// block's tag boundary case-insensitively, so an uppercase
+/// `</PINVOU_USER_MEMORY>` variant passes an exact-lowercase check and
+/// still closes the block on render. The boundary strings in render.rs are
+/// fixed lowercase; the gate must not be narrower than the boundary it
+/// guards.
+pub fn contains_memory_block_marker(content: &str) -> bool {
+    content.to_ascii_lowercase().contains("pinvou_user_memory")
 }
 
 /// Per-kind memory-content quality gate shared by the review sanitizer

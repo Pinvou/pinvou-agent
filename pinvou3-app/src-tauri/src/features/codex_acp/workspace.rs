@@ -1,4 +1,4 @@
-// architecture-guard: allow-target-cfg -- the round-12 baseline-gate symlink-convergence pin is cfg(unix)-gated: std::os::unix::fs::symlink has no portable equivalent and the inner-symlink shape it pins is a POSIX alias; the gate itself is portable and no platform behavior leaks into shared code.
+// architecture-guard: allow-target-cfg -- the cfg(unix)-gated test fixtures in this file share one non-portable shape: a real symlink. The round-12 baseline-gate convergence pin, the round-48 untracked-diff regression (refuses an escaping link, reads a local one canonically), and the round-51 fingerprint/baseline pins (a dirty symlink→regular-file must be skipped, never hashed through, and the tracked-ness oracle must answer literal paths so a glob-metacharacter filename cannot alias a tracked file) all need std::os::unix::fs::symlink or a `*`-bearing filename that Windows cannot express; the semantics under test are platform-independent, only the fixtures cannot be.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -342,16 +342,33 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
             .with_context(|| format!("创建工作区基线目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(&baseline).context("序列化工作区基线失败")?;
-    let temporary = path.with_extension("json.tmp");
-    {
+    // Pid-carrying staging name: the CLI's `code` family captures baselines
+    // from a second process against the same session directories, and a
+    // fixed `.tmp` name lets two surfaces rename each other's half-written
+    // file into place (the same rule the providers store's `persist_locked`
+    // documents).
+    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    // Round-41 review: BOTH failure arms clean the pid tmp — a File::create
+    // or write failure (ENOSPC, EACCES) strands `…tmp.<pid>` forever because
+    // a different-pid run never reuses it (only the rename arm cleaned up;
+    // the sibling AcpConfigDefaultsStore persist got the same two-arm fix in
+    // round-37).
+    let staged = (|| -> anyhow::Result<()> {
         let mut file = fs::File::create(&temporary)
             .with_context(|| format!("创建工作区基线失败: {}", temporary.display()))?;
         file.write_all(&payload)
             .with_context(|| format!("写入工作区基线失败: {}", temporary.display()))?;
         file.sync_all().ok();
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
     }
-    fs::rename(&temporary, &path)
-        .with_context(|| format!("保存工作区基线失败: {}", path.display()))?;
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("保存工作区基线失败: {}", path.display()));
+    }
     Ok(())
 }
 
@@ -760,9 +777,20 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
     }
 
     let mut text = if is_git_workspace(&root) {
+        // Round-51 review: `:(literal)` — `--` stops option parsing but not
+        // pathspec globbing, so a requested `a*x.txt` used to render the
+        // tracked `abx.txt`'s diff instead of its own. Same literal prefix
+        // the tracked-ness oracle below uses.
+        let literal = format!(":(literal){relative}");
         let unstaged = git_output(
             &root,
-            &["diff", "--no-ext-diff", "--no-color", "--", &relative],
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--",
+                literal.as_str(),
+            ],
         )?;
         let staged = git_output(
             &root,
@@ -772,7 +800,7 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
                 "--no-ext-diff",
                 "--no-color",
                 "--",
-                &relative,
+                literal.as_str(),
             ],
         )?;
         let mut combined = String::new();
@@ -788,7 +816,19 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
             combined.push_str(&unstaged);
         }
         if combined.is_empty() && path.is_file() {
-            untracked_diff(&path, &relative)?
+            // Round-40 review: the synthetic new-file diff is only correct
+            // for an UNTRACKED file. A tracked, unmodified file reached this
+            // arm too (both diffs empty) and `untracked_diff` reported the
+            // whole content as added from /dev/null — asserting a change
+            // that does not exist, on the GUI's diff view and the CLI's
+            // `code workspace diff` alike. `ls-files --error-unmatch`
+            // settles tracked-ness (it exits nonzero for an untracked
+            // path); a tracked file answers with no diff at all.
+            if ls_files_tracked(&root, &relative) {
+                String::new()
+            } else {
+                untracked_diff(&root, &path, &relative)?
+            }
         } else {
             combined
         }
@@ -1189,7 +1229,17 @@ fn snapshot_entries(root: &Path) -> Result<BTreeMap<String, FileFingerprint>> {
 }
 
 fn fingerprint(path: &Path, include_hash: bool) -> Result<Option<FileFingerprint>> {
-    let metadata = match path.metadata() {
+    // Round-51 review M1: `symlink_metadata`, not `metadata` — the following
+    // variant let a dirty symlink→regular-file (an untracked dotfile link or
+    // a tracked file→link typechange, both listed by `git status
+    // --untracked-files=all`) pass the `is_file` gate and then hit
+    // `sha256_file`'s symlink refusal, failing the whole baseline capture
+    // (GUI session creation rolled back). Skipping non-regular entries here
+    // matches the file-tree arm (WalkDir runs with follow_links(false)) and
+    // snapshot_entries' own `is_file` filter, so both baseline arms treat a
+    // symlink as "no fingerprint" and classify_origin stays consistent
+    // (both sides `None`).
+    let metadata = match path.symlink_metadata() {
         Ok(metadata) if metadata.is_file() => metadata,
         Ok(_) => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1372,12 +1422,36 @@ fn classify_origin(
     }
 }
 
-fn untracked_diff(path: &Path, relative: &str) -> Result<String> {
-    if file_kind(path) != "text" {
+fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String> {
+    // Round-48 review MAJOR: resolve through symlinks and re-check
+    // containment BEFORE opening, then read the CANONICAL path — the
+    // lexical `root.join(relative)` let an untracked symlink planted in
+    // the agent-writable workspace (`notes.md -> ~/.ssh/id_ed25519`) route
+    // the target's bytes into the synthetic "new file" diff. Same
+    // canonicalize → gate → read-canonical discipline the preview lane has
+    // carried since the round-40/46 fixes. The read is also bounded at
+    // DIFF_LIMIT+1 (the loop only ever renders DIFF_LIMIT bytes): the
+    // previous whole-file `fs::read_to_string` loaded a multi-gigabyte
+    // untracked text file into memory just to cut it at render time.
+    let canonical_root = std::fs::canonicalize(root)
+        .with_context(|| format!("解析工作区根目录失败: {}", root.display()))?;
+    let canonical = std::fs::canonicalize(path)
+        .with_context(|| format!("读取未跟踪文件失败: {}", path.display()))?;
+    if !canonical.starts_with(&canonical_root) {
+        bail!("未跟踪路径通过符号链接越出了工作区: {}", relative);
+    }
+    if file_kind(&canonical) != "text" {
         return Ok("未跟踪的二进制文件不支持差异预览。".to_string());
     }
-    let preview = fs::read_to_string(path)
-        .with_context(|| format!("读取未跟踪文件失败: {}", path.display()))?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&canonical)
+        .and_then(|mut file| {
+            (&mut file)
+                .take(DIFF_LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .with_context(|| format!("读取未跟踪文件失败: {}", canonical.display()))?;
+    let preview = String::from_utf8_lossy(&bytes);
     let mut output = format!(
         "diff --git a/{0} b/{0}\nnew file mode 100644\n--- /dev/null\n+++ b/{0}\n",
         relative
@@ -1391,6 +1465,45 @@ fn untracked_diff(path: &Path, relative: &str) -> Result<String> {
         }
     }
     Ok(output)
+}
+
+/// Tracked-ness oracle for the round-40 arm: `ls-files --error-unmatch`
+/// exits 0 with the path for a TRACKED file and exits 1 for an untracked
+/// one — but any other failure (index.lock contention, corrupt repo, git
+/// missing) also lands in `git_output`'s `Err`, which the previous
+/// `unwrap_or(false)` flattened into "untracked", degrading a tracked
+/// unmodified file back into the fabricated whole-file addition the
+/// round-40 fix exists to kill. Tracked-ness UNKNOWN therefore answers
+/// "tracked" — silence, never a fabricated diff; a genuinely untracked
+/// file diffed during a git outage re-syncs on the next call.
+fn ls_files_tracked(root: &Path, relative: &str) -> bool {
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    // Round-51 review: `:(literal)` disables pathspec globbing — `--` only
+    // stops option parsing, so an untracked `a*x.txt` used to match the
+    // tracked `abx.txt`, exit 0, and get misanswered "tracked" (its diff
+    // silently disappeared). The literal magic prefix is understood by every
+    // git the workspace lane supports.
+    let Ok(output) = command
+        .current_dir(root)
+        .args([
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            format!(":(literal){relative}").as_str(),
+        ])
+        .output()
+    else {
+        return true;
+    };
+    if output.status.success() {
+        !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    } else {
+        // `--error-unmatch` exits 1 exactly for the not-listed (untracked)
+        // case; anything else is a git failure, not an answer, and keeps
+        // the "tracked" (stay silent) answer.
+        output.status.code() != Some(1)
+    }
 }
 
 #[cfg(test)]
@@ -1467,6 +1580,107 @@ mod tests {
         assert!(validate_workspace_relative_path(root.path(), "").is_ok());
         assert!(validate_workspace_relative_path(root.path(), "../secret.txt").is_err());
         assert!(validate_workspace_relative_path(root.path(), "/absolute/secret.txt").is_err());
+    }
+
+    /// Round-51 review M1: a dirty symlink→regular-file used to pass the
+    /// following-`metadata` gate and then hit `sha256_file`'s symlink
+    /// refusal, failing the whole baseline capture (GUI session creation
+    /// rolled back). The fingerprint must SKIP the link — never hash through
+    /// it, never error — while the regular target still hashes.
+    #[cfg(unix)]
+    #[test]
+    fn fingerprint_skips_symlinks_instead_of_failing() {
+        let root = TestDir::new("fingerprint-symlink");
+        fs::create_dir_all(root.path().join("secrets")).unwrap();
+        fs::write(root.path().join("secrets/prod.env"), "SECRET=1\n").unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("secrets/prod.env"),
+            root.path().join(".env"),
+        )
+        .unwrap();
+
+        let link = fingerprint(&root.path().join(".env"), true).unwrap();
+        assert!(
+            link.is_none(),
+            "a symlink must fingerprint as None, got {link:?}"
+        );
+        let target = fingerprint(&root.path().join("secrets/prod.env"), true).unwrap();
+        let target = target.expect("regular file must fingerprint");
+        assert!(target.sha256.is_some());
+        // A broken symlink is the same skip, not a NotFound error.
+        std::os::unix::fs::symlink(
+            root.path().join("secrets/missing.env"),
+            root.path().join(".broken"),
+        )
+        .unwrap();
+        assert!(
+            fingerprint(&root.path().join(".broken"), true)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Round-51 review M1 end-to-end shape: `git status
+    /// --untracked-files=all` lists an untracked symlink as a dirty path, and
+    /// the baseline/classify pair must treat it consistently (skip, never
+    /// hash through, never fail the capture). classify_origin takes the
+    /// baseline by reference, so the pair is exercised hermetically with a
+    /// hand-built baseline — no store, no env mutation.
+    #[cfg(unix)]
+    #[test]
+    fn git_arm_treats_untracked_symlink_as_a_consistent_skip() {
+        let Some(root) = init_git_repo("baseline-untracked-symlink") else {
+            return;
+        };
+        fs::create_dir_all(root.path().join("secrets")).unwrap();
+        fs::write(root.path().join("secrets/prod.env"), "SECRET=1\n").unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("secrets/prod.env"),
+            root.path().join(".env"),
+        )
+        .unwrap();
+
+        // The git arm's input shape: the link is listed as a dirty path.
+        let status = git_status_entries(root.path()).unwrap();
+        assert!(
+            status.iter().any(|change| change.relative_path == ".env"),
+            "git status must list the untracked symlink"
+        );
+        // The capture-side half of the fix: fingerprint skips the link
+        // (asserted in fingerprint_skips_symlinks_instead_of_failing), so the
+        // baseline entry map carries no ".env" row.
+        let baseline = WorkspaceBaseline {
+            workspace_path: root.path().to_string_lossy().into_owned(),
+            git: true,
+            dirty_paths: BTreeSet::from([".env".to_string()]),
+            entries: BTreeMap::new(),
+        };
+        let origin = classify_origin(root.path(), Some(&baseline), ".env").unwrap();
+        assert_eq!(
+            origin, "preexisting",
+            "a skipped symlink classifies consistently (both sides None), never errors"
+        );
+    }
+
+    /// Round-51 review: the tracked-ness oracle must match the path
+    /// LITERALLY — `--` disables option parsing but not pathspec globbing,
+    /// so an untracked `a*x.txt` used to match the tracked `abx.txt`, exit 0,
+    /// and get misanswered "tracked" (its diff silently disappeared).
+    #[cfg(unix)]
+    #[test]
+    fn ls_files_tracked_answers_literal_paths_not_globs() {
+        let Some(root) = init_git_repo("ls-files-literal") else {
+            return;
+        };
+        fs::write(root.path().join("abx.txt"), "tracked\n").unwrap();
+        git_output(root.path(), &["add", "."]).unwrap();
+        fs::write(root.path().join("a*x.txt"), "untracked glob-shaped\n").unwrap();
+
+        assert!(ls_files_tracked(root.path(), "abx.txt"));
+        assert!(
+            !ls_files_tracked(root.path(), "a*x.txt"),
+            "an untracked glob-metacharacter filename must not alias a tracked file"
+        );
     }
 
     #[test]
@@ -1692,6 +1906,105 @@ mod tests {
     // resolve index/HEAD/ref paths through git itself; the plain
     // `root.join(".git/...")` heuristic misses them and would serve stale
     // cached diffs. Requires the `git` binary; skips gracefully otherwise.
+    /// Round-48 review MAJOR: in a GIT workspace the untracked arm must
+    /// (a) refuse an untracked symlink that escapes the workspace through
+    /// canonical containment (the round-40/46 discipline previously lived
+    /// only in the non-git preview arm), (b) still diff a workspace-LOCAL
+    /// untracked symlink by reading its canonical (inside-root) target,
+    /// and (c) keep answering no-diff for a tracked unmodified file. The
+    /// read is bounded at DIFF_LIMIT+1 (the whole-file `fs::read_to_string`
+    /// is gone). Requires the `git` binary; skips gracefully otherwise.
+    #[test]
+    fn untracked_diff_in_git_workspaces_resolves_symlinks_and_bounded_reads() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping untracked_diff_in_git_workspaces_resolves_symlinks_and_bounded_reads: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("untracked-git-symlink");
+        let repo = root.path();
+        let run_git = |args: &[&str]| {
+            let mut command = std::process::Command::new("git");
+            crate::platform::process::strip_all_git_env(&mut command);
+            let output = command
+                .current_dir(repo)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .args(args)
+                .output()
+                .unwrap_or_else(|error| panic!("failed to spawn git {args:?}: {error}"));
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        };
+        run_git(&["init", "-b", "main", "."]);
+        run_git(&["config", "user.name", "test"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("tracked.txt"), "hello\n").unwrap();
+        run_git(&["add", "tracked.txt"]);
+        run_git(&["commit", "-m", "init"]);
+
+        // (c) tracked + unmodified → no diff (exit-code-aware oracle).
+        let diff = workspace_diff("sess-untracked-symlink", repo, "tracked.txt").unwrap();
+        assert_eq!(diff.text, "", "a tracked unmodified file must show no diff");
+
+        #[cfg(unix)]
+        {
+            // (a) untracked symlink escaping the workspace must be refused —
+            // its target's bytes must never surface as a synthetic diff.
+            let outside = std::env::temp_dir().join(format!(
+                "pinvou3-untracked-escape-target-{}",
+                crate::platform::paths::tests::unique_suffix()
+            ));
+            fs::write(&outside, "outside secret bytes\n").unwrap();
+            std::os::unix::fs::symlink(&outside, repo.join("outside.md")).unwrap();
+            let error = workspace_diff("sess-untracked-symlink", repo, "outside.md")
+                .err()
+                .expect("an escaping untracked symlink must be refused");
+            let rendered = format!("{error:#}");
+            assert!(
+                rendered.contains("越出了工作区"),
+                "the refusal must name the symlink escape, got: {rendered}"
+            );
+            let _ = fs::remove_file(&outside);
+
+            // (b) a workspace-LOCAL untracked symlink still diffs through
+            // its canonical (inside-root) target.
+            fs::write(repo.join("inner.txt"), "inner bytes\n").unwrap();
+            std::os::unix::fs::symlink("inner.txt", repo.join("inner-link.md")).unwrap();
+            let diff = workspace_diff("sess-untracked-symlink", repo, "inner-link.md").unwrap();
+            assert!(
+                diff.text.contains("+inner bytes"),
+                "a local untracked symlink must diff via its canonical target, got: {}",
+                diff.text
+            );
+        }
+
+        // Bounded read: an untracked text file larger than DIFF_LIMIT is
+        // capped at the cap (the render loop stops at DIFF_LIMIT anyway,
+        // but the READ itself must not load the whole file).
+        let big = "x".repeat(DIFF_LIMIT * 4);
+        fs::write(repo.join("big.txt"), &big).unwrap();
+        let diff = workspace_diff("sess-untracked-symlink", repo, "big.txt").unwrap();
+        assert!(
+            diff.text.len() <= DIFF_LIMIT + 160,
+            "the untracked read must be capped near DIFF_LIMIT, got {}",
+            diff.text.len()
+        );
+        assert!(diff.truncated);
+    }
+
     #[test]
     fn diff_fingerprint_tracks_index_and_head_in_linked_worktree() {
         if std::process::Command::new("git")

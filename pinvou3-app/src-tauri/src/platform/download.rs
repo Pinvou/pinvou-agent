@@ -122,7 +122,9 @@ pub(crate) const DOWNLOAD_READ_IDLE_TIMEOUT: std::time::Duration =
 /// 的总时长上限：归档有 128/64 MiB 的硬上限，总量上限可计算；慢链路要求
 /// ~150 KB/s 也能完成。reqwest 0.13 的 blocking 客户端没有 read_timeout，
 /// 只能以总时长兜底，与 async 下载器的空闲上限是两种互补策略。
-pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
+/// `pub`：headless CLI 的连接器归档下载经 platform facade 复用同一常量
+/// （与 [`NPM_MIRROR_REGISTRY`] 同一 crate 边界形状），避免漂移的本地副本。
+pub const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(900);
 
 /// npm CN mirror registry (Alibaba Cloud npmmirror, a sync mirror of the
@@ -135,7 +137,10 @@ pub(crate) const ARTIFACT_DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration =
 /// that same registry), so integrity on this path rests on TLS and the
 /// mirror's sync fidelity — not the same strength as the SHA-256 pin
 /// verification used for archive/wheel downloads.
-pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
+/// `pub` for the crate-boundary re-export in `platform::mod` (the CLI's
+/// `connectors ensure-cli tmeet` retry chain consumes the app's constant
+/// instead of a drifting copy).
+pub const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 
 /// Redact userinfo (`user:pass@host`) before showing a candidate URL in
 /// logs/errors: users may paste credentials into an acceleration prefix, and
@@ -146,8 +151,10 @@ pub(crate) const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 /// HTTPS gate anyway and never requested. Lives in platform so the candidate
 /// download loops of the connectors and marketplace features can share it
 /// (features must not depend on each other), and both must skip candidates
-/// the same way.
-pub(crate) fn redact_url_credentials(url_text: &str) -> String {
+/// the same way. `pub` for the crate-boundary re-export in `platform::mod`
+/// (round-40 review: the CLI's download aggregation consumes the same
+/// redactor instead of a drifting copy).
+pub fn redact_url_credentials(url_text: &str) -> String {
     let mut parsed = match reqwest::Url::parse(url_text) {
         Ok(parsed) => parsed,
         Err(_) => return "<invalid URL>".to_string(),
@@ -157,6 +164,74 @@ pub(crate) fn redact_url_credentials(url_text: &str) -> String {
         let _ = parsed.set_password(None);
     }
     parsed.to_string()
+}
+
+/// Round-40 review: free-text form of [`redact_url_credentials`]. Error
+/// `Display` impls embed the requested URL (`reqwest` prints
+/// `... for url (https://...)`), and the connectors' labels-only aggregation
+/// rule promises never to echo a candidate URL — mirror prefixes can carry
+/// userinfo. Scans the text for embedded `http(s)://` runs (bounded by the
+/// usual delimiters) and redacts userinfo in each; non-URL text passes
+/// through unchanged. Same crate-boundary re-export as the single-URL form.
+pub fn redact_url_credentials_in_text(text: &str) -> String {
+    let delimiters = |c: char| {
+        matches!(
+            c,
+            ' ' | '\t' | '\n' | '\r' | ')' | '"' | '\'' | ';' | ',' | '<' | '>'
+        )
+    };
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    // Round-42 review: take the EARLIEST scheme occurrence, not the first
+    // scheme in list order — `find_map` over `["https://", "http://"]` lets
+    // a later `https://` anywhere in the text win over an earlier
+    // `http://user:pass@…`, pushing that userinfo through unredacted (the
+    // exact input this function exists to scrub: multi-candidate download
+    // error chains embed several URLs).
+    // Round-48 review: match the scheme ASCII-CASE-INSENSITIVELY — a
+    // hand-embedded `HTTPS://user:pass@…` in free text slipped the
+    // case-sensitive scan (the single-URL form never had the hole:
+    // `Url::parse` lowercases the scheme). ASCII-only folding on an
+    // ASCII needle cannot split a multi-byte char, so byte offsets stay
+    // char-boundary safe.
+    while let Some(position) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| find_ascii_case_insensitive(rest, scheme))
+        .min()
+    {
+        let (before, after) = rest.split_at(position);
+        result.push_str(before);
+        let end = after.find(delimiters).unwrap_or(after.len());
+        result.push_str(&redact_url_credentials(&after[..end]));
+        rest = &after[end..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Byte-offset finder for an ASCII needle in arbitrary text, ASCII-folded:
+/// returns the first position where `needle` occurs regardless of ASCII
+/// case. UTF-8 continuation bytes always have the high bit set and can
+/// never equal an ASCII byte, so a match index is always a char boundary.
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let hay = haystack.as_bytes();
+    let first = needle.as_bytes()[0].to_ascii_lowercase();
+    hay.windows(needle.len())
+        .enumerate()
+        .find_map(|(index, window)| {
+            (window[0].to_ascii_lowercase() == first)
+                .then(|| {
+                    window
+                        .iter()
+                        .zip(needle.bytes())
+                        .all(|(byte, expected)| byte.to_ascii_lowercase() == expected)
+                })
+                .filter(|&matched| matched)
+                .map(|_| index)
+        })
 }
 
 pub(crate) async fn download_to_part_with_verify(
@@ -882,5 +957,45 @@ mod tests {
             assert_eq!(redacted, "<invalid URL>", "{invalid_with_userinfo}");
             assert!(!redacted.contains("user:secret"), "{redacted}");
         }
+    }
+
+    /// Round-42 review: the free-text scan must redact the EARLIEST URL,
+    /// not prefer `https://` by list order — a download error chain that
+    /// embeds an `http://user:pass@mirror…` before any `https://` URL used
+    /// to leak that userinfo verbatim.
+    #[test]
+    fn redact_in_text_redacts_the_earliest_url_not_the_preferred_scheme() {
+        // http first, https later: the pre-fix iteration order redacted only
+        // the https URL and passed the userinfo-bearing http URL through.
+        let mixed = "failed fetching (http://user:pass@mirror.internal/pkg.tgz) \
+                     caused by (https://registry.example/x.tar.gz)";
+        let redacted = redact_url_credentials_in_text(mixed);
+        assert!(
+            !redacted.contains("user:pass"),
+            "the earliest URL must be redacted regardless of scheme: {redacted}"
+        );
+        assert!(
+            redacted.contains("http://mirror.internal/pkg.tgz"),
+            "{redacted}"
+        );
+        assert!(
+            redacted.contains("https://registry.example/x.tar.gz"),
+            "{redacted}"
+        );
+
+        // The https-first order keeps working, delimiters still bound the
+        // URL run, and non-URL text passes through.
+        let https_first = redact_url_credentials_in_text(
+            "see https://user:key@safe.example/a then http://plain.example/b, done",
+        );
+        assert!(!https_first.contains("user:key"), "{https_first}");
+        assert!(
+            https_first.contains("http://plain.example/b, done"),
+            "{https_first}"
+        );
+        assert_eq!(
+            redact_url_credentials_in_text("no urls in here"),
+            "no urls in here"
+        );
     }
 }

@@ -9,13 +9,39 @@ pub mod code_checkpoints;
 // The other `pub` modules below (`codex_acp`, `dependencies`, `knowledge`,
 // `monitor`, `projects`, `remote_knowledge`, `shared_knowledge_host`,
 // `voice`) are opened for the stacked headless CLI (#507 family), which
-// calls them across the `pinvoy3_lib` path dependency; like
+// calls them across the `pinvou3_lib` path dependency; like
 // `code_checkpoints`, some of that surface is ahead of its first in-tree
 // consumer.
 pub mod codex_acp;
 pub(crate) mod computer_use;
 pub(crate) mod connectors;
-pub(crate) mod deliverables;
+// Crate-boundary re-exports for the headless CLI's `connectors ensure-cli`
+// lane (same shape as the `count_user_turns_in_json` re-export below: the
+// module stays crate-private, four items cross): the install-log appender, so
+// the CLI's npm attempts append to — never truncate — the shared log and
+// mark the mirror retry, plus the log's size-bound rotator (the CLI
+// redirects npm stdio into the same log directly and must enforce the same
+// 8 MiB bound `run_with_timeout` enforces); the managed license writer, so
+// the CLI's native-lane install records the same license side file the GUI
+// writer records; and the acceleration-prefix env name, so the CLI's
+// download chain consumes the app's constant instead of a drifting copy.
+pub use connectors::{
+    GITHUB_ASSET_MIRROR_PREFIX_ENV, append_cli_install_log, rotate_cli_install_log_if_oversized,
+    write_managed_license,
+};
+// Round-51 review: the per-connector semantic-version floors are
+// single-sourced — the CLI's connectors family imports these instead of
+// re-declaring them, so a GUI-side raise to a lock baseline moves the
+// CLI's `upgrade_required` gates with it (the feishu floor is the live
+// one: round-49 raised it for the skill pack's command surface).
+pub use connectors::feishu::LARK_MIN_VERSION;
+pub use connectors::tmeet::TMEET_MIN_VERSION;
+pub use connectors::wecom::WECOM_MIN_VERSION;
+// `pub` for the headless CLI (`pinvou artifacts list`): the deliverable
+// extension whitelist and the category mapping must be ONE table shared
+// with the GUI surface — a copy there drifts silently (the CLI's forced
+// mirror predated the widening).
+pub mod deliverables;
 pub mod dependencies;
 pub mod feedback;
 pub mod files;
