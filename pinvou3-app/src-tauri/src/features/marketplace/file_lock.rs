@@ -118,8 +118,9 @@ pub(crate) fn process_mutex_for(lock_path: &Path) -> Arc<Mutex<()>> {
 }
 
 /// Opens (creating if missing) the cross-process lock file. Shared by the
-/// blocking write path and the try-lock read path.
-fn open_lock_file(lock_path: &Path) -> Result<std::fs::File, String> {
+/// blocking write path and the try-lock read path. `pub(super)` so the
+/// sibling marketplace modules can reuse the same open funnel.
+pub(super) fn open_lock_file(lock_path: &Path) -> Result<std::fs::File, String> {
     let open = || crate::platform::filesystem::open_private_lock_file(lock_path);
     // Open first: once the home exists — the steady state, and reads are the
     // common case — this skips the per-read create_dir_all probe; only a
@@ -255,15 +256,14 @@ where
 /// [`try_file_lock_for_read`] with lock-state reporting: `f` receives whether
 /// the read ran **fully locked** (`true` — both locks acquired, so read-time
 /// repairs may persist) or degraded to the unlocked snapshot (`false` — every
-/// contention/error arm, so nothing may persist). The scope module's hot read
-/// of `disabled_bundles.lock` consumes the flag to keep its `persist_repairs`
-/// distinction without carrying its own copy of this funnel.
-pub(super) fn try_file_lock_for_read_report_locked<F, R>(
-    data_path: &Path,
-    f: F,
-) -> Result<R, String>
+/// contention/error arm, so nothing may persist). The closure is infallible —
+/// every arm runs it and returns its output, so this funnel returns `R`
+/// directly. The scope module's hot read of `disabled_bundles.lock` consumes
+/// the flag to keep its `persist_repairs` distinction without carrying its own
+/// copy of this funnel.
+pub(super) fn try_file_lock_for_read_report_locked<F, R>(data_path: &Path, f: F) -> R
 where
-    F: FnOnce(bool) -> Result<R, String>,
+    F: FnOnce(bool) -> R,
 {
     let lock_path = lock_path_for(data_path);
     // Try the in-process mutex first, so a degraded read below is only ever
@@ -356,20 +356,19 @@ mod tests {
             let lock_path = lock_path_for(&data_path);
             std::fs::create_dir(&lock_path).expect("plant the broken lock");
             // The closure stands in for the caller's data leg (healthy here);
-            // the report flag is what each phase below asserts on.
-            let read = |step: &str| {
-                try_file_lock_for_read_report_locked(&data_path, |fully_locked| Ok(fully_locked))
-                    .unwrap_or_else(|error| panic!("{step}: the read must not error: {error}"))
-            };
+            // the report flag is what each phase below asserts on. The funnel
+            // is infallible, so its result is the flag itself.
+            let read =
+                || try_file_lock_for_read_report_locked(&data_path, |fully_locked| fully_locked);
 
-            let first = read("first degraded read");
+            let first = read();
             assert!(!first, "the broken lock leg must degrade the read");
             assert!(
                 READ_FAILURE_LOGGED.load(Ordering::Relaxed) & LOG_LOCK_OPEN != 0,
                 "an unavailable lock file must latch the failure mode"
             );
 
-            let second = read("second degraded read");
+            let second = read();
             assert!(!second, "the broken lock leg must still degrade the read");
             assert!(
                 READ_FAILURE_LOGGED.load(Ordering::Relaxed) & LOG_LOCK_OPEN != 0,
@@ -378,7 +377,7 @@ mod tests {
 
             // Heal the lock leg: a fully locked clean read re-arms the latch.
             std::fs::remove_dir(&lock_path).expect("remove the planted dir");
-            let third = read("locked read");
+            let third = read();
             assert!(third, "the healed lock read must run fully locked");
             assert_eq!(
                 READ_FAILURE_LOGGED.load(Ordering::Relaxed),
