@@ -561,15 +561,10 @@ fn refuse_non_regular_file(file: &std::fs::File, path: &Path) -> io::Result<()> 
 /// near this bound.
 const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Read one of the private-home data files whose bytes are consent state,
-/// as UTF-8. Delegates to [`read_private_data_file_bytes`]; the hardening
-/// is [`open_private_data_file`]'s single hardened open (Unix
-/// symlink/FIFO/device refusal plus the Windows full-share-mode open and
-/// the platform-general regular-file/read-cap gate); only the read and the
-/// UTF-8 decode are added here. An invalid-UTF-8
-/// refusal's message text comes from `FromUtf8Error` instead of std's
-/// stream text — the `ErrorKind` stays `InvalidData`, so kind-matched
-/// callers are unaffected.
+/// UTF-8 variant of [`read_private_data_file_bytes`]: an invalid-UTF-8
+/// refusal keeps `ErrorKind::InvalidData` (the message text comes from
+/// `FromUtf8Error` instead of std's stream text), so kind-matched callers
+/// are unaffected.
 pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
     read_private_data_file_bytes(path).and_then(|bytes| {
         String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -577,12 +572,10 @@ pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
 }
 
 /// [`read_private_data_file`] for raw bytes: the salvage read that preserves
-/// a corrupt store's bytes before quarantine — and the single hardened body
-/// both readers share, so the salvage path must not hang on a planted FIFO
-/// either — the data file a hot reader touches every turn is the same
-/// trust surface. The whole hardening is [`open_private_data_file`]'s;
-/// this body adds only the read, bounded by [`read_capped`] so a file
-/// appended past the cap after the open-time gate is refused too.
+/// a corrupt store's bytes before quarantine. The whole hardening is
+/// [`open_private_data_file`]'s; this body adds only the read, bounded by
+/// [`read_capped`] so a file appended past the cap after the open-time gate
+/// is refused too.
 pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
     let mut file = open_private_data_file(path)?;
     read_capped(&mut file, MAX_PRIVATE_DATA_READ_BYTES)

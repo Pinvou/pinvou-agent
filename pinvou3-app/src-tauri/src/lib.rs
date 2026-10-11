@@ -1880,17 +1880,13 @@ mod startup_order_contract {
         );
     }
 
-    /// The freeze-persist failure mirror is the only
-    /// durable channel naming the failure before the log plugin attaches
-    /// (the windowless host attaches none at all) — but nothing pinned its
-    /// existence, so deleting either host's mirror passed the whole suite.
-    /// lib.rs must keep the mirrored startup read at BOTH startup sites (the
-    /// hoisted freeze and the second-chance re-read); headless keeps one.
-    /// Cleanup: the read+mirror two-line dance collapsed into the shared
-    /// scope helper, so the needles count that combined CALL per file instead
-    /// of the mirror helper's message text. Needle assembled from fragments
-    /// so this test module's own source (scanned together with lib.rs)
-    /// cannot self-match — the established review #455 R4-S1 trick.
+    /// The freeze-persist failure mirror is the only durable channel naming
+    /// the failure before the log plugin attaches (the windowless host
+    /// attaches none at all). lib.rs must keep the mirrored startup read at
+    /// BOTH startup sites (the hoisted freeze and the second-chance
+    /// re-read); headless keeps one. Needle assembled from fragments so this
+    /// test module's own source (scanned together with lib.rs) cannot
+    /// self-match — the established review #455 R4-S1 trick.
     #[test]
     fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_every_host() {
         let mirrored_read = ["load_disabled_bundles_startup_", "mirrored()"].concat();
