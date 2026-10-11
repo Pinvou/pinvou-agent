@@ -1670,38 +1670,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             };
             removed_install_record = removed_by_us;
 
-            // Write-back core shared by both abort legs below: an aborted
-            // uninstall must leave the bundles.json mirror exactly as it
-            // found it, so the record THIS call removed is written back (and
-            // only that one — a record a concurrent actor already removed is
-            // never revived). The legs' log copies are pinned
-            // review-observable text (Chinese on the recycle leg, English on
-            // the round-17 withdrawal leg) and are deliberately NOT unified:
-            // `context` selects each leg's exact wording.
-            let write_back_removed_record = |record: Option<store::BundleRecord>, context: &str| {
-                match record {
-                    Some(record) => {
-                        if let Err(re) = store.upsert(record) {
-                            if context == "recycle" {
-                                log::warn!(
-                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
-                                );
-                            } else {
-                                log::warn!(
-                                    "[marketplace] record write-back after a failed withdrawal ({tool_id}): {re}"
-                                );
-                            }
-                        }
-                    }
-                    // Only the withdrawal leg restores an optional snapshot
-                    // (the recycle leg always holds its record), so the
-                    // missing-snapshot copy is withdrawal-worded.
-                    None => log::warn!(
-                        "[marketplace] record cannot be written back after a failed withdrawal ({tool_id}): no pre-uninstall record"
-                    ),
-                }
-            };
-
             // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
             // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
             // commands::marketplace::uninstall_marketplace_tool_sync）。
@@ -1736,8 +1704,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
                         // installed.json / mcp.json 由下方事务 rollback 恢复；
                         // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
+                        // An aborted uninstall must leave the bundles.json
+                        // mirror exactly as it found it: the record THIS call
+                        // removed is written back, and only that one — a
+                        // record a concurrent actor already removed is never
+                        // revived.
                         if removed_by_us {
-                            write_back_removed_record(Some(record), "recycle");
+                            if let Err(re) = store.upsert(record) {
+                                log::warn!(
+                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
+                                );
+                            }
                         }
                         return Err(format!("移入回收站失败（{tool_id}）: {e}"));
                     }
@@ -1778,9 +1755,24 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // dir live outside its snapshot — restore the record
                         // like the recycle-failure leg above, so the aborted
                         // uninstall leaves the registration state exactly as
-                        // it found it.
+                        // it found it: the record THIS call removed is
+                        // written back, and only that one — a record a
+                        // concurrent actor already removed is never revived.
                         if removed_by_us {
-                            write_back_removed_record(pre_remove_record.clone(), "withdrawal");
+                            match pre_remove_record {
+                                Some(record) => {
+                                    if let Err(re) = store.upsert(record) {
+                                        log::warn!(
+                                            "[marketplace] record write-back after a failed withdrawal ({tool_id}): {re}"
+                                        );
+                                    }
+                                }
+                                // The recycle leg always holds its record, so
+                                // the missing-snapshot copy is withdrawal-worded.
+                                None => log::warn!(
+                                    "[marketplace] record cannot be written back after a failed withdrawal ({tool_id}): no pre-uninstall record"
+                                ),
+                            }
                         }
                         return Err(withdraw_error);
                     }
@@ -1803,24 +1795,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // fully usable instead of producing a half-uninstalled state.
         // Upload 组合包的 companion 目录已随整包搬离（false 分支的清理自然空转）；
         // 预置 companion 物理删除沿用既有语义（可重获得）。
-        // Scope entries are consent state: strip them only when this call
-        // actually removed the install record. A vacuous uninstall (no record
-        // — e.g. racing a same-id install whose deny-first gate just
-        // registered the entries but whose record has not landed yet) must
-        // leave the entries alone, or it would re-enable the package as it
-        // lands. Only the scope legs are gated; secrets of a provisioned
-        // manifest still belong to this teardown. The strips here run under
-        // MARKETPLACE_TRANSACTION_LOCK — a registration a concurrent install
-        // makes after this point survives (round-11 P2-1); there is no
-        // post-return strip.
-        self.cleanup_uninstalled_tool_state(
-            tool_id,
-            &secret_targets,
-            false,
-            &companion_owners,
-            removed_install_record,
-            recycles_upload,
-        );
+        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+        // The gate mirrors `strip_uninstalled_scope_state`'s doctrine: with no
+        // record removed this uninstall is vacuous and the consent entries
+        // must survive untouched.
+        if removed_install_record {
+            self.strip_uninstalled_scope_state(tool_id, false, &companion_owners, recycles_upload);
+        }
 
         // Environments and wheel caches are garbage-collected by reference to the still-installed MCPs.
         // A failed cleanup never rolls back the finished uninstall; the next uninstall retries, so a held file cannot leave the tool stuck in a half state where the config is gone but uninstall keeps erroring.
@@ -1924,19 +1905,47 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(None)
     }
 
-    /// Domain cleanup after a tool registration is removed. Plain uninstall and failed startup
-    /// repair must share one semantic, otherwise companion skills keep surfacing in session prompts after the MCP is already unusable.
-    /// `preserve_companion_skills`：跳过 companion 技能物理删除 —— 修复降级路径
-    /// 上 Upload 整包回收失败（技能目录仍在盘上）时由调用方置位：宁可留下残留
-    /// 技能卡，不把用户唯一副本的 skills 部分物理删除。
+    /// Domain cleanup after a tool registration is removed — the secrets leg
+    /// (the scope-strip tail lives in [`Self::strip_uninstalled_scope_state`];
+    /// the two used to share one 6-positional-param fn). Plain uninstall and
+    /// failed startup repair must share one semantic, otherwise companion
+    /// skills keep surfacing in session prompts after the MCP is already unusable.
     ///
-    /// Teardown policy twin: this is the **post-commit best-effort** companion
-    /// cleanup (runs only after the uninstall transaction commits; failures are
+    /// Teardown policy twin: this is the **post-commit best-effort** cleanup
+    /// (runs only after the uninstall transaction commits; failures are
     /// swallowed). The eager pre-uninstall, abort-on-failure twin lives in
     /// `app/commands/marketplace.rs::uninstall_marketplace_tool_sync` (runs
     /// before any supply-side teardown so a failed companion delete aborts the
     /// whole uninstall). Keep the two policies distinct and the cross
     /// references intact when touching either side.
+    fn cleanup_uninstalled_tool_state(&self, tool_id: &str, secret_targets: &[(String, String)]) {
+        for (target, key) in secret_targets {
+            let reference = secrets::mcp_secret_reference(tool_id, target, key);
+            let _ = self.credential_store.delete(&reference);
+            secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
+        }
+    }
+
+    /// Scope-strip tail of the uninstall teardown: this pack's own consent
+    /// rows plus the companion-skill consent/physical handling. Split from
+    /// [`Self::cleanup_uninstalled_tool_state`] so no caller threads a
+    /// 6-positional-bool argument list.
+    ///
+    /// Scope entries are consent state: strip them only when this call
+    /// actually removed the install record. A vacuous uninstall (no record
+    /// — e.g. racing a same-id install whose deny-first gate just
+    /// registered the entries but whose record has not landed yet) must
+    /// leave the entries alone, or it would re-enable the package as it
+    /// lands. Only the scope legs are gated; secrets of a provisioned
+    /// manifest still belong to this teardown. The strips here run under
+    /// MARKETPLACE_TRANSACTION_LOCK — a registration a concurrent install
+    /// makes after this point survives (round-11 P2-1); there is no
+    /// post-return strip.
+    ///
+    /// `preserve_companion_skills`：跳过 companion 技能物理删除 —— 修复降级路径
+    /// 上 Upload 整包回收失败（技能目录仍在盘上）时由调用方置位：宁可留下残留
+    /// 技能卡，不把用户唯一副本的 skills 部分物理删除。
+    ///
     /// Round-28 MAJOR 1 (review #455): the companion-owner snapshots MUST be
     /// computed **before the uninstall transaction commits** — post-commit the
     /// tool's own conditional claim is dead (and its manifest may be gone),
@@ -1945,30 +1954,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// undeclared `skills/<name>/`, letting the exact removal erase THAT
     /// pack's consent rows. Callers snapshot with claims alive and thread the
     /// pairs in; the best-effort swallow stays per this leg's policy.
-    fn cleanup_uninstalled_tool_state(
+    fn strip_uninstalled_scope_state(
         &self,
         tool_id: &str,
-        secret_targets: &[(String, String)],
         preserve_companion_skills: bool,
         companion_owners: &[(String, String)],
-        remove_scope_entries: bool,
-        strip_recycled_companions: bool,
+        recycles_upload_or_equivalent: bool,
     ) {
-        for (target, key) in secret_targets {
-            let reference = secrets::mcp_secret_reference(tool_id, target, key);
-            let _ = self.credential_store.delete(&reference);
-            secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
-        }
-        // Scope entries are consent state: strip them only when this call
-        // actually removed the install record. A vacuous uninstall (no record
-        // — e.g. racing a same-id install whose deny-first gate just
-        // registered the entries but whose record has not landed yet) must
-        // leave the entries alone, or it would re-enable the package as it
-        // lands. Only the scope legs are gated; secrets of a provisioned
-        // manifest still belong to this teardown.
-        if !remove_scope_entries {
-            return;
-        }
         // Round-26 MAJOR 1 (review #455): `tool_id` is a pack id and this
         // cleanup runs after the dir is deleted/redeliverable-stripped — the
         // normalized form's gating fallback could re-own the absent id onto a
@@ -2038,7 +2030,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // reject two live packs sharing a companion, so the snapshot
             // owner can only be this pack's own (round-14 review: a foreign
             // strip would require a poisoned owner snapshot).
-            if strip_recycled_companions {
+            if recycles_upload_or_equivalent {
                 Self::strip_companion_rows(tool_id, skill_id, owner);
                 continue;
             }
@@ -2161,12 +2153,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         }
                     }
                 }
-                self.cleanup_uninstalled_tool_state(
+                self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+                // The repair path always removes the install record, so the
+                // scope strip runs unconditionally (no vacuous-uninstall gate).
+                self.strip_uninstalled_scope_state(
                     tool_id,
-                    &secret_targets,
                     preserve_companions,
                     &companion_owners,
-                    true,
                     companions_moved_with_package,
                 );
                 if let Err(error) = store::BundleStore::new().remove(tool_id) {
@@ -2996,11 +2989,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
-    /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
-    /// The in-process secret registry is snapshotted-cleared-restored the
-    /// same way (secrets no longer land in the process env; the isolation
-    /// point moves from env to the registry).
     /// Round-8 review: the post-commit companion cleanup must keep a deny
     /// entry when that skill's own teardown fails — the skill is still on
     /// disk, so removing the entry would silently re-enable it. Broken
@@ -3033,12 +3021,11 @@ pub(crate) mod tests {
                 .join("bundles.json");
             std::fs::create_dir_all(&store_path).unwrap();
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            mgr.cleanup_uninstalled_tool_state(
+            mgr.cleanup_uninstalled_tool_state("tencent-docs", &[]);
+            mgr.strip_uninstalled_scope_state(
                 "tencent-docs",
-                &[],
                 false,
                 &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
-                true,
                 false,
             );
             assert!(
@@ -3050,12 +3037,11 @@ pub(crate) mod tests {
             // Phase 2: store readable again -> teardown succeeds -> the entry
             // is removed with the skill actually gone.
             std::fs::remove_dir_all(&store_path).unwrap();
-            mgr.cleanup_uninstalled_tool_state(
+            mgr.cleanup_uninstalled_tool_state("tencent-docs", &[]);
+            mgr.strip_uninstalled_scope_state(
                 "tencent-docs",
-                &[],
                 false,
                 &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
-                true,
                 false,
             );
             assert!(
@@ -3121,6 +3107,11 @@ pub(crate) mod tests {
         (env, restore)
     }
 
+    /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
+    /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
+    /// The in-process secret registry is snapshotted-cleared-restored the
+    /// same way (secrets no longer land in the process env; the isolation
+    /// point moves from env to the registry).
     fn with_temp_home<F: FnOnce()>(f: F) {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // The verdict memo is keyed by home directory, but temp dirs reuse

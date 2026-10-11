@@ -15,7 +15,7 @@
 //! - 损坏 JSON fail loud：bundles.json 是唯一真相源，静默重建会掩盖数据损坏，
 //!   损坏时返回 Err 且绝不回写。
 //!
-// architecture-guard: allow-target-cfg -- the unix regression tests in this file (the round-23 MAJOR 3 legacy-import gate latch and the round-21 planted-FIFO load pin) need an unreadable (0o000) installed.json / FIFO fixtures; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as scope.rs / package_export.rs, review #455); a real read() probe guards against running as root, Windows is covered by link checks.
+// architecture-guard: allow-target-cfg -- the unix regression tests in this file (the round-23 MAJOR 3 legacy-import gate latch and the round-21 planted-symlink load pin) need an unreadable (0o000) installed.json / symlink fixtures; test-only inline cfg(unix)+PermissionsExt (same exemption precedent as scope.rs / package_export.rs, review #455); a real read() probe guards against running as root, Windows is covered by link checks.
 
 use std::path::{Path, PathBuf};
 
@@ -838,23 +838,12 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
         // like the unreadable root above — the one-shot `legacy_imported`
         // gate must not latch over an incomplete mirror (round-23 MAJOR-3 /
         // round-24 m2 class, per-entry form).
+        // Hardened read (round-20 P2): read_private_data_file refuses
+        // directories and non-regular entries, so a planted FIFO now
+        // ABORTS the one-shot import fail-closed instead of silently
+        // skipping (and latching the gate over a skipped mirror).
         let marker_path = dir.join(".installed-from");
-        if marker_path.is_dir() {
-            // Round-27 review (NIT): a planted DIRECTORY at the marker path
-            // fell through the is_file gate into the "no marker" skip below,
-            // silently latching the one-shot legacy_imported gate over a
-            // skipped mirror — the pre-round-20 shape failed closed with
-            // EISDIR, so restore that. Only the FIFO case (where open itself
-            // would hang) deserves the skip treatment.
-            return Err(format!(
-                "读取 {} 失败: 是目录而非标注文件",
-                marker_path.display()
-            ));
-        }
-        let marker = if marker_path.is_file() {
-            // Hardened read (round-20 P2): a non-regular entry (planted FIFO)
-            // now reads as "no marker" (skip) instead of hanging the boot
-            // import; an unreadable regular file still aborts fail-closed.
+        let marker = if marker_path.exists() {
             match read_private_data_file(&marker_path) {
                 Ok(marker) => marker,
                 Err(e) => return Err(format!("读取 {} 失败: {e}", marker_path.display())),
@@ -2037,37 +2026,38 @@ mod tests {
 
     /// round-21 review: `load_locked` runs inside the bundles.json file lock
     /// and — via the scope DenyAll expansion — inside the scope lock's
-    /// critical section, so it must route through the hardened read: a
-    /// planted FIFO at the path must refuse, not block the lock holder.
-    /// Behavioral pin that the routing survived refactors (the platform
-    /// primitive's own FIFO tests cover the mechanism).
+    /// critical section, so it must route through the hardened read. Symlink
+    /// pin (unix-only API, same convention as recycle_bin.rs): a planted
+    /// symlink at the path must be refused by the hardened open (O_NOFOLLOW)
+    /// — a plain `read_to_string` would silently follow it — and the refusal
+    /// must not block the lock holder. Behavioral pin that the routing
+    /// survived refactors (the platform primitive's own tests cover the
+    /// mechanism, FIFO shape included).
     #[cfg(unix)]
     #[test]
-    fn load_locked_refuses_a_planted_fifo() {
+    fn load_locked_refuses_a_planted_symlink() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("bundles.json");
-        crate::platform::paths::tests::plant_fifo(&file);
+        // A real store file first, then replace it with a symlink to a
+        // sibling: the load must refuse the link instead of reading through
+        // to the target's bytes.
+        std::fs::write(
+            &file,
+            r#"{"schema_version": 1, "legacy_imported": false, "records": []}"#,
+        )
+        .unwrap();
+        let target = temp.path().join("outside.json");
+        std::fs::write(
+            &target,
+            r#"{"schema_version": 1, "legacy_imported": false, "records": []}"#,
+        )
+        .unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&target, &file).unwrap();
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            tx.send(load_locked(&file))
-                .expect("worker should send its result");
-        });
-        let result = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap_or_else(|_| {
-                // Round-27 review (minor): a regressed worker stays blocked
-                // holding the store lock — contain the cascade with a loud
-                // process death instead of hanging the serial lane.
-                eprintln!(
-                    "FAIL: load_locked still blocks on a planted FIFO — \
-                     aborting the test process to contain the leaked lock holder"
-                );
-                std::process::abort();
-            });
         assert!(
-            result.is_err(),
-            "a planted FIFO must be refused by the regular-file gate"
+            load_locked(&file).is_err(),
+            "a planted symlink must be refused by the hardened open, not followed"
         );
     }
 }

@@ -243,18 +243,9 @@ impl RecycleBin {
             // "the directory was rolled back in place", and the end state is
             // "shown installed, only copy in the recycle bin". Shares the write
             // leg's compensation.
-            let mut file = match load_locked(&self.file) {
-                Ok(file) => file,
-                Err(e) => {
-                    return Err(Self::rollback_recycled_dir(
-                        pkg_id,
-                        &src,
-                        &dst,
-                        &e,
-                        "读取回收站清单",
-                    ));
-                }
-            };
+            let mut file = load_locked(&self.file).map_err(|e| {
+                Self::rollback_recycled_dir(pkg_id, &src, &dst, &e, "读取回收站清单")
+            })?;
             file.entries.retain(|e| e.id != pkg_id);
             file.entries.push(RecycledEntry {
                 id: pkg_id.to_string(),
@@ -935,26 +926,6 @@ mod tests {
     #[cfg(unix)]
     use crate::features::marketplace::scope::load_disabled_bundles_file;
 
-    /// Points PINVOU3_HOME at a clean temp dir for the closure, serializing via
-    /// ENV_LOCK with the other env-mutating tests (repo convention: scope.rs /
-    /// mod.rs each keep their own same-named test helper; no cross-module
-    /// sharing). Unix-only: currently used only by the read-only-permission
-    /// fixture regressions.
-    #[cfg(unix)]
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        // Round-27 review (minor): delegated to the shared RAII harness like
-        // the other PINVOU3_HOME mutators — the straight-line restore after
-        // `f()` is skipped when an assertion inside the closure unwinds,
-        // leaking the temp dir and leaving PINVOU3_HOME pointed at it for
-        // every later test in the process. The verdict-memo clear stays:
-        // memos are keyed by home path and the unique per-call dir cannot
-        // collide, but clearing keeps parity with the scope.rs harness.
-        crate::platform::test_support::with_temp_home("pinvou3-recyclebin", || {
-            crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
-            f();
-        });
-    }
-
     fn fresh_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-recyclebin-test-{tag}-{}-{}",
@@ -1010,6 +981,37 @@ mod tests {
             .recycle_package(id, KIND_SKILL, &format!("{id}.zip"), record)
             .unwrap();
         pkg
+    }
+
+    /// RAII-locked, freshly seeded PINVOU3_HOME for the deny-first restore
+    /// pins: takes the env lock, points PINVOU3_HOME at a fresh temp dir, and
+    /// seeds an initialized Code scope (deny list = ["seed-bundle"]) so the
+    /// restore's consent gate has a writable target. Returns
+    /// `(tmp, lock, env)` — keep the guards alive for the test body and drop
+    /// `tmp` with `remove_dir_all` at the end (the RAII env restore also
+    /// covers unwinding assertions).
+    fn seeded_code_home(
+        tag: &str,
+    ) -> (
+        PathBuf,
+        std::sync::MutexGuard<'static, ()>,
+        crate::platform::test_support::EnvRestore,
+    ) {
+        // RAII lock + env snapshot (round 9): a failing assertion unwinds
+        // past a straight-line env restore and would cascade unrelated
+        // failures for every later test in the process.
+        let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = fresh_dir(tag);
+        // SAFETY: ENV_LOCK held by lock; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Initialized DenyAll scope: the restore registration has a writable target.
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+            &["seed-bundle".to_string()],
+        )
+        .unwrap();
+        (tmp, lock, env)
     }
 
     /// 回收 → list → 取回的完整往返：目录搬动、清单条目、记录快照逐字段保留。
@@ -1098,7 +1100,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn recycle_manifest_read_refuses_a_planted_symlink() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-symlink-pin", || {
             let manifest = crate::platform::paths::pinvou3_home()
                 .join("marketplace")
                 .join("recycle-bin.json");
@@ -1417,22 +1419,9 @@ mod tests {
     /// to retry as-is.
     #[test]
     fn restore_registers_deny_first_and_refusal_aborts_before_landing() {
-        // RAII lock + env snapshot (round 9): a failing assertion unwinds
-        // past a straight-line env restore and would cascade unrelated
-        // failures for every later test in the process.
-        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-        let tmp = fresh_dir("restore-deny-first");
-        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let (tmp, _lock, _env) = seeded_code_home("restore-deny-first");
 
         let pkg = bin_package("my-skill", "my-skill", false);
-
-        // Initialized DenyAll scope: the restore registration has a writable target.
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &["seed-bundle".to_string()],
-        )
-        .unwrap();
 
         // Refusal injection: a directory at the lock path (open must fail) -> the restore aborts before anything moves.
         let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
@@ -1479,11 +1468,7 @@ mod tests {
     /// here is unconditional.
     #[test]
     fn restore_registers_even_when_a_stale_store_record_survives() {
-        // RAII lock + env snapshot (round 9), same reason as the refusal test.
-        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-        let tmp = fresh_dir("restore-stale-record");
-        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let (tmp, _lock, _env) = seeded_code_home("restore-stale-record");
 
         let store = BundleStore::new();
         // Simulate the failed mirror delete (store.remove errs, log-only) and
@@ -1492,13 +1477,8 @@ mod tests {
         let pkg = bin_package("my-skill", "my-skill", true);
         assert!(store.get("my-skill").unwrap().unwrap().installed);
 
-        // Initialized DenyAll scope with the lock WORKING: the skip would be
-        // observable as a missing entry, not as a refusal.
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &["seed-bundle".to_string()],
-        )
-        .unwrap();
+        // With the lock WORKING, the skip would be observable as a missing
+        // entry, not as a refusal — the helper's seeding already covers it.
 
         let result = restore_plugin("my-skill").unwrap();
         assert!(!result.credentials_required);
@@ -1522,19 +1502,9 @@ mod tests {
     /// entry it would leave behind for a never-restorable id.
     #[test]
     fn restore_of_a_bogus_id_leaves_no_deny_entry() {
-        // RAII lock + env snapshot (round 9), same reason as the refusal test.
-        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-        let tmp = fresh_dir("restore-bogus-id");
-        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        // Initialized DenyAll scope, lock working: a gate-first ordering
-        // would happily register the bogus id.
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &["seed-bundle".to_string()],
-        )
-        .unwrap();
+        // Initialized DenyAll scope with the lock working (the helper seeds
+        // it): a gate-first ordering would happily register the bogus id.
+        let (tmp, _lock, _env) = seeded_code_home("restore-bogus-id");
 
         let err = restore_plugin("no-such-id").unwrap_err();
         assert!(
@@ -1566,21 +1536,12 @@ mod tests {
     /// never-restorable id. Purge remains the only way to clear it.
     #[test]
     fn restore_of_package_missing_entry_registers_no_deny_entry() {
-        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-        let tmp = fresh_dir("restore-package-missing");
-        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let (tmp, _lock, _env) = seeded_code_home("restore-package-missing");
 
         bin_package("gone-skill", "gone-skill", false);
         // The external-deletion scenario: the manifest keeps the entry while
         // the package directory is gone.
         std::fs::remove_dir_all(RecycleBin::new().root.join("gone-skill")).unwrap();
-
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &["seed-bundle".to_string()],
-        )
-        .unwrap();
 
         let err = restore_plugin("gone-skill").unwrap_err();
         assert!(
@@ -1621,11 +1582,7 @@ mod tests {
     /// happened (consent destroyed by a refused restore).
     #[test]
     fn restore_refused_before_anything_lands_when_destination_exists() {
-        // RAII lock + env snapshot, same reason as the refusal test above.
-        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
-        let tmp = fresh_dir("restore-dst-exists");
-        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let (tmp, _lock, _env) = seeded_code_home("restore-dst-exists");
 
         bin_package("my-skill", "my-skill", false);
 
@@ -1633,13 +1590,8 @@ mod tests {
         // again (an empty dir is the same bar take_back's dst.exists() applies).
         std::fs::create_dir_all(paths::bundles_root().join("my-skill")).unwrap();
 
-        // Initialized DenyAll scope with the lock WORKING; snapshot the deny
-        // list so the gate's non-consumption is checkable after the refusal.
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &["seed-bundle".to_string()],
-        )
-        .unwrap();
+        // Snapshot the deny list so the gate's non-consumption is checkable
+        // after the refusal (the helper's seeding ran with the lock WORKING).
         let deny_before = crate::features::marketplace::scope::load_disabled_bundles_for(
             crate::features::marketplace::ConnectorScope::Code,
         );
@@ -2593,44 +2545,47 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         // Part 1 — writable home: the no-sibling rule caps sidecar copies.
-        with_temp_home(|| {
-            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::write(&path, b"not-json{{{").unwrap();
-            let file = load_disabled_bundles_file();
-            assert!(
-                file.plain_defaults_migrated && !file.initialized.contains("plain"),
-                "fail-closed recovered state: {file:?}"
-            );
-            assert_eq!(
-                quarantine_copy_count(),
-                1,
-                "first corrupt read quarantines once"
-            );
-            assert!(
-                std::fs::read_to_string(&path)
-                    .unwrap()
-                    .contains("plain_defaults_migrated"),
-                "a writable home self-heals on the same read"
-            );
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-recyclebin-corrupt-recovery",
+            || {
+                let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+                std::fs::write(&path, b"not-json{{{").unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                    "fail-closed recovered state: {file:?}"
+                );
+                assert_eq!(
+                    quarantine_copy_count(),
+                    1,
+                    "first corrupt read quarantines once"
+                );
+                assert!(
+                    std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("plain_defaults_migrated"),
+                    "a writable home self-heals on the same read"
+                );
 
-            // Corrupt again: the sibling from the first read must suppress the
-            // second quarantine (the overwrite itself succeeds and heals).
-            std::fs::write(&path, b"not-json{{{").unwrap();
-            let file = load_disabled_bundles_file();
-            assert!(
-                file.plain_defaults_migrated && !file.initialized.contains("plain"),
-                "second recovery: {file:?}"
-            );
-            assert_eq!(
-                quarantine_copy_count(),
-                1,
-                "the no-sibling rule must cap the sidecar at one"
-            );
-        });
+                // Corrupt again: the sibling from the first read must suppress the
+                // second quarantine (the overwrite itself succeeds and heals).
+                std::fs::write(&path, b"not-json{{{").unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                    "second recovery: {file:?}"
+                );
+                assert_eq!(
+                    quarantine_copy_count(),
+                    1,
+                    "the no-sibling rule must cap the sidecar at one"
+                );
+            },
+        );
 
         // Part 2 — read-only home: the memo carries the recovery and defers
         // to the next writer without touching disk.
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-corrupt-memo", || {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::write(&path, b"not-json{{{").unwrap();
             // Pre-seed the single sidecar the no-sibling rule allows: the
