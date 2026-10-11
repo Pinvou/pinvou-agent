@@ -383,8 +383,8 @@ assert.match(
 );
 assert.match(
   atomicFnBody,
-  /^\s*\[System\.IO\.File\]::Replace\(\$temporaryPath, \$Path, \$null\)$/mu,
-  "an existing destination must be swapped in via File.Replace (atomic ReplaceFile), because Move-Item -Force deletes the destination before the rename and the unlocked descriptor readers in scripts/tauri/windows-runtime.js would observe the file missing",
+  /^\s*\[System\.IO\.File\]::Replace\(\$temporaryPath, \$Path, \[NullString\]::Value\)$/mu,
+  "an existing destination must be swapped in via File.Replace (atomic ReplaceFile) with a real null backup (PowerShell coerces a plain $null argument to an empty string, which Replace would resolve as the backup path), because Move-Item -Force deletes the destination before the rename and the unlocked descriptor readers in scripts/tauri/windows-runtime.js would observe the file missing",
 );
 assert.match(
   atomicFnBody,

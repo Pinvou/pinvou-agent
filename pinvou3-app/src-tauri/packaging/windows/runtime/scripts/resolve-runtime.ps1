@@ -86,8 +86,10 @@ function Write-Utf8Atomically {
       # reader in scripts/tauri/windows-runtime.js) never observe the file
       # missing. Move-Item -Force deletes the destination before renaming the
       # replacement into place, which re-opens exactly that window on every
-      # re-stage.
-      [System.IO.File]::Replace($temporaryPath, $Path, $null)
+      # re-stage. PowerShell turns a plain $null argument into an empty
+      # string for a .NET string parameter, and Replace would then resolve
+      # "" as the backup path and fail; NullString passes a real null.
+      [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
     } else {
       [System.IO.File]::Move($temporaryPath, $Path)
     }
