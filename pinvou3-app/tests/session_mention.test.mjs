@@ -857,6 +857,7 @@ test('composer session drop invokes the guarded add path (behavioral)', () => {
       setSessionDropActive: (value) => { calls.deactivated.push(value); },
       activeSessionId: 'current-session',
       sessionRefs: [],
+      MAX_SESSION_REFS,
       bs: { sessions: [{ id: 's1', title: '销量 PPT' }] },
       knownSessionMentionIds: new Set(['s1', 'current-session']),
       handleSelectMentionCandidate: (candidate) => { calls.added.push(candidate); },
@@ -1274,10 +1275,22 @@ test('Rust mirror still carries the verbatim block contract (drift pin)', () => 
   const [header, contract1, contract2, contract3] = sample.split('\n');
   const sessionsRs = readFileSync(
     new URL('../src-tauri/src/app/commands/sessions.rs', import.meta.url), 'utf8');
-  assert.ok(sessionsRs.includes(header), 'Rust SESSION_MENTION_BLOCK_HEADER must match the JS header');
-  for (const line of [contract1, contract2, contract3]) {
-    assert.ok(sessionsRs.includes(line), `Rust contract line must match the JS module: ${line}`);
-  }
+  // Anchor to the PRODUCTION const declarations specifically (round-17 M3):
+  // the literals also exist inside #[cfg(test)] fixtures, so an unanchored
+  // includes() over the whole file stays green when only the production
+  // constants drift.
+  const productionRs = sessionsRs.split('#[cfg(test)]')[0];
+  assert.ok(
+    productionRs.includes(`const SESSION_MENTION_BLOCK_HEADER: &str = ${JSON.stringify(header)};`),
+    'Rust production SESSION_MENTION_BLOCK_HEADER must match the JS header verbatim',
+  );
+  const productionContract = [contract1, contract2, contract3]
+    .map((line) => `    ${JSON.stringify(line)},`)
+    .join('\n');
+  assert.ok(
+    productionRs.includes(productionContract),
+    'Rust production SESSION_MENTION_CONTRACT_LINES must match the JS module verbatim',
+  );
 });
 
 // ── Feature switch (docs/builtin-toolset-contract.md §3.3 four-layer cascade) ──
@@ -1555,7 +1568,7 @@ test('steer-notice keys exist exactly once per locale in the BT table (round-15 
   const bridgeSource = readFileSync(new URL('../src/platform/tauri/bridge.js', import.meta.url), 'utf8');
   for (const key of [
     'steerDroppedQueued', 'steerFailedQueued', 'steerFailedUnconfirmed',
-    'steerFailedLost', 'steerDroppedDuringEdit',
+    'steerFailedLost', 'steerDroppedDuringEdit', 'steerEditRestored',
   ]) {
     const occurrences = bridgeSource.split(`\n      ${key}:`).length - 1;
     assert.equal(occurrences, 3, `${key} must appear exactly once per locale (en/ja/zh), got ${occurrences}`);
@@ -1705,7 +1718,6 @@ test('failure restores are stash-backed across unmount and draft materialization
         name: 'sendTask',
         build: (sandbox) => {
           const fn = extractChatViewFunction('sendTask: async (outgoing, context) =>');
-          sandbox.mentionSendScopeRef = { current: null };
           sandbox.activeSessionIdRef = { current: 'sess-1' };
           sandbox.draftEpoch = 3;
           sandbox.personalWorkbenchTemplateIdRef = { current: null };
@@ -1716,13 +1728,16 @@ test('failure restores are stash-backed across unmount and draft materialization
         },
       },
     ];
-    for (const lane of lanes) {
+    // Round-17 M2: each lane runs TWO drives — (A) stay-mounted failure
+    // after a real materialization, with a LIVE-applying setSessionRefs so
+    // the ledger-aware live guard is observable (reverting a lane's guard to
+    // the raw-key shape reds here), and (B) the "restored"-verdict abort
+    // with a provisional mapping, so the ledger clear is observable
+    // (dropping a lane's clear reds here). Both were handleSend-only before.
+    const runLaneDrive = async (lane, { verdict, expectLive, expectStashKey, expectNotStashKey }) => {
       const store = recordingDraftStore();
+      const live = { refs: [], applied: [] };
       const sandbox = {
-        // Round-16 m1: dispatch from a DRAFT scope — the failure tail must
-        // resolve its stash key through the ledger after the send's own
-        // materialization moves the scope, in every lane (not just
-        // handleSend).
         mentionDraftKeyRef: { current: 'draft:3' },
         mentionPendingDraftSendsRef: { current: new Set() },
         isMultiAgentReadOnly: false,
@@ -1741,13 +1756,15 @@ test('failure restores are stash-backed across unmount and draft materialization
         clearDraftMaterialization,
         sessionRefs: REFS,
         sendChatMessage: async () => {
-          // the unmount cleanup stash + the send's own materialization
           store.stashSessionMentionDraft('draft:3', []);
           recordDraftMaterialization('draft:3', 'session:sess-1');
           sandbox.mentionDraftKeyRef.current = 'session:sess-1';
-          return false;
+          return verdict;
         },
-        setSessionRefs: () => { /* unmounted: no-op */ },
+        setSessionRefs: (value) => {
+          live.refs = typeof value === 'function' ? value(live.refs) : value;
+          live.applied.push([...live.refs]);
+        },
         personalWorkbenchTemplateIdRef: { current: null },
         setPersonalWorkbenchTemplateId: () => {},
         bridge: { chat: { prefillComposer: () => {}, restoreTaskDraft: () => {} } },
@@ -1757,9 +1774,33 @@ test('failure restores are stash-backed across unmount and draft materialization
       await drive();
       assert.deepEqual(
         store.calls.stashed.at(-1),
-        ['session:sess-1', [...REFS]],
-        `${lane.name}: the failure arm stashes the ledger-resolved snapshot when the live setter is dead`,
+        [expectStashKey, [...REFS]],
+        `${lane.name}: the settle tail stashes under ${expectStashKey}`,
       );
+      assert.deepEqual(
+        restoreSessionMentionDraft(expectNotStashKey),
+        [],
+        `${lane.name}: nothing leaks under ${expectNotStashKey}`,
+      );
+      assert.deepEqual(
+        live.applied.at(-1) || [],
+        expectLive ? [...REFS] : [],
+        `${lane.name}: the live restore ${expectLive ? 'fires' : 'stays silent'} per the ledger-aware guard`,
+      );
+      // The ledger and the underlying draft store are module-level state
+      // shared across drives: scrub both keys so the next drive starts
+      // clean (a stale entry would leak into its restore assertions).
+      clearDraftMaterialization('draft:3');
+      stashSessionMentionDraft('draft:3', []);
+      stashSessionMentionDraft('session:sess-1', []);
+    };
+    for (const lane of lanes) {
+      // (A) materialize-then-fail: stash under the session key, chips
+      // restored LIVE in the materialized session.
+      await runLaneDrive(lane, { verdict: false, expectLive: true, expectStashKey: 'session:sess-1', expectNotStashKey: 'draft:3' });
+      // (B) aborted materialization ("restored"): mapping cleared, snapshot
+      // stays under the alive draft, no live arming.
+      await runLaneDrive(lane, { verdict: 'restored', expectLive: false, expectStashKey: 'draft:3', expectNotStashKey: 'session:sess-1' });
     }
   }
 
