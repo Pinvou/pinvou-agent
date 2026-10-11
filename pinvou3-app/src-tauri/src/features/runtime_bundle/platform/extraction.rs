@@ -316,12 +316,30 @@ impl Pinvou3Bundle {
         }
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.skills_dir)?;
-        // PINVOU 自有 hooks：写入 + 加可执行位
-        std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
-        std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
-        std::fs::write(&self.multiagent_depth_guard_sh, MULTIAGENT_DEPTH_GUARD_SH)?;
-        std::fs::write(&self.multiagent_depth_guard_ps1, MULTIAGENT_DEPTH_GUARD_PS1)?;
-        std::fs::write(&self.shell_env_sh, SHELL_ENV_SH)?;
+        // PINVOU 自有 hooks：写入 + 加可执行位。App-owned 固定路径与落地标记
+        // 同一信任面（round-26 MAJOR 3 / round-28 review）：加固写对植入的
+        // symlink/FIFO 直接拒绝而不是跟链；write 的 0600 创建模式随后被下方
+        // 0o755 循环补回可执行位。
+        crate::platform::filesystem::write_private_data_file(
+            &self.deny_sensitive_sh,
+            DENY_SENSITIVE_PATHS_SH.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.deny_sensitive_ps1,
+            DENY_SENSITIVE_PATHS_PS1.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.multiagent_depth_guard_sh,
+            MULTIAGENT_DEPTH_GUARD_SH.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.multiagent_depth_guard_ps1,
+            MULTIAGENT_DEPTH_GUARD_PS1.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.shell_env_sh,
+            SHELL_ENV_SH.as_bytes(),
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -335,7 +353,10 @@ impl Pinvou3Bundle {
                 std::fs::set_permissions(script, perm)?;
             }
         }
-        std::fs::write(&version_file, BUNDLE_VERSION)?;
+        crate::platform::filesystem::write_private_data_file(
+            &version_file,
+            BUNDLE_VERSION.as_bytes(),
+        )?;
         eprintln!(
             "[pinvou3-app] bundle extracted to {} (version {})",
             self.root.display(),
