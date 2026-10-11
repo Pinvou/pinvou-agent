@@ -4194,10 +4194,7 @@ impl AcpPool {
         self.evict(&probe_id).await;
         let agents = self.agents.clone();
         let probe_owned = probe_id.clone();
-        if let Err(error) = tokio::task::spawn_blocking(move || agents.remove(&probe_owned))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
-        {
+        if let Err(error) = on_blocking(move || agents.remove(&probe_owned)).await {
             eprintln!("[pinvou3-app] 清理模型探针会话记录失败（{probe_id}）: {error:#}");
         }
         let probe_dir = crate::platform::paths::sessions_root().join(&probe_id);

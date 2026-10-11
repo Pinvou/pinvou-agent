@@ -1464,24 +1464,6 @@ where
     }
 }
 
-/// Bare async host for lanes that need the app crate's runtime environment
-/// (rustls, release env, the shared multi-thread tokio runtime with
-/// `tauri::async_runtime` wired) but touch neither the engine pool nor the
-/// session store: the remote-knowledge network lanes and the monitor
-/// probes. Booting the full windowless product host for these built a whole
-/// Tauri context and ran `SessionStore::boot` — whose retention sweep can
-/// evict the user's oldest sessions, a destructive side effect a status
-/// command must not carry — for closures that ignore both handles, and it
-/// made the lanes need a display on headless Linux (the Tauri event loop).
-/// No event loop and no app context here: the work future runs on the
-/// runtime directly as one spawned task, whose JoinHandle contains panics
-/// as the same "headless work failed" JoinError as any other fault. One
-/// hard precondition, unlike the windowless
-/// product host (which contains its whole boot): the WORK future is
-/// panic-contained, but the boot itself is not — `tauri::async_runtime::set`
-/// panics if a runtime was already initialized in this process, so this
-/// helper must stay at-most-once per process and never run beside another
-/// host lane.
 /// Process latch for the at-most-once precondition shared by BOTH host
 /// lanes — [`run_bare_host`] and [`run_windowless_host`] (round-43 review
 /// doc fix: the comment used to name only the bare lane).
@@ -1522,6 +1504,24 @@ fn claim_headless_host_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     Ok(async_runtime)
 }
 
+/// Bare async host for lanes that need the app crate's runtime environment
+/// (rustls, release env, the shared multi-thread tokio runtime with
+/// `tauri::async_runtime` wired) but touch neither the engine pool nor the
+/// session store: the remote-knowledge network lanes and the monitor
+/// probes. Booting the full windowless product host for these built a whole
+/// Tauri context and ran `SessionStore::boot` — whose retention sweep can
+/// evict the user's oldest sessions, a destructive side effect a status
+/// command must not carry — for closures that ignore both handles, and it
+/// made the lanes need a display on headless Linux (the Tauri event loop).
+/// No event loop and no app context here: the work future runs on the
+/// runtime directly as one spawned task, whose JoinHandle contains panics
+/// as the same "headless work failed" JoinError as any other fault. One
+/// hard precondition, unlike the windowless
+/// product host (which contains its whole boot): the WORK future is
+/// panic-contained, but the boot itself is not — `tauri::async_runtime::set`
+/// panics if a runtime was already initialized in this process, so this
+/// helper must stay at-most-once per process and never run beside another
+/// host lane.
 pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
 where
     T: Send + 'static,

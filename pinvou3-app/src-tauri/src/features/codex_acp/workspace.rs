@@ -1536,6 +1536,33 @@ mod tests {
         }
     }
 
+    /// Shared git subprocess helper for the workspace tests. Strip
+    /// process-wide GIT_* overrides the way production git call sites do:
+    /// other tests concurrently holding ENV_LOCK may point GIT_DIR /
+    /// GIT_INDEX_FILE at bogus locations, which would redirect these
+    /// subprocesses away from the temp repository.
+    fn run_git(dir: &Path, args: &[&str]) {
+        let mut command = std::process::Command::new("git");
+        crate::platform::process::strip_all_git_env(&mut command);
+        let output = command
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to spawn git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
     #[test]
     fn rejects_workspace_escape() {
         let root = TestDir::new("escape-root");
@@ -1948,32 +1975,12 @@ mod tests {
         }
         let root = TestDir::new("untracked-git-symlink");
         let repo = root.path();
-        let run_git = |args: &[&str]| {
-            let mut command = std::process::Command::new("git");
-            crate::platform::process::strip_all_git_env(&mut command);
-            let output = command
-                .current_dir(repo)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .args(args)
-                .output()
-                .unwrap_or_else(|error| panic!("failed to spawn git {args:?}: {error}"));
-            assert!(
-                output.status.success(),
-                "git {args:?} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        };
-        run_git(&["init", "-b", "main", "."]);
-        run_git(&["config", "user.name", "test"]);
-        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
         fs::write(repo.join("tracked.txt"), "hello\n").unwrap();
-        run_git(&["add", "tracked.txt"]);
-        run_git(&["commit", "-m", "init"]);
+        run_git(repo, &["add", "tracked.txt"]);
+        run_git(repo, &["commit", "-m", "init"]);
 
         // (c) tracked + unmodified → no diff (exit-code-aware oracle).
         let diff = workspace_diff("sess-untracked-symlink", repo, "tracked.txt").unwrap();
@@ -2041,31 +2048,6 @@ mod tests {
         let repo = root.path().join("repo");
         let linked = root.path().join("linked");
         fs::create_dir_all(&repo).unwrap();
-        // Strip process-wide GIT_* overrides the way production git call sites
-        // do: other tests concurrently holding ENV_LOCK may point GIT_DIR /
-        // GIT_INDEX_FILE at bogus locations, which would redirect these
-        // subprocesses away from the temp repository.
-        let run_git = |dir: &Path, args: &[&str]| {
-            let mut command = std::process::Command::new("git");
-            crate::platform::process::strip_all_git_env(&mut command);
-            let output = command
-                .current_dir(dir)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .args(args)
-                .output()
-                .unwrap_or_else(|error| panic!("failed to spawn git {args:?}: {error}"));
-            assert!(
-                output.status.success(),
-                "git {args:?} failed: {}\nstderr: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        };
         run_git(&repo, &["init", "-b", "main", "."]);
         run_git(&repo, &["config", "user.name", "test"]);
         run_git(&repo, &["config", "user.email", "test@example.com"]);

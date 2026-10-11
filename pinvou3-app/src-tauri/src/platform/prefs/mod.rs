@@ -1601,6 +1601,43 @@ mod tests {
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
 
+    /// Keyring stand-in shared by the fallback-miss pins below: `get` always
+    /// misses and the keyring reports itself unreachable, so the refresh must
+    /// classify the miss as `Unavailable` (never `Missing`) on both the
+    /// models loop and the search loop.
+    struct FallbackStore;
+    impl crate::platform::credential_store::CredentialStore for FallbackStore {
+        fn get(
+            &self,
+            _reference: &crate::platform::credential_store::CredentialReference,
+        ) -> Result<Option<String>, crate::platform::credential_store::CredentialError> {
+            Ok(None)
+        }
+        fn set(
+            &self,
+            _reference: &crate::platform::credential_store::CredentialReference,
+            _value: &str,
+        ) -> Result<(), crate::platform::credential_store::CredentialError> {
+            Err(crate::platform::credential_store::CredentialError::new(
+                "not used by the refresh",
+            ))
+        }
+        fn delete(
+            &self,
+            _reference: &crate::platform::credential_store::CredentialReference,
+        ) -> Result<(), crate::platform::credential_store::CredentialError> {
+            Err(crate::platform::credential_store::CredentialError::new(
+                "not used by the refresh",
+            ))
+        }
+        fn os_keyring_unreachable(
+            &self,
+            _reference: &crate::platform::credential_store::CredentialReference,
+        ) -> bool {
+            true
+        }
+    }
+
     /// The settings lock file must be owner-only (0600): the lock file is
     /// never deleted, and flock needs only READ permission, so a 0644
     /// leftover would let any local account hold the settings write lock on
@@ -3879,40 +3916,6 @@ mod tests {
     /// `os_keyring_unreachable` doctrine, now on the state lanes too).
     #[test]
     fn refresh_classifies_a_fallback_miss_as_unavailable_not_missing() {
-        struct FallbackStore;
-        impl crate::platform::credential_store::CredentialStore for FallbackStore {
-            fn get(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-            ) -> Result<Option<String>, crate::platform::credential_store::CredentialError>
-            {
-                Ok(None)
-            }
-            fn set(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-                _value: &str,
-            ) -> Result<(), crate::platform::credential_store::CredentialError> {
-                Err(crate::platform::credential_store::CredentialError::new(
-                    "not used by the refresh",
-                ))
-            }
-            fn delete(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-            ) -> Result<(), crate::platform::credential_store::CredentialError> {
-                Err(crate::platform::credential_store::CredentialError::new(
-                    "not used by the refresh",
-                ))
-            }
-            fn os_keyring_unreachable(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-            ) -> bool {
-                true
-            }
-        }
-
         let mut prefs = UserPrefs::default();
         prefs.upsert_model(SavedModel {
             id: "m1".to_string(),
@@ -3953,40 +3956,6 @@ mod tests {
     /// honest.
     #[test]
     fn refresh_classifies_a_search_fallback_miss_as_unavailable_not_missing() {
-        struct SearchFallbackStore;
-        impl crate::platform::credential_store::CredentialStore for SearchFallbackStore {
-            fn get(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-            ) -> Result<Option<String>, crate::platform::credential_store::CredentialError>
-            {
-                Ok(None)
-            }
-            fn set(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-                _value: &str,
-            ) -> Result<(), crate::platform::credential_store::CredentialError> {
-                Err(crate::platform::credential_store::CredentialError::new(
-                    "not used by the refresh",
-                ))
-            }
-            fn delete(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-            ) -> Result<(), crate::platform::credential_store::CredentialError> {
-                Err(crate::platform::credential_store::CredentialError::new(
-                    "not used by the refresh",
-                ))
-            }
-            fn os_keyring_unreachable(
-                &self,
-                _reference: &crate::platform::credential_store::CredentialReference,
-            ) -> bool {
-                true
-            }
-        }
-
         let mut prefs = UserPrefs {
             search: SearchPrefs {
                 provider: SearchProvider::Tavily,
@@ -4004,7 +3973,7 @@ mod tests {
             },
             ..Default::default()
         };
-        prefs.refresh_credential_states_with_store(&SearchFallbackStore);
+        prefs.refresh_credential_states_with_store(&FallbackStore);
         assert_eq!(
             prefs.search.credentials[&SearchProvider::Tavily].credential_state,
             CredentialState::Unavailable,

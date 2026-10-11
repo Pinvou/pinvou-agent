@@ -6535,59 +6535,42 @@ mod scheduled_model_tests {
     #[test]
     fn failed_delete_sweep_skips_adopted_records_but_keeps_converged_and_fresh_ones() {
         use super::EnginePool;
-        let _env_guard = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-engine-pool-sweep-guard-{}",
-            std::process::id()
-        ));
-        let previous_home = std::env::var("PINVOU3_HOME").ok();
-        let _ = std::fs::remove_dir_all(&home);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        crate::platform::test_support::with_temp_home("pinvou3-engine-pool-sweep-guard", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let store = SessionStore::boot().expect("session store");
+            let session_id = store
+                .create_new(
+                    "wire-model".to_string(),
+                    Some(crate::features::sessions::NEW_CHAT_TITLE.to_string()),
+                    home.join("workspace"),
+                )
+                .expect("chat session")
+                .metadata
+                .id;
 
-        let store = SessionStore::boot().expect("session store");
-        let session_id = store
-            .create_new(
-                "wire-model".to_string(),
-                Some(crate::features::sessions::NEW_CHAT_TITLE.to_string()),
-                home.join("workspace"),
-            )
-            .expect("chat session")
-            .metadata
-            .id;
+            // Factory-titled record (never adopted) → sweepable.
+            assert!(EnginePool::sweep_may_remove_session_dir(
+                &store,
+                &session_id
+            ));
 
-        // Factory-titled record (never adopted) → sweepable.
-        assert!(EnginePool::sweep_may_remove_session_dir(
-            &store,
-            &session_id
-        ));
+            // Adopted (renamed out of the factory title) inside the window → keep.
+            store
+                .set_title(&session_id, "user renamed me".to_string())
+                .expect("adopting rename");
+            assert!(!EnginePool::sweep_may_remove_session_dir(
+                &store,
+                &session_id
+            ));
 
-        // Adopted (renamed out of the factory title) inside the window → keep.
-        store
-            .set_title(&session_id, "user renamed me".to_string())
-            .expect("adopting rename");
-        assert!(!EnginePool::sweep_may_remove_session_dir(
-            &store,
-            &session_id
-        ));
-
-        // Record deleted after all (the retried store delete converged) →
-        // the sweep still cleans the resurrected-orphan directory.
-        store.delete(&session_id).expect("record delete");
-        assert!(EnginePool::sweep_may_remove_session_dir(
-            &store,
-            &session_id
-        ));
-
-        match previous_home {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&home);
+            // Record deleted after all (the retried store delete converged) →
+            // the sweep still cleans the resurrected-orphan directory.
+            store.delete(&session_id).expect("record delete");
+            assert!(EnginePool::sweep_may_remove_session_dir(
+                &store,
+                &session_id
+            ));
+        });
     }
 
     #[tokio::test]
@@ -6782,13 +6765,16 @@ mod scheduled_model_tests {
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // RAII env restore: a failing assertion unwinds past the straight-line
+        // restore this replaces and would leave PINVOU3_HOME stale for every
+        // later test in the process.
+        let _env = EnvRestore::capture(&["PINVOU3_HOME"]);
         let home = std::env::temp_dir().join(format!(
             "pinvou3-engine-pool-delete-gate-timeout-{}",
             std::process::id()
         ));
-        let previous_home = std::env::var("PINVOU3_HOME").ok();
         let _ = std::fs::remove_dir_all(&home);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
 
         let store = SessionStore::boot().expect("session store");
@@ -6849,12 +6835,6 @@ mod scheduled_model_tests {
             "the record must survive a timed-out delete"
         );
 
-        match previous_home {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&home);
     }
 

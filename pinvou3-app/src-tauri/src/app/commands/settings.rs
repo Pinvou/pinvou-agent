@@ -456,11 +456,7 @@ pub async fn delete_model(id: String) -> Result<(), String> {
     // Round-51 review: same cross-process settings-lock rationale as
     // [`save_model`] — join the blocking transaction on a worker.
     let store = SystemCredentialStore::new();
-    let id_for_worker = id.clone();
-    join_blocking("delete_model", move || {
-        delete_model_inner(&id_for_worker, &store)
-    })
-    .await
+    join_blocking("delete_model", move || delete_model_inner(&id, &store)).await
 }
 
 pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Result<(), String> {

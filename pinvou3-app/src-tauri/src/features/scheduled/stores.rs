@@ -1566,15 +1566,12 @@ mod foreign_writer_tests {
     //! the CLI, corrupt files, and stat ordering) and reuse stores.rs's
     //! private visibility.
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn temp_home() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-scheduled-store-tests-{}-{}",
             std::process::id(),
-            DIR_SEQ.fetch_add(1, Ordering::Relaxed)
+            crate::bridge::paths::tests::unique_suffix()
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
