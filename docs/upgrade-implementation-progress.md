@@ -988,3 +988,34 @@ frozen full actual lifecycle PostgreSQL regression passed (460.289s), including
 initial/final deadlines and races. Baseline tests/vet/build/module/pinned-contract
 and client architecture checks passed; detailed evidence is in the service plan.
 This closes B9 only and does not mark full T44 or dependent production complete.
+
+### T44 batch 10: consumed activation terminals (2026-10-12)
+
+Private additive migration 10 atomically binds actual consumed activation to
+its original completed preinstall and activating staged content. OwnerReplay
+success/activated or proven failure/failed shares Scope/Transaction/Staged CAS,
+lawful sequence and existing health/safety facts, final owner/time checks and
+full capture bounds. Original staged times, preinstall and consume outcome stay.
+Events and reporting use the activation Transaction's original 30-day window;
+expiry of earlier action credentials, Session or waiting content cannot undo
+consumption. Fixed reporting maintenance produces no client event or local
+damage fact. Exact old B9 reporting terminals can converge only their original
+still-activating content, preserving the old Transaction; unknown history is
+refused. Safe cancellation/successor remains subsequent work.
+
+Actual PostgreSQL tests passed full healthy/failure paths, atomic rollback,
+same-owner retry, original deadline and old B9 compensation, execution after
+old action/content expiry, clock NULL/unsafe/rollback (31.787s), terminal and
+maintenance races (15.262s), exact 4096 reads and 32 MiB aggregate with one-byte
+rejection, migration/private grants/digest and unchanged old maintenance
+(16.674s). Resource/time injections are explicit adversarial fixtures, not
+credential, current qualification, physical preparation or deployment evidence.
+Full regression and final independent review evidence follow in the service
+plan. Full T44 and production composition remain in progress; continue remaining
+unblocked tasks while recorded owner decisions/deployment stay deferred.
+
+Both independent roles passed the frozen complete B10 code/test/documentation
+delta. Full actual lifecycle PostgreSQL regression passed (553.199s), along with
+default Go tests/vet, module verification, all commands, pinned contract checks,
+formatting/diff and client architecture guard. This closes B10 only; full T44
+and production composition stay open.
