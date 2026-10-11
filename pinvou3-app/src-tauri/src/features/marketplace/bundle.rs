@@ -109,20 +109,20 @@ pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
 /// the gate registers (over-denial, fail-closed). A poisoned pre-upgrade
 /// state converges once the variant package is uninstalled — the next gated
 /// show re-extracts under the canonical names.
+///
+/// Exact-name bar: every expected dir must exist UNDER ITS EXACT NAME
+/// (read_dir, not path resolution) with a SKILL.md file inside. Path
+/// resolution would let a case-variant directory planted on a
+/// case-insensitive filesystem (macOS/Windows) vouch for consent it never
+/// received; exact names cannot. The dirs are derived from the id via
+/// [`cli_bundle_skill_dirs`], and the startup visibility cache
+/// (`cached_connector_skills_visible`) calls this same fn, so the two bars
+/// cannot diverge.
 pub(crate) fn cli_connector_skills_materialized(id: &str) -> bool {
     let dirs = cli_bundle_skill_dirs(id);
-    !dirs.is_empty() && cli_connector_skill_dirs_present(id, dirs)
-}
-
-/// Exact-name materialization check for a CLI connector's companion dirs:
-/// every expected dir must exist UNDER ITS EXACT NAME (read_dir, not path
-/// resolution) with a SKILL.md file inside. Path resolution would let a
-/// case-variant directory planted on a case-insensitive filesystem
-/// (macOS/Windows) vouch for consent it never received; exact names cannot.
-/// The startup visibility cache
-/// (`cached_connector_skills_visible`) shares this helper so the two bars
-/// cannot diverge.
-pub(crate) fn cli_connector_skill_dirs_present(id: &str, dirs: &[&str]) -> bool {
+    if dirs.is_empty() {
+        return false;
+    }
     let skills_dir = crate::platform::paths::bundles_root()
         .join(id)
         .join("skills");
@@ -1003,14 +1003,14 @@ mod tests {
         }
     }
 
-    /// Round-17 review: the CLI identity fold must hold for the REVERSE
-    /// claim too — a case-variant skill dir name resolves to the connector
-    /// so the vocabulary guards and the consent gate agree on what counts
-    /// as its companion (round-12 introduced the fold; this pins it).
-    /// Reverting the `eq_ignore_ascii_case` fold in `cli_bundle_of_skill`
-    /// turns this red (the exact-name materialization probe does not
-    /// exercise this function). Empty manifests keep it hermetic: the CLI
-    /// branch precedes manifest claims in `skill_owner_package_with`.
+    /// The CLI identity fold must hold for the REVERSE claim too — a
+    /// case-variant skill dir name resolves to the connector so the
+    /// vocabulary guards and the consent gate agree on what counts as its
+    /// companion. Reverting the `eq_ignore_ascii_case` fold in
+    /// `cli_bundle_of_skill` turns this red (the exact-name materialization
+    /// probe does not exercise this function). Empty manifests keep it
+    /// hermetic: the CLI branch precedes manifest claims in
+    /// `skill_owner_package_with`.
     #[test]
     fn cli_bundle_of_skill_folds_case_variant_dirs() {
         for &dir in cli_bundle_skill_dirs("wecom") {

@@ -132,8 +132,7 @@ pub(crate) fn mcp_json_unparseable() -> bool {
         // An unreadable file is treated like an unparseable one: the builtin
         // repair loader reads through `unwrap_or_default`, so a permission
         // failure would reset the file to an empty skeleton.
-        // Hardened read: mcp.json is private-home consent-adjacent state —
-        // the open must not hang on a planted FIFO.
+        // Hardened read — family rationale on `open_private_data_file`.
         Ok(read_private_data_file(&mcp_path)
             .ok()
             .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
@@ -608,7 +607,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             Self::managed_python_runtime_fields(manifest, server_dir, environment)?;
         with_mcp_json_lock(|| {
             let mcp_path = paths::mcp_config_path();
-            // Same hardened read as above (must not hang on a planted FIFO).
+            // Hardened read — family rationale on `open_private_data_file`.
             let content = read_private_data_file(&mcp_path)
                 .map_err(|error| format!("read mcp.json: {error}"))?;
             let mut mcp: serde_json::Value = serde_json::from_str(&content)
