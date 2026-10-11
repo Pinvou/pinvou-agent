@@ -928,3 +928,30 @@ checks and detailed evidence are recorded in the service plan. No hard total/cum
 download timeout, physical/qualification certification or deployment is inferred.
 Continue activation/staged successors, channel invalidation and remaining tasks;
 undecidable owner choices remain recorded and skipped as requested.
+
+
+### T44 batch 8: activation session and restart confirmation (2026-10-12)
+
+Private additive migration 8 binds a new activation Session to actual waiting,
+original completed preinstall, consumed authorization/Session, exact scope,
+channel, slot, object, context/hop and workflow. StandardReplay initialization
+uses a distinct Session ID and new SQL 24h action-window start. The private
+OwnerReplay restart command alone advances update_offered -> staged_verified,
+requiring exact slot/object/hop and actual waiting/source re-reads. It leaves
+waiting state/revision, original staged time/deadline and preinstall terminal
+untouched. Ordinary events remain closed to this edge; no execution rights or
+waiting consumption are issued. Current T17/T20 qualification, workflow,
+preparation and authenticated local restart evidence remain their same final
+transaction responsibilities.
+
+Both independent roles passed the production/test delta. Actual PostgreSQL
+controls passed for original identity/rollback, wrong bindings and owner/CAS,
+legal numeric spelling, exact 4096 reads, migration/private grants/digest,
+original content and independent Session final deadlines/clock rollback with
+same-owner positive controls, concurrent creation/restart and expiry competition.
+A two-day-later activation retains its own new 24h Session window without
+extending original waiting content. The frozen full lifecycle PostgreSQL
+regression passed (411.633s); baseline checks passed and their evidence is
+recorded in the service plan. Full T44 and production/physical acceptance
+remain unfinished; continue remaining private lifecycle commands and unblocked
+tasks while existing owner decisions/deployment stay recorded and skipped.
