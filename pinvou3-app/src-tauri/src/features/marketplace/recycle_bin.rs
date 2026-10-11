@@ -727,9 +727,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // bundles_root, where the disk-derived skill arm of the DenyAll expansion
     // (`resolve_scope_disabled_ids`) sees it — the gate's inner-name scan
     // normalizes to the physical owner via skill_gating_owner.
-    // Hardened open: the bare read here held the per-id import lock across a
-    // FIFO-blockable open, and exists()+read raced the take_back-side state
-    // anyway. NotFound keeps the no-manifest (false) arm; any other
+    // NotFound keeps the no-manifest (false) arm; any other
     // open/parse failure keeps the fail-toward-force direction.
     let manifest_path = bin.root.join(pkg_id).join("mcp").join("manifest.json");
     let secrets_declared = match crate::platform::filesystem::read_private_data_file(&manifest_path)
@@ -961,17 +959,14 @@ mod tests {
     /// Bins one pure-skill package through the exact uninstall shape the
     /// marketplace commands run: create `bundles/<id>/skills/<skill>/SKILL.md`,
     /// register it (`upload_record`), drop the registration, recycle the
-    /// package into the bin. `skill` is passed separately because two pins
+    /// package into the bin. `skill` is passed separately because three pins
     /// carry an inner skill whose dir name differs from the pack id and is
-    /// pinned verbatim in their path assertions. `keep_record = true` skips
-    /// the `store.remove`, pinning the mid-uninstall shape where the
-    /// mirror delete fails log-only, so a binned package keeps a stale
-    /// `installed = true` record. Returns the pre-recycle package path
-    /// (`bundles/<id>/`) — what a refused restore must NOT land at and a
-    /// successful restore must land back at. File-local per the module
-    /// convention (scope.rs / mod.rs keep their own same-named test helpers;
-    /// no cross-module sharing).
-    fn bin_package(id: &str, skill: &str, keep_record: bool) -> PathBuf {
+    /// pinned verbatim in their path assertions. Returns the pre-recycle
+    /// package path (`bundles/<id>/`) — what a refused restore must NOT land
+    /// at and a successful restore must land back at. File-local per the
+    /// module convention (scope.rs / mod.rs keep their own same-named test
+    /// helpers; no cross-module sharing).
+    fn bin_package(id: &str, skill: &str) -> PathBuf {
         let pkg = paths::bundles_root().join(id);
         std::fs::create_dir_all(pkg.join("skills").join(skill)).unwrap();
         std::fs::write(
@@ -982,9 +977,7 @@ mod tests {
         let store = BundleStore::new();
         store.upsert(upload_record(id)).unwrap();
         let record = store.get(id).unwrap().unwrap();
-        if !keep_record {
-            store.remove(id).unwrap();
-        }
+        store.remove(id).unwrap();
         RecycleBin::new()
             .recycle_package(id, KIND_SKILL, &format!("{id}.zip"), record)
             .unwrap();
@@ -999,7 +992,7 @@ mod tests {
     #[test]
     fn take_back_refuses_a_snapshot_record_id_mismatch() {
         crate::platform::test_support::with_temp_home("pinvou3-recycle-id-mismatch", || {
-            bin_package("demo", "demo", false);
+            bin_package("demo", "demo");
             let bin = RecycleBin::new();
 
             let mut manifest: serde_json::Value =
@@ -1407,7 +1400,7 @@ mod tests {
         let tmp = fresh_dir("restore-skill");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = bin_package("my-skill", "my-skill", false);
+        let pkg = bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
         assert!(store.get("my-skill").unwrap().is_none());
 
@@ -1448,7 +1441,7 @@ mod tests {
     fn restore_registers_deny_first_and_refusal_aborts_before_landing() {
         let (tmp, _lock, _env) = seeded_code_home("restore-deny-first");
 
-        let pkg = bin_package("my-skill", "my-skill", false);
+        let pkg = bin_package("my-skill", "my-skill");
 
         // Refusal injection: a directory at the lock path (open must fail) -> the restore aborts before anything moves.
         let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
@@ -1500,8 +1493,20 @@ mod tests {
         let store = BundleStore::new();
         // Simulate the failed mirror delete (store.remove errs, log-only) and
         // the recycle that proceeds anyway: record stays installed, package
-        // is binned, deny entries were cleared at the command layer.
-        let pkg = bin_package("my-skill", "my-skill", true);
+        // is binned, deny entries were cleared at the command layer. Staged
+        // inline — unlike bin_package it must NOT drop the record.
+        let pkg = paths::bundles_root().join("my-skill");
+        std::fs::create_dir_all(pkg.join("skills").join("my-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills").join("my-skill").join("SKILL.md"),
+            "---\nname: my-skill\n---\n",
+        )
+        .unwrap();
+        store.upsert(upload_record("my-skill")).unwrap();
+        let record = store.get("my-skill").unwrap().unwrap();
+        RecycleBin::new()
+            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
+            .unwrap();
         assert!(store.get("my-skill").unwrap().unwrap().installed);
 
         // With the lock WORKING, the skip would be observable as a missing
@@ -1565,7 +1570,7 @@ mod tests {
     fn restore_of_package_missing_entry_registers_no_deny_entry() {
         let (tmp, _lock, _env) = seeded_code_home("restore-package-missing");
 
-        bin_package("gone-skill", "gone-skill", false);
+        bin_package("gone-skill", "gone-skill");
         // The external-deletion scenario: the manifest keeps the entry while
         // the package directory is gone.
         std::fs::remove_dir_all(RecycleBin::new().root.join("gone-skill")).unwrap();
@@ -1611,7 +1616,7 @@ mod tests {
     fn restore_refused_before_anything_lands_when_destination_exists() {
         let (tmp, _lock, _env) = seeded_code_home("restore-dst-exists");
 
-        bin_package("my-skill", "my-skill", false);
+        bin_package("my-skill", "my-skill");
 
         // Simulate the reinstall/re-import since: the destination exists
         // again (an empty dir is the same bar take_back's dst.exists() applies).
@@ -1666,7 +1671,7 @@ mod tests {
         let tmp = fresh_dir("restore-collide");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        bin_package("my-skill", "my-skill", false);
+        bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
 
         // 冲突注入：回收期间他包 m 实体化了同名 companion 副本。
@@ -1726,7 +1731,7 @@ mod tests {
         )
         .unwrap();
 
-        bin_package("my-skill", "my-skill", false);
+        bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
 
         // Orphan injection: drop the manifest entry, keep the bin dir.
@@ -2463,7 +2468,7 @@ mod tests {
         let tmp = fresh_dir("restore-upsert-fail");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = bin_package("my-skill", "my-skill", false);
+        let pkg = bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
 
         // Failure injection: bundles.json exists but is unreadable → upsert_preserving errors on read.
@@ -2683,7 +2688,7 @@ mod tests {
         let tmp = fresh_dir("take-back-compensate");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = bin_package("compensated", "member", false);
+        let pkg = bin_package("compensated", "member");
 
         // Inject the save failure at exactly take_back's manifest persist
         // (round-20 minor 6: via the shared arm_failpoint guard — a bare
@@ -2781,7 +2786,7 @@ mod tests {
 
             // Healed manifest: the retry succeeds end to end.
             std::fs::remove_file(tmp.join("marketplace/recycle-bin.json")).unwrap();
-            bin_package("load-comp", "member", false);
+            bin_package("load-comp", "member");
             assert!(
                 !pkg.exists(),
                 "the retried recycle moved the dir into the bin"
@@ -2802,7 +2807,7 @@ mod tests {
     fn restore_waits_for_the_cross_process_landing_lease() {
         crate::platform::test_support::with_temp_home("pinvou3-recyclebin-restore-lease", || {
             // Bin the package (bin entry + dir in place, bundles_root clear).
-            let pkg = bin_package("leased-re", "member", false);
+            let pkg = bin_package("leased-re", "member");
             assert!(!pkg.exists(), "fixture: the pack is binned");
 
             // The peer shape: hold the landing lease on a second fd.

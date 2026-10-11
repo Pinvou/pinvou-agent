@@ -689,9 +689,6 @@ pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> Stri
 /// the lock holder — the same hardening discipline as disabled_bundles.json's
 /// identical reads. NotFound semantics unchanged (the kind passes through).
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
-    // Hardened read: bundles.json is private-home consent state
-    // read inside the scope critical section (DenyAll expansion) and under
-    // the transaction lock — the open must not hang on a planted FIFO.
     match read_private_data_file(path) {
         Ok(content) => {
             let file: BundlesFile = serde_json::from_str(&content).map_err(|e| {
@@ -2038,21 +2035,12 @@ mod tests {
     fn load_locked_refuses_a_planted_symlink() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("bundles.json");
-        // A real store file first, then replace it with a symlink to a
-        // sibling: the load must refuse the link instead of reading through
-        // to the target's bytes.
-        std::fs::write(
-            &file,
-            r#"{"schema_version": 1, "legacy_imported": false, "records": []}"#,
-        )
-        .unwrap();
         let target = temp.path().join("outside.json");
         std::fs::write(
             &target,
             r#"{"schema_version": 1, "legacy_imported": false, "records": []}"#,
         )
         .unwrap();
-        std::fs::remove_file(&file).unwrap();
         std::os::unix::fs::symlink(&target, &file).unwrap();
 
         assert!(
