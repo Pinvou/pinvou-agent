@@ -798,7 +798,7 @@ fn dedup_credential_declarations<T>(
 /// "assets mismatch" -- exactly the misdiagnosis this judgment prevents.
 ///
 /// Written as a two-half `concat!` split exactly at the classifier prefix:
-/// the first half is byte-for-byte [`CLI_DISCONNECTED_DEGRADED_PREFIX`], so
+/// the first half is byte-for-byte `CLI_DISCONNECTED_DEGRADED_PREFIX`, so
 /// the prefix relationship is structural in the source (the two literals sit
 /// a few lines apart) instead of being policed by a hand-rolled const-fn
 /// byte matcher.
