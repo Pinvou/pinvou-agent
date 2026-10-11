@@ -546,8 +546,9 @@ fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
 /// file is the same shape (a full allocation per read on hot per-turn
 /// paths). Generous against every legitimate consumer — the family reads
 /// JSON state files, markers, and SKILL.md-sized bundle assets, nothing
-/// near this bound (round-26 review).
-#[cfg(unix)]
+/// near this bound (round-26 review). Round-27: platform-general — the
+/// Windows leg used to read unbounded (the cap rationale does not stop at
+/// Unix), so the post-open metadata gate applies there too.
 const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Read one of the private-home data files whose bytes are consent state,
@@ -599,6 +600,28 @@ pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
         let mut file = options.open(path)?;
+        // Round-27: the same post-open gate the Unix leg applies — a planted
+        // non-regular target (reparse point followed to a device/pipe) or a
+        // multi-GB regular file must refuse instead of allocating unbounded
+        // on a hot per-turn read. Windows cannot carry the Unix pre-open
+        // O_NOFOLLOW|O_NONBLOCK flags, so the reparse-follow residual stays
+        // disclosed; this closes the unbounded-read shape itself.
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", path.display()),
+            ));
+        }
+        if metadata.len() > MAX_PRIVATE_DATA_READ_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} exceeds the private-state read cap ({MAX_PRIVATE_DATA_READ_BYTES} bytes); rename it aside if it is yours",
+                    path.display()
+                ),
+            ));
+        }
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(bytes)
