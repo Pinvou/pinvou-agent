@@ -648,15 +648,20 @@ fn clear_equipped_sidecars(persona_id: &str) -> Result<(Vec<String>, Vec<String>
         // No sessions directory yet: nothing can be equipped anywhere. Any
         // other listing failure (permissions, ...) must surface as a sweep
         // error — a silent empty result would report success while ghost
-        // sidecars survive.
+        // sidecars survive. Round-51 review: it must surface as a sweep
+        // ERROR RECORD, not a command failure — the card delete has already
+        // committed by the time this runs, so a hard Err discards the
+        // partial report and the rerun hits the existence gate before the
+        // sweep can ever run (the same post-commit doctrine the lock-failure
+        // arms of this family follow).
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok((Vec::new(), Vec::new()));
         }
         Err(error) => {
-            return Err(CliError::failed(format!(
-                "personas delete: cannot list {}: {error}",
-                sessions_dir.display()
-            )));
+            return Ok((
+                Vec::new(),
+                vec![format!("cannot list {}: {error}", sessions_dir.display())],
+            ));
         }
     };
     let mut cleared = Vec::new();

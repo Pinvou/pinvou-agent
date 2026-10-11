@@ -700,6 +700,47 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
             "--base-url",
             "https://a.com",
         ],
+        // Round-51 review: a repeated slot id used to be silently last-wins
+        // at the downstream HashMap insert — refused at parse like every
+        // other repeated flag in this parser.
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "add",
+            "--agent",
+            "codex",
+            "--name",
+            "n",
+            "--base-url",
+            "https://a.com",
+            "--api-key-env",
+            "MY_KEY",
+            "--model-slot",
+            "sonnet=s1",
+            "--model-slot",
+            "sonnet=s2",
+        ],
+        // Round-51 review: the positive-integer gate on --context-window is
+        // a parse refusal (0 would otherwise reach the store's own zh
+        // validation through the store_error boundary this family pins
+        // everywhere else).
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "add",
+            "--agent",
+            "codex",
+            "--name",
+            "n",
+            "--base-url",
+            "https://a.com",
+            "--api-key-env",
+            "MY_KEY",
+            "--context-window",
+            "0",
+        ],
         vec![
             "pinvou",
             "code",
@@ -1974,7 +2015,59 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     let _ = std::fs::remove_file(&secret);
 }
 
-/// The git-environment isolation behind the CLI workspace lanes is the app's/// The git-environment isolation behind the CLI workspace lanes is the app's
+/// Round-51 review: the tracked-ness oracle must match the path LITERALLY —
+/// `--` disables option parsing but not pathspec globbing, so an untracked
+/// `a*x.txt` used to match the tracked `abx.txt`, answer "tracked", and lose
+/// its diff silently. The `:(literal)` prefix (both surfaces) makes the
+/// glob-shaped untracked file diff like any other untracked file.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(project) = init_git_repo("diff-glob-filename") else {
+        eprintln!(
+            "skipping workspace_diff_diffs_an_untracked_glob_shaped_filename: git unavailable"
+        );
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("abx.txt"), "tracked\n").unwrap();
+    for args in [
+        vec!["add", "abx.txt"],
+        vec![
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+    ] {
+        let ok = std::process::Command::new("git")
+            .current_dir(&project)
+            .args(&args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        assert!(ok, "fixture git {:?} failed", args.first());
+    }
+
+    std::fs::write(project.join("a*x.txt"), "glob-shaped untracked\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "a*x.txt"]);
+    assert!(
+        cli["text"]
+            .as_str()
+            .unwrap()
+            .contains("glob-shaped untracked"),
+        "an untracked glob-metacharacter filename must diff, not vanish: {}",
+        cli["text"]
+    );
+}
+
+/// The git-environment isolation behind the CLI workspace lanes is the app's
 /// `GIT_OVERRIDE_KEYS`, imported through the `features::codex_acp` facade —
 /// not a local copy. A former local mirror in `code.rs` had drifted three
 /// keys behind the app's list (`GIT_NOGLOB_PATHSPECS`,

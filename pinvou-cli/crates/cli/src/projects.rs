@@ -894,7 +894,22 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
 /// second process only has the disk. Extracted so the freshness contract
 /// is testable without driving a full rebind.
 fn fence_stragglers_from_disk(from_display: &Path, final_stale: &mut Vec<String>) {
-    let fence_agents = SessionAgentStore::load_or_empty();
+    // Round-51 review: `load()`, not `load_or_empty()` — the empty-fallback's
+    // failure arm prints the app-styled `[pinvou3-app] … starting empty`
+    // recovery line into CLI output. On the (near-unreachable — the codex
+    // lane refuses a corrupt index before this fence runs) error path the
+    // fence says so in a CLI-styled note and skips its scan instead; the
+    // healthy path keeps the full store scan semantics verbatim.
+    let fence_agents = match SessionAgentStore::load() {
+        Ok(store) => store,
+        Err(error) => {
+            crate::note!(
+                "warning: projects rebind: the ACP session index is unreadable ({error:#}); \
+                 the straggler fence skipped its scan"
+            );
+            return;
+        }
+    };
     for (session_id, _) in fence_agents.sessions_under_workspace(from_display) {
         if !final_stale.contains(&session_id) {
             final_stale.push(session_id);

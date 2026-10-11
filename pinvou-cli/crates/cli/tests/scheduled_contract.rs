@@ -3879,3 +3879,41 @@ fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
         );
     }
 }
+
+/// Round-51 review: `--prompt-file` is model context (it becomes the
+/// unattended run's turn with auto-approve forced), so it joins the
+/// credential-path gate every sibling lane applies — a credential-shaped
+/// path must be refused before anything is persisted.
+#[test]
+fn create_refuses_a_credential_path_prompt_file() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = TempHome::new("create-credential-prompt");
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "PRIVATE KEY").unwrap();
+
+    let message = expect_failed(&[
+        "scheduled",
+        "create",
+        "--name",
+        "credential-gate",
+        "--prompt-file",
+        key.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+    ]);
+    assert!(
+        message.contains("refusing prompt file"),
+        "the credential-path gate must name the refusal: {message}"
+    );
+
+    // Nothing may have been persisted by the refusal.
+    let list = run_json(&["scheduled", "list"]);
+    let tasks = list
+        .as_array()
+        .or_else(|| list["tasks"].as_array())
+        .map(|tasks| tasks.len())
+        .unwrap_or(0);
+    assert_eq!(tasks, 0, "the refusal must not have created a task: {list}");
+}

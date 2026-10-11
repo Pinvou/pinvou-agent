@@ -77,6 +77,9 @@ use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON;
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
+use pinvou3_lib::features::{
+    LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, WECOM_MIN_VERSION,
+};
 use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
@@ -94,16 +97,13 @@ use pinvou3_lib::platform::paths::{
 const USAGE: &str =
     "usage: pinvou connectors <status|ensure-cli|enable|disable|logout|apply-skills|connect|ima>";
 
-/// Semantic-version floor per connector, mirroring the `*_MIN_VERSION`
-/// gates in wecom.rs (1.2.1 skill baseline), tmeet.rs (1.0.18 npm spec) and
-/// feishu.rs (`LARK_MIN_VERSION`, the 1.0.95 lock baseline).
-const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
-/// Mirrors the GUI's `LARK_MIN_VERSION` (feishu.rs): the skill pack's
-/// command surface assumes the 1.0.95 lock baseline, so an installed but
-/// older lark-cli counts as `upgrade_required` and `ensure-cli` replaces it
-/// instead of reporting "already installed".
-const FEISHU_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
+// Round-51 review: the per-connector semantic-version floors are imported
+// from the app crate's own gates (wecom.rs 1.2.1 skill baseline, tmeet.rs
+// 1.0.18 npm spec, feishu.rs 1.0.95 lock baseline) instead of re-declared —
+// a GUI-side raise moves the CLI's `upgrade_required` gates with it (the
+// same single-sourcing shape as the skill-dir and lock-JSON tables). The
+// feishu floor is the live one: this PR raised it for the skill pack's
+// command surface, so future raises are expected.
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).

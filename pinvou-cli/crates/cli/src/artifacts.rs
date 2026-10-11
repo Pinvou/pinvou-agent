@@ -413,7 +413,18 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
         // not-a-record disclosure the skip would have swallowed. Parse
         // those (rare) so corrupt records stay disclosed; the common
         // artifact-less well-formed record keeps skipping the parse.
-        if !raw.contains("\"artifacts\"") && raw.contains("\"metadata\"") {
+        // Round-51 review: the same disclosure contract covers a record
+        // that IS unparseable but carries `"metadata"` — a mid-write or
+        // hand-truncated file cut after the metadata region hits the skip
+        // above and vanishes from `skipped_sessions` (indistinguishable
+        // from a clean bill). A well-formed JSON document always ends with
+        // `}`, so a record whose raw bytes do not is unparseable by
+        // construction: parse-and-disclose it too, at the same negligible
+        // frequency as the neither-key class.
+        if !raw.contains("\"artifacts\"")
+            && raw.contains("\"metadata\"")
+            && raw.trim_end().ends_with('}')
+        {
             continue;
         }
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {
@@ -504,8 +515,10 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
                     // between runs, turning the CLI-only retain below into a
                     // present/absent flip for the same store. (The GUI twin
                     // keeps its `>=`; it has no session filter to amplify
-                    // the flip.) The id compare matches the row sort's
-                    // secondary key (name, then id via the struct order).
+                    // the flip.) Round-51 review: the row sort's key is
+                    // (mtime, name, path); the dedup tie here keys the
+                    // session id so `--session` selection is deterministic
+                    // even before that sort runs.
                     if row.mtime > current.mtime
                         || (row.mtime == current.mtime && row.session_id >= current.session_id)
                     {
@@ -516,7 +529,16 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
         }
     }
     let mut rows: Vec<DeliverableRow> = by_path.into_values().collect();
-    rows.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
+    // Round-51 review: a final `path` leg — (mtime, name) ties (same-second
+    // same-name deliverables in different sessions) kept HashMap-random
+    // relative order, flipping the JSON array and human row order between
+    // runs. Path is unique per row (the dedup map's key).
+    rows.sort_by(|a, b| {
+        b.mtime
+            .cmp(&a.mtime)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.path.cmp(&b.path))
+    });
     skipped.sort();
     Ok(DeliverableIndex { rows, skipped })
 }

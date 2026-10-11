@@ -987,7 +987,18 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
         }
         SkillMarketplaceManager::new()
             .uninstall(sid)
-            .map_err(|error| feature_error("tools uninstall", id, error))?;
+            .map_err(|error| {
+                // Round-51 review: name what held — the tool itself is still
+                // installed and the uninstall is retryable, mirroring the
+                // scoped "aborted while cleaning…" wording of the consent
+                // cleanup right below. (Manual format rather than
+                // `feature_error`: the state qualifier belongs in the message,
+                // not squeezed into the operation slot.)
+                CliError::failed(format!(
+                    "plugins tools uninstall({id}): aborted while removing the companion \
+                 skill (the tool itself is still installed): {error:#}"
+                ))
+            })?;
         // Round-40 review: this cleanup runs BEFORE `mgr.uninstall`, so its
         // failure means the tool is still installed — the shared "landed"
         // wording was false here (the GUI's equivalent propagates the raw
