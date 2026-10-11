@@ -2043,6 +2043,10 @@ mod web_projection_tests {
             chat.contains("crate::features::memory::record_turn_user(\n                    &sid,\n                    super::sessions::strip_session_mention_block(&raw_message),"),
             "long-memory must record the stripped user text, not the contract (round-15 m6)"
         );
+        assert!(
+            chat.contains("let title_source = super::sessions::first_send_title_source("),
+            "the native auto-title path must route through first_send_title_source (round-17 m8)"
+        );
         let codex = include_str!("codex.rs");
         assert!(
             codex.contains(".or_else(|| workspace_references.first().map(String::as_str)),"),

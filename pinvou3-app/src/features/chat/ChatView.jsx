@@ -1144,9 +1144,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // Codex/ACP sidebar rows put their session id on the same drag type
         // but never appear in bs.sessions (round-8 M4): a chip built from one
         // renders a dead "Session deleted" card that read_session can never
-        // resolve. Only ids the @ panel could produce are droppable.
+        // resolve. Knownness plus the choke point's own acceptance decide:
+        // a pick the @ panel would never offer (isolated prefix, oversized
+        // id — knownSessionMentionIds includes archived sessions) or a full
+        // chip strip must not show a drop hint it silently swallows
+        // (round-17 m4) — run the guarded add and let it reject.
         if (!knownSessionMentionIds.has(sessionId)) return;
         if (sessionRefs.some(ref => ref.sessionId === sessionId)) return;
+        if (sessionRefs.length >= MAX_SESSION_REFS) return;
         const title = ((((bs && bs.sessions) || []).find(s => s.id === sessionId)) || {}).title || '';
         handleSelectMentionCandidate({ sessionId, title });
       };
