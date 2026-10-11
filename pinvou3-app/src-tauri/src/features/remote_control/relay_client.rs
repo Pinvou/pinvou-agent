@@ -366,6 +366,12 @@ async fn run_revocation_loop(
         let (ws, _) = match connected {
             Ok(pair) => pair,
             Err(error) => {
+                // 撤销通道的 Connection 事件只有本 loop 的 channel-closure 检测在
+                // 消费（manager 侧只匹配 Message），失败原因在这里补一条日志，
+                // 与主循环的连接失败日志对齐。
+                eprintln!(
+                    "[web-access] connect relay for revocation failed: {error} ({relay_url})"
+                );
                 if tx_in
                     .send(RelayInbound::Connection {
                         endpoint_id: endpoint_id.clone(),
@@ -387,6 +393,7 @@ async fn run_revocation_loop(
         let (mut write, mut read) = ws.split();
         let revoke = revoke_message_parts(&endpoint_id, &desktop_secret);
         if let Err(error) = write.send(Message::Text(revoke.to_string().into())).await {
+            eprintln!("[web-access] revoke endpoint failed: {error}");
             if tx_in
                 .send(RelayInbound::Connection {
                     endpoint_id: endpoint_id.clone(),
@@ -457,6 +464,7 @@ async fn run_revocation_loop(
             }
         }
 
+        eprintln!("[web-access] relay revocation connection lost; reconnecting");
         if tx_in
             .send(RelayInbound::Connection {
                 endpoint_id: endpoint_id.clone(),
