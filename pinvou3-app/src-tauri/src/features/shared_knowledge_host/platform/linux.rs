@@ -1,12 +1,13 @@
 //! Linux 适配：通过安装包内的 root-owned helper 管理 systemd 服务。
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use pinvou_knowledge::client::KnowledgeClient;
 use pinvou_knowledge::model::DeviceGrant;
+use pinvou_knowledge::net_policy::{is_tailnet, is_ula};
 
 use crate::platform::process::{output_with_timeout, output_with_timeout_and_kill_tree};
 
@@ -383,13 +384,8 @@ fn is_lan_address(address: IpAddr) -> bool {
         // Only ULA addresses are portable between machines. A link-local fe80::
         // endpoint requires an interface zone id, which `hostname -I` does not
         // provide and therefore must never be advertised in a share link.
-        IpAddr::V6(address) => !address.is_loopback() && (address.segments()[0] & 0xfe00) == 0xfc00,
+        IpAddr::V6(address) => !address.is_loopback() && is_ula(address),
     }
-}
-
-fn is_tailnet(address: Ipv4Addr) -> bool {
-    let octets = address.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
 #[cfg(test)]
