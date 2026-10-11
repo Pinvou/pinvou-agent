@@ -649,3 +649,63 @@ and issuer/material/read-set final composition remain unfinished. Local
 owner/window helpers and the future write-set plan are not committed as completed
 functionality. Deployment remains deferred; downloads have no hard total or
 cumulative elapsed limit.
+
+T07 internal finite atomic metadata recording (2026-10-11) is committed as
+`ba104e4cd294ce4f2d1eac5b92c9d752901f2d59` in the separate server repository on
+`feat/t07-issuance-write-set`.
+It captures actual T05 enabled epochs, original accepted provider sources and
+the T06 owner, prepares signatures outside SQL, then records exact whole-envelope
+bytes and monotone original KeyUse obligations in one private SQL transaction.
+The new issuance namespace leaves every existing SQL migration and frozen V1
+artifact unchanged. Runtime has SELECT and no EXECUTE on its private write port;
+a command name or prepared signature does not establish publisher authority.
+
+Before writing, the port rechecks the complete original Root, typed deny,
+metadata inventory, epoch/control/use, material/fence and owner read set. After
+writing each distinct epoch once, it checks precisely derived final uses/index,
+unchanged dependencies, the actual lease and final object/Root expiry. Original
+keys, threshold and provenance remain immutable. Retention preserves previous
+deadlines, uses the original signed expiry and the current SQL lease rounded up
+plus the standard 24-hour reply window, with a two-minute margin. These windows
+create no fresh object validity, event-upload right or permanent replay right.
+Recovery returns original stored bytes within the actual original T06 window;
+it calls no signer and still requires current publisher authorization and T06's
+final replay fence. Same-version exact bytes may be reused by a later result;
+different bytes at the same full role/scope/version conflict.
+
+The corrected production tree passed all ten new real PostgreSQL/OpenBao cases
+and the affected existing issuer Transit regression in one serial run (222.567s).
+They cover multi-role/threshold and multi-Target exact-scope issuance, original
+replay without signing, business/lease rollback, version/byte/canonical/owner/read
+and policy counterexamples, final object/Root expiry, Stop during presigning,
+private helper/column ACL and digest refusal, and additive initialization.
+The actual complete-source boundary records 4096 references and refuses 4097;
+its additional canonical genesis heads are isolated owner fixtures, not thousands
+of accepted T05 registrations. The 32MiB aggregate-array tests are synthetic
+arithmetic controls; frozen V1 still has at most fourteen legal slots per component.
+
+Actual Transit uses the approved original T05 source, fixed name/version/public
+descriptor and local Ed25519 verification. Revoking the isolated signing token
+does not prevent original-byte replay; new issuance fails without extra records.
+The collation regression checks actual accepted test descriptors whose ICU
+numeric and byte ordering differ: explicit `COLLATE "C"` accepts the legal batch,
+while the old comparator refuses it with no partial writes. Deterministic public
+test labels and full pair selection remove random fixture failures; the corrected
+test-only fixture passed separately (16.398s). Final
+post-write verification also binds itself back to the original complete candidate.
+
+Both independent roles passed the complete scoped code, SQL, tests and design
+record after the primary role repaired their findings. Full default Go tests/vet,
+module verification, three command builds and pinned-contract checks passed.
+Default external opt-ins remain distinct from the explicit local integration
+runs; no browser, live Keycloak OTP, production custody, HA, concurrent-load or
+physical-client certification is inferred.
+
+This completes the internal recording port, not all T07/T08 functionality.
+The actual source currently accepts complete genesis and rejects published heads.
+A production publisher must supply current business/authority guards, metadata
+reference graph and all current/generation/pending publication writes in the same
+T06 transaction. The isolated test publisher does not provide those owners.
+Specific-client trust proof, complete emergency deny/reconciliation and permanent
+Manifest archives remain separate work. Deployment remains deferred; downloads
+have no hard total or cumulative elapsed limit.
