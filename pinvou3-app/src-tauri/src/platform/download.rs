@@ -213,25 +213,13 @@ pub fn redact_url_credentials_in_text(text: &str) -> String {
 /// returns the first position where `needle` occurs regardless of ASCII
 /// case. UTF-8 continuation bytes always have the high bit set and can
 /// never equal an ASCII byte, so a match index is always a char boundary.
+/// `needle` must be non-empty (an empty needle would panic in `windows`):
+/// the only callers pass the non-empty `"https://"` / `"http://"` literals.
 fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let hay = haystack.as_bytes();
-    let first = needle.as_bytes()[0].to_ascii_lowercase();
-    hay.windows(needle.len())
-        .enumerate()
-        .find_map(|(index, window)| {
-            (window[0].to_ascii_lowercase() == first)
-                .then(|| {
-                    window
-                        .iter()
-                        .zip(needle.bytes())
-                        .all(|(byte, expected)| byte.to_ascii_lowercase() == expected)
-                })
-                .filter(|&matched| matched)
-                .map(|_| index)
-        })
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 pub(crate) async fn download_to_part_with_verify(

@@ -1,7 +1,7 @@
 // architecture-guard: allow-target-cfg -- the cfg(unix)-gated test fixtures in this file share one non-portable shape: a real symlink. The round-12 baseline-gate convergence pin, the round-48 untracked-diff regression (refuses an escaping link, reads a local one canonically), and the round-51 fingerprint/baseline pins (a dirty symlink→regular-file must be skipped, never hashed through, and the tracked-ness oracle must answer literal paths so a glob-metacharacter filename cannot alias a tracked file) all need std::os::unix::fs::symlink or a `*`-bearing filename that Windows cannot express; the semantics under test are platform-independent, only the fixtures cannot be.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::UNIX_EPOCH;
@@ -337,38 +337,23 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
         entries,
     };
     let path = baseline_path(session_id);
+    // `atomic_write` stages inside the target's parent, so the directory
+    // must exist first (unchanged from the hand-rolled writer).
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("创建工作区基线目录失败: {}", parent.display()))?;
     }
     let payload = serde_json::to_vec_pretty(&baseline).context("序列化工作区基线失败")?;
-    // Pid-carrying staging name: the CLI's `code` family captures baselines
-    // from a second process against the same session directories, and a
-    // fixed `.tmp` name lets two surfaces rename each other's half-written
-    // file into place (the same rule the providers store's `persist_locked`
-    // documents).
-    let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
-    // Round-41 review: BOTH failure arms clean the pid tmp — a File::create
-    // or write failure (ENOSPC, EACCES) strands `…tmp.<pid>` forever because
-    // a different-pid run never reuses it (only the rename arm cleaned up;
-    // the sibling AcpConfigDefaultsStore persist got the same two-arm fix in
-    // round-37).
-    let staged = (|| -> anyhow::Result<()> {
-        let mut file = fs::File::create(&temporary)
-            .with_context(|| format!("创建工作区基线失败: {}", temporary.display()))?;
-        file.write_all(&payload)
-            .with_context(|| format!("写入工作区基线失败: {}", temporary.display()))?;
-        file.sync_all().ok();
-        Ok(())
-    })();
-    if let Err(error) = staged {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error).with_context(|| format!("保存工作区基线失败: {}", path.display()));
-    }
+    // The hand-rolled pid-carrying tmp+rename (the CLI's `code` family
+    // captures baselines from a second process against the same session
+    // directories, so a fixed `.tmp` name would let two surfaces rename
+    // each other's half-written file into place) carried no fsync, and its
+    // two cleanup arms existed because a failed write (ENOSPC, EACCES)
+    // would strand `…tmp.<pid>` forever. `atomic_write` subsumes both: the
+    // unique per-writer staging name, the fsync-before-rename the sibling
+    // stores migrated for, and the same litter rule.
+    crate::platform::filesystem::atomic_write(&path, &payload)
+        .with_context(|| format!("保存工作区基线失败: {}", path.display()))?;
     Ok(())
 }
 

@@ -1730,6 +1730,32 @@ mod tests {
         fs::write(record, "{}").unwrap();
     }
 
+    /// Temp directory plus a fresh empty [`SessionAgentStore`] over
+    /// `session-agents.json` inside it — one call per store instance in the
+    /// lock-and-reload tests below. The directory keeps the module's
+    /// existing `pinvou3-<tag>-{pid}` on-disk naming shape (the trailing
+    /// `-` stays in `tag`) and is recreated fresh per call so parallel
+    /// tests never share a directory. Same shape as the providers test
+    /// module's `section_test_dir` + `tmp_store`.
+    fn store_fixture(tag: &str) -> (PathBuf, SessionAgentStore) {
+        let root = std::env::temp_dir().join(format!("{tag}{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = store_at(&root.join("session-agents.json"));
+        (root, store)
+    }
+
+    /// A fresh empty store over `path` — the second-process stand-in for
+    /// tests that need two independent in-memory tables over the same
+    /// on-disk index (a second `store_fixture` call would wipe the
+    /// directory the first store already committed to).
+    fn store_at(path: &Path) -> SessionAgentStore {
+        SessionAgentStore {
+            path: path.to_path_buf(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     #[test]
     fn backend_aliases_are_stable() {
         assert_eq!(AgentBackend::parse(None).unwrap(), AgentBackend::Deepseek);
@@ -2077,24 +2103,12 @@ mod tests {
     /// bind resurrected a CLI-deleted record), with no error anywhere.
     #[test]
     fn gui_mutators_reload_under_the_section_lock_instead_of_persisting_a_stale_table() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-session-agents-lock-reload-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let gui = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, gui) = store_fixture("pinvou3-session-agents-lock-reload-test-");
+        let path = gui.path.clone();
         gui.set_acp_session("gui-session", "acp-1".to_string(), None, HashMap::new())
             .unwrap();
         // The CLI is a separate process committing after the GUI booted.
-        let cli = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let cli = store_at(&path);
         cli.set_acp_session("cli-session", "acp-2".to_string(), None, HashMap::new())
             .unwrap();
 
@@ -2136,17 +2150,8 @@ mod tests {
     /// index must be refused instead of being overwritten.
     #[test]
     fn restore_missing_code_session_record_observes_the_section_truth() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-restore-code-record-lock-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let gui = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, gui) = store_fixture("pinvou3-restore-code-record-lock-test-");
+        let path = gui.path.clone();
         gui.bind_code_native_session("booted-session", CodexWorkspaceKind::Temporary, None)
             .unwrap();
         // The sidecar this boot pass will restore from (index record
@@ -2158,10 +2163,7 @@ mod tests {
             None
         ));
         // A peer process commits a fresh bind after the GUI booted.
-        let peer = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let peer = store_at(&path);
         peer.bind_code_native_session("peer-session", CodexWorkspaceKind::Temporary, None)
             .unwrap();
 
@@ -2209,17 +2211,8 @@ mod tests {
     /// record from the sidecar bytes read under the section lock.
     #[test]
     fn restore_missing_code_session_record_rebuilds_from_the_rewritten_sidecar() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-restore-code-record-rewrite-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let gui = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, gui) = store_fixture("pinvou3-restore-code-record-rewrite-test-");
+        let path = gui.path.clone();
         // What the boot pass enumerated: an orphan sidecar bound to the old
         // temporary workspace (no index record — the recovery lane's premise).
         assert!(write_code_session_sidecar(
@@ -2262,25 +2255,15 @@ mod tests {
     /// restore pass would turn back into an index record.
     #[test]
     fn sidecar_backfill_does_not_resurrect_a_peer_deleted_session() {
-        let root =
-            std::env::temp_dir().join(format!("pinvou3-backfill-lock-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let gui = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, gui) = store_fixture("pinvou3-backfill-lock-test-");
+        let path = gui.path.clone();
         gui.bind_code_native_session("legacy-session", CodexWorkspaceKind::Temporary, None)
             .unwrap();
         // A pre-sidecar-persist build's legacy record: index in, sidecar
         // out — exactly what the backfill exists to heal.
         remove_code_session_sidecar(&path, "legacy-session");
         // The peer deletes the session (record and sidecar) after boot.
-        let peer = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let peer = store_at(&path);
         peer.remove_for_second_process("legacy-session").unwrap();
 
         let backfilled = gui.backfill_missing_code_session_sidecars().unwrap();
@@ -2300,17 +2283,8 @@ mod tests {
     /// `remove_for_second_process` and `rebind_workspace_prefix`.
     #[test]
     fn gui_mutators_refuse_a_corrupt_index_instead_of_persisting_over_it() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-session-agents-corrupt-refusal-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let store = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, store) = store_fixture("pinvou3-session-agents-corrupt-refusal-test-");
+        let path = store.path.clone();
         store
             .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
             .unwrap();
@@ -2564,18 +2538,9 @@ mod tests {
     /// the whole-table persist used to drop it silently.
     #[test]
     fn rebind_workspace_prefix_persists_a_record_bound_after_this_process_booted() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-codex-rebind-second-process-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
+        let (root, store) = store_fixture("pinvou3-codex-rebind-second-process-");
         // `store` is the rebind process: its memory holds only s1 (the
         // boot-era snapshot).
-        let store = SessionAgentStore {
-            path: root.join("session-agents.json"),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
         let from = root.join("from");
         let to = root.join("to");
         fs::create_dir_all(from.join("sub")).unwrap();
@@ -2594,10 +2559,7 @@ mod tests {
         // built through a real `set_acp_workspace` on a scratch store so the
         // serialized shape stays the production one, then spliced into the
         // index the way the GUI's own persist would have.
-        let scratch_store = SessionAgentStore {
-            path: root.join("scratch-index.json"),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let scratch_store = store_at(&root.join("scratch-index.json"));
         scratch_store
             .set_acp_workspace(
                 "s2",
@@ -2650,16 +2612,7 @@ mod tests {
     /// table persist that throws away every recoverable record.
     #[test]
     fn rebind_workspace_prefix_refuses_a_corrupt_index_instead_of_emptying_it() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-codex-rebind-corrupt-index-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let store = SessionAgentStore {
-            path: root.join("session-agents.json"),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, store) = store_fixture("pinvou3-codex-rebind-corrupt-index-");
         let from = root.join("from");
         let to = root.join("to");
         fs::create_dir_all(&from).unwrap();
@@ -3396,17 +3349,8 @@ mod tests {
     /// ACP index record for the deleted session.
     #[test]
     fn restore_missing_acp_record_refuses_when_the_source_vanished_under_the_lock() {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-acp-restore-source-gone-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("session-agents.json");
-        let store = SessionAgentStore {
-            path: path.clone(),
-            records: Arc::new(RwLock::new(HashMap::new())),
-        };
+        let (root, store) = store_fixture("pinvou3-acp-restore-source-gone-test-");
+        let path = store.path.clone();
         let recovered = || SessionAgentRecord {
             backend: AgentBackend::ClaudeAcp,
             acp_session_id: Some("acp-session-1".to_string()),

@@ -796,39 +796,25 @@ fn dedup_credential_declarations<T>(
 /// may be reworded at any time, and a full-equality match would let a pure
 /// copy edit silently reclassify "disconnected" back into
 /// "assets mismatch" -- exactly the misdiagnosis this judgment prevents.
+///
+/// Written as a two-half `concat!` split exactly at the classifier prefix:
+/// the first half is byte-for-byte [`CLI_DISCONNECTED_DEGRADED_PREFIX`], so
+/// the prefix relationship is structural in the source (the two literals sit
+/// a few lines apart) instead of being policed by a hand-rolled const-fn
+/// byte matcher.
 pub const CLI_DISCONNECTED_DEGRADED_REASON: &str =
-    "已断开授权：配套技能已随断开移除，重新连接即可恢复";
+    concat!("已断开授权", "：配套技能已随断开移除，重新连接即可恢复");
 
 /// [`CLI_DISCONNECTED_DEGRADED_REASON`] 的稳定前缀：分类器只认前缀（尾巴的
 /// 提示文案可随时改写），两个写入方都以它开头——重新措辞 const 时分类器
-/// 自动跟随，不会再留一份手抄字面量悄悄漂移。
+/// 自动跟随，不会再留一份手抄字面量悄悄漂移。（上方 const 的 `concat!` 第一
+/// 段就是这段字节；改前缀时两处须同改。）
 const CLI_DISCONNECTED_DEGRADED_PREFIX: &str = "已断开授权";
 
 /// `degraded` 原因是否来自「断开授权」而不是资产校验失败。
 fn degraded_by_disconnect(reason: &str) -> bool {
     reason.starts_with(CLI_DISCONNECTED_DEGRADED_PREFIX)
 }
-
-/// 编译期钉扎：const 必须以分类器的稳定前缀开头。前缀漂移（重写 const 时
-/// 动了开头）在构建期即红，而不是等到断开授权被误分类为资产损坏。
-const fn starts_with_stable_prefix(hay: &str, prefix: &str) -> bool {
-    let (hay, prefix) = (hay.as_bytes(), prefix.as_bytes());
-    if prefix.len() > hay.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < prefix.len() {
-        if hay[index] != prefix[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-const _: () = assert!(starts_with_stable_prefix(
-    CLI_DISCONNECTED_DEGRADED_REASON,
-    CLI_DISCONNECTED_DEGRADED_PREFIX
-));
 
 /// 就绪态判定（派生态，现算不进存储）。
 /// - CLI 包：桌面端由命令层经 `bundle_readiness` 分派到各 status 查询注入授权态

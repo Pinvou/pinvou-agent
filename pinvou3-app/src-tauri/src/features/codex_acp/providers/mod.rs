@@ -1385,12 +1385,11 @@ impl ProviderManager {
         // removed provider's model name pointed at official auth.
         let removed = self.store.record_fresh_locked(agent, provider_id);
         if was_current {
-            match removed.as_ref() {
-                // 已持双锁：调 fresh 实现，避免重复加锁（flock 与
-                // parking_lot 都非可重入）。
-                Some(record) => self.switch_official_after_removal_fresh(agent, record)?,
-                None => self.switch_official_locked(agent)?,
-            }
+            // 已持双锁：调 fresh 实现，避免重复加锁（flock 与
+            // parking_lot 都非可重入）。显式传入 removed：记录存在时以它为
+            // revert 目标；不存在时（Some/None 两臂原语义）回退到
+            // current 的 fresh read。
+            self.switch_official_locked(agent, removed)?;
         }
         let removed = self.store.remove_locked(agent, provider_id)?;
         if removed.is_some() {
@@ -1505,14 +1504,25 @@ impl ProviderManager {
         // Round-37 review MAJOR: the flock spans the reads and the config
         // rewrite plus the store write, like `switch`.
         let _section = self.store.section_lock();
-        self.switch_official_locked(agent)
+        self.switch_official_locked(agent, None)
     }
 
     /// 无锁内部实现：调用方必须已持 per-agent 切换锁 AND the cross-process
     /// section flock（delete / switch_official 持双锁后调用）。
-    /// store 读取走 reload 后的 fresh read（配置/表分裂态的同一纪律）。
-    fn switch_official_locked(&self, agent: &str) -> Result<()> {
-        let record = self.store.current_and_record_fresh_locked(agent);
+    /// `revert` 传 `Some(record)` 时跳过 store 读取、直接以该记录为 revert
+    /// 目标——delete 回退当前 Provider：显式传入被删记录供 revert 精确清理
+    /// （例如 codex 顶层 model 只在与被删 Provider 的 model 相同时删除）；
+    /// `None` 时 store 读取走 reload 后的 fresh read（配置/表分裂态的同一
+    /// 纪律）。
+    // Round-40 review: the public lock-then-delegate wrapper is gone —
+    // `delete`'s revert arm is the only caller and it already holds both
+    // locks, so the wrapper had no live caller and a second entry point
+    // into the locked region is one more way to bypass the discipline.
+    fn switch_official_locked(&self, agent: &str, revert: Option<ProviderRecord>) -> Result<()> {
+        let record = match revert {
+            Some(record) => Some(record),
+            None => self.store.current_and_record_fresh_locked(agent),
+        };
         let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
         // Same fresh-read discipline as the revert target: this value is
         // written back verbatim by `restore_default_model`, so deciding it
@@ -1521,30 +1531,6 @@ impl ProviderManager {
         let official_default_model = self.store.official_default_model_fresh_locked(agent);
         let writer = self.writer_for(agent)?;
         writer.revert_to_official(reverted.as_ref())?;
-        writer.restore_default_model(official_default_model.as_deref())?;
-        self.store.set_current_locked(agent, None)?;
-        Ok(())
-    }
-
-    /// 删除当前 Provider 后的回退：记录已从 store 移除，显式传入 removed 记录
-    /// 供 revert 精确清理（例如 codex 顶层 model 只在与被删 Provider 的 model
-    /// 相同时删除）。
-    // Round-40 review: the public lock-then-delegate wrapper is gone —
-    // `delete`'s revert arm is the only caller and it already holds both
-    // locks, so the wrapper had no live caller and a second entry point
-    // into the locked region is one more way to bypass the discipline.
-    /// Revert-to-official for `delete`'s arm, a caller that already
-    /// holds both the per-agent switch lock and the section flock.
-    fn switch_official_after_removal_fresh(
-        &self,
-        agent: &str,
-        removed: &ProviderRecord,
-    ) -> Result<()> {
-        // Fresh read under the held section lock: this restore decides the
-        // official login state the same way `switch_official_locked` does.
-        let official_default_model = self.store.official_default_model_fresh_locked(agent);
-        let writer = self.writer_for(agent)?;
-        writer.revert_to_official(Some(&ProviderTarget::from_record(removed, None)))?;
         writer.restore_default_model(official_default_model.as_deref())?;
         self.store.set_current_locked(agent, None)?;
         Ok(())

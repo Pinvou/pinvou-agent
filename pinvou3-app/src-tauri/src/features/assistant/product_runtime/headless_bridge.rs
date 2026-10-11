@@ -1474,8 +1474,9 @@ where
 /// command must not carry — for closures that ignore both handles, and it
 /// made the lanes need a display on headless Linux (the Tauri event loop).
 /// No event loop and no app context here: the work future runs on the
-/// runtime directly, with the same nested-task panic containment as the
-/// product host's spawn site. One hard precondition, unlike the windowless
+/// runtime directly as one spawned task, whose JoinHandle contains panics
+/// as the same "headless work failed" JoinError as any other fault. One
+/// hard precondition, unlike the windowless
 /// product host (which contains its whole boot): the WORK future is
 /// panic-contained, but the boot itself is not — `tauri::async_runtime::set`
 /// panics if a runtime was already initialized in this process, so this
@@ -1491,7 +1492,9 @@ static BARE_HOST_TAKEN: AtomicBool = AtomicBool::new(false);
 /// at-most-once latch (bailing with the lane-collision message), and the
 /// shared multi-thread tokio runtime build. The caller alone performs
 /// `tauri::async_runtime::set` on the returned runtime's handle, keeping
-/// each host's local flow readable.
+/// each host's local flow readable. (round-47 review: the lane-collision
+/// message used to blame run_bare_host even when the windowless lane took
+/// the latch first)
 fn claim_headless_host_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     crate::install_rustls_provider();
     crate::ensure_release_env();
@@ -1508,7 +1511,7 @@ fn claim_headless_host_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
         .is_err()
     {
         anyhow::bail!(
-            "a windowless host lane (run_windowless_host or run_bare_host) already ran in this process: tauri::async_runtime::set panics on a second runtime, and both helpers share one latch and must stay the process's only host lanes (round-47 review: the message used to blame run_bare_host even when the windowless lane took the latch first)"
+            "a windowless host lane (run_windowless_host or run_bare_host) already ran in this process: tauri::async_runtime::set panics on a second runtime, and both helpers share one latch and must stay the process's only host lanes"
         );
     }
     let async_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1527,15 +1530,7 @@ where
 {
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
-    let joined = async_runtime.spawn(async move {
-        // Same shape as the product host's spawn site: the work future runs
-        // on a nested task so a panic inside it surfaces as a JoinError
-        // instead of being swallowed by tokio.
-        match tokio::task::spawn(work()).await {
-            Ok(result) => result,
-            Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),
-        }
-    });
+    let joined = async_runtime.spawn(work());
     match async_runtime.block_on(joined) {
         Ok(result) => result,
         Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),

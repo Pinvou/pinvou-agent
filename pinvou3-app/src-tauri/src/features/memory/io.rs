@@ -125,44 +125,25 @@ pub(crate) fn organize_lock_path() -> PathBuf {
 /// run, with the message preserved in the run record).
 pub const ORGANIZE_LOCK_BUSY: &str = "another organize pass is already running";
 
-/// Guard for an acquired organize pass lock. `Drop` releases the OS advisory
-/// lock, so holding the guard for the scope of the pass covers every exit
-/// path — early errors, cancellation, success — with no manual release. The
-/// lock file itself is never deleted: only the OS lock on an open handle
-/// decides, so a file left behind by a crashed process never blocks the next
-/// pass.
-#[derive(Debug)]
-pub(crate) struct OrganizePassLock {
-    file: fs::File,
-}
-
-impl Drop for OrganizePassLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
-}
-
 /// Try-acquire the cross-process organize pass lock
 /// ([`organize_lock_path`]). Uses the OS advisory file lock through the
-/// std-stabilized `File::try_lock`/`unlock` pair (flock on Unix, LockFileEx
-/// on Windows) — the same class of primitive the install locks use — no new
-/// dependency, no unsafe guard construction. Try semantics: a second pass
-/// while one is in flight fails immediately with [`ORGANIZE_LOCK_BUSY`] on
-/// `WouldBlock` instead of queueing behind the running pass's up to
-/// 75-second LLM call.
-pub(crate) fn try_lock_organize_pass() -> io::Result<OrganizePassLock> {
-    let path = organize_lock_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)?;
+/// std-stabilized `File::try_lock` (flock on Unix, LockFileEx on Windows)
+/// — the same class of primitive the install locks use — no new
+/// dependency, no unsafe guard construction. The returned file handle IS
+/// the guard: holding it for the scope of the pass covers every exit path
+/// — early errors, cancellation, success — with no manual release. No
+/// explicit `unlock()`: the OS advisory lock is bound to the file
+/// descriptor and the kernel releases it when the handle drops (closes),
+/// the same discipline the settings transaction lock documents. The lock
+/// file itself is never deleted: only the OS lock on an open handle
+/// decides, so a file left behind by a crashed process never blocks the
+/// next pass. Try semantics: a second pass while one is in flight fails
+/// immediately with [`ORGANIZE_LOCK_BUSY`] on `WouldBlock` instead of
+/// queueing behind the running pass's up to 75-second LLM call.
+pub(crate) fn try_lock_organize_pass() -> io::Result<std::fs::File> {
+    let file = crate::platform::filesystem::open_lock_file_with_dirs(&organize_lock_path())?;
     match file.try_lock() {
-        Ok(()) => Ok(OrganizePassLock { file }),
+        Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             ORGANIZE_LOCK_BUSY,

@@ -60,19 +60,15 @@ fn lock_rewound_turns_file() -> Result<std::fs::File> {
 }
 
 /// Path-compute → create_dir_all → open scaffold shared by the two lock
-/// twins above and below (they differ only in blocking vs `try_lock`). The
-/// blocking twin wraps any failure — including the `create_dir_all` step —
-/// in its `打开回退备份锁失败` context; the try twin degrades to `None`.
+/// twins above and below (they differ only in blocking vs `try_lock`): the
+/// create_dir_all + open half now comes from the shared platform helper
+/// [`crate::platform::filesystem::open_lock_file_with_dirs`]. The blocking
+/// twin wraps any failure — including the `create_dir_all` step — in its
+/// `打开回退备份锁失败` context; the try twin degrades to `None`.
 fn open_lock_file() -> std::io::Result<std::fs::File> {
-    let path = rewound_turns_path().with_extension("json.lock");
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
+    crate::platform::filesystem::open_lock_file_with_dirs(
+        &rewound_turns_path().with_extension("json.lock"),
+    )
 }
 
 /// Non-blocking twin of [`lock_rewound_turns_file`] for callers that must

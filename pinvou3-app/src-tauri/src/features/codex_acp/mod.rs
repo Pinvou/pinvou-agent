@@ -3380,7 +3380,7 @@ impl AcpPool {
         // 加锁重读的临界区，这里的本地查找在同一份快照上完成判定。
         let providers = self.providers.clone();
         let agent = agent.to_string();
-        tokio::task::spawn_blocking(move || {
+        on_blocking(move || {
             let state = providers.store().state_after_reload(&agent);
             let provider_id = match session_provider {
                 Some(provider_id) => Some(provider_id),
@@ -3399,7 +3399,6 @@ impl AcpPool {
             providers.api_key(&agent, &provider_id)
         })
         .await
-        .map_err(|error| anyhow::anyhow!("provider key task join error: {error}"))?
     }
 
     /// 卸载 ACP Agent CLI。有运行中会话时拒绝；`cleanup=true` 时额外删除该 Agent

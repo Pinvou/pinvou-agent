@@ -91,6 +91,10 @@ pub(super) fn browser_last_error_hint(raw: &str, now: u64) -> Option<(&'static s
         .copied()
         .find(|(candidate, _)| *candidate == code)
 }
+    /// 清理已从工具市场移除的预置 MCP 工具残留。
+    ///
+    /// 不能删除所有未知目录:未来/本地可能有自定义 MCP 工具。这里只精确处理曾经内置、
+    /// 现在源码资源已经移除的 marketplace 工具。
 pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
         let tool_id = "data_analysis";
         // 退役 id 保护：`bundles/` 已是用户上传落盘区，用户可能上传过

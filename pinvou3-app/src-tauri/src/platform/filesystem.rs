@@ -694,6 +694,28 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
     file.write_all(bytes)
 }
 
+/// The plain shared open scaffold for cross-process lock files:
+/// `create_dir_all(parent)` + open read+write, created but never truncated
+/// (`truncate(false)` — the lock files hold no data and are never deleted;
+/// a leftover empty file must not block the next acquirer). Callers apply
+/// their own acquire policy on the returned handle (blocking `lock`,
+/// `try_lock`, bounded retry) and their own error contexts. This is
+/// deliberately NOT [`open_private_lock_file`]: switching would change the
+/// lock files' observable permissions (0600 creation + tighten) and open
+/// semantics (O_NOFOLLOW/O_NONBLOCK hardening) — a behavior change for the
+/// existing consumers, not a refactor.
+pub(crate) fn open_lock_file_with_dirs(path: &Path) -> io::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
 #[derive(Clone)]
 pub(crate) struct RealDirectoryIdentity {
     #[cfg(any(
