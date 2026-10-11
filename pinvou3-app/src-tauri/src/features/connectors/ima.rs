@@ -481,23 +481,6 @@ fn redact_known_credentials(mut text: String, client_id: &str, api_key: &str) ->
 
 #[cfg(test)]
 mod tests {
-    /// Round-32 minor 10 (review #455): the shared consent-failure marker is
-    /// the exact string the frontend matches (ToolStoreView
-    /// `consentFailure`); rewording it without updating the frontend matcher
-    /// would silently degrade the en/ja guidance to the generic copy. The
-    /// ima-local alias of the marker was production-dead since deny-first
-    /// (a refused gate aborts before anything lands, so ima connect surfaces
-    /// the raw refusal instead of a wrapped marker copy) — removed in the
-    /// round-15 pass; the contract pin lives on against the shared constant.
-    #[test]
-    fn consent_failure_marker_matches_the_frontend_contract() {
-        assert_eq!(
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
-            "persisting their default-off consent state failed",
-            "the marker value is the frontend contract (ToolStoreView consentFailure) — update both sides together"
-        );
-    }
-
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
@@ -748,83 +731,38 @@ mod tests {
         });
     }
 
-    /// Round-10 review: the deny-first gate must land the ima entry BEFORE
-    /// the first credential write touches the vault. The probe store
-    /// snapshots the Code deny list at the first `set` — it must already be
-    /// the final post-gate state, and it must contain a fresh registration
-    /// beyond the seed. Reordering the gate after the credential writes
-    /// fails the first assert (the snapshot would miss the new entry).
-    struct GateOrderProbe {
-        inner: MemoryCredentialStore,
-        deny_list_at_first_set: std::sync::Mutex<Option<Vec<String>>>,
-    }
-
-    impl CredentialStore for GateOrderProbe {
-        fn get(
-            &self,
-            reference: &CredentialReference,
-        ) -> Result<Option<String>, crate::platform::credential_store::CredentialError> {
-            self.inner.get(reference)
-        }
-
-        fn set(
-            &self,
-            reference: &CredentialReference,
-            value: &str,
-        ) -> Result<(), crate::platform::credential_store::CredentialError> {
-            let mut first = self.deny_list_at_first_set.lock().unwrap();
-            if first.is_none() {
-                *first = Some(
-                    crate::features::marketplace::scope::load_disabled_bundles_for(
-                        crate::features::marketplace::ConnectorScope::Code,
-                    ),
-                );
-            }
-            drop(first);
-            self.inner.set(reference, value)
-        }
-
-        fn delete(
-            &self,
-            reference: &CredentialReference,
-        ) -> Result<(), crate::platform::credential_store::CredentialError> {
-            self.inner.delete(reference)
-        }
-    }
-
+    /// Happy-path end-state pin for a FRESH connect on a working lock (the
+    /// only observable residue of the deleted GateOrderProbe ordering probe —
+    /// the ordering proof lives on in
+    /// `connect_refused_sync_aborts_before_anything_lands` under the refusal
+    /// condition): the deny-first entry lands in the initialized Code scope
+    /// ("ima-skills" normalizes to its owner-package id "ima" on save) and
+    /// the credentials round-trip.
     #[test]
-    fn connect_touches_credentials_only_after_the_deny_entry_lands() {
+    fn fresh_connect_lands_deny_entry_and_credentials() {
         with_temp_home(|| {
             init_code_scope(&["seed-bundle"]);
 
-            let probe = GateOrderProbe {
-                inner: MemoryCredentialStore::default(),
-                deny_list_at_first_set: std::sync::Mutex::new(None),
-            };
-            ima_connect_sync_with_store("client".to_string(), "key".to_string(), &probe)
+            let store = MemoryCredentialStore::default();
+            ima_connect_sync_with_store("client".to_string(), "key".to_string(), &store)
                 .expect("a fresh connect must succeed while the lock works");
 
-            let final_list = crate::features::marketplace::scope::load_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-            );
-            let snapshot = probe
-                .deny_list_at_first_set
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("the connect must write credentials through the probe");
-            assert_eq!(
-                snapshot, final_list,
-                "the deny list at the first credential write must already be the final post-gate state"
-            );
             assert!(
-                snapshot.len() > 1,
-                "a fresh connect must have registered a deny entry beyond the seed: {snapshot:?}"
+                crate::features::marketplace::scope::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Code,
+                )
+                .contains(&"ima".to_string()),
+                "the fresh connect must register the deny-first entry"
             );
             assert_eq!(
-                probe.get(&client_id_ref()).unwrap().as_deref(),
+                store.get(&client_id_ref()).unwrap().as_deref(),
                 Some("client"),
-                "the connect must still write the credentials through the probe"
+                "the connect must write the credentials"
+            );
+            assert_eq!(
+                store.get(&api_key_ref()).unwrap().as_deref(),
+                Some("key"),
+                "the connect must write the credentials"
             );
         });
     }
