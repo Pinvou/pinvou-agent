@@ -449,14 +449,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "needs.changes.outputs.release_contract == 'true'",
             self.pr_workflow,
         )
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        # required-gate's display `name:` is the branch-protection check name;
-        # the suite locates the job only by its YAML key, so a display-name
-        # rename would silently orphan the required check. Pin it in every
-        # test that asserts on this block.
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- release-contract-test", required_gate)
         self.assertIn(
             '"release-contract-test:$RELEASE_CONTRACT_RESULT"',
@@ -796,10 +789,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "开发启动入口变化必须触发 ACP Runtime 契约检查",
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertNotIn("完整门禁已在 PR 入队前验证", required_gate)
         self.assertIn("Merge Queue 基础检查失败", required_gate)
 
@@ -869,10 +859,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("--manifest-path pinvou-knowledge/Cargo.toml", knowledge)
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
@@ -936,6 +923,16 @@ class CiGatePolicyTests(unittest.TestCase):
             matches,
             msg or f"no run_filtered line pins -p {package} --locked {filter}",
         )
+
+    def _required_gate(self):
+        # Split off everything from the required-gate job onward. Required-
+        # gate's display `name:` is the branch-protection check name; the
+        # suite locates the job only by its YAML key, so a display-name
+        # rename would silently orphan the required check. Pin it in every
+        # test that asserts on this block.
+        required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
+        self.assertIn("name: required-gate", required_gate)
+        return required_gate
 
     def test_cli_crate_has_its_own_required_gate(self):
         changes = _changes_block(self.pr_workflow)
@@ -1417,10 +1414,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- cli-test", required_gate)
         self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
         self.assertIn("- macos-cli-check", required_gate)
@@ -1507,10 +1501,7 @@ class CiGatePolicyTests(unittest.TestCase):
             merge_group_branch,
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- macos-cli-check", required_gate)
         self.assertIn(
             "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
@@ -1673,25 +1664,18 @@ class CiGatePolicyTests(unittest.TestCase):
             # Round-51 review: cargo's short spelling of --features slipped
             # past the pin above — `-F product-backend` appended after
             # --locked compiled the feature-on config with every assertion
-            # green (mutation-verified bypass). Pin both spellings, mirroring
-            # the -A / -Aclippy clippy pins: the space form as a literal, the
-            # adjacent form (`-Fproduct-backend`, where the feature name
-            # varies) as a regex.
+            # green (mutation-verified bypass). The featureless invocation
+            # never legitimately contains `-F`, so one literal covers both
+            # the space form and the adjacent `-F<feature>` spelling.
             self.assertNotIn(
-                "-F ",
+                "-F",
                 block,
                 "the featureless check must not re-enable features via "
-                "cargo's short flag (on any line of the folded run block): "
+                "cargo's short flag (`-F<feature>`, space or adjacent "
+                "form, on any line of the folded run block): "
                 "`--no-default-features --locked -F product-backend` "
                 "satisfies the --features pin while compiling the "
                 f"feature-on config: {block}",
-            )
-            self.assertNotRegex(
-                block,
-                r"-F\S",
-                "the featureless check must not re-enable features via the "
-                "adjacent short spelling (`-F<feature>`, no space): "
-                f"{block}",
             )
         # Secondary net over any unfolded single-line invocation of the same
         # check (defense in depth; the folded assertion above is the
@@ -1713,10 +1697,7 @@ class CiGatePolicyTests(unittest.TestCase):
             cli_lint,
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- cli-lint", required_gate)
         self.assertIn("CLI_LINT_RESULT: ${{ needs.cli-lint.result }}", required_gate)
         self.assertIn(
@@ -2688,10 +2669,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "Windows must execute the PowerShell connector-introspection hook regression",
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- windows-rust-test", required_gate)
         self.assertIn("WINDOWS_RUST_RESULT", required_gate)
         self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
@@ -2705,10 +2683,7 @@ class CiGatePolicyTests(unittest.TestCase):
         job = re.split(r"\n  [a-zA-Z]", job_body, maxsplit=1)[0]
         self.assertIn("needs: changes", job)
         self.assertIn("MACOS_RUST_CHECK_RESULT", self.pr_workflow)
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- macos-rust-check", required_gate)
         self.assertIn("MACOS_RUST_CHECK_RESULT", required_gate)
         self.assertIn('"macos-rust-check:$MACOS_RUST_CHECK_RESULT"', required_gate)
@@ -2744,10 +2719,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn('PINVOU3_TEST_BROWSER_NO_HOST: "1"', windows_job)
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- windows-codex-runtime-test", required_gate)
         self.assertIn("WINDOWS_CODEX_RESULT", required_gate)
 
@@ -2782,10 +2754,7 @@ class CiGatePolicyTests(unittest.TestCase):
             windows_job,
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("name: required-gate", required_gate)
+        required_gate = self._required_gate()
         self.assertIn("- windows-codex-runtime-test", required_gate)
 
     def test_windows_rustup_repair_runs_in_required_native_job(self):
