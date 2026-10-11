@@ -243,6 +243,19 @@ fn official_deepseek_model_name(model: &str) -> String {
 /// paths unchanged.
 pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
+/// Host-wide default per-turn model step budget: the main-turn default and
+/// the subagent default (`[subagents] default_max_steps`) are both 2,000;
+/// the latter equals the foundation's subagent hard cap
+/// (`MAX_SUBAGENT_STEPS` = 2,000), which also clamps explicit positive
+/// spawn values. GUI, CLI, and benchmark all share `build_engine_config` /
+/// `build_dt_config`, so the three surfaces stay consistent automatically;
+/// `advanced.max_steps` can still explicitly override the main turn.
+/// This is a default, not a host-enforced cap: the foundation treats an
+/// explicit `max_steps: 0` on an `agent` call as its unbounded sentinel
+/// (pinned upstream by `child_step_override_wins_and_clamps_to_hard_ceiling`),
+/// and the host has no boundary that rewrites tool arguments.
+const HOST_STEP_BUDGET: u32 = 2_000;
+
 /// One-shot gate for the removed-`PINVOU3_MAX_TOOL_CALLS` warning: the config
 /// builder runs at every engine spawn, so without it a batch spawning N
 /// sessions prints N identical lines.
@@ -1981,8 +1994,9 @@ impl Pinvou3Bridge {
             instructions: _,
             project_context_pack_enabled: _,
             // advanced.max_steps overrides when explicitly configured;
-            // otherwise reuse the foundation default.
-            max_steps: default_max_steps,
+            // otherwise use the host-wide default budget (2000, no longer
+            // following the foundation default).
+            max_steps: _,
             max_subagents: _,
             snapshots_enabled: _,
             memory_enabled: _,
@@ -2122,7 +2136,7 @@ impl Pinvou3Bridge {
             plugin_registry: None,
             instructions: self.instructions(),
             project_context_pack_enabled: false,
-            max_steps: self.prefs.advanced.max_steps.unwrap_or(default_max_steps),
+            max_steps: self.prefs.advanced.max_steps.unwrap_or(HOST_STEP_BUDGET),
             // Default 10, reserved for session-level multi-agent fan-out.
             // The original lock (2026-05-19) avoided multi-subagent
             // concurrency timing out under a weak model + a single vLLM.
@@ -2804,6 +2818,16 @@ impl Pinvou3Bridge {
         // tier (see request_reasoning_effort); everything else defaults to
         // high.
         cfg.reasoning_effort = self.request_reasoning_effort();
+        // Default turn budget: the subagent default step count matches the
+        // main turn (2000, i.e. the foundation hard cap). `agent` calls that
+        // do not pass max_steps explicitly no longer fall back to the
+        // foundation role default (0 = unlimited). An explicit max_steps
+        // still wins: positive values clamp to the foundation ceiling, and
+        // an explicit 0 stays the foundation's unbounded sentinel — this
+        // knob is a default, not a host-side hard cap.
+        cfg.subagents
+            .get_or_insert_with(Default::default)
+            .default_max_steps = Some(HOST_STEP_BUDGET);
         cfg
     }
 
@@ -2827,11 +2851,19 @@ impl Pinvou3Bridge {
     pub(crate) fn build_multi_agent_dt_config(&self, snapshot: &ExpertRosterSnapshot) -> DtConfig {
         let mut config = self.build_dt_config();
         config.fleet = Some(snapshot.fleet_config().clone());
-        // 旧提醒逐字教的 per-call 预算字段不在模型 schema 里（#5324 裁剪）；预算归
-        // 引擎配置，角色默认步数本就无限制。这里把默认墙钟钉到底座上限 86400s
-        // （底座按 1..=86400 钳制），子智能体未显式传 wall_time_secs 时不再被
-        // 1800s 底座默认提前截断。App 配置面不暴露 subagents 偏好，且基底
-        // `build_dt_config` 从不填充 `subagents`——此处是无条件钉定，不会覆盖用户值。
+        // The per-call budget field the old prompt taught verbatim is not in
+        // the model schema (trimmed by #5324); budgets belong to the engine
+        // config: the base `build_dt_config` already injects
+        // `default_max_steps` = `HOST_STEP_BUDGET` (2000, so subagents
+        // without an explicit max_steps no longer fall back to the base role
+        // default of 0 = unbounded; explicit values still win per the base
+        // `resolve_max_steps`). This pins the default wall clock to the base
+        // ceiling of 86,400 s (the base clamps to 1..=86,400), so subagents
+        // without an explicit wall_time_secs are no longer cut off early by
+        // the base default of 1800 s. The app config surface does not expose
+        // subagents preferences; `get_or_insert` reuses the map the base
+        // already created, so this only pins `default_wall_time_secs` next
+        // to the injected `default_max_steps` without overwriting it.
         let subagents = config.subagents.get_or_insert_with(Default::default);
         subagents.default_wall_time_secs = Some(86_400);
         config
@@ -6883,25 +6915,38 @@ mod tests {
         ));
     }
 
-    /// Main-agent step budget: when not explicitly configured, the max_steps
-    /// of the foundation's `EngineConfig::default()` must be reused
-    /// (following upstream adjustments); an explicit settings.json value wins.
+    /// Main agent step budget: when not explicitly configured, use the
+    /// host-wide default budget of 2000 (no longer following the foundation
+    /// default of 200); when explicitly configured, settings.json wins. The
+    /// subagent default step count is injected through `build_dt_config`
+    /// with the same budget, and `agent` calls without an explicit max_steps
+    /// are no longer unlimited (0). An explicit `max_steps` on the call
+    /// still wins over the injected default per the foundation's
+    /// `resolve_max_steps` semantics: positive values clamp to the 2,000
+    /// ceiling, and an explicit 0 remains the foundation's unbounded
+    /// sentinel (pinned upstream by
+    /// `child_step_override_wins_and_clamps_to_hard_ceiling`) — the host
+    /// has no arg-rewriting boundary, so this knob is a default, not a cap.
     #[test]
-    fn engine_config_reuses_base_max_steps_default_and_respects_override() {
+    fn engine_config_defaults_to_unified_step_budget_and_respects_override() {
         let mut bridge = fixture_bridge();
-        let base_default = EngineConfig::default().max_steps;
 
         assert_eq!(
             bridge.build_engine_config().max_steps,
-            base_default,
-            "未显式配置时，主 agent 必须复用 CodeWhale 的 max_steps 默认值"
+            HOST_STEP_BUDGET,
+            "without explicit config, the main agent step budget must be the host-wide default value 2000"
+        );
+        assert_eq!(
+            bridge.build_dt_config().subagent_default_max_steps(),
+            Some(HOST_STEP_BUDGET),
+            "the subagent default step budget must be injected as 2000 via [subagents] default_max_steps"
         );
 
         bridge.prefs.advanced.max_steps = Some(321);
         assert_eq!(
             bridge.build_engine_config().max_steps,
             321,
-            "settings.json 中的 advanced.max_steps 必须继续覆盖底座默认值"
+            "advanced.max_steps in settings.json must keep overriding the host default"
         );
     }
 
