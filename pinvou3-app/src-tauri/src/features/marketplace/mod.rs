@@ -970,7 +970,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 if !manifest_path.is_file() {
                     continue;
                 }
-                match std::fs::read_to_string(&manifest_path) {
+                // Round-27 review: consent_gate_bundle_already_known runs this
+                // walk on every gate evaluation, so the read goes through the
+                // hardened private-data primitive like its spec_for sibling —
+                // a manifest swapped to a FIFO/symlink in the probe-to-read
+                // window refuses (log + skip the pack) instead of hanging the
+                // gate or reading unbounded.
+                match crate::platform::filesystem::read_private_data_file(&manifest_path) {
                     Ok(content) => match serde_json::from_str::<ToolManifest>(&content) {
                         Ok(manifest) => {
                             by_id.insert(manifest.id.clone(), manifest);
