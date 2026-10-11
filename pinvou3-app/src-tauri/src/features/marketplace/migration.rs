@@ -125,11 +125,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     }
 
     fn migrate_mcp_json_file_locked(&self, path: &std::path::Path) -> Result<(), String> {
-        // Round-27 review MAJOR 1: this read sat INSIDE the mcp.lock critical
-        // section as a raw `read_to_string` — the check-then-act twin of the
-        // `migrate_mcp_json_paths` hole the round-26 fix closed (mod.rs): a
-        // planted FIFO swapped in after the caller's `is_file()` probe
-        // blocked `open()` forever while HOLDING mcp.lock, wedging every
+        // A planted FIFO swapped in after the caller's `is_file()` probe
+        // blocks `open()` forever while HOLDING mcp.lock, wedging every
         // mcp.json reader/writer in every process sharing the home. The
         // hardened primitive refuses non-regular targets without blocking;
         // NotFound (raced away after the probe) stays a no-op like the
@@ -296,7 +293,7 @@ mod tests {
         });
     }
 
-    /// Round-27 review MAJOR 1: the read INSIDE the mcp.lock critical
+    /// The read INSIDE the mcp.lock critical
     /// section (`migrate_mcp_json_file` → `_locked`) must refuse a planted
     /// FIFO through the hardened primitive instead of blocking `open()`
     /// forever while HOLDING the cross-process mcp.lock (the caller's

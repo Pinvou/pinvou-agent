@@ -93,18 +93,18 @@ pub fn cli_bundle_skill_dirs(id: &str) -> &'static [&'static str] {
 /// the files can only have been written by an earlier gated show (or carried
 /// over from a pre-locking version, where a connected connector's visible
 /// skills were the recorded status quo), and the gate additionally requires
-/// the surviving sync-ledger trace (round-18 review) — the ledger entry is
+/// the surviving sync-ledger trace — the ledger entry is
 /// written by that gate run and cleared only by a consent-strip teardown or a
 /// fail-closed store recovery (whose re-registration is the accepted
 /// over-denial), so
-/// a stripped consent state (whose teardown also withdraws these dirs,
-/// round-17 review) can never keep vouching through them, not even when a
+/// a stripped consent state (whose teardown also withdraws these dirs)
+/// can never keep vouching through them, not even when a
 /// gated show materializing in flight across the teardown re-lands the
 /// dirs. A partially materialized state (an interrupted show) errs toward
 /// "not known" — registration is over-denial, not exposure. Non-CLI ids are
 /// always false.
 ///
-/// Case caveat (round-12 review): on case-insensitive filesystems the
+/// Case caveat: on case-insensitive filesystems the
 /// EXACT-name check makes a case-variant planted dir count as partial, so
 /// the gate registers (over-denial, fail-closed). A poisoned pre-upgrade
 /// state converges once the variant package is uninstalled — the next gated
@@ -118,8 +118,8 @@ pub(crate) fn cli_connector_skills_materialized(id: &str) -> bool {
 /// every expected dir must exist UNDER ITS EXACT NAME (read_dir, not path
 /// resolution) with a SKILL.md file inside. Path resolution would let a
 /// case-variant directory planted on a case-insensitive filesystem
-/// (macOS/Windows) vouch for consent it never received (round-12 review
-/// B3); exact names cannot. The startup visibility cache
+/// (macOS/Windows) vouch for consent it never received; exact names cannot.
+/// The startup visibility cache
 /// (`cached_connector_skills_visible`) shares this helper so the two bars
 /// cannot diverge.
 pub(crate) fn cli_connector_skill_dirs_present(id: &str, dirs: &[&str]) -> bool {
@@ -153,7 +153,7 @@ pub fn cli_bundle_bin(id: &str) -> Option<&'static str> {
 /// Case-folded like the exact-name bar of every other CLI identity claim: on
 /// case-insensitive filesystems (default macOS/Windows) a case-variant
 /// on-disk directory resolves to the connector's dir regardless of declared
-/// casing (round-12 review), so the reverse claim must fold the same way or
+/// casing, so the reverse claim must fold the same way or
 /// the vocabulary guards and the consent gate would disagree about what
 /// counts as the connector's companion. On Linux this can only over-deny a
 /// hypothetical distinct package whose skill dir differs solely by case —
@@ -293,7 +293,7 @@ pub(crate) fn skill_gating_owner_with(tools: &[super::ToolManifest], skill_name:
 /// 包是否已安装：BundleStore 记录优先；store 不可读时回退 installed.json——
 /// 与 `list_bundles` 的 V5 认领判定同口径（Phase 2 过渡期 installed.json 仍权威）。
 ///
-/// Round-20 review note (disclosed residual): the fallback consults the
+/// Disclosed residual: the fallback consults the
 /// legacy `installed.json`, which is kept as read-only history after the
 /// one-shot legacy import — a stale id there keeps the V5 owner-claim alive
 /// while the store is unreadable. The claim additionally requires the

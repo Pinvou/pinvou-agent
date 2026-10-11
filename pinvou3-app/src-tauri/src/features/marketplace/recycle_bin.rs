@@ -234,9 +234,8 @@ impl RecycleBin {
             }
             // After the move succeeds, read-modify-write the manifest; a manifest
             // read OR write failure moves the directory back in place (no
-            // manifest-less orphan directory). round-21 review (P2): the read leg
-            // previously returned straight through `?`, breaking this comment's
-            // promise — when the manifest is corrupt/unreadable, the user's only
+            // manifest-less orphan directory). When the manifest is
+            // corrupt/unreadable, the user's only
             // copy is stranded at the recycle root with no manifest entry,
             // invisible to list/restore/purge; the caller (the uninstall
             // transaction rollback) still restores registration on the assumption
@@ -289,10 +288,9 @@ impl RecycleBin {
             // A directory stranded at the recycle root with no manifest entry
             // = an orphan invisible to list/restore/purge (no data lost). Log
             // loudly and report honestly (never claim a rollback that did
-            // not happen). Copy convention (round-24 minor): these are
-            // user-visible recycle errors — keep main's Chinese shape
-            // (写入回收站清单失败…) with the phase folded in, not the
-            // English the refactor authored.
+            // not happen). Copy convention: these are user-visible recycle
+            // errors — keep the Chinese shape (写入回收站清单失败…) with
+            // the phase folded in.
             log::error!(
                 "[recycle-bin] 回收 {pkg_id} {phase}失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
                 dst.display()
@@ -606,7 +604,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
         return Err(format!("非法包 id '{pkg_id}'"));
     }
-    // round-21 review (P3): restore is a same-id `bundles/<id>` writer like
+    // Restore is a same-id `bundles/<id>` writer like
     // the import pipeline and the uninstall, so it holds the same
     // cross-process landing lease across its span — without it, the boot
     // sweep's record-probe→delete pair (which leases against imports and
@@ -729,11 +727,10 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // bundles_root, where the disk-derived skill arm of the DenyAll expansion
     // (`resolve_scope_disabled_ids`) sees it — the gate's inner-name scan
     // normalizes to the physical owner via skill_gating_owner.
-    // Hardened open replaces the old exists()+read pair (round-21 review):
-    // the bare read here held the per-id import lock across a FIFO-blockable
-    // open, and exists()+read raced the take_back-side state anyway. NotFound
-    // keeps the no-manifest (false) arm; any other open/parse failure keeps
-    // the fail-toward-force direction from round-17 minor 2.
+    // Hardened open: the bare read here held the per-id import lock across a
+    // FIFO-blockable open, and exists()+read raced the take_back-side state
+    // anyway. NotFound keeps the no-manifest (false) arm; any other
+    // open/parse failure keeps the fail-toward-force direction.
     let manifest_path = bin.root.join(pkg_id).join("mcp").join("manifest.json");
     let secrets_declared = match crate::platform::filesystem::read_private_data_file(&manifest_path)
     {
@@ -888,7 +885,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 // ---------------------------------------------------------------------------
 
 /// 内层读：文件不存在 → 空清单；JSON 损坏 → Err（fail loud，不静默重建）。
-/// 经硬化打开读取（评审 22 轮）：所有调用方都持有 recycle-bin.json 的跨进程
+/// 经硬化打开读取：所有调用方都持有 recycle-bin.json 的跨进程
 /// 文件锁，裸 `read_to_string` 会被植入的 FIFO 卡死在 `open()` 上——锁被持有
 /// 期间所有回收站操作（含 restore 持有的 per-id import 锁）全部停摆。硬化
 /// 语义与其它私有状态文件一致：非普通文件（FIFO/symlink/设备）一律响亮拒绝。
@@ -967,7 +964,7 @@ mod tests {
     /// package into the bin. `skill` is passed separately because two pins
     /// carry an inner skill whose dir name differs from the pack id and is
     /// pinned verbatim in their path assertions. `keep_record = true` skips
-    /// the `store.remove`, pinning the round-9 mid-uninstall shape where the
+    /// the `store.remove`, pinning the mid-uninstall shape where the
     /// mirror delete fails log-only, so a binned package keeps a stale
     /// `installed = true` record. Returns the pre-recycle package path
     /// (`bundles/<id>/`) — what a refused restore must NOT land at and a
@@ -1137,7 +1134,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// 评审 22 轮（P1 收尾）：清单读取走硬化打开后，植入的 symlink/FIFO 必须
+    /// 清单读取走硬化打开后，植入的 symlink/FIFO 必须
     /// 响亮拒绝而不是跟随/挂死——所有调用方持锁读，裸读会被 FIFO 卡死在
     /// `open()` 上并拖死全部回收站操作。symlink 引脚（unix 专属 API）：拒绝
     /// 必须指名清单路径（fail loud），且清单内容不得被越过。
@@ -1410,22 +1407,8 @@ mod tests {
         let tmp = fresh_dir("restore-skill");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        let pkg = bin_package("my-skill", "my-skill", false);
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-
-        // 卸载（模拟 skill_marketplace 的回收路径）：删登记 + 整包回收。
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
         assert!(store.get("my-skill").unwrap().is_none());
 
         let result = restore_plugin("my-skill").unwrap();
@@ -1683,20 +1666,8 @@ mod tests {
         let tmp = fresh_dir("restore-collide");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        bin_package("my-skill", "my-skill", false);
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
 
         // 冲突注入：回收期间他包 m 实体化了同名 companion 副本。
         let foreign = paths::bundles_root().join("m/skills/my-skill");
@@ -1755,20 +1726,8 @@ mod tests {
         )
         .unwrap();
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        bin_package("my-skill", "my-skill", false);
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
 
         // Orphan injection: drop the manifest entry, keep the bin dir.
         let bin = RecycleBin::new();
@@ -2504,20 +2463,8 @@ mod tests {
         let tmp = fresh_dir("restore-upsert-fail");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        let pkg = bin_package("my-skill", "my-skill", false);
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
 
         // Failure injection: bundles.json exists but is unreadable → upsert_preserving errors on read.
         let store_path = tmp.join("marketplace").join("bundles.json");
@@ -2736,20 +2683,7 @@ mod tests {
         let tmp = fresh_dir("take-back-compensate");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("compensated");
-        std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
-        std::fs::write(
-            pkg.join("skills/member/SKILL.md"),
-            "---\nname: member\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("compensated")).unwrap();
-        let record = store.get("compensated").unwrap().unwrap();
-        store.remove("compensated").unwrap();
-        RecycleBin::new()
-            .recycle_package("compensated", KIND_SKILL, "compensated.zip", record)
-            .unwrap();
+        let pkg = bin_package("compensated", "member", false);
 
         // Inject the save failure at exactly take_back's manifest persist
         // (round-20 minor 6: via the shared arm_failpoint guard — a bare
@@ -2787,7 +2721,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// round-21 review (P2): the manifest LOAD failure after the directory
+    /// The manifest LOAD failure after the directory
     /// rename must compensate exactly like the save leg — a bare `?` left the
     /// user's only copy sitting in the bin root with no manifest entry
     /// (invisible to list/restore/purge) while the uninstall rollback
@@ -2856,7 +2790,7 @@ mod tests {
         });
     }
 
-    /// round-21 review (P3): restore must hold the cross-process landing
+    /// Restore must hold the cross-process landing
     /// lease across its span — it is a same-id `bundles/<id>` writer, and
     /// the boot sweep leases against exactly that (a restore in its
     /// take_back→registration gap could otherwise have its just-restored

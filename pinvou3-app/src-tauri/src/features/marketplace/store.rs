@@ -682,14 +682,14 @@ pub(crate) fn upload_display_name(record: &BundleRecord, fallback: &str) -> Stri
 
 /// Inner read: separated from the lock-taking wrapper so already-locked
 /// import/upsert callers invoke it directly, avoiding mutex re-entry. The
-/// read goes through the hardened primitive (round-21 review): this function
+/// read goes through the hardened primitive: this function
 /// runs inside the bundles.json file lock and — via the scope's DenyAll
 /// expansion — inside the disabled_bundles.lock critical section, so a FIFO
 /// or symlink planted at the path must be refused rather than left hanging
 /// the lock holder — the same hardening discipline as disabled_bundles.json's
 /// identical reads. NotFound semantics unchanged (the kind passes through).
 fn load_locked(path: &Path) -> Result<BundlesFile, String> {
-    // Hardened read (round-20 P2): bundles.json is private-home consent state
+    // Hardened read: bundles.json is private-home consent state
     // read inside the scope critical section (DenyAll expansion) and under
     // the transaction lock — the open must not hang on a planted FIFO.
     match read_private_data_file(path) {
@@ -838,7 +838,7 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
         // like the unreadable root above — the one-shot `legacy_imported`
         // gate must not latch over an incomplete mirror (round-23 MAJOR-3 /
         // round-24 m2 class, per-entry form).
-        // Hardened read (round-20 P2): read_private_data_file refuses
+        // Hardened read: read_private_data_file refuses
         // directories and non-regular entries, so a planted FIFO now
         // ABORTS the one-shot import fail-closed instead of silently
         // skipping (and latching the gate over a skipped mirror).
