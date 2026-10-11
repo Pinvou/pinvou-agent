@@ -1539,7 +1539,17 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // keys on the same stripped id the import pipeline uses, so the
         // exclusion still pairs with the import it serializes against.
         let lease_id = tool_id.strip_prefix("skill:").unwrap_or(tool_id);
-        if lease_id.is_empty() || lease_id.contains(&['/', '\\', ':', '\0'][..]) {
+        // Windows keeps `:` in the hostile set (drive-relative paths / ADS).
+        // Unix filenames allow it, and legacy custom-MCP pack ids derived
+        // verbatim from such directory names (round-27 review minor) must
+        // stay removable — before this guard they uninstalled fine. `/` and
+        // NUL escape the journal path on every platform; `\` rides along as
+        // path-separator paranoia.
+        #[cfg(windows)]
+        let hostile = lease_id.is_empty() || lease_id.contains(&['/', '\\', ':', '\0'][..]);
+        #[cfg(not(windows))]
+        let hostile = lease_id.is_empty() || lease_id.contains(&['/', '\\', '\0'][..]);
+        if hostile {
             return Err(format!("invalid tool id '{tool_id}'"));
         }
         let mut landing_lease = plugin_import::open_landing_lease(lease_id)
@@ -4973,7 +4983,13 @@ pub(crate) mod tests {
     fn uninstall_refuses_hostile_ids_before_the_landing_lease() {
         with_temp_home(|| {
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            for hostile in ["/tmp/x", "../../x", "a/b", "C:evil", "skill:a/b", ""] {
+            // `C:evil` stays hostile on Windows only (see the guard's
+            // cfg-split): on Unix a colon is a legal filename byte.
+            #[cfg(windows)]
+            let hostile_ids = ["/tmp/x", "../../x", "a/b", "C:evil", "skill:a/b", ""];
+            #[cfg(not(windows))]
+            let hostile_ids = ["/tmp/x", "../../x", "a/b", "skill:a/b", ""];
+            for hostile in hostile_ids {
                 let error = mgr
                     .uninstall(hostile)
                     .err()
@@ -5000,6 +5016,18 @@ pub(crate) mod tests {
                     .exists(),
                 "a traversal id must not escape the journal"
             );
+            // Round-27 review follow-up: on Unix a colon-bearing legacy id
+            // must reach the not-installed path instead of the id-shape
+            // refusal (run last — the lease probe plants a journal file the
+            // emptiness assertion above must not see).
+            #[cfg(not(windows))]
+            {
+                let result = mgr.uninstall("C:evil");
+                assert!(
+                    !matches!(&result, Err(e) if e.contains("invalid tool id")),
+                    "a colon-bearing id is not hostile on unix: {result:?}"
+                );
+            }
         });
     }
 
