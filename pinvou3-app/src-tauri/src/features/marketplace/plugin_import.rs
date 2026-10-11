@@ -1477,9 +1477,11 @@ pub(crate) fn import_plugin_package_gated(
     // fail-stop tradeoff as the scope lock.
     let mut landing_lease = open_landing_lease(&id)
         .map_err(|error| format!("open the landing lease for {id}: {error}"))?;
-    let _landing_lease_guard = landing_lease
-        .write()
-        .map_err(|error| format!("lock the landing lease for {id}: {error}"))?;
+    // Shared bounded transient retry (round-28 review): the funnel's Windows
+    // ERROR_LOCK_VIOLATION discipline applies to the lease takers too.
+    let _landing_lease_guard =
+        super::file_lock::lock_write_with_transient_retry!(&mut landing_lease)
+            .map_err(|error| format!("lock the landing lease for {id}: {error}"))?;
     mark_landing(&id);
     let _landing_guard = LandingJournalGuard(id.clone());
     test_park_after_landing_mark();

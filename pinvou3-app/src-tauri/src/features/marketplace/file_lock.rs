@@ -166,29 +166,9 @@ where
     let mut lock = fd_lock::RwLock::new(file);
     // The in-process mutex is already held while the OS lock is taken, and no
     // lock reachable inside `f` (see the module's global-order note) is held
-    // by another thread waiting on this one, so deadlock is impossible. A
-    // signal-interrupted flock retries below instead of surfacing as a
-    // spurious write refusal — and so does the Windows blocking LockFileEx
-    // race that surfaces a transient ERROR_LOCK_VIOLATION as a raw error
-    // instead of blocking (the race fd-lock's own try path maps to
-    // WouldBlock): a bounded retry turns it into a normal wait, and a
-    // persistent failure still refuses fail-closed once the bound is
-    // exhausted (the #517 `with_scope_file_lock` disposition).
-    let mut lock_write_retries = 0u32;
-    let _os_guard = loop {
-        match lock.write() {
-            Ok(guard) => break guard,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                if lock_write_retries < LOCK_WRITE_TRANSIENT_RETRIES {
-                    lock_write_retries += 1;
-                    std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
-                    continue;
-                }
-                return Err(format!("lock {}: {error}", lock_path.display()));
-            }
-        }
-    };
+    // by another thread waiting on this one, so deadlock is impossible.
+    let _os_guard = lock_write_with_transient_retry!(&mut lock)
+        .map_err(|error| format!("lock {}: {error}", lock_path.display()))?;
     f()
 }
 
@@ -196,8 +176,46 @@ where
 /// blocking write lock (the Windows blocking-LockFileEx ERROR_LOCK_VIOLATION
 /// race, which surfaces as a raw error instead of blocking); a persistent
 /// failure still refuses fail-closed after the bound (the #517 disposition).
-const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
-const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
+pub(super) const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
+pub(super) const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// The one blocking `write()` discipline, shared by the lock funnel above and
+/// the landing-lease takers (round-28 review: the lease sites took the OS
+/// lock bare, so the same transient race failed an install/uninstall/restore
+/// that the funnel would have absorbed — fail-closed, but inconsistently
+/// hardened). A signal-interrupted flock retries instead of surfacing as a
+/// spurious write refusal.
+///
+/// A macro, not a function: the acquired guard borrows the caller's lock for
+/// the rest of its scope, and a helper returning that guard across a
+/// function boundary is rejected by NLL — the escape region covers the whole
+/// retry loop, so every earlier iteration reads as a second mutable borrow.
+/// Expanded inline, the loop is exactly the shape `with_file_lock` always
+/// compiled with.
+macro_rules! lock_write_with_transient_retry {
+    ($lock:expr) => {{
+        let mut retries = 0u32;
+        loop {
+            match $lock.write() {
+                Ok(guard) => break Ok(guard),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    if retries
+                        < $crate::features::marketplace::file_lock::LOCK_WRITE_TRANSIENT_RETRIES
+                    {
+                        retries += 1;
+                        std::thread::sleep(
+                            $crate::features::marketplace::file_lock::LOCK_WRITE_RETRY_DELAY,
+                        );
+                        continue;
+                    }
+                    break Err(error);
+                }
+            }
+        }
+    }};
+}
+pub(super) use lock_write_with_transient_retry;
 
 /// Once-per-mode logging for lock-read failures. Reads must stay bounded even
 /// when the lock is persistently unavailable (a broken home must not print a

@@ -607,8 +607,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // holder dies).
     let mut landing_lease = super::plugin_import::open_landing_lease(pkg_id)
         .map_err(|error| format!("open the landing lease for {pkg_id}: {error}"))?;
-    let _landing_lease_guard = landing_lease
-        .write()
+    let _landing_lease_guard = file_lock::lock_write_with_transient_retry!(&mut landing_lease)
         .map_err(|error| format!("lock the landing lease for {pkg_id}: {error}"))?;
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());

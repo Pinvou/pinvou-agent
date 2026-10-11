@@ -1554,8 +1554,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         }
         let mut landing_lease = plugin_import::open_landing_lease(lease_id)
             .map_err(|error| format!("open the landing lease for {lease_id}: {error}"))?;
-        let _landing_lease_guard = landing_lease
-            .write()
+        let _landing_lease_guard = file_lock::lock_write_with_transient_retry!(&mut landing_lease)
             .map_err(|error| format!("lock the landing lease for {lease_id}: {error}"))?;
         self.uninstall_leased(tool_id)
     }
