@@ -16,7 +16,7 @@ REQUIRED_WORKFLOWS = (
 PUBLIC_SUBMODULE_VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
 
 
-def _extract_quoted_paths(block):
+def _extract_quoted_paths(block, tight=True):
     """提取 YAML 块中 `- 'path'` / `- "path"` 形式的路径条目(保持文本序)。
 
     Round-40 review M4: 单引号形式之外还要认双引号形式——一条
@@ -29,9 +29,16 @@ def _extract_quoted_paths(block):
     (YAML 规范:注释以引号后的 `#` 开始),因此先取引号闭包、再剥其后的
     注释。凡是引用形式的条目行(`- '…'` / `- "…"` 开头)却匹配不上
     引号闭包正则的,一律视为未识别形状直接让断言红掉——那正是"提取器
-    看不见 → 下方全部 pin 可被同一条目绕过"的形状。其余列表行(作业步骤
-    `- name:`、`- uses:`、裸 needs 等)不是路径条目,维持原样忽略——
-    有些调用切片覆盖整个 job,历史行为依赖这一点。
+    看不见 → 下方全部 pin 可被同一条目绕过"的形状。
+
+    Round-51 review: tight 模式(默认)把 fail-closed 扩大到所有列表条目
+    形状的行(可选空格 + `- ` 开头)。折叠标量(`- >-` + 缩进文本)与裸词
+    条目(`- pinvou-cli/**`)对 dorny 都是真实的过滤条目(dorny 会把块重新
+    按 YAML 解析),旧提取器却静默忽略——一条隐藏的 `!pinvou-cli/**`
+    排除即可静默跳过全部 CLI 腿。tight 模式下这类行一律让断言红掉。
+    `tight=False` 是显式逃生门,仅供切片覆盖整个 job/文件、因而混有作业
+    步骤(`- name:`、`- uses:`、裸 needs 等)非路径列表行的调用方使用,
+    且必须在调用处注明理由。
     """
     paths = []
     unrecognized = []
@@ -44,9 +51,11 @@ def _extract_quoted_paths(block):
             paths.append(match.group(2) if match.group(2) is not None else match.group(3))
         elif stripped.startswith("- '") or stripped.startswith('- "'):
             unrecognized.append(stripped)
+        elif tight and stripped.startswith("- "):
+            unrecognized.append(stripped)
     if unrecognized:
         raise AssertionError(
-            "unrecognized quoted path-filter entry(ies); the extractor cannot "
+            "unrecognized path-filter entry(ies); the extractor cannot "
             "parse them, so every extractor-based pin below would be bypassable "
             "by the same entry — fix the quoting or move prose to a comment "
             "line: " + "; ".join(unrecognized)
@@ -369,6 +378,42 @@ class CiGatePolicyTests(unittest.TestCase):
             # 是"静默忽略",对现在必须红。
             _extract_quoted_paths("            - 'pinvou-cli/unclosed\n")
 
+    def test_path_extractor_fails_closed_on_folded_scalar_and_bare_entries(self):
+        # Round-51 review 回归锁:折叠标量(`- >-` + 缩进文本)与裸词条目
+        # (`- pinvou-cli/**`)对 dorny 都是真实的过滤条目(dorny 把 filters 块
+        # 重新按 YAML 解析),旧提取器却对"不是引用形式"的列表行静默忽略——
+        # 一条折叠标量的 `!pinvou-cli/**` 排除即可让全部 CLI 腿静默跳过,
+        # 而下方所有基于提取结果的 pin 全绿(经变异验证)。tight 模式(默认)
+        # 下这类行必须让断言红掉,而不是被吞掉。
+        folded = (
+            "          paths:\n"
+            "            - 'pinvou-cli/**'\n"
+            "            - >-\n"
+            "              !pinvou-cli/**\n"
+        )
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(folded)
+        bare = (
+            "          paths:\n"
+            "            - 'pinvou-cli/**'\n"
+            "            - !pinvou3-app/src-tauri/**\n"
+        )
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(bare)
+        # 逃生门只限文档注明覆盖整个 job/文件的切片:键值、空行等非条目
+        # 形状的行在两种模式下都维持忽略。
+        whole_job = (
+            "    needs: changes\n"
+            "    steps:\n"
+            "      - name: Cargo cache\n"
+            "        uses: Swatinem/rust-cache@v2\n"
+        )
+        self.assertEqual(_extract_quoted_paths(whole_job, tight=False), [])
+        # 条目行缩进不限:更深缩进的折叠标量排除同样必须红。
+        deep_folded = "            - >-\n                !pinvou-cli/docs/**\n"
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(deep_folded)
+
     def test_trigger_coverage_respects_exclusions(self):
         # dorny/paths-filter(some-with-excludes)的语义是"至少一条正向
         # pattern 命中且没有任何 `!` 排除条目命中"。此前
@@ -470,6 +515,16 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1].split("            knowledge_dependencies:", maxsplit=1)[0]
         self.assertIn("- 'pinvou-knowledge/**/*.rs'", knowledge_paths)
         self.assertIn("- 'pinvou-knowledge/deploy/**'", knowledge_paths)
+        # Round-51 review: the knowledge-rust alignment step declares
+        # pinvou-knowledge/rust-toolchain.toml the single source of truth for
+        # the toolchain it resolves, yet the file was routed by no filter
+        # group (rust_full routes only the app twin under src-tauri), so a
+        # version-bump-only PR skipped the job that aligns to it. Membership
+        # is pinned in the same style as the entries above.
+        self.assertIn(
+            "- 'pinvou-knowledge/rust-toolchain.toml'",
+            knowledge_paths,
+        )
 
         knowledge = _without_yaml_comments(
             self.pr_workflow.split("\n  knowledge-rust:", maxsplit=1)[1].split(
@@ -815,10 +870,15 @@ class CiGatePolicyTests(unittest.TestCase):
         # at `pet:` — a job declared BEFORE it — so the slice ran to EOF and
         # bundle_chain's coverage was an accident of that unbounded sweep.
         # windows_codex is now bounded at its real neighbor, and the terminal
-        # group gets its own explicit sweep to EOF.
+        # group gets its own explicit sweep. Round-51 review: that sweep is
+        # bounded at the next job header (fast-gate) instead of running to
+        # EOF of the whole file, so the slice stays a pure filter-entry list
+        # and the extractor's fail-closed entry-shape check applies to it; a
+        # whole-file slice would need the lenient extractor and could hide a
+        # folded-scalar exclusion from this sweep.
         bundle_chain_paths = self.pr_workflow.split(
             "            bundle_chain:", maxsplit=1
-        )[1]
+        )[1].split("\n  fast-gate:", maxsplit=1)[0]
         assert_group_paths_reachable(bundle_chain_paths, "bundle_chain")
 
         # Round-42 review: the sweep now covers EVERY filter group in the
@@ -889,24 +949,31 @@ class CiGatePolicyTests(unittest.TestCase):
         # make cli-test report success while running NO tests on PRs or in
         # the Merge Queue — the exact silent-skip class the windows phase
         # map's end-anchored pins close for the Windows leg.
+        # Round-51 review: the pairs are END-ANCHORED — each pinned string
+        # includes the line's trailing "\n" (the windows phase map uses the
+        # regex `(?:\n|$)` for the same guarantee). A bare substring stayed
+        # green when `&& false` (or a trailing comment) was appended to the
+        # `if:` value, so a leg could skip its tests while the map/pin
+        # reported it routed; the trailing newline makes any suffix mutation
+        # fail the pin.
         self.assertIn(
             "- name: cargo test (all targets, no-fail-fast)\n"
-            "        if: github.event_name != 'push'",
+            "        if: github.event_name != 'push'\n",
             cli_test,
         )
         self.assertIn(
             "- name: cargo compile check (push)\n"
-            "        if: github.event_name == 'push'",
+            "        if: github.event_name == 'push'\n",
             cli_test,
         )
         self.assertIn(
             "- name: cargo test (adapter-gaia test-support)\n"
-            "        if: github.event_name != 'push'",
+            "        if: github.event_name != 'push'\n",
             cli_test,
         )
         self.assertIn(
             "- name: cargo compile check (push, adapter-gaia test-support)\n"
-            "        if: github.event_name == 'push'",
+            "        if: github.event_name == 'push'\n",
             cli_test,
         )
         self.assertIn("cache-targets: false", cli_test)
@@ -1291,6 +1358,29 @@ class CiGatePolicyTests(unittest.TestCase):
                 "product-backend` satisfies the substring pin while "
                 f"compiling the feature-on config: {block}",
             )
+            # Round-51 review: cargo's short spelling of --features slipped
+            # past the pin above — `-F product-backend` appended after
+            # --locked compiled the feature-on config with every assertion
+            # green (mutation-verified bypass). Pin both spellings, mirroring
+            # the -A / -Aclippy clippy pins: the space form as a literal, the
+            # adjacent form (`-Fproduct-backend`, where the feature name
+            # varies) as a regex.
+            self.assertNotIn(
+                "-F ",
+                block,
+                "the featureless check must not re-enable features via "
+                "cargo's short flag (on any line of the folded run block): "
+                "`--no-default-features --locked -F product-backend` "
+                "satisfies the --features pin while compiling the "
+                f"feature-on config: {block}",
+            )
+            self.assertNotRegex(
+                block,
+                r"-F\S",
+                "the featureless check must not re-enable features via the "
+                "adjacent short spelling (`-F<feature>`, no space): "
+                f"{block}",
+            )
         # Secondary net over any unfolded single-line invocation of the same
         # check (defense in depth; the folded assertion above is the
         # load-bearing one).
@@ -1429,6 +1519,13 @@ class CiGatePolicyTests(unittest.TestCase):
         # different and deliberate shape, so scanning the gate jobs for the
         # unconditional-success idioms has no false positives today.
         gate_jobs = (
+            # Round-51 review: fast-gate RUNS this very suite, so an `|| true`
+            # on its runner line (`python3 -m unittest discover ...`) disarms
+            # every pin in this file while required-gate still requires
+            # fast-gate — it must be scanned like any other gate job. Its one
+            # ci-memory-setup line is covered by the same per-job `|| echo`
+            # exemption as the other legs (verified: exactly one such line).
+            "fast-gate",
             "rust-test",
             "rust-lint",
             "cli-test",
@@ -1499,8 +1596,20 @@ class CiGatePolicyTests(unittest.TestCase):
             # must not carry ANY `||` redirect of its exit status; the two
             # documented exceptions stay pinned to their own lines (the
             # lld-probe diagnostic above and the ci-memory-setup step, whose
-            # name is asserted on main).
-            for idiom in ("|| true", "|| :", "|| exit 0", "|| echo"):
+            # name is asserted on main). Round-51 review: the statement-
+            # separator coat of the same swallow (`cmd; true` reports the
+            # last command's status) is scanned identically — audited
+            # zero-for-zero against every gate job's real steps before being
+            # added.
+            for idiom in (
+                "|| true",
+                "|| :",
+                "|| exit 0",
+                "|| echo",
+                "; true",
+                "; :",
+                "; exit 0",
+            ):
                 self.assertNotIn(
                     idiom,
                     block,
@@ -2751,6 +2860,10 @@ class CiGatePolicyTests(unittest.TestCase):
             # (same main-only namespace death-loop exposure) but not this
             # pin — the flag could be dropped with the suite green.
             ("macos-cli-check", "\n  required-gate:"),
+            # Round-51 review: cli-lint joined the flag for the same
+            # "one failed main push drops the namespace fully cold" reason
+            # as its siblings; pin it so it cannot rot the same way.
+            ("cli-lint", "\n  windows-rust-test:"),
         ):
             job = self.pr_workflow.split(
                 f"\n  {job_name}:", maxsplit=1

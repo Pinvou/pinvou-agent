@@ -314,6 +314,11 @@ jobs:
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
               - 'pinvou-knowledge/Cargo.lock'
+              # The alignment step below declares this file the single source
+              # of truth for the toolchain it resolves (mirror of rust_full
+              # routing the app twin); without this entry a version-bump-only
+              # PR skips the job that aligns to it.
+              - 'pinvou-knowledge/rust-toolchain.toml'
               - 'pinvou-knowledge/deploy/**'
               - '.github/workflows/pr-check.yml'
             knowledge_dependencies:
@@ -1535,6 +1540,12 @@ jobs:
         with:
           workspaces: pinvou-cli
           shared-key: cli-lint
+          # cache-on-failure matches the sibling legs (rust-test,
+          # windows-rust-test, macos-rust-check, macos-cli-check):
+          # save-on-success-only means one failed main push drops the
+          # namespace fully cold and every later run pays the full cold
+          # compile. Saves stay main-only (save-if below).
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Warn-visible by design (see the job comment); --all-targets so tests
