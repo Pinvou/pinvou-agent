@@ -63,7 +63,7 @@ impl ConnectorGate {
     pub async fn apply_skills_command(&'static self) -> Result<Value, String> {
         let show = tokio::task::spawn_blocking(|| -> Result<bool, String> {
             let show = self.skills_should_show();
-            // Deny-first transaction boundary (#517 review): register the
+            // Deny-first transaction boundary: register the
             // connector in the initialized DenyAll scopes BEFORE materializing
             // skill files, so a refused gate sync aborts before `apply_skills`
             // exposes anything — the connector can never end up enabled
@@ -80,23 +80,17 @@ impl ConnectorGate {
                 return Err(e);
             }
             if show {
-                // Fail-visible belt-and-braces (review #455 R13-B3, preserved
-                // through the round-19 merge): deny-first above already
+                // Fail-visible belt-and-braces: deny-first above already
                 // registered the pair, and once the companion dirs are
                 // materialized the sync's known-clause skips it — this leg
                 // only acts (and its marker copy only surfaces) in the corner
                 // where the known-clause cannot vouch for a just-applied
                 // connector. Swallowing the error would let the connector go
                 // live with zero consent in that corner. It runs inside THIS
-                // spawn_blocking closure (the second hop it used to own was a
-                // pure wrapper with nothing between the two hops): still off
-                // the executor like the deny-first gate above, because the
-                // sync write can block on the cross-process flock (#515), and
-                // a frozen peer must not hang a Tokio worker. The fold merges
-                // the old hop's join-error branch into the single
-                // "apply skills task failed" log below (a JoinError no longer
-                // identifies its phase); the user-visible
-                // "spawn_blocking: {e}" copy is unchanged.
+                // spawn_blocking closure: still off the executor like the
+                // deny-first gate above, because the sync write can block on
+                // the cross-process flock (#515), and a frozen peer must not
+                // hang a Tokio worker.
                 crate::features::marketplace::sync_deny_all_scopes_after_install(self.id).map_err(
                     |e| {
                         log::warn!(
@@ -141,11 +135,11 @@ impl ConnectorGate {
 
     /// `refresh_connector_auth_gates` 的单连接器步骤(在线程池里跑):
     /// 实时探测应否可见,按结果写 / 删技能目录。
-    /// Same deny-first boundary as `apply_skills_command` (#517 review
-    /// round 6): the auth-gate refresh and the startup backfill also
-    /// materialize skill files, so a connector flipping visible here must
-    /// register in the initialized DenyAll scopes first; a refused
-    /// registration fails the refresh before anything is exposed.
+    /// Same deny-first boundary as `apply_skills_command`: the auth-gate
+    /// refresh and the startup backfill also materialize skill files, so a
+    /// connector flipping visible here must register in the initialized
+    /// DenyAll scopes first; a refused registration fails the refresh before
+    /// anything is exposed.
     pub fn refresh_step(&self) -> Result<bool, String> {
         let show = self.skills_should_show();
         crate::features::marketplace::deny_first_register_connector(self.id, show)?;
@@ -264,11 +258,11 @@ mod tests {
         }
     }
 
-    /// Round-8 review: the deny-first wiring is pinned THROUGH the two
-    /// production command bodies (`apply_skills_command`, `refresh_step`),
-    /// not only through `deny_first_register_connector` driven directly — a
-    /// revert of these bodies to apply-then-swallow previously kept the
-    /// entire suite green. A directory at the lock path makes the gate write
+    /// The deny-first wiring is pinned THROUGH the two production command
+    /// bodies (`apply_skills_command`, `refresh_step`), not only through
+    /// `deny_first_register_connector` driven directly — a revert of these
+    /// bodies to apply-then-swallow keeps the entire suite green. A
+    /// directory at the lock path makes the gate write
     /// refuse; nothing may materialize and the refusal must surface.
     #[test]
     fn command_bodies_register_deny_first_and_refusal_lands_nothing() {
@@ -277,7 +271,7 @@ mod tests {
             load_disabled_bundles_for, save_disabled_bundles_for,
         };
 
-        // Shared RAII temp-home helper (round 9): a failing assertion unwinds
+        // Shared RAII temp-home helper: a failing assertion unwinds
         // past a straight-line env restore, which would leave PINVOU3_HOME
         // pointed at a deleted temp dir and cascade unrelated failures.
         crate::platform::test_support::with_temp_home("pinvou3-skillgate-body", || {

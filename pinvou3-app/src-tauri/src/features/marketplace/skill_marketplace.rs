@@ -147,7 +147,7 @@ fn preset_manifests() -> &'static [SkillManifest] {
     ]
 }
 
-/// Preset alias (round-8 review): one preset names its marketplace id
+/// Preset alias: one preset names its marketplace id
 /// differently from its frontmatter skill_name / on-disk directory
 /// (tencent-docs-skill <-> tencent-docs) — one package, two names. The
 /// consent vocabulary (card id, stored deny entries, gate registrations)
@@ -167,6 +167,12 @@ pub(crate) fn preset_id_for_skill_name(skill_name: &str) -> Option<&'static str>
         .iter()
         .find(|m| m.skill_name == skill_name && m.id != m.skill_name)
         .map(|m| m.id)
+}
+
+/// Shared error copy for an unknown preset skill id, so the feature layer and
+/// the command layer (which resolves the same lookup) surface one message.
+pub(crate) fn unknown_preset_skill_error(skill_id: &str) -> String {
+    format!("未知预置技能 '{skill_id}'")
 }
 
 // 前端展示态 ------------------------------------------------------------------
@@ -417,8 +423,7 @@ impl SkillMarketplaceManager {
     /// Lenient read: a per-entry IO failure counts as "not installed" and is
     /// swallowed — fine for display/list paths. In the consent gate a miss
     /// errs toward "not known", i.e. toward REGISTRATION (over-denial,
-    /// fail-closed), so the leniency is safe there too (round-16 review:
-    /// the earlier "fail-open for a consent gate" wording was wrong). The
+    /// fail-closed), so the leniency is safe there too. The
     /// DenyAll default computation must still use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
         let mut out: Vec<String> = preset_manifests()
@@ -543,7 +548,7 @@ impl SkillMarketplaceManager {
     pub fn install(&self, skill_id: &str) -> Result<(), String> {
         let m = self
             .preset(skill_id)
-            .ok_or_else(|| format!("未知预置技能 '{skill_id}'"))?;
+            .ok_or_else(|| unknown_preset_skill_error(skill_id))?;
         if RETIRED_SKILL_NAMES.contains(&m.skill_name) {
             return Err(format!("技能名 '{}' 与已下线内置冲突", m.skill_name));
         }
@@ -560,30 +565,24 @@ impl SkillMarketplaceManager {
                 dest.display()
             ));
         };
-        // Round-20 P2: the whole landing (staged extract → delete-then-rename
-        // → duplicate sweep → record upsert) holds the same per-id import lock
-        // the uninstall lanes hold (`uninstall_locked` /
+        // The whole landing (staged extract → delete-then-rename → duplicate
+        // sweep → record upsert) holds the same per-id import lock the
+        // uninstall lanes hold (`uninstall_locked` /
         // `uninstall_and_strip_scope`), so a same-id preset install can no
-        // longer interleave with a consent-strip teardown. The old gap let
-        // rows stripped mid-landing stay stripped while record+dir landed,
-        // and the known-skip then suppressed every later gate run until the
-        // next teardown — a milliseconds-wide window (keychain + extraction +
-        // fingerprint hashing on the ima reconnect path) that §3.2 previously
-        // undersold as part of the µs check-then-act family. Lock order
+        // longer interleave with a consent-strip teardown. Lock order
         // matches the rest of the lane (import_lock → store file_lock); the
         // deny-first gates run BEFORE install in every caller and take no
         // import lock, so no new nesting is introduced.
-        // Round-26 review (disclosed residual): this mutex is process-local.
-        // A same-id UNIFIED IMPORT landing in ANOTHER process holds the
-        // cross-process landing lease; this lane does not take that lease
-        // (closing it needs a held-lease variant so the nested MCP companion
-        // cleanup cannot self-deadlock — see the pipeline comment in
-        // plugin_import), so a cross-process skill-install-vs-import of the
-        // same id can still interleave. Round-27 review correction: this
-        // does NOT self-heal — the landed record+content satisfy the
-        // known-check, so the next gate run SKIPS and the pack sits with
-        // zero consent rows until its next teardown; §3.2 registers the
-        // window with the exact direction.
+        // Disclosed residual: this mutex is process-local. A same-id UNIFIED
+        // IMPORT landing in ANOTHER process holds the cross-process landing
+        // lease; this lane does not take that lease (closing it needs a
+        // held-lease variant so the nested MCP companion cleanup cannot
+        // self-deadlock — see the pipeline comment in plugin_import), so a
+        // cross-process skill-install-vs-import of the same id can still
+        // interleave, and it does NOT self-heal: the landed record+content
+        // satisfy the known-check, so the next gate run SKIPS and the pack
+        // sits with zero consent rows until its next teardown; §3.2
+        // registers the window with the exact direction.
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
@@ -918,16 +917,12 @@ impl SkillMarketplaceManager {
         // From here the same-id import lock is held to the end of the
         // critical section: the unified import, the legacy import, and the
         // display edit (`update_display_meta`) share this one lock and lock
-        // order (import lock → store file lock). Concurrent uninstalls used
-        // to run without it, so a display edit's "read backup → write
-        // SKILL.md" critical section could be interleaved by an uninstall
-        // (the edit returned success while its directory was already gone —
-        // the narrow comment-disclosed window).
+        // order (import lock → store file lock).
         // The one guard spans the whole teardown (`uninstall_locked`); for
         // `uninstall_and_strip_scope` that same guard also spans the scope
-        // strip (round-12 review B2 — the strip never runs after the
-        // lock-protected teardown returned).
-        // Round-26 review (disclosed residual): process-local mutex — a
+        // strip — the strip never runs after the lock-protected teardown
+        // returned.
+        // Disclosed residual: process-local mutex — a
         // cross-process UNIFIED IMPORT of the same id (which holds the
         // landing lease this lane does not take) can still recycle a
         // just-landed standalone pack between landing and record upsert;
@@ -938,7 +933,7 @@ impl SkillMarketplaceManager {
     }
 
     /// Pre-lock validation shared by `uninstall` and
-    /// `uninstall_and_strip_scope` (round-12 review B2): the builtin guard,
+    /// `uninstall_and_strip_scope`: the builtin guard,
     /// the id → directory resolution, and the name safety check run before
     /// the per-id import lock is taken, so a refusal never touches the lock.
     /// Returns the resolved on-disk directory name.
@@ -970,7 +965,7 @@ impl SkillMarketplaceManager {
     /// installation was actually torn down (see `uninstall`'s contract).
     /// Caller MUST hold the per-id `import_lock_for(skill_id)`; split out of
     /// `uninstall` so `uninstall_and_strip_scope` can hold ONE guard across
-    /// this teardown and its scope strip (round-12 review B2).
+    /// this teardown and its scope strip.
     fn uninstall_locked(&self, skill_id: &str, dir_name: &str) -> Result<bool, String> {
         let legacy = self.legacy_skills_dir.join(dir_name);
 
@@ -1065,26 +1060,24 @@ impl SkillMarketplaceManager {
     /// Uninstall plus the caller-side scope strip, with the per-id import
     /// lock held across BOTH: the teardown and the strip share one critical
     /// section, so a deny-first registration a concurrent same-id install
-    /// makes after this function returns survives (round-11 P2-1), and the
-    /// previous post-return strip — which ran with the lock already released
-    /// and could delete a just-registered fresh entry (round-12 review B2) —
-    /// is gone. The residual is the same in-section window the MCP tool lane
-    /// has: a gate that reads the store in the instant between the record
-    /// removal and the strip still registers and is then stripped
-    /// (microsecond scale, fail-open, disclosed in capability-governance
-    /// §3.2). A vacuous `Ok(false)` strips nothing; a refused strip only
-    /// logs (the leftover entry fails closed). The strip targets the
-    /// pre-teardown owner snapshot via the exact form (round-26 MAJOR 1).
-    /// Only for teardown paths with no outer transaction lock (ima logout);
-    /// the skill command lane keeps its own post-return strip with a
-    /// pre-teardown owner snapshot (its callers are the ones that know the
-    /// owner), and the tool uninstall's companion legs strip inside
+    /// makes after this function returns survives, and the strip can never
+    /// delete a just-registered fresh entry. The residual is the same
+    /// in-section window the MCP tool lane has: a gate that reads the store
+    /// in the instant between the record removal and the strip still
+    /// registers and is then stripped (microsecond scale, fail-open,
+    /// disclosed in capability-governance §3.2). A vacuous `Ok(false)`
+    /// strips nothing; a refused strip only logs (the leftover entry fails
+    /// closed). The strip targets the pre-teardown owner snapshot via the
+    /// exact form. Only for teardown paths with no outer transaction lock
+    /// (ima logout); the skill command lane keeps its own post-return strip
+    /// with a pre-teardown owner snapshot (its callers are the ones that
+    /// know the owner), and the tool uninstall's companion legs strip inside
     /// `cleanup_uninstalled_tool_state` instead.
     pub fn uninstall_and_strip_scope(&self, skill_id: &str) -> Result<bool, String> {
         let dir_name = self.precheck_uninstall(skill_id)?;
         let import_lock = super::plugin_import::import_lock_for(skill_id);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-        // Round-26 MAJOR 1 exact-form rule: the rows were owned by the
+        // Exact-form rule: the rows were owned by the
         // pre-teardown owner mapping, so snapshot it while the claims are
         // alive — re-normalizing the id after `uninstall_locked` deleted the
         // directories is hijackable by a foreign claim. Today's only caller
@@ -1193,7 +1186,7 @@ impl SkillMarketplaceManager {
         // Same vocabulary guard as the plugin-package pipeline: an upload
         // keyed under a preset MARKET id would make the consent gate treat
         // the real preset as already known and fold the alias vocabulary
-        // onto the upload (round-11 P2-2).
+        // onto the upload.
         if is_preset_market_id(&name) {
             return Err(format!(
                 "skill name '{name}' conflicts with a marketplace preset skill id; rename and retry"
@@ -1539,7 +1532,7 @@ impl SkillMarketplaceManager {
                 continue;
             }
             let target = self.migration_skill_dir(&name, &legacy_companions);
-            // Hardened open (round-22 review): boot-path read; a planted
+            // Hardened open: boot-path read; a planted
             // FIFO at the marker would otherwise block the migration.
             // Refused (non-regular) reads empty → the same
             // not-marked-for-preservation treatment as an absent marker.
@@ -1824,11 +1817,10 @@ fn legacy_companion_owners() -> std::collections::HashMap<String, String> {
     };
     for entry in rd.flatten() {
         let manifest_path = entry.path().join("manifest.json");
-        // Round-27 review (minor): this runs on the boot migration thread;
+        // This runs on the boot migration thread;
         // a planted FIFO at a manifest path must refuse through the hardened
         // primitive (skip the dir, same as corrupt/missing) instead of
-        // blocking `open()` — the hardened marker read twenty lines below
-        // made the sweep's own read safe, this twin stayed raw.
+        // blocking `open()`.
         let content = match crate::platform::filesystem::read_private_data_file(&manifest_path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -1922,7 +1914,7 @@ fn collect_disk_files_under(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        // Round-27 review (minor): the fingerprint walk feeds the update
+        // The fingerprint walk feeds the update
         // probe and the display-edit path; a FIFO planted as a non-SKILL.md
         // file in an installed tree must refuse through the hardened
         // primitive (surfaces as a fingerprint/read error like any other IO
@@ -3295,12 +3287,48 @@ mod tests {
         });
     }
 
+    /// Shared blocked-worker harness for the per-id import-lock pins: locks
+    /// `lock`, spawns `lane` on a worker, samples whether the worker stayed
+    /// parked for the bounded contention window, runs
+    /// `observe_while_parked` mid-flight (before the lock is released), then
+    /// releases the lock, waits out the lane, and joins the worker. Bounded:
+    /// a regressed lane that skips the lock completes inside the window
+    /// (`parked = false`); a correct one stays parked on the mutex. The
+    /// worker is always drained (and joined) BEFORE the caller can assert on
+    /// the result, so the env restore can never race a still-running lane
+    /// onto the real home.
+    fn blocked_worker_on_import_lock<R, F, O>(
+        lock: &std::sync::Mutex<()>,
+        lane: F,
+        observe_while_parked: O,
+    ) -> (bool, Result<R, String>)
+    where
+        R: Send + 'static,
+        F: FnOnce() -> Result<R, String> + Send + 'static,
+        O: FnOnce(),
+    {
+        let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = lane();
+            tx.send(result).expect("worker should send its result");
+        });
+        let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
+        observe_while_parked();
+        drop(guard);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lane completes once the lock is released");
+        worker.join().expect("worker should finish");
+        (parked, result)
+    }
+
     /// The skill lane's consent strip must run while the per-id import lock
-    /// is still held (round-12 review B2): a strip that runs before the lock
+    /// is still held: a strip that runs before the lock
     /// is taken can delete a deny-first registration a concurrent same-id
-    /// install just made. Behavioral twin on the file's established
-    /// blocked-worker harness (`install_waits_for_the_per_id_import_lock`,
-    /// mod.rs's `uninstall_waits_for_the_cross_process_landing_lease`): a
+    /// install just made. Behavioral twin on the file's blocked-worker
+    /// harness (`blocked_worker_on_import_lock`, mod.rs's
+    /// `uninstall_waits_for_the_cross_process_landing_lease`): a
     /// real pack is installed, the owner row the strip must remove is
     /// seeded, and the fixture holds the per-id lock while the
     /// uninstall-and-strip runs on a worker. While parked the worker must
@@ -3314,8 +3342,7 @@ mod tests {
                 .install(id)
                 .expect("fixture: the preset skill installs");
             // The deny-first row the strip must remove, seeded under the
-            // same owner mapping the strip targets (round-26 MAJOR 1 exact
-            // form).
+            // same owner mapping the strip targets (the exact form).
             let owner = crate::features::marketplace::bundle::skill_owner_package(id);
             crate::features::marketplace::scope::save_disabled_bundles_for(
                 crate::features::marketplace::ConnectorScope::Plain,
@@ -3335,26 +3362,14 @@ mod tests {
             // The peer-lane shape: hold the per-id import lock the helper
             // must take before it strips.
             let lock = crate::features::marketplace::plugin_import::import_lock_for(id);
-            let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-
-            let (tx, rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let result = SkillMarketplaceManager::new().uninstall_and_strip_scope(id);
-                tx.send(result).expect("worker should send its result");
-            });
-            // Bounded: a regressed strip that runs before the lock completes
-            // here with the row already gone; a correct one stays parked on
-            // the mutex with the row untouched. The worker is always drained
-            // (and joined) BEFORE any assertion can panic, so the env
-            // restore can never race a still-running teardown onto the real
-            // home.
-            let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
-            let row_while_parked = plain_rows().iter().any(|row| row == &owner);
-            drop(guard);
-            let result = rx
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .expect("the uninstall completes once the lock is released");
-            worker.join().expect("worker should finish");
+            let mut row_while_parked = false;
+            let (parked, result) = blocked_worker_on_import_lock(
+                &lock,
+                move || SkillMarketplaceManager::new().uninstall_and_strip_scope(id),
+                || {
+                    row_while_parked = plain_rows().iter().any(|row| row == &owner);
+                },
+            );
             assert!(
                 parked,
                 "the uninstall-and-strip must wait while the fixture holds the per-id import lock"
@@ -3371,7 +3386,7 @@ mod tests {
         });
     }
 
-    /// round-21 review (P2): the preset install pipeline must hold the same
+    /// The preset install pipeline must hold the same
     /// per-id import lock the uninstall / display-edit / unified-import
     /// lanes hold. A lock excludes only lock-takers: an unlocked install
     /// racing a lock-holding uninstall can rename its dirs back in and
@@ -3383,39 +3398,19 @@ mod tests {
     #[test]
     fn install_waits_for_the_per_id_import_lock() {
         with_temp_home("pinvou3-skill-install-lock", || {
-            // The uninstall lane's shape: acquire the per-id lock and hold it
+            // The uninstall lane's shape: the fixture holds the per-id lock
             // across the lane's whole body.
             let lock = crate::features::marketplace::plugin_import::import_lock_for("visualizer");
-            let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
-
-            let (tx, rx) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                let result = SkillMarketplaceManager::new().install("visualizer");
-                tx.send(result).expect("worker should send its result");
-            });
-            // Bounded: a regressed install that skips the lock completes
-            // inside this window (parked = false); a correct one stays
-            // parked on the mutex. The worker is always drained (and joined)
-            // BEFORE any assertion can panic, so the env restore can never
-            // race a still-running install onto the real home.
-            let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
-            drop(guard);
-            let result = rx
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .expect("install completes once the lock is released");
-            worker.join().expect("worker should finish");
+            let (parked, result) = blocked_worker_on_import_lock(
+                &lock,
+                || SkillMarketplaceManager::new().install("visualizer"),
+                || (),
+            );
             assert!(
                 parked,
                 "install must wait while a same-id lane holds the per-id import lock"
             );
             result.expect("install succeeds after waiting out the peer lane");
-            assert!(
-                SkillMarketplaceManager::new()
-                    .find_skill_dir("visualizer")
-                    .map(|dir| dir.join("SKILL.md").is_file())
-                    .unwrap_or(false),
-                "the install landed after the lock released"
-            );
         });
     }
 

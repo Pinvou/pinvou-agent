@@ -175,7 +175,7 @@ where
 /// Bounded retry for transient OS-lock acquisition errors while taking a
 /// blocking write lock (the Windows blocking-LockFileEx ERROR_LOCK_VIOLATION
 /// race, which surfaces as a raw error instead of blocking); a persistent
-/// failure still refuses fail-closed after the bound (the #517 disposition).
+/// failure still refuses fail-closed after the bound.
 pub(super) const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
 pub(super) const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
 
@@ -335,13 +335,12 @@ mod tests {
         }
     }
 
-    /// Round-17 review (moved from scope.rs with its hot read into the shared
-    /// funnel): the once-per-failure-mode latch must survive degraded reads.
-    /// Both clean-read tails used to clear every bit unconditionally, so with
-    /// a healthy data file but a persistently broken lock file every per-turn
-    /// hot read logged one warn — the exact per-read spam the latch exists to
-    /// prevent. A degraded read (data leg fine, lock leg failed) must keep
-    /// the bit armed; only a fully locked read re-arms.
+    /// The once-per-failure-mode latch must survive degraded reads: a
+    /// clean-read tail that clears every bit unconditionally logs one warn
+    /// per hot read with a healthy data file but a persistently broken lock
+    /// file — the exact per-read spam the latch exists to prevent. A
+    /// degraded read (data leg fine, lock leg failed) must keep the bit
+    /// armed; only a fully locked read re-arms.
     #[test]
     fn degraded_reads_keep_the_failure_latch_armed() {
         // The latch is process-global across every funnel read, so run under
