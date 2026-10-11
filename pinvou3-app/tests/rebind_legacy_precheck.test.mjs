@@ -36,7 +36,11 @@ assert.ok(rebindFnAt > 0, 'the rebind command must exist');
 assert.ok(endAnchorAt > rebindFnAt, 'the end anchor must trail the command (round-24 minor 24: a missing anchor used to slice to -1 silently)');
 const commandBody = projectsRs.slice(rebindFnAt, endAnchorAt);
 const planAt = commandBody.indexOf('plan_rebind_workspace_bindings(&from, &to_display)');
-const codexAt = commandBody.indexOf('rebind_workspace_prefix(&from, &to_display)');
+// The codex-lane call now runs on a blocking worker (round-51 review: the
+// workspace-prefix lock must not park an async-runtime worker), so the arg
+// locals carry spawn_blocking names — pin the call prefix, which comments in
+// the body never contain, instead of the arg names a refactor may rename.
+const codexAt = commandBody.indexOf('rebind_workspace_prefix(&from');
 const applyAt = commandBody.indexOf('apply_rebind_workspace_bindings(plain_plan)');
 assert.ok(planAt > 0, 'the command must run the plain-lane planning half');
 assert.ok(codexAt > 0, 'the command must run the codex lane');

@@ -3858,13 +3858,17 @@ mod tests {
                 _reference: &crate::platform::credential_store::CredentialReference,
                 _value: &str,
             ) -> Result<(), crate::platform::credential_store::CredentialError> {
-                unimplemented!("not used by the refresh");
+                Err(crate::platform::credential_store::CredentialError::new(
+                    "not used by the refresh",
+                ))
             }
             fn delete(
                 &self,
                 _reference: &crate::platform::credential_store::CredentialReference,
             ) -> Result<(), crate::platform::credential_store::CredentialError> {
-                unimplemented!("not used by the refresh");
+                Err(crate::platform::credential_store::CredentialError::new(
+                    "not used by the refresh",
+                ))
             }
             fn os_keyring_unreachable(
                 &self,
