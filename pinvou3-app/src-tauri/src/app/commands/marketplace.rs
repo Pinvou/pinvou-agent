@@ -1,6 +1,9 @@
 // ---------------------------------------------------------------------------
 // 工具市场
 // ---------------------------------------------------------------------------
+// architecture-guard: allow-target-cfg -- the round-27 OAuth-status FIFO pin
+// is cfg(unix)-gated: plant_fifo and the hardened-read refusal it exercises
+// are unix-only (test-only, same exemption precedent as marketplace/store.rs).
 
 #[tauri::command]
 pub fn list_marketplace_tools()
