@@ -942,27 +942,17 @@ mod tests {
     /// fixture regressions.
     #[cfg(unix)]
     fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("pinvou3-recyclebin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // The write-failure memos are keyed by home path and this harness
-        // reuses a pid-keyed dir: clear them so a prior case's memo cannot
-        // bleed into the next one (same shape as scope.rs's harness).
-        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        // Round-27 review (minor): delegated to the shared RAII harness like
+        // the other PINVOU3_HOME mutators — the straight-line restore after
+        // `f()` is skipped when an assertion inside the closure unwinds,
+        // leaking the temp dir and leaving PINVOU3_HOME pointed at it for
+        // every later test in the process. The verdict-memo clear stays:
+        // memos are keyed by home path and the unique per-call dir cannot
+        // collide, but clearing keeps parity with the scope.rs harness.
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin", || {
+            crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
+            f();
+        });
     }
 
     fn fresh_dir(tag: &str) -> PathBuf {

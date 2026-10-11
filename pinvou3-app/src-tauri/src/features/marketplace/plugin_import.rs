@@ -3135,58 +3135,54 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mark_landing_refuses_a_planted_fifo_and_symlink() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-mark-hardening-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // Round-27 review (minor): the hand-rolled env dance moves onto the
+        // shared RAII harness — a failing assertion unwinds past a
+        // straight-line restore and would leave PINVOU3_HOME pointed at a
+        // deleted temp dir for every later test in the process.
+        crate::platform::test_support::with_temp_home("pinvou-mark-hardening", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        // A planted FIFO at the mark path: the write must refuse, not open-block.
-        let fifo = landing_mark_path("fifo-id");
-        std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
-        crate::platform::paths::tests::plant_fifo(&fifo);
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            mark_landing("fifo-id");
-            tx.send(()).expect("worker should send");
+            // A planted FIFO at the mark path: the write must refuse, not open-block.
+            let fifo = landing_mark_path("fifo-id");
+            std::fs::create_dir_all(fifo.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&fifo);
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                mark_landing("fifo-id");
+                tx.send(()).expect("worker should send");
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    // Round-27 review (minor): uniform abort containment with the
+                    // other FIFO pins — a future edit that takes a lock around
+                    // mark_landing must not turn one regression into a
+                    // lane-wide cascade hang.
+                    eprintln!(
+                        "FAIL: mark_landing still blocks on a planted FIFO — \
+                     aborting the test process to contain the leaked blocked worker"
+                    );
+                    std::process::abort();
+                });
+
+            // A planted symlink at the mark path: O_NOFOLLOW must refuse without
+            // touching the target.
+            let victim = dir.join("victim.txt");
+            std::fs::write(&victim, b"victim").unwrap();
+            let link = landing_mark_path("link-id");
+            std::os::unix::fs::symlink(&victim, &link).unwrap();
+            mark_landing("link-id");
+            assert_eq!(
+                std::fs::read(&victim).unwrap(),
+                b"victim",
+                "the symlink's target must be untouched"
+            );
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false),
+                "the mark must not be written through a planted symlink (the path must still be the link itself)"
+            );
         });
-        rx.recv_timeout(std::time::Duration::from_secs(5))
-            .expect("mark_landing must refuse a planted FIFO, not hang");
-
-        // A planted symlink at the mark path: O_NOFOLLOW must refuse without
-        // touching the target.
-        let victim = dir.join("victim.txt");
-        std::fs::write(&victim, b"victim").unwrap();
-        let link = landing_mark_path("link-id");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
-        mark_landing("link-id");
-        assert_eq!(
-            std::fs::read(&victim).unwrap(),
-            b"victim",
-            "the symlink's target must be untouched"
-        );
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false),
-            "the mark must not be written through a planted symlink (the path must still be the link itself)"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 统一导入路径（三条 UI 上传通道的汇聚点）重导入时必须重基线 SKILL.md 说明

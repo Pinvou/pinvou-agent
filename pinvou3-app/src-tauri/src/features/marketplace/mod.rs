@@ -3203,7 +3203,16 @@ pub(crate) mod tests {
             let result = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or_else(|_| {
-                    panic!("migrate must refuse a planted mcp.json FIFO without hanging (5s bound)")
+                    // Round-27 review (minor): the regressed worker stays
+                    // blocked while HOLDING mcp.lock — a plain panic would
+                    // cascade-hang every later mcp.lock test in the serial
+                    // lane, so die loudly and contain it (the scope.rs
+                    // funnel pins' convention).
+                    eprintln!(
+                        "FAIL: migrate still blocks on a planted mcp.json FIFO while holding mcp.lock — \
+                         aborting the test process to contain the leaked lock holder"
+                    );
+                    std::process::abort();
                 });
             let error = result.expect_err("a planted FIFO must fail the migration loudly");
             assert!(
@@ -7830,7 +7839,16 @@ pub(crate) mod tests {
             });
             let result = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("the installed.json read must refuse a planted FIFO, not hang");
+                .unwrap_or_else(|_| {
+                    // Round-27 review (minor): a regressed worker stays
+                    // blocked holding the store-side lock — contain the
+                    // cascade with a loud process death.
+                    eprintln!(
+                        "FAIL: the installed.json read still blocks on a planted FIFO — \
+                         aborting the test process to contain the leaked lock holder"
+                    );
+                    std::process::abort();
+                });
             assert!(
                 result.is_err(),
                 "a planted FIFO must be refused by the regular-file gate"
