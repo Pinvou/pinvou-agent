@@ -52,19 +52,27 @@ static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
 /// imperceptible.
 fn lock_rewound_turns_file() -> Result<std::fs::File> {
     let path = rewound_turns_path().with_extension("json.lock");
+    let file =
+        open_lock_file().with_context(|| format!("打开回退备份锁失败: {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("锁定回退备份失败: {}", path.display()))?;
+    Ok(file)
+}
+
+/// Path-compute → create_dir_all → open scaffold shared by the two lock
+/// twins above and below (they differ only in blocking vs `try_lock`). The
+/// blocking twin wraps any failure — including the `create_dir_all` step —
+/// in its `打开回退备份锁失败` context; the try twin degrades to `None`.
+fn open_lock_file() -> std::io::Result<std::fs::File> {
+    let path = rewound_turns_path().with_extension("json.lock");
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建回退备份锁目录失败: {}", parent.display()))?;
+        std::fs::create_dir_all(parent)?;
     }
-    let file = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(&path)
-        .with_context(|| format!("打开回退备份锁失败: {}", path.display()))?;
-    file.lock()
-        .with_context(|| format!("锁定回退备份失败: {}", path.display()))?;
-    Ok(file)
 }
 
 /// Non-blocking twin of [`lock_rewound_turns_file`] for callers that must
@@ -74,18 +82,7 @@ fn lock_rewound_turns_file() -> Result<std::fs::File> {
 /// blocking acquire — a peer wedged while holding the flock would hang the
 /// delete/retention caller forever instead of skipping.
 fn try_lock_rewound_turns_file() -> Option<std::fs::File> {
-    let path = rewound_turns_path().with_extension("json.lock");
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return None;
-        }
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .ok()?;
+    let file = open_lock_file().ok()?;
     match file.try_lock() {
         Ok(()) => Some(file),
         Err(std::fs::TryLockError::WouldBlock) => None,
@@ -201,14 +198,7 @@ fn load_rewound_turns_map_with(
                 path.with_extension(format!("corrupt-{}", Utc::now().format("%Y%m%d%H%M%S")));
             match mode {
                 RewindLoadMode::CallerHoldsLock => {
-                    eprintln!(
-                        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
-                        quarantine.display()
-                    );
-                    if let Err(error) = std::fs::rename(&path, &quarantine) {
-                        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
-                    }
-                    Ok(HashMap::new())
+                    quarantine_and_continue(&path, &quarantine, parse_error)
                 }
                 RewindLoadMode::TryLockAndRecheck => {
                     match try_lock_rewound_turns_file() {
@@ -230,14 +220,7 @@ fn load_rewound_turns_map_with(
                                     Ok(fresh_map)
                                 }
                                 Err(_still_corrupt) => {
-                                    eprintln!(
-                                        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
-                                        quarantine.display()
-                                    );
-                                    if let Err(error) = std::fs::rename(&path, &quarantine) {
-                                        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
-                                    }
-                                    Ok(HashMap::new())
+                                    quarantine_and_continue(&path, &quarantine, parse_error)
                                 }
                             }
                         }
@@ -259,6 +242,27 @@ fn load_rewound_turns_map_with(
             }
         }
     }
+}
+
+/// Shared tail of both load modes ([`RewindLoadMode::CallerHoldsLock`] and
+/// the re-read-under-lock `TryLockAndRecheck` arm, which were byte-identical):
+/// isolate the corrupt sidecar under `corrupt-*`（保留现场供人工恢复）and
+/// answer an empty map. Both messages are part of the observable behavior
+/// and are pinned verbatim here; see the mode enum for who holds the
+/// cross-process flock during the rename.
+fn quarantine_and_continue(
+    path: &std::path::Path,
+    quarantine: &std::path::Path,
+    parse_error: serde_json::Error,
+) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
+    eprintln!(
+        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+        quarantine.display()
+    );
+    if let Err(error) = std::fs::rename(path, quarantine) {
+        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+    }
+    Ok(HashMap::new())
 }
 
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {

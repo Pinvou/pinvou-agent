@@ -886,18 +886,7 @@ impl SessionAgentStore {
         // every GUI mutator that whole-table-persists runs the same
         // lock-and-reload discipline (see `lock_and_reload`), so no surface
         // persists a stale boot-era table over a peer's committed write.
-        let lock_path = self.path.with_extension("json.lock");
-        let _section = super::cross_process_section_lock(&lock_path, "session-agents");
-        if self.path.exists() {
-            let raw = fs::read_to_string(&self.path)
-                .with_context(|| format!("读取 {} 失败", self.path.display()))?;
-            let fresh: HashMap<String, SessionAgentRecord> =
-                serde_json::from_str::<AgentStoreFile>(&raw)
-                    .with_context(|| format!("解析 {} 失败", self.path.display()))?
-                    .sessions;
-            let mut records = self.records.write();
-            *records = fresh;
-        }
+        let _section = self.lock_and_reload()?;
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
         let mut sidecar_final_stale: Vec<String> = Vec::new();
         // Original bindings of the mutated records, kept so a persist
@@ -1328,9 +1317,10 @@ impl SessionAgentStore {
     /// mutate → persist, and a corrupt index is REFUSED instead of being
     /// replaced by a stale-table persist. Returns the section guard — the
     /// caller mutates `self.records` and calls `self.persist()` while it is
-    /// held. `rebind_workspace_prefix` keeps its own inline sequence (it
-    /// must not reload mid-translation) and [`Self::commit_index_rekeys`]
-    /// stays lock-free because its other caller already holds the lock.
+    /// held. `rebind_workspace_prefix` takes the lock + fresh reload FIRST
+    /// through this helper and only then translates the paths, and
+    /// [`Self::commit_index_rekeys`] stays lock-free because its other
+    /// caller already holds the lock.
     fn lock_and_reload(&self) -> Result<Option<std::fs::File>> {
         let lock_path = self.path.with_extension("json.lock");
         let section = super::cross_process_section_lock(&lock_path, "session-agents");

@@ -448,12 +448,11 @@ impl ImportJobStore {
         // exit) would otherwise overwrite `interrupted` with `done`,
         // turning "zero sources ingested, resumable" into an exit-0
         // success whose promised remedy never materializes.
-        let promoted = c.execute(
+        c.execute(
             "UPDATE knowledge_import_jobs SET state=?2,updated_at=?3,finished_at=?3 \
              WHERE id=?1 AND state IN ('preparing','running')",
             params![job_id, state, now],
         )?;
-        let _ = promoted;
         Ok(())
     }
 

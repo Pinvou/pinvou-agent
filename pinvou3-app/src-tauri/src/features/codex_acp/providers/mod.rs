@@ -482,20 +482,19 @@ impl AcpProvidersStore {
         })
     }
 
-    /// Fresh read of the current id AND its record in one critical section.
+    /// Fresh read of the current provider's record in one critical section.
     /// Deriving the revert target from a stale `current`/record pair
     /// rewrites the config for a provider a peer already removed or
     /// un-currented. (Round-40 review removed the `_after_reload` wrapper —
-    /// it had zero callers; the fresh-locked form is the only consumer.)
-    fn current_and_record_fresh_locked(
-        &self,
-        agent: &str,
-    ) -> (Option<String>, Option<ProviderRecord>) {
+    /// it had zero callers; the fresh-locked form is the only consumer. The
+    /// `current` id stays an internal lookup: its only caller discarded that
+    /// tuple half, so the fn returns the record alone.)
+    fn current_and_record_fresh_locked(&self, agent: &str) -> Option<ProviderRecord> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
         let state = agents.get(agent);
         let current = state.and_then(|state| state.current_provider_id.clone());
-        let record = current.as_deref().and_then(|id| {
+        current.as_deref().and_then(|id| {
             state.and_then(|state| {
                 state
                     .providers
@@ -503,8 +502,7 @@ impl AcpProvidersStore {
                     .find(|candidate| candidate.id == id)
                     .cloned()
             })
-        });
-        (current, record)
+        })
     }
 
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
@@ -521,13 +519,7 @@ impl AcpProvidersStore {
     /// decide "not recorded" from memory and persist that `None` over the
     /// CLI-written value, breaking the later official-login restore the
     /// field exists for (kimi's `default_model` is the concrete casualty).
-    pub(crate) fn official_default_model_after_reload(&self, agent: &str) -> Option<String> {
-        let _section = self.section_lock();
-        self.official_default_model_fresh_locked(agent)
-    }
-
-    /// [`Self::official_default_model_after_reload`] for a caller that
-    /// already holds the section lock (see [`Self::upsert_locked`]).
+    /// Caller already holds the section lock (see [`Self::upsert_locked`]).
     pub(crate) fn official_default_model_fresh_locked(&self, agent: &str) -> Option<String> {
         let mut agents = self.agents.write();
         Self::reload_into(&mut agents, &self.path);
@@ -927,26 +919,18 @@ impl ProviderManager {
     /// Round-48 test-only constructor: pairs the manager with an ARMED
     /// divergence-window gate so a test can land a peer store write between
     /// `save`'s pre-lock read and its under-lock fresh read. Returns the
-    /// gate for the test to await and release.
+    /// gate for the test to await and release. (Constructs through
+    /// `Self::new` instead of re-spelling the field list, so a new field
+    /// cannot be forgotten here.)
     #[cfg(test)]
     pub(crate) fn new_with_armed_divergence_gate(
         credentials: SystemCredentialStore,
-    ) -> (Result<Self>, Arc<DivergenceGate>) {
+    ) -> (Self, Arc<DivergenceGate>) {
+        let mut manager = Self::new(credentials).expect("worker manager");
         let gate = Arc::new(DivergenceGate::default());
         gate.arm();
-        let home = crate::platform::os::user_home_dir();
-        (
-            Ok(Self {
-                store: AcpProvidersStore::load_or_empty(),
-                credentials,
-                claude_root: home.join(".claude"),
-                codex_root: home.join(".codex"),
-                kimi_root: super::introspect::kimi_data_root(),
-                switch_locks: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-                divergence_gate: gate.clone(),
-            }),
-            gate,
-        )
+        manager.divergence_gate = gate.clone();
+        (manager, gate)
     }
 
     /// 取（必要时创建）per-agent 配置切换锁。
@@ -1528,7 +1512,7 @@ impl ProviderManager {
     /// section flock（delete / switch_official 持双锁后调用）。
     /// store 读取走 reload 后的 fresh read（配置/表分裂态的同一纪律）。
     fn switch_official_locked(&self, agent: &str) -> Result<()> {
-        let (_current, record) = self.store.current_and_record_fresh_locked(agent);
+        let record = self.store.current_and_record_fresh_locked(agent);
         let reverted = record.map(|record| ProviderTarget::from_record(&record, None));
         // Same fresh-read discipline as the revert target: this value is
         // written back verbatim by `restore_default_model`, so deciding it
@@ -1837,20 +1821,85 @@ mod tests {
         }
     }
 
+    /// Temp directory named after the running test (thread name with path
+    /// separators flattened), recreated fresh per call so parallel tests
+    /// never share a section-lock directory. `tag` keeps every historical
+    /// on-disk directory name byte-identical.
+    fn section_test_dir(tag: &str) -> PathBuf {
+        let current = std::thread::current();
+        let test = current
+            .name()
+            .unwrap_or_default()
+            .replace(['/', '\\', ':'], "_");
+        let dir = std::env::temp_dir().join(format!("{tag}{test}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Test `ProviderRecord` factory shared by the section/store tests
+    /// below; `created_at` is a fixed marker no assertion reads, so the
+    /// per-test copies this hoist replaced could not drift invisibly.
+    fn record(id: &str, name: &str) -> ProviderRecord {
+        ProviderRecord {
+            id: id.into(),
+            name: name.into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: None,
+            model_slots: None,
+            context_window: None,
+            wire_api: ProviderWireApi::Openai,
+            credential: None,
+            created_at: "2026-09-30T00:00:00Z".into(),
+        }
+    }
+
+    /// Locked env + isolated HOME for the tests that drive the real
+    /// `ProviderManager` over the file secret backend. Returns the guards
+    /// AND the home dir: dropping the guards inside the helper would release
+    /// the env lock at helper exit and un-serialize the unsafe writes below
+    /// (a bare returned `PathBuf` cannot keep them alive), so the caller
+    /// binds the whole tuple. `tag` keeps every historical on-disk home
+    /// name byte-identical.
+    fn locked_provider_env(
+        tag: &str,
+    ) -> (
+        std::sync::MutexGuard<'static, ()>,
+        crate::platform::test_support::EnvRestore,
+        PathBuf,
+    ) {
+        let (lock, env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_HOME",
+            "HOME",
+            "CODEWHALE_HOME",
+            "CODEWHALE_SECRET_BACKEND",
+            "DEEPSEEK_SECRET_BACKEND",
+        ]);
+        let home = std::env::temp_dir().join(format!(
+            "acp-providers-test-{tag}-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
+        // writes are serialized in-process.
+        unsafe {
+            std::env::set_var("PINVOU3_HOME", &home);
+            std::env::set_var("HOME", &home);
+            std::env::set_var("CODEWHALE_HOME", &home);
+            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
+        }
+        (lock, env, home)
+    }
+
     /// The reload→mutate→persist section is serialized ACROSS processes:
     /// while another process holds the section lock, a mutator here waits
     /// instead of renaming its own snapshot over the peer's just-committed
     /// write (the lost-update window the in-process write guard left open).
     #[test]
     fn mutators_wait_for_another_process_holding_the_section_lock() {
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let cli = tmp_store(&dir);
 
         // An external "process" (any holder of the same lock file) owns the
@@ -1864,19 +1913,6 @@ mod tests {
             .unwrap();
         holder.lock().unwrap();
 
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-09-30T00:00:00Z".into(),
-            }
-        }
         let done = Arc::new(AtomicBool::new(false));
         let done_in = done.clone();
         // The worker signals right before entering the mutator, so the
@@ -1909,33 +1945,13 @@ mod tests {
     /// it — `load_or_empty`'s boot-time `.pinvou3-bak` never saw it either.
     #[test]
     fn reload_into_quarantines_a_file_that_turned_corrupt_after_boot() {
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let path = dir.join("acp-providers.json");
         let store = tmp_store(&dir);
 
         let corrupt = b"{ this never parses";
         fs::write(&path, corrupt).unwrap();
 
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-09-30T00:00:00Z".into(),
-            }
-        }
         store.upsert("codex", record("pv-a", "A")).unwrap();
 
         let quarantine = dir.join("acp-providers.json.invalid");
@@ -1962,27 +1978,7 @@ mod tests {
     /// (the config/store split-brain).
     #[test]
     fn current_after_reload_reads_the_disk_state_a_cli_wrote() {
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-09-30T00:00:00Z".into(),
-            }
-        }
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let gui = tmp_store(&dir);
         let cli = tmp_store(&dir);
 
@@ -2038,28 +2034,8 @@ mod tests {
     /// official default model and breaking the later official-login restore
     /// (kimi's `default_model` is the concrete casualty).
     #[test]
-    fn official_default_model_after_reload_reads_the_disk_state_a_cli_wrote() {
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-10-03T00:00:00Z".into(),
-            }
-        }
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    fn official_default_model_fresh_locked_reads_the_disk_state_a_cli_wrote() {
+        let dir = section_test_dir("acp-providers-test-");
         let gui = tmp_store(&dir);
         let cli = tmp_store(&dir);
 
@@ -2078,7 +2054,11 @@ mod tests {
             "precondition: the plain read is the stale memory value"
         );
         assert_eq!(
-            gui.official_default_model_after_reload("codex").as_deref(),
+            {
+                let _section = gui.section_lock();
+                gui.official_default_model_fresh_locked("codex")
+            }
+            .as_deref(),
             Some("kimi-code/k3"),
             "the decision read must adopt the disk state, not the stale memory"
         );
@@ -2087,7 +2067,10 @@ mod tests {
         // through the same mutator erases the recorded model.
         cli.set_switch_state("codex", Some("pv-a"), None).unwrap();
         assert_eq!(
-            cli.official_default_model_after_reload("codex"),
+            {
+                let _section = cli.section_lock();
+                cli.official_default_model_fresh_locked("codex")
+            },
             None,
             "a None decision persists None — so the decision must be fresh-read"
         );
@@ -2103,27 +2086,7 @@ mod tests {
     /// error routes `switch` into its rollback arm.
     #[test]
     fn switch_decisions_read_the_disk_state_and_refuse_a_removed_target() {
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-09-30T00:00:00Z".into(),
-            }
-        }
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let gui = tmp_store(&dir);
         let cli = tmp_store(&dir);
 
@@ -2263,14 +2226,7 @@ mod tests {
 
     #[test]
     fn store_roundtrip_and_atomic() {
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let store = tmp_store(&dir);
         let record = ProviderRecord {
             id: "pv-1234567890ab".into(),
@@ -2332,27 +2288,7 @@ mod tests {
     /// state (this is the discard the post-guard persist shape allowed).
     #[test]
     fn racing_mutators_never_lose_a_committed_write() {
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-09-30T00:00:00Z".into(),
-            }
-        }
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let store = std::sync::Arc::new(tmp_store(&dir));
 
         let upserter = {
@@ -2408,27 +2344,7 @@ mod tests {
 
     #[test]
     fn mutators_reload_the_disk_state_the_other_surface_wrote() {
-        fn record(id: &str, name: &str) -> ProviderRecord {
-            ProviderRecord {
-                id: id.into(),
-                name: name.into(),
-                base_url: "https://api.example.com/v1".into(),
-                model: None,
-                model_slots: None,
-                context_window: None,
-                wire_api: ProviderWireApi::Openai,
-                credential: None,
-                created_at: "2026-09-30T00:00:00Z".into(),
-            }
-        }
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-");
         let path = dir.join("acp-providers.json");
         let gui = tmp_store(&dir);
         let cli = tmp_store(&dir);
@@ -2485,14 +2401,7 @@ mod tests {
 
     #[test]
     fn remove_clears_current_candidate() {
-        let current = std::thread::current();
-        let test = current
-            .name()
-            .unwrap_or_default()
-            .replace(['/', '\\', ':'], "_");
-        let dir = std::env::temp_dir().join(format!("acp-providers-test-rm-{test}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = section_test_dir("acp-providers-test-rm-");
         let store = tmp_store(&dir);
         store
             .upsert(
@@ -2557,28 +2466,7 @@ mod tests {
     /// the provider is not `current`.
     #[test]
     fn save_adds_a_first_key_to_a_keyless_provider_and_rotates_it() {
-        let (_lock, _env) = crate::platform::test_support::locked_env(&[
-            "PINVOU3_HOME",
-            "HOME",
-            "CODEWHALE_HOME",
-            "CODEWHALE_SECRET_BACKEND",
-            "DEEPSEEK_SECRET_BACKEND",
-        ]);
-        let home = std::env::temp_dir().join(format!(
-            "acp-providers-test-keyless-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = fs::remove_dir_all(&home);
-        fs::create_dir_all(&home).unwrap();
-        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
-        // writes are serialized in-process.
-        unsafe {
-            std::env::set_var("PINVOU3_HOME", &home);
-            std::env::set_var("HOME", &home);
-            std::env::set_var("CODEWHALE_HOME", &home);
-            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
-        }
+        let (_lock, _env, home) = locked_provider_env("keyless");
         let store_path = home.join("acp-providers.json");
 
         let manager =
@@ -2671,28 +2559,7 @@ mod tests {
     /// since `atomic_write`'s staging token is pid+nanotime.)
     #[test]
     fn take_back_untouched_key_deletes_only_its_own_value() {
-        let (_lock, _env) = crate::platform::test_support::locked_env(&[
-            "PINVOU3_HOME",
-            "HOME",
-            "CODEWHALE_HOME",
-            "CODEWHALE_SECRET_BACKEND",
-            "DEEPSEEK_SECRET_BACKEND",
-        ]);
-        let home = std::env::temp_dir().join(format!(
-            "acp-providers-test-take-back-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = fs::remove_dir_all(&home);
-        fs::create_dir_all(&home).unwrap();
-        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
-        // writes are serialized in-process.
-        unsafe {
-            std::env::set_var("PINVOU3_HOME", &home);
-            std::env::set_var("HOME", &home);
-            std::env::set_var("CODEWHALE_HOME", &home);
-            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
-        }
+        let (_lock, _env, home) = locked_provider_env("take-back");
         let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
         let reference = CredentialReference::for_acp_provider("codex", "unit-take-back");
 
@@ -2733,28 +2600,7 @@ mod tests {
 
     #[test]
     fn save_takes_back_the_written_key_when_a_peer_clears_the_pointer() {
-        let (_lock, _env) = crate::platform::test_support::locked_env(&[
-            "PINVOU3_HOME",
-            "HOME",
-            "CODEWHALE_HOME",
-            "CODEWHALE_SECRET_BACKEND",
-            "DEEPSEEK_SECRET_BACKEND",
-        ]);
-        let home = std::env::temp_dir().join(format!(
-            "acp-providers-test-peer-clear-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = fs::remove_dir_all(&home);
-        fs::create_dir_all(&home).unwrap();
-        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
-        // writes are serialized in-process.
-        unsafe {
-            std::env::set_var("PINVOU3_HOME", &home);
-            std::env::set_var("HOME", &home);
-            std::env::set_var("CODEWHALE_HOME", &home);
-            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
-        }
+        let (_lock, _env, home) = locked_provider_env("peer-clear");
         let store_path = home.join("acp-providers.json");
 
         let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
@@ -2785,7 +2631,6 @@ mod tests {
             // guard re-validates.
             let (worker_manager, gate) =
                 ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
-            let worker_manager = worker_manager.expect("worker manager");
             gate_tx.send(gate).unwrap();
             let result = worker_manager.save(
                 "codex",
@@ -2848,28 +2693,7 @@ mod tests {
     /// value was clobbered by the peer's write anyway).
     #[test]
     fn save_keeps_the_written_key_when_a_peer_commits_a_first_key() {
-        let (_lock, _env) = crate::platform::test_support::locked_env(&[
-            "PINVOU3_HOME",
-            "HOME",
-            "CODEWHALE_HOME",
-            "CODEWHALE_SECRET_BACKEND",
-            "DEEPSEEK_SECRET_BACKEND",
-        ]);
-        let home = std::env::temp_dir().join(format!(
-            "acp-providers-test-peer-first-key-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = fs::remove_dir_all(&home);
-        fs::create_dir_all(&home).unwrap();
-        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; env
-        // writes are serialized in-process.
-        unsafe {
-            std::env::set_var("PINVOU3_HOME", &home);
-            std::env::set_var("HOME", &home);
-            std::env::set_var("CODEWHALE_HOME", &home);
-            std::env::set_var("CODEWHALE_SECRET_BACKEND", "file");
-        }
+        let (_lock, _env, home) = locked_provider_env("peer-first-key");
         let store_path = home.join("acp-providers.json");
 
         // Bootstrap a KEYLESS record: both saves below are first-key saves.
@@ -2901,7 +2725,6 @@ mod tests {
             // before the under-lock fresh read.
             let (worker_manager, gate) =
                 ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
-            let worker_manager = worker_manager.expect("worker manager");
             gate_tx.send(gate).unwrap();
             worker_manager.save(
                 "codex",

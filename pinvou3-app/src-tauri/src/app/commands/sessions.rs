@@ -637,15 +637,12 @@ pub async fn delete_session(
                     let agents = acp_pool.agents().clone();
                     let session_id = session_id.to_string();
                     async move {
-                        tauri::async_runtime::spawn_blocking(move || {
+                        super::settings::join_blocking("Agent session mapping cleanup", move || {
                             agents.remove(&session_id).map_err(|error| {
                                 format!("failed to clean up the Agent session mapping: {error:#}")
                             })
                         })
                         .await
-                        .map_err(|error| {
-                            format!("Agent session mapping cleanup 任务失败: {error}")
-                        })?
                     }
                 },
             )

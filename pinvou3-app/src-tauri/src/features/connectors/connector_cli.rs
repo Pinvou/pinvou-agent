@@ -257,13 +257,26 @@ fn open_install_log_appender(
         .create(true)
         .append(true)
         .open(log_path)?;
+    harden_log_mode(&file);
+    let clone = file.try_clone()?;
+    Ok((file, clone))
+}
+
+/// Best-effort 0600 on an opened `cli-install.log` handle, shared by the
+/// redirect appender above and the marker appender below (rationale in the
+/// file-top allow-target-cfg note: the log can echo npmrc tokens, and
+/// creation mode alone leaves the umask default whenever the other surface
+/// created the file first). A chmod failure must not fail the install.
+fn harden_log_mode(file: &std::fs::File) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
     }
-    let clone = file.try_clone()?;
-    Ok((file, clone))
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+    }
 }
 
 pub fn run_with_timeout(mut cmd: Command, secs: u64) -> Result<bool, String> {
@@ -340,11 +353,7 @@ pub fn append_cli_install_log(line: &str) {
         // first created by a marker line stayed world-readable until a
         // redirect append happened to tighten it. Same best-effort chmod:
         // a failure must not fail the install.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
+        harden_log_mode(&file);
         let _ = writeln!(file, "{line}");
     }
 }

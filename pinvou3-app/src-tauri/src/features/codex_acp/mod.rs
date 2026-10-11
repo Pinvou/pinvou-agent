@@ -67,6 +67,73 @@ use auth_probe::{AgentAuthProbeState, CachedAuthStatus};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::{Mutex, oneshot};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use wait_timeout::ChildExt;
+
+use crate::features::sessions::SessionStore;
+// ACP 空闲回收阈值/巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）、
+// 回收判定本体、锁内复核 + 原子移除（take_session_if_still_idle）与巡检
+// 句柄/循环（IdleReaperGuard / start_idle_reaper）收敛到 `core::reaper`：
+// 每个空闲会话都是一个活的 node/codex/kimi 子进程（spawn 带 kill_on_drop），
+// 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
+// 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
+// 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
+use crate::core::reaper::{
+    IDLE_EVICT_AFTER_SECS, IdleReaperGuard, should_reap_idle, take_session_if_still_idle,
+};
+use attachments::prepare_codex_prompt;
+use deepseek_tui::session_manager::SessionMetadata;
+pub(crate) use events::project_acp_value_for_web;
+// `pub` for the headless CLI (`pinvou projects rebind`): the GUI's rebind
+// runs this storage pass per session, and the CLI's mirror must run the same
+// half or an untranslated acp-state workspace resurrects the vanished root
+// on boot recovery.
+pub use events::translate_acp_state_workspace;
+pub use events::{
+    AcpEventEnvelope, project_acp_elicitation_request_for_web,
+    project_acp_permission_request_for_web,
+};
+use events::{
+    EventBridge, WebAcpTimelineSlice, load_timeline, load_web_timeline_page, persist_acp_state,
+};
+use latest::LatestVersionProbe;
+use operation_gate::admit_prompt_turn;
+pub use providers::{
+    AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
+};
+// `CLAUDE_MODEL_SLOTS` 通过本 facade 公开再导出：同仓 `pinvou-cli` 的
+// `providers add` 预检与 `ProviderManager::save` 共用同一 claude 模型槽位
+// 列表，消除手工副本漂移；行为不变。
+pub use providers::CLAUDE_MODEL_SLOTS;
+// `GIT_OVERRIDE_KEYS` (from `platform::process`) is published through this
+// facade re-export: the workspace git env scrubbing in the same-repo
+// `pinvou-cli` shares the exact key list with `strip_git_override_env`,
+// eliminating hand-copied drift (the CLI-side copy had drifted by three
+// keys); behavior is unchanged.
+pub use crate::platform::process::GIT_OVERRIDE_KEYS;
+// `GIT_IDENTITY_KEYS` (from `platform::process`) is published through this
+// facade re-export for the same reason: the CLI's `--mode commit` lane strips
+// the exact identity list the GUI's commit lane strips, eliminating the
+// hand-copied drift window; behavior is unchanged.
+pub use crate::platform::process::GIT_IDENTITY_KEYS;
+// `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
+// 同一最低版本约束，消除手工副本漂移；行为不变。
+pub use runtime::MIN_CODEX_VERSION;
+/// The comparison itself, not only the constants: `pinvou-cli`'s `code`
+/// gates (`agents status`, override resolution) consume this so a
+/// comparison-semantics change app-side cannot drift behind a CLI-local
+/// copy (round-27 review; the fn's module stays private — the re-export is
+/// the sanctioned surface, same as the constants beside it).
+pub use runtime::version_at_least;
+use runtime::{ResolvedCodex, codex_version, probe_codex_runtime};
+use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
+pub use store::{
+    AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
+    validate_codex_project_workspace,
+};
 
 /// How long a store's cross-process section lock waits for a peer's
 /// reload→mutate→persist section before degrading to unlocked operation
@@ -139,73 +206,24 @@ pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Optio
         }
     }
 }
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, oneshot};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use wait_timeout::ChildExt;
 
-use crate::features::sessions::SessionStore;
-// ACP 空闲回收阈值/巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）、
-// 回收判定本体、锁内复核 + 原子移除（take_session_if_still_idle）与巡检
-// 句柄/循环（IdleReaperGuard / start_idle_reaper）收敛到 `core::reaper`：
-// 每个空闲会话都是一个活的 node/codex/kimi 子进程（spawn 带 kill_on_drop），
-// 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
-// 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
-// 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
-use crate::core::reaper::{
-    IDLE_EVICT_AFTER_SECS, IdleReaperGuard, should_reap_idle, take_session_if_still_idle,
-};
-use attachments::prepare_codex_prompt;
-use deepseek_tui::session_manager::SessionMetadata;
-pub(crate) use events::project_acp_value_for_web;
-// `pub` for the headless CLI (`pinvou projects rebind`): the GUI's rebind
-// runs this storage pass per session, and the CLI's mirror must run the same
-// half or an untranslated acp-state workspace resurrects the vanished root
-// on boot recovery.
-pub use events::translate_acp_state_workspace;
-pub use events::{
-    AcpEventEnvelope, project_acp_elicitation_request_for_web,
-    project_acp_permission_request_for_web,
-};
-use events::{
-    EventBridge, WebAcpTimelineSlice, load_timeline, load_web_timeline_page, persist_acp_state,
-};
-use latest::LatestVersionProbe;
-use operation_gate::admit_prompt_turn;
-pub use providers::{
-    AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
-};
-// `CLAUDE_MODEL_SLOTS` 通过本 facade 公开再导出：同仓 `pinvou-cli` 的
-// `providers add` 预检与 `ProviderManager::save` 共用同一 claude 模型槽位
-// 列表，消除手工副本漂移；行为不变。
-pub use providers::CLAUDE_MODEL_SLOTS;
-// `GIT_OVERRIDE_KEYS` (from `platform::process`) is published through this
-// facade re-export: the workspace git env scrubbing in the same-repo
-// `pinvou-cli` shares the exact key list with `strip_git_override_env`,
-// eliminating hand-copied drift (the CLI-side copy had drifted by three
-// keys); behavior is unchanged.
-pub use crate::platform::process::GIT_OVERRIDE_KEYS;
-// `GIT_IDENTITY_KEYS` (from `platform::process`) is published through this
-// facade re-export for the same reason: the CLI's `--mode commit` lane strips
-// the exact identity list the GUI's commit lane strips, eliminating the
-// hand-copied drift window; behavior is unchanged.
-pub use crate::platform::process::GIT_IDENTITY_KEYS;
-// `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
-// 同一最低版本约束，消除手工副本漂移；行为不变。
-pub use runtime::MIN_CODEX_VERSION;
-/// The comparison itself, not only the constants: `pinvou-cli`'s `code`
-/// gates (`agents status`, override resolution) consume this so a
-/// comparison-semantics change app-side cannot drift behind a CLI-local
-/// copy (round-27 review; the fn's module stays private — the re-export is
-/// the sanctioned surface, same as the constants beside it).
-pub use runtime::version_at_least;
-use runtime::{ResolvedCodex, codex_version, probe_codex_runtime};
-use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
-pub use store::{
-    AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
-    validate_codex_project_workspace,
-};
+/// Run one provider/store section on a blocking worker and map the join
+/// failure onto the shared command-surface error. The provider commands'
+/// `spawn_blocking` sites repeated the identical clone → spawn → await →
+/// join-error chain; this keeps the error string (and therefore every
+/// user-visible message) byte-identical while collapsing the repetition.
+/// Closures that do not themselves return `Result` translate their
+/// fallible half inside (context included) so the join mapping stays
+/// shared.
+async fn on_blocking<T, F>(f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+}
 
 /// Managed-runtime directory schema retained for compatibility with installs
 /// created before the bundled bridge moved past 1.1.5. This is not the
@@ -3102,9 +3120,7 @@ impl AcpPool {
         // drive the ACP engine session pumps.
         let providers = self.providers.clone();
         let agent = agent.to_string();
-        tokio::task::spawn_blocking(move || providers.list(&agent))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+        on_blocking(move || providers.list(&agent)).await
     }
 
     /// 读取 Provider 的 API key（明文，仅编辑弹窗「显示密钥」按需调用）。
@@ -3119,9 +3135,7 @@ impl AcpPool {
         let providers = self.providers.clone();
         let agent = agent.to_string();
         let provider_id = provider_id.to_string();
-        tokio::task::spawn_blocking(move || providers.api_key(&agent, &provider_id))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+        on_blocking(move || providers.api_key(&agent, &provider_id)).await
     }
 
     /// 保存 Provider。若保存的是**生效中**的 Provider，配置已重写但运行中的
@@ -3148,8 +3162,8 @@ impl AcpPool {
         let providers = self.providers.clone();
         let agent_owned = agent.to_string();
         let provider_id = provider_id.map(str::to_string);
-        let record = tokio::task::spawn_blocking(move || {
-            providers.save(
+        let (record, is_current) = on_blocking(move || {
+            let record = providers.save(
                 &agent_owned,
                 provider_id.as_deref(),
                 name,
@@ -3160,30 +3174,23 @@ impl AcpPool {
                 wire_api,
                 api_key,
                 api_key_action,
-            )
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
-        // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
-        // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
-        // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
-        // 可以在本 GUI 启动后改写 current，读内存会把「当前 Provider」判错，
-        // 该重启的会话不重启（或反之）。
-        // The fresh read polls the cross-process section lock (up to
-        // SECTION_LOCK_TIMEOUT) and reloads the store from disk — blocking,
-        // so it stays on a blocking worker like the save above.
-        let providers_for_read = self.providers.clone();
-        let agent_for_read = agent.to_string();
-        let saved_id = record.id.clone();
-        let is_current = tokio::task::spawn_blocking(move || {
-            providers_for_read
+            )?;
+            // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
+            // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
+            // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
+            // 可以在本 GUI 启动后改写 current，读内存会把「当前 Provider」判错，
+            // 该重启的会话不重启（或反之）。
+            // The fresh read polls the cross-process section lock (up to
+            // SECTION_LOCK_TIMEOUT) and reloads the store from disk — blocking,
+            // so it stays on the same blocking worker as the save above.
+            let is_current = providers
                 .store()
-                .current_after_reload(&agent_for_read)
+                .current_after_reload(&agent_owned)
                 .as_deref()
-                == Some(saved_id.as_str())
+                == Some(record.id.as_str());
+            Ok((record, is_current))
         })
-        .await
-        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?;
+        .await?;
         if is_current {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
@@ -3206,14 +3213,13 @@ impl AcpPool {
         let providers = self.providers.clone();
         let agent = agent.to_string();
         let provider_id = provider_id.to_string();
-        let (delete_result, was_current) = tokio::task::spawn_blocking(move || {
+        let was_current = on_blocking(move || {
             let was_current = providers.store().current_after_reload(&agent).as_deref()
                 == Some(provider_id.as_str());
-            (providers.delete(&agent, &provider_id), was_current)
+            providers.delete(&agent, &provider_id)?;
+            Ok(was_current)
         })
-        .await
-        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?;
-        delete_result?;
+        .await?;
         if was_current {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
@@ -3234,9 +3240,7 @@ impl AcpPool {
         let providers = self.providers.clone();
         let agent = agent.to_string();
         let provider_id = provider_id.to_string();
-        tokio::task::spawn_blocking(move || providers.switch(&agent, &provider_id))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
+        on_blocking(move || providers.switch(&agent, &provider_id)).await?;
         self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
@@ -3248,9 +3252,7 @@ impl AcpPool {
         // Round-46 review: same blocking-worker discipline as `switch`.
         let providers = self.providers.clone();
         let agent = agent.to_string();
-        tokio::task::spawn_blocking(move || providers.switch_official(&agent))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
+        on_blocking(move || providers.switch_official(&agent)).await?;
         self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
@@ -3259,18 +3261,14 @@ impl AcpPool {
     pub async fn export_acp_providers(&self, agent: &str) -> Result<String> {
         let providers = self.providers.clone();
         let agent = agent.to_string();
-        tokio::task::spawn_blocking(move || providers.export(&agent))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+        on_blocking(move || providers.export(&agent)).await
     }
 
     pub async fn import_acp_providers(&self, agent: &str, json: &str) -> Result<ImportResult> {
         let providers = self.providers.clone();
         let agent = agent.to_string();
         let json = json.to_string();
-        tokio::task::spawn_blocking(move || providers.import(&agent, &json))
-            .await
-            .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+        on_blocking(move || providers.import(&agent, &json)).await
     }
 
     /// Per-session provider override (F11): writes the "provider" key into the
@@ -3308,34 +3306,29 @@ impl AcpPool {
                 let providers = self.providers.clone();
                 let agent_owned = agent.to_string();
                 let provider_owned = provider_id.clone();
-                tokio::task::spawn_blocking(move || {
+                on_blocking(move || {
                     providers
                         .store()
                         .record_after_reload(&agent_owned, &provider_owned)
+                        .with_context(|| format!("Provider 不存在: {provider_owned}"))
                 })
-                .await
-                .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
-                .with_context(|| format!("Provider 不存在: {provider_id}"))?;
+                .await?;
                 // Round-49 review: the session-index mutator polls the
                 // cross-process section lock and rewrites the whole
                 // session-agents.json — blocking worker, same as the fresh
                 // read above.
                 let agents = self.agents.clone();
                 let session_owned = session_id.to_string();
-                tokio::task::spawn_blocking(move || {
+                on_blocking(move || {
                     agents.set_acp_config_value(&session_owned, "provider", &provider_id)
                 })
-                .await
-                .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
+                .await?;
             }
             None => {
                 let agents = self.agents.clone();
                 let session_owned = session_id.to_string();
-                tokio::task::spawn_blocking(move || {
-                    agents.clear_acp_config_value(&session_owned, "provider")
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
+                on_blocking(move || agents.clear_acp_config_value(&session_owned, "provider"))
+                    .await?;
             }
         }
         self.restart_agent_sessions(backend).await;
@@ -3366,20 +3359,24 @@ impl AcpPool {
         // read——CLI 进程在本 GUI 启动后 switch 过 current 时，读启动
         // 内存会把旧 Provider 的 key 注进指向新 endpoint 的 config，
         // 产生无因的 401。与 save/delete 的 fresh-read 纪律同一形状。
+        // 一次 state_after_reload 同时取回 current 与 providers 表：原
+        // 先的 current_after_reload + record_after_reload 是两段各自
+        // 加锁重读的临界区，这里的本地查找在同一份快照上完成判定。
         let providers = self.providers.clone();
         let agent = agent.to_string();
         tokio::task::spawn_blocking(move || {
+            let state = providers.store().state_after_reload(&agent);
             let provider_id = match session_provider {
                 Some(provider_id) => Some(provider_id),
-                None => providers.store().current_after_reload(&agent),
+                None => state.current_provider_id.clone(),
             };
             let Some(provider_id) = provider_id else {
                 return Ok(None);
             };
-            if providers
-                .store()
-                .record_after_reload(&agent, &provider_id)
-                .is_none()
+            if !state
+                .providers
+                .iter()
+                .any(|candidate| candidate.id == provider_id)
             {
                 return Ok(None);
             }
@@ -4172,11 +4169,10 @@ impl AcpPool {
         // blocking worker like the fresh reads.
         let agents = self.agents.clone();
         let probe_owned = probe_id.clone();
-        tokio::task::spawn_blocking(move || {
+        on_blocking(move || {
             agents.set_acp_workspace(&probe_owned, backend, CodexWorkspaceKind::Temporary, None)
         })
-        .await
-        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
+        .await?;
         let result = self.session_info(&probe_id).await;
         // 无论成败都必须收口，不得留下运行中的探针进程或 store 残留记录；
         // 清理失败只告警，主结果（上报或原始错误）优先透传。
@@ -4934,7 +4930,7 @@ impl AcpPool {
         let pinvou_session_owned = pinvou_session_id.to_string();
         let acp_session_owned = acp_session_id.clone();
         let current_model_owned = current_model_id.clone();
-        tokio::task::spawn_blocking(move || {
+        on_blocking(move || {
             agents.set_acp_session(
                 &pinvou_session_owned,
                 acp_session_owned,
@@ -4942,8 +4938,7 @@ impl AcpPool {
                 config_values,
             )
         })
-        .await
-        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))??;
+        .await?;
         persist_acp_state(
             pinvou_session_id,
             json!({

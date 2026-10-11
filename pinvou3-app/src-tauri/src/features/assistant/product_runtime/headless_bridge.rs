@@ -1345,29 +1345,7 @@ where
     Work: FnOnce(EnginePool, SessionStore) -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
-    crate::install_rustls_provider();
-    crate::ensure_release_env();
-    crate::startup_process_env();
-    if BARE_HOST_TAKEN
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        anyhow::bail!(
-            "a windowless host lane (run_windowless_host or run_bare_host) already ran in this process: tauri::async_runtime::set panics on a second runtime, and both helpers share one latch and must stay the process's only host lanes (round-47 review: the message used to blame run_bare_host even when the windowless lane took the latch first)"
-        );
-    }
-    // Same as the GUI host (lib.rs run()): the startup timeline must be
-    // initialized before the freeze read in the setup closure — this host
-    // attaches no log plugin either, so without the file sink the
-    // freeze-persist CRITICAL below would reach only stderr and the
-    // "the startup timeline is the only durable channel" claim would be
-    // false exactly where it matters.
-    crate::platform::startup::init();
-    let async_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
-        .build()
-        .context("build headless async runtime")?;
+    let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     // Reuse lib.rs's single generate_context expansion point: a second
@@ -1508,15 +1486,23 @@ where
 /// doc fix: the comment used to name only the bare lane).
 static BARE_HOST_TAKEN: AtomicBool = AtomicBool::new(false);
 
-pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
-where
-    T: Send + 'static,
-    Work: FnOnce() -> WorkFuture + Send + 'static,
-    WorkFuture: Future<Output = Result<T>> + Send + 'static,
-{
+/// The bootstrap shared by BOTH host lanes above: the process env setup
+/// (rustls, release env, startup process env), the [`BARE_HOST_TAKEN`]
+/// at-most-once latch (bailing with the lane-collision message), and the
+/// shared multi-thread tokio runtime build. The caller alone performs
+/// `tauri::async_runtime::set` on the returned runtime's handle, keeping
+/// each host's local flow readable.
+fn claim_headless_host_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     crate::install_rustls_provider();
     crate::ensure_release_env();
     crate::startup_process_env();
+    // Same as the GUI host (lib.rs run()): the startup timeline must be
+    // initialized before the freeze read in the setup closure — this host
+    // attaches no log plugin either, so without the file sink the
+    // freeze-persist CRITICAL below would reach only stderr and the
+    // "the startup timeline is the only durable channel" claim would be
+    // false exactly where it matters.
+    crate::platform::startup::init();
     if BARE_HOST_TAKEN
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -1530,6 +1516,16 @@ where
         .thread_stack_size(16 * 1024 * 1024)
         .build()
         .context("build headless async runtime")?;
+    Ok(async_runtime)
+}
+
+pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+where
+    T: Send + 'static,
+    Work: FnOnce() -> WorkFuture + Send + 'static,
+    WorkFuture: Future<Output = Result<T>> + Send + 'static,
+{
+    let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let joined = async_runtime.spawn(async move {
         // Same shape as the product host's spawn site: the work future runs

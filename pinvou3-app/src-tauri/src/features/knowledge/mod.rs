@@ -498,17 +498,7 @@ impl KnowledgeService {
             // process is what the freshness check exists to prevent, and a
             // false refusal is what 2× buys margin against.
             if previous.running {
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_secs() as i64)
-                    .unwrap_or(i64::MAX);
-                let age_secs = previous
-                    .updated_at
-                    .map(|updated| now_secs.saturating_sub(updated))
-                    // An unmeasurable row cannot prove liveness: fail open to
-                    // the pre-guard behavior instead of wedging the button.
-                    .unwrap_or(i64::MAX);
-                if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
+                if foreign_row_is_fresh(previous.updated_at) {
                     return previous;
                 }
                 // Round-43 review: a frozen running row is provably
@@ -821,8 +811,7 @@ impl KnowledgeService {
                         // value, which restarts at 0 for every root) keeps
                         // the counter monotonic across roots with no
                         // bookkeeping.
-                        |raw| {
-                            let _ = raw;
+                        || {
                             scan_state.lock().raw_seen += 1;
                         },
                     );
@@ -942,7 +931,7 @@ fn expand_import_roots(
         }
         // 导入侧沿用「错误即跳过」：导入的目的是收录可读文件，单个不可读
         // 子树不否定其余条目（与全盘扫描的删除授权不同，那边必须否决）。
-        for entry in scanner::walk_pruned_with(root, &ex, |_| heartbeat()).flatten() {
+        for entry in scanner::walk_pruned_with(root, &ex, || heartbeat()).flatten() {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -978,17 +967,7 @@ fn refuse_fresh_foreign_running_import(
             .map(|id| Some(id) != requested_job)
             .unwrap_or(true);
         if previous.running && foreign {
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_secs() as i64)
-                .unwrap_or(i64::MAX);
-            let age_secs = previous
-                .updated_at
-                .map(|updated| now_secs.saturating_sub(updated))
-                // An unmeasurable row cannot prove liveness: fail open to
-                // the pre-guard behavior instead of wedging the button.
-                .unwrap_or(i64::MAX);
-            if age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS {
+            if foreign_row_is_fresh(previous.updated_at) {
                 return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());
             }
             // Round-43 review: same phantom-latest hazard as start_index —
@@ -1047,6 +1026,23 @@ fn interrupt_frozen_foreign_row(
 /// stale and degrades to a normal start. 2× the CLI's default 300 s stall
 /// bound — see the start_index comment for the failure-direction trade.
 const IMPORT_HEARTBEAT_ALIVE_SECS: i64 = 600;
+
+/// Is the foreign running job row's `updated_at` heartbeat fresh enough to
+/// treat its owner as LIVE (age within [`IMPORT_HEARTBEAT_ALIVE_SECS`])?
+/// Shared verbatim by the `start_index` guard and
+/// [`refuse_fresh_foreign_running_import`].
+fn foreign_row_is_fresh(updated_at: Option<i64>) -> bool {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(i64::MAX);
+    let age_secs = updated_at
+        .map(|updated| now_secs.saturating_sub(updated))
+        // An unmeasurable row cannot prove liveness: fail open to
+        // the pre-guard behavior instead of wedging the button.
+        .unwrap_or(i64::MAX);
+    age_secs <= IMPORT_HEARTBEAT_ALIVE_SECS
+}
 
 /// Round-46 review: single-sourced so the CLI's error mapper can recognize
 /// the fresh-foreign-running refusal by marker instead of a verbatim string
@@ -1386,7 +1382,6 @@ pub async fn kb_collection_update(
     spawn_db(move || {
         l1.update_collection(id, &name, category.as_deref(), description.as_deref())
             .map_err(|e| e.to_string())
-            .map(|_changed| ())
     })
     .await
 }

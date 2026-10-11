@@ -144,7 +144,8 @@ impl AgenticTeardownExecutor for EnginePoolRuntime {
         // keep outcome a pre-armed sweep would delete `sessions/<id>/`
         // (timeline, staged attachments, workspace) under the kept session.
         crate::features::assistant::timing::unregister_eval_observation(session_id);
-        self.delete_headless_session_unless_adopted(session_id)
+        self.pool
+            .delete_chat_session_unless_adopted(session_id)
             .await
     }
 
@@ -624,22 +625,7 @@ async fn run_session_lifecycle(
             executor.teardown_evict(session_id).await;
             return;
         }
-        match one_shot_cleanup_decision(
-            store.chat_session_has_messages(session_id).map_err(|_| ()),
-            store
-                .chat_session_factory_titled(session_id)
-                .map_err(|_| ()),
-        ) {
-            FreshSessionDisposition::Cleanup => {
-                if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    super::note_stderr(&format!(
-                        "[agent-task] cleanup delete failed: {}",
-                        error.root_cause()
-                    ));
-                }
-            }
-            FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
-        }
+        run_one_shot_cleanup(executor, store, session_id).await;
         return;
     }
     // The submit boundary is not atomic with transcript admission: the engine
@@ -666,12 +652,6 @@ async fn run_session_lifecycle(
             factory_titled,
         ) {
             NeverStartedDisposition::CleanupStub => {
-                // Best-effort delete: a failure must not mask the run's own
-                // outcome, but silently stranding the session hides it from
-                // the operator. Only the root cause is printed — the full
-                // `{error:#}` chain would carry the session id into
-                // persistent logs (CodeQL cleartext-logging gate); the
-                // store's own error chain already names the session.
                 // The guarded twin re-checks emptiness under the turn gate:
                 // the samples above were taken outside it, so a turn admitted
                 // in between lands as a kept started transcript, not a
@@ -680,10 +660,7 @@ async fn run_session_lifecycle(
                     .teardown_delete_stub_if_still_empty(session_id)
                     .await
                 {
-                    super::note_stderr(&format!(
-                        "[agent-task] cleanup delete failed: {}",
-                        error.root_cause()
-                    ));
+                    note_cleanup_delete_failure(&error);
                 }
             }
             NeverStartedDisposition::LegacyCleanupStarted => {
@@ -692,10 +669,7 @@ async fn run_session_lifecycle(
                 // title: the disposition has already classified a renamed
                 // record as adopted and kept it.
                 if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    super::note_stderr(&format!(
-                        "[agent-task] cleanup delete failed: {}",
-                        error.root_cause()
-                    ));
+                    note_cleanup_delete_failure(&error);
                 }
             }
             NeverStartedDisposition::KeepInspectable => {
@@ -712,23 +686,44 @@ async fn run_session_lifecycle(
         // run's session — unless it was adopted (renamed away from the
         // factory title, which means a GUI user owns it now) or its state is
         // unreadable (deleting on unknown state is the unsafe direction).
-        match one_shot_cleanup_decision(
-            store.chat_session_has_messages(session_id).map_err(|_| ()),
-            store
-                .chat_session_factory_titled(session_id)
-                .map_err(|_| ()),
-        ) {
-            FreshSessionDisposition::Cleanup => {
-                if let Err(error) = executor.teardown_schedule_delete(session_id).await {
-                    super::note_stderr(&format!(
-                        "[agent-task] cleanup delete failed: {}",
-                        error.root_cause()
-                    ));
-                }
-            }
-            FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
-        }
+        run_one_shot_cleanup(executor, store, session_id).await;
     }
+}
+
+/// Shared teardown tail of the two fresh-session one-shot lanes above (the
+/// setup timeout and the submitted run): re-reads the record's message and
+/// title facts and applies [`one_shot_cleanup_decision`] — Cleanup
+/// schedules the guarded delete, Keep reclaims the engine only.
+async fn run_one_shot_cleanup(
+    executor: &impl AgenticTeardownExecutor,
+    store: &SessionStore,
+    session_id: &str,
+) {
+    match one_shot_cleanup_decision(
+        store.chat_session_has_messages(session_id).map_err(|_| ()),
+        store
+            .chat_session_factory_titled(session_id)
+            .map_err(|_| ()),
+    ) {
+        FreshSessionDisposition::Cleanup => {
+            if let Err(error) = executor.teardown_schedule_delete(session_id).await {
+                note_cleanup_delete_failure(&error);
+            }
+        }
+        FreshSessionDisposition::Keep => executor.teardown_evict(session_id).await,
+    }
+}
+
+/// Report a failed best-effort cleanup delete without masking the run's own
+/// outcome, but without silently stranding the session either. Only the root
+/// cause is printed — the full `{error:#}` chain would carry the session id
+/// into persistent logs (CodeQL cleartext-logging gate); the store's own
+/// error chain already names the session.
+fn note_cleanup_delete_failure(error: &anyhow::Error) {
+    super::note_stderr(&format!(
+        "[agent-task] cleanup delete failed: {}",
+        error.root_cause()
+    ));
 }
 
 /// Mint a headless session id that is free in `exists`'s store. Fresh ids
@@ -857,7 +852,6 @@ impl PlanModeRestore {
 
 /// The disposition of the one-shot delete lane: a run-owned session is
 /// deleted, everything else (adopted, unreadable) is kept.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FreshSessionDisposition {
     Cleanup,
     Keep,
@@ -1000,6 +994,34 @@ fn submit_err_admitted_turn(
         // never-started disposition applies to deletes).
         Err(_) => true,
     }
+}
+
+/// The pre-submit abort tail shared by `run_turn`'s Err and timeout arms:
+/// put the caller-provided session's pins back, then sweep this run's staged
+/// attachment copies. Each arm keeps its own gate condition (the Err arm's
+/// admitted-turn decision vs the timeout arm's `!submit_entered`) and its
+/// own return value; only the phase note differs.
+#[allow(clippy::too_many_arguments)]
+async fn abort_before_submit(
+    runtime: &EnginePoolRuntime,
+    store: &SessionStore,
+    session_id: &str,
+    plan_restore: &mut Option<PlanModeRestore>,
+    model_restore: &mut Option<Option<String>>,
+    existing_session: bool,
+    staged_copies: &[std::path::PathBuf],
+    phase: &str,
+) {
+    restore_pre_run_pins(
+        runtime,
+        store,
+        session_id,
+        plan_restore.take(),
+        model_restore.take(),
+        phase,
+    )
+    .await;
+    sweep_unreferenced_staged_copies(store, session_id, existing_session, staged_copies);
 }
 
 /// The mode half of [`restore_pre_run_pins`], split out because it needs no
@@ -1656,21 +1678,17 @@ async fn run_turn(
                     pre_submit_revision.as_deref(),
                     runtime.teardown_turn_active(session_id),
                 ) {
-                    restore_pre_run_pins(
+                    abort_before_submit(
                         runtime,
                         store,
                         session_id,
-                        plan_restore.take(),
-                        model_restore.take(),
+                        &mut plan_restore,
+                        &mut model_restore,
+                        existing_session,
+                        &staged_attachment_copies,
                         "failure",
                     )
                     .await;
-                    sweep_unreferenced_staged_copies(
-                        store,
-                        session_id,
-                        existing_session,
-                        &staged_attachment_copies,
-                    );
                 }
                 return (false, Err(error));
             }
@@ -1695,21 +1713,17 @@ async fn run_turn(
             }
             let submit_entered = submit_entered.load(Ordering::SeqCst);
             if !submit_entered {
-                restore_pre_run_pins(
+                abort_before_submit(
                     runtime,
                     store,
                     session_id,
-                    plan_restore.take(),
-                    model_restore.take(),
+                    &mut plan_restore,
+                    &mut model_restore,
+                    existing_session,
+                    &staged_attachment_copies,
                     "timeout",
                 )
                 .await;
-                sweep_unreferenced_staged_copies(
-                    store,
-                    session_id,
-                    existing_session,
-                    &staged_attachment_copies,
-                );
             }
             return (false, Ok(setup_timeout_report(session_id, submit_entered)));
         }
@@ -1956,10 +1970,10 @@ async fn prompt_with_attachments(
     // task stays joinable for the failure arms instead of detaching
     // mid-write.
     *staging_in_flight = Some(join);
-    let staged = match staging_in_flight.as_mut() {
-        Some(join) => (&mut *join).await.context("attachment staging task")??,
-        None => unreachable!("the staging handle was parked above"),
-    };
+    let join = staging_in_flight
+        .as_mut()
+        .expect("the staging handle was parked above");
+    let staged = (&mut *join).await.context("attachment staging task")??;
     let (ingested, consumed_sources, staged_copies) = staged;
     Ok((
         build_message_with_attachments_in_dir(
@@ -3661,7 +3675,7 @@ mod tests {
             // Covers the DISPOSITION half only (this double performs the
             // unconditional store delete). Production `teardown_schedule_delete`
             // routes the durable delete through the adoption-gated
-            // `delete_headless_session_unless_adopted` under the turn lock;
+            // `delete_chat_session_unless_adopted` under the turn lock;
             // that gate half is pinned by
             // `one_shot_delete_gate_rechecks_the_adoption_marker` in
             // engine_pool, not here.

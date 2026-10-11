@@ -1,6 +1,26 @@
 use super::prelude::*;
 use crate::platform::credential_store::{CredentialReference, CredentialStore};
 
+/// Round-51 review: the settings transaction holds the cross-process
+/// settings.json.lock across keychain I/O (the CLI's models family writes
+/// the same transaction from a second process), and the sibling blocking
+/// calls (the ACP section-lock passes, `SessionAgentStore::remove`) poll a
+/// cross-process lock for up to its timeout — so the async command layer
+/// joins each blocking body on a `spawn_blocking` worker instead of parking
+/// a runtime worker that also drives the engine session pumps (the same
+/// rationale as round-50's codex.rs conversion). One helper for the join
+/// scaffolding shared by every converted command: run `body` on a blocking
+/// worker and map a failed join to `<label> 任务失败: {error}`.
+pub(super) async fn join_blocking<T, F>(label: &str, body: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(body)
+        .await
+        .map_err(|error| format!("{label} 任务失败: {error}"))?
+}
+
 /// 从 disk 读最新 UserPrefs。
 /// 注意走 disk 而非 engine.bridge.prefs——如果用户手改 settings.json，
 /// `get_settings()` 能立刻拿到，不需要 reload bridge。
@@ -15,7 +35,7 @@ fn prepare_prefs_for_save(
 ) -> Result<(UserPrefs, Vec<CredentialReference>), String> {
     prefs.normalize_saved_model_metadata();
     let migration = prefs.migrate_plaintext_api_keys_with_store(store);
-    if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
+    if migration.has_failures() {
         return Err("credential store unavailable; please reconfigure API Key".to_string());
     }
     // The migration DEFERS destructive keyring deletes (see the search
@@ -385,9 +405,7 @@ pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Resul
     // codex.rs conversion: these runtime workers also drive the engine
     // session pumps.
     let store = SystemCredentialStore::new();
-    tauri::async_runtime::spawn_blocking(move || save_model_inner(model, &store))
-        .await
-        .map_err(|error| format!("save_model 任务失败: {error}"))??;
+    join_blocking("save_model", move || save_model_inner(model, &store)).await?;
     pool.mark_model_updated(&model_id);
     Ok(())
 }
@@ -439,9 +457,10 @@ pub async fn delete_model(id: String) -> Result<(), String> {
     // [`save_model`] — join the blocking transaction on a worker.
     let store = SystemCredentialStore::new();
     let id_for_worker = id.clone();
-    tauri::async_runtime::spawn_blocking(move || delete_model_inner(&id_for_worker, &store))
-        .await
-        .map_err(|error| format!("delete_model 任务失败: {error}"))?
+    join_blocking("delete_model", move || {
+        delete_model_inner(&id_for_worker, &store)
+    })
+    .await
 }
 
 pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Result<(), String> {
@@ -487,7 +506,7 @@ pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Resul
 pub async fn set_active_model(id: String) -> Result<(), String> {
     // Round-51 review: same cross-process settings-lock rationale as
     // [`save_model`] — join the blocking transaction on a worker.
-    tauri::async_runtime::spawn_blocking(move || {
+    join_blocking("set_active_model", move || {
         UserPrefs::update_transaction(|prefs| {
             if prefs.model_by_id(&id).is_none() {
                 return Err(format!("model not found: {id}"));
@@ -499,7 +518,6 @@ pub async fn set_active_model(id: String) -> Result<(), String> {
         .map_err(|e| sanitize_command_error("set_active_model", e))
     })
     .await
-    .map_err(|error| format!("set_active_model 任务失败: {error}"))?
 }
 
 /// 切某会话当前模型(聊天 chip 热切):写 per-session 绑定 + evict 该会话 engine,
@@ -1382,9 +1400,7 @@ pub async fn update_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, S
     // Round-51 review: the settings transaction holds the cross-process
     // settings.json.lock across keychain I/O — join the blocking body on a
     // spawn_blocking worker like the sibling model commands.
-    tauri::async_runtime::spawn_blocking(move || persist_general_settings(patch))
-        .await
-        .map_err(|error| format!("update_settings 任务失败: {error}"))?
+    join_blocking("update_settings", move || persist_general_settings(patch)).await
 }
 
 fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsPatch) {
@@ -1523,9 +1539,10 @@ pub(super) fn persist_web_settings_inner(
 pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
     // Round-51 review: same cross-process settings-lock rationale as
     // [`save_model`] — join the blocking transaction on a worker.
-    tauri::async_runtime::spawn_blocking(move || persist_search_settings(search))
-        .await
-        .map_err(|error| format!("update_search_settings 任务失败: {error}"))?
+    join_blocking("update_search_settings", move || {
+        persist_search_settings(search)
+    })
+    .await
 }
 
 /// Unified post-save restart finalization. Restart bypasses RunEvent::Exit, so persist and close

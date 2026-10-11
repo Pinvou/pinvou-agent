@@ -567,8 +567,7 @@ impl SkillMarketplaceManager {
         // lock) through the end of the function.
         let import_lock = super::plugin_import::import_lock_for(m.skill_name);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire()
-            .map_err(|e| format!("创建市场写入锁: {e}"))?;
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{}.tmp", m.skill_name));
         let _ = std::fs::remove_dir_all(&staged);
@@ -967,8 +966,7 @@ impl SkillMarketplaceManager {
         // process — hold the same cross-process market lock every market
         // mutator holds (order: import_lock → market file lock → store
         // file lock).
-        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire()
-            .map_err(|e| format!("创建市场写入锁: {e}"))?;
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let legacy = self.legacy_skills_dir.join(&dir_name);
 
         // Upload 独立技能包回收（必须先于一切物理删除；fail-closed 与 MCP 卸载
@@ -1221,8 +1219,7 @@ impl SkillMarketplaceManager {
         // Round-51 review: cross-process market lock (same order as every
         // market mutator; the CLI's `plugins skills` lanes are a second
         // process against the same staged paths).
-        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire()
-            .map_err(|e| format!("创建市场写入锁: {e}"))?;
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
         let dest = self.packages_root.join(&name).join("skills").join(&name);
         // Same as above: joined from the root, so a parent always exists;
@@ -1352,8 +1349,7 @@ impl SkillMarketplaceManager {
         // Round-51 review: cross-process market lock (same order as every
         // market mutator; the CLI's `plugins` lanes are a second process
         // against the same directories).
-        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire()
-            .map_err(|e| format!("创建市场写入锁: {e}"))?;
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         // 门禁必须在回写之前：先挡住预置/内置包与未登记 id，避免改写非上传包
         // 的技能内容；set_display_meta 内同口径兜底（防 TOCTOU）。
         let record = self

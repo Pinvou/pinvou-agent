@@ -36,7 +36,7 @@ const RAW_HEARTBEAT: u64 = 5000;
 pub(super) fn walk_pruned_with(
     root: &Path,
     ex: &Excluder,
-    mut on_raw: impl FnMut(u64),
+    mut on_raw: impl FnMut(),
 ) -> impl Iterator<Item = walkdir::Result<DirEntry>> {
     let mut raw = 0u64;
     WalkDir::new(root)
@@ -45,7 +45,7 @@ pub(super) fn walk_pruned_with(
         .filter_entry(move |e| {
             raw += 1;
             if raw.is_multiple_of(RAW_HEARTBEAT) {
-                on_raw(raw);
+                on_raw();
             }
             !skipped(ex, e)
         })
@@ -64,7 +64,7 @@ pub fn scan(
     existing: &HashMap<String, (i64, u64)>,
     visited: &mut HashSet<String>,
     mut on_progress: impl FnMut(u64),
-    mut on_raw: impl FnMut(u64),
+    mut on_raw: impl FnMut(),
 ) -> (u64, u64) {
     let mut buf: Vec<FileRecord> = Vec::with_capacity(BATCH);
     let mut walked: u64 = 0;
@@ -190,7 +190,7 @@ mod tests {
             &HashMap::new(),
             &mut visited,
             |_| {},
-            |_| {},
+            || {},
         );
         assert!(walked >= 1, "the readable slice still walks");
         assert!(
@@ -207,7 +207,7 @@ mod tests {
             &HashMap::new(),
             &mut visited_again,
             |_| {},
-            |_| {},
+            || {},
         );
         assert_eq!(
             errors_again, 0,
@@ -247,7 +247,7 @@ mod tests {
             &HashMap::new(),
             &mut visited,
             |_| progress_calls += 1,
-            |raw| raw_ticks = raw,
+            || raw_ticks += 1,
         );
         // Only the root directory itself is countable (every FILE is
         // pruned); a healthy walk over a much larger pruned-heavy tree
@@ -263,7 +263,7 @@ mod tests {
              {progress_calls}"
         );
         assert!(
-            raw_ticks >= 5000,
+            raw_ticks >= 1,
             "the raw heartbeat must have ticked: {raw_ticks}"
         );
         let _ = fs::remove_dir_all(&base);
@@ -292,7 +292,7 @@ mod tests {
             &HashMap::new(),
             &mut visited,
             |_| {},
-            |_| {},
+            || {},
         );
 
         // 能搜到 Documents 下的文件

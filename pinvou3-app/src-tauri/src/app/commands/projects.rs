@@ -754,13 +754,12 @@ pub async fn rebind_workspace_root(
     let agents = acp_pool.agents().clone();
     let from_for_agents = from.clone();
     let to_for_agents = to_display.clone();
-    let prefix_outcome = tauri::async_runtime::spawn_blocking(move || {
+    let prefix_outcome = super::settings::join_blocking("rebind_workspace_root", move || {
         agents
             .rebind_workspace_prefix(&from_for_agents, &to_for_agents)
             .map_err(|e| format!("rebind_workspace_root: {e:#}"))
     })
-    .await
-    .map_err(|error| format!("rebind_workspace_root 任务失败: {error}"))??;
+    .await?;
     // Plain-chat binding sidecars (review #463 round-8 B1): the sidecar pass
     // of the batch planned above — the legacy table already carries the
     // plan's translations, so a fault here heals forward at the next boot. A
@@ -859,13 +858,12 @@ pub async fn rebind_workspace_root(
         // prefix rebind above — join on a blocking worker.
         let agents = acp_pool.agents().clone();
         let stranded_for_repair = stranded.clone();
-        let repaired_ids = tauri::async_runtime::spawn_blocking(move || {
+        let repaired_ids = super::settings::join_blocking("rebind_workspace_root", move || {
             agents
                 .repair_stranded_index_records(&stranded_for_repair)
                 .map_err(|e| format!("rebind_workspace_root: {e:#}"))
         })
-        .await
-        .map_err(|error| format!("rebind_workspace_root 任务失败: {error}"))??;
+        .await?;
         // SF-C (review #463 round-15): the repair re-keys the index onto the
         // sidecar's target, but the metadata loop computes its set_workspace
         // targets from the scan-time snapshot — and the repaired session was

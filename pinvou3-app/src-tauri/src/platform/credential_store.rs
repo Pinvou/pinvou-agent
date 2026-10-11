@@ -206,6 +206,16 @@ pub struct CredentialMigrationResult {
     pub deferred_search_deletes: Vec<CredentialReference>,
 }
 
+impl CredentialMigrationResult {
+    /// Whether any plaintext→keychain migration failed (a model or a search
+    /// provider). The gate every persisting caller refuses at: a failed
+    /// migration leaves the plaintext key in memory only, and the sanitize
+    /// on a subsequent save would erase it from its only durable location.
+    pub fn has_failures(&self) -> bool {
+        !self.failed_model_ids.is_empty() || !self.failed_search_providers.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialError {
     message: String,
@@ -753,8 +763,7 @@ fn is_secret_like(value: &str) -> bool {
         // the end of a clause (`…credentials: AKIA…EXAMPLE.`) is the most
         // common leak rendering. `ASIA` (STS temporary credentials) shares
         // the shape.
-        || (aws_key_shape(trimmed, "akia"))
-        || (aws_key_shape(trimmed, "asia"))
+        || ["akia", "asia"].iter().any(|prefix| aws_key_shape(trimmed, prefix))
         || lower.starts_with("ghr_")
         || lower.starts_with("xoxb-")
         || lower.starts_with("xoxp-")

@@ -364,6 +364,36 @@ fn stamp_of_our_write(path: &Path, payload: &[u8]) -> Option<FileStamp> {
     (std::fs::read(path).ok().as_deref() == Some(payload)).then_some(stamp)
 }
 
+/// The shared stamp-comparison behind `reload_if_changed`'s "skip the
+/// re-read" answer and `persist`'s foreign-write refusal. `may_create`
+/// distinguishes the one case the two callers answer differently: a
+/// handle that has never seen the file may create it (fresh open on a
+/// not-yet-created sidecar counts as unchanged for a persist), while a
+/// re-read gate never grants "unchanged" on a stamp this handle has not
+/// observed. The comparison fails open: an unreadable stamp on either
+/// side forces the read / refuses the write.
+fn stamp_matches_seen(
+    current: Option<FileStamp>,
+    seen: Option<FileStamp>,
+    may_create: bool,
+) -> bool {
+    match (current, seen) {
+        (Some(current), Some(seen)) => current == seen,
+        // An absence this handle has already priced in (its own or a
+        // foreign quarantine kept memory over it): a re-read cannot
+        // teach it anything, and the sentinel answers without the
+        // failed read the old shape paid on every miss. A file that
+        // APPEARED in the window is the (Some, _) arm above and still
+        // refuses.
+        (None, Some(seen)) => seen == FileStamp::ABSENT,
+        // Absence priced in explicitly (post-quarantine keep) or never
+        // seen at all (fresh open on a not-yet-created file): this
+        // handle may create.
+        (None, None) => may_create,
+        _ => false,
+    }
+}
+
 /// Outcome of one disk read of a store's file.
 enum DiskRead<T> {
     /// A usable payload as-is (possibly the default because the file is
@@ -439,6 +469,30 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         had_seen_file: bool,
     ) -> DiskRead<T> {
         use std::sync::atomic::Ordering as AtomicOrdering;
+        // Shared scaffold of the two unusable-payload arms (a newer schema
+        // and invalid JSON): apply the store's quarantine policy and report
+        // a byte-level (non-I/O) failure.
+        //
+        // Raise the flag BEFORE the rename inside handle_invalid:
+        // a concurrent same-handle reload whose read_to_string
+        // observes NotFound after the rename but samples the
+        // flag before this store would otherwise answer
+        // `Loaded(default)` and install it over healthy memory.
+        // Not cleared on a failed rename — the file either went
+        // away (a sibling quarantine's rename won the race, flag
+        // true is then the fact) or is still there (the next
+        // successful read clears the flag); both directions keep
+        // memory, which is the safe side.
+        let fail = |reason: String| -> DiskRead<T> {
+            if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
+                quarantined_flag.store(true, AtomicOrdering::Release);
+            }
+            let quarantined = Self::handle_invalid(path, &reason);
+            DiskRead::Failed {
+                quarantined,
+                io_error: false,
+            }
+        };
         match Self::read_registry_capped(path) {
             Ok(raw) => match serde_json::from_str::<T>(&raw) {
                 Ok(registry) if registry.schema_version() == T::SUPPORTED_VERSION => {
@@ -449,44 +503,12 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     quarantined_flag.store(false, AtomicOrdering::Release);
                     DiskRead::Migrated(registry.migrate())
                 }
-                Ok(registry) => {
-                    // Raise the flag BEFORE the rename inside handle_invalid:
-                    // a concurrent same-handle reload whose read_to_string
-                    // observes NotFound after the rename but samples the
-                    // flag before this store would otherwise answer
-                    // `Loaded(default)` and install it over healthy memory.
-                    // Not cleared on a failed rename — the file either went
-                    // away (a sibling quarantine's rename won the race, flag
-                    // true is then the fact) or is still there (the next
-                    // successful read clears the flag); both directions keep
-                    // memory, which is the safe side.
-                    if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
-                        quarantined_flag.store(true, AtomicOrdering::Release);
-                    }
-                    let quarantined = Self::handle_invalid(
-                        path,
-                        &format!(
-                            "schema v{} is newer than supported v{}",
-                            registry.schema_version(),
-                            T::SUPPORTED_VERSION
-                        ),
-                    );
-                    DiskRead::Failed {
-                        quarantined,
-                        io_error: false,
-                    }
-                }
-                Err(error) => {
-                    // Same pre-rename flag discipline as the schema arm above.
-                    if matches!(T::QUARANTINE, QuarantineStrategy::Rename) {
-                        quarantined_flag.store(true, AtomicOrdering::Release);
-                    }
-                    let quarantined = Self::handle_invalid(path, &format!("invalid JSON: {error}"));
-                    DiskRead::Failed {
-                        quarantined,
-                        io_error: false,
-                    }
-                }
+                Ok(registry) => fail(format!(
+                    "schema v{} is newer than supported v{}",
+                    registry.schema_version(),
+                    T::SUPPORTED_VERSION
+                )),
+                Err(error) => fail(format!("invalid JSON: {error}")),
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 // An absent file is an empty registry EXCEPT when this handle
@@ -501,6 +523,11 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 // mutator's persist rewrites the healthy registry and heals
                 // the file (which also clears the flag).
                 if quarantined_flag.load(AtomicOrdering::Acquire) || had_seen_file {
+                    // The canonical file was renamed away: until a persist
+                    // (or a repaired external write) makes the path exist
+                    // again, an absent-file read must keep this memory, not
+                    // install the empty default over it.
+                    quarantined_flag.store(true, AtomicOrdering::Release);
                     DiskRead::Failed {
                         quarantined: true,
                         io_error: false,
@@ -635,12 +662,8 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                     io_error,
                 } => {
                     if quarantined {
-                        // The canonical file was renamed away: until a persist
-                        // (or a repaired external write) makes the path exist
-                        // again, an absent-file read must keep this memory, not
-                        // install the empty default over it.
-                        self.quarantined
-                            .store(true, std::sync::atomic::Ordering::Release);
+                        // The flag this fact carries was raised inside
+                        // `read_from_disk`'s absent-file arm.
                         // Price the confirmed absence in: repeated lookups then
                         // cost one stat (answered by the ABSENT sentinel in
                         // `reload_if_changed`) instead of a failed read-and-swap
@@ -718,8 +741,10 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
             // compacts per poll, forever on chat-only installs). The
             // re-stat under the lock above already proved the file is still
             // absent; a foreign write that recreates it yields a real
-            // stamp, which never equals the sentinel.
-            if stamp.is_none() && current.is_none() {
+            // stamp, which never equals the sentinel. The `current != stamp`
+            // early return above guarantees `current == stamp` here, so
+            // `stamp` alone decides.
+            if stamp.is_none() {
                 *self.seen.write() = Some(FileStamp::ABSENT);
             } else {
                 *self.seen.write() = stamp;
@@ -744,16 +769,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     pub(crate) fn reload_if_changed(&self) {
         let current = FileStamp::of(self.path.as_ref());
         let seen = *self.seen.read();
-        let unchanged = match (current, seen) {
-            (Some(current), Some(seen)) => current == seen,
-            // An absence this handle has already priced in (its own or a
-            // foreign quarantine kept memory over it): a re-read cannot
-            // teach it anything, and the sentinel answers without the
-            // failed read the old shape paid on every miss.
-            (None, Some(seen)) => seen == FileStamp::ABSENT,
-            _ => false,
-        };
-        if unchanged {
+        if stamp_matches_seen(current, seen, false) {
             return;
         }
         self.reload();
@@ -797,17 +813,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
         // stronger alternative if this ever needs closing.)
         let current = FileStamp::of(self.path.as_ref());
         let seen = *self.seen.read();
-        let unchanged = match (current, seen) {
-            (Some(current), Some(seen)) => current == seen,
-            // Absence priced in explicitly (post-quarantine keep) or never
-            // seen at all (fresh open on a not-yet-created file): this
-            // handle may create. A file that APPEARED in the window is the
-            // (Some, _) arm below and still refuses.
-            (None, Some(seen)) => seen == FileStamp::ABSENT,
-            (None, None) => true,
-            _ => false,
-        };
-        if !unchanged {
+        if !stamp_matches_seen(current, seen, true) {
             return Err(anyhow::anyhow!(
                 "{} changed on disk after this handle last read it (a concurrent \
                  writer landed between the reload and this persist); refusing to \
@@ -837,7 +843,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     /// the fact the absent-file read arm needs to keep memory over an empty
     /// default. (Round-40 review: the stale first summary line that used to
     /// sit above this one is gone.)
-    pub(crate) fn handle_invalid(path: &Path, reason: &str) -> bool {
+    fn handle_invalid(path: &Path, reason: &str) -> bool {
         match T::QUARANTINE {
             QuarantineStrategy::LogInPlace => {
                 log::warn!(

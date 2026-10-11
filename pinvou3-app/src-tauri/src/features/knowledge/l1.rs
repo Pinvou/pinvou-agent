@@ -243,24 +243,24 @@ impl L1Store {
             .optional()
     }
 
-    /// Returns whether the row existed (round-37 review: the CLI's
-    /// update lane must not report success for a collection a concurrent
-    /// delete removed between its pre-check and this write).
     pub fn update_collection(
         &self,
         id: i64,
         name: &str,
         category: Option<&str>,
         description: Option<&str>,
-    ) -> rusqlite::Result<bool> {
-        let changed = self.conn.lock().execute(
+    ) -> rusqlite::Result<()> {
+        self.conn.lock().execute(
             "UPDATE collections SET name=?2,category=?3,description=?4,updated_at=?5 WHERE id=?1",
             params![id, name, category, description, now()],
         )?;
-        Ok(changed > 0)
+        Ok(())
     }
 
-    /// Partial variant of [`Self::update_collection`]: only the provided
+    /// Returns whether the row existed (round-37 review: the CLI's
+    /// update lane must not report success for a collection a concurrent
+    /// delete removed between its pre-check and this write). Partial
+    /// variant of [`Self::update_collection`]: only the provided
     /// columns join the SET list (plus the `updated_at` stamp). Round-45
     /// review: the CLI's update lane used to read-merge-write the whole row,
     /// so a concurrent rename between its read and write was silently

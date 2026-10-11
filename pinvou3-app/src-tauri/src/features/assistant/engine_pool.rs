@@ -62,8 +62,13 @@ use crate::features::assistant::engine::{
 };
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
+// Every note_stderr use site in this file (the two delete-gate skips and
+// the adoption-aware failed-delete sweep) is headless-gated, so the import
+// shares their gate instead of warning as unused on GUI builds.
 use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
+#[cfg(any(feature = "benchmark-hooks", test))]
+use crate::features::assistant::product_runtime::note_stderr;
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
 use crate::features::sessions::{ScheduledRunProfile, SessionStore, transcript_revision};
 use crate::platform::prefs::{SavedModel, UserPrefs};
@@ -601,7 +606,7 @@ where
                 // caller passes `None`), which is why the notice carries the
                 // same headless gate as the disposition-mismatch skip below.
                 #[cfg(any(feature = "benchmark-hooks", test))]
-                crate::features::assistant::product_runtime::note_stderr(&format!(
+                note_stderr(&format!(
                     "[agent-task] cleanup skipped: the session's turn gate did not free up \
                      within {wait:?}; the session stays inspectable"
                 ));
@@ -625,7 +630,7 @@ where
         // so the notice is gated with them; note_stderr keeps a closed
         // stderr from panicking the await chain under the report.
         #[cfg(any(feature = "benchmark-hooks", test))]
-        crate::features::assistant::product_runtime::note_stderr(&format!(
+        note_stderr(&format!(
             "[agent-task] cleanup skipped under the delete gate: the record no \
              longer matches the sampled disposition; keeping the session"
         ));
@@ -2843,43 +2848,13 @@ impl EnginePool {
     /// the turn's whole wall clock.
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn delete_chat_session_if_still_empty(&self, session_id: &str) -> Result<()> {
-        let deleted = delete_chat_session_with_gate(
-            &self.turn_locks,
-            &self.store,
+        self.delete_chat_session_gated(
             session_id,
-            Some(DELETE_GATE_WAIT),
             DeleteGateRecheck::StillAStub,
-            || self.evict_locked(session_id),
-            || self.forget_session(session_id),
+            "late sweep of deleted stub",
+            "late sweep of failed stub cleanup",
         )
-        .await;
-        let deleted = match deleted {
-            Ok(deleted) => deleted,
-            // Same failed-delete backstop as `delete_eval_session`: the
-            // in-memory entry must not linger on a failed delete, and the
-            // late sweep retries the disk cleanup. The sweep is
-            // adoption-aware, same as the one-shot twin: the record
-            // SURVIVED the failed delete, so a GUI rename landing inside
-            // the sweep window turns the directory into a live session's
-            // workspace that must not be destroyed.
-            Err(error) => {
-                self.forget_session(session_id);
-                Self::schedule_late_sweep_unless_adopted(
-                    crate::platform::paths::sessions_root().join(session_id),
-                    "late sweep of failed stub cleanup",
-                    self.store.clone(),
-                    session_id.to_string(),
-                );
-                return Err(error);
-            }
-        };
-        if deleted {
-            Self::schedule_late_sweep(
-                crate::platform::paths::sessions_root().join(session_id),
-                "late sweep of deleted stub",
-            );
-        }
-        Ok(())
+        .await
     }
 
     /// Atomically reset a task's auxiliary conversation (M6): delete the
@@ -2953,29 +2928,52 @@ impl EnginePool {
     /// keep included.
     #[cfg(any(feature = "benchmark-hooks", test))]
     pub(crate) async fn delete_chat_session_unless_adopted(&self, session_id: &str) -> Result<()> {
+        self.delete_chat_session_gated(
+            session_id,
+            DeleteGateRecheck::StillFactoryTitled,
+            "late sweep of deleted one-shot session",
+            "late sweep of failed one-shot delete",
+        )
+        .await
+    }
+
+    /// Shared body of the two guarded deletes above: the bounded gate wait
+    /// ([`DELETE_GATE_WAIT`]), the failed-delete backstop, and the
+    /// deleted-outcome late sweep are structurally identical — the variants
+    /// differ only in the [`DeleteGateRecheck`] sampled under the gate and
+    /// the two sweep labels.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    async fn delete_chat_session_gated(
+        &self,
+        session_id: &str,
+        recheck: DeleteGateRecheck,
+        deleted_label: &'static str,
+        failed_label: &'static str,
+    ) -> Result<()> {
         let deleted = delete_chat_session_with_gate(
             &self.turn_locks,
             &self.store,
             session_id,
             Some(DELETE_GATE_WAIT),
-            DeleteGateRecheck::StillFactoryTitled,
+            recheck,
             || self.evict_locked(session_id),
             || self.forget_session(session_id),
         )
         .await;
         let deleted = match deleted {
             Ok(deleted) => deleted,
-            // Same failed-delete backstop as the stub twin: the in-memory
-            // entry must not linger on a failed delete, and the late sweep
-            // retries the disk cleanup. The sweep is adoption-aware: the
-            // record SURVIVED the failed delete, so a GUI rename landing
-            // inside the sweep window turns the directory into a live
-            // session's workspace that must not be destroyed.
+            // Same failed-delete backstop as `delete_eval_session`: the
+            // in-memory entry must not linger on a failed delete, and the
+            // late sweep retries the disk cleanup. The sweep is
+            // adoption-aware: the record SURVIVED the failed delete, so a
+            // GUI rename landing inside the sweep window turns the
+            // directory into a live session's workspace that must not be
+            // destroyed.
             Err(error) => {
                 self.forget_session(session_id);
                 Self::schedule_late_sweep_unless_adopted(
                     crate::platform::paths::sessions_root().join(session_id),
-                    "late sweep of failed one-shot delete",
+                    failed_label,
                     self.store.clone(),
                     session_id.to_string(),
                 );
@@ -2985,7 +2983,7 @@ impl EnginePool {
         if deleted {
             Self::schedule_late_sweep(
                 crate::platform::paths::sessions_root().join(session_id),
-                "late sweep of deleted one-shot session",
+                deleted_label,
             );
         }
         Ok(())
@@ -3047,18 +3045,30 @@ impl EnginePool {
         tauri::async_runtime::spawn(async move {
             for delay_ms in [2000u64, 6000] {
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                match std::fs::remove_dir_all(&dir) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Self::sweep_attempt_remove_dir(&dir, label, |message| {
                     // Plain eprintln!: this twin is compiled in default
                     // (non-benchmark) builds, and the closed-stderr panic
                     // it risks is bounded to a detached best-effort sweep.
-                    Err(error) => {
-                        eprintln!("[engine_pool] {label} {} failed: {error}", dir.display())
-                    }
-                }
+                    eprintln!("{message}")
+                });
             }
         });
+    }
+
+    /// One sweep attempt's disk half, shared by both late-sweep entry
+    /// points: remove the directory, swallow a missing target as converged,
+    /// and hand every other failure to the entry point's own logging choice
+    /// (plain `eprintln!` for the default-build twin, `note_stderr` for the
+    /// cfg-gated backstop twin).
+    fn sweep_attempt_remove_dir(dir: &std::path::Path, label: &str, report: impl FnOnce(String)) {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => report(format!(
+                "[engine_pool] {label} {} failed: {error}",
+                dir.display()
+            )),
+        }
     }
 
     /// [`Self::schedule_late_sweep`] for the failed-delete backstop, gated on
@@ -3078,13 +3088,7 @@ impl EnginePool {
                 if !Self::sweep_may_remove_session_dir(&store, &session_id) {
                     continue;
                 }
-                match std::fs::remove_dir_all(&dir) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => crate::features::assistant::product_runtime::note_stderr(
-                        &format!("[engine_pool] {label} {} failed: {error}", dir.display()),
-                    ),
-                }
+                Self::sweep_attempt_remove_dir(&dir, label, |message| note_stderr(&message));
             }
         });
     }

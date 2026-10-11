@@ -460,6 +460,13 @@ impl MarketplaceWriteLock {
         file.lock()?;
         Ok(Self(file))
     }
+
+    /// [`Self::acquire`] + the uniform 「创建市场写入锁」 error mapping every
+    /// market mutator returns; the literal is single-sourced here (the type's
+    /// home) so the six call sites cannot drift apart.
+    pub(crate) fn acquire_map_err() -> Result<Self, String> {
+        Self::acquire().map_err(|e| format!("创建市场写入锁: {e}"))
+    }
 }
 
 impl Drop for MarketplaceWriteLock {
@@ -1538,8 +1545,7 @@ pub(crate) fn import_plugin_package_gated(
     // second process — hold the cross-process market lock for the whole
     // conflict-check → rename window (lock order: import_lock → market
     // file lock → store file lock, identical at every market mutator).
-    let _market_lock =
-        MarketplaceWriteLock::acquire().map_err(|e| format!("创建市场写入锁: {e}"))?;
+    let _market_lock = MarketplaceWriteLock::acquire_map_err()?;
     // Re-check the fold divergence under the import lock: the
     // first check ran before the consent gate, and a claimant (preset skill
     // install, CLI companion, ima connect) completing in between would fold
@@ -1548,8 +1554,7 @@ pub(crate) fn import_plugin_package_gated(
     // Nothing has landed at this point, so the refusal aborts with the home
     // untouched (the gate's earlier registration is an over-denial row on an
     // installed claimant — fail-closed).
-    ensure_package_id_self_mapping(&id)?;
-    // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
+        // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
     // same_package_content）：plugin.json 语义 + 全部可落盘条目字节 + 图标 +
@@ -3436,52 +3441,33 @@ mod tests {
     #[test]
     fn import_rejects_zip_slip_traversal_entries() {
         use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-zip-slip-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-zip-slip", || {
+            // Entry names are written verbatim by the zip writer, so the archive
+            // carries the traversal / absolute paths exactly as a malicious
+            // package would.
+            let zip_path = crate::platform::paths::pinvou3_home().join("zipslip.zip");
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("../outside.txt", opts).unwrap();
+                zw.write_all(b"traversal").unwrap();
+                zw.start_file("/abs/evil.txt", opts).unwrap();
+                zw.write_all(b"absolute").unwrap();
+                zw.finish().unwrap();
+            }
 
-        // Entry names are written verbatim by the zip writer, so the archive
-        // carries the traversal / absolute paths exactly as a malicious
-        // package would.
-        let zip_path = dir.join("zipslip.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("../outside.txt", opts).unwrap();
-            zw.write_all(b"traversal").unwrap();
-            zw.start_file("/abs/evil.txt", opts).unwrap();
-            zw.write_all(b"absolute").unwrap();
-            zw.finish().unwrap();
-        }
-
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "zipslip.zip").unwrap_err();
-        assert!(
-            err.contains("不安全路径"),
-            "zip-slip traversal entry must be rejected, got: {err}"
-        );
-        assert!(
-            !dir.join("bundles").exists(),
-            "rejected package must not land any bundle directory"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let err =
+                import_plugin_package(&zip_path.to_string_lossy(), "zipslip.zip").unwrap_err();
+            assert!(
+                err.contains("不安全路径"),
+                "zip-slip traversal entry must be rejected, got: {err}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root().exists(),
+                "rejected package must not land any bundle directory"
+            );
+        });
     }
 
     /// 并发互斥（四轮评审 M-4）：两线程同时导入同 id 同内容包，按 id 的进程内
@@ -3549,47 +3535,28 @@ mod tests {
     /// no sleeps.
     #[test]
     fn marketplace_write_lock_excludes_a_second_handle() {
-        use crate::platform::paths::tests::{ENV_LOCK, unique_suffix};
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-market-write-lock-{}-{}",
-            std::process::id(),
-            unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
-        let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
-        assert!(
-            lock_path.exists(),
-            "the lock file must exist under bundles root"
-        );
-        let second = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .unwrap();
-        let conflict = second.try_lock();
-        assert!(
-            matches!(conflict, Err(std::fs::TryLockError::WouldBlock)),
-            "a second handle must be excluded while the guard is held: {conflict:?}"
-        );
-        drop(guard);
-        second
-            .try_lock()
-            .expect("a dropped guard must release the lock");
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::platform::test_support::with_temp_home("pinvou-market-write-lock", || {
+            let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+            let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
+            assert!(
+                lock_path.exists(),
+                "the lock file must exist under bundles root"
+            );
+            let second = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            let conflict = second.try_lock();
+            assert!(
+                matches!(conflict, Err(std::fs::TryLockError::WouldBlock)),
+                "a second handle must be excluded while the guard is held: {conflict:?}"
+            );
+            drop(guard);
+            second
+                .try_lock()
+                .expect("a dropped guard must release the lock");
+        });
     }
 
     /// 有界读取（四轮评审 M-5）：实际解压字节超过头部声明 size 即判伪造头部
