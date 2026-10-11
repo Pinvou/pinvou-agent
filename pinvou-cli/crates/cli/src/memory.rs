@@ -1100,9 +1100,7 @@ fn plain_store_items<T>(
 /// goes through the same collapse as every other warning renderer — plus the
 /// `cleanup_warnings` JSON array of `{topic, code, detail}` objects the DTO
 /// envelopes embed.
-fn cleanup_warning_rows(
-    cleanup_warnings: &[(String, String)],
-) -> (Vec<String>, serde_json::Value) {
+fn cleanup_warning_rows(cleanup_warnings: &[(String, String)]) -> (Vec<String>, serde_json::Value) {
     let lines = cleanup_warnings
         .iter()
         .map(|(topic, detail)| {
@@ -1163,12 +1161,14 @@ fn load_store_items(
                 serde_json::to_value(items).unwrap_or_default(),
             )
         })?,
-        MemoryStore::RecentActivity => plain_store_items(feature::load_recent_activity(), |items| {
-            (
-                items.iter().map(render_timed).collect(),
-                serde_json::to_value(items).unwrap_or_default(),
-            )
-        })?,
+        MemoryStore::RecentActivity => {
+            plain_store_items(feature::load_recent_activity(), |items| {
+                (
+                    items.iter().map(render_timed).collect(),
+                    serde_json::to_value(items).unwrap_or_default(),
+                )
+            })?
+        }
         MemoryStore::RecentWork => plain_store_items(feature::load_recent_work(), |items| {
             (
                 items.iter().map(render_recent_work).collect(),
