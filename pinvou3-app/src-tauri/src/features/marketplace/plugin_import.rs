@@ -791,6 +791,38 @@ fn clear_landing(id: &str) {
     let _ = std::fs::remove_file(landing_mark_path(id));
 }
 
+/// Test-only failpoint for the lease hold-span pin (round-27 review MAJOR
+/// 2): when armed, `import_plugin_package_gated` signals right after the
+/// landing mark is written and parks until released, so a test can observe
+/// that a peer cannot acquire the landing lease while the pipeline is
+/// mid-flight. The park pin cannot make that observation (a scoped-block
+/// release parks identically at acquire) and the source-text pin's own doc
+/// concedes that shape survives its greps.
+#[cfg(test)]
+static LANDING_SPAN_PARK: std::sync::Mutex<
+    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+/// No-op outside tests: the call site in the gated pipeline is unconditional
+/// on purpose, so the pin drives exactly the production body (no cfg-split
+/// for a future edit to desync).
+fn test_park_after_landing_mark() {
+    #[cfg(test)]
+    {
+        let park = LANDING_SPAN_PARK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some((reached, release)) = park {
+            let _ = reached.send(());
+            // Park until the test releases; a dropped sender means the test
+            // died waiting — resume so the worker can finish and report its
+            // own result instead of leaking a parked thread.
+            let _ = release.recv();
+        }
+    }
+}
+
 /// Clears the landing mark on any in-process exit; a crash skips the drop and
 /// leaves the mark for the startup reconciliation.
 struct LandingJournalGuard(String);
@@ -1412,6 +1444,7 @@ pub(crate) fn import_plugin_package_gated(
         .map_err(|error| format!("lock the landing lease for {id}: {error}"))?;
     mark_landing(&id);
     let _landing_guard = LandingJournalGuard(id.clone());
+    test_park_after_landing_mark();
 
     // Pre-land gate hook: the id is final and validated here, nothing has
     // been written yet. A refusal aborts the whole import before any content
@@ -2238,6 +2271,104 @@ mod tests {
                     .is_file(),
                 "the released import landed the package content"
             );
+        });
+    }
+
+    /// Round-27 review MAJOR 2: the lease HOLD-SPAN — the landing lease must
+    /// stay held from acquisition through landing and registration, not
+    /// merely be acquired before the mark. The park pin above cannot
+    /// distinguish a scoped-block release (the worker parks identically at
+    /// acquire and lands after the peer releases), and the source-text pin's
+    /// own doc concedes that shape survives its greps, so this test drives
+    /// the production pipeline to the post-mark failpoint and asserts a
+    /// peer's try-acquire FAILS mid-flight and only SUCCEEDS after the
+    /// import completed.
+    #[test]
+    fn import_holds_the_landing_lease_across_the_whole_span() {
+        crate::platform::test_support::with_temp_home("pinvou-import-lease-span", || {
+            use std::io::Write;
+            let dir = crate::platform::paths::pinvou3_home();
+
+            let zip_path = dir.join("span.zip");
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("plugin.json", opts).unwrap();
+                zw.write_all(
+                    r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                        .as_bytes(),
+                )
+                .unwrap();
+                zw.start_file("mcp/manifest.json", opts).unwrap();
+                zw.write_all(
+                    r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                        .as_bytes(),
+                )
+                .unwrap();
+                zw.start_file("mcp/server.py", opts).unwrap();
+                zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
+                    .unwrap();
+                zw.start_file("skills/demo/SKILL.md", opts).unwrap();
+                zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
+                zw.finish().unwrap();
+            }
+
+            // Arm the post-mark failpoint. The reset guard restores the
+            // static however the test exits, so the serial lane can never
+            // inherit an armed park.
+            struct ResetArmedPark;
+            impl Drop for ResetArmedPark {
+                fn drop(&mut self) {
+                    *LANDING_SPAN_PARK.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                }
+            }
+            let (reached_tx, reached_rx) = std::sync::mpsc::channel::<()>();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            *LANDING_SPAN_PARK.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((reached_tx, release_rx));
+            let _reset = ResetArmedPark;
+
+            let worker_zip = zip_path.clone();
+            let worker = std::thread::spawn(move || {
+                import_plugin_package(&worker_zip.to_string_lossy(), "combo.zip")
+            });
+            reached_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("the import must reach the post-mark failpoint (mark + lease held)");
+
+            // Mid-pipeline (mark written, nothing landed): a peer's
+            // try-acquire must FAIL — the observation neither the park pin
+            // nor the source-text pin can make.
+            let mut peer = open_landing_lease("demo").expect("the peer lease opens");
+            assert!(
+                peer.try_write().is_err(),
+                "the landing lease must stay HELD while the import is mid-flight"
+            );
+
+            release_tx
+                .send(())
+                .expect("the failpoint release channel is live");
+            let report = worker
+                .join()
+                .expect("the import worker should not panic")
+                .expect("the import completes after the failpoint releases");
+            assert_eq!(report.id, "demo");
+            assert!(
+                dir.join("bundles")
+                    .join("demo")
+                    .join("mcp")
+                    .join("manifest.json")
+                    .is_file(),
+                "the released import landed its package content"
+            );
+
+            // After completion (mark cleared, guards dropped) the lease is
+            // free again.
+            let mut after = open_landing_lease("demo").expect("the post-completion lease opens");
+            after
+                .try_write()
+                .expect("the landing lease must be released once the import completes");
         });
     }
 
