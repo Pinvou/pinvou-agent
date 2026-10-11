@@ -1458,7 +1458,9 @@ fn store_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliErro
 }
 
 fn provider_not_found(agent: &str, id: &str) -> CliError {
-    CliError::failed(format!("provider_not_found: no provider '{id}' for agent {agent}"))
+    CliError::failed(format!(
+        "provider_not_found: no provider '{id}' for agent {agent}"
+    ))
 }
 
 /// Restored by the round-52 rebase: `require_native_code_session` joined

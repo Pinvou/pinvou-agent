@@ -1404,7 +1404,7 @@ fn skills_install(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
         .install(id)
         .map_err(|error| feature_error("skills install", id, error))?;
     sync_after_install_or_fail("skills install", id)?;
-    return action_outcome(id, "installed", output);
+    action_outcome(id, "installed", output)
 }
 
 fn skills_update(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1422,7 +1422,7 @@ fn skills_update(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     mgr.install(id)
         .map_err(|error| feature_error("skills update", id, error))?;
-    return action_outcome(id, "updated", output);
+    action_outcome(id, "updated", output)
 }
 
 fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1435,7 +1435,7 @@ fn skills_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcom
         .uninstall(id)
         .map_err(|error| feature_error("skills uninstall", id, error))?;
     remove_scope_rows_or_fail("skills uninstall", &owner)?;
-    return action_outcome(id, "uninstalled", output);
+    action_outcome(id, "uninstalled", output)
 }
 
 // ---------------------------------------------------------------------------

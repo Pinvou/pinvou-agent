@@ -1604,9 +1604,11 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // `spawn_supervised` closes the spawn→register window (see
     // `support/supervise.rs`); the `GroupGuard::arm` bracket below is then
     // the idempotent belt.
-    let mut child = crate::support::supervise::spawn_supervised(&mut engine_command)
-        .map_err(|error| {
-            CliError::failed(format!("voice transcribe: cannot start ASR engine: {error}"))
+    let mut child =
+        crate::support::supervise::spawn_supervised(&mut engine_command).map_err(|error| {
+            CliError::failed(format!(
+                "voice transcribe: cannot start ASR engine: {error}"
+            ))
         })?;
     // The recognized-pid rule the wait loop below documents (no group kill
     // once `try_wait` has reaped the child) is about signaling, not
