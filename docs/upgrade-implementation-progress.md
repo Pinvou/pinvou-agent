@@ -1299,3 +1299,47 @@ Full T21 remains in progress. Continue the protected persistence batch without
 introducing any download time cap.
 
 Service commit: `d2ac3ae`. Client architecture/version checks passed.
+
+
+### T21 third batch: private sample and permanent receipt storage (2026-10-12)
+
+The service stores bounded sample heads and immutable point receipts in a separate
+protected namespace. A sample consumes an actual T47 first window fact and frozen
+full-scope plan. Its unique scope/installation/window/group/metric slot excludes
+workflow so retries cannot add samples or rebind the original target. Registration
+starts incomplete; rows grant no contribution or production assessment authority.
+
+Actual configured SQL database/login/current identity, SERIALIZABLE isolation,
+pinned shared owner and actual T47 sources guard every access. Runtime receives
+read rights only. New receipt/sample writes share one exact-head transaction, with
+first/final SQL clocks bounded by real window and predecessor commit. Bounded
+readback checks the exact original projection, initial/later snapshot relations,
+one immutable predecessor, chronological binding and sticky history. Point history
+remains separate from current JSON and outlives the 24-hour response replay limit.
+
+Real PostgreSQL controls passed: complete seven-test regression (36.527s), exact
+post-write clock fault with same-event legal positive (7.597s), and complete foreign
+database with the same runtime login plus SET-reachable writer refusal (7.992s).
+Original credentials remain process-local. Sixty-four real history rows preserve
+current bounds and the first receipt; no larger quality-history run is claimed.
+Controls also cover real T05/T06-approved policies, replay/conflict, workflow slot,
+paused origin, rollback/CAS, raw/runtime denial and schema/ACL/source/token drift.
+Final default Go tests/vet, module verification, command builds, pinned contracts
+and scoped formatting/diff checks passed.
+
+T21 remains in progress. Actual T20 event acceptance/deny/source processing cursor,
+T25 purpose-bound eligibility/limits, aggregate evaluation and freeze reasons must
+join the future fixed owner command. Private attributed digests are not accepted
+original event authentication. No production ingestion, quality permission or
+deployment acceptance is opened; downloads retain no hard time cap. Continue T20
+trusted event reception and other unblocked tasks.
+
+Final catalog relations explicitly use pg_catalog. Actual temporary catalog
+shadowing of the owner OID with real runtime column write permission refuses
+both point reads and private writes; restored normal controls pass. The targeted
+control passed (3.809s), and final complete nine-test real PostgreSQL regression
+passed (111.344s). Final default checks passed after the production fix.
+
+Both independent scoped roles gave final PASS after the catalog fix. Service
+commit: `780bdea`. Client architecture/version/diff checks passed. Full T21
+remains open at the production event/eligibility/evaluation boundaries above.
