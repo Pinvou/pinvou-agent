@@ -1596,3 +1596,42 @@ after all compatibility/type findings were repaired. Continue runtime verificati
 and actual recoverable owner composition without pausing the remaining tasks.
 Service commit: `49eaf63` (pushed). Reception migration two is now frozen;
 subsequent SQL behavior changes require additive migrations.
+
+### T20 eighth batch: protected reception point observations (2026-10-12)
+
+The service composes original credential/current Root/deny and actual lifecycle
+checks with read-only receipt/diagnostic-cursor observations. Startup and each
+read authenticate actual configured DB/login/isolation/catalog resolution,
+protected common owner, frozen migration digests and read-only privileges.
+Independent review found and closed case-insensitive cursor parsing and missing
+actual uniqueness checks. All four tables now have actual column checks, five
+enforced immediate primary/unique keys and three validated FK mappings; recorded
+migration hashes alone cannot certify present structure.
+
+Receipt replay does not inspect a later diagnostic cursor. Fresh observations
+retain complete point references including canonical null absence hashes; final
+original verification supplies current SQL time, rejects changed trust/backward
+time, and bounds complete combined reads. Invalid storage returns no partial
+snapshot. Exact canonical receipt bytes/native hashes and case-sensitive cursor
+fields are mandatory; lawful absent/null cursor profiles remain accepted.
+SQL bounds body transfer to 1..64 KiB before allocation; removing storage size
+checks cannot make an oversized body cross into the runtime process.
+
+Actual PostgreSQL reception tests passed (five tests, 38.361s), covering live/late/
+replay, corruption/restoration, denied-key ordering, dangerous permissions,
+unchanged-digest structural faults and actual duplicate cursor refusal at startup
+and reads. Original Node/domain tests passed (17.708s), adapter tests (5.463s).
+Final three source tests after the resource-bound fix passed (21.941s), including
+dropped size checks and oversized cursor/receipt refusal with restoration controls.
+Full default Go tests, vet, module verification, command builds, pinned contract
+and client architecture/version/diff checks passed. Database/provider opt-ins
+remain skipped by default; this batch's actual PostgreSQL cases were explicitly
+enabled. Production/cross-repository E2E remains unverified.
+No frozen SQL or normative contract changed, writer granted, command registered
+or HTTP enabled. Observations are not ACKs. Actual recoverable owner/completion,
+transport, remaining event kinds and quality composition continue as later work.
+Full T20 is open; downloads have no hard total/cumulative elapsed limit.
+Both independent scoped roles passed the complete eighth-batch code, tests and
+documents after all findings were repaired. Continue actual recovery/owner
+composition; this completes only the protected point-observation batch.
+Service commit: `143c943` (pushed). Continue without rewriting frozen SQL.
