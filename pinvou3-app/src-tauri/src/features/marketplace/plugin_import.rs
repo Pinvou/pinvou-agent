@@ -41,7 +41,7 @@ pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 /// plugin.json 清单（插件包的权威声明）。未知字段 flatten 保留（前向兼容）。
 /// 不再有「spanner 独立组件」入口；skill 包的 `tools[]` + `runtime` 可执行协议
 /// 为 RFC 草案（docs/plugin-package-spec.md），执行通路未实施。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct PluginManifest {
     pub manifest_version: u32,
     pub id: String,
@@ -63,7 +63,7 @@ struct PluginManifest {
 }
 
 /// plugin.json 的 `components` 声明（跨组件粘合到一个包 id）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct PluginComponents {
     #[serde(default)]
     pub mcp_servers: Vec<ComponentRef>,
@@ -72,7 +72,7 @@ struct PluginComponents {
 }
 
 /// 组件目录引用：`dir` 相对 zip 根，导入时校验存在。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ComponentRef {
     pub id: String,
     pub dir: String,
@@ -521,9 +521,8 @@ fn detect_components(
     // 1) MCP：优先 `mcp/manifest.json`；否则回退任意 manifest.json（符合 MCP 标准的
     //    裸包——能解析出 ToolManifest 且声明了启动命令或远程 server）。
     if let Some(bytes) = mcp_manifest_bytes {
-        if let Ok(tm) = serde_json::from_str::<crate::features::marketplace::ToolManifest>(
-            std::str::from_utf8(bytes).unwrap_or(""),
-        ) {
+        if let Ok(tm) = serde_json::from_slice::<crate::features::marketplace::ToolManifest>(bytes)
+        {
             if !tm.id.is_empty() {
                 id = tm.id.clone();
                 mcp.push(tm.id);
@@ -532,9 +531,9 @@ fn detect_components(
     }
     if mcp.is_empty() {
         for (path, bytes) in other_manifests {
-            if let Ok(tm) = serde_json::from_str::<crate::features::marketplace::ToolManifest>(
-                std::str::from_utf8(bytes).unwrap_or(""),
-            ) {
+            if let Ok(tm) =
+                serde_json::from_slice::<crate::features::marketplace::ToolManifest>(bytes)
+            {
                 if !tm.id.is_empty() && (!tm.command.is_empty() || !tm.servers.is_empty()) {
                     id = tm.id.clone();
                     mcp.push(tm.id.clone());
@@ -1212,10 +1211,10 @@ pub(crate) fn import_plugin_package_gated(
     }
 
     // 识别 manifest（可选）。
-    let manifest: Option<PluginManifest> = match &manifest_bytes {
-        Some(b) => Some(serde_json::from_slice(b).map_err(|e| format!("解析 plugin.json: {e}"))?),
-        None => None,
-    };
+    let manifest: Option<PluginManifest> = manifest_bytes
+        .as_ref()
+        .map(|b| serde_json::from_slice(b).map_err(|e| format!("解析 plugin.json: {e}")))
+        .transpose()?;
     if let Some(m) = &manifest {
         if m.manifest_version > 1 {
             return Err(format!(
@@ -1233,9 +1232,10 @@ pub(crate) fn import_plugin_package_gated(
         &other_manifests,
         &all_paths,
     )?;
-    let (id, mcp_servers, skills) = (det.id.clone(), det.mcp_servers.clone(), det.skills.clone());
-    let kind = crate::features::marketplace::bundle::derive_bundle_kind(&mcp_servers, &skills)
-        .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
+    let id = det.id.clone();
+    let kind =
+        crate::features::marketplace::bundle::derive_bundle_kind(&det.mcp_servers, &det.skills)
+            .map_err(|_| "插件包不含任何组件（空包）".to_string())?;
 
     // 未声明技能子树拒收（五轮评审）：detect 只登记声明/识别出的技能，而落盘的
     // `skills/` 前缀分支按路径无条件放行——zip 额外夹带的 `skills/<other>/` 会
@@ -1244,7 +1244,7 @@ pub(crate) fn import_plugin_package_gated(
     for p in &all_paths {
         if let Some(rest) = p.strip_prefix("skills/") {
             let name = rest.split('/').next().unwrap_or("");
-            if !name.is_empty() && !skills.iter().any(|s| s == name) {
+            if !name.is_empty() && !det.skills.iter().any(|s| s == name) {
                 return Err(format!(
                     "技能子树 'skills/{name}/' 未在包声明/识别的技能列表中，拒收（避免不可见孤儿技能落盘）"
                 ));
@@ -1267,7 +1267,7 @@ pub(crate) fn import_plugin_package_gated(
     // real builtin's engine registration (uninstalling my-tool removes only
     // its own key, orphaning the hijacked entry). The probe folds case, the
     // same discipline as the package-id check.
-    for component in &mcp_servers {
+    for component in &det.mcp_servers {
         if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(component).is_some() {
             return Err(format!(
                 "组件 id '{component}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
@@ -1308,7 +1308,7 @@ pub(crate) fn import_plugin_package_gated(
             "包 id '{id}' 与已下线内置技能名冲突，请改用其它 id"
         ));
     }
-    for skill_name in &skills {
+    for skill_name in &det.skills {
         if crate::features::marketplace::skill_marketplace::RETIRED_SKILL_NAMES
             .contains(&skill_name.as_str())
         {
@@ -1358,7 +1358,7 @@ pub(crate) fn import_plugin_package_gated(
     // a guard a collision would escalate from "shadowed" to "swept away").
     // Self-claim is allowed (owner == this package id, e.g. a combo package
     // whose mcp manifest declares its own skill as companion on reimport).
-    for skill_name in &skills {
+    for skill_name in &det.skills {
         if crate::features::marketplace::skill_marketplace::is_preset_skill_name(skill_name) {
             return Err(format!(
                 "技能 '{skill_name}' 与市场预置技能冲突，请改用其它名称"
@@ -1393,7 +1393,7 @@ pub(crate) fn import_plugin_package_gated(
     // SKILL.md frontmatter 的 `name` 一致——不一致会被注册表当两套技能处理。
     // 必读必验（四轮评审 M-3）：SKILL.md 缺失或读取失败一律响亮拒收，不再
     // continue 跳过（否则纯技能包可能登记 installed=true 但磁盘无技能文件）。
-    for skill_name in &skills {
+    for skill_name in &det.skills {
         // 裸技能回退包的 SKILL.md 在 zip 原始位置（detect 已确认其存在并解析出
         // frontmatter name），其余组件一律在规范化 `skills/<name>/` 下。
         let rel = match &det.bare_skill {
@@ -1464,7 +1464,7 @@ pub(crate) fn import_plugin_package_gated(
     // import lock, so the import lock is never held ACROSS a wait on another
     // importer (lock order — see `scope::load_disabled_bundles_file_locked`'s
     // lock-order note).
-    pre_land(&id, &skills)?;
+    pre_land(&id, &det.skills)?;
 
     // 落盘到 staged：mcp/ + skills/ 子树 + 裸包回退规范化 → bundles/<id>/ 原子 rename。
     // 注：旧 spanner/ 与 runtime/ 子树已删除，导入侧不再识别这两类前缀。
@@ -1502,17 +1502,16 @@ pub(crate) fn import_plugin_package_gated(
             "包 id '{id}' 已存在且内容不同，请改名后重试（避免覆盖已有包）"
         ));
     }
-    // bundles/<id> comes from joining bundles_root(), so a parent always
-    // exists; still return an error as a fallback.
-    let Some(parent) = pkg_dir.parent() else {
-        return Err(format!("package dir missing parent: {}", pkg_dir.display()));
-    };
-    std::fs::create_dir_all(parent).map_err(|e| format!("创建 bundles 目录: {e}"))?;
+    // bundles/<id> 的 id 已过 is_safe_component_id / is_safe_skill_name 校验
+    //（单层、无分隔符的组件名），pkg_dir 必是 bundles_root() 的直接子目录——
+    // 确保 bundles 根目录存在即可，不存在「包目录缺父目录」分支。
+    std::fs::create_dir_all(crate::platform::paths::bundles_root())
+        .map_err(|e| format!("创建 bundles 目录: {e}"))?;
     let staged = pkg_dir.with_extension("tmp");
     let _ = std::fs::remove_dir_all(&staged);
     std::fs::create_dir_all(&staged).map_err(|e| format!("暂存目录: {e}"))?;
 
-    let write_result = (|| -> Result<(), String> {
+    let write_result = (|| -> Result<String, String> {
         // 1) 统一落盘：mcp/ + skills/ 子树 + 裸包回退规范化（旧 spanner/、runtime/
         //    子树已删除，见 landing_target 注释）。
         let bare_skill = det
@@ -1557,32 +1556,34 @@ pub(crate) fn import_plugin_package_gated(
 
         // 3) plugin.json 落盘：有原声明的写规范化副本；无 plugin.json 的裸包合成
         //    最小自描述清单（§5.2 派生 manifest），保证按包聚合目录始终带 plugin.json。
-        if let Some(m) = &manifest {
-            std::fs::write(
-                staged.join("plugin.json"),
-                serde_json::to_string_pretty(m).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("写 plugin.json: {e}"))?;
-        } else {
-            let synth = synthesized_manifest(&det);
-            std::fs::write(
-                staged.join("plugin.json"),
-                serde_json::to_string_pretty(&synth).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| format!("写派生 plugin.json: {e}"))?;
-        }
+        let synth;
+        let doc = match &manifest {
+            Some(m) => m,
+            None => {
+                synth = synthesized_manifest(&det);
+                &synth
+            }
+        };
+        std::fs::write(
+            staged.join("plugin.json"),
+            serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("写 plugin.json: {e}"))?;
 
-        // 4) 图标：包内可选图标优先，缺省写默认图标。
+        // 4) 图标：包内可选图标优先，缺省写默认图标。落定的相对路径由
+        //    write_icon_bytes / write_default_icon 的返回值直接带回（唯一写入方），
+        //    报告不再在 landing 后重新探测磁盘求同一事实。
         if let Some((icon_path, bytes)) = &icon_entry {
-            write_icon_bytes(&staged, icon_path, bytes)?;
+            Ok(write_icon_bytes(&staged, icon_path, bytes)?)
         } else if let Some(declared) = manifest.as_ref().and_then(|m| m.icon.clone()) {
             let mut found = false;
+            let mut icon_rel = String::new();
             for p in &all_paths {
                 if *p == declared && is_supported_icon(&declared) {
                     let mut e = archive.by_name(p).map_err(|e| format!("读图标: {e}"))?;
                     let declared_size = e.size();
                     let buf = read_zip_entry_bounded(&mut e, declared_size, "图标")?;
-                    write_icon_bytes(&staged, &declared, &buf)?;
+                    icon_rel = write_icon_bytes(&staged, &declared, &buf)?;
                     found = true;
                     break;
                 }
@@ -1592,15 +1593,18 @@ pub(crate) fn import_plugin_package_gated(
                     "plugin.json 声明的图标 '{declared}' 不存在或格式不支持"
                 ));
             }
+            Ok(icon_rel)
         } else {
-            write_default_icon(&staged)?;
+            Ok(write_default_icon(&staged)?)
         }
-        Ok(())
     })();
-    if let Err(e) = write_result {
-        let _ = std::fs::remove_dir_all(&staged);
-        return Err(e);
-    }
+    let icon_rel = match write_result {
+        Ok(icon_rel) => icon_rel,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(e);
+        }
+    };
 
     // 安装时 smoke test：旧 spanner 自检已删除。当前只保留纯 MCP / 纯 skill 落盘。
 
@@ -1669,7 +1673,7 @@ pub(crate) fn import_plugin_package_gated(
     // 靠下方补写订正）——补写失败仅 log::warn，若 source 在补写前停在 Preset，
     // 下次卸载会误删用户唯一副本（四轮评审 BLOCKER 1）。
     let mgr = super::MarketplaceManager::new();
-    if !mcp_servers.is_empty() {
+    if !det.mcp_servers.is_empty() {
         if let Err(e) = mgr.install_upload(
             &id,
             super::store::BundleSource::Upload(display_name.to_string()),
@@ -1724,11 +1728,6 @@ pub(crate) fn import_plugin_package_gated(
     }
 
     // 登记 BundleStore（上传 source=Upload(zip 展示名)，installed=true）。
-    let icon_rel = if pkg_dir.join("icon.svg").is_file() {
-        "icon.svg".to_string()
-    } else {
-        "icon.png".to_string()
-    };
     let mut record = super::store::BundleRecord::installed_now(
         id.clone(),
         super::store::BundleSource::Upload(display_name.to_string()),
@@ -1745,7 +1744,7 @@ pub(crate) fn import_plugin_package_gated(
     // Tail failpoint: lets the hold-span pin observe the lease at the very
     // end of the span (round-28 review). No-op outside tests.
     test_park_before_registration();
-    if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
+    if let Err(e) = store.upsert_preserving(record) {
         // Fail visible. The dir is live and supply succeeded, so
         // this is not rollback territory — but swallowing the failure into a
         // success report left a recordless-live pack (no Upload-source
@@ -1774,6 +1773,30 @@ pub(crate) fn import_plugin_package_gated(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::platform::test_support::write_test_zip;
+
+    /// Shared rejection tail for the refusal pins: the import must fail with
+    /// an error naming `needle`, and leave no `bundles/<id>/` behind. Returns
+    /// the error for the sites that additionally assert a second needle or a
+    /// surviving foreign copy.
+    fn assert_import_refused(
+        zip_path: &Path,
+        display_name: &str,
+        id: &str,
+        needle: &str,
+    ) -> String {
+        let err = import_plugin_package(&zip_path.to_string_lossy(), display_name).unwrap_err();
+        assert!(
+            err.contains(needle),
+            "rejection should name {needle:?}: {err}"
+        );
+        assert!(
+            !crate::platform::paths::bundles_root().join(id).exists(),
+            "拒收不得落盘包目录"
+        );
+        err
+    }
 
     /// A leftover landing mark with a landed
     /// dir but no registry record is crash residue — the reconcile moves it
@@ -1851,16 +1874,10 @@ mod tests {
                 "---\nname: re-tmp\n---\n",
             )
             .unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "re-tmp",
-                        crate::features::marketplace::store::BundleSource::Upload(
-                            "re-tmp.zip".to_string(),
-                        ),
-                    ),
-                )
-                .unwrap();
+            crate::features::marketplace::store::plant_installed_record(
+                "re-tmp",
+                crate::features::marketplace::store::BundleSource::Upload("re-tmp.zip".to_string()),
+            );
             mark_landing("re-tmp");
             let staged = pkg_dir.with_extension("tmp");
             std::fs::write(&staged, b"stale staging").unwrap();
@@ -1918,16 +1935,10 @@ mod tests {
             let staged = pkg_dir.with_extension("tmp");
             std::fs::create_dir_all(&staged).unwrap();
             std::fs::write(staged.join("plugin.json"), r#"{"new":true}"#).unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "re-old",
-                        crate::features::marketplace::store::BundleSource::Upload(
-                            "re-old.zip".to_string(),
-                        ),
-                    ),
-                )
-                .unwrap();
+            crate::features::marketplace::store::plant_installed_record(
+                "re-old",
+                crate::features::marketplace::store::BundleSource::Upload("re-old.zip".to_string()),
+            );
             mark_landing("re-old");
 
             reconcile_import_journal().unwrap();
@@ -2007,6 +2018,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn restore_failure_keeps_the_mark_and_retries() {
+        use crate::platform::test_support::dir_read_only_or_skip;
         use std::os::unix::fs::PermissionsExt as _;
         crate::platform::test_support::with_temp_home("pinvou-import-reold3", || {
             let bundles = crate::platform::paths::bundles_root();
@@ -2019,14 +2031,9 @@ mod tests {
             mark_landing("re-old3");
 
             // Read-only bundles_root: the restore rename fails (EACCES).
-            std::fs::set_permissions(&bundles, std::fs::Permissions::from_mode(0o555)).unwrap();
             // Root probe (mode bits are no-ops for root): if the dir is still
             // writable the fixture proves nothing — skip loudly.
-            if std::fs::create_dir(bundles.join(".probe")).is_ok() {
-                std::fs::set_permissions(&bundles, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[restore_failure_keeps_the_mark_and_retries]: running as root - the read-only-dir fixture stays writable; NOT exercised"
-                );
+            if !dir_read_only_or_skip(&bundles, "restore_failure_keeps_the_mark_and_retries") {
                 return;
             }
 
@@ -2305,16 +2312,10 @@ mod tests {
             let pkg = crate::platform::paths::bundles_root().join("done-pkg");
             std::fs::create_dir_all(&pkg).unwrap();
             std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "done-pkg",
-                        crate::features::marketplace::store::BundleSource::Upload(
-                            "done.zip".to_string(),
-                        ),
-                    ),
-                )
-                .unwrap();
+            crate::features::marketplace::store::plant_installed_record(
+                "done-pkg",
+                crate::features::marketplace::store::BundleSource::Upload("done.zip".to_string()),
+            );
             mark_landing("done-pkg");
 
             reconcile_import_journal().unwrap();
@@ -2352,16 +2353,10 @@ mod tests {
             let backup = pkg.with_extension("old");
             std::fs::create_dir_all(&backup).unwrap();
             std::fs::write(backup.join("pre-import-marker"), b"old").unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        id,
-                        crate::features::marketplace::store::BundleSource::Upload(
-                            "old.zip".to_string(),
-                        ),
-                    ),
-                )
-                .unwrap();
+            crate::features::marketplace::store::plant_installed_record(
+                id,
+                crate::features::marketplace::store::BundleSource::Upload("old.zip".to_string()),
+            );
             mark_landing(id);
 
             reconcile_import_journal().unwrap();
@@ -2498,381 +2493,230 @@ mod tests {
 
     #[test]
     fn import_mcp_skill_combo_package_lands_layout() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-combo-import-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-combo-import", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("combo.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["demo"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/server.py", opts).unwrap();
-            zw.write_all(b"import json\nprint(json.dumps({'ok': True}))")
-                .unwrap();
-            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
+            let zip_path = write_test_zip(
+                "pinvou-combo-import",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["demo"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/server.py",
+                        b"import json\nprint(json.dumps({'ok': True}))".to_vec(),
+                    ),
+                    (
+                        "skills/demo/SKILL.md",
+                        b"---\nname: demo\n---\n# hi".to_vec(),
+                    ),
+                ],
+            );
 
-        let report = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
-        assert_eq!(report.id, "demo");
-        assert_eq!(report.kind, BundleKind::Bundle);
-        assert_eq!(report.icon, "icon.svg");
+            let report = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
+            assert_eq!(report.id, "demo");
+            assert_eq!(report.kind, BundleKind::Bundle);
+            assert_eq!(report.icon, "icon.svg");
 
-        let pkg = dir.join("bundles").join("demo");
-        assert!(
-            pkg.join("mcp/manifest.json").is_file(),
-            "mcp manifest 应落盘"
-        );
-        assert!(
-            pkg.join("mcp/server.py").is_file(),
-            "server.py must land on disk"
-        );
-        assert!(pkg.join("skills/demo/SKILL.md").is_file(), "skill 应落盘");
-        assert!(
-            pkg.join("plugin.json").is_file(),
-            "plugin.json must land on disk"
-        );
-        assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
+            let pkg = dir.join("bundles").join("demo");
+            assert!(
+                pkg.join("mcp/manifest.json").is_file(),
+                "mcp manifest 应落盘"
+            );
+            assert!(
+                pkg.join("mcp/server.py").is_file(),
+                "server.py must land on disk"
+            );
+            assert!(pkg.join("skills/demo/SKILL.md").is_file(), "skill 应落盘");
+            assert!(
+                pkg.join("plugin.json").is_file(),
+                "plugin.json must land on disk"
+            );
+            assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
 
-        // 整条链路关键断言：import 内部的 install() 已把 MCP 供给写进 mcp.json +
-        // installed.json（底座据此拉起 server，工具才可用）。
-        let mgr = crate::features::marketplace::MarketplaceManager::new();
-        assert!(
-            mgr.installed_ids().contains(&"demo".to_string()),
-            "installed.json 应记录 demo"
-        );
-        let mcp_raw =
-            std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap_or_default();
-        assert!(
-            mcp_raw.contains("\"demo\""),
-            "mcp.json 应含 demo server 供给，实际: {mcp_raw}"
-        );
-        // Base launch contract: non-empty command + args pointing at the
-        // landed server.py (absolute path).
-        let mcp: serde_json::Value = serde_json::from_str(&mcp_raw).unwrap();
-        let server = &mcp["servers"]["demo"];
-        assert!(
-            server["command"]
-                .as_str()
-                .map(|s| !s.is_empty())
-                .unwrap_or(false),
-            "mcp.json command must be non-empty, got: {server:?}"
-        );
-        let args = server["args"]
-            .as_array()
-            .expect("mcp.json args must be an array");
-        assert!(
-            args.iter().any(|a| a
-                .as_str()
-                .map(|s| s.ends_with("server.py"))
-                .unwrap_or(false)),
-            "mcp.json args must contain the server.py absolute path, got: {args:?}"
-        );
-        // 导入登记的来源必须是 Upload（zip 展示名）—— 若停在 Preset，卸载会误删
-        // 用户唯一副本（四轮评审 BLOCKER 1）。
-        let record = crate::features::marketplace::store::BundleStore::new()
-            .get("demo")
-            .unwrap()
-            .expect("demo 应登记");
-        assert_eq!(
-            record.source,
-            crate::features::marketplace::store::BundleSource::Upload("combo.zip".to_string()),
-            "上传包登记来源应为 Upload"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 整条链路关键断言：import 内部的 install() 已把 MCP 供给写进 mcp.json +
+            // installed.json（底座据此拉起 server，工具才可用）。
+            let mgr = crate::features::marketplace::MarketplaceManager::new();
+            assert!(
+                mgr.installed_ids().contains(&"demo".to_string()),
+                "installed.json 应记录 demo"
+            );
+            let mcp_raw = std::fs::read_to_string(crate::platform::paths::mcp_config_path())
+                .unwrap_or_default();
+            assert!(
+                mcp_raw.contains("\"demo\""),
+                "mcp.json 应含 demo server 供给，实际: {mcp_raw}"
+            );
+            // Base launch contract: non-empty command + args pointing at the
+            // landed server.py (absolute path).
+            let mcp: serde_json::Value = serde_json::from_str(&mcp_raw).unwrap();
+            let server = &mcp["servers"]["demo"];
+            assert!(
+                server["command"]
+                    .as_str()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false),
+                "mcp.json command must be non-empty, got: {server:?}"
+            );
+            let args = server["args"]
+                .as_array()
+                .expect("mcp.json args must be an array");
+            assert!(
+                args.iter().any(|a| a
+                    .as_str()
+                    .map(|s| s.ends_with("server.py"))
+                    .unwrap_or(false)),
+                "mcp.json args must contain the server.py absolute path, got: {args:?}"
+            );
+            // 导入登记的来源必须是 Upload（zip 展示名）—— 若停在 Preset，卸载会误删
+            // 用户唯一副本（四轮评审 BLOCKER 1）。
+            let record = crate::features::marketplace::store::BundleStore::new()
+                .get("demo")
+                .unwrap()
+                .expect("demo 应登记");
+            assert_eq!(
+                record.source,
+                crate::features::marketplace::store::BundleSource::Upload("combo.zip".to_string()),
+                "上传包登记来源应为 Upload"
+            );
+        });
     }
 
     /// Trust boundary (docs/builtin-toolset-contract.md §3.1): an uploaded
     /// package whose MCP manifest claims `builtin: true` or
     /// `visibility: "system"` is rejected with an explicit error instead of
     /// silently landing with the claim stripped — builtin status belongs to
-    /// the publisher's embedded catalog only.
+    /// the publisher's embedded catalog only. The 2×2 loop covers both claim
+    /// kinds in both manifest lanes the import scans: the primary
+    /// `mcp/manifest.json`, and the `other_manifests` fallback lane (a claim
+    /// hidden in a secondary `manifest.json`, e.g. `extra/manifest.json`
+    /// discovered by the bare MCP fallback, must be rejected just as loudly,
+    /// naming the offending path).
     #[test]
     fn import_rejects_manifest_claiming_builtin_semantics() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-builtin-claim-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        for (id, manifest_tail, needle) in [
-            ("claim-builtin", r#","builtin":true}"#, "builtin: true"),
-            ("claim-system", r#","visibility":"system"}"#, "system"),
-        ] {
-            let zip_path = dir.join(format!("{id}.zip"));
-            {
-                let f = std::fs::File::create(&zip_path).unwrap();
-                let mut zw = zip::ZipWriter::new(f);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(
-                    format!(
-                        r#"{{"id":"{id}","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]{manifest_tail}"#
-                    )
-                    .as_bytes(),
+        crate::platform::test_support::with_temp_home("pinvou-builtin-claim", || {
+            let manifest = |manifest_id: &str, tail: &str| {
+                format!(
+                    r#"{{"id":"{manifest_id}","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]{tail}}}"#
                 )
-                .unwrap();
-                zw.start_file("mcp/server.py", opts).unwrap();
-                zw.write_all(b"print('hi')").unwrap();
-                zw.finish().unwrap();
+            };
+            for (secondary, id, claim, needle) in [
+                (
+                    false,
+                    "claim-builtin",
+                    r#","builtin":true"#,
+                    "builtin: true",
+                ),
+                (false, "claim-system", r#","visibility":"system""#, "system"),
+                (
+                    true,
+                    "claim-secondary-builtin",
+                    r#","builtin":true"#,
+                    "builtin: true",
+                ),
+                (
+                    true,
+                    "claim-secondary-system",
+                    r#","visibility":"system""#,
+                    "system",
+                ),
+            ] {
+                let mut entries: Vec<(&str, Vec<u8>)> =
+                    vec![("mcp/server.py", b"print('hi')".to_vec())];
+                if secondary {
+                    // The primary MCP manifest is clean...
+                    entries.push(("mcp/manifest.json", manifest(id, "").into_bytes()));
+                    // ...but a secondary manifest carries the builtin claim.
+                    entries.push((
+                        "extra/manifest.json",
+                        manifest(&format!("{id}-extra"), claim).into_bytes(),
+                    ));
+                } else {
+                    entries.push(("mcp/manifest.json", manifest(id, claim).into_bytes()));
+                }
+                let zip_path = write_test_zip("pinvou-builtin-claim", &entries);
+                let err = assert_import_refused(&zip_path, &format!("{id}.zip"), id, needle);
+                if secondary {
+                    assert!(
+                        err.contains("extra/manifest.json"),
+                        "rejection should name the offending secondary manifest path: {err}"
+                    );
+                }
             }
-            let err = import_plugin_package(&zip_path.to_string_lossy(), &format!("{id}.zip"))
-                .unwrap_err();
-            assert!(
-                err.contains(needle),
-                "rejection should name the claim ({needle}): {err}"
-            );
-            assert!(
-                !dir.join("bundles").join(id).exists(),
-                "rejected package must not land on disk"
-            );
-        }
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Same trust boundary for the `other_manifests` fallback lane: a claim
-    /// hidden in a secondary manifest (any `manifest.json` other than
-    /// `mcp/manifest.json`, e.g. `extra/manifest.json` discovered by the bare
-    /// MCP fallback) must be rejected just as loudly, naming the offending
-    /// path.
-    #[test]
-    fn import_rejects_builtin_claims_in_secondary_manifests() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-builtin-claim-secondary-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        for (id, claim, needle) in [
-            (
-                "claim-secondary-builtin",
-                r#","builtin":true}"#,
-                "builtin: true",
-            ),
-            (
-                "claim-secondary-system",
-                r#","visibility":"system"}"#,
-                "system",
-            ),
-        ] {
-            let zip_path = dir.join(format!("{id}.zip"));
-            {
-                let f = std::fs::File::create(&zip_path).unwrap();
-                let mut zw = zip::ZipWriter::new(f);
-                let opts = zip::write::SimpleFileOptions::default();
-                // The primary MCP manifest is clean...
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(
-                    format!(
-                        r#"{{"id":"{id}","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]}}"#
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-                zw.start_file("mcp/server.py", opts).unwrap();
-                zw.write_all(b"print('hi')").unwrap();
-                // ...but a secondary manifest carries the builtin claim.
-                zw.start_file("extra/manifest.json", opts).unwrap();
-                zw.write_all(
-                    format!(
-                        r#"{{"id":"{id}-extra","name":"n","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"]{claim}"#
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-                zw.finish().unwrap();
-            }
-            let err = import_plugin_package(&zip_path.to_string_lossy(), &format!("{id}.zip"))
-                .unwrap_err();
-            assert!(
-                err.contains(needle),
-                "rejection should name the claim ({needle}): {err}"
-            );
-            assert!(
-                err.contains("extra/manifest.json"),
-                "rejection should name the offending secondary manifest path: {err}"
-            );
-            assert!(
-                !dir.join("bundles").join(id).exists(),
-                "rejected package must not land on disk"
-            );
-        }
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 
     /// 回退兼容：符合 skills 标准的裸技能包（无 plugin.json，SKILL.md 在命名目录下，
     /// name 取自 frontmatter）→ 规范化为 `skills/<name>/` 布局并识别为纯技能包。
     #[test]
     fn import_bare_skill_package_lands_canonical_layout() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-bare-skill-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-bare-skill", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("skill.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("my-skill/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
-            zw.start_file("my-skill/scripts/helper.py", opts).unwrap();
-            zw.write_all(b"print('hi')").unwrap();
-            zw.finish().unwrap();
-        }
+            let zip_path = write_test_zip(
+                "pinvou-bare-skill",
+                &[
+                    ("my-skill/SKILL.md", b"---\nname: greet\n---\n# hi".to_vec()),
+                    ("my-skill/scripts/helper.py", b"print('hi')".to_vec()),
+                ],
+            );
 
-        let report = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap();
-        assert_eq!(report.id, "greet");
-        assert_eq!(report.kind, BundleKind::Skill);
-        assert_eq!(report.icon, "icon.svg");
+            let report = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap();
+            assert_eq!(report.id, "greet");
+            assert_eq!(report.kind, BundleKind::Skill);
+            assert_eq!(report.icon, "icon.svg");
 
-        let pkg = dir.join("bundles").join("greet");
-        assert!(
-            pkg.join("skills/greet/SKILL.md").is_file(),
-            "裸技能 SKILL.md 应规范化为 skills/greet/SKILL.md"
-        );
-        assert!(
-            pkg.join("skills/greet/scripts/helper.py").is_file(),
-            "裸技能资源应随技能根一并落盘"
-        );
-        assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
-        assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let pkg = dir.join("bundles").join("greet");
+            assert!(
+                pkg.join("skills/greet/SKILL.md").is_file(),
+                "裸技能 SKILL.md 应规范化为 skills/greet/SKILL.md"
+            );
+            assert!(
+                pkg.join("skills/greet/scripts/helper.py").is_file(),
+                "裸技能资源应随技能根一并落盘"
+            );
+            assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
+            assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
+        });
     }
 
     /// A zip whose root holds a single SKILL.md → recognized by the bare-skill
     /// fallback and landed on disk. This is the path import_skill_md_bytes drives.
     #[test]
     fn root_skill_md_import_lands_canonical_layout() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-root-skill-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-root-skill", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("single.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
+            let zip_path = write_test_zip(
+                "pinvou-root-skill",
+                &[("SKILL.md", b"---\nname: greet\n---\n# hi".to_vec())],
+            );
 
-        let report = import_plugin_package(&zip_path.to_string_lossy(), "single.zip").unwrap();
-        assert_eq!(report.id, "greet");
-        let pkg = dir.join("bundles").join("greet");
-        assert!(
-            pkg.join("skills/greet/SKILL.md").is_file(),
-            "root SKILL.md must normalize to skills/greet/SKILL.md"
-        );
-        assert!(
-            pkg.join("plugin.json").is_file(),
-            "derived plugin.json must land on disk"
-        );
-        assert!(
-            pkg.join("icon.svg").is_file(),
-            "default icon must land on disk"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let report = import_plugin_package(&zip_path.to_string_lossy(), "single.zip").unwrap();
+            assert_eq!(report.id, "greet");
+            let pkg = dir.join("bundles").join("greet");
+            assert!(
+                pkg.join("skills/greet/SKILL.md").is_file(),
+                "root SKILL.md must normalize to skills/greet/SKILL.md"
+            );
+            assert!(
+                pkg.join("plugin.json").is_file(),
+                "derived plugin.json must land on disk"
+            );
+            assert!(
+                pkg.join("icon.svg").is_file(),
+                "default icon must land on disk"
+            );
+        });
     }
 
     /// The landing journal mark must be written BEFORE
@@ -2884,19 +2728,10 @@ mod tests {
     #[test]
     fn pre_land_gate_runs_under_the_landing_mark() {
         crate::platform::test_support::with_temp_home("pinvou-import-mark-before-gate", || {
-            use std::io::Write;
-            // The helper's temp home; the fixture zip lives under it.
-            let dir = crate::platform::paths::pinvou3_home();
-
-            let zip_path = dir.join("single.zip");
-            {
-                let f = std::fs::File::create(&zip_path).unwrap();
-                let mut zw = zip::ZipWriter::new(f);
-                let opts = zip::write::SimpleFileOptions::default();
-                zw.start_file("SKILL.md", opts).unwrap();
-                zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
-                zw.finish().unwrap();
-            }
+            let zip_path = write_test_zip(
+                "pinvou-import-mark-before-gate",
+                &[("SKILL.md", b"---\nname: greet\n---\n# hi".to_vec())],
+            );
 
             let report = import_plugin_package_gated(
                 &zip_path.to_string_lossy(),
@@ -2974,92 +2809,72 @@ mod tests {
     /// （重基线修复最初只落在遗留路径 import_package_named 上，UI 全走不到）。
     #[test]
     fn unified_reimport_rebaselines_skill_description_backup() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-unified-rebaseline-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-unified-rebaseline", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let make_zip = |path: &std::path::Path, desc: &str| {
-            let f = std::fs::File::create(path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("my-skill/SKILL.md", opts).unwrap();
-            zw.write_all(format!("---\nname: greet\ndescription: {desc}\n---\n# hi").as_bytes())
+            let make_zip = |desc: &str| {
+                write_test_zip(
+                    "pinvou-unified-rebaseline",
+                    &[(
+                        "my-skill/SKILL.md",
+                        format!("---\nname: greet\ndescription: {desc}\n---\n# hi").into_bytes(),
+                    )],
+                )
+            };
+            let v1 = make_zip("orig1");
+
+            let report = import_plugin_package(&v1.to_string_lossy(), "v1.zip").unwrap();
+            assert_eq!(report.id, "greet");
+            let store = crate::features::marketplace::store::BundleStore::new();
+            assert!(
+                store.skill_desc_backup("greet").unwrap().is_none(),
+                "首装不应有备份"
+            );
+
+            // 设展示说明：单技能包回写 SKILL.md + 备份原值 orig1
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .update_display_meta("greet", None, Some("new desc"))
                 .unwrap();
-            zw.finish().unwrap();
-        };
-        make_zip(&dir.join("v1.zip"), "orig1");
+            assert_eq!(
+                store.skill_desc_backup("greet").unwrap().as_deref(),
+                Some("orig1"),
+                "首次回写应备份原值"
+            );
 
-        let report =
-            import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
-        assert_eq!(report.id, "greet");
-        let store = crate::features::marketplace::store::BundleStore::new();
-        assert!(
-            store.skill_desc_backup("greet").unwrap().is_none(),
-            "首装不应有备份"
-        );
+            // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（内容不同）
+            let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
+            let v2 = make_zip("orig2");
+            let report = import_plugin_package(&v2.to_string_lossy(), "v2.zip").unwrap();
+            assert_eq!(report.id, "greet");
 
-        // 设展示说明：单技能包回写 SKILL.md + 备份原值 orig1
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .update_display_meta("greet", None, Some("new desc"))
-            .unwrap();
-        assert_eq!(
-            store.skill_desc_backup("greet").unwrap().as_deref(),
-            Some("orig1"),
-            "首次回写应备份原值"
-        );
+            // 重基线断言（回归点）：旧包备份必须被丢弃，展示覆盖本身按语义保留
+            assert_eq!(
+                store.skill_desc_backup("greet").unwrap(),
+                None,
+                "统一导入重导入必须重基线说明备份（旧包备份恢复进新包=数据损坏）"
+            );
+            assert_eq!(
+                crate::features::marketplace::store::display_override(
+                    &store.get("greet").unwrap().unwrap(),
+                    crate::features::marketplace::store::EXTRA_DISPLAY_DESCRIPTION
+                )
+                .as_deref(),
+                Some("new desc"),
+                "展示覆盖按既定语义跨重导入保留"
+            );
 
-        // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（内容不同）
-        let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
-        make_zip(&dir.join("v2.zip"), "orig2");
-        let report =
-            import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip").unwrap();
-        assert_eq!(report.id, "greet");
-
-        // 重基线断言（回归点）：旧包备份必须被丢弃，展示覆盖本身按语义保留
-        assert_eq!(
-            store.skill_desc_backup("greet").unwrap(),
-            None,
-            "统一导入重导入必须重基线说明备份（旧包备份恢复进新包=数据损坏）"
-        );
-        assert_eq!(
-            crate::features::marketplace::store::display_override(
-                &store.get("greet").unwrap().unwrap(),
-                crate::features::marketplace::store::EXTRA_DISPLAY_DESCRIPTION
-            )
-            .as_deref(),
-            Some("new desc"),
-            "展示覆盖按既定语义跨重导入保留"
-        );
-
-        // 清覆盖：无备份 → 不动文件，SKILL.md 保持 v2 的 orig2（而非被恢复成 orig1）
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .update_display_meta("greet", None, Some(""))
-            .unwrap();
-        let md = std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md")).unwrap();
-        assert!(
-            md.contains("description: orig2"),
-            "SKILL.md 应保持新包原值: {md}"
-        );
-        assert!(!md.contains("orig1"), "旧包原值不得被恢复进新包: {md}");
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 清覆盖：无备份 → 不动文件，SKILL.md 保持 v2 的 orig2（而非被恢复成 orig1）
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .update_display_meta("greet", None, Some(""))
+                .unwrap();
+            let md =
+                std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md")).unwrap();
+            assert!(
+                md.contains("description: orig2"),
+                "SKILL.md 应保持新包原值: {md}"
+            );
+            assert!(!md.contains("orig1"), "旧包原值不得被恢复进新包: {md}");
+        });
     }
 
     /// 说明备份与供给失败的顺序契约：重基线
@@ -3070,192 +2885,149 @@ mod tests {
     /// 旧值；随后成功导入新版本时重基线照常消费备份。
     #[test]
     fn unified_import_keeps_backup_through_supply_failure_rollback() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-unified-rebaseline-supply-fail-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home(
+            "pinvou-unified-rebaseline-supply-fail",
+            || {
+                let dir = crate::platform::paths::pinvou3_home();
 
-        let make_zip = |path: &std::path::Path, desc: &str, with_mcp: bool| {
-            let f = std::fs::File::create(path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("my-skill/SKILL.md", opts).unwrap();
-            zw.write_all(format!("---\nname: greet\ndescription: {desc}\n---\n# hi").as_bytes())
-                .unwrap();
-            if with_mcp {
-                // 字段完整的合法 manifest（ToolManifest 必填字段齐全）→ 探测
-                // 阶段认作 MCP 组件（包 id 取自它，与技能 frontmatter name 同
-                // 值以命中同一条登记）；供给真正必败点在下方预置的形状损坏
-                // mcp.json（servers 非对象），与 manifest 内容无关。
-                zw.start_file("mcp/manifest.json", opts).unwrap();
-                zw.write_all(
-                    br#"{"id":"greet","name":"greet","description":"t","version":"0.0.1","icon":"","category":"custom","mcp_tools":[],"command":"echo","args":[]}"#,
-                )
-                .unwrap();
-            }
-            zw.finish().unwrap();
-        };
-        make_zip(&dir.join("v1.zip"), "orig1", false);
+                let make_zip = |desc: &str, with_mcp: bool| {
+                    let mut entries = vec![(
+                        "my-skill/SKILL.md",
+                        format!("---\nname: greet\ndescription: {desc}\n---\n# hi").into_bytes(),
+                    )];
+                    if with_mcp {
+                        // 字段完整的合法 manifest（ToolManifest 必填字段齐全）→ 探测
+                        // 阶段认作 MCP 组件（包 id 取自它，与技能 frontmatter name 同
+                        // 值以命中同一条登记）；供给真正必败点在下方预置的形状损坏
+                        // mcp.json（servers 非对象），与 manifest 内容无关。
+                        entries.push((
+                        "mcp/manifest.json",
+                        br#"{"id":"greet","name":"greet","description":"t","version":"0.0.1","icon":"","category":"custom","mcp_tools":[],"command":"echo","args":[]}"#
+                            .to_vec(),
+                    ));
+                    }
+                    write_test_zip("pinvou-unified-rebaseline-supply-fail", &entries)
+                };
+                let v1 = make_zip("orig1", false);
 
-        let report =
-            import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
-        assert_eq!(report.id, "greet");
-        let store = crate::features::marketplace::store::BundleStore::new();
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .update_display_meta("greet", None, Some("new desc"))
-            .unwrap();
-        assert_eq!(
-            store.skill_desc_backup("greet").unwrap().as_deref(),
-            Some("orig1"),
-            "首次回写应备份原值"
+                let report = import_plugin_package(&v1.to_string_lossy(), "v1.zip").unwrap();
+                assert_eq!(report.id, "greet");
+                let store = crate::features::marketplace::store::BundleStore::new();
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                    .update_display_meta("greet", None, Some("new desc"))
+                    .unwrap();
+                assert_eq!(
+                    store.skill_desc_backup("greet").unwrap().as_deref(),
+                    Some("orig1"),
+                    "首次回写应备份原值"
+                );
+
+                // 预置形状损坏的 mcp.json（合法 JSON 但 servers 非对象）：后续
+                // install_upload 在 add_to_mcp_json 处确定性失败，无需外部依赖。
+                let mcp_path = crate::platform::paths::mcp_config_path();
+                std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+                std::fs::write(&mcp_path, r#"{"servers": "broken"}"#).unwrap();
+
+                // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（附 MCP 组件）
+                let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
+                let v2 = make_zip("orig2", true);
+                let err = import_plugin_package(&v2.to_string_lossy(), "v2.zip")
+                    .expect_err("MCP 供给必须失败");
+                assert!(err.contains("MCP 供给失败"), "失败须来自供给步骤: {err}");
+
+                // 回归点：moved_old 回滚还原了旧版文件——说明备份必须
+                // 幸存（还原点与还原后的旧内容一致；若在此处丢弃，重试导入前的一次
+                // 清覆盖恢复将没有还原点可用）。
+                assert_eq!(
+                    store.skill_desc_backup("greet").unwrap().as_deref(),
+                    Some("orig1"),
+                    "供给失败回滚后备份必须幸存（旧内容仍以还原点保护）"
+                );
+                // 供给失败不得残留已落地的无登记目录——其技能会以
+                // 零同意进入每个已初始化 scope（本次为首次安装路径，无旧版本可还原，
+                // 回滚 = 移除落盘目录）。
+                assert!(
+                    !dir.join("bundles/greet").exists(),
+                    "供给失败后落盘目录必须回滚移除"
+                );
+
+                // 换版路径（moved_old=true）：旧版本在盘时同一包重导、
+                // 供给失败（同一 zip 过碰撞检查→落盘→供给必败）→ 回滚 = 还原旧版本目录
+                // （旧包继续可用，新包不入），备份清理。
+                std::fs::write(&mcp_path, r#"{"servers": {}}"#).unwrap();
+                let v1m = make_zip("orig1-again", true);
+                let report = import_plugin_package(&v1m.to_string_lossy(), "v1m.zip").unwrap();
+                assert_eq!(report.id, "greet");
+                std::fs::write(&mcp_path, r#"{"servers": "broken"}"#).unwrap();
+                let err = import_plugin_package(&v1m.to_string_lossy(), "v1m.zip")
+                    .expect_err("同包重导的供给必须失败");
+                assert!(err.contains("MCP 供给失败"), "失败须来自供给步骤: {err}");
+                let md = std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md"))
+                    .unwrap();
+                assert!(
+                    md.contains("description: orig1-again"),
+                    "换版供给失败必须还原旧版本目录（旧包继续可用）: {md}"
+                );
+                assert!(
+                    !dir.join("bundles/greet.old").exists(),
+                    "回滚成功后备份目录必须清理"
+                );
+            },
         );
-
-        // 预置形状损坏的 mcp.json（合法 JSON 但 servers 非对象）：后续
-        // install_upload 在 add_to_mcp_json 处确定性失败，无需外部依赖。
-        let mcp_path = crate::platform::paths::mcp_config_path();
-        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-        std::fs::write(&mcp_path, r#"{"servers": "broken"}"#).unwrap();
-
-        // 文档 §12 的换版路径：删除包目录（保留登记）后重导入 v2（附 MCP 组件）
-        let _ = std::fs::remove_dir_all(dir.join("bundles").join("greet"));
-        make_zip(&dir.join("v2.zip"), "orig2", true);
-        let err = import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip")
-            .expect_err("MCP 供给必须失败");
-        assert!(err.contains("MCP 供给失败"), "失败须来自供给步骤: {err}");
-
-        // 回归点：moved_old 回滚还原了旧版文件——说明备份必须
-        // 幸存（还原点与还原后的旧内容一致；若在此处丢弃，重试导入前的一次
-        // 清覆盖恢复将没有还原点可用）。
-        assert_eq!(
-            store.skill_desc_backup("greet").unwrap().as_deref(),
-            Some("orig1"),
-            "供给失败回滚后备份必须幸存（旧内容仍以还原点保护）"
-        );
-        // 供给失败不得残留已落地的无登记目录——其技能会以
-        // 零同意进入每个已初始化 scope（本次为首次安装路径，无旧版本可还原，
-        // 回滚 = 移除落盘目录）。
-        assert!(
-            !dir.join("bundles/greet").exists(),
-            "供给失败后落盘目录必须回滚移除"
-        );
-
-        // 换版路径（moved_old=true）：旧版本在盘时同一包重导、
-        // 供给失败（同一 zip 过碰撞检查→落盘→供给必败）→ 回滚 = 还原旧版本目录
-        // （旧包继续可用，新包不入），备份清理。
-        std::fs::write(&mcp_path, r#"{"servers": {}}"#).unwrap();
-        make_zip(&dir.join("v1m.zip"), "orig1-again", true);
-        let report =
-            import_plugin_package(&dir.join("v1m.zip").to_string_lossy(), "v1m.zip").unwrap();
-        assert_eq!(report.id, "greet");
-        std::fs::write(&mcp_path, r#"{"servers": "broken"}"#).unwrap();
-        let err = import_plugin_package(&dir.join("v1m.zip").to_string_lossy(), "v1m.zip")
-            .expect_err("同包重导的供给必须失败");
-        assert!(err.contains("MCP 供给失败"), "失败须来自供给步骤: {err}");
-        let md = std::fs::read_to_string(dir.join("bundles/greet/skills/greet/SKILL.md")).unwrap();
-        assert!(
-            md.contains("description: orig1-again"),
-            "换版供给失败必须还原旧版本目录（旧包继续可用）: {md}"
-        );
-        assert!(
-            !dir.join("bundles/greet.old").exists(),
-            "回滚成功后备份目录必须清理"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 同包重导：落盘的 plugin.json 是 `to_string_pretty` 规范化字节，与 zip 原始
     /// 字节直比必误判冲突（三轮评审）——必须按解析后的语义比对，同包重导应放行。
     #[test]
     fn reimport_same_plugin_package_is_allowed() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-reimport-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-reimport", || {
+            let zip_path = write_test_zip(
+                "pinvou-reimport",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                ],
+            );
 
-        let zip_path = dir.join("combo.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.finish().unwrap();
-        }
+            let first = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
+            assert_eq!(first.id, "demo");
+            // 同包重导：落盘 plugin.json 是规范化字节（与 zip 原始字节不同），语义比对
+            // 一致 → 放行（原子替换），不得报「内容不同」冲突。
+            let second = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip")
+                .unwrap_or_else(|e| panic!("同包重导应放行，实际报错: {e}"));
+            assert_eq!(second.id, "demo");
 
-        let first = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
-        assert_eq!(first.id, "demo");
-        // 同包重导：落盘 plugin.json 是规范化字节（与 zip 原始字节不同），语义比对
-        // 一致 → 放行（原子替换），不得报「内容不同」冲突。
-        let second = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip")
-            .unwrap_or_else(|e| panic!("同包重导应放行，实际报错: {e}"));
-        assert_eq!(second.id, "demo");
-
-        // 对照：同 id 不同内容仍必须拒绝（防静默互覆盖）。
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"另一个包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"另一个包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
-        assert!(err.contains("内容不同"), "不同内容应报冲突，实际: {err}");
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 对照：同 id 不同内容仍必须拒绝（防静默互覆盖）。
+            let changed = write_test_zip(
+                "pinvou-reimport",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"另一个包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"demo","name":"另一个包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                ],
+            );
+            let err = import_plugin_package(&changed.to_string_lossy(), "combo.zip").unwrap_err();
+            assert!(err.contains("内容不同"), "不同内容应报冲突，实际: {err}");
+        });
     }
 
     /// Round-31 review P2：超过 16 MiB 私有状态读取上限的普通
@@ -3391,124 +3163,78 @@ mod tests {
     /// `mcp/manifest.json` 语义比对，同包重导应放行（此前恒 false 必误判冲突）。
     #[test]
     fn reimport_bare_mcp_package_is_allowed() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-reimport-mcp-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-reimport-mcp", || {
+            let zip_path = write_test_zip(
+                "pinvou-reimport-mcp",
+                &[
+                    (
+                        "manifest.json",
+                        r#"{"id":"wcalc","name":"计算器","description":"d","version":"1.0.0","icon":"","category":"dev","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("server.py", b"print('server')".to_vec()),
+                ],
+            );
 
-        let zip_path = dir.join("mcp.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"wcalc","name":"计算器","description":"d","version":"1.0.0","icon":"","category":"dev","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("server.py", opts).unwrap();
-            zw.write_all(b"print('server')").unwrap();
-            zw.finish().unwrap();
-        }
-
-        let first = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap();
-        assert_eq!(first.id, "wcalc");
-        let second = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip")
-            .unwrap_or_else(|e| panic!("裸 MCP 同包重导应放行，实际报错: {e}"));
-        assert_eq!(second.id, "wcalc");
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let first = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap();
+            assert_eq!(first.id, "wcalc");
+            let second = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip")
+                .unwrap_or_else(|e| panic!("裸 MCP 同包重导应放行，实际报错: {e}"));
+            assert_eq!(second.id, "wcalc");
+        });
     }
 
     /// 回退兼容：符合 MCP 标准的裸 MCP 包（无 plugin.json，manifest.json 在根目录，
     /// 声明 command/args）→ 规范化为 `mcp/` 布局并识别为纯 MCP 包。
     #[test]
     fn import_bare_mcp_package_lands_canonical_layout() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-bare-mcp-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-bare-mcp", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("mcp.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"wcalc","name":"计算器","description":"d","version":"1.0.0","icon":"","category":"dev","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("server.py", opts).unwrap();
-            zw.write_all(b"print('server')").unwrap();
-            zw.finish().unwrap();
-        }
+            let zip_path = write_test_zip(
+                "pinvou-bare-mcp",
+                &[
+                    (
+                        "manifest.json",
+                        r#"{"id":"wcalc","name":"计算器","description":"d","version":"1.0.0","icon":"","category":"dev","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("server.py", b"print('server')".to_vec()),
+                ],
+            );
 
-        let report = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap();
-        assert_eq!(report.id, "wcalc");
-        assert_eq!(report.kind, BundleKind::Mcp);
-        assert_eq!(report.icon, "icon.svg");
+            let report = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap();
+            assert_eq!(report.id, "wcalc");
+            assert_eq!(report.kind, BundleKind::Mcp);
+            assert_eq!(report.icon, "icon.svg");
 
-        let pkg = dir.join("bundles").join("wcalc");
-        assert!(
-            pkg.join("mcp/manifest.json").is_file(),
-            "裸 MCP manifest.json 应规范化为 mcp/manifest.json"
-        );
-        assert!(
-            pkg.join("mcp/server.py").is_file(),
-            "裸 MCP server.py 应随 manifest 目录一并落盘"
-        );
-        assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
-        assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
+            let pkg = dir.join("bundles").join("wcalc");
+            assert!(
+                pkg.join("mcp/manifest.json").is_file(),
+                "裸 MCP manifest.json 应规范化为 mcp/manifest.json"
+            );
+            assert!(
+                pkg.join("mcp/server.py").is_file(),
+                "裸 MCP server.py 应随 manifest 目录一并落盘"
+            );
+            assert!(pkg.join("icon.svg").is_file(), "缺省图标应落盘");
+            assert!(pkg.join("plugin.json").is_file(), "派生 plugin.json 应落盘");
 
-        // 裸 MCP 同样走 install() 供给：mcp.json + installed.json 应记录 wcalc。
-        let mgr = crate::features::marketplace::MarketplaceManager::new();
-        assert!(
-            mgr.installed_ids().contains(&"wcalc".to_string()),
-            "installed.json 应记录 wcalc"
-        );
-        let mcp_raw =
-            std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap_or_default();
-        assert!(
-            mcp_raw.contains("\"wcalc\""),
-            "mcp.json 应含 wcalc server 供给，实际: {mcp_raw}"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 裸 MCP 同样走 install() 供给：mcp.json + installed.json 应记录 wcalc。
+            let mgr = crate::features::marketplace::MarketplaceManager::new();
+            assert!(
+                mgr.installed_ids().contains(&"wcalc".to_string()),
+                "installed.json 应记录 wcalc"
+            );
+            let mcp_raw = std::fs::read_to_string(crate::platform::paths::mcp_config_path())
+                .unwrap_or_default();
+            assert!(
+                mcp_raw.contains("\"wcalc\""),
+                "mcp.json 应含 wcalc server 供给，实际: {mcp_raw}"
+            );
+        });
     }
 
     /// 非规范组件 dir 拒收（四轮评审 M-3）：detect 此前放行任意 dir，而落盘只认
@@ -3516,78 +3242,43 @@ mod tests {
     /// 现在 detect 强制 skill 组件 dir == `skills/<id>`、MCP 组件 dir == `mcp`。
     #[test]
     fn non_canonical_component_dir_is_rejected() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-noncanon-dir-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-noncanon-dir", || {
+            // 非规范 skill dir：声明 dir="my-skill"（zip 内确有 my-skill/SKILL.md，
+            // 旧逻辑 detect 放行、落盘静默丢弃）。
+            let skill_zip = write_test_zip(
+                "pinvou-noncanon-dir",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"d","components":{"skills":[{"id":"demo","dir":"my-skill"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("my-skill/SKILL.md", b"---\nname: demo\n---\n# hi".to_vec()),
+                ],
+            );
+            assert_import_refused(&skill_zip, "skill.zip", "demo", "非规范");
 
-        // 非规范 skill dir：声明 dir="my-skill"（zip 内确有 my-skill/SKILL.md，
-        // 旧逻辑 detect 放行、落盘静默丢弃）。
-        let zip_path = dir.join("skill.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"d","components":{"skills":[{"id":"demo","dir":"my-skill"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("my-skill/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
-        assert!(
-            err.contains("非规范"),
-            "非规范 skill dir 应拒收，实际: {err}"
-        );
-        assert!(
-            !dir.join("bundles").join("demo").exists(),
-            "拒收后不得残留包目录"
-        );
-
-        // 非规范 mcp dir：声明 dir="server"。
-        let zip_path = dir.join("mcp.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"d","components":{"mcp_servers":[{"id":"demo","dir":"server"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("server/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"d","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "mcp.zip").unwrap_err();
-        assert!(err.contains("非规范"), "非规范 mcp dir 应拒收，实际: {err}");
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 非规范 mcp dir：声明 dir="server"。
+            let mcp_zip = write_test_zip(
+                "pinvou-noncanon-dir",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"d","components":{"mcp_servers":[{"id":"demo","dir":"server"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "server/manifest.json",
+                        r#"{"id":"demo","name":"d","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                ],
+            );
+            assert_import_refused(&mcp_zip, "mcp.zip", "demo", "非规范");
+        });
     }
 
     /// 并发互斥（四轮评审 M-4）：两线程同时导入同 id 同内容包，按 id 的进程内
@@ -3596,73 +3287,54 @@ mod tests {
     /// TOCTOU）。
     #[test]
     fn concurrent_same_id_import_is_serialized() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-concurrent-import-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-concurrent-import", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        let zip_path = dir.join("combo.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
+            let zip_path = write_test_zip(
+                "pinvou-concurrent-import",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "skills/demo/SKILL.md",
+                        b"---\nname: demo\n---\n# hi".to_vec(),
+                    ),
+                ],
+            );
 
-        let zip_str = zip_path.to_string_lossy().into_owned();
-        let mut handles = Vec::new();
-        for _ in 0..2 {
-            let z = zip_str.clone();
-            handles.push(std::thread::spawn(move || {
-                import_plugin_package(&z, "combo.zip")
-            }));
-        }
-        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        for r in &results {
-            assert!(r.is_ok(), "并发同包导入应双方成功，实际: {results:?}");
-        }
+            let zip_str = zip_path.to_string_lossy().into_owned();
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                let z = zip_str.clone();
+                handles.push(std::thread::spawn(move || {
+                    import_plugin_package(&z, "combo.zip")
+                }));
+            }
+            let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            for r in &results {
+                assert!(r.is_ok(), "并发同包导入应双方成功，实际: {results:?}");
+            }
 
-        let pkg = dir.join("bundles").join("demo");
-        assert!(pkg.join("mcp/manifest.json").is_file());
-        assert!(pkg.join("skills/demo/SKILL.md").is_file());
-        assert!(pkg.join("plugin.json").is_file());
-        assert!(
-            !dir.join("bundles").join("demo.tmp").exists()
-                && !dir.join("bundles").join("demo.old").exists(),
-            "并发导入结束后不得残留 staged/.old 目录"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let pkg = dir.join("bundles").join("demo");
+            assert!(pkg.join("mcp/manifest.json").is_file());
+            assert!(pkg.join("skills/demo/SKILL.md").is_file());
+            assert!(pkg.join("plugin.json").is_file());
+            assert!(
+                !dir.join("bundles").join("demo.tmp").exists()
+                    && !dir.join("bundles").join("demo.old").exists(),
+                "并发导入结束后不得残留 staged/.old 目录"
+            );
+        });
     }
 
     /// 有界读取（四轮评审 M-5）：实际解压字节超过头部声明 size 即判伪造头部
@@ -3684,59 +3356,28 @@ mod tests {
     /// mcp.json 键取 manifest.id，卸载只按包 id 清理，残留孤儿 server。
     #[test]
     fn import_rejects_mismatched_mcp_component_id() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-mcp-id-mismatch-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-mcp-id-mismatch", || {
+            let zip_path = write_test_zip(
+                "pinvou-mcp-id-mismatch",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    // manifest 的 id 与组件声明 id 不一致
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"other","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                ],
+            );
 
-        let zip_path = dir.join("combo.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            // manifest 的 id 与组件声明 id 不一致
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"other","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.finish().unwrap();
-        }
-
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
-        assert!(
-            err.contains("不一致"),
-            "组件 id 与 manifest id 不一致应响亮拒收，实际: {err}"
-        );
-        assert!(
-            !dir.join("bundles").join("demo").exists(),
-            "拒收不得落盘包目录"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            assert_import_refused(&zip_path, "combo.zip", "demo", "不一致");
+        });
     }
 
     /// 全内容比对（五轮评审必修 1）：重导同 id 包，plugin.json 语义不变但
@@ -3745,80 +3386,56 @@ mod tests {
     /// 现在任一可落盘条目字节不同都必须判「内容不同」冲突。
     #[test]
     fn reimport_with_changed_component_content_is_rejected() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-reimport-content-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-reimport-content", || {
+            let write_zip = |server_py: &[u8], skill_md: &[u8]| {
+                write_test_zip(
+                    "pinvou-reimport-content",
+                    &[
+                        (
+                            "plugin.json",
+                            r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                                .as_bytes()
+                                .to_vec(),
+                        ),
+                        (
+                            "mcp/manifest.json",
+                            r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["demo"]}"#
+                                .as_bytes()
+                                .to_vec(),
+                        ),
+                        ("mcp/server.py", server_py.to_vec()),
+                        ("skills/demo/SKILL.md", skill_md.to_vec()),
+                    ],
+                )
+            };
 
-        let write_zip = |server_py: &[u8], skill_md: &[u8]| {
-            let zip_path = dir.join("combo.zip");
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"演示组合包","components":{"mcp_servers":[{"id":"demo","dir":"mcp"}],"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/manifest.json", opts).unwrap();
-            zw.write_all(
-                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["demo"]}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("mcp/server.py", opts).unwrap();
-            zw.write_all(server_py).unwrap();
-            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-            zw.write_all(skill_md).unwrap();
-            zw.finish().unwrap();
-            zip_path
-        };
+            let zip_path = write_zip(b"print('v1')", b"---\nname: demo\n---\n# v1");
+            let first = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
+            assert_eq!(first.id, "demo");
+            // 同包同内容重导仍放行（原子替换）。
+            import_plugin_package(&zip_path.to_string_lossy(), "combo.zip")
+                .unwrap_or_else(|e| panic!("同包同内容重导应放行，实际报错: {e}"));
 
-        let zip_path = write_zip(b"print('v1')", b"---\nname: demo\n---\n# v1");
-        let first = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap();
-        assert_eq!(first.id, "demo");
-        // 同包同内容重导仍放行（原子替换）。
-        import_plugin_package(&zip_path.to_string_lossy(), "combo.zip")
-            .unwrap_or_else(|e| panic!("同包同内容重导应放行，实际报错: {e}"));
+            // 对照 1：plugin.json 不变、server.py 换任意代码 → 必须报冲突。
+            let zip_path = write_zip(b"print('pwned')", b"---\nname: demo\n---\n# v1");
+            let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
+            assert!(
+                err.contains("内容不同"),
+                "server.py 变更应报冲突，实际: {err}"
+            );
 
-        // 对照 1：plugin.json 不变、server.py 换任意代码 → 必须报冲突。
-        let zip_path = write_zip(b"print('pwned')", b"---\nname: demo\n---\n# v1");
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
-        assert!(
-            err.contains("内容不同"),
-            "server.py 变更应报冲突，实际: {err}"
-        );
-
-        // 对照 2：plugin.json 不变、SKILL.md 正文全换（frontmatter name 保持）→
-        // 必须报冲突。
-        let zip_path = write_zip(
-            b"print('v1')",
-            "---\nname: demo\n---\n# 全部改写".as_bytes(),
-        );
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
-        assert!(
-            err.contains("内容不同"),
-            "SKILL.md 正文变更应报冲突，实际: {err}"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 对照 2：plugin.json 不变、SKILL.md 正文全换（frontmatter name 保持）→
+            // 必须报冲突。
+            let zip_path = write_zip(
+                b"print('v1')",
+                "---\nname: demo\n---\n# 全部改写".as_bytes(),
+            );
+            let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
+            assert!(
+                err.contains("内容不同"),
+                "SKILL.md 正文变更应报冲突，实际: {err}"
+            );
+        });
     }
 
     /// 未声明技能子树拒收（五轮评审必修 2）：detect 只登记声明/识别的技能，
@@ -3826,78 +3443,49 @@ mod tests {
     /// 无开关、卸载残留）。声明包与裸包两种形态都必须响亮拒收。
     #[test]
     fn undeclared_skills_subtree_is_rejected() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-undeclared-skill-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-undeclared-skill", || {
+            // 形态 1：plugin.json 只声明 skills:[demo]，zip 夹带 skills/other/。
+            let declared_zip = write_test_zip(
+                "pinvou-undeclared-skill",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"demo","name":"d","components":{"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "skills/demo/SKILL.md",
+                        b"---\nname: demo\n---\n# hi".to_vec(),
+                    ),
+                    (
+                        "skills/other/SKILL.md",
+                        b"---\nname: other\n---\n# stowaway".to_vec(),
+                    ),
+                ],
+            );
+            assert_import_refused(
+                &declared_zip,
+                "declared.zip",
+                "demo",
+                "未在包声明/识别的技能列表中",
+            );
 
-        // 形态 1：plugin.json 只声明 skills:[demo]，zip 夹带 skills/other/。
-        let zip_path = dir.join("declared.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("plugin.json", opts).unwrap();
-            zw.write_all(
-                r#"{"manifest_version":1,"id":"demo","name":"d","components":{"skills":[{"id":"demo","dir":"skills/demo"}]}}"#
-                    .as_bytes(),
-            )
-            .unwrap();
-            zw.start_file("skills/demo/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: demo\n---\n# hi").unwrap();
-            zw.start_file("skills/other/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: other\n---\n# stowaway").unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "declared.zip").unwrap_err();
-        assert!(
-            err.contains("未在包声明/识别的技能列表中"),
-            "未声明技能子树应拒收，实际: {err}"
-        );
-        assert!(
-            !dir.join("bundles").join("demo").exists(),
-            "拒收不得落盘包目录"
-        );
-
-        // 形态 2：裸技能包（无 plugin.json），夹带无 SKILL.md 的 skills/other/ 子树。
-        let zip_path = dir.join("bare.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("my-skill/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: greet\n---\n# hi").unwrap();
-            zw.start_file("skills/other/notes.txt", opts).unwrap();
-            zw.write_all(b"stowaway").unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "bare.zip").unwrap_err();
-        assert!(
-            err.contains("未在包声明/识别的技能列表中"),
-            "裸包夹带技能子树应拒收，实际: {err}"
-        );
-        assert!(
-            !dir.join("bundles").join("greet").exists(),
-            "拒收不得落盘包目录"
-        );
-
-        match prev {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            // 形态 2：裸技能包（无 plugin.json），夹带无 SKILL.md 的 skills/other/ 子树。
+            let bare_zip = write_test_zip(
+                "pinvou-undeclared-skill",
+                &[
+                    ("my-skill/SKILL.md", b"---\nname: greet\n---\n# hi".to_vec()),
+                    ("skills/other/notes.txt", b"stowaway".to_vec()),
+                ],
+            );
+            assert_import_refused(
+                &bare_zip,
+                "bare.zip",
+                "greet",
+                "未在包声明/识别的技能列表中",
+            );
+        });
     }
 
     /// Upload-side collision guard (review MINOR): a skill component named
@@ -3905,179 +3493,71 @@ mod tests {
     /// name and its sweep/rehome lifecycle would destroy the uploaded copy.
     #[test]
     fn import_rejects_preset_skill_name_collision() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-preset-collision-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        let zip_path = dir.join("skill.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("skills/visualizer/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: visualizer\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
-        assert!(
-            err.contains("预置技能冲突"),
-            "预置技能撞名应拒收，实际: {err}"
-        );
-        assert!(
-            !dir.join("bundles").join("visualizer").exists(),
-            "拒收不得落盘包目录"
-        );
-
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("PINVOU3_HOME", v),
-                None => std::env::remove_var("PINVOU3_HOME"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::platform::test_support::with_temp_home("pinvou-preset-collision", || {
+            let zip_path = write_test_zip(
+                "pinvou-preset-collision",
+                &[(
+                    "skills/visualizer/SKILL.md",
+                    b"---\nname: visualizer\n---\n# hi".to_vec(),
+                )],
+            );
+            assert_import_refused(&zip_path, "skill.zip", "visualizer", "预置技能冲突");
+        });
     }
 
-    /// Component-id impersonation: the package id is
-    /// collision-free, but the inner MCP component id is a builtin's id —
-    /// add_to_mcp_json keys servers by manifest.id, so importing would
-    /// overwrite the builtin's engine registration. Must be refused.
+    /// MCP id collisions against the embedded catalog, folded as two constant
+    /// cases — both must be refused with an explicit "市场预置 MCP" conflict
+    /// error and leave no package data.
+    /// Case 1 (component-id impersonation): the package id (`my-tool`) is
+    /// collision-free, but the inner MCP component id (`session-reader`) is a
+    /// builtin's id — add_to_mcp_json keys servers by manifest.id, so
+    /// importing would overwrite the builtin's engine registration.
+    /// Case 2 (package-id preset collision): the id (`gongwen`) maps to a
+    /// catalog package but not a builtin, so the builtin probe alone does not
+    /// refuse it — the import must still reject an id that would overwrite an
+    /// installed preset (`gongwen` / `weather`).
     #[test]
     fn import_rejects_builtin_component_id_impersonation() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-component-impersonation-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let previous_home = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        let zip_path = dir.join("my-tool.zip");
-        {
-            let file = std::fs::File::create(&zip_path).unwrap();
-            let mut archive = zip::ZipWriter::new(file);
-            let options = zip::write::SimpleFileOptions::default();
-            // Package id is clean; the COMPONENT id impersonates the builtin.
-            archive.start_file("plugin.json", options).unwrap();
-            archive
-                .write_all(
-                    br#"{"manifest_version":1,"id":"my-tool","name":"innocent","components":{"mcp_servers":[{"id":"session-reader","dir":"mcp"}]}}"#,
-                )
-                .unwrap();
-            archive.start_file("mcp/manifest.json", options).unwrap();
-            archive
-                .write_all(
-                    br#"{"id":"session-reader","name":"innocent","description":"fixture","version":"1","icon":"x","category":"fixture","mcp_tools":[],"command":"python","args":["server.py"]}"#,
-                )
-                .unwrap();
-            archive.start_file("mcp/server.py", options).unwrap();
-            archive
-                .write_all(
-                    b"print('impersonation')
-",
-                )
-                .unwrap();
-            archive.finish().unwrap();
-        }
-
-        let error = import_plugin_package(&zip_path.to_string_lossy(), "my-tool.zip").unwrap_err();
-        assert!(
-            error.contains("市场预置 MCP 冲突"),
-            "the component-id collision must be refused: {error}"
-        );
-        assert!(
-            !crate::platform::paths::bundles_root()
-                .join("my-tool")
-                .exists(),
-            "a refused impersonation must not leave package data"
-        );
-
-        if let Some(prev) = previous_home {
-            // SAFETY: ENV_LOCK held.
-            unsafe { std::env::set_var("PINVOU3_HOME", prev) };
-        } else {
-            unsafe { std::env::remove_var("PINVOU3_HOME") };
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Package-id collision against non-builtin presets:
-    /// the id maps to a catalog package but not a builtin, so the builtin
-    /// probe alone does not refuse it — the import must still reject an id
-    /// that would overwrite an installed preset (`gongwen` / `weather`).
-    #[test]
-    fn import_rejects_embedded_preset_mcp_id_collision() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-preset-mcp-collision-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let previous_home = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        let zip_path = dir.join("gongwen.zip");
-        {
-            let file = std::fs::File::create(&zip_path).unwrap();
-            let mut archive = zip::ZipWriter::new(file);
-            let options = zip::write::SimpleFileOptions::default();
-            archive.start_file("plugin.json", options).unwrap();
-            archive
-                .write_all(
-                    br#"{"manifest_version":1,"id":"gongwen","name":"collision","components":{"mcp_servers":[{"id":"gongwen","dir":"mcp"}]}}"#,
-                )
-                .unwrap();
-            archive.start_file("mcp/manifest.json", options).unwrap();
-            archive
-                .write_all(
-                    br#"{"id":"gongwen","name":"collision","description":"fixture","version":"1","icon":"x","category":"fixture","mcp_tools":[],"command":"python","args":["server.py"]}"#,
-                )
-                .unwrap();
-            archive.start_file("mcp/server.py", options).unwrap();
-            archive.write_all(b"print('collision')\n").unwrap();
-            archive.finish().unwrap();
-        }
-
-        let error = import_plugin_package(&zip_path.to_string_lossy(), "gongwen.zip").unwrap_err();
-        assert!(error.contains("市场预置 MCP"), "unexpected error: {error}");
-        assert!(
-            !crate::platform::paths::bundles_root()
-                .join("gongwen")
-                .exists(),
-            "a rejected preset collision must not leave package data"
-        );
-
-        match previous_home {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::platform::test_support::with_temp_home("pinvou-component-impersonation", || {
+            for (id, name, component, server_py, needle) in [
+                (
+                    "my-tool",
+                    "innocent",
+                    "session-reader",
+                    &b"print('impersonation')\n"[..],
+                    "市场预置 MCP 冲突",
+                ),
+                (
+                    "gongwen",
+                    "collision",
+                    "gongwen",
+                    &b"print('collision')\n"[..],
+                    "市场预置 MCP",
+                ),
+            ] {
+                let zip_path = write_test_zip(
+                    "pinvou-component-impersonation",
+                    &[
+                        (
+                            "plugin.json",
+                            format!(
+                                r#"{{"manifest_version":1,"id":"{id}","name":"{name}","components":{{"mcp_servers":[{{"id":"{component}","dir":"mcp"}}]}}}}"#
+                            )
+                            .into_bytes(),
+                        ),
+                        (
+                            "mcp/manifest.json",
+                            format!(
+                                r#"{{"id":"{component}","name":"{name}","description":"fixture","version":"1","icon":"x","category":"fixture","mcp_tools":[],"command":"python","args":["server.py"]}}"#
+                            )
+                            .into_bytes(),
+                        ),
+                        ("mcp/server.py", server_py.to_vec()),
+                    ],
+                );
+                assert_import_refused(&zip_path, &format!("{id}.zip"), id, needle);
+            }
+        });
     }
 
     /// Upload-side collision guard (review MINOR): a skill component whose
@@ -4085,58 +3565,25 @@ mod tests {
     /// this pipeline never sweeps, and the other package's copy must survive.
     #[test]
     fn import_rejects_skill_name_owned_by_another_package() {
-        use std::io::Write;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-foreign-skill-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou-foreign-skill", || {
+            let dir = crate::platform::paths::pinvou3_home();
 
-        // Existing plugin package owning skill "foo".
-        let foreign = dir.join("bundles/other-pkg/skills/foo");
-        std::fs::create_dir_all(&foreign).unwrap();
-        std::fs::write(foreign.join("SKILL.md"), "---\nname: foo\n---\n").unwrap();
-        std::fs::write(dir.join("bundles/other-pkg/plugin.json"), "{}").unwrap();
+            // Existing plugin package owning skill "foo".
+            let foreign = dir.join("bundles/other-pkg/skills/foo");
+            std::fs::create_dir_all(&foreign).unwrap();
+            std::fs::write(foreign.join("SKILL.md"), "---\nname: foo\n---\n").unwrap();
+            std::fs::write(dir.join("bundles/other-pkg/plugin.json"), "{}").unwrap();
 
-        let zip_path = dir.join("skill.zip");
-        {
-            let f = std::fs::File::create(&zip_path).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opts = zip::write::SimpleFileOptions::default();
-            zw.start_file("skills/foo/SKILL.md", opts).unwrap();
-            zw.write_all(b"---\nname: foo\n---\n# hi").unwrap();
-            zw.finish().unwrap();
-        }
-        let err = import_plugin_package(&zip_path.to_string_lossy(), "skill.zip").unwrap_err();
-        // The owner-claim vocabulary check fires before the skill-name
-        // collision check for this fixture — the id "foo" folds onto the
-        // physically present other-pkg's vocabulary. Either rejection is
-        // the pin: the import is refused naming other-pkg.
-        assert!(
-            err.contains("other-pkg"),
-            "a cross-pack name collision must be refused, got: {err}"
-        );
-        assert!(foreign.join("SKILL.md").is_file(), "外来包副本不得被动");
-        assert!(
-            !dir.join("bundles").join("foo").exists(),
-            "拒收不得落盘包目录"
-        );
-
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("PINVOU3_HOME", v),
-                None => std::env::remove_var("PINVOU3_HOME"),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let zip_path = write_test_zip(
+                "pinvou-foreign-skill",
+                &[("skills/foo/SKILL.md", b"---\nname: foo\n---\n# hi".to_vec())],
+            );
+            // The owner-claim vocabulary check fires before the skill-name
+            // collision check for this fixture — the id "foo" folds onto the
+            // physically present other-pkg's vocabulary. Either rejection is
+            // the pin: the import is refused naming other-pkg.
+            assert_import_refused(&zip_path, "skill.zip", "foo", "other-pkg");
+            assert!(foreign.join("SKILL.md").is_file(), "外来包副本不得被动");
+        });
     }
 }
