@@ -1754,3 +1754,59 @@ remains postponed; T06 cleanup does not complete T20 event/intent maintenance.
 Full T20, public batches/remaining roles/contribution/client outbox remain open.
 Downloads have no hard total or cumulative time limit.
 Service command batch commit: `bdd306a`.
+
+### T20 twelfth batch: expired unaccepted intent maintenance (2026-10-12)
+
+The service adds a protected-owner `clean-unaccepted` command. Each serializable
+page retires only expired, never-accepted no-update input intents and their entire
+still-processing T06 attempt closure. Original immutable expiry plus two minutes,
+native canonical identities/hashes, original operation binding, safe ownership
+windows and monotonic native SQL time are required. A single active attempt keeps
+the whole closure; accepted receipt/outbox/cursor and T44 state remain intact.
+
+Pages are bounded at 32 candidates, 4096 linked attempts and 32 MiB of conservative
+logical native-row charges. Exact payload lengths plus bounded fixed-member/header
+allowances are counted; this is not a PostgreSQL index/MVCC/peak-memory guarantee.
+Oversize closures stay complete while a private cursor permits later work. Each
+page commits independently; a failed command explicitly says earlier pages may
+have committed and emits no speculative per-page success or event identifiers.
+
+The directly used function chains also receive module-owned path-only upgrades:
+operations migration two, lifecycle fourteen and reception four. Explicit catalog
+lookup includes temporary schema last; all earlier migration bytes and native
+business bodies/ACLs remain unchanged. Initialization resolves legacy DDL safely.
+Native body, argument, return, strictness/support and effective path checks prevent
+markers alone from authorizing drift or undeclared functions. Existing sealed
+frames, keys, result identities, leases and business records are preserved.
+
+Targeted real PostgreSQL evidence has passed for complete oversize/cursor controls
+(19.846s), exact logical 32 MiB/+1 (7.385s), sealed operations upgrade and original
+null-result OwnerReplay completion (3.887s), lifecycle safety/native-path and V1
+upgrade controls (24.103s), original reception upgrade/immutable receipt preservation
+(11.602s), and isolated temporary-type boundary regression (28.601s).
+
+All 52 selected actual event cases are verified across the initial regression and
+serial rechecks. The initial concurrent invocation failed four database/command
+cases (1363.975s); the same executable bytes passed isolated verification, then
+all four serial rechecks passed (269.705s). These include genuine original expiry
+plus two minutes (155.57s) and built-command recovery (89.80s). The full operations
+PostgreSQL package passed (546.695s). The lifecycle invocation exhausted its
+25-minute test allowance during fixture creation and found two old modified-clock
+upgrade fixtures requiring source restoration. Remaining 74 cases plus three
+rechecks passed serially (441.252s), including the final explicit drift-refusal
+and clock-restoration controls. All 154 lifecycle cases are verified across runs;
+neither initial failed invocation is described as a full pass. Product budgets
+were not relaxed. All 19 prior SQL blobs compare byte-identical to the baseline.
+
+Default full Go tests, vet/builds, module/pinned checks and client architecture/
+version checks passed. Database/provider opt-ins are skipped by default; the
+actual PostgreSQL cases above were explicitly enabled. Both independent roles
+passed the final frozen B12 code/tests/documents with no remaining required
+findings. This completes this batch; full T20 remains open.
+
+This scope does not complete accepted-data retention, full T20, multi-event public
+transport, remaining event roles, quality composition or client outbox. Copied
+capacity fixtures do not certify authentication/recovery of new attempts. Actual
+deployment, HA and cross-repository/platform E2E remain deferred. Downloads retain
+no hard total or cumulative elapsed deadline.
+Service maintenance batch commit: `083d404`.
