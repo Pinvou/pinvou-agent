@@ -10,7 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const productionOf = (src) => src.split('#[cfg(test)]')[0];
+// The production cut is anchored at the `#[cfg(test)] mod tests` boundary and
+// fails closed: scope.rs scatters test-only `#[cfg(test)] fn` items before its
+// test module, and a file with no marker at all must not degrade to scanning
+// test code as production.
+const productionOf = (src) => {
+  const idx = src.search(/#\[cfg\(test\)\]\s*mod tests\b/);
+  assert.ok(idx > 0, 'Rust source must keep its test module after the production body');
+  return src.slice(0, idx);
+};
 
 // The literal lives ONCE, in connector-ui-state.js
 // (mirroring scope::CONSENT_SYNC_FAILURE_MARKER); the three JS matchers import
@@ -22,8 +30,7 @@ const uiState = readFileSync(
 );
 const MARKER = 'persisting their default-off consent state failed';
 assert.ok(
-  uiState.includes(`export const CONSENT_SYNC_FAILURE_MARKER =\n  '${MARKER}'`)
-    || uiState.includes(`export const CONSENT_SYNC_FAILURE_MARKER = '${MARKER}'`),
+  uiState.replace(/\s+/g, ' ').includes(`export const CONSENT_SYNC_FAILURE_MARKER = '${MARKER}'`),
   'connector-ui-state.js must define the shared consent marker exactly once (update the Rust pin in the same commit if reworded)',
 );
 const store = readFileSync(
@@ -73,17 +80,8 @@ assert.strictEqual(
 const TEMPLATE_TAIL = 'new sessions will enable it by default';
 
 // (a) The template tail must exist exactly once in scope.rs PRODUCTION —
-// inside the helper. scope.rs cannot use the plain `productionOf` split
-// above: test-only items (`#[cfg(test)] fn ...` failpoints and test helpers)
-// are scattered through the file BEFORE the marker/helper region, so its
-// first `#[cfg(test)]` is not the test MODULE — anchor the production cut at
-// the module instead.
-const scopeTestsIdx = scopeSrc.search(/#\[cfg\(test\)\]\s*mod tests\b/);
-assert.ok(
-  scopeTestsIdx > 0,
-  'scope.rs must keep its test module after the production body',
-);
-const scopeProduction = scopeSrc.slice(0, scopeTestsIdx);
+// inside the shared helper.
+const scopeProduction = productionOf(scopeSrc);
 assert.ok(
   scopeProduction.split(TEMPLATE_TAIL).length - 1 === 1,
   'the consent-failure template must exist exactly once in scope.rs production — inside the shared helper',
@@ -103,31 +101,34 @@ assert.ok(
   'consent_sync_failure_message must interpolate {CONSENT_SYNC_FAILURE_MARKER} — a wording without it degrades every consent failure to the generic error code',
 );
 
-// (b) The marketplace command layer carries the post-landing consent-failure
-// channels (tool/skill/import); every one of them routes through the shared
-// helper (lower bound 1) and NONE of them may hand-roll the template — the
-// tail exists exactly once system-wide, inside the helper ((a)). A
-// hand-rolled copy (marker interpolated or not) fails here; deleting the
-// emit site drops the lower-bound leg.
+// (b)/(c) The marketplace command layer (the post-landing consent-failure
+// channels: tool/skill/import) and the skill gate route every emit site
+// through the shared helper (lower bound 1) and NONE of them may hand-roll
+// the template — the tail exists exactly once system-wide, inside the helper
+// ((a)). A hand-rolled copy (marker interpolated or not) fails here; deleting
+// the emit site drops the lower-bound leg.
+const assertRoutesThroughSharedHelper = (label, src) => {
+  const production = productionOf(src);
+  const calls = production.split('consent_sync_failure_message(').length - 1;
+  assert.ok(
+    calls >= 1,
+    `${label}.rs emit sites must route through consent_sync_failure_message (found ${calls}, expected >= 1)`,
+  );
+  const copies = production.split(TEMPLATE_TAIL).length - 1;
+  assert.ok(
+    copies === 0,
+    `${label}.rs must not hand-roll the consent-failure template (found ${copies}, expected 0) — every channel must call the shared helper`,
+  );
+};
+
+// (b) The marketplace command layer.
 const marketplaceSrc = readFileSync(
   join(root, 'src-tauri/src/app/commands/marketplace.rs'),
   'utf8',
 );
-const marketplaceProduction = productionOf(marketplaceSrc);
-const helperCalls = marketplaceProduction.split('consent_sync_failure_message(')
-  .length - 1;
-assert.ok(
-  helperCalls >= 1,
-  `marketplace.rs emit sites must route through consent_sync_failure_message (found ${helperCalls}, expected >= 1)`,
-);
-const templateCopies = marketplaceProduction.split(TEMPLATE_TAIL).length - 1;
-assert.ok(
-  templateCopies === 0,
-  `marketplace.rs must not hand-roll the consent-failure template (found ${templateCopies}, expected 0) — every channel must call the shared helper`,
-);
+assertRoutesThroughSharedHelper('marketplace', marketplaceSrc);
 
-// (c) The skill-gate channel's Rust leg: skill_gate.rs production routes its
-// emit site through the shared helper.
+// (c) The skill-gate channel's Rust leg.
 const skillGateSrc = readFileSync(join(rustDir, 'connectors/skill_gate.rs'), 'utf8');
 // Pin the Rust-side VALUE test by name — a rename or
 // rewrite that left the constant referenced only from a comment would
@@ -136,18 +137,6 @@ assert.ok(
   skillGateSrc.includes('fn skill_gate_consent_failure_message_keeps_the_frontend_marker'),
   'skill_gate.rs must keep the Rust-side value contract test this leg leans on (fn skill_gate_consent_failure_message_keeps_the_frontend_marker)',
 );
-// Grep the PRODUCTION region only (up to the test module) —
-// cut there so the leg stays exact if a Rust-side test ever reintroduces a
-// hand-built template copy inside the test module. The production region
-// must call the shared helper and must not hand-roll the template at all.
-const skillGateProduction = productionOf(skillGateSrc);
-assert.ok(
-  skillGateProduction.includes('consent_sync_failure_message('),
-  'skill_gate.rs production must route its consent-failure emit site through the shared helper',
-);
-assert.ok(
-  !skillGateProduction.includes(TEMPLATE_TAIL),
-  'skill_gate.rs production must not hand-roll the consent-failure template — call the shared helper',
-);
+assertRoutesThroughSharedHelper('skill_gate', skillGateSrc);
 
 console.log('consent_marker_frontend: ok');

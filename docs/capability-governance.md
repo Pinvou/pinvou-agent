@@ -198,25 +198,18 @@ and degrade under contention to an unlocked, never-persisting snapshot
 (engine-side per-turn reads never block on a peer; "never persisting" means no
 policy state is written — a degraded read at most creates the empty lock file
 itself on demand); the opens of both the data file and the lock file are
-hardened (on Unix `O_NOFOLLOW`/`O_NONBLOCK`, plus a
-regular-file fstat gate before any byte **on the data-file opens**, so
-FIFOs/devices/symlinks are refused there; the **lock-file** open has no
-regular-file gate — a planted FIFO that survives the open is locked on its
-own inode where flock works and fails flock where it does not, a deliberate
-platform-split outcome documented in platform/filesystem; Windows has no
-equivalent and keeps the documented profile-ACL residual — for Windows
-behavior see platform/filesystem's module docs); the hardening guards the
-final path component only — parent-directory symlinks are still followed,
+hardened (the `O_NOFOLLOW`/`O_NONBLOCK` flags, the data-file-only
+regular-file gate, the lock file's deliberate no-gate platform split, and
+the Windows profile-ACL residual are documented in platform/filesystem's
+module docs); the hardening guards the final path component only —
+parent-directory symlinks are still followed,
 the same exposure as the rest of the private home's file access — the
 cost is that a legitimate dotfile/sync setup that makes
 `disabled_bundles.json` a symlink is treated as "unreadable" (the in-memory
 over-refusal direction), and the next write renames the symlink aside into a
 preserved `.unreadable.<timestamp>` copy and recovers with a regular file;
 when the file is corrupt (a parse failure or invalid UTF-8), the locked path
-quarantines the corrupt bytes to a `*.corrupt.<timestamp>` backup and
-recovers fail-closed — the recovery flow and the quarantine backup's
-first-instance-only preservation are disclosed in §3.2's corrupt-recovery
-paragraph below, and the
+runs the corrupt-recovery flow disclosed below, and the
 sibling-evidence branch (either a `.corrupt.*` quarantine backup or an
 `.unreadable.*` preserved copy — both count) that deliberately skips the
 legacy migration in §7's sibling-evidence bullet.
@@ -464,13 +457,8 @@ new install, and the landing is governed — the cross-process window "import
 passes the gate (skips registration) → uninstall commits and clears rows →
 import lands ungoverned" on the import channel is closed. The **by-name
 catalog lane** (`install_marketplace_tool_sync` → `install_inner`) is *not*
-lease-covered: it serializes only on the process-local transaction lock,
-so a same-id catalog reinstall racing a lease-held uninstall can still run
-its known-skip gate against records the uninstall is about to clear and
-land with zero consent rows in initialized DenyAll scopes — the narrow
-same-id window is the #515 class without a startup backfill arm for MCP
-packs (round-31 review MAJOR 3; registered in §7 with its convergence
-directions).
+lease-covered — the #515-class same-id window and its convergence
+directions are registered in §7.
 
 **The import pipeline additionally refuses owner-claim-divergent ids**: a new import whose
 pack id, after `to_package_id` folding, lands on another installed claimant
@@ -525,8 +513,7 @@ the marker the pipeline takes the cross-process file lock on
 `marketplace/import_journal/<id>.landing.lock` (fd-lock, the same primitive
 as `disabled_bundles.lock`) and holds it until after the landing guard
 clears the marker; same-id cross-process imports therefore serialize on the
-lease (the shared staged `.tmp`/`.old` paths thereby gain real cross-process
-mutual exclusion — previously only in-process), and the user uninstall
+lease, and the user uninstall
 command, the retired-tool startup sweep, and the recycle-bin restore
 (restore is a same-id `bundles/<id>` writer — without the lease,
 the sweep's "record probe → directory delete" pair can delete the
@@ -617,7 +604,7 @@ boot 自写 `sessions/` 目录项、缺省补写默认 `settings.json`），因�
 上提至各宿主启动钩顶部（GUI setup、headless bridge、dump_system_prompt，
 早于一切首启自写），且判定在**首次读取时无条件落盘**（置
 `plain_defaults_migrated`）冻结——否则全新装机会被自己的首启痕迹误判为
-升级装机而翻回全开。文件损坏时不静默覆盖：先隔离为 `.corrupt.<ts>` 副本（隔离副本仅在尚无兄弟证据副本时写入——只保留**首个**损坏实例的原始字节，删除副本会重新布防隔离），
+升级装机而翻回全开。文件损坏时不静默覆盖：先隔离为 `.corrupt.<ts>` 副本（隔离副本仅在尚无兄弟证据副本时写入——只保留**首个**损坏实例的原始字节），
 再按 **fail-closed** 一次性恢复落盘——只置迁移标记（冻结为全新装机判定）、
 不初始化任何 scope，未初始化 scope 按 DenyAll 兜底（宁可恢复全关，不把
 用户显式关过的状态恢复成全开）。隔离写失败时同样不覆盖，并布防
@@ -671,7 +658,7 @@ pool/session 生命周期回收，catalog 与最终 dispatch 都继续 fail clos
   重拼系统提示（发现走 mtime 缓存，组合目录一变下一轮即失效重扫），所以禁用后
   **新轮次**不再列出该技能名、后续 `load_skill` 也读不到正文。但**已进入上下文的
   内容撤不回**——若本会话此前已 `load_skill` 读过该技能，其正文留在消息历史里，
-  模型仍记得并可能继续按其引导作答。因此供给层关闭是「体验层尽力而为」（§5.1），
+  模型仍记得并可能继续按其引导作答。因此供给层关闭是「体验层尽力而为」（§5），
   真正的保证在执行层：execpolicy deny 硬拒该技能目录内脚本的 spawn、disallowed_tools
   过滤 MCP 工具，二者不依赖上下文是否已被污染。纯引导型技能（无脚本）在已被读入
   后无法从模型记忆里擦除，这是 LLM 上下文的固有边界，记录为已知限制。
