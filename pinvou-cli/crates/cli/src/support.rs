@@ -473,14 +473,15 @@ pub fn collapse_control_characters(value: &str) -> String {
 /// column but would destroy the layout of the very content the caller asked
 /// to read — a document legitimately spans many lines and indents code
 /// blocks. So newline and tab survive, and everything else in the C0/C1
-/// control range collapses to a space. What this keeps out is the
+/// control range collapses to a space (`char::is_control` plus the
+/// `is_row_unsafe_char` set). What this keeps out is the
 /// attacker-controlled part: ESC (terminal escape sequences — cursor
 /// moves, colour, window-title rewrites, and on some terminals clipboard or
 /// response injection), CR (redraws the current line), BEL, and the
 /// remaining C0/DEL noise, from content the model or a tool wrote.
 ///
 /// What the block sanitizer neutralises beyond `char::is_control`: the same
-/// bidi-override/isolate and zero-width set [`is_row_unsafe_char`] carries.
+/// bidi-override/isolate and zero-width set `is_row_unsafe_char` carries.
 /// The round-27 review found blocks kept those intact — a hostile
 /// `.md`/diff rendered by `artifacts read`, `code workspace preview/diff`,
 /// `agent run` or `personas show` could still visually reorder its own
@@ -488,10 +489,7 @@ pub fn collapse_control_characters(value: &str) -> String {
 /// already neutralised the identical set, because a row is just as
 /// reorderable as a block. Newline and tab still survive: they are layout,
 /// not spoofing.
-fn is_block_unsafe_char(ch: char) -> bool {
-    ch.is_control() || is_row_unsafe_char(ch)
-}
-
+///
 /// JSON mode needs no equivalent — `serde_json` escapes everything below
 /// 0x20 — so this stays strictly a human-rendering choice and the stored
 /// file and the JSON payload keep the verbatim bytes.
@@ -500,7 +498,7 @@ pub fn collapse_block_control_characters(value: &str) -> String {
         .chars()
         .map(|ch| match ch {
             '\n' | '\t' => ch,
-            _ if is_block_unsafe_char(ch) => ' ',
+            _ if ch.is_control() || is_row_unsafe_char(ch) => ' ',
             _ => ch,
         })
         .collect()
@@ -1735,8 +1733,7 @@ pub(crate) mod test_support {
         /// Creates `<temp>/pinvou-cli-{label}-{pid}-{nanos}` and points
         /// `PINVOU3_HOME` at it. The pid+nanos suffix makes concurrent test
         /// binaries and retried runs unable to collide on the directory.
-        /// Every caller is a product-backend-gated test; featureless test
-        /// builds only reach [`TempHome::at`].
+        /// Featureless test builds only reach [`TempHome::at`].
         #[cfg_attr(not(feature = "product-backend"), allow(dead_code))]
         pub(crate) fn new(label: &str) -> Self {
             let root = std::env::temp_dir().join(format!(

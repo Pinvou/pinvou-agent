@@ -118,16 +118,18 @@
 //!
 //! Pure storage only: no Tauri host, no engine, no async runtime.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::support::{collapse_control_characters, render, require_yes, sandbox_home, success};
+use crate::support::{
+    collapse_control_characters, family_option, render, require_yes, sandbox_home, success,
+};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
     ConnectorScope, MarketplaceManager,
     builtin::is_builtin_tool,
-    bundle::{BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
+    bundle::{BundleInfo, BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
     load_disabled_bundles_for, package_export, plugin_import, recycle_bin,
     save_disabled_bundles_for,
     scope::{
@@ -135,7 +137,7 @@ use pinvou3_lib::features::marketplace::{
         remove_bundle_from_disabled_scopes_exact, resolve_pack_owner_id,
         set_project_skills_enabled, to_package_id_with,
     },
-    skill_marketplace::SkillMarketplaceManager,
+    skill_marketplace::{SkillMarketplaceManager, read_skill_name_from_str, sanitize_skill_name},
     store::{BundleSource, BundleStore},
     sync_deny_all_scopes_after_install,
 };
@@ -206,6 +208,8 @@ pub enum PluginsCommand {
     },
     ToolsOauthLogin {
         id: String,
+        // Parsed (and positively validated) for argv compatibility; there is
+        // no login to time out, so nothing reads it after parsing.
         timeout: Option<u64>,
     },
     ToolsOauthCancel {
@@ -295,14 +299,14 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
             let (options, _) = parse_flags(&rest[1..], EXPORT_OPTIONS, &[])?;
             Ok(PluginsCommand::Export {
                 id,
-                output: option(&options, "--output").map(PathBuf::from),
+                output: family_option(&options, "--output").map(PathBuf::from),
             })
         }
         "meta" => {
             let id = require_id(rest.first())?;
             let (options, _) = parse_flags(&rest[1..], META_OPTIONS, &[])?;
-            let name = option(&options, "--name").map(str::to_owned);
-            let description = option(&options, "--description").map(str::to_owned);
+            let name = family_option(&options, "--name").map(str::to_owned);
+            let description = family_option(&options, "--description").map(str::to_owned);
             if name.is_none() && description.is_none() {
                 return Err(CliError::usage(
                     "plugins meta requires --name N and/or --description D",
@@ -322,7 +326,7 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
         "enable" | "disable" => {
             let id = require_id(rest.first())?;
             let (options, _) = parse_flags(&rest[1..], SCOPE_OPTIONS, &[])?;
-            let scope = match option(&options, "--scope") {
+            let scope = match family_option(&options, "--scope") {
                 None => ScopeArg::Both,
                 Some(value) => ScopeArg::parse(value)?,
             };
@@ -400,7 +404,8 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         "oauth-login" => {
             let id = require_id(tail.first())?;
             let (options, _) = parse_flags(&tail[1..], TOOLS_OAUTH_LOGIN_OPTIONS, &[])?;
-            let timeout = parse_positive(&options, "--timeout")?;
+            let timeout =
+                crate::support::parse_family_positive::<u64>(&options, "--timeout", "plugins")?;
             Ok(PluginsCommand::ToolsOauthLogin { id, timeout })
         }
         "oauth-cancel" => {
@@ -486,7 +491,7 @@ fn parse_recycle(rest: &[String]) -> Result<PluginsCommand, CliError> {
             let (options, _) = parse_flags(&tail[1..], EXPORT_OPTIONS, &[])?;
             Ok(PluginsCommand::RecycleExport {
                 id,
-                output: option(&options, "--output").map(PathBuf::from),
+                output: family_option(&options, "--output").map(PathBuf::from),
             })
         }
         _ => Err(CliError::usage(RECYCLE_USAGE)),
@@ -584,14 +589,6 @@ fn parse_flags<'a>(
     boolean_flags: &[&str],
 ) -> Result<crate::support::FamilyFlags<'a>, CliError> {
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "plugins")
-}
-
-fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
-    crate::support::family_option(options, name)
-}
-
-fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<u64>, CliError> {
-    crate::support::parse_family_positive::<u64>(options, name, "plugins")
 }
 
 fn feature_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliError {
@@ -712,7 +709,7 @@ pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome
         PluginsCommand::ToolsInstall { id, secrets } => tools_install(&id, &secrets, output),
         PluginsCommand::ToolsUninstall { id, yes } => tools_uninstall(&id, yes, output),
         PluginsCommand::ToolsAuth { id } => tools_auth(&id, output),
-        PluginsCommand::ToolsOauthLogin { id, timeout } => tools_oauth_login(&id, timeout, output),
+        PluginsCommand::ToolsOauthLogin { id, .. } => Err(tools_oauth_login(&id)),
         PluginsCommand::ToolsOauthCancel { id } => tools_oauth_cancel(&id, output),
         PluginsCommand::SkillsList { installed_only } => skills_list(installed_only, output),
         PluginsCommand::SkillsInstall { id } => skills_install(&id, output),
@@ -1229,33 +1226,27 @@ fn mcp_server_entry_matches_typed_shape(entry: &serde_json::Value) -> bool {
     })
 }
 
-/// Degrading variant for `tools auth`: a status READ must not turn a damaged
-/// `mcp.json` into exit 1. The GUI's `get_marketplace_tool_auth_status` logs
-/// the failure and continues with `mcp_configured = false` (which yields
-/// `auth_pending`), so the CLI does the same and writes the reason to stderr
-/// instead of dropping it. `oauth-login` deliberately keeps the strict reader:
-/// its GUI counterpart (`start_marketplace_tool_oauth_login`) propagates the
-/// parse error too, because it is about to ACT on that config.
-fn mcp_json_servers_lenient(context: &str) -> Option<serde_json::Value> {
-    match read_mcp_json_servers(context) {
-        Ok(servers) => servers,
-        Err(error) => {
-            note!("[plugins] {error}; reporting the MCP config as not installed");
-            None
-        }
-    }
-}
-
 fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let mgr = MarketplaceManager::new();
     let installed = mgr.installed_ids().iter().any(|tool| tool == id);
     let server_name = mgr.oauth_remote_server_name(id);
     let oauth_required = server_name.is_some();
     let mut mcp_configured = false;
-    if let Some(name) = server_name.as_deref()
-        && let Some(servers) = mcp_json_servers_lenient("auth")
-    {
-        mcp_configured = servers.get(name).is_some();
+    // Lenient read: a status READ must not turn a damaged `mcp.json` into
+    // exit 1. The GUI's `get_marketplace_tool_auth_status` logs the failure
+    // and continues with `mcp_configured = false` (which yields
+    // `auth_pending`), so the CLI does the same and writes the reason to
+    // stderr instead of dropping it. (`oauth-login` deliberately keeps the
+    // strict reader: its GUI counterpart propagates the parse error too,
+    // because it is about to ACT on that config.)
+    if let Some(name) = server_name.as_deref() {
+        match read_mcp_json_servers("auth") {
+            Ok(Some(servers)) => mcp_configured = servers.get(name).is_some(),
+            Ok(None) => {}
+            Err(error) => {
+                note!("[plugins] {error}; reporting the MCP config as not installed");
+            }
+        }
     }
     // The foundation keeps OAuth tokens in its own credential-store namespace;
     // the CLI cannot read them, so token presence is conservative.
@@ -1295,32 +1286,35 @@ fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &value)))
 }
 
-fn tools_oauth_login(
-    id: &str,
-    // Accepted for argv compatibility; there is no login to time out.
-    _timeout: Option<u64>,
-    _output: OutputMode,
-) -> Result<CliOutcome, CliError> {
-    // Same guards as the GUI `start_marketplace_tool_oauth_login`.
+/// The guards are the GUI `start_marketplace_tool_oauth_login`'s (the tool
+/// must declare a remote OAuth server present in `mcp.json`); the login flow
+/// itself always refuses headless, so this returns the command's error
+/// directly instead of an outcome that could never be `Ok`.
+fn tools_oauth_login(id: &str) -> CliError {
     let mgr = MarketplaceManager::new();
-    let server_name = mgr.oauth_remote_server_name(id).ok_or_else(|| {
-        CliError::failed(format!(
-            "plugins tools oauth-login({id}): tool does not declare a remote MCP OAuth login"
-        ))
-    })?;
+    let server_name = match mgr.oauth_remote_server_name(id) {
+        Some(server_name) => server_name,
+        None => {
+            return CliError::failed(format!(
+                "plugins tools oauth-login({id}): tool does not declare a remote MCP OAuth login"
+            ));
+        }
+    };
     // The lookup IS the guard: a declared server missing from mcp.json
     // refuses here, and the resolved entry has no further consumer — the
     // login flow it would feed lives in the foundation crate (refused below).
-    read_mcp_json_servers("oauth-login")?
-        .and_then(|servers| servers.get(&server_name).cloned())
-        .ok_or_else(|| {
-            CliError::failed(format!(
-                "plugins tools oauth-login({id}): mcp.json has no server '{server_name}'"
-            ))
-        })?;
-    Err(CliError::failed(
+    let present = match read_mcp_json_servers("oauth-login") {
+        Ok(servers) => servers.is_some_and(|servers| servers.get(&server_name).is_some()),
+        Err(error) => return error,
+    };
+    if !present {
+        return CliError::failed(format!(
+            "plugins tools oauth-login({id}): mcp.json has no server '{server_name}'"
+        ));
+    }
+    CliError::failed(
         "oauth_login_unavailable_in_cli: the MCP OAuth login flow (PKCE + local callback + token persistence) lives in the CodeWhale foundation crate, which the pinvou CLI does not link; complete the interactive grant in the desktop app, or configure the credential with 'pinvou plugins tools install --secret KEY=ENV_VAR_NAME'",
-    ))
+    )
 }
 
 fn tools_oauth_cancel(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1525,7 +1519,7 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
                 path.display()
             ))
         })?;
-        if frontmatter_name(&skill_md).is_none() {
+        if read_skill_name_from_str(&skill_md).is_none() {
             // The RAW name, not the sanitized form: the anti-collision branch
             // inside wrap_markdown_skill hashes it, so directories whose
             // names sanitize to the same generic "skill" (any pure non-ASCII
@@ -1695,7 +1689,7 @@ fn reserve_export_destination(
     id: &str,
     dest: &Path,
     action: &str,
-) -> Result<Option<std::path::PathBuf>, CliError> {
+) -> Result<Option<PathBuf>, CliError> {
     // Some(parent) when THIS call created the parent directory (the
     // NotFound recovery path) — the failure cleanup may then remove that
     // self-created empty directory, never one the caller already had.
@@ -2074,187 +2068,8 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
     let credential_store = SystemCredentialStore::new();
     let rows = registry
         .list_bundles()
-        .into_iter()
-        .map(|bundle| {
-            // Credential presence is only consulted for installed bundles:
-            // a fresh read-only CLI run (nothing installed) must never touch
-            // the OS keyring. Uninstalled bundles report the same
-            // `missing_credentials` reason the GUI derives for absent
-            // credentials.
-            //
-            // ima is the exception judged ABOVE this gate: its credentials
-            // live in the ima secret namespace and feed the gui-parity branch
-            // below, so they are read on every readiness run regardless of
-            // the store record (a GUI-connected ima has credentials present
-            // even when no bundle record exists yet).
-            // ima mirrors the GUI's `bundle_readiness` ima arm instead of the
-            // registry branch: ready = ima_status's `connected` (credentials
-            // AND companion skill), credentials judged first, installed =
-            // credentials OR skill — the registry's `IMA_CLIENT_ID`/
-            // `IMA_API_KEY` lookup is the wrong namespace and would report
-            // `missing_credentials` for a connected ima.
-            // Every row carries the same six pinned keys (the JSON shape must
-            // not vary by kind), so both branches below build through this
-            // one local literal.
-            let row = |id: &str,
-                       kind: &str,
-                       installed: bool,
-                       ready: bool,
-                       reason: &Option<String>,
-                       probe: &str| {
-                serde_json::json!({
-                    "bundle_id": id,
-                    "kind": kind,
-                    "installed": installed,
-                    "ready": ready,
-                    "reason": reason,
-                    "probe": probe,
-                })
-            };
-            if bundle.kind == BundleKind::Skill && bundle.id == "ima" {
-                let (credentials_present, skill_installed, store_unavailable) =
-                    ima_readiness_parts(&credential_store);
-                let ready = credentials_present && skill_installed;
-                let reason = if ready {
-                    None
-                } else if store_unavailable {
-                    // The store could not answer; the row's verdict is not a
-                    // credential fact (round-38 review degrade).
-                    Some("credential_store_unavailable".to_owned())
-                } else if !credentials_present {
-                    Some("missing_credentials".to_owned())
-                } else {
-                    Some(REASON_IMA_SKILL_NOT_INSTALLED.to_owned())
-                };
-                let kind = enum_label(&bundle.kind);
-                return Ok(row(
-                    &bundle.id,
-                    &kind,
-                    credentials_present || skill_installed,
-                    ready,
-                    &reason,
-                    PROBE_REGISTRY,
-                ));
-            }
-            let bundle_id = bundle.id.clone();
-            // The credential reads are fallible for INSTALLED bundles,
-            // mirroring `ima_readiness_parts`' rule one screen above: a
-            // credential-store READ failure is "unavailable", a different
-            // fact from "missing" — folding it into `missing_credentials`
-            // would tell the user to re-enter credentials when the fixable
-            // problem is the store. Every referenced credential is read once
-            // up front so a store failure surfaces as the lane's error
-            // instead of a fabricated `missing_credentials` row.
-            let mut resolved_credentials = Vec::new();
-            // The verdict consults REQUIRED credentials only (bundle.rs's
-            // missing-required filter; the GUI's pre-read does the same), so
-            // an optional credential is never touched here: a store failure
-            // or a first-touch keyring prompt for a secret the verdict never
-            // reads would fail or interrupt the command for nothing.
-            // Round-40 review: one keyring touch per UNIQUE key, mirroring
-            // the GUI's `bundle_readiness_with_store` pre-read (which
-            // dedupes by key before reading). A manifest declaring one key
-            // with multiple targets made the CLI read the same secret twice
-            // — an extra OS-keyring touch (a possible macOS access prompt)
-            // the GUI never makes. The first declaration wins, the same
-            // find-first semantics the `lookup` closure below keeps.
-            let mut seen_keys: Vec<&str> = Vec::new();
-            let required_specs: Vec<_> = bundle
-                .credentials
-                .iter()
-                .filter(|spec| spec.required)
-                .filter(|spec| {
-                    if seen_keys.contains(&spec.key.as_str()) {
-                        false
-                    } else {
-                        seen_keys.push(&spec.key);
-                        true
-                    }
-                })
-                .collect();
-            for spec in required_specs {
-                let present = if !bundle.installed {
-                    false
-                } else {
-                    let reference = CredentialReference::for_mcp_secret(
-                        &bundle_id,
-                        keyring_target(spec.target),
-                        &spec.key,
-                    );
-                    // A per-row keyring READ error degrades this row, not the
-                    // whole command: the GUI's `_` arm folds read errors to
-                    // absent (`missing_credentials`) and keeps serving every
-                    // other card — one corrupted keychain entry must not hide
-                    // every other row's verdict. The degrade keeps the
-                    // fail-closed direction (a present key the store cannot
-                    // answer counts as absent, never the reverse).
-                    match credential_store.get(&reference) {
-                        Ok(value) => value.is_some(),
-                        Err(error) => {
-                            note!(
-                                "[plugins] readiness {}: credential store read failed \
-                                 (reporting the credential as absent): {}",
-                                bundle_id,
-                                error.user_message()
-                            );
-                            false
-                        }
-                    }
-                };
-                resolved_credentials.push((spec.key.clone(), present));
-            }
-            let lookup = |key: &str| {
-                resolved_credentials
-                    .iter()
-                    .find(|(name, _)| name == key)
-                    .is_some_and(|(_, present)| *present)
-            };
-            let (registry_ready, registry_reason) = match readiness_for(&bundle, lookup) {
-                Readiness::Ready => (true, None),
-                Readiness::NotReady(reason) => (false, Some(reason.to_owned())),
-            };
-            // A CLI connector's readiness IS its connection state: the desktop
-            // answers it from a live `*_status` probe (`bundle_readiness`'s Cli
-            // arm, `connected = connected_of(&status)`), which needs the
-            // connector runtime this crate does not link. `readiness_for`'s
-            // headless fallback only sees registry facts — installed, and its
-            // assets verify — and a logged-out feishu satisfies both. Passing
-            // that through as `ready: true` would be a false positive against
-            // the GUI's `not_connected`, so the headless surface never claims a
-            // CLI bundle is ready: it reports the conservative `false` plus a
-            // reason and a probe marker naming the limitation, the same
-            // disclosure shape `tools auth` uses for `oauth_token_present` /
-            // `token_check`. Registry-visible negatives (`cli_not_installed`,
-            // `cli_disconnected`, `cli_assets_mismatch`) are facts the CLI
-            // really did observe and pass through unchanged — only their probe
-            // marker records that a connection check was still not performed.
-            let (ready, reason, probe) = if bundle.kind == BundleKind::Cli {
-                let reason = registry_reason.or_else(|| Some(REASON_CONNECTION_UNKNOWN.to_owned()));
-                (false, reason, PROBE_UNAVAILABLE_IN_CLI)
-            } else if registry_ready && bundle.degraded.is_some() {
-                // Headless-only demotion (see REASON_ASSETS_MISSING): the
-                // registry has nothing else against the package, but the store
-                // says its assets are gone. Still `probe: "registry"` — the
-                // verdict is fully decided from registry state, no live probe
-                // was skipped.
-                (
-                    false,
-                    Some(REASON_ASSETS_MISSING.to_owned()),
-                    PROBE_REGISTRY,
-                )
-            } else {
-                (registry_ready, registry_reason, PROBE_REGISTRY)
-            };
-            let kind = enum_label(&bundle.kind);
-            Ok(row(
-                &bundle.id,
-                &kind,
-                bundle.installed,
-                ready,
-                &reason,
-                probe,
-            ))
-        })
+        .iter()
+        .map(|bundle| readiness_row_for_bundle(bundle, &credential_store))
         .collect::<Result<Vec<_>, CliError>>()?;
     let value = serde_json::json!({ "bundles": rows });
     let human = rows
@@ -2276,6 +2091,177 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
         .collect::<Vec<_>>()
         .join("\n");
     Ok(success(render(output, human, &value)))
+}
+
+/// Every `plugins readiness` row carries the same six pinned keys (the JSON
+/// shape must not vary by kind), so both branches of the per-bundle verdict
+/// build through this one literal.
+fn readiness_row(
+    id: &str,
+    kind: &str,
+    installed: bool,
+    ready: bool,
+    reason: &Option<String>,
+    probe: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "bundle_id": id,
+        "kind": kind,
+        "installed": installed,
+        "ready": ready,
+        "reason": reason,
+        "probe": probe,
+    })
+}
+
+/// One row's verdict. Credential presence is only consulted for installed
+/// bundles: a fresh read-only CLI run (nothing installed) must never touch
+/// the OS keyring. Uninstalled bundles report the same `missing_credentials`
+/// reason the GUI derives for absent credentials. ima is the exception judged
+/// ABOVE that gate: its credentials live in the ima secret namespace and are
+/// read on every readiness run regardless of the store record (a
+/// GUI-connected ima has credentials present even when no bundle record
+/// exists yet), and it mirrors the GUI's `bundle_readiness` ima arm instead
+/// of the registry branch — see [`ima_readiness_parts`].
+fn readiness_row_for_bundle(
+    bundle: &BundleInfo,
+    credential_store: &SystemCredentialStore,
+) -> Result<serde_json::Value, CliError> {
+    if bundle.kind == BundleKind::Skill && bundle.id == "ima" {
+        let (credentials_present, skill_installed, store_unavailable) =
+            ima_readiness_parts(credential_store);
+        let ready = credentials_present && skill_installed;
+        let reason = if ready {
+            None
+        } else if store_unavailable {
+            // The store could not answer; the row's verdict is not a
+            // credential fact (round-38 review degrade).
+            Some("credential_store_unavailable".to_owned())
+        } else if !credentials_present {
+            Some("missing_credentials".to_owned())
+        } else {
+            Some(REASON_IMA_SKILL_NOT_INSTALLED.to_owned())
+        };
+        let kind = enum_label(&bundle.kind);
+        return Ok(readiness_row(
+            &bundle.id,
+            &kind,
+            credentials_present || skill_installed,
+            ready,
+            &reason,
+            PROBE_REGISTRY,
+        ));
+    }
+    let bundle_id = bundle.id.clone();
+    // The credential reads are fallible for INSTALLED bundles,
+    // mirroring `ima_readiness_parts`' rule one branch above: a
+    // credential-store READ failure is "unavailable", a different
+    // fact from "missing" — folding it into `missing_credentials`
+    // would tell the user to re-enter credentials when the fixable
+    // problem is the store. Every referenced credential is read once
+    // up front so a store failure surfaces as the lane's error
+    // instead of a fabricated `missing_credentials` row.
+    let mut resolved_credentials = Vec::new();
+    // The verdict consults REQUIRED credentials only (bundle.rs's
+    // missing-required filter; the GUI's pre-read does the same), so
+    // an optional credential is never touched here: a store failure
+    // or a first-touch keyring prompt for a secret the verdict never
+    // reads would fail or interrupt the command for nothing.
+    // Round-40 review: one keyring touch per UNIQUE key, mirroring
+    // the GUI's `bundle_readiness_with_store` pre-read (which
+    // dedupes by key before reading). A manifest declaring one key
+    // with multiple targets made the CLI read the same secret twice
+    // — an extra OS-keyring touch (a possible macOS access prompt)
+    // the GUI never makes. The first declaration wins, the same
+    // find-first semantics the `lookup` closure below keeps.
+    let mut seen_keys = HashSet::new();
+    let required_specs: Vec<_> = bundle
+        .credentials
+        .iter()
+        .filter(|spec| spec.required && seen_keys.insert(spec.key.as_str()))
+        .collect();
+    for spec in required_specs {
+        let present = if !bundle.installed {
+            false
+        } else {
+            let reference = CredentialReference::for_mcp_secret(
+                &bundle_id,
+                keyring_target(spec.target),
+                &spec.key,
+            );
+            // A per-row keyring READ error degrades this row, not the
+            // whole command: the GUI's `_` arm folds read errors to
+            // absent (`missing_credentials`) and keeps serving every
+            // other card — one corrupted keychain entry must not hide
+            // every other row's verdict. The degrade keeps the
+            // fail-closed direction (a present key the store cannot
+            // answer counts as absent, never the reverse).
+            match credential_store.get(&reference) {
+                Ok(value) => value.is_some(),
+                Err(error) => {
+                    note!(
+                        "[plugins] readiness {}: credential store read failed \
+                         (reporting the credential as absent): {}",
+                        bundle_id,
+                        error.user_message()
+                    );
+                    false
+                }
+            }
+        };
+        resolved_credentials.push((spec.key.clone(), present));
+    }
+    let lookup = |key: &str| {
+        resolved_credentials
+            .iter()
+            .find(|(name, _)| name == key)
+            .is_some_and(|(_, present)| *present)
+    };
+    let (registry_ready, registry_reason) = match readiness_for(bundle, lookup) {
+        Readiness::Ready => (true, None),
+        Readiness::NotReady(reason) => (false, Some(reason.to_owned())),
+    };
+    // A CLI connector's readiness IS its connection state: the desktop
+    // answers it from a live `*_status` probe (`bundle_readiness`'s Cli
+    // arm, `connected = connected_of(&status)`), which needs the
+    // connector runtime this crate does not link. `readiness_for`'s
+    // headless fallback only sees registry facts — installed, and its
+    // assets verify — and a logged-out feishu satisfies both. Passing
+    // that through as `ready: true` would be a false positive against
+    // the GUI's `not_connected`, so the headless surface never claims a
+    // CLI bundle is ready: it reports the conservative `false` plus a
+    // reason and a probe marker naming the limitation, the same
+    // disclosure shape `tools auth` uses for `oauth_token_present` /
+    // `token_check`. Registry-visible negatives (`cli_not_installed`,
+    // `cli_disconnected`, `cli_assets_mismatch`) are facts the CLI
+    // really did observe and pass through unchanged — only their probe
+    // marker records that a connection check was still not performed.
+    let (ready, reason, probe) = if bundle.kind == BundleKind::Cli {
+        let reason = registry_reason.or_else(|| Some(REASON_CONNECTION_UNKNOWN.to_owned()));
+        (false, reason, PROBE_UNAVAILABLE_IN_CLI)
+    } else if registry_ready && bundle.degraded.is_some() {
+        // Headless-only demotion (see REASON_ASSETS_MISSING): the
+        // registry has nothing else against the package, but the store
+        // says its assets are gone. Still `probe: "registry"` — the
+        // verdict is fully decided from registry state, no live probe
+        // was skipped.
+        (
+            false,
+            Some(REASON_ASSETS_MISSING.to_owned()),
+            PROBE_REGISTRY,
+        )
+    } else {
+        (registry_ready, registry_reason, PROBE_REGISTRY)
+    };
+    let kind = enum_label(&bundle.kind);
+    Ok(readiness_row(
+        &bundle.id,
+        &kind,
+        bundle.installed,
+        ready,
+        &reason,
+        probe,
+    ))
 }
 
 fn set_enabled(
@@ -2692,9 +2678,11 @@ fn collect_directory_entries(
 /// Mirrors the GUI `import_skill_md_content` fallback: a `.md` file with no
 /// frontmatter `name` gets a deterministic `skill-<fnv1a(stem)>` name
 /// injected as minimal frontmatter; files that already declare `name` are
-/// imported unchanged.
+/// imported unchanged. The name reader and sanitizer are the app's own lib
+/// functions (round-41 review: re-exported instead of hand mirrors, so a
+/// frontmatter-rule change lands here with the GUI).
 fn wrap_markdown_skill(content: &str, filename: &str) -> String {
-    if frontmatter_name(content).is_some() {
+    if read_skill_name_from_str(content).is_some() {
         return content.to_owned();
     }
     let stem = filename
@@ -2703,33 +2691,17 @@ fn wrap_markdown_skill(content: &str, filename: &str) -> String {
         .unwrap_or(filename);
     let sanitized = sanitize_skill_name(stem);
     let fallback = if sanitized == "skill" && !stem.is_empty() {
-        format!("skill-{}", stable_stem_hash(stem))
+        // Deterministic, cross-platform id derivation for non-sanitizable
+        // file names — the GUI's FNV-1a digest: names that all sanitize to
+        // the generic "skill" still get distinct `skill-<hash>` ids.
+        format!(
+            "skill-{:016x}",
+            pinvou3_lib::platform::paths::fnv1a64(stem.as_bytes())
+        )
     } else {
         sanitized
     };
     format!("---\nname: {fallback}\n---\n\n{content}")
-}
-
-/// Frontmatter `name:` from a leading `---` block — the app pipeline's own
-/// reader (round-41 review: re-exported instead of a hand mirror, so a
-/// frontmatter-rule change lands here with the GUI).
-fn frontmatter_name(content: &str) -> Option<String> {
-    pinvou3_lib::features::marketplace::skill_marketplace::read_skill_name_from_str(content)
-}
-
-/// `[A-Za-z0-9_-]`, other characters collapse to `-`, trimmed, max 64 chars,
-/// empty → "skill" — the app's sanitizer directly (round-41 review).
-fn sanitize_skill_name(name: &str) -> String {
-    pinvou3_lib::features::marketplace::skill_marketplace::sanitize_skill_name(name)
-}
-
-/// Deterministic, cross-platform stable id derivation for non-sanitizable
-/// file names — the GUI's FNV-1a digest, shared (round-41 review).
-fn stable_stem_hash(stem: &str) -> String {
-    format!(
-        "{:016x}",
-        pinvou3_lib::platform::paths::fnv1a64(stem.as_bytes())
-    )
 }
 
 /// CRC-32 (IEEE 802.3, reflected), bitwise — enough for a handful of small

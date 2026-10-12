@@ -319,28 +319,24 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
                 &["--code-stdin"],
                 "login",
             )?;
-            let sources = [
-                option(&options, "--code").is_some(),
-                option(&options, "--code-env").is_some(),
-                booleans.contains(&"--code-stdin"),
-            ];
+            let arg = option(&options, "--code");
+            let env = option(&options, "--code-env");
+            let stdin = booleans.contains(&"--code-stdin");
+            let sources = [arg.is_some(), env.is_some(), stdin];
             if sources.iter().filter(|present| **present).count() > 1 {
                 return Err(CliError::usage(
                     "use only one of --code, --code-env, or --code-stdin",
                 ));
             }
-            let code = if sources[0] {
-                Some(LoginCodeSource::Arg(
-                    option(&options, "--code").unwrap_or_default().to_owned(),
-                ))
-            } else if sources[1] {
+            let code = if let Some(value) = arg {
+                Some(LoginCodeSource::Arg(value.to_owned()))
+            } else if let Some(var) = env {
                 // Round-44 review: the value is an env-var NAME; a pasted
                 // literal must be refused at parse time, not echoed back by
                 // a later not-set error.
-                let var = option(&options, "--code-env").unwrap_or_default();
                 crate::support::ensure_env_var_name("--code-env", var)?;
                 Some(LoginCodeSource::Env(var.to_owned()))
-            } else if sources[2] {
+            } else if stdin {
                 Some(LoginCodeSource::Stdin)
             } else {
                 None
@@ -462,9 +458,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 return Err(CliError::usage("code providers add requires --base-url"));
             }
             let model_slots = parse_model_slot_pairs(&repeated, "providers add")?;
-            if let Some(wire) = option(&options, "--wire-api") {
-                parse_wire_api_value(Some(wire))?;
-            }
+            parse_wire_api_value(option(&options, "--wire-api"))?;
             if flags.contains(&"--api-key-stdin") && options.contains_key("--api-key-env") {
                 return Err(CliError::usage(
                     "use only one of --api-key-env or --api-key-stdin",
@@ -517,9 +511,7 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
                 ));
             }
             let agent = require_agent(options.get(AGENT).copied(), &providers_usage())?;
-            if let Some(wire) = option(&options, "--wire-api") {
-                parse_wire_api_value(Some(wire))?;
-            }
+            parse_wire_api_value(option(&options, "--wire-api"))?;
             if flags.contains(&"--api-key-stdin") && options.contains_key("--api-key-env") {
                 return Err(CliError::usage(
                     "use only one of --api-key-env or --api-key-stdin",
@@ -1502,6 +1494,14 @@ struct AgentProbe {
     authenticated: bool,
 }
 
+impl AgentProbe {
+    /// The installed verdict both the JSON and human renders report: the
+    /// binary was found AND passes the version gate.
+    fn installed(&self) -> bool {
+        self.cli_path.is_some() && self.version_supported
+    }
+}
+
 /// Mirror of `install::agent_cli_names`: the per-agent Windows candidate
 /// order — codex's npm `.cmd` shim wins there, the native runtimes prefer
 /// their `.exe`; Unix installs a single unadorned name.
@@ -1780,12 +1780,6 @@ fn is_version_candidate(token: &str) -> bool {
         .is_some_and(|head| !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Whether `codex_version_token` has a real digit-headed token to find —
-/// the fallback-free precondition for treating probed output as a version.
-fn codex_output_has_version_token(version: &str) -> bool {
-    version.split_whitespace().any(is_version_candidate)
-}
-
 /// Mirror of `runtime::parse_codex_version_output`: codex prints a
 /// package-prefixed line ("codex-cli 0.146.0"), so the version is the first
 /// whitespace token whose dot/dash/plus-separated head is all digits.
@@ -1796,14 +1790,15 @@ fn codex_version_token(version: &str) -> &str {
         .unwrap_or(version)
 }
 
-/// A codex `--version` whose output carries no digit-headed token is a
+/// A codex `--version` whose output carries no digit-headed token (the
+/// fallback-free precondition for treating probed output as a version) is a
 /// banner, not a version: classify the probe as failed (the GUI's
 /// `parse_codex_version_output` drops such a candidate outright) instead of
 /// letting the token fallback masquerade the banner as an installed version
 /// and read the row as the misleading "version-too-old".
 fn classify_codex_probe(probe: VersionProbe) -> VersionProbe {
     match probe {
-        VersionProbe::Version(text) if !codex_output_has_version_token(&text) => {
+        VersionProbe::Version(text) if !text.split_whitespace().any(is_version_candidate) => {
             VersionProbe::Failed
         }
         other => other,
@@ -2088,6 +2083,32 @@ fn kimi_data_root() -> PathBuf {
     pinvou3_lib::platform::paths::user_home_dir().join(".kimi-code")
 }
 
+/// The per-agent authentication probe shared by the `agents` renders and the
+/// post-login re-check: env credentials / vendor status for the resolved
+/// binary. No binary, no authentication.
+fn agent_authenticated(agent: &str, cli_path: Option<&Path>) -> bool {
+    match cli_path {
+        Some(path) => match agent {
+            "codex" => codex_authenticated(path),
+            "claude" => claude_authenticated(path),
+            "kimi" => kimi_authenticated(),
+            _ => false,
+        },
+        None => false,
+    }
+}
+
+/// The agent's minimum version from the imported `MIN_VERSIONS` table. The
+/// fallback never fires for the codex|claude|kimi the parse gate admits; a
+/// catalog entry outside the table must still render a row.
+fn min_version_for(agent: &str) -> &'static str {
+    MIN_VERSIONS
+        .iter()
+        .find(|(id, _)| *id == agent)
+        .map(|(_, min)| *min)
+        .unwrap_or("0.0.0")
+}
+
 fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
     // The codex override gate hands back the verdict it already produced for
     // this exact binary, so the same `--version` is never spawned twice;
@@ -2107,24 +2128,11 @@ fn probe_agent(agent: &str, agent_name: &str) -> AgentProbe {
         Some(VersionProbe::Version(text)) => Some(text.clone()),
         _ => None,
     };
-    let min_version = MIN_VERSIONS
-        .iter()
-        .find(|(id, _)| *id == agent)
-        .map(|(_, min)| *min)
-        .unwrap_or("0.0.0");
+    let min_version = min_version_for(agent);
     let version_supported = version
         .as_deref()
-        .map(|version| version_supported_for(agent, version, min_version))
-        .unwrap_or(false);
-    let authenticated = match cli_path.as_deref() {
-        Some(path) => match agent {
-            "codex" => codex_authenticated(path),
-            "claude" => claude_authenticated(path),
-            "kimi" => kimi_authenticated(),
-            _ => false,
-        },
-        None => false,
-    };
+        .is_some_and(|version| version_supported_for(agent, version, min_version));
+    let authenticated = agent_authenticated(agent, cli_path.as_deref());
     AgentProbe {
         agent_id: agent.to_owned(),
         agent_name: agent_name.to_owned(),
@@ -2151,11 +2159,7 @@ fn probe_all_agents() -> Vec<AgentProbe> {
     // while reading as `version_probe_failed` instead of aborting the whole
     // listing or fabricating an installed/authenticated fact.
     let degraded = |descriptor: &AcpAgentDescriptor| AgentProbe {
-        min_version: MIN_VERSIONS
-            .iter()
-            .find(|(id, _)| *id == descriptor.agent_id)
-            .map(|(_, min)| *min)
-            .unwrap_or("0.0.0"),
+        min_version: min_version_for(descriptor.agent_id),
         agent_id: descriptor.agent_id.to_owned(),
         agent_name: descriptor.agent_name.to_owned(),
         cli_path: None,
@@ -2195,7 +2199,7 @@ fn probe_json(probe: &AgentProbe) -> serde_json::Value {
     serde_json::json!({
         "agent_id": probe.agent_id,
         "agent_name": probe.agent_name,
-        "installed": probe.cli_path.is_some() && probe.version_supported,
+        "installed": probe.installed(),
         "cli_found": probe.cli_path.is_some(),
         "cli_path": probe.cli_path.as_ref().map(|path| path.display().to_string()),
         "version": probe.version,
@@ -2217,7 +2221,7 @@ fn agents_list(output: OutputMode) -> Result<CliOutcome, CliError> {
                 "{}\t{}\t{}\t{}\t{}",
                 probe.agent_id,
                 probe.agent_name,
-                if probe.cli_path.is_some() && probe.version_supported {
+                if probe.installed() {
                     "installed"
                 } else if probe.version_probe_failed {
                     // A cold binary, an unprobing one, or a hang is not the
@@ -2258,11 +2262,7 @@ fn agents_status(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError
         "agent: {}\nname: {}\ninstalled: {}\nversion: {}\nmin_version: {}\nauthenticated: {}\npath: {}",
         probe.agent_id,
         probe.agent_name,
-        if probe.cli_path.is_some() && probe.version_supported {
-            "yes"
-        } else {
-            "no"
-        },
+        if probe.installed() { "yes" } else { "no" },
         crate::support::collapse_control_characters(probe.version.as_deref().unwrap_or("-")),
         probe.min_version,
         if probe.authenticated { "yes" } else { "no" },
@@ -2313,6 +2313,14 @@ fn extract_login_url(agent: &str, output: &str) -> Option<String> {
             login_url_allowed(agent, candidate).then(|| candidate.to_string())
         })
         .last()
+}
+
+/// Shape gate for a claude authorization code, shared by the pre-spawn
+/// validation of the `--code`/`--code-env` lanes and the deferred stdin read
+/// (which must accept exactly what those lanes accept): non-empty, at most
+/// 4096 bytes, no control characters. The value is trimmed before the check.
+fn valid_login_code(trimmed: &str) -> bool {
+    !trimmed.is_empty() && trimmed.len() <= 4096 && !trimmed.chars().any(char::is_control)
 }
 
 /// Exact-value strip of the authorization code this process wrote to the
@@ -2560,20 +2568,16 @@ fn read_deferred_login_code() -> Option<String> {
         );
     }
     let mut raw = String::new();
-    {
-        use std::io::Read;
-        let mut bounded = std::io::stdin().take(64 * 1024 + 1);
-        if let Err(error) = bounded.read_to_string(&mut raw) {
-            note!("code login: cannot read code from stdin: {error}");
-            return None;
-        }
+    let mut bounded = std::io::stdin().take(64 * 1024 + 1);
+    if let Err(error) = bounded.read_to_string(&mut raw) {
+        note!("code login: cannot read code from stdin: {error}");
+        return None;
     }
     if raw.len() > 64 * 1024 {
         note!("code login: stdin authorization code exceeds the 64 KiB read cap");
         return None;
     }
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
+    if !valid_login_code(raw.trim()) {
         note!("code login: invalid claude authorization code");
         return None;
     }
@@ -2692,23 +2696,22 @@ fn login(
         }
         None => (None, false),
     };
-    if let Some(code) = code.as_deref() {
-        let trimmed = code.trim();
-        if trimmed.is_empty() || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
-            // Round-41 review: an argv `--code` value is usage-class — the
-            // invoker controls it at the command line. An env-var value is
-            // content read after parse, so the family's documented exit
-            // rule (argv-decidable → 2, env/stdin content → 1) routes it
-            // to `failed`, matching the missing/empty arms above and the
-            // deferred stdin lane's in-thread validation.
-            if argv_code {
-                return Err(CliError::usage("invalid claude authorization code"));
-            }
-            return Err(CliError::failed(
-                "code_login_code_invalid: the authorization code from the environment is empty, \
-                 over the 4096-byte limit, or carries control characters",
-            ));
+    if let Some(code) = code.as_deref()
+        && !valid_login_code(code.trim())
+    {
+        // Round-41 review: an argv `--code` value is usage-class — the
+        // invoker controls it at the command line. An env-var value is
+        // content read after parse, so the family's documented exit
+        // rule (argv-decidable → 2, env/stdin content → 1) routes it
+        // to `failed`, matching the missing/empty arms above and the
+        // deferred stdin lane's in-thread validation.
+        if argv_code {
+            return Err(CliError::usage("invalid claude authorization code"));
         }
+        return Err(CliError::failed(
+            "code_login_code_invalid: the authorization code from the environment is empty, \
+             over the 4096-byte limit, or carries control characters",
+        ));
     }
     let executable = login_executable(agent)?;
     let mut command = crate::support::build_command(&executable, login_args(agent));
@@ -2829,8 +2832,7 @@ fn login(
                 if code_gate_rx.recv().is_err() {
                     return;
                 }
-                let code = read_deferred_login_code();
-                if let Some(code) = code {
+                if let Some(code) = read_deferred_login_code() {
                     *deferred_code_slot
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(code.clone());
@@ -3034,13 +3036,7 @@ fn login(
         // Mirror the GUI's post-login re-check: a successful process exit does
         // not guarantee a usable credential (kimi can complete OAuth yet fail
         // to write the model config; codex/claude probes re-run here).
-        let authenticated = match agent {
-            "codex" => codex_authenticated(&executable),
-            "claude" => claude_authenticated(&executable),
-            "kimi" => kimi_authenticated(),
-            _ => false,
-        };
-        if !authenticated {
+        if !agent_authenticated(agent, Some(&executable)) {
             return Err(CliError::failed(format!(
                 "code_login_not_authenticated: {agent} login process completed but the \
                  authentication probe does not report a usable credential yet; check \
@@ -3226,9 +3222,8 @@ fn render_provider_view(agent: &str, view: &AcpProvidersView) -> String {
 
 fn parse_wire_api_value(value: Option<&str>) -> Result<ProviderWireApi, CliError> {
     match value {
-        None => ProviderWireApi::parse(None)
-            .map_err(|error| CliError::failed(format!("wire api: {error:#}"))),
-        Some("anthropic")
+        None
+        | Some("anthropic")
         | Some("openai")
         | Some("openai_compatible")
         | Some("chat")
@@ -3404,14 +3399,8 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
         .and_then(|record| record.model_slots.clone())
         .map(|slots| slots.into_iter().collect::<HashMap<String, String>>());
     let mut slots_map = existing_slots.clone().unwrap_or_default();
-    for (slot, value) in model_slots {
-        slots_map.insert(slot.clone(), value.clone());
-    }
-    let model_slots = if !slots_map.is_empty() || existing_slots.is_some() {
-        Some(slots_map)
-    } else {
-        None
-    };
+    slots_map.extend(model_slots.iter().cloned());
+    let model_slots = (!slots_map.is_empty() || existing_slots.is_some()).then_some(slots_map);
     if provider_id.is_some() && agent == "claude" {
         // The update lane's completeness depends on the MERGED set above: a
         // legacy record stored without slots (pre-slots build, or a
@@ -5366,44 +5355,36 @@ fn workspace_diff(
                     }
                 }
             }
-            // The file cap is a truncation like any other: files beyond it are
-            // exactly the "listed by `changes` but not diffed" case the
-            // doctrine above refuses to drop silently, so they surface in the
-            // same three places (text marker, `truncated` flag, stderr note)
-            // instead of rendering like a complete diff of a 600-file refactor
-            // that only contains its first 500 files.
-            if hit_file_cap {
+            // Both caps are truncations like any other: files beyond the
+            // 500-file cap are exactly the "listed by `changes` but not
+            // diffed" case the doctrine above refuses to drop silently, and
+            // small diffs can accumulate past 1 MiB without any single file
+            // hitting the per-file cap. Each surfaces in the same three
+            // places (text marker, `truncated` flag, stderr note) instead of
+            // rendering like a complete diff that silently omitted its tail.
+            for (hit, cap) in [
+                (
+                    hit_file_cap,
+                    format!("stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap"),
+                ),
+                (
+                    hit_diff_limit,
+                    "stopped at the 1 MiB payload cap".to_owned(),
+                ),
+            ] {
+                if !hit {
+                    continue;
+                }
                 note!(
-                    "code workspace diff: stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap; the \
-                     remaining changed files are not included — diff them with \
-                     `pinvou code workspace diff <session> <path>`"
+                    "code workspace diff: {cap}; the remaining changed files are not included — \
+                     diff them with `pinvou code workspace diff <session> <path>`"
                 );
                 if !combined.is_empty() {
                     combined.push('\n');
                 }
                 combined.push_str(&format!(
-                    "# diff truncated: stopped at the {WORKSPACE_DIFF_FILE_CAP}-file cap; the \
-                     remaining changed files are not included\n"
+                    "# diff truncated: {cap}; the remaining changed files are not included\n"
                 ));
-            }
-            // The payload cap is the same truncation as the file cap — small
-            // diffs accumulate past 1 MiB without any single file hitting the
-            // per-file cap — so it gets the same three-channel treatment:
-            // in-band marker, `truncated` flag, stderr note. Without it the
-            // human output would just stop mid-hunk with no explanation.
-            if hit_diff_limit {
-                note!(
-                    "code workspace diff: stopped at the 1 MiB payload cap; the \
-                     remaining changed files are not included — diff them with \
-                     `pinvou code workspace diff <session> <path>`"
-                );
-                if !combined.is_empty() {
-                    combined.push('\n');
-                }
-                combined.push_str(
-                    "# diff truncated: stopped at the 1 MiB payload cap; the \
-                     remaining changed files are not included\n",
-                );
             }
             // Actually cut the payload when reporting truncation — the
             // per-file path below does the same.
@@ -5543,7 +5524,6 @@ fn workspace_diff_one(
                 let mut bytes = Vec::new();
                 std::fs::File::open(&canonical)
                     .and_then(|mut file| {
-                        use std::io::Read as _;
                         file.by_ref()
                             .take(PREVIEW_LIMIT as u64 + 1)
                             .read_to_end(&mut bytes)
@@ -5616,7 +5596,7 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
     const READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
     let file = std::fs::File::open(&canonical)
         .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
-    let mut capped = std::io::Read::take(file, READ_CAP);
+    let mut capped = file.take(READ_CAP);
     let mut raw = Vec::new();
     capped
         .read_to_end(&mut raw)
@@ -5936,9 +5916,8 @@ fn checkpoints_rewind(
     match store.rewound_turns_records(session) {
         Ok(records) => {
             for record in records {
-                let cutoff = match parse_rfc3339_epoch_secs(&record.rewound_at) {
-                    Some(value) => value,
-                    None => continue,
+                let Some(cutoff) = parse_rfc3339_epoch_secs(&record.rewound_at) else {
+                    continue;
                 };
                 if let Err(error) = checkpoints::invalidate_stale_turn_checkpoints(
                     &ledger,

@@ -157,8 +157,7 @@ pub fn parse(values: &[String]) -> Result<ArtifactsCommand, CliError> {
                 .iter()
                 .position(|value| value == "--file" || value == "--stdin")
                 .unwrap_or(rest.len());
-            let (session_id, relative_path) =
-                require_session_and_path(rest.get(..positional_end).unwrap_or_default())?;
+            let (session_id, relative_path) = require_session_and_path(&rest[..positional_end])?;
             if positional_end > 2 {
                 return Err(CliError::usage(
                     "artifacts write accepts only a session id and a relative path",
@@ -169,12 +168,14 @@ pub fn parse(values: &[String]) -> Result<ArtifactsCommand, CliError> {
             let mut index = positional_end;
             while index < rest.len() {
                 match rest[index].as_str() {
+                    // Either flag already answered is the same mutual-
+                    // exclusion refusal, whichever order they arrive in.
+                    "--file" | "--stdin" if file.is_some() || stdin => {
+                        return Err(CliError::usage(
+                            "artifacts write accepts one of --file or --stdin",
+                        ));
+                    }
                     "--file" => {
-                        if file.is_some() || stdin {
-                            return Err(CliError::usage(
-                                "artifacts write accepts one of --file or --stdin",
-                            ));
-                        }
                         let value = rest.get(index + 1).ok_or_else(|| {
                             CliError::usage("artifacts write --file requires a path")
                         })?;
@@ -185,11 +186,6 @@ pub fn parse(values: &[String]) -> Result<ArtifactsCommand, CliError> {
                         index += 2;
                     }
                     "--stdin" => {
-                        if file.is_some() || stdin {
-                            return Err(CliError::usage(
-                                "artifacts write accepts one of --file or --stdin",
-                            ));
-                        }
                         stdin = true;
                         index += 1;
                     }
@@ -572,6 +568,16 @@ fn read_record_capped(path: &Path, cap: u64) -> RecordRead {
     }
 }
 
+/// The path component's UTF-8 `Normal` segment; `None` for the `.`, `..`
+/// and platform-prefix components both session-relative legs below must
+/// reject.
+fn normal_component(component: std::path::Component<'_>) -> Option<&str> {
+    match component {
+        std::path::Component::Normal(value) => value.to_str(),
+        _ => None,
+    }
+}
+
 /// Resolves `<session-id> <relative-path>` to a canonical artifact file,
 /// mirroring `resolve_artifact_path_in_workspace` (relative against the
 /// ledger workspace) plus containment checks. Read and write differ like
@@ -665,10 +671,7 @@ fn resolve_session_artifact(
     let mut components = relative.components();
     let session = components
         .next()
-        .and_then(|component| match component {
-            std::path::Component::Normal(value) => value.to_str(),
-            _ => None,
-        })
+        .and_then(normal_component)
         .ok_or_else(|| CliError::failed("artifact_outside_session"))?;
     if session.is_empty() || session.starts_with('_') {
         return Err(CliError::failed("artifact_outside_editable_session"));
@@ -680,10 +683,7 @@ fn resolve_session_artifact(
     }
     let area = components
         .next()
-        .and_then(|component| match component {
-            std::path::Component::Normal(value) => value.to_str(),
-            _ => None,
-        })
+        .and_then(normal_component)
         .ok_or_else(|| CliError::failed("artifact_outside_session_artifacts"))?;
     if area != "artifacts" && area != "workspace" {
         return Err(CliError::failed("artifact_outside_session_artifacts"));

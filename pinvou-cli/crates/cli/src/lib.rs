@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use support::success;
+use support::{family_option, success};
 
 use adapter_gaia::{
     GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter, GaiaDataset, GaiaSnapshotManager,
@@ -366,20 +366,6 @@ where
     if values.last().map(String::as_str) == Some("--output") {
         return Err(CliError::usage(GLOBAL_OUTPUT_USAGE));
     }
-    if values.first().map(String::as_str) == Some("agent") {
-        let command = agent_task::parse(&values)?;
-        return Ok(ParsedCli {
-            command: CliCommand::Agent(command),
-            output,
-        });
-    }
-    if values.first().map(String::as_str) == Some("settings") {
-        let command = models::parse(&values)?;
-        return Ok(ParsedCli {
-            command: CliCommand::Models(command),
-            output,
-        });
-    }
     // `pinvou --help` / `-h`: asking for the usage text is not a usage error.
     // It used to fall through to the unknown-command arm, which prints the
     // same text on STDERR and exits 2 — so `pinvou --help > surface.txt` wrote
@@ -409,16 +395,14 @@ where
         let command = CliCommand::Version;
         return Ok(ParsedCli { command, output });
     }
-    if values.first().map(String::as_str) == Some("benchmark") {
-        let command = parse_benchmark(&values)?;
-        return Ok(ParsedCli {
-            command: CliCommand::Benchmark(command),
-            output,
-        });
-    }
     let command = match values.first().map(String::as_str) {
+        Some("agent") => CliCommand::Agent(agent_task::parse(&values)?),
+        Some("benchmark") => CliCommand::Benchmark(parse_benchmark(&values)?),
         Some("sessions") => CliCommand::Sessions(sessions::parse(&values)?),
         Some("models") => CliCommand::Models(models::parse(&values)?),
+        // The `settings` alias routes into the models family (pinned by the
+        // dispatch contract tests).
+        Some("settings") => CliCommand::Models(models::parse(&values)?),
         Some("memory") => CliCommand::Memory(memory::parse(&values)?),
         Some("knowledge") => CliCommand::Knowledge(knowledge::parse(&values)?),
         Some("scheduled") => CliCommand::Scheduled(scheduled::parse(&values)?),
@@ -538,7 +522,7 @@ fn parse_benchmark(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 fn parse_gaia_fetch(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "fetch")?;
     let options = named_options(&values[3..], &["--token-env", "--source"])?;
-    let token_env = match option(&options, "--token-env") {
+    let token_env = match family_option(&options, "--token-env") {
         // Round-44 review: NAME shape gate — same doctrine as the other
         // env-var-NAME flags.
         Some(value) => {
@@ -547,7 +531,7 @@ fn parse_gaia_fetch(values: &[String]) -> Result<BenchmarkCommand, CliError> {
         }
         None => None,
     };
-    let source = option(&options, "--source").map(PathBuf::from);
+    let source = family_option(&options, "--source").map(PathBuf::from);
     if token_env.is_some() == source.is_some() {
         return Err(CliError::usage(
             "benchmark fetch gaia requires exactly one of --token-env or --source",
@@ -559,7 +543,7 @@ fn parse_gaia_fetch(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 fn parse_gaia_verify(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "verify")?;
     let options = named_options(&values[3..], &["--source"])?;
-    let source = option(&options, "--source")
+    let source = family_option(&options, "--source")
         .map(PathBuf::from)
         .ok_or_else(|| CliError::usage("benchmark verify gaia requires --source"))?;
     Ok(BenchmarkCommand::VerifyGaia { source })
@@ -567,9 +551,9 @@ fn parse_gaia_verify(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 
 fn parse_gaia_run(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     let options = named_options(&values[3..], &["--split", "--level"])?;
-    let split = option(&options, "--split")
+    let split = family_option(&options, "--split")
         .ok_or_else(|| CliError::usage("benchmark run gaia requires --split validation"))?;
-    let level = option(&options, "--level")
+    let level = family_option(&options, "--level")
         .and_then(|value| value.parse::<u8>().ok())
         .ok_or_else(|| CliError::usage("benchmark run gaia requires --level 1"))?;
     if split != GAIA_SPLIT || level != GAIA_LEVEL {
@@ -584,7 +568,7 @@ fn parse_gaia_run(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 fn parse_gaia_score(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "score")?;
     let options = named_options(&values[3..], &["--run-id"])?;
-    let run_id = option(&options, "--run-id")
+    let run_id = family_option(&options, "--run-id")
         .map(str::to_owned)
         .ok_or_else(|| CliError::usage("benchmark score gaia requires --run-id"))?;
     Ok(BenchmarkCommand::ScoreGaia { run_id })
@@ -593,11 +577,11 @@ fn parse_gaia_score(values: &[String]) -> Result<BenchmarkCommand, CliError> {
 fn parse_gaia_submission(values: &[String]) -> Result<BenchmarkCommand, CliError> {
     require_gaia(values, "submission")?;
     let options = named_options(&values[3..], &["--run-id", "--destination", "--output"])?;
-    let run_id = option(&options, "--run-id")
+    let run_id = family_option(&options, "--run-id")
         .map(str::to_owned)
         .ok_or_else(|| CliError::usage("benchmark submission gaia requires --run-id"))?;
-    let destination = option(&options, "--destination");
-    let legacy_output = option(&options, "--output");
+    let destination = family_option(&options, "--destination");
+    let legacy_output = family_option(&options, "--output");
     if destination.is_some() && legacy_output.is_some() {
         return Err(CliError::usage(
             "benchmark submission gaia accepts one destination",
@@ -647,12 +631,6 @@ fn named_options<'a>(
         parsed.push((name, value));
     }
     Ok(parsed)
-}
-
-fn option<'a>(options: &'a [(&str, &'a str)], name: &str) -> Option<&'a str> {
-    options
-        .iter()
-        .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
 }
 
 fn required_value(values: &[String], command: &str) -> Result<String, CliError> {
@@ -863,7 +841,7 @@ fn status(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let terminal = store.read_outcomes().map_err(core_error)?;
     let failed = terminal
         .iter()
-        .filter(|outcome| outcome.status() != benchmark_core::TaskStatus::Completed)
+        .filter(|outcome| outcome.status() != TaskStatus::Completed)
         .count();
     let diagnostics = GaiaDiagnostics::from_outcomes(&terminal);
     let text = match output {
@@ -1732,7 +1710,7 @@ mod product {
             let adapter = SmokeAdapter::new();
             let dataset = adapter.verify_dataset(Path::new("."))?;
             let plan = adapter.plan(&dataset, &TaskSelection::all())?;
-            let run_id = new_run_id();
+            let run_id = new_run_id("smoke");
             let model = ModelIdentity::new(identity.provider(), identity.model())?;
             let manifest = new_smoke_manifest(&run_id, &adapter, model)?;
             let service = BenchmarkService::native_with_private_inputs(
@@ -1756,7 +1734,7 @@ mod product {
             let dataset = Arc::new(open_official_gaia_dataset(&snapshot)?);
             let adapter = GaiaAdapter::with_dataset(Arc::clone(&dataset));
             let verified = adapter.verify_dataset(&snapshot)?;
-            let run_id = new_gaia_run_id();
+            let run_id = new_run_id("gaia");
             let manifest = RunManifest::new(
                 &run_id,
                 adapter.descriptor(),
@@ -1858,20 +1836,12 @@ mod product {
         })
     }
 
-    fn new_run_id() -> String {
+    fn new_run_id(prefix: &str) -> String {
         let millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        format!("smoke-{millis}-{}", std::process::id())
-    }
-
-    fn new_gaia_run_id() -> String {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        format!("gaia-{millis}-{}", std::process::id())
+        format!("{prefix}-{millis}-{}", std::process::id())
     }
 
     fn gaia_summary(summary: RunSummary, output: OutputMode) -> CliOutcome {

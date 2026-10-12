@@ -246,13 +246,11 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
             // to both of its lanes): an all-whitespace name is argv-class,
             // not a feature error that would surface later as a translated
             // exit 1 for the same shape of input.
-            if let Some(name) = crate::support::family_option(&options, "--name")
-                && name.trim().is_empty()
-            {
+            let name = crate::support::family_option(&options, "--name").map(str::to_owned);
+            if name.as_deref().is_some_and(|name| name.trim().is_empty()) {
                 return Err(CliError::usage("personas update --name must not be empty"));
             }
             let body = body_source(&options, &flags, "update")?;
-            let name = crate::support::family_option(&options, "--name").map(str::to_owned);
             let description =
                 crate::support::family_option(&options, "--description").map(str::to_owned);
             // Round-52 review: with no field to change the command used to
@@ -814,19 +812,32 @@ fn equip_state_path(session_id: &str) -> Result<PathBuf, CliError> {
         .join("persona_equipped.json"))
 }
 
-/// Reads the persisted equip state; a missing, unreadable, or corrupt sidecar
-/// degrades to "no persona equipped" (the same tolerance as the GUI restart
-/// path, where the memory-only state is simply gone).
-fn equipped_persona_id(session_id: &str) -> Option<String> {
-    let path = equip_state_path(session_id).ok()?;
+/// Parses the per-session equip sidecar; a missing, unreadable, or corrupt
+/// file is `None` — the shared tolerance every read lane applies. The capped
+/// read's error text never surfaces here (every caller discards the failure);
+/// the delete sweep, whose read errors ARE surfaced, calls
+/// `read_text_file_capped` directly.
+fn read_sidecar_value(path: &std::path::Path) -> Option<serde_json::Value> {
     let raw =
-        crate::support::read_text_file_capped(&path, MAX_SIDECAR_BYTES, "personas equip").ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "personas equip").ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// The card a sidecar names: a missing or blank `persona_id` is no persona.
+fn sidecar_persona_id(value: &serde_json::Value) -> Option<String> {
     value
         .get("persona_id")
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.trim().is_empty())
         .map(str::to_owned)
+}
+
+/// Reads the persisted equip state; a missing, unreadable, or corrupt sidecar
+/// degrades to "no persona equipped" (the same tolerance as the GUI restart
+/// path, where the memory-only state is simply gone).
+fn equipped_persona_id(session_id: &str) -> Option<String> {
+    let value = read_sidecar_value(&equip_state_path(session_id).ok()?)?;
+    sidecar_persona_id(&value)
 }
 
 /// The GUI's per-turn light anchor, resolved live from the session's
@@ -1029,13 +1040,8 @@ pub(crate) fn consume_pending_persona_injection(
 /// verbatim.
 #[cfg(feature = "product-backend")]
 fn staged_persona_injection_at(path: &std::path::Path) -> Option<StagedPersonaInjection> {
-    let raw = crate::support::read_text_file_capped(path, MAX_SIDECAR_BYTES, "agent run").ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let persona_id = value
-        .get("persona_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-        .map(str::to_owned)?;
+    let value = read_sidecar_value(path)?;
+    let persona_id = sidecar_persona_id(&value)?;
     let body = value
         .get("pending_body")
         .and_then(serde_json::Value::as_str)
@@ -1106,19 +1112,6 @@ const MAX_SIDECAR_BYTES: usize = 4 * 1024 * 1024 * 6 + 1024;
 /// `create`/`update` body and `require_equippable_body` on the equipped card
 /// share it), so the two can no longer disagree.
 const MAX_EQUIP_BODY_BYTES: usize = 4 * 1024 * 1024;
-
-/// Nanos since the Unix epoch, saturating at 0 if the clock is before it —
-/// the stage stamp [`persist_equipped_persona_checked`] writes and the consume
-/// guard compares.
-fn unix_nanos_now() -> u64 {
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default(),
-    )
-    .unwrap_or_default()
-}
 
 /// Refuses a card whose RAW body is over the budget the sidecar cap is
 /// computed from.
@@ -1234,10 +1227,17 @@ fn persist_equipped_persona_checked(
         // mid-run restage of the same card with the same body (a
         // byte-identical pair, since `equip_body_injection` is deterministic
         // from the card) is still recognized as NEWER staging and survives
-        // the running turn's consume (round-40 review M6). Nanos give the
+        // the running turn's consume (round-40 review M6). Nanos since the
+        // Unix epoch (saturating at 0 if the clock is before it) give the
         // stamp enough resolution that two human-paced equips never
         // collide; `0` is the legacy-sidecar sentinel on the read side.
-        "staged_at": unix_nanos_now(),
+        "staged_at": u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default(),
+        )
+        .unwrap_or_default(),
     });
     let bytes = serde_json::to_vec(&payload).map_err(|error| {
         CliError::failed(format!("cannot serialize session persona sidecar: {error}"))
@@ -1278,11 +1278,11 @@ fn equip(session_id: &str, persona_id: &str, output: OutputMode) -> Result<CliOu
     // stray `sessions/<bogus-id>/` directory for a session that does not
     // exist.
     //
-    // That order includes `open_store()`, which runs `sandbox_home()` and
-    // `SessionStore::boot()` — both Failed-class. Booting it first made the
-    // exit-2 contract above depend on the store happening to boot cleanly;
-    // `unequip` and `active` already validate before booting, and this lane
-    // now matches them.
+    // That order includes `open_equipped_session`'s `sandbox_home()` and
+    // `SessionStore::boot()` — both Failed-class. Booting the store first
+    // made the exit-2 contract above depend on the store happening to boot
+    // cleanly; `unequip` and `active` already validate before booting, and
+    // this lane now matches them.
     let (store, _) = open_equipped_session("equip", session_id)?;
     let card = get(persona_id)
         .ok_or_else(|| CliError::failed(format!("unknown persona: {persona_id}")))?;
@@ -1431,14 +1431,6 @@ fn summary_value(summary: &PersonaSummary, context: &str) -> Result<serde_json::
         .map_err(|error| CliError::failed(format!("personas {context}: {error}")))
 }
 
-fn open_store() -> Result<SessionStore, CliError> {
-    // Same absolute-path contract as the other families: a relative
-    // PINVOU3_HOME would silently resolve against the cwd.
-    crate::support::sandbox_home()?;
-    SessionStore::boot()
-        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
-}
-
 /// The shared 3-step session gate behind `equip`/`unequip`/`active` (the
 /// three sites were byte-identical apart from the verb): reject ids that
 /// cannot name a session directory before any path use, boot the store, and
@@ -1448,16 +1440,19 @@ fn open_store() -> Result<SessionStore, CliError> {
 /// unequip that cleared nothing, and active must not answer "none" for a
 /// typo (the commit that added the unequip gate claimed equip/active parity
 /// — this restores it). Usage before Failed: the id check runs before
-/// `open_store`, whose `sandbox_home()`/`SessionStore::boot()` are
-/// Failed-class, so the exit-2 contract never depended on the store booting
-/// cleanly. Returns the sidecar path for the lane that removes it
-/// (`unequip`); the other two discard it.
+/// `sandbox_home()`/`SessionStore::boot()`, both Failed-class, so the exit-2
+/// contract never depended on the store booting cleanly. Returns the sidecar
+/// path for the lane that removes it (`unequip`); the other two discard it.
 fn open_equipped_session(
     verb: &str,
     session_id: &str,
 ) -> Result<(SessionStore, PathBuf), CliError> {
     let path = equip_state_path(session_id)?;
-    let store = open_store()?;
+    // Same absolute-path contract as the other families: a relative
+    // PINVOU3_HOME would silently resolve against the cwd.
+    sandbox_home()?;
+    let store = SessionStore::boot()
+        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))?;
     store.load(session_id).map_err(|error| {
         CliError::failed(format!(
             "personas {verb}: session {session_id} does not exist ({error})"

@@ -182,11 +182,10 @@ pub fn execute(command: FeedbackCommand, output: OutputMode) -> Result<CliOutcom
             // happily writes `/home/u/.ssh/id_rsa` into a persisted file is a way
             // around a rule the other surface enforces, so the same path policy
             // applies (`artifacts::check_sensitive_path`, the mirror of
-            // `platform::path_policy::check_sensitive_components`). The canonical
-            // form is what the policy is defined over, so resolve first.
-            // The canonical form is what the policy is defined over, so resolve
-            // first. Nothing downstream reads the canonical path here — only the
-            // gate runs on it (the request records the argv spelling).
+            // `platform::path_policy::check_sensitive_components`). The
+            // canonical form is what the policy is defined over, so resolve
+            // first. Nothing downstream reads the canonical path here — only
+            // the gate runs on it (the request records the argv spelling).
             crate::support::gate_canonical_path(
                 path,
                 "feedback submit",

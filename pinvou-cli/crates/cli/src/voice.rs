@@ -352,19 +352,17 @@ fn asr_dir() -> PathBuf {
     pinvou3_home().join("asr")
 }
 
-#[cfg(target_os = "linux")]
+// `cfg!` is a bool literal, so one unconditioned fn compiles on every target
+// (the same verdicts the previous `#[cfg]`-split copies produced): the
+// SenseVoice.cpp engine on Linux, the external-protocol CLI elsewhere.
 fn engine_binary_name() -> &'static str {
-    "sense-voice-main"
-}
-
-#[cfg(target_os = "windows")]
-fn engine_binary_name() -> &'static str {
-    "pinvou-asr.exe"
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-fn engine_binary_name() -> &'static str {
-    "pinvou-asr"
+    if cfg!(target_os = "windows") {
+        "pinvou-asr.exe"
+    } else if cfg!(target_os = "linux") {
+        "sense-voice-main"
+    } else {
+        "pinvou-asr"
+    }
 }
 
 // `cfg!` is a bool literal, so one unconditioned fn compiles on every target:
@@ -547,21 +545,16 @@ fn ffmpeg_available() -> bool {
 /// Same composition as `voice_asr::compose_status` / `status()`: macOS
 /// reports the system Speech runtime as present (`asr_bundled_runtime_status`
 /// → `Some(true)`), other platforms check engine + ffmpeg + model files.
-fn asr_components() -> (bool, bool, bool, bool) {
-    // Lazy verdict: on macOS the composition never consumes the ffmpeg
-    // half, and an eager probe used to spawn a real `ffmpeg -version` per
-    // `asr-status`/`transcribe` — a wedged ffmpeg first on PATH stalled the
-    // read-only status command up to the probe timeout for a verdict
-    // nothing reads (round-39 review).
-    asr_components_with(ffmpeg_available)
-}
-
-/// `asr_components` with the ffmpeg verdict supplied: `asr-install` probes
-/// ffmpeg once up front (round-38 review — the already-present path used to
-/// spawn a second, redundant `ffmpeg -version` here) and hands the verdict
-/// through instead of re-asking. The verdict is a closure so the macOS early
-/// return leaves it unevaluated (round-39 review).
-fn asr_components_with(ffmpeg: impl FnOnce() -> bool) -> (bool, bool, bool, bool) {
+///
+/// The ffmpeg verdict is supplied by the caller: `asr-install` probes ffmpeg
+/// once up front (round-38 review — the already-present path used to spawn a
+/// second, redundant `ffmpeg -version` here) and hands its verdict through,
+/// the other callers pass [`ffmpeg_available`]. The verdict is a closure so
+/// the macOS early return leaves it unevaluated (round-39 review — an eager
+/// probe used to spawn a real `ffmpeg -version` per `asr-status`/`transcribe`
+/// on macOS, where a wedged ffmpeg first on PATH stalled the read-only status
+/// command up to the probe timeout for a verdict nothing reads).
+fn asr_components(ffmpeg: impl FnOnce() -> bool) -> (bool, bool, bool, bool) {
     // Only Linux has a CLI install route (`voice asr-install`); Windows
     // ships the engine in the MSI, which only the desktop app's
     // repair/reinstall flow can restore; macOS needs no installation.
@@ -677,7 +670,7 @@ fn command_exists(command: &Path) -> bool {
 // ─────────────────────────── asr-status / asr-install ──────────────────────
 
 fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let (engine, ffmpeg, model, installable) = asr_components();
+    let (engine, ffmpeg, model, installable) = asr_components(ffmpeg_available);
     let ready = engine && ffmpeg && model;
     // `ready` mirrors the GUI's host-capability status (on macOS it reports
     // the system Speech runtime). The CLI cannot reach that runtime, so this
@@ -876,7 +869,7 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         let path = download_asr_model()?;
         steps.push(format!("downloaded model {}", path.display()));
     }
-    let (engine, _, model, _) = asr_components_with(|| ffmpeg_ok);
+    let (engine, _, model, _) = asr_components(|| ffmpeg_ok);
     let ffmpeg = ffmpeg_ok;
     let value = serde_json::json!({
         "engine": engine,
@@ -1238,7 +1231,7 @@ struct AsrLanes {
 /// ffmpeg + model, and the external probe there is the only lane the CLI
 /// actually has, so it must never be skipped.
 fn installed_lanes() -> AsrLanes {
-    let (engine, ffmpeg, model, _) = asr_components();
+    let (engine, ffmpeg, model, _) = asr_components(ffmpeg_available);
     let native = native_lane_supported();
     let external = external_asr_command().is_some();
     AsrLanes {
@@ -1435,39 +1428,34 @@ fn transcribe_with(
 /// available here, so its guarantees are mirrored) never has that window,
 /// and the mirror is only faithful without it.
 fn create_private_staging(path: &Path) -> Result<std::fs::File, CliError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|error| {
-                CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-            })
+        options.mode(0o600);
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|error| {
-                CliError::failed(format!("voice transcribe: cannot stage audio: {error}"))
-            })
-    }
+    options
+        .open(path)
+        .map_err(|error| CliError::failed(format!("voice transcribe: cannot stage audio: {error}")))
+}
+
+/// Collision-resistant staged-audio name in the shared temp dir: the pid
+/// separates concurrent processes, the nanosecond nonce separates
+/// back-to-back calls in one process.
+fn private_temp_wav(tag: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "pinvou-cli-{tag}-{}-{nonce}.wav",
+        std::process::id()
+    ))
 }
 
 fn write_temp_wav(bytes: &[u8]) -> Result<PathBuf, CliError> {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "pinvou-cli-voice-{}-{nonce}.wav",
-        std::process::id()
-    ));
+    let path = private_temp_wav("voice");
     let mut file = create_private_staging(&path)?;
     // Any failure after the exclusive create must not leak the (empty or
     // partial) staging file.
@@ -1539,14 +1527,7 @@ fn native_engine_transcribe(wav: &Path, ffmpeg: bool) -> Result<String, CliError
     // existing private file) so a second world-readable copy never exists,
     // and remove it on every path — the app removes it unconditionally after
     // the engine attempt, half-written ffmpeg output included.
-    let normalized = std::env::temp_dir().join(format!(
-        "pinvou-cli-asr-{}-{}.wav",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let normalized = private_temp_wav("asr");
     drop(create_private_staging(&normalized)?);
     // The normalized staging file is 0600 private audio in the shared temp
     // dir: this guard unlinks it on every path out of the rest of this
@@ -3201,7 +3182,6 @@ mod tests {
     /// buffered, which is then the whole request. The raw request bytes are
     /// handed to the returned receiver so a test can assert on what reached
     /// the wire.
-    #[cfg(test)]
     fn serve_once(body: String) -> (String, std::sync::mpsc::Receiver<Vec<u8>>) {
         use std::io::{Read as _, Write as _};
 

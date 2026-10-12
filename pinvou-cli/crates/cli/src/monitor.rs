@@ -84,9 +84,8 @@ fn status(output: OutputMode) -> Result<CliOutcome, CliError> {
     // The host's work closure must resolve to `anyhow::Result`; the plain
     // probe value is lifted with `Ok(...)` so this module never names the
     // host's feature-gated error type.
-    let snapshot = pinvou3_lib::headless_bridge::run_bare_host(|| {
-        let work = async move { monitor::active_model_snapshot().await };
-        async move { Ok(work.await) }
+    let snapshot = pinvou3_lib::headless_bridge::run_bare_host(|| async {
+        Ok(monitor::active_model_snapshot().await)
     })
     .map_err(|error| CliError::failed(format!("monitor status failed: {}", redact(&error))))?;
     let (human, value) = status_payload(snapshot.as_ref(), now_ms);
@@ -197,12 +196,9 @@ fn status_payload(
 /// cannot tell "no tokens generated yet" from "this process does not and
 /// cannot count tokens".
 fn snapshot(output: OutputMode) -> Result<CliOutcome, CliError> {
-    let snapshot = pinvou3_lib::headless_bridge::run_bare_host(|| {
-        let work = async move {
-            let state = monitor::MonitorState::new();
-            monitor::sample_all(&state).await
-        };
-        async move { Ok(work.await) }
+    let snapshot = pinvou3_lib::headless_bridge::run_bare_host(|| async {
+        let state = monitor::MonitorState::new();
+        Ok(monitor::sample_all(&state).await)
     })
     .map_err(|error| CliError::failed(format!("monitor snapshot failed: {}", redact(&error))))?;
     // Same stance as the `status` lane's `last_check_ms`: zero is a
@@ -426,7 +422,7 @@ fn status_label(status: VllmStatus) -> &'static str {
 /// userinfo intact (the exact class fixed for `models test`). Generic over
 /// the error type so this module never needs to name the host's error
 /// type (which is feature-gated upstream).
-fn redact(error: &(impl std::fmt::Display + std::fmt::Debug)) -> String {
+fn redact(error: &impl std::fmt::Display) -> String {
     let rendered = format!("{error:#}");
     let rendered = pinvou3_lib::platform::redact_url_credentials_in_text(&rendered);
     pinvou3_lib::platform::credential_store::redact_secret(&rendered)

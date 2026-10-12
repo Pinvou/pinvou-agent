@@ -437,6 +437,7 @@ fn parse_options(
     value_flags: &[&str],
     flag_flags: &[&str],
 ) -> Result<Options, CliError> {
+    let label = format!("pinvou {family} {subcommand}");
     let mut values = BTreeMap::new();
     let mut flags = Vec::new();
     let mut positionals = Vec::new();
@@ -445,8 +446,18 @@ fn parse_options(
         let argument = &rest[index];
         if let Some(name) = argument.strip_prefix("--") {
             if value_flags.contains(&name) {
+                // An empty value is a missing value, not a value that happens
+                // to be empty: `--name "$UNSET"` is how the shell spells
+                // "this argument was never computed". `support::parse_family_flags`
+                // has always refused it; `models` did not, so `--name ""`
+                // reached the store and `--api-key-env ""` reached
+                // `std::env::var("")` — each failing later with a message
+                // about the store or the environment rather than about the
+                // command line. Refusing here keeps all three parsers
+                // (support.rs, models.rs, memory.rs) on one contract.
                 let value = rest
                     .get(index + 1)
+                    .filter(|value| !value.is_empty())
                     .ok_or_else(|| CliError::usage(format!("--{name} requires a value")))?;
                 if value.starts_with("--") {
                     // `--api-key-env --set-active` would otherwise consume
@@ -458,18 +469,6 @@ fn parse_options(
                     return Err(CliError::usage(format!(
                         "--{name} requires a value (got another flag, not a value)"
                     )));
-                }
-                // An empty value is a missing value, not a value that happens
-                // to be empty: `--name "$UNSET"` is how the shell spells
-                // "this argument was never computed". `support::parse_family_flags`
-                // has always refused it; `models` did not, so `--name ""`
-                // reached the store and `--api-key-env ""` reached
-                // `std::env::var("")` — each failing later with a message
-                // about the store or the environment rather than about the
-                // command line. Refusing here keeps all three parsers
-                // (support.rs, models.rs, memory.rs) on one contract.
-                if value.is_empty() {
-                    return Err(CliError::usage(format!("--{name} requires a value")));
                 }
                 if values.insert(name.to_owned(), value.clone()).is_some() {
                     return Err(CliError::usage(format!(
@@ -490,7 +489,7 @@ fn parse_options(
                 index += 1;
             } else {
                 return Err(CliError::usage(format!(
-                    "unknown option --{name} for pinvou {family} {subcommand}"
+                    "unknown option --{name} for {label}"
                 )));
             }
         } else {
@@ -499,7 +498,7 @@ fn parse_options(
         }
     }
     Ok(Options {
-        label: format!("pinvou {family} {subcommand}"),
+        label,
         values,
         flags,
         positionals,
@@ -556,6 +555,19 @@ impl Options {
             )))
         }
     }
+
+    /// The count-free companion of [`Self::reject_stray_positionals`] for
+    /// subcommands that take nothing but options.
+    fn ensure_no_positionals(&self) -> Result<(), CliError> {
+        if self.positionals.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::usage(format!(
+                "{} takes no arguments",
+                self.label
+            )))
+        }
+    }
 }
 
 const MODELS_USAGE: &str = "usage: pinvou models <list|add|edit|remove|use|show|test|probe-local>";
@@ -581,7 +593,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     match (family, subcommand.as_str()) {
         ("models", "list") => {
             let options = parse_options("models", "list", rest, &[], &[])?;
-            ensure_no_positionals(&options)?;
+            options.ensure_no_positionals()?;
             Ok(ModelsCommand::List)
         }
         ("models", "add") => parse_add(rest),
@@ -620,7 +632,7 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
                 &["url", "api-key-env", "model"],
                 &[],
             )?;
-            ensure_no_positionals(&options)?;
+            options.ensure_no_positionals()?;
             let url = options.value("url").map(str::to_owned);
             let model_id = options.value("model").map(str::to_owned);
             if model_id.is_some() && options.value("api-key-env").is_some() {
@@ -673,27 +685,6 @@ pub fn parse(values: &[String]) -> Result<ModelsCommand, CliError> {
     }
 }
 
-fn ensure_no_positionals(options: &Options) -> Result<(), CliError> {
-    if options.positionals.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::usage(format!(
-            "{} takes no arguments",
-            options.label
-        )))
-    }
-}
-
-/// The metadata value flags shared by `models add` and `models edit`, so the
-/// two commands can never accept different spellings of the same field.
-const MODEL_METADATA_FLAGS: &[&str] = &[
-    "alias",
-    "provider-kind",
-    "vendor",
-    "endpoint-mode",
-    "vision-model-id",
-];
-
 /// `provider_kind` is not free-form: the prefs layer only recognizes these
 /// three (`MODEL_PROVIDER_KIND_*`), and `normalize_provider_metadata` rewrites
 /// anything else. Rejecting an unrecognized spelling at parse time reports the
@@ -726,50 +717,44 @@ fn parse_metadata_value(flag: &str, raw: &str) -> Result<String, CliError> {
 /// Reads the five optional GUI-form metadata fields off a parsed option set.
 fn parse_metadata(options: &Options) -> Result<ModelMetadata, CliError> {
     Ok(ModelMetadata {
-        alias: opt_flag(options, "alias", |raw: &str| {
-            parse_metadata_value("alias", raw)
-        })?,
+        alias: opt_flag_text(options, "alias", parse_metadata_value)?,
         provider_kind: opt_flag(options, "provider-kind", parse_provider_kind)?,
-        vendor: opt_flag(options, "vendor", |raw: &str| {
-            parse_metadata_value("vendor", raw)
-        })?,
-        endpoint_mode: opt_flag(options, "endpoint-mode", |raw: &str| {
-            parse_metadata_value("endpoint-mode", raw)
-        })?,
-        vision_model_id: opt_flag(options, "vision-model-id", |raw: &str| {
-            parse_metadata_value("vision-model-id", raw)
-        })?,
+        vendor: opt_flag_text(options, "vendor", parse_metadata_value)?,
+        endpoint_mode: opt_flag_text(options, "endpoint-mode", parse_metadata_value)?,
+        vision_model_id: opt_flag_text(options, "vision-model-id", parse_metadata_value)?,
     })
 }
 
 /// The value flags `models add` and `models edit` accept — the eight
-/// identity/credential/sizing flags plus the five GUI-form metadata flags —
-/// so the two commands can never accept different spellings of the same
-/// field.
-fn model_value_flags() -> Vec<&'static str> {
-    let mut value_flags = vec![
-        "preset",
-        "name",
-        "model",
-        "base-url",
-        "api-key-env",
-        "context-window",
-        "max-output",
-        "reasoning-effort",
-    ];
-    value_flags.extend_from_slice(MODEL_METADATA_FLAGS);
-    value_flags
-}
+/// identity/credential/sizing flags followed by the five GUI-form metadata
+/// flags (`alias`, `provider-kind`, `vendor`, `endpoint-mode`,
+/// `vision-model-id`) — so the two commands can never accept different
+/// spellings of the same field.
+const MODEL_VALUE_FLAGS: &[&str] = &[
+    "preset",
+    "name",
+    "model",
+    "base-url",
+    "api-key-env",
+    "context-window",
+    "max-output",
+    "reasoning-effort",
+    "alias",
+    "provider-kind",
+    "vendor",
+    "endpoint-mode",
+    "vision-model-id",
+];
 
 fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
     let options = parse_options(
         "models",
         "add",
         rest,
-        &model_value_flags(),
+        MODEL_VALUE_FLAGS,
         &["api-key-stdin", "set-active"],
     )?;
-    ensure_no_positionals(&options)?;
+    options.ensure_no_positionals()?;
     if options.value("api-key-env").is_some() && options.has("api-key-stdin") {
         return Err(CliError::usage(
             "use only one of --api-key-env or --api-key-stdin",
@@ -837,12 +822,34 @@ fn opt_flag<T>(
     }
 }
 
+/// [`opt_flag`] over one of the `(flag, raw)`-shaped text validators
+/// (`parse_required_text`, `parse_metadata_value`), which need the flag name
+/// for their error message; building that closure here keeps every call site
+/// to one line.
+fn opt_flag_text(
+    options: &Options,
+    flag: &str,
+    parse: fn(&str, &str) -> Result<String, CliError>,
+) -> Result<Option<String>, CliError> {
+    opt_flag(options, flag, |raw: &str| parse(flag, raw))
+}
+
+/// The clearable companion of [`opt_flag_text`], for `models edit` fields the
+/// literal `none` clears.
+fn clearable_flag_text(
+    options: &Options,
+    flag: &str,
+    parse: fn(&str, &str) -> Result<String, CliError>,
+) -> Result<Option<Option<String>>, CliError> {
+    parse_clearable(options, flag, |raw: &str| parse(flag, raw))
+}
+
 fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
     let options = parse_options(
         "models",
         "edit",
         rest,
-        &model_value_flags(),
+        MODEL_VALUE_FLAGS,
         &["api-key-stdin", "clear-api-key", "set-active", "yes"],
     )?;
     let id = options.exactly_one_positional()?;
@@ -866,15 +873,9 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         // The three identity fields are not clearable: a model with no name,
         // wire model or base_url is not a model. `--name none` therefore
         // stores the literal, like `models add` would.
-        name: opt_flag(&options, "name", |raw: &str| {
-            parse_required_text("name", raw)
-        })?,
-        model: opt_flag(&options, "model", |raw: &str| {
-            parse_required_text("model", raw)
-        })?,
-        base_url: opt_flag(&options, "base-url", |raw: &str| {
-            parse_required_text("base-url", raw)
-        })?,
+        name: opt_flag_text(&options, "name", parse_required_text)?,
+        model: opt_flag_text(&options, "model", parse_required_text)?,
+        base_url: opt_flag_text(&options, "base-url", parse_required_text)?,
         context_window: parse_clearable(&options, "context-window", |raw: &str| {
             parse_positive_u32("--context-window", raw)
         })?,
@@ -882,19 +883,11 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
             parse_positive_u32("--max-output", raw)
         })?,
         reasoning_effort: parse_clearable(&options, "reasoning-effort", parse_reasoning_effort)?,
-        alias: parse_clearable(&options, "alias", |raw: &str| {
-            parse_metadata_value("alias", raw)
-        })?,
+        alias: clearable_flag_text(&options, "alias", parse_metadata_value)?,
         provider_kind: parse_clearable(&options, "provider-kind", parse_provider_kind)?,
-        vendor: parse_clearable(&options, "vendor", |raw: &str| {
-            parse_metadata_value("vendor", raw)
-        })?,
-        endpoint_mode: parse_clearable(&options, "endpoint-mode", |raw: &str| {
-            parse_metadata_value("endpoint-mode", raw)
-        })?,
-        vision_model_id: parse_clearable(&options, "vision-model-id", |raw: &str| {
-            parse_metadata_value("vision-model-id", raw)
-        })?,
+        vendor: clearable_flag_text(&options, "vendor", parse_metadata_value)?,
+        endpoint_mode: clearable_flag_text(&options, "endpoint-mode", parse_metadata_value)?,
+        vision_model_id: clearable_flag_text(&options, "vision-model-id", parse_metadata_value)?,
     };
     if changes.is_empty()
         && api_key_env.is_none()
@@ -952,7 +945,7 @@ fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
     match search_subcommand.as_str() {
         "list" => {
             let options = parse_options("settings", "search list", rest, &[], &[])?;
-            ensure_no_positionals(&options)?;
+            options.ensure_no_positionals()?;
             Ok(ModelsCommand::SearchList)
         }
         "set" => {
@@ -1628,7 +1621,7 @@ fn edit<S: CredentialStore>(
             rollback_keyring_write(
                 store,
                 &reference,
-                replacement.map(|value| value.to_owned()),
+                replacement.clone(),
                 Some(previous.map_err(|_| ())),
             );
         }
@@ -1965,39 +1958,28 @@ struct ConnectionProbe {
 
 fn connection_http_result(status: reqwest::StatusCode) -> ConnectionProbe {
     let status_code = status.as_u16();
-    let detail = Some(format!("HTTP {status_code}"));
-    if status.is_success() {
-        return ConnectionProbe {
-            ok: true,
-            code: "ok",
-            detail,
-            http_status: Some(status_code),
-        };
-    }
-    if status.is_redirection() {
-        return ConnectionProbe {
-            ok: false,
-            code: "redirect",
-            detail,
-            http_status: Some(status_code),
-        };
-    }
-    let code = match status_code {
-        400 | 422 => "request_invalid",
-        401 => "auth_invalid",
-        403 => "auth_forbidden",
-        404 => "endpoint_not_found",
-        405 => "method_not_allowed",
-        402 => "billing",
-        408 => "timeout",
-        429 => "rate_limited",
-        500..=599 => "server_unavailable",
-        _ => "http_error",
+    let code = if status.is_success() {
+        "ok"
+    } else if status.is_redirection() {
+        "redirect"
+    } else {
+        match status_code {
+            400 | 422 => "request_invalid",
+            401 => "auth_invalid",
+            403 => "auth_forbidden",
+            404 => "endpoint_not_found",
+            405 => "method_not_allowed",
+            402 => "billing",
+            408 => "timeout",
+            429 => "rate_limited",
+            500..=599 => "server_unavailable",
+            _ => "http_error",
+        }
     };
     ConnectionProbe {
-        ok: false,
+        ok: status.is_success(),
         code,
-        detail,
+        detail: Some(format!("HTTP {status_code}")),
         http_status: Some(status_code),
     }
 }
@@ -2469,11 +2451,6 @@ fn fetch_v1_models(base_url: &str, bearer: Option<&str>) -> V1ModelsProbe {
     let Ok(response) = apply_bearer(client.get(&primary), bearer).send() else {
         return V1ModelsProbe::Miss;
     };
-    // Retry once only when the primary candidate clearly reports "path not
-    // found" (404/405) and a fallback candidate exists; auth failures
-    // (401/403) are not helped by switching paths, and timeouts/connection
-    // refusals mean the host is unreachable — neither is retried,
-    // conservatively falling back to no facts.
     let response = match (response.status().as_u16(), fallback) {
         (200..=299, _) => response,
         (404 | 405, Some(url)) => {
@@ -2677,10 +2654,6 @@ fn select_local_server_kind_from_hits(hits: &ProbeCandidateHits) -> &'static str
     "generic"
 }
 
-fn select_local_server_kind(base_url: &str, bearer: Option<&str>) -> &'static str {
-    select_local_server_kind_from_hits(&probe_candidates(base_url, bearer))
-}
-
 /// `models probe-local [--url URL [--model ID]] [--api-key-env VAR]`:
 /// identify the local inference server kind. Without `--url` the target is
 /// the active model's base_url and its stored credential, mirroring the GUI's
@@ -2833,7 +2806,7 @@ fn probe_local<S: CredentialStore>(
         }
     };
     let authenticated = bearer.is_some();
-    let kind = select_local_server_kind(&target, bearer.as_deref());
+    let kind = select_local_server_kind_from_hits(&probe_candidates(&target, bearer.as_deref()));
     // The human lines collapse the target like every other untrusted cell
     // (`models list`/`show`): WHATWG URL parsing strips interior control
     // characters before the loopback gate, so a stored
@@ -3420,15 +3393,14 @@ fn search_test<S: CredentialStore>(
     if let Some(detail) = &probe.detail {
         human.push_str(&format!("\ndetail: {detail}"));
     }
-    let outcome = CliOutcome {
+    Ok(CliOutcome {
         exit_code: if probe.ok {
             ExitCode::Success
         } else {
             ExitCode::Failed
         },
         stdout: render(output, human, &json),
-    };
-    Ok(outcome)
+    })
 }
 
 /// A request to the provider was attempted and its outcome — a classified
@@ -3807,20 +3779,16 @@ fn run_bing_probe() -> SearchProbe {
                     BodyRead::Bytes(bytes) => body_carries_result_element(&bytes),
                     BodyRead::Unreadable | BodyRead::TooLarge => false,
                 };
-            if body_is_result_shaped {
-                SearchProbe {
-                    ok: true,
-                    code: "ok",
-                    detail: Some(format!("HTTP {}", status.as_u16())),
-                    verified: VERIFIED_LIVE_PROBE,
-                }
+            let (ok, code) = if body_is_result_shaped {
+                (true, "ok")
             } else {
-                SearchProbe {
-                    ok: false,
-                    code: "http_error",
-                    detail: Some(format!("HTTP {}", status.as_u16())),
-                    verified: VERIFIED_LIVE_PROBE,
-                }
+                (false, "http_error")
+            };
+            SearchProbe {
+                ok,
+                code,
+                detail: Some(format!("HTTP {}", status.as_u16())),
+                verified: VERIFIED_LIVE_PROBE,
             }
         }
         Err(error) => SearchProbe::from_live(connection_error_result(&error)),
@@ -3914,6 +3882,9 @@ fn resolve_search_key<S: CredentialStore>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use pinvou3_lib::platform::credential_store::CredentialError;
+
     #[test]
     fn transport_error_scrubs_url_userinfo_before_the_report() {
         // Round-44 review pin: reqwest's Display embeds the full URL,
@@ -3946,7 +3917,6 @@ mod tests {
         // probe; for the three providers with declared JSON conventions it
         // must fail as response_unreadable, while Tavily (no error-code
         // convention) stays unjudged.
-        use super::{SearchProvider, search_body_error};
         let portal = "<html>please log in to the wifi</html>";
         for provider in [
             SearchProvider::Metaso,
@@ -3961,9 +3931,6 @@ mod tests {
         // A well-formed envelope still classifies by its business code.
         assert!(search_body_error(SearchProvider::Metaso, r#"{"code":0}"#).is_none());
     }
-
-    use super::*;
-    use pinvou3_lib::platform::credential_store::CredentialError;
 
     /// The bing shape needle is pinned at its real length: the historical
     /// `windows(17)` against the 18-byte `<li class="b_algo"` marker made

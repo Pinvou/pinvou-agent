@@ -85,8 +85,8 @@ use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
 
 use crate::support::{
-    collapse_control_characters, family_lock, family_option, gate_canonical_path, render,
-    require_family_id, require_yes, sandbox_home, success,
+    collapse_control_characters, family_lock, family_option, gate_canonical_path,
+    parse_family_positive, render, require_family_id, require_yes, sandbox_home, success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
 
@@ -265,7 +265,7 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             let (options, _) = parse_flags(&rest[1..], &["--limit"], &[])?;
             Ok(ScheduledCommand::Show {
                 id,
-                limit: parse_limit(&options, "--limit")?,
+                limit: parse_family_positive::<usize>(&options, "--limit", "scheduled")?,
             })
         }
         "create" => parse_create(rest),
@@ -484,10 +484,6 @@ fn parse_flags<'a>(
     crate::support::parse_family_flags(values, value_flags, boolean_flags, "scheduled")
 }
 
-fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
-    crate::support::parse_family_positive::<usize>(options, name, "scheduled")
-}
-
 /// Round-49 review: upper bound for the aggregate run lanes' `--limit`.
 /// Each accepted unit costs one run-record read — `runs` for one task,
 /// `runs-all` for EVERY task — so a huge value (the execute-time overflow
@@ -499,12 +495,13 @@ fn parse_limit(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, Cl
 /// already-read list, so it buys no reads.
 const MAX_RUNS_LIMIT: usize = 100_000;
 
-/// [`parse_limit`] plus the [`MAX_RUNS_LIMIT`] refusal, so an over-bound
-/// `--limit` dies at parse time (exit 2, the family's parse-refusal class
-/// for out-of-range argv) instead of at execute. The message mirrors the
-/// overflow probes' wording so scripts can match one shape.
+/// The shared `--limit` parse (`parse_family_positive`) plus the
+/// [`MAX_RUNS_LIMIT`] refusal, so an over-bound `--limit` dies at parse time
+/// (exit 2, the family's parse-refusal class for out-of-range argv) instead
+/// of at execute. The message mirrors the overflow probes' wording so scripts
+/// can match one shape.
 fn parse_runs_limit(options: &[(&str, &str)]) -> Result<Option<usize>, CliError> {
-    let Some(limit) = parse_limit(options, "--limit")? else {
+    let Some(limit) = parse_family_positive::<usize>(options, "--limit", "scheduled")? else {
         return Ok(None);
     };
     if limit > MAX_RUNS_LIMIT {
@@ -551,7 +548,10 @@ fn validate_rrule(rrule: &str) -> Result<(), CliError> {
     if let Some((_, interval_value)) = parts.iter().find(|(key, _)| key == "INTERVAL") {
         // Only for the HOURLY grammar, where the sweep does interval
         // arithmetic; ONCE/WEEKLY/CRON ignore the field.
-        if matches!(freq_of(&parts).as_deref(), Some("HOURLY")) {
+        if parts
+            .iter()
+            .any(|(key, value)| key == "FREQ" && value.trim().eq_ignore_ascii_case("HOURLY"))
+        {
             let interval = interval_value.parse::<u32>().ok().unwrap_or(1);
             if interval > MAX_HOURLY_INTERVAL {
                 return Err(CliError::usage(format!(
@@ -595,13 +595,6 @@ fn parse_rrule_pairs(rrule: &str) -> Result<Vec<(String, String)>, CliError> {
     Ok(parts)
 }
 
-fn freq_of(parts: &[(String, String)]) -> Option<String> {
-    parts
-        .iter()
-        .find(|(key, _)| key == "FREQ")
-        .map(|(_, value)| value.trim().to_ascii_uppercase())
-}
-
 fn parse_byday(value: &str) -> Vec<String> {
     // Parser is the foundation's; this renders the label (best effort).
     let mut days: Vec<String> = Vec::new();
@@ -636,14 +629,6 @@ fn record_time(value: &serde_json::Value, field: &str) -> chrono::DateTime<chron
         .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
         .map(|stamp| stamp.with_timezone(&chrono::Utc))
         .unwrap_or_else(|| chrono::DateTime::from_timestamp(FLOOR_SECS, 0).expect("sorting floor"))
-}
-
-/// Round-48 review: the archive prune above sorts by `record_time`, which
-/// used to re-parse the RFC3339 stamp on EVERY comparison — O(n log n)
-/// parses instead of n. Pre-computing the sort key here keeps the lossy
-/// lane's per-record cost to one parse.
-fn record_sort_key(value: &serde_json::Value) -> chrono::DateTime<chrono::Utc> {
-    record_time(value, "scheduled_for")
 }
 
 // ---- store layout (mirrors AutomationManager::open(root) + app sidecars) ----
@@ -844,14 +829,11 @@ impl TaskStore {
             )));
         }
         let dir = self.runs_dir_for(&record.automation_id)?;
-        std::fs::create_dir_all(&dir).map_err(|error| {
-            CliError::failed(format!(
-                "scheduled_storage_unavailable: cannot create {}: {error}",
-                dir.display()
-            ))
-        })?;
         let stamp = record.created_at.format("%Y%m%dT%H%M%S%3fZ").to_string();
         let path = dir.join(format!("{stamp}-{}.json", record.id));
+        // `write_json_atomic` creates the target's parent (the runs
+        // directory) before staging, with the same
+        // `scheduled_storage_unavailable` error text.
         write_json_atomic(&path, run)?;
         // Mirror the foundation: rewrites of a legacy-named run migrate it
         // to the sortable name; drop the old file so the run never exists
@@ -1261,7 +1243,8 @@ fn read_registry_for_write(path: &Path, keys: &[&str]) -> Result<serde_json::Val
 /// whether or not the file could be moved aside — silently resetting e.g. the
 /// user's viewed-run state looks like success.
 fn quarantine_unreadable(path: &Path) -> bool {
-    let stamp = quarantine_stamp();
+    // Sortable, separator-free version of the current instant.
+    let stamp = chrono::Utc::now().to_rfc3339().replace([':', '.'], "-");
     let mut target = path.as_os_str().to_owned();
     target.push(format!(".invalid-{stamp}"));
     let target = PathBuf::from(target);
@@ -1317,14 +1300,14 @@ fn quarantine_unreadable(path: &Path) -> bool {
 /// specific file).
 fn registry_map_mut<'a>(
     registry: &'a mut serde_json::Value,
-    schema_version: u32,
+    schema_version: u64,
     key: &str,
     what: &str,
 ) -> Result<&'a mut serde_json::Map<String, serde_json::Value>, CliError> {
     // A registry written by a newer app version must be refused, never
     // merged and written back (the GUI's VersionedJsonStore quarantines the
     // same situation); the version check only gates objects that carry one.
-    ensure_sidecar_schema(registry, schema_version as u64, what)?;
+    ensure_sidecar_schema(registry, schema_version, what)?;
     if !registry.is_object() {
         *registry = serde_json::json!({ "schema_version": schema_version });
         registry[key] = serde_json::Value::Object(serde_json::Map::new());
@@ -1354,11 +1337,6 @@ fn registry_map_mut<'a>(
 /// the foundation's own renderer is the parity choice now).
 fn now_string() -> String {
     chrono::Utc::now().to_rfc3339()
-}
-
-/// Quarantine stamp: sortable, separator-free version of the same instant.
-fn quarantine_stamp() -> String {
-    chrono::Utc::now().to_rfc3339().replace([':', '.'], "-")
 }
 
 /// Registry schema gate for the CLI-owned sidecar registries (schema
@@ -1622,27 +1600,28 @@ fn map_task(
     views: &SidecarViews,
     titles: &std::collections::HashMap<String, String>,
 ) -> serde_json::Value {
-    let task_id = str_field(def, "id").unwrap_or("").to_owned();
+    let task_id = str_field(def, "id").unwrap_or("");
     let model = str_field(def, "model");
+    let rrule = str_field(def, "rrule").unwrap_or("");
     let (has_unread_runs, is_running) =
-        unread_and_running(&task_id, runs, store, &views.read_state, titles);
-    let (pinned, pinned_at) = pinned_for(&views.ui_metadata, &task_id);
+        unread_and_running(task_id, runs, store, &views.read_state, titles);
+    let (pinned, pinned_at) = pinned_for(&views.ui_metadata, task_id);
     serde_json::json!({
         "id": task_id,
         "name": str_field(def, "name").unwrap_or(""),
         "prompt": str_field(def, "prompt").unwrap_or(""),
-        "rrule": str_field(def, "rrule").unwrap_or(""),
-        "scheduleLabel": humanize_rrule(str_field(def, "rrule").unwrap_or("")),
+        "rrule": rrule,
+        "scheduleLabel": humanize_rrule(rrule),
         "status": str_field(def, "status").unwrap_or("active"),
-        "nextRunAt": def.get("next_run_at").cloned().unwrap_or(serde_json::Value::Null),
-        "lastRunAt": def.get("last_run_at").cloned().unwrap_or(serde_json::Value::Null),
+        "nextRunAt": def.get("next_run_at").cloned().unwrap_or_default(),
+        "lastRunAt": def.get("last_run_at").cloned().unwrap_or_default(),
         // Workspace selection is no longer a user-facing setting (GUI keeps
         // the DTO field empty).
         "cwds": [],
-        "model": model.map(str::to_owned),
-        "modelId": model_id_for(&views.bindings, &task_id, model),
-        "kind": kind_for(&views.kinds, &task_id),
-        "mode": def.get("mode").cloned().unwrap_or(serde_json::Value::Null),
+        "model": model,
+        "modelId": model_id_for(&views.bindings, task_id, model),
+        "kind": kind_for(&views.kinds, task_id),
+        "mode": def.get("mode").cloned().unwrap_or_default(),
         "allowShell": bool_field(def, "allow_shell", false),
         "trustMode": bool_field(def, "trust_mode", false),
         "autoApprove": bool_field(def, "auto_approve", true),
@@ -1651,12 +1630,6 @@ fn map_task(
         "pinned": pinned,
         "pinnedAt": pinned_at,
     })
-}
-
-/// [`session_titles`] for the best-effort enrichment sites: no store means
-/// the same empty map (and absent session-derived fields) as a failed read.
-fn session_titles_for(store: Option<&SessionStore>) -> std::collections::HashMap<String, String> {
-    store.map(session_titles).unwrap_or_default()
 }
 
 fn session_titles(store: &SessionStore) -> std::collections::HashMap<String, String> {
@@ -1696,9 +1669,9 @@ fn map_run(
     task_name: Option<&str>,
     task_model: Option<&str>,
 ) -> serde_json::Value {
-    let task_id = str_field(run, "automation_id").unwrap_or("").to_owned();
+    let task_id = str_field(run, "automation_id").unwrap_or("");
     let session_id =
-        store.and_then(|store| owned_session_id_from_snapshot(run, &task_id, store, titles));
+        store.and_then(|store| owned_session_id_from_snapshot(run, task_id, store, titles));
     let session_title = session_id
         .as_deref()
         .and_then(|id| titles.get(id))
@@ -1713,7 +1686,7 @@ fn map_run(
         str_field(run, "status"),
         session_id.as_deref(),
         archived,
-        viewed_runs(read_state, &task_id).contains(&str_field(run, "id").unwrap_or("")),
+        viewed_runs(read_state, task_id).contains(&str_field(run, "id").unwrap_or("")),
     );
     serde_json::json!({
         "id": str_field(run, "id").unwrap_or(""),
@@ -1722,19 +1695,19 @@ fn map_run(
         "scheduledFor": str_field(run, "scheduled_for").unwrap_or(""),
         "status": str_field(run, "status").unwrap_or(""),
         "createdAt": str_field(run, "created_at").unwrap_or(""),
-        "startedAt": run.get("started_at").cloned().unwrap_or(serde_json::Value::Null),
-        "endedAt": run.get("ended_at").cloned().unwrap_or(serde_json::Value::Null),
-        "taskId": run.get("task_id").cloned().unwrap_or(serde_json::Value::Null),
-        "threadId": run.get("thread_id").cloned().unwrap_or(serde_json::Value::Null),
-        "turnId": run.get("turn_id").cloned().unwrap_or(serde_json::Value::Null),
-        "error": run.get("error").cloned().unwrap_or(serde_json::Value::Null),
+        "startedAt": run.get("started_at").cloned().unwrap_or_default(),
+        "endedAt": run.get("ended_at").cloned().unwrap_or_default(),
+        "taskId": run.get("task_id").cloned().unwrap_or_default(),
+        "threadId": run.get("thread_id").cloned().unwrap_or_default(),
+        "turnId": run.get("turn_id").cloned().unwrap_or_default(),
+        "error": run.get("error").cloned().unwrap_or_default(),
         "unread": unread,
         "sessionTitle": session_title,
         "pinned": session.is_some_and(|(id, store)| store.is_pinned(id)),
         "pinnedAt": session.and_then(|(id, store)| store.pinned_at(id)),
         "archived": archived,
-        "taskName": task_name.map(str::to_owned),
-        "taskModel": task_model.map(str::to_owned),
+        "taskName": task_name,
+        "taskModel": task_model,
     })
 }
 
@@ -1914,7 +1887,6 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let tasks = defs
         .iter()
         .map(|def| {
-            let task_id = str_field(def, "id").unwrap_or("").to_owned();
             // Round-47 review: the aggregate lanes (list/show/delete/run)
             // read every historical run record because the summary facts are
             // exists-queries over all history (`hasUnreadRuns`, a zombie
@@ -1925,7 +1897,7 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
             // upstream in the foundation's `list_runs`; until then the read
             // grows with store age (~8,760 records/year for one hourly
             // task).
-            let runs = store_holder.list_runs(&task_id, None)?;
+            let runs = store_holder.list_runs(str_field(def, "id").unwrap_or(""), None)?;
             let value = map_task(def, &runs, Some(&sessions), &views, &titles);
             // Human rows must not be forgeable: every textual cell goes
             // through the shared collapse (JSON keeps the originals), the
@@ -2387,12 +2359,7 @@ fn update(
     // name — the GUI sends `model: selected.model, modelId: selected.id`,
     // and the executor rejects any other combination. Unknown ids are
     // refused before any write.
-    let mut model_update: Option<String> = None;
-    let mut validated_model_id: Option<String> = None;
-    if let Some((wire_model, saved_model_id)) = resolve_model_pair("update", model_id.as_deref())? {
-        model_update = Some(wire_model);
-        validated_model_id = Some(saved_model_id);
-    }
+    let model_pair = resolve_model_pair("update", model_id.as_deref())?;
     let mut request = UpdateAutomationRequest::default();
     if let Some(name) = name {
         let name = name.trim();
@@ -2412,8 +2379,8 @@ fn update(
     if let Some(rrule) = rrule {
         request.rrule = Some(rrule.to_owned());
     }
-    if let Some(model) = model_update.clone() {
-        request.model = Some(model);
+    if let Some((model, _)) = &model_pair {
+        request.model = Some(model.clone());
     }
     let updated = store_holder
         .manager()?
@@ -2434,7 +2401,7 @@ fn update(
         // A workspace-persistence failure lands AFTER the definition's new
         // model wire name is committed — the same split-pair window the
         // binding write below guards, so it rides the same rollback.
-        if validated_model_id.is_some() {
+        if model_pair.is_some() {
             return Err(rollback_committed_update_definition(
                 &store_holder,
                 id,
@@ -2451,8 +2418,12 @@ fn update(
         );
         return Err(error);
     }
-    if validated_model_id.is_some()
-        && let Err(error) = write_model_binding(&store_holder, id, validated_model_id.as_deref())
+    if model_pair.is_some()
+        && let Err(error) = write_model_binding(
+            &store_holder,
+            id,
+            model_pair.as_ref().map(|pair| pair.1.as_str()),
+        )
     {
         // The definition's new model wire name is already committed, so
         // propagating the failure as-is would leave the pair the executor
@@ -2486,10 +2457,10 @@ fn update(
 /// that already pins the workspace is left untouched, so the repair is
 /// idempotent and writes only when the content actually changed.
 fn ensure_workspace(store_holder: &TaskStore, def: &mut serde_json::Value) -> Result<(), CliError> {
-    let id = str_field(def, "id").unwrap_or("").to_owned();
-    // `require_object_definition` already rejected non-component ids at the
+    let id = str_field(def, "id").unwrap_or("");
+    // `require_safe_record_id` already rejected non-component ids at the
     // read gate; this join therefore only ever sees validated ids.
-    let workspace = store_holder.workspace_dir(&id);
+    let workspace = store_holder.workspace_dir(id);
     std::fs::create_dir_all(&workspace).map_err(|error| {
         CliError::failed(format!(
             "scheduled_workspace_unavailable: cannot create {}: {error}",
@@ -2825,7 +2796,7 @@ fn delete(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         "task": {
             "id": str_field(&def, "id").unwrap_or(id),
             "name": str_field(&def, "name").unwrap_or(""),
-            "model": def.get("model").cloned().unwrap_or(serde_json::Value::Null),
+            "model": def.get("model").cloned().unwrap_or_default(),
         },
         "runs": runs,
         "deleted_at": now_string(),
@@ -3117,22 +3088,20 @@ enabled in settings",
              still shows the previous last-run time"
         ),
         Ok(mut latest) => {
-            if latest.is_object() {
-                latest["updated_at"] = serde_json::json!(now_string());
-                latest["last_run_at"] = record["ended_at"].clone();
-                // Best-effort like the enrichment below, but not silent:
-                // unlike the rollback `let _ =` lanes (where the unwritten
-                // state dies with the failed command), a failed refresh here
-                // leaves a user-visible stale "last run" behind while the
-                // command still succeeds, so the loss is disclosed on stderr
-                // instead.
-                if let Err(error) = store_holder.write_def(&latest) {
-                    note!(
-                        "pinvou: warning: scheduled run {run_id} (task {id}) completed, but its \
-                         definition could not be refreshed ({error}); the task still shows the \
-                         previous last-run time"
-                    );
-                }
+            latest["updated_at"] = serde_json::json!(now_string());
+            latest["last_run_at"] = record["ended_at"].clone();
+            // Best-effort like the enrichment below, but not silent:
+            // unlike the rollback `let _ =` lanes (where the unwritten
+            // state dies with the failed command), a failed refresh here
+            // leaves a user-visible stale "last run" behind while the
+            // command still succeeds, so the loss is disclosed on stderr
+            // instead.
+            if let Err(error) = store_holder.write_def(&latest) {
+                note!(
+                    "pinvou: warning: scheduled run {run_id} (task {id}) completed, but its \
+                     definition could not be refreshed ({error}); the task still shows the \
+                     previous last-run time"
+                );
             }
         }
     }
@@ -3140,7 +3109,7 @@ enabled in settings",
     // record is committed above, so a sessions store boot failure must not
     // report a finished, irreversible run as failed.
     let sessions = open_sessions_for_enrichment();
-    let titles = session_titles_for(sessions.as_ref());
+    let titles = sessions.as_ref().map(session_titles).unwrap_or_default();
     let value = map_run(
         &record,
         sessions.as_ref(),
@@ -3314,7 +3283,8 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     let mut active_keys: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
     for def in &defs {
-        let task_id = str_field(def, "id").unwrap_or("").to_owned();
+        let task_id = str_field(def, "id").unwrap_or("");
+        let ids = active_keys.entry(task_id.to_owned()).or_default();
         // Push the limit down per task: the foundation truncates the
         // sortable file listing BEFORE reading (`list_runs(id, limit)`),
         // so the sort+truncate below returns identical rows without
@@ -3333,11 +3303,8 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
         // with a limit set, an active run id beyond the per-task top-K no
         // longer suppresses an equal archived-twin id below — a layout only
         // a hand-crafted store can produce, since run ids are fresh per run.
-        for run in store_holder.list_runs(&task_id, Some(probe_limit))? {
-            active_keys
-                .entry(task_id.clone())
-                .or_default()
-                .insert(str_field(&run, "id").unwrap_or("").to_owned());
+        for run in store_holder.list_runs(task_id, Some(probe_limit))? {
+            ids.insert(str_field(&run, "id").unwrap_or("").to_owned());
             records.push(run);
         }
     }
@@ -3377,10 +3344,12 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
                 // were not read".
                 // Sort (time, original index) newest-first; the index tiebreak
                 // keeps the selection deterministic for equal timestamps.
+                // Round-48 review: pre-computing the sort key keeps the lossy
+                // lane's per-record cost to one stamp parse.
                 let mut newest_first = runs
                     .iter()
                     .enumerate()
-                    .map(|(index, run)| (record_sort_key(run), index))
+                    .map(|(index, run)| (record_time(run, "scheduled_for"), index))
                     .collect::<Vec<_>>();
                 newest_first.sort_by_key(|(time, index)| (Reverse(*time), Reverse(*index)));
                 let selected: Vec<&serde_json::Value> = newest_first
@@ -3418,12 +3387,11 @@ fn runs_all(limit: Option<usize>, output: OutputMode) -> Result<CliOutcome, CliE
     }
     // Round-51 review: decorate-sort like the archive prune above — the
     // bare `sort_by` re-parsed the RFC3339 stamp on every comparison
-    // (O(n log n) parses instead of n; `record_sort_key`'s own comment
-    // documents the shape). The stable sort keeps the insertion-order
-    // tiebreak for equal stamps.
+    // (O(n log n) parses instead of n). The stable sort keeps the
+    // insertion-order tiebreak for equal stamps.
     let mut keyed: Vec<(chrono::DateTime<chrono::Utc>, serde_json::Value)> = records
         .into_iter()
-        .map(|run| (record_sort_key(&run), run))
+        .map(|run| (record_time(&run, "scheduled_for"), run))
         .collect();
     keyed.sort_by_key(|a| std::cmp::Reverse(a.0));
     let records: Vec<serde_json::Value> = keyed.into_iter().map(|(_, run)| run).collect();
@@ -3634,7 +3602,7 @@ fn enriched_task_view(
         runs,
         sessions.as_ref(),
         &views,
-        &session_titles_for(sessions.as_ref()),
+        &sessions.as_ref().map(session_titles).unwrap_or_default(),
     )
 }
 

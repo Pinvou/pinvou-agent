@@ -169,9 +169,8 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
             let id = require_id(rest.first(), "update")?;
             let (rest, roots) = extract_roots(&rest[1..])?;
             let (options, flags) = parse_flags(&rest, NAME_OPTIONS, UPDATE_FLAGS)?;
-            if crate::support::family_option(&options, "--name")
-                .is_some_and(|name| name.trim().is_empty())
-            {
+            let name = crate::support::family_option(&options, "--name");
+            if name.is_some_and(|name| name.trim().is_empty()) {
                 return Err(CliError::usage("projects update --name must not be empty"));
             }
             // `--clear-roots` expresses the GUI's Some([]) (drop every root):
@@ -191,7 +190,7 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
             };
             Ok(ProjectsCommand::Update {
                 id,
-                name: crate::support::family_option(&options, "--name").map(str::to_owned),
+                name: name.map(str::to_owned),
                 roots,
             })
         }
@@ -730,12 +729,12 @@ fn move_session(
     // the chat-only admission below would pass them — but admitting them
     // into the assignments table creates the ghost-entry class (aux ids are
     // invisible in every list, so an assignment could never be cleared from
-    // the UI).
+    // the UI). Same refusal text as the sessions family's mutators.
     if pinvou3_lib::features::sessions::is_aux_session_id(session_id) {
-        return Err(CliError::failed(format!(
-            "projects move({session_id}): auxiliary conversations are managed through their \
-             main session"
-        )));
+        return Err(crate::sessions::aux_session_error(
+            "projects move",
+            session_id,
+        ));
     }
     // Omitting the project id is the ungrouping form, whose write is
     // irreversible on both surfaces (neither can turn the explicit entry
@@ -1073,8 +1072,9 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
     // Finally-stale sidecars of both lanes: no self-healing path remains in
     // this run, so they must be reported as failed for a rerun to converge
-    // them via the on-disk prefix scan.
-    let mut final_stale = prefix_outcome.sidecar_final_stale.clone();
+    // them via the on-disk prefix scan. (Moved: nothing else reads the
+    // outcome's stale list.)
+    let mut final_stale = prefix_outcome.sidecar_final_stale;
     for session_id in &plain_rebind.failed_session_ids {
         push_unique(&mut final_stale, session_id.clone());
     }
@@ -1523,20 +1523,12 @@ mod tests {
     /// disk read can see it.
     #[test]
     fn codex_fence_sees_bindings_persisted_after_an_earlier_load() {
+        // Lock first, fixture second: the fixture's Drop restores the
+        // previous PINVOU3_HOME while the lock is still held.
         let _env_lock = crate::support::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-projects-fence-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create temp home");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = crate::support::test_support::TempHome::new("projects-fence");
         let from = root.join("from-dir");
         std::fs::create_dir_all(&from).expect("create from dir");
 
@@ -1578,12 +1570,6 @@ mod tests {
         // "a rerun converges them" reachable for this class.
         fence_stragglers_from_disk(&from, &mut final_stale);
         assert_eq!(final_stale, vec!["fence-session".to_owned()]);
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn project_fixture(name: &str, roots: Vec<PathBuf>) -> Project {
@@ -1736,17 +1722,7 @@ mod tests {
         let _env_lock = crate::support::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-projects-backslash-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create temp home");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = crate::support::test_support::TempHome::new("projects-backslash");
         let from = root.join("proj\\");
         std::fs::create_dir_all(&from).expect("create the backslash directory");
         let sessions = SessionStore::boot().expect("boot the session store");
@@ -1802,12 +1778,6 @@ mod tests {
             to,
             "the SavedSession metadata must be synced to the destination"
         );
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The other half of the same comparison: a genuine no-op (the same
@@ -1821,17 +1791,7 @@ mod tests {
         let _env_lock = crate::support::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-cli-projects-noop-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("create temp home");
-        let previous = std::env::var_os("PINVOU3_HOME");
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let root = crate::support::test_support::TempHome::new("projects-noop");
         let dir = root.join("proj");
         std::fs::create_dir_all(&dir).expect("create the directory");
         let sessions = SessionStore::boot().expect("boot the session store");
@@ -1860,12 +1820,6 @@ mod tests {
             }),
             "a self-rebind is a no-op success, not a rewrite: {report}"
         );
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Round-53 review: the Windows half of the no-op fold — the helper the

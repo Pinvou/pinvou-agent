@@ -996,44 +996,32 @@ fn list(store: Option<MemoryStore>, output: OutputMode) -> Result<CliOutcome, Cl
             let never =
                 feature::load_never_memory().map_err(|error| feature_error("list", error))?;
             let mut lines = Vec::new();
-            let mut section = |label: &str, items: &[String]| {
+            let mut section = |label: &str, items: Vec<String>| {
                 lines.push(format!("{label} ({})", items.len()));
-                lines.extend(items.iter().cloned());
+                lines.extend(items);
             };
             section(
                 "preferences",
-                &preferences
-                    .iter()
-                    .map(render_preference)
-                    .collect::<Vec<_>>(),
+                preferences.iter().map(render_preference).collect(),
             );
             section(
                 "work_context",
-                &work_context
-                    .iter()
-                    .map(render_work_context)
-                    .collect::<Vec<_>>(),
+                work_context.iter().map(render_work_context).collect(),
             );
             section(
                 "current_focus",
-                &current_focus.iter().map(render_timed).collect::<Vec<_>>(),
+                current_focus.iter().map(render_timed).collect(),
             );
             section(
                 "recent_activity",
-                &recent_activity.iter().map(render_timed).collect::<Vec<_>>(),
+                recent_activity.iter().map(render_timed).collect(),
             );
             section(
                 "recent_work",
-                &recent_work
-                    .iter()
-                    .map(render_recent_work)
-                    .collect::<Vec<_>>(),
+                recent_work.iter().map(render_recent_work).collect(),
             );
-            section("never", &never.iter().map(render_never).collect::<Vec<_>>());
-            section(
-                "pending",
-                &pending.iter().map(render_pending).collect::<Vec<_>>(),
-            );
+            section("never", never.iter().map(render_never).collect());
+            section("pending", pending.iter().map(render_pending).collect());
             // Round-40 review: the detail composes filesystem paths, so it
             // goes through the same collapse as every other warning renderer
             // — a control character in an unremovable file's name must not
@@ -1825,27 +1813,6 @@ fn replaced_entries(before: &[(String, String)], after: &[(String, String)]) -> 
         .collect()
 }
 
-/// The text cap the `memory update` writer applies to the patch text, per
-/// store — the `clean_candidate_sentence` cap at each write site
-/// (`features/memory/io.rs`: `update_preference_unlocked`,
-/// `update_work_context_unlocked`, `update_timed_memory_unlocked`). The
-/// constants are re-exported from `features::memory` (round-41 review), so
-/// the caps are the store's own values instead of documented literals; the
-/// update truncation contract test still reads the stored length back from
-/// the store as the authority. `None` for the two stores `parse_update`
-/// refuses: they have no writer, so there is nothing to predict.
-fn update_writer_cap(store: MemoryStore) -> Option<usize> {
-    match store {
-        MemoryStore::Preferences => Some(feature::PREFERENCE_TEXT_MAX_CHARS),
-        MemoryStore::WorkContext => Some(feature::WORK_CONTEXT_TEXT_MAX_CHARS),
-        // Shared by both timed stores.
-        MemoryStore::CurrentFocus | MemoryStore::RecentActivity => {
-            Some(feature::TIMED_TEXT_MAX_CHARS)
-        }
-        MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => None,
-    }
-}
-
 /// The `memory update` truncation measurement, captured before the write: the
 /// target store's writer cap plus the submitted-versus-stored character
 /// counts, everything the two disclosure channels need.
@@ -1870,8 +1837,26 @@ impl UpdateTruncation {
     /// same normalization the empty check above replays (there against the
     /// exported work-context constant, which cannot change the emptiness
     /// outcome; here the per-store cap is the whole point).
+    ///
+    /// The cap is the `clean_candidate_sentence` cap at each store's write
+    /// site (`features/memory/io.rs`: `update_preference_unlocked`,
+    /// `update_work_context_unlocked`, `update_timed_memory_unlocked`). The
+    /// constants are re-exported from `features::memory` (round-41 review),
+    /// so the caps are the store's own values instead of documented
+    /// literals; the update truncation contract test still reads the stored
+    /// length back from the store as the authority. `None` for the stores
+    /// `parse_update` refuses: they have no writer, so there is nothing to
+    /// predict.
     fn measure(store: MemoryStore, content: &str) -> Option<Self> {
-        let cap_chars = update_writer_cap(store)?;
+        let cap_chars = match store {
+            MemoryStore::Preferences => feature::PREFERENCE_TEXT_MAX_CHARS,
+            MemoryStore::WorkContext => feature::WORK_CONTEXT_TEXT_MAX_CHARS,
+            // Shared by both timed stores.
+            MemoryStore::CurrentFocus | MemoryStore::RecentActivity => {
+                feature::TIMED_TEXT_MAX_CHARS
+            }
+            MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => return None,
+        };
         Some(Self {
             submitted_chars: feature::clean_text(content, usize::MAX).chars().count(),
             cap_clause: format!("applied when the {} item is written", store.as_str()),
@@ -1964,14 +1949,19 @@ fn update(
     // fails (an unknown id), and the JSON fields and human note ride the
     // successful output at the bottom of this function.
     let truncation = UpdateTruncation::measure(store, content);
-    if let Some(truncation) = truncation.as_ref().filter(|t| t.is_truncated()) {
+    // Classified once for both disclosure points (the pre-write stderr note
+    // here and the post-success output note below): `is_normalized` already
+    // implies `!is_truncated`, so at most one of the two is `Some`.
+    let over_cap = truncation.as_ref().filter(|t| t.is_truncated());
+    let renormalized = truncation.as_ref().filter(|t| t.is_normalized());
+    if let Some(truncation) = over_cap {
         note_truncation(
             "update",
             truncation.submitted_chars,
             truncation.cap_chars,
             &truncation.cap_clause,
         );
-    } else if let Some(truncation) = truncation.as_ref().filter(|t| t.is_normalized()) {
+    } else if let Some(truncation) = renormalized {
         // Round-48 review: fired at measurement time — BEFORE the write — so
         // the wording is prospective (the truncation note's round-37
         // discipline): a subsequent not-found refusal must not leave stderr
@@ -2067,7 +2057,7 @@ work-context, current-focus, recent-activity)",
     // characters than submitted" — the same disclosure `add` appends for its
     // own truncations, on both output channels (the stderr note already fired
     // at measurement time above).
-    if let Some(truncation) = truncation.as_ref().filter(|t| t.is_truncated()) {
+    if let Some(truncation) = over_cap {
         disclose_truncation(
             &mut value,
             &mut human,
@@ -2076,7 +2066,7 @@ work-context, current-focus, recent-activity)",
             truncation.cap_chars,
             &truncation.cap_clause,
         );
-    } else if let Some(truncation) = truncation.as_ref().filter(|t| t.is_normalized()) {
+    } else if let Some(truncation) = renormalized {
         disclose_normalization(
             &mut value,
             &mut human,

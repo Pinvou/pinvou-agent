@@ -666,7 +666,7 @@ fn redact_argv_pairing(args: &[&str]) -> String {
         }
         index += 1;
     }
-    pinvou3_lib::platform::credential_store::redact_secret(&joined)
+    redact_secret(&joined)
 }
 
 /// The vendor child spawn preamble [`run_cli_bounded`] and
@@ -824,16 +824,14 @@ fn run_cli_bounded(
 /// a child that outproduces the cap can still finish instead of blocking on
 /// a full pipe. Same contract as the shared
 /// [`drain_capped_to_eof`](crate::support::drain_capped_to_eof) (which
-/// voice.rs and code.rs call), which this lane now calls instead of keeping
-/// its own exact-cap copy: the helper keeps a `cap + 1` window and reports a
-/// total, so the call passes `MAX_VENDOR_OUTPUT_BYTES - 1` and truncates the
-/// kept bytes back to the exact cap — keep-window-plus-truncate is exactly
-/// the old hand-rolled keep (the first 8 MiB bytes, everything past it read
-/// and discarded), the total is unused here, and a missing pipe still
-/// drains to an empty string.
+/// voice.rs and code.rs call), which this lane calls instead of keeping its
+/// own exact-cap copy: the helper keeps a `cap + 1` window, so passing
+/// `MAX_VENDOR_OUTPUT_BYTES - 1` keeps exactly the first 8 MiB bytes — the
+/// old hand-rolled keep — while everything past it is read and discarded.
+/// The helper's `total` is unused here, and a missing pipe still drains to
+/// an empty string.
 fn drain_vendor_output<R: std::io::Read>(pipe: Option<R>) -> String {
-    let (mut kept, _) = crate::support::drain_capped_to_eof(pipe, MAX_VENDOR_OUTPUT_BYTES - 1);
-    kept.truncate(MAX_VENDOR_OUTPUT_BYTES as usize);
+    let (kept, _) = crate::support::drain_capped_to_eof(pipe, MAX_VENDOR_OUTPUT_BYTES - 1);
     String::from_utf8_lossy(&kept).into_owned()
 }
 
@@ -1263,7 +1261,7 @@ pub fn execute(command: ConnectorsCommand, output: OutputMode) -> Result<CliOutc
     // Connector state (bundle mirror, disabled markers, install locks/logs)
     // lives under the product data root; a relative PINVOU3_HOME would
     // silently resolve against the cwd.
-    crate::support::sandbox_home()?;
+    sandbox_home()?;
     match command {
         ConnectorsCommand::Status { connector } => status(connector, output),
         ConnectorsCommand::EnsureCli { connector } => ensure_cli(connector, output),
@@ -1366,58 +1364,7 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
 
     let human = entries
         .iter()
-        .map(|entry| {
-            let mut line = format!("{}\t", entry["id"].as_str().unwrap_or("-"));
-            if entry.get("credentials_present").is_some() {
-                line.push_str(&ima_status_cells(entry));
-            } else {
-                let installed = if bool_field(entry, "installed") {
-                    match entry.get("version").and_then(Value::as_str) {
-                        // The version string comes straight from the vendor
-                        // CLI's `--version` output; a control character in it
-                        // would break the tab-separated column structure of
-                        // this row (same reason the sessions/projects
-                        // families collapse their vendor- and user-supplied
-                        // cells). JSON keeps the raw string.
-                        Some(version) => format!(
-                            "yes({})",
-                            crate::support::collapse_control_characters(version)
-                        ),
-                        None => "yes".to_owned(),
-                    }
-                } else {
-                    "no".to_owned()
-                };
-                line.push_str(&format!(
-                    "installed={}\tconnected={}\tenabled={}\tskills={}",
-                    installed,
-                    yes_no(bool_field(entry, "connected")),
-                    yes_no(bool_field(entry, "enabled")),
-                    yes_no(bool_field(entry, "skills_applied")),
-                ));
-                if bool_field(entry, "upgrade_required") {
-                    line.push_str("\tupgrade_required=yes");
-                }
-                // A legacy marker is the one "disabled" reason no GUI surface
-                // can explain or undo, so it is named separately from the
-                // plain `enabled=no` and carries its own remedy.
-                if bool_field(entry, "legacy_disabled_marker") {
-                    let id = entry["id"].as_str().unwrap_or("-");
-                    line.push_str(&format!(
-                        "\tlegacy_disabled_marker=yes (run `pinvou connectors enable {id}` to clear it)"
-                    ));
-                }
-            }
-            if let Some(note) = entry.get("note").and_then(Value::as_str) {
-                // Same collapse discipline as the sibling version cell:
-                // the note embeds error-chain text (round-44 review).
-                line.push_str(&format!(
-                    "\t({})",
-                    crate::support::collapse_control_characters(note)
-                ));
-            }
-            line
-        })
+        .map(human_status_row)
         .collect::<Vec<_>>()
         .join("\n");
     Ok(success(render(
@@ -1425,6 +1372,62 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
         human,
         &json!({ "connectors": entries }),
     )))
+}
+
+/// One human status row: the ima shape (`connected` / `credentials` /
+/// `skill_installed`) when the entry carries credential fields, the vendor
+/// shape otherwise, plus the shared note cell.
+fn human_status_row(entry: &Value) -> String {
+    let mut line = format!("{}\t", entry["id"].as_str().unwrap_or("-"));
+    if entry.get("credentials_present").is_some() {
+        line.push_str(&ima_status_cells(entry));
+    } else {
+        let installed = if bool_field(entry, "installed") {
+            match entry.get("version").and_then(Value::as_str) {
+                // The version string comes straight from the vendor
+                // CLI's `--version` output; a control character in it
+                // would break the tab-separated column structure of
+                // this row (same reason the sessions/projects
+                // families collapse their vendor- and user-supplied
+                // cells). JSON keeps the raw string.
+                Some(version) => format!(
+                    "yes({})",
+                    crate::support::collapse_control_characters(version)
+                ),
+                None => "yes".to_owned(),
+            }
+        } else {
+            "no".to_owned()
+        };
+        line.push_str(&format!(
+            "installed={}\tconnected={}\tenabled={}\tskills={}",
+            installed,
+            yes_no(bool_field(entry, "connected")),
+            yes_no(bool_field(entry, "enabled")),
+            yes_no(bool_field(entry, "skills_applied")),
+        ));
+        if bool_field(entry, "upgrade_required") {
+            line.push_str("\tupgrade_required=yes");
+        }
+        // A legacy marker is the one "disabled" reason no GUI surface
+        // can explain or undo, so it is named separately from the
+        // plain `enabled=no` and carries its own remedy.
+        if bool_field(entry, "legacy_disabled_marker") {
+            let id = entry["id"].as_str().unwrap_or("-");
+            line.push_str(&format!(
+                "\tlegacy_disabled_marker=yes (run `pinvou connectors enable {id}` to clear it)"
+            ));
+        }
+    }
+    if let Some(note) = entry.get("note").and_then(Value::as_str) {
+        // Same collapse discipline as the sibling version cell:
+        // the note embeds error-chain text (round-44 review).
+        line.push_str(&format!(
+            "\t({})",
+            crate::support::collapse_control_characters(note)
+        ));
+    }
+    line
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -1594,7 +1597,6 @@ fn set_enabled(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
-    sandbox_home()?;
     // The switch itself is the unified scope state below — the CLI does NOT
     // write a `<id>_disabled` marker. The app retired that writer together
     // with the `set_*_enabled` commands (`skill_gate.rs`), so a marker
@@ -2088,27 +2090,25 @@ fn optional_string_field(value: &Value, key: &str) -> Option<String> {
 /// reviewed `mirrorUrl`, then the official URL. Labels name the candidate
 /// class in errors, never the URL itself (mirror URLs can be intranet
 /// addresses). Each candidate is checksum-verified by the caller.
+///
+/// The opt-in prefix follows the GUI's `github_prefixed_url` rule: only a
+/// github.com release URL can be re-hosted under the acceleration prefix.
 fn artifact_download_urls(artifact: &LockArtifact) -> Vec<(&'static str, String)> {
     let mut urls = Vec::new();
-    if let Ok(prefix) = std::env::var(pinvou3_lib::features::GITHUB_ASSET_MIRROR_PREFIX_ENV)
-        && let Some(prefixed) = github_prefixed_url(prefix.trim(), &artifact.url)
-    {
-        urls.push(("GitHub mirror prefix", prefixed));
+    if let Ok(prefix) = std::env::var(pinvou3_lib::features::GITHUB_ASSET_MIRROR_PREFIX_ENV) {
+        let prefix = prefix.trim();
+        if !prefix.is_empty() && artifact.url.starts_with("https://github.com/") {
+            urls.push((
+                "GitHub mirror prefix",
+                format!("{}/{}", prefix.trim_end_matches('/'), artifact.url),
+            ));
+        }
     }
     if let Some(mirror) = artifact.mirror_url.clone() {
         urls.push(("reviewed mirror", mirror));
     }
     urls.push(("official URL", artifact.url.clone()));
     urls
-}
-
-/// The GUI `github_prefixed_url` rule: only a github.com release URL can be
-/// re-hosted under the acceleration prefix.
-fn github_prefixed_url(prefix: &str, url: &str) -> Option<String> {
-    if prefix.is_empty() || !url.starts_with("https://github.com/") {
-        return None;
-    }
-    Some(format!("{}/{}", prefix.trim_end_matches('/'), url))
 }
 
 fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -3249,7 +3249,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             // Phase 1 (register app): `config init --new` until exit. The
             // register link is printed and noted live by
             // `spawn_and_capture_url` while the vendor CLI runs.
-            let (url, _user_code, status_ok) = spawn_and_capture_url(
+            let (_url, _user_code, status_ok) = spawn_and_capture_url(
                 spec,
                 &["config", "init", "--new"],
                 &mut notes,
@@ -3263,7 +3263,6 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     connect_failure_suffix(spec, &notes, &tail)
                 )));
             }
-            let _ = url;
             // Phase 2 (authorize user): device-code login + polling.
             let (ok, stdout, stderr) = run_cli_bounded(
                 spec,
@@ -3445,7 +3444,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             };
             let (url, user_code, _status_ok) =
                 spawn_and_capture_url(spec, args, &mut notes, &mut tail, deadline, None)?;
-            if let Some(url) = compose_user_code(&url, user_code.as_deref()) {
+            if let Some(url) = compose_user_code(url.as_deref(), user_code.as_deref()) {
                 // Same collapse as the feishu lane: the URL is vendor output
                 // and reaches the terminal through the notes.
                 notes.push(format!(
@@ -3955,8 +3954,8 @@ enum LoginStreamEvent {
 
 /// Mirror of dingtalk `with_user_code_param`: attach the drained user code to
 /// the login URL when the URL does not already carry it.
-fn compose_user_code(url: &Option<String>, user_code: Option<&str>) -> Option<String> {
-    let url = url.as_deref()?;
+fn compose_user_code(url: Option<&str>, user_code: Option<&str>) -> Option<String> {
+    let url = url?;
     let Some(code) = user_code else {
         return Some(url.to_owned());
     };

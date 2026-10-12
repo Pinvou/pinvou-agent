@@ -157,7 +157,9 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
         }
         "rename" => {
             let id = require_id(rest.first())?;
-            let title = rest.get(1..).unwrap_or_default().join(" ");
+            // `require_id` proved `rest[0]` exists, so the title slice is
+            // always in range.
+            let title = rest[1..].join(" ");
             if title.trim().is_empty() {
                 return Err(CliError::usage(format!(
                     "sessions rename requires a title\n{RENAME_OUTPUT_NOTE}"
@@ -328,6 +330,19 @@ fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), 
         .load(id)
         .map(|_| ())
         .map_err(|error| store_error(action, id, error))
+}
+
+/// The shared aux-session refusal (`sessions <prefix>(<id>): auxiliary
+/// conversations are managed through their main session`), stated once:
+/// every mutating subcommand that takes an id refuses aux ids with this
+/// exact text — retitling one would desync the rename pair, and
+/// pin/archive ones would land ghost sidecar entries no list can clear,
+/// because aux sessions are invisible in every list. Shared with the
+/// `projects move` ghost-entry gate.
+pub(crate) fn aux_session_error(prefix: &str, id: &str) -> CliError {
+    CliError::failed(format!(
+        "{prefix}({id}): auxiliary conversations are managed through their main session"
+    ))
 }
 
 fn kind_label(store: &SessionStore, id: &str) -> &'static str {
@@ -630,12 +645,9 @@ fn show(
 }
 
 fn rename(id: &str, title: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    // GUI `rename_session` parity: aux ids are managed through their main
-    // session, and retitling one here would desync the pair.
+    // GUI `rename_session` parity: retitling an aux id would desync the pair.
     if is_aux_session_id(id) {
-        return Err(CliError::failed(format!(
-            "sessions rename({id}): auxiliary conversations are managed through their main session"
-        )));
+        return Err(aux_session_error("sessions rename", id));
     }
     let store = open_store()?;
     store
@@ -701,13 +713,10 @@ fn set_pinned(id: &str, pinned: bool, output: OutputMode) -> Result<CliOutcome, 
     } else {
         ("unpin", "unpinned")
     };
-    // GUI `set_session_pinned` parity: aux ids would land in the pinned
-    // table as ghost entries — aux sessions are invisible in every list, so
-    // the entry could never be cleared from the UI.
+    // GUI `set_session_pinned` parity: an aux id would land in the pinned
+    // table as a ghost entry no list can clear (see [`aux_session_error`]).
     if is_aux_session_id(id) {
-        return Err(CliError::failed(format!(
-            "sessions {verb}({id}): auxiliary conversations are managed through their main session"
-        )));
+        return Err(aux_session_error(&format!("sessions {verb}"), id));
     }
     require_existing(&store, id, verb)?;
     if let Err(error) = store.set_pinned(id, pinned) {
@@ -735,9 +744,7 @@ fn set_hidden(id: &str, hidden: bool, output: OutputMode) -> Result<CliOutcome, 
     // Same ghost-entry argument as the pin gate (GUI
     // `set_session_archived` parity).
     if is_aux_session_id(id) {
-        return Err(CliError::failed(format!(
-            "sessions {verb}({id}): auxiliary conversations are managed through their main session"
-        )));
+        return Err(aux_session_error(&format!("sessions {verb}"), id));
     }
     require_existing(&store, id, verb)?;
     if let Err(error) = store.set_hidden(id, hidden) {

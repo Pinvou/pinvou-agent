@@ -14,7 +14,7 @@
 //!   wedge a live desktop app's import.
 //! - scan start/status → `KnowledgeService::{start_scan, status}`;
 //!   `--root` omitted defaults to the user home like `kb_start_scan`. Scan
-//!   cancel is a stable exit-1 refusal (see `scan_cancel`): the in-memory
+//!   cancel is a stable exit-1 refusal (see `scan_cancel_unavailable`): the in-memory
 //!   scan state is process-local, so a one-shot invocation can never have a
 //!   scan of its own to signal.
 //! - collections list/create/update/delete → `KnowledgeService::l1()`
@@ -740,7 +740,7 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         }
         KnowledgeCommand::ScanStart { root } => scan_start(root, output),
         KnowledgeCommand::ScanStatus => scan_status(output),
-        KnowledgeCommand::ScanCancel => scan_cancel(output),
+        KnowledgeCommand::ScanCancel => Err(scan_cancel_unavailable()),
         KnowledgeCommand::Stats => stats(output),
         KnowledgeCommand::TypeCounts => type_counts(output),
         KnowledgeCommand::CollectionsList => collections_list(output),
@@ -787,7 +787,7 @@ pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutco
         ),
         KnowledgeCommand::ModelStatus => model_status(output),
         KnowledgeCommand::ModelDownload => Err(model_download_unavailable()),
-        KnowledgeCommand::ModelCancel => model_cancel(output),
+        KnowledgeCommand::ModelCancel => Err(model_cancel_unavailable()),
         KnowledgeCommand::RemoteConnections => remote_connections(output),
         KnowledgeCommand::RemoteProbe { url } => remote_probe(&url, output),
         KnowledgeCommand::RemoteCollections => remote_collections(output),
@@ -845,8 +845,7 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     // CRUD lanes it must not run the boot recovery: that would flip a job a
     // live desktop process is still importing to interrupted.
     let service = open_service()?;
-    let roots = vec![root];
-    service.start_scan(roots);
+    service.start_scan(vec![root]);
     // The scan runs on a service thread; a one-shot process that returned
     // immediately would kill it before it did any work (nothing would be
     // indexed and no completion marker persisted), so the invocation waits
@@ -869,10 +868,16 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
     // disallowed files under a few countable ones — walks healthily for a
     // long time without `scanned` moving, and keying on it alone would
     // misclassify that walk as a wedged thread and kill it mid-tree.
+    // `PINVOU_KB_SCAN_STALL_MILLIS` (milliseconds, positive) overrides the
+    // default — the same override shape the import lane's
+    // `PINVOU_KB_IMPORT_STALL_MILLIS` has, so the timeout path stays
+    // automatable; an unusable value keeps the default.
+    let stall_bound =
+        stall_millis_override("PINVOU_KB_SCAN_STALL_MILLIS", Duration::from_secs(300));
     let first_status = service.status();
     let mut last_scanned = first_status.scanned;
     let mut last_raw_seen = first_status.raw_seen;
-    let mut last_progress = std::time::Instant::now();
+    let mut last_progress = Instant::now();
     loop {
         let state = service.status();
         if !state.running {
@@ -894,8 +899,8 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
         if state.scanned != last_scanned || state.raw_seen != last_raw_seen {
             last_scanned = state.scanned;
             last_raw_seen = state.raw_seen;
-            last_progress = std::time::Instant::now();
-        } else if last_progress.elapsed() >= scan_no_progress_timeout() {
+            last_progress = Instant::now();
+        } else if last_progress.elapsed() >= stall_bound {
             return Err(CliError::failed(format!(
                 // Round-40 review: the import twin's timeout text names the
                 // legitimate quiet phases; this one called a healthy scan on
@@ -911,7 +916,7 @@ fn scan_start(root: Option<PathBuf>, output: OutputMode) -> Result<CliOutcome, C
                 state.raw_seen
             )));
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -924,21 +929,6 @@ fn stall_millis_override(key: &str, default: Duration) -> Duration {
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or(default)
-}
-
-/// How long `scan start` keeps waiting on a scan that is flagged running but
-/// has stopped counting. Generous on purpose: the walker only reports every
-/// 5000 entries, and a cold spinning disk or a slow network mount can spend
-/// minutes between two reports without being stuck.
-/// `PINVOU_KB_SCAN_STALL_MILLIS` (milliseconds, positive) overrides the
-/// default — the same override shape the import lane's
-/// `PINVOU_KB_IMPORT_STALL_MILLIS` has, so the timeout path stays
-/// automatable; an unusable value keeps the default.
-fn scan_no_progress_timeout() -> std::time::Duration {
-    stall_millis_override(
-        "PINVOU_KB_SCAN_STALL_MILLIS",
-        std::time::Duration::from_secs(300),
-    )
 }
 
 fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -964,13 +954,13 @@ fn scan_status(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// command reporting success that cannot cancel anything is dishonest; this
 /// is therefore a stable refusal, same pattern as `model cancel` and
 /// `model download`.
-fn scan_cancel(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed(
+fn scan_cancel_unavailable() -> CliError {
+    CliError::failed(
         "knowledge_scan_cancel_requires_product_host: the scan this process could signal is \
          always already over — `scan start` blocks until its scan finishes and no other lane \
          starts one, so a later one-shot invocation can never have a scan to cancel; a scan a \
          live desktop app is running lives in that app's process and is out of reach here",
-    ))
+    )
 }
 
 fn scan_out(header: &str, state: ScanState, output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -1547,7 +1537,7 @@ fn collections_add_sources(
             state.running
         )));
     }
-    let Some(job_id) = state.job_id.clone() else {
+    let Some(job_id) = state.job_id else {
         return Err(CliError::failed(format!(
             "knowledge_index_start_failed: collection {id} reported no index job id; the \
              requested sources were not enqueued"
@@ -1788,7 +1778,7 @@ fn require_job_id(
     service: &KnowledgeService,
     job_id: &str,
     operation: &str,
-) -> Result<IndexState, CliError> {
+) -> Result<(), CliError> {
     let latest = service.index_status();
     let Some(active) = latest.job_id.as_deref() else {
         return Err(CliError::failed(format!(
@@ -1819,7 +1809,7 @@ fn require_job_id(
              next start relabels it interrupted/resumable",
         )));
     }
-    Ok(latest)
+    Ok(())
 }
 
 /// GUI `kb_index_resume` re-arms an interrupted job; the invocation then
@@ -1894,20 +1884,6 @@ fn index_state_result(result: Result<IndexState, String>) -> Result<IndexState, 
     })
 }
 
-/// How long an import-owning command keeps waiting on a job that is still
-/// flagged running but reports no observable progress. Generous on purpose:
-/// the importer can legitimately go quiet while it loads the embedding model
-/// (~570 MiB of ONNX/tokenizer reads on model-installed machines) before the
-/// first item's counters start moving. Same order as the scan lane's bound.
-const IMPORT_NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The no-progress bound actually applied. `PINVOU_KB_IMPORT_STALL_MILLIS`
-/// (milliseconds, positive) overrides the default for automation and tests
-/// that exercise the timeout path; an unusable value keeps the default.
-fn import_no_progress_timeout() -> Duration {
-    stall_millis_override("PINVOU_KB_IMPORT_STALL_MILLIS", IMPORT_NO_PROGRESS_TIMEOUT)
-}
-
 /// One read-error tolerance burst, shared by [`wait_for_terminal_job`]'s two
 /// call sites (the first poll and the loop step): poll the job state until it
 /// answers, tolerating a short burst of failed polls (a sustained
@@ -1957,8 +1933,8 @@ fn poll_tolerant(
 /// Waits until the named job leaves the running phase, polling the per-job
 /// state surface ([`KnowledgeService::index_job_state`]) — the same read
 /// `index status <job-id>` uses. Returns the terminal state, or fails with a
-/// liveness error when the job reports no progress for
-/// [`import_no_progress_timeout`] (the import thread is gone or wedged).
+/// liveness error when the job reports no progress for the no-progress stall
+/// bound (the import thread is gone or wedged).
 ///
 /// Terminal states are exactly the phases with `running: false`
 /// (`interrupted`/`cancelled`/`done`/`done_with_errors` in
@@ -1980,7 +1956,16 @@ fn wait_for_terminal_job(
     job_id: &str,
     operation: &str,
 ) -> Result<IndexState, CliError> {
-    let stall_bound = import_no_progress_timeout();
+    // Generous on purpose: the importer can legitimately go quiet while it
+    // loads the embedding model (~570 MiB of ONNX/tokenizer reads on
+    // model-installed machines) before the first item's counters start
+    // moving, and one file whose parse outlasts the bound stages its
+    // counters only after it finishes (the stall report names these quiet
+    // phases). `PINVOU_KB_IMPORT_STALL_MILLIS` (milliseconds, positive)
+    // overrides the default for automation and the tests that exercise the
+    // timeout path; an unusable value keeps the default.
+    let stall_bound =
+        stall_millis_override("PINVOU_KB_IMPORT_STALL_MILLIS", Duration::from_secs(300));
     // Round-48 review: the FIRST poll sits inside the same read-error
     // tolerance as the loop below. It used to propagate immediately, so a
     // transient store-busy at the one poll this command makes before its
@@ -2034,7 +2019,7 @@ fn wait_for_terminal_job(
                      resume {job_id}` continues it)"
                 )
             } else if matches!(
-                actual_phase.as_deref(),
+                actual_phase,
                 Some("done") | Some("done_with_errors") | Some("cancelled")
             ) {
                 // Round-40 review: a job landing TERMINAL in the moment
@@ -2046,7 +2031,7 @@ fn wait_for_terminal_job(
                     "the job reached `{}` right at the deadline — it is terminal \
                      (`pinvou knowledge index status` shows it); nothing needs resuming or \
                      cancelling",
-                    actual_phase.as_deref().unwrap_or("done")
+                    actual_phase.unwrap_or("done")
                 )
             } else {
                 format!(
@@ -2175,7 +2160,7 @@ fn index_finished(state: &IndexState, output: OutputMode) -> Result<CliOutcome, 
              added; check the exclude rules if this is unexpected)"
         );
     }
-    let (header, failed) = match display_phase(state).as_str() {
+    let (header, failed) = match display_phase(state) {
         "interrupted" => (
             "index interrupted (staged progress survives; re-run `pinvou knowledge index \
              resume <job-id>` to continue)",
@@ -2216,21 +2201,21 @@ fn index_payload(state: &IndexState) -> serde_json::Value {
 /// part of that contract: without it a cancelled job (running=false with a
 /// job_id) is indistinguishable from a finished one, and a client polling
 /// until `done` would treat a cancelled import as completed.
-fn display_phase(state: &IndexState) -> String {
+fn display_phase(state: &IndexState) -> &'static str {
     if state.running {
-        "running".into()
+        "running"
     } else if state.resumable {
-        "interrupted".into()
+        "interrupted"
     } else if state.cancelled {
-        "cancelled".into()
+        "cancelled"
     } else if state.job_id.is_some() {
         if state.failed > 0 {
-            "done_with_errors".into()
+            "done_with_errors"
         } else {
-            "done".into()
+            "done"
         }
     } else {
-        "idle".into()
+        "idle"
     }
 }
 
@@ -2402,11 +2387,18 @@ fn index_failed(
 /// kept rather than dropped because it is the honest answer for this process
 /// (and becomes meaningful the day a headless loader exists), and dropping a
 /// published field would break consumers for no gain. `model_dir`/`installed`
-/// are process-local too: `configured_model_dir` reads this process's
-/// `PINVOU3_KB_EMBED_MODEL_DIR`.
+/// are process-local too: the reported directory reads this process's
+/// `PINVOU3_KB_EMBED_MODEL_DIR` override, else the managed `model_dir()`.
 fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
-    let dir = configured_model_dir();
+    // Same resolution order as the GUI (`configured_model_dir` in
+    // model_download.rs): the `PINVOU3_KB_EMBED_MODEL_DIR` override first,
+    // then the managed `model_dir()`.
+    let dir = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(model_dir);
     let installed = pinvou3_lib::features::knowledge::model_directory_is_complete(&dir);
     let ready = service.semantic_ready();
     let human = format!(
@@ -2429,17 +2421,6 @@ fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     )))
 }
 
-/// Same resolution order as the GUI (`configured_model_dir` in
-/// model_download.rs): the `PINVOU3_KB_EMBED_MODEL_DIR` override first, then
-/// the managed `model_dir()`.
-fn configured_model_dir() -> PathBuf {
-    std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(model_dir)
-}
-
 /// The upstream `kb_model_cancel` sets a process-local flag inside the
 /// desktop app's download orchestration (`features/knowledge/
 /// model_download.rs`). A one-shot CLI process can never have a download of
@@ -2447,14 +2428,14 @@ fn configured_model_dir() -> PathBuf {
 /// so the flag it sets is read by nobody and the `cancelled: true` the
 /// command used to print was a no-op reported as success. Same honest
 /// refusal pattern as `model download` itself.
-fn model_cancel(_output: OutputMode) -> Result<CliOutcome, CliError> {
-    Err(CliError::failed(
+fn model_cancel_unavailable() -> CliError {
+    CliError::failed(
         "knowledge_model_cancel_requires_product_host: the download cancel flag is \
          process-local to the desktop app's model_download orchestration, and a one-shot \
          CLI process never has a download of its own in flight (`model download` is \
          unavailable headless — see `model status`) — nothing in this process can be \
          cancelled; cancel a download in the desktop app",
-    ))
+    )
 }
 
 // ───────────────────────── remote / host ─────────────────────────
@@ -2834,24 +2815,12 @@ fn host_status(_output: OutputMode) -> Result<CliOutcome, CliError> {
     Err(crate::support::product_backend_not_enabled())
 }
 
-/// The mount surface refuses honestly, same pattern as `model download`:
-/// mounted collections live in the desktop app's per-process memory
-/// (`features::sessions::mode_state` — deliberately not persisted), so a
-/// one-shot CLI process can neither observe nor durably mutate them. A
-/// command that printed success here would change nothing.
-fn mount_requires_product_host(action: &str, session_id: &str) -> CliError {
-    CliError::failed(format!(
-        "knowledge_{action}_requires_product_host: mounted collections live in the running \
-         desktop app's process memory and are deliberately not persisted, so a CLI process \
-         can neither read nor change session {session_id}'s mounts; mount collections in the \
-         app's session knowledge panel"
-    ))
-}
-
 /// GUI `session_mounted_collections_snapshot` and its `mount`/`unmount`
-/// siblings: every invocation is refused honestly — mounts live in the
-/// desktop app's process memory and are deliberately not persisted, so the
-/// CLI can neither read nor change them.
+/// siblings: every invocation is refused honestly, same pattern as
+/// `model download` — mounted collections live in the desktop app's
+/// per-process memory (`features::sessions::mode_state` — deliberately not
+/// persisted), so a one-shot CLI process can neither observe nor durably
+/// mutate them, and a command that printed success here would change nothing.
 ///
 /// The refusal is returned BEFORE any store is opened. It does not depend on
 /// the session at all, and `SessionStore::boot()` is not a read: it enforces
@@ -2869,5 +2838,10 @@ fn mount_refusal(
     _output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     sandbox_home()?;
-    Err(mount_requires_product_host(action, session_id))
+    Err(CliError::failed(format!(
+        "knowledge_{action}_requires_product_host: mounted collections live in the running \
+         desktop app's process memory and are deliberately not persisted, so a CLI process \
+         can neither read nor change session {session_id}'s mounts; mount collections in the \
+         app's session knowledge panel"
+    )))
 }
