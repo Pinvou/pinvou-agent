@@ -9,7 +9,8 @@ use crate::features::assistant::engine_pool::user_display_message;
 use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
 
 /// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体、web seam
-/// （web_access_chat_for_session）与 accept_plan 三处共用（车道不变量的门面）。
+/// （web_access_chat_for_session）、accept_plan、compact_now 与 edit_last_turn
+/// 五处共用（车道不变量的门面）。
 pub(crate) const ACP_CHAT_LANE_REJECTED: &str = "ACP 代码会话必须通过独立代码页面发送";
 
 /// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
