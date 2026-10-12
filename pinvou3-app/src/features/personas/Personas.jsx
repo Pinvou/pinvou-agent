@@ -190,8 +190,10 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
               ? '0 2px 8px rgba(0,0,0,.45), 0 24px 60px rgba(0,0,0,.65)'
               : '0 8px 28px rgba(83,74,183,.16)',
             border: isDark ? '1px solid rgba(255,255,255,.18)' : '1px solid rgba(83,74,183,.14)', // isDark dynamic-value: 保留 (rgba border + banner 整体 isDark 同深浅)
-            // 原为四字体短栈(-apple-system/BlinkMacSystemFont/"PingFang SC"/sans-serif),未见刻意差异说明,统一为 IOS_FONT_STACK。
-            fontFamily: IOS_FONT_STACK }}>
+            // Promo banner keeps its shorter 4-font stack from main on purpose
+            // (adding "SF Pro Text"/"Microsoft YaHei" here changes Windows
+            // rendering); do not unify onto IOS_FONT_STACK.
+            fontFamily:'-apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif' }}>
           <div className="absolute rounded-full" style={{ width:240, height:240, background:'#AFA9EC', opacity:.16, top:-80, right:-40 }} />
           <div className="absolute rounded-full" style={{ width:150, height:150, background:'#9FE1CB', opacity:.15, bottom:-50, right:120 }} />
           {/* 左侧内容 */}
