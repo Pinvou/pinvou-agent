@@ -1225,3 +1225,30 @@ as did default Go tests, full vet, module verification, all command builds,
 pinned artifacts and client architecture/version/diff checks. No SQL/provider
 behavior changed; actual database/provider opt-ins were not rerun for this batch.
 Service commit: `04e248a`.
+
+
+### T47 third batch: private persistence and permanent history (2026-10-12)
+
+An additive state namespace persists bounded current instances, immutable original
+StageFact revisions and permanent full-scope windows. Private owner writes bind
+actual frozen policies, head CAS, source facts, exact local edges and final SQL
+time. Runtime receives read access only; no production lifecycle command, parent
+composition, quality qualification or publisher is opened by this batch. Paused
+instances retain their scope slot; terminated instances retain window attribution.
+History reads verify actual plans, first revisions, chronology and source watermarks.
+
+Both independent roles passed the frozen scoped code/test/documentation review.
+Complete actual PostgreSQL regression passed (142.931s), and the final retired-window
+watermark control passed separately (3.618s). Real history exceeds 4,096 facts and
+1 MiB without enlarging current JSON. Concurrent CAS, rollback, final-clock faults,
+terminal revision reserve, runtime denial and schema/ACL drift have real controls.
+Domain/original Node tests passed (4.178s); final default tests, vet, module
+verification, all command builds, pinned contracts and diff checks passed.
+
+Full T47 remains in progress pending actual T14/T15/T21/T08 final read sets and
+controlled operation/recovery composition. This closes only the private storage
+batch; production commands and deployment acceptance remain closed. Continue
+unblocked T21 quality calculation/projection work; recorded owner decisions stay
+deferred. Downloads have no hard total/cumulative time limit.
+
+Service commit: `f12f3e5`. Client architecture/version checks passed.
