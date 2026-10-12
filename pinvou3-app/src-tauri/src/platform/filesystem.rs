@@ -506,16 +506,13 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// instead. Windows has no `O_NOFOLLOW` equivalent; the same documented
 /// residual applies (profile-directory ACL reliance, consistent with the
 /// rest of the application data tree).
-fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
-    open_private_data_file_within(path, MAX_PRIVATE_DATA_READ_BYTES)
-}
-
-/// [`open_private_data_file`] with a caller-chosen size bound: the
-/// marketplace same-content comparison reads landed package payloads whose
-/// legitimate size is the import package budget, not the state-file cap —
-/// bounding the disk read below what the importer accepts would make an
-/// identical re-import of a large package report conflicting content
-/// (round-31 P2). The hardening is otherwise identical.
+///
+/// The state-file callers use the default cap; with a caller-chosen size
+/// bound, the marketplace same-content comparison reads landed package
+/// payloads whose legitimate size is the import package budget, not the
+/// state-file cap — bounding the disk read below what the importer accepts
+/// would make an identical re-import of a large package report conflicting
+/// content (round-31 P2).
 fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -585,11 +582,11 @@ pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
 
 /// [`read_private_data_file`] for raw bytes: the salvage read that preserves
 /// a corrupt store's bytes before quarantine. The whole hardening is
-/// [`open_private_data_file`]'s; this body adds only the read, bounded by
-/// [`read_capped`] so a file appended past the cap after the open-time gate
-/// is refused too.
+/// [`open_private_data_file_within`]'s; this body adds only the read, bounded
+/// by [`read_capped`] so a file appended past the cap after the open-time
+/// gate is refused too.
 pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
-    let mut file = open_private_data_file(path)?;
+    let mut file = open_private_data_file_within(path, MAX_PRIVATE_DATA_READ_BYTES)?;
     read_capped(&mut file, MAX_PRIVATE_DATA_READ_BYTES)
         .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
 }
@@ -613,7 +610,7 @@ pub(crate) fn read_private_data_file_bytes_within(
 
 /// One bounded read: at most `cap` bytes, with a one-byte overshoot window
 /// so the overflow arm can distinguish "exactly cap" from "cap or more".
-/// The metadata gate in [`open_private_data_file`] bounds the read at open
+/// The metadata gate in [`open_private_data_file_within`] bounds the read at open
 /// time only — a concurrent appender can grow the file between the gate and
 /// EOF (the fd pins the inode, so no swap is needed), and the former
 /// unbounded `read_to_end` would have read and allocated it whole.
@@ -635,7 +632,7 @@ fn read_capped<R: std::io::Read>(reader: &mut R, cap: u64) -> io::Result<Vec<u8>
 /// under a cross-process lock, so a planted FIFO or symlink at the path must
 /// refuse, not block the lock holder's `open` (same trust
 /// surface and same consequence as the hardened reads above). Same Unix
-/// hardening as [`open_private_data_file`], plus create/truncate at 0600;
+/// hardening as [`open_private_data_file_within`], plus create/truncate at 0600;
 /// the fstat gate runs BEFORE any byte is written, so a non-regular inode is
 /// refused untouched. Windows keeps plain create+write (no `O_NOFOLLOW`
 /// equivalent; the documented profile-ACL residual applies).

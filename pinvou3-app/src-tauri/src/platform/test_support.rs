@@ -29,7 +29,6 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let prev = std::env::var("PINVOU3_HOME").ok();
     // Keyring hermeticity rides along — the same trio the marketplace
     // harness installs. A test reaching a real credential write through
     // this harness otherwise lands in the developer's OS keychain, and on
@@ -37,45 +36,30 @@ pub(crate) fn with_temp_home(prefix: &str, f: impl FnOnce()) {
     // indefinitely on the ACL consent dialog. `PINVOU3_TEST_KEYRING_FILE_FALLBACK`
     // exists only in test builds (credential_store reads it before probing
     // the OS keyring); `CODEWHALE_HOME` rides to the temp dir so
-    // CodeWhale-side state stays hermetic too. The pair is restored through
-    // the shared `EnvRestore` instead of hand-rolled arms on the struct
-    // below.
+    // CodeWhale-side state stays hermetic too. The trio is restored through
+    // the shared `EnvRestore`.
+    // Declared after `_g` so it drops BEFORE the lock is released (no other
+    // test may observe the temporary values), and before the set_var calls
+    // below so the snapshot sees the caller's values. Restore runs on Drop —
+    // a failing assertion inside the closure unwinds, and a straight-line
+    // restore would be skipped, leaking the env AND the temp dir into every
+    // later test in this process — with the dir removal as the post_restore
+    // tail so it happens after every env restore.
+    let _env = EnvRestore::capture_with_post_restore(
+        &[
+            "PINVOU3_HOME",
+            "CODEWHALE_HOME",
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+        ],
+        {
+            let dir = dir.clone();
+            move || {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        },
+    );
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-    // Restore through Drop, not straight-line code after `f()`. A failing
-    // assertion inside the closure unwinds, and with the restore written
-    // inline it would be skipped: the temp dir leaks AND PINVOU3_HOME stays
-    // pointed at it for every later test in this process, so one genuine
-    // failure cascades into a string of unrelated ones and the suite's red
-    // signal stops meaning anything. Same RAII contract as `EnvRestore` below.
-    struct TempHomeRestore {
-        previous: Option<OsString>,
-        dir: std::path::PathBuf,
-    }
-    impl Drop for TempHomeRestore {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                // SAFETY: the caller still holds ENV_LOCK for this scope.
-                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-                // SAFETY: the caller still holds ENV_LOCK for this scope.
-                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-            }
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-    // Declared after `_g` so it drops BEFORE the lock is released: no other
-    // test may observe the temporary value.
-    let _restore = TempHomeRestore {
-        previous: prev.map(OsString::from),
-        dir: dir.clone(),
-    };
-    // Declared after `_restore` so the keyring pair is restored BEFORE the
-    // temp dir is removed (env-then-dir, then the lock — matching the
-    // struct's own order for PINVOU3_HOME). Captured here, before the
-    // set_var calls below overwrite the pair with the temporary values.
-    let _keyring_env =
-        EnvRestore::capture(&["CODEWHALE_HOME", "PINVOU3_TEST_KEYRING_FILE_FALLBACK"]);
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
     unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
     // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
@@ -233,6 +217,54 @@ impl Drop for UnreadableDirForTest {
     }
 }
 
+/// Root-skip probes for the fail-closed permission fixtures (round-11 m12):
+/// chmod the target to the denial mode, check the denial actually took
+/// effect, and report `false` — restoring the default mode and eprintln-ing
+/// the loud, per-test greppable `ROOT-SKIP[<test>]` marker — when it did not
+/// (root is not constrained by mode bits), so the caller skips the
+/// assertions that depend on EACCES instead of passing vacuously:
+/// `if !file_unreadable_or_skip(&path, "test_name") { return; }`. Unix-only:
+/// every caller is a `#[cfg(unix)]` test. Deny/restore modes match the
+/// fixtures this replaces — files deny with 000 and restore 644, directories
+/// deny with 0555 and restore 755.
+#[cfg(all(test, unix))]
+pub(crate) fn file_unreadable_or_skip(file: &std::path::Path, test: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000));
+    // Root is not constrained by 000: with the file still readable the
+    // unreadable-read branch would never run — restore and skip loudly.
+    if std::fs::read(file).is_ok() {
+        let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644));
+        eprintln!(
+            "ROOT-SKIP[{test}]: running as root - the unreadable-file fixture stays readable; NOT exercised"
+        );
+        return false;
+    }
+    true
+}
+
+/// [`file_unreadable_or_skip`] for a read-only directory: chmod 0555 and
+/// probe by creating a file inside it. On `true` the directory stays
+/// read-only for the caller's denial assertions; on `false` the fixture was
+/// ineffective (root) — restored to 755 and skipped loudly.
+#[cfg(all(test, unix))]
+pub(crate) fn dir_read_only_or_skip(dir: &std::path::Path, test: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555));
+    // Root is not constrained by 0555: with the directory still writable the
+    // failure branch would never run — restore and skip loudly.
+    let probe = dir.join(".root-probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+        eprintln!(
+            "ROOT-SKIP[{test}]: running as root - the read-only-dir fixture stays writable; NOT exercised"
+        );
+        return false;
+    }
+    true
+}
+
 /// POSIX mode bits of `path`, or `None` where the platform has none.
 ///
 /// Permission assertions belong to the platform layer: a feature test that
@@ -329,4 +361,30 @@ pub(crate) fn run_bounded_worker_or_abort<R: Send + 'static>(
         });
     handle.join().unwrap();
     value
+}
+
+/// Shared zip-fixture builder for the plugin-package import tests: writes
+/// `entries` (archive path → bytes, in order) into a uniquely named temp zip
+/// (`{prefix}-{pid}-{suffix}.zip`) and returns its path. Zip bytes and temp
+/// names match the per-test inline builders this replaces.
+#[cfg(test)]
+pub(crate) fn write_test_zip(prefix: &str, entries: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
+    let mut zip_buf = std::io::Cursor::new(Vec::new());
+    {
+        use std::io::Write;
+        let mut zw = zip::ZipWriter::new(&mut zip_buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in entries {
+            zw.start_file((*name).to_string(), opts).unwrap();
+            zw.write_all(bytes).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+    let tmp = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}.zip",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
+    tmp
 }
