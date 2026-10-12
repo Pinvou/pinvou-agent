@@ -967,15 +967,15 @@ impl Pinvou3Bundle {
         // 本函数是 boot 链的 mcp.json 写方，与 GUI/headless 并发安装/卸载的写入器
         // 互斥（mcp.lock 是叶子锁，锁内不取其他市场锁）；boot 链此处无外层持锁，
         // 函数体内也无嵌套取锁。
-        // 锁等待没有超时（对端冻结时本 boot 线程无限等待的既定取舍）：前后打点把
-        // 「卡在 mcp.lock 等待」与维护链其余步骤区分开，
-        // startup.log 可直接定位这类挂起。
-        crate::platform::startup::mark("bundle_extract:mcp_upsert:lock_wait:start");
+        // 锁等待没有超时（对端冻结时本 boot 线程无限等待的既定取舍）：前后打点
+        // 圈出 mcp.lock 临界区全程——含锁等待与 upsert 本身，挂起时 startup.log
+        // 可直接定位是这一段（而非维护链其余步骤）。
+        crate::platform::startup::mark("bundle_extract:mcp_upsert:locked:start");
         let result = crate::features::marketplace::with_mcp_json_lock(|| {
             self.ensure_builtin_mcp_servers_locked()
                 .map_err(|error| error.to_string())
         });
-        crate::platform::startup::mark("bundle_extract:mcp_upsert:lock_wait:done");
+        crate::platform::startup::mark("bundle_extract:mcp_upsert:locked:done");
         result.map_err(std::io::Error::other)
     }
 
