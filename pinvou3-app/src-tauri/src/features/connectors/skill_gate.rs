@@ -314,6 +314,22 @@ mod tests {
         });
     }
 
+    /// Round-33 MAJOR 2 (review #455): the connect-path consent-persist
+    /// failure copy carries the ONE shared frontend marker
+    /// (`scope::CONSENT_SYNC_FAILURE_MARKER`) — the localized template on the
+    /// store cards keys on exactly this string, so a rewording here must move
+    /// the frontend matcher in the same commit. The literal is asserted (not
+    /// reformatted and re-matched) so a marker rename fails here instead of
+    /// silently degrading the frontend guidance to generic copy.
+    #[test]
+    fn skill_gate_consent_failure_message_keeps_the_frontend_marker() {
+        assert_eq!(
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
+            "persisting their default-off consent state failed",
+            "the shipped marker is the string the frontend consentFailure matcher keys on"
+        );
+    }
+
     /// Round-37 C1 (review #455): a consent persist failure between connect
     /// and enable left the pair unledgered, so the startup refresh reverted
     /// the user's enable across the restart (round-30 family residue). The

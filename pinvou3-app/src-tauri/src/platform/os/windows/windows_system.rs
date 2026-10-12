@@ -469,3 +469,44 @@ pub fn bundled_node() -> Option<PathBuf> {
         .map(|dir| dir.join("node.exe"))
         .filter(|p| p.is_file())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_hides_archive_dependency_check() {
+        assert!(!show_archive_dependency_check());
+        assert_eq!(archive_dependency_packages(), "");
+    }
+
+    #[test]
+    fn detects_libreoffice_command_names() {
+        assert!(is_libreoffice_command("soffice"));
+        assert!(is_libreoffice_command("soffice.exe"));
+        assert!(is_libreoffice_command("soffice.com"));
+        assert!(is_libreoffice_command("libreoffice"));
+        assert!(!is_libreoffice_command("pandoc"));
+    }
+
+    #[test]
+    fn libreoffice_missing_message_is_windows_specific() {
+        let message = libreoffice_missing_message();
+        assert!(message.contains("可前往设置 - 依赖体检"));
+        assert!(!message.contains("Office/WPS"));
+        assert!(!message.contains("sudo apt"));
+    }
+
+    #[test]
+    fn system_default_open_check_is_limited_to_presentations() {
+        assert_eq!(
+            normalized_presentation_extension(Path::new("slides.pptx")).as_deref(),
+            Some(".pptx")
+        );
+        assert_eq!(
+            normalized_presentation_extension(Path::new("slides.PPT")).as_deref(),
+            Some(".ppt")
+        );
+        assert!(normalized_presentation_extension(Path::new("notes.txt")).is_none());
+    }
+}

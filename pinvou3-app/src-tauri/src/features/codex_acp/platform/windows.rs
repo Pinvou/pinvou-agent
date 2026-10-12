@@ -70,3 +70,47 @@ pub(super) fn codex_login_command(codex: &Path) -> Command {
         command
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_javascript_adapter_uses_native_windows_paths() {
+        let command = adapter_command(
+            Path::new(r"\\?\C:\Program Files\pinvou3\runtime\codex-bridge\index.js"),
+            Some(Path::new(
+                r"\\?\C:\Program Files\pinvou3\runtime\node\node.exe",
+            )),
+        )
+        .expect("build installed JavaScript adapter command");
+
+        assert_eq!(
+            command.as_std().get_program(),
+            r"C:\Program Files\pinvou3\runtime\node\node.exe"
+        );
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![r"C:\Program Files\pinvou3\runtime\codex-bridge\index.js"]
+        );
+    }
+
+    #[test]
+    fn command_shim_uses_windows_command_interpreter() {
+        let command = adapter_command(Path::new(r"C:\runtime\codex-acp.cmd"), None)
+            .expect("build Windows command-shim adapter command");
+        assert_eq!(command.as_std().get_program(), "cmd");
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["/D", "/S", "/C", r"C:\runtime\codex-acp.cmd"]
+        );
+    }
+}

@@ -783,3 +783,36 @@ async fn staged_attachment_is_passed_to_attachment_runtime_and_then_deleted() {
     );
     assert!(!workspace.exists());
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_attachment_runtime_stays_security_gated() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("private.txt");
+    std::fs::write(&source, b"private attachment").unwrap();
+    let backend = ProductHeadlessBackend::from_runtime(Arc::new(RecordingRuntime::default()));
+    let session = backend
+        .prepare(
+            prepare_request("windows-gate", vec![AttachmentHandle::new("opaque")])
+                .with_resolved_attachments(vec![ResolvedAttachmentSource::new(
+                    &source,
+                    "attachment.txt",
+                )]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        backend
+            .run(
+                &session,
+                AgentTaskInput::new("windows-gate", PrivateInputHandle::new("opaque")),
+                Arc::new(AttachmentResolver),
+                Arc::new(Observer::default()),
+            )
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent backend operation failed: attachments_platform_security_unsupported"
+    );
+}

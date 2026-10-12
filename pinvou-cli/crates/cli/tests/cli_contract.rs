@@ -3,6 +3,105 @@ use pinvou_cli::{
     execute, parse_args, render_list,
 };
 use std::path::PathBuf;
+#[cfg(not(feature = "product-backend"))]
+use std::sync::Mutex;
+
+/// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
+/// variable, preventing data races when the parallel test runner executes them
+/// concurrently.
+#[cfg(not(feature = "product-backend"))]
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Restores the previous `PINVOU3_HOME` on drop, so the restore survives a
+/// panicking assertion instead of leaking the polluted value into every later
+/// test in the process.
+#[cfg(not(feature = "product-backend"))]
+struct RestoreHome(Option<std::ffi::OsString>);
+
+#[cfg(not(feature = "product-backend"))]
+impl Drop for RestoreHome {
+    fn drop(&mut self) {
+        match self.0.take() {
+            // SAFETY: ENV_LOCK is held by the owning test.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: ENV_LOCK is held by the owning test.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+}
+
+#[cfg(not(feature = "product-backend"))]
+#[test]
+fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
+    use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
+    use benchmark_core::{
+        BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId,
+    };
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-gaia-manifest-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+    let adapter = GaiaAdapter::new();
+    let expected = RunManifest::new(
+        "gaia-manifest-probe",
+        adapter.descriptor(),
+        Split::new(GAIA_SPLIT),
+        ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
+        ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+        1,
+    )
+    .unwrap();
+    assert_eq!(GAIA_LEVEL, 1);
+    let mutations = [
+        ("run_id", serde_json::json!("different-run-id")),
+        // Schema 1 (legacy) stays scoreable on purpose; only an unknown
+        // schema must be rejected by the scoring gate.
+        ("schema_version", serde_json::json!(99)),
+        ("concurrency", serde_json::json!(2)),
+        ("pass", serde_json::json!(2)),
+        (
+            "adapter_version",
+            serde_json::json!("pinvou-gaia-adapter/v2"),
+        ),
+        ("dataset_revision", serde_json::json!("changed-dataset")),
+        ("scorer_revision", serde_json::json!("changed-scorer")),
+        ("split", serde_json::json!("test")),
+        ("tool_policy", serde_json::json!("changed-policy/v1")),
+    ];
+    for (index, (field, replacement)) in mutations.into_iter().enumerate() {
+        let run_id = format!("gaia-manifest-{index}");
+        let manifest = RunManifest::new(
+            run_id.as_str(),
+            adapter.descriptor(),
+            Split::new(GAIA_SPLIT),
+            ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
+            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+            1,
+        )
+        .unwrap();
+        let store = RunStore::create(&root, &manifest).unwrap();
+        let mut stored = serde_json::to_value(&expected).unwrap();
+        stored["run_id"] = serde_json::json!(run_id);
+        stored[field] = replacement;
+        std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
+
+        let parsed =
+            parse_args(["pinvou", "benchmark", "score", "gaia", "--run-id", &run_id]).unwrap();
+        let error = execute(parsed).expect_err("mutated manifest must be rejected before scoring");
+        assert_eq!(error.to_string(), "gaia_run_manifest_mismatch", "{field}");
+    }
+    drop(_restore);
+    std::fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn gaia_parser_exposes_only_the_pinned_official_level_one_workflow() {
@@ -147,6 +246,75 @@ fn gaia_output_mode_remains_global_without_stealing_submission_destination() {
     );
 }
 
+#[cfg(not(feature = "product-backend"))]
+#[test]
+fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = std::env::temp_dir().join(format!(
+        "pinvou-cli-home-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&home).unwrap();
+    let previous_dir = std::env::current_dir().unwrap();
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+    std::env::set_current_dir(&home).unwrap();
+    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+    let parsed = parse_args([
+        "pinvou",
+        "benchmark",
+        "fetch",
+        "gaia",
+        "--source",
+        "missing-snapshot",
+    ])
+    .unwrap();
+    let error = execute(parsed).unwrap_err();
+    assert_ne!(error.to_string(), "gaia_worktree_unavailable");
+
+    std::env::set_current_dir(previous_dir).unwrap();
+    drop(_restore);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[cfg(not(feature = "product-backend"))]
+#[test]
+fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let home = std::env::temp_dir().join(format!(
+        "pinvou-cli-gaia-ready-gate-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let source = home.join("arbitrary-source");
+    std::fs::create_dir_all(&source).unwrap();
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+
+    let parsed = parse_args([
+        "pinvou",
+        "benchmark",
+        "verify",
+        "gaia",
+        "--source",
+        source.to_str().unwrap(),
+    ])
+    .unwrap();
+    let error = execute(parsed).expect_err("incomplete raw snapshot must fail dataset validation");
+    assert_eq!(error.to_string(), "gaia_verify_failed");
+    assert!(!error.to_string().contains(source.to_str().unwrap()));
+
+    drop(_restore);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn gaia_official_consumers_take_the_digest_bound_dataset_from_the_ready_gate() {
     let source = include_str!("../src/lib.rs");
@@ -224,6 +392,26 @@ fn gaia_parser_rejects_unpinned_or_noncomparable_modes() {
         let error = parse_args(arguments).expect_err("unsafe GAIA mode must be rejected");
         assert_eq!(error.exit_code(), ExitCode::Usage);
     }
+}
+
+#[cfg(not(feature = "product-backend"))]
+#[test]
+fn gaia_run_requires_product_backend_without_exposing_error_chains() {
+    let parsed = parse_args([
+        "pinvou",
+        "benchmark",
+        "run",
+        "gaia",
+        "--split",
+        "validation",
+        "--level",
+        "1",
+    ])
+    .unwrap();
+    let error = execute(parsed).expect_err("feature-off run is unavailable");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert_eq!(error.to_string(), "product_backend_not_enabled");
+    assert!(!error.to_string().contains("Caused by"));
 }
 
 #[test]
