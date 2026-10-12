@@ -28,8 +28,7 @@ impl Embedder {
         // The directory layout (ONNX candidates and tokenizer files) follows
         // the download manifest's model_layout, so the load path, the
         // download, and the completeness probe share one description.
-        let onnx = std::fs::read(crate::model_layout::find_onnx_in(dir)?)
-            .map_err(|error| error.to_string())?;
+        let onnx = crate::model_layout::read_first_onnx(dir)?;
         let [
             tokenizer_file,
             config_file,
