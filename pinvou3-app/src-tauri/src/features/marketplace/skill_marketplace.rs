@@ -3253,7 +3253,11 @@ mod tests {
             std::fs::create_dir_all(&mcp_dir).unwrap();
             std::fs::write(
                 mcp_dir.join("manifest.json"),
-                r#"{"id":"session-reader","name":"s","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":[],"builtin":true,"companion_skills":["trip-notes"]}"#,
+                crate::features::marketplace::tests::tool_manifest_fixture(
+                    "session-reader",
+                    "s",
+                    r#""mcp_tools":[],"command":"python","args":[],"builtin":true,"companion_skills":["trip-notes"]"#,
+                ),
             )
             .unwrap();
             let store_file = crate::platform::paths::pinvou3_home()
@@ -4152,7 +4156,11 @@ mod tests {
         std::fs::create_dir_all(m_dir.join("mcp")).unwrap();
         std::fs::write(
             m_dir.join("mcp/manifest.json"),
-            r#"{"id":"m","name":"M","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-skill"]}"#,
+            crate::features::marketplace::tests::tool_manifest_fixture(
+                "m",
+                "M",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-skill"]"#,
+            ),
         )
         .unwrap();
         let foreign = m_dir.join("skills/up-skill");

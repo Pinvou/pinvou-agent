@@ -132,7 +132,7 @@ impl Pinvou3Bundle {
     {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
-        // Hardened read — family rationale on `open_private_data_file`. Any
+        // Hardened read — family rationale on `open_private_data_file_within`. Any
         // refusal (or absence) degrades to the empty string, so the bundle
         // re-extracts.
         let current =
@@ -314,7 +314,7 @@ impl Pinvou3Bundle {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.skills_dir)?;
         // PINVOU 自有 hooks：写入 + 加可执行位。加固写族文档见
-        // `open_private_data_file`；write 的 0600 创建模式随后被下方 0o755
+        // `open_private_data_file_within`；write 的 0600 创建模式随后被下方 0o755
         // 循环补回可执行位。
         crate::platform::filesystem::write_private_data_file(
             &self.deny_sensitive_sh,
@@ -481,7 +481,7 @@ impl Pinvou3Bundle {
             if !dir.exists() {
                 continue;
             }
-            // Hardened read — family rationale on `open_private_data_file`. A
+            // Hardened read — family rationale on `open_private_data_file_within`. A
             // refused (non-regular) read is empty → the same unmarked
             // treatment as an absent marker.
             let marker =
@@ -724,7 +724,7 @@ impl Pinvou3Bundle {
             if !path.exists() {
                 continue; // 文件不存在 = 该清理面本就干净,不算误报
             }
-            // Hardened read — family rationale on `open_private_data_file`.
+            // Hardened read — family rationale on `open_private_data_file_within`.
             // A rejected read errs toward "residue present", the
             // conservative direction.
             match crate::platform::filesystem::read_private_data_file(&path) {
@@ -740,7 +740,7 @@ impl Pinvou3Bundle {
         }
         // mcp.json 按结构探测:server key 存在即残留;坏 json 保守视为有残留——
         // uninstall 会在写入器处拒绝并整体回滚,清理推迟到文件修复后的下次启动。
-        // Hardened read — family rationale on `open_private_data_file` — so
+        // Hardened read — family rationale on `open_private_data_file_within` — so
         // this probe shares the two probes' convention above and a future
         // edit cannot change only one of them.
         if !paths::mcp_config_path().is_file() {
@@ -1044,7 +1044,7 @@ impl Pinvou3Bundle {
         // 原子落盘复用 marketplace 的共享写方(write_json_pretty → write_atomic,
         // tmp+rename):裸写被崩溃打断会制造出启动维护防御的损坏文件本身。
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
-        // Hardened read — family rationale on `open_private_data_file`. A
+        // Hardened read — family rationale on `open_private_data_file_within`. A
         // refusal reads as "differs" and the locked atomic writer below
         // takes over.
         if crate::platform::filesystem::read_private_data_file(&self.mcp_json)
@@ -1234,7 +1234,7 @@ impl Pinvou3Bundle {
         }
         // Report the most recent dynamic startup failure (for example, native-host or CDP
         // readiness) only while it remains fresh for 24 hours.
-        // Hardened read — family rationale on `open_private_data_file`. A
+        // Hardened read — family rationale on `open_private_data_file_within`. A
         // refusal reads as "no report".
         let Ok(raw) =
             crate::platform::filesystem::read_private_data_file(&paths::browser_last_error_json())
@@ -1279,7 +1279,7 @@ impl Pinvou3Bundle {
         // from this session and leave only Browser MCP; continuing with a non-object would
         // panic at `as_object_mut().unwrap()`. The fallback loses only browser tools and
         // preserves the global behavior. The read is the hardened private-data read
-        // (see `open_private_data_file`): every spawned session reaches this path,
+        // (see `open_private_data_file_within`): every spawned session reaches this path,
         // so it must not hang the spawn.
         let mcp: serde_json::Value =
             match crate::platform::filesystem::read_private_data_file(&base)
@@ -1338,7 +1338,7 @@ impl Pinvou3Bundle {
                 // Skip an unchanged file. Every spawned session reaches this path, including
                 // Code-mode sessions that later fall back to the global configuration, so
                 // atomically replacing identical content would be needless disk I/O. The
-                // compare is the hardened read (see `open_private_data_file`); the atomic
+                // compare is the hardened read (see `open_private_data_file_within`); the atomic
                 // private write below then replaces it.
                 if crate::platform::filesystem::read_private_data_file(&work_path)
                     .map(|existing| existing == json)
@@ -2123,6 +2123,24 @@ mod tests {
         });
     }
 
+    /// The consent rows both cleanup tests seed: the pack deny-disabled in
+    /// the plain scope and hidden there too.
+    const DISABLED_ROWS: &str =
+        r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"plain":["data_analysis"]}}"#;
+
+    /// Parse `disabled_bundles.json` from disk and pin both consent rows —
+    /// the cleanup tests' shared assertion plumbing.
+    fn assert_disabled_rows(path: &std::path::Path, scopes: &[&str], hidden: &[&str], ctx: &str) {
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(file["scopes"]["plain"], serde_json::json!(scopes), "{ctx}");
+        assert_eq!(
+            file["hidden_scopes"]["plain"],
+            serde_json::json!(hidden),
+            "{ctx}"
+        );
+    }
+
     /// When the uninstall rolls back wholesale because
     /// mcp.json refuses the reset (byte-preservation contract see
     /// ensure_extracted_preserves_corrupt_mcp_json_bytes), the transaction
@@ -2146,11 +2164,7 @@ mod tests {
             )
             .unwrap();
             let disabled = home.join("disabled_bundles.json");
-            std::fs::write(
-                &disabled,
-                r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"plain":["data_analysis"]}}"#,
-            )
-            .unwrap();
+            std::fs::write(&disabled, DISABLED_ROWS).unwrap();
             let bundle = super::Pinvou3Bundle::paths();
             std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
             let corrupt = r#"{"servers":{"mine":{"command":"x""#;
@@ -2176,34 +2190,24 @@ mod tests {
             );
             // The pack is still installed: the disabled/hidden rows are
             // current consent, the rollback path must not clear them.
-            let file: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
-            assert_eq!(
-                file["scopes"]["plain"],
-                serde_json::json!(["data_analysis"]),
-                "rollback keeps the pack installed: the disabled row must survive (clearing it silently re-enables)"
-            );
-            assert_eq!(
-                file["hidden_scopes"]["plain"],
-                serde_json::json!(["data_analysis"]),
-                "rollback keeps the pack installed: the hidden row must survive"
+            assert_disabled_rows(
+                &disabled,
+                &["data_analysis"],
+                &["data_analysis"],
+                "rollback keeps the pack installed: both consent rows must survive \
+                 (clearing them silently re-enables)",
             );
 
             // Retry leg: with mcp.json repaired, the next cleanup completes
             // the retirement and only then clears the residue rows.
             std::fs::write(&bundle.mcp_json, r#"{"servers":{}}"#).unwrap();
             bundle.cleanup_removed_marketplace_tools().unwrap();
-            let file: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
-            assert_eq!(
-                file["scopes"]["plain"],
-                serde_json::json!([]),
-                "the retired entry must be cleared once the uninstall succeeds"
-            );
-            assert_eq!(
-                file["hidden_scopes"]["plain"],
-                serde_json::json!([]),
-                "the hidden residue must be cleared with it"
+            assert_disabled_rows(
+                &disabled,
+                &[],
+                &[],
+                "the retired entry and its hidden residue must be cleared once \
+                 the uninstall succeeds",
             );
         });
     }
@@ -2229,11 +2233,7 @@ mod tests {
             // No install record: the concurrent import below has registered
             // rows but not landed — the exact state the probe exists for.
             let disabled = home.join("disabled_bundles.json");
-            std::fs::write(
-                &disabled,
-                r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"plain":["data_analysis"]}}"#,
-            )
-            .unwrap();
+            std::fs::write(&disabled, DISABLED_ROWS).unwrap();
             let bundle = super::Pinvou3Bundle::paths();
             std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
             std::fs::write(&bundle.mcp_json, r#"{"servers":{}}"#).unwrap();
@@ -2255,17 +2255,12 @@ mod tests {
 
             bundle.cleanup_removed_marketplace_tools().unwrap();
 
-            let file: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
-            assert_eq!(
-                file["scopes"]["plain"],
-                serde_json::json!(["data_analysis"]),
-                "the consent strip must defer while an import for the id is mid-landing"
-            );
-            assert_eq!(
-                file["hidden_scopes"]["plain"],
-                serde_json::json!(["data_analysis"]),
-                "the hidden-row strip must defer with it"
+            assert_disabled_rows(
+                &disabled,
+                &["data_analysis"],
+                &["data_analysis"],
+                "the consent strip (both rows) must defer while an import for \
+                 the id is mid-landing",
             );
             assert!(
                 pack_dir.is_dir() && mcp_dir.is_dir(),
@@ -2276,17 +2271,11 @@ mod tests {
             // reconciliation resolved it): the retry leg proceeds (#522).
             std::fs::remove_file(&mark).unwrap();
             bundle.cleanup_removed_marketplace_tools().unwrap();
-            let file: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
-            assert_eq!(
-                file["scopes"]["plain"],
-                serde_json::json!([]),
-                "without the in-flight mark the retry leg strips the residue rows"
-            );
-            assert_eq!(
-                file["hidden_scopes"]["plain"],
-                serde_json::json!([]),
-                "the hidden-row residue is stripped with it"
+            assert_disabled_rows(
+                &disabled,
+                &[],
+                &[],
+                "without the in-flight mark the retry leg strips both residue rows",
             );
             assert!(
                 !pack_dir.exists() && !mcp_dir.exists(),

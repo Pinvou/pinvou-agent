@@ -682,7 +682,9 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
     // (or the whole package is recycled), the normalized cleanup's gating
     // fallback can be re-owned by a foreign pack's claim/nesting and the
     // removal would erase THAT pack's consent rows.
-    let companion_owners: std::collections::HashMap<String, String> = companions
+    // Order-preserving pairs (same iteration source as the loop below): the
+    // owner lookup can never miss, so no fallback is needed.
+    let companion_owners: Vec<(String, String)> = companions
         .iter()
         .map(|sid| {
             (
@@ -691,7 +693,7 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
             )
         })
         .collect();
-    for sid in &companions {
+    for (sid, owner) in &companion_owners {
         if recycles_with_package {
             continue; // companion 随整包回收，见上注释
         }
@@ -712,9 +714,6 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
         // otherwise a still-installed skill would be silently re-enabled.
         // Exact form (round-26 MAJOR 1): the rows were owned by the
         // pre-teardown snapshot; re-normalizing a deleted id is hijackable.
-        // `sid` always has a snapshot entry (same iteration source), so the
-        // fallback is unreachable; production code avoids expect().
-        let owner = companion_owners.get(sid).map(String::as_str).unwrap_or(sid);
         crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(owner)?;
     }
     // The scope strips happen INSIDE the transaction (the in-lock leg in
@@ -724,19 +723,15 @@ pub(super) fn uninstall_marketplace_tool_sync(tool_id: &str) -> Result<(), Strin
     // and could undo the deny-first entry a concurrent same-id install
     // registered after our in-lock strip — re-enabling the package as it
     // lands. A vacuous uninstall (the manager's `Ok(false)`) leaves every
-    // entry alone: stranded leftover entries fail closed and do NOT converge
-    // via install/uninstall — the deny-list composer's next full-list save
+    // entry alone too: no install record existed, so nothing was torn down
+    // and the in-lock scope cleanup has nothing legitimate to remove — but
+    // a post-return strip WOULD erase the deny-first consent entry a
+    // concurrent same-id install may have just registered (its install
+    // record lands after the gate), re-enabling the package as it lands.
+    // Stranded leftover entries fail closed and do NOT converge via
+    // install/uninstall — the deny-list composer's next full-list save
     // rewrites the file.
-    let removed_install_record = mgr.uninstall(tool_id)?;
-    if !removed_install_record {
-        // Vacuous uninstall: no install record existed, so nothing was torn
-        // down and the in-lock scope cleanup has nothing legitimate to
-        // remove — but a post-return strip WOULD erase the deny-first
-        // consent entry a concurrent same-id install may have just
-        // registered (its install record lands after the gate), re-enabling
-        // the package as it lands. Leave every entry alone.
-        return Ok(());
-    }
+    mgr.uninstall(tool_id)?;
     Ok(())
 }
 // ---------------------------------------------------------------------------
@@ -1614,6 +1609,7 @@ pub async fn export_plugin_spec(app: tauri::AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::test_support::write_test_zip;
 
     /// Temp-home harness for the DenyAll transaction-boundary regressions:
     /// serializes on ENV_LOCK like the other PINVOU3_HOME mutators.
@@ -1702,11 +1698,27 @@ mod tests {
 
     fn init_code_scope_then_break_lock() {
         init_code_scope();
-        // Make the lock file unopenable (a directory at its path) so every
-        // consent-gate sync is refused.
-        let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
-        std::fs::remove_file(&lock).unwrap();
-        std::fs::create_dir_all(&lock).unwrap();
+        crate::features::marketplace::scope::break_scope_lock_for_test();
+    }
+
+    /// The code scope's deny list, for the gate tests' assertions.
+    fn code_deny_list() -> Vec<String> {
+        crate::features::marketplace::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        )
+    }
+
+    /// Whether the bundle store holds an installed record for `id`.
+    fn store_has_record(id: &str) -> bool {
+        crate::features::marketplace::store::BundleStore::new()
+            .get(id)
+            .unwrap()
+            .is_some()
+    }
+
+    /// Whether the package's landing dir exists under the bundles root.
+    fn pkg_dir_exists(id: &str) -> bool {
+        crate::platform::paths::bundles_root().join(id).exists()
     }
 
     /// Shared Upload-combo fixture for the uninstall tests: writes the
@@ -1714,22 +1726,12 @@ mod tests {
     /// companion's SKILL.md, then registers the Upload install record.
     /// Returns the companion skill dir.
     fn seed_upload_combo(id: &str, skill: &str) -> std::path::PathBuf {
-        // Display name title-cases the id's dash-separated parts, matching
-        // the literal fixtures this helper replaces ("up-lock" → "UpLock").
-        let mut name = String::new();
-        for part in id.split('-') {
-            let mut chars = part.chars();
-            if let Some(first) = chars.next() {
-                name.extend(first.to_uppercase());
-                name.push_str(chars.as_str());
-            }
-        }
         let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir(id);
         std::fs::create_dir_all(&manifest_dir).unwrap();
         std::fs::write(
             manifest_dir.join("manifest.json"),
             format!(
-                r#"{{"id":"{id}","name":"{name}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["{skill}"]}}"#
+                r#"{{"id":"{id}","name":"{id}","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["{skill}"]}}"#
             ),
         )
         .unwrap();
@@ -1747,31 +1749,6 @@ mod tests {
             )
             .unwrap();
         skill_dir
-    }
-
-    /// Shared zip-fixture builder for the import-channel tests: writes
-    /// `entries` (archive path → bytes, in order) into a uniquely named temp
-    /// zip (`{prefix}-{pid}-{suffix}.zip`) and returns its path. Zip bytes
-    /// and temp names match the per-test inline builders this replaces.
-    fn write_test_zip(prefix: &str, entries: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
-        let mut zip_buf = std::io::Cursor::new(Vec::new());
-        {
-            use std::io::Write;
-            let mut zw = zip::ZipWriter::new(&mut zip_buf);
-            let opts = zip::write::SimpleFileOptions::default();
-            for (name, bytes) in entries {
-                zw.start_file((*name).to_string(), opts).unwrap();
-                zw.write_all(bytes).unwrap();
-            }
-            zw.finish().unwrap();
-        }
-        let tmp = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}.zip",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
-        tmp
     }
 
     /// Transaction boundary (deny-first): a preset skill install
@@ -1802,16 +1779,11 @@ mod tests {
                 "the skill must never land on a refused gate"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("pptx")
-                    .unwrap()
-                    .is_none(),
+                !store_has_record("pptx"),
                 "no install record may be written on a refused gate"
             );
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the initialized deny state must be untouched"
             );
@@ -1848,16 +1820,11 @@ mod tests {
                 "the reinstalled skill must still be on disk"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("pptx")
-                    .unwrap()
-                    .is_some(),
+                store_has_record("pptx"),
                 "the install record must survive the reinstall"
             );
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the reinstall must not re-deny the enabled skill"
             );
@@ -1891,16 +1858,11 @@ mod tests {
                 "refusal must state the deny-first boundary: {error}"
             );
             assert!(
-                !crate::platform::paths::bundles_root()
-                    .join("weather")
-                    .exists(),
+                !pkg_dir_exists("weather"),
                 "a refused install must not create the package dir"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("weather")
-                    .unwrap()
-                    .is_none(),
+                !store_has_record("weather"),
                 "a refused install must not write an install record"
             );
         });
@@ -1927,17 +1889,10 @@ mod tests {
                 r#"{"id":"evil","name":"Evil","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["weather","pptx"]}"#,
             )
             .unwrap();
-            let store = crate::features::marketplace::store::BundleStore::new();
-            store
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "evil",
-                        crate::features::marketplace::store::BundleSource::Upload(
-                            "Evil".to_string(),
-                        ),
-                    ),
-                )
-                .unwrap();
+            crate::features::marketplace::store::plant_installed_record(
+                "evil",
+                crate::features::marketplace::store::BundleSource::Upload("Evil".to_string()),
+            );
             init_code_scope();
 
             let tool_error = install_marketplace_tool_gates("weather").unwrap_err();
@@ -1963,9 +1918,7 @@ mod tests {
             );
 
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the claimed ids must gain no deny rows (registration never ran)"
             );
@@ -1973,13 +1926,13 @@ mod tests {
             // Positive control: the fold is state-dependent — with the
             // claimant gone the id self-maps and the gate registers.
             std::fs::remove_dir_all(crate::platform::paths::bundles_root().join("evil")).unwrap();
-            store.remove("evil").unwrap();
+            crate::features::marketplace::store::BundleStore::new()
+                .remove("evil")
+                .unwrap();
             install_marketplace_tool_gates("weather")
                 .expect("with no claimant installed the id self-maps and the gate runs");
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string(), "weather".to_string()],
                 "the fresh id must be registered deny-first once unclaimed"
             );
@@ -2021,9 +1974,7 @@ mod tests {
             );
 
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the initialized deny state must gain no phantom rows"
             );
@@ -2068,16 +2019,11 @@ mod tests {
                  lock failure: {error}"
             );
             assert!(
-                !crate::platform::paths::bundles_root()
-                    .join("gate-fresh-plugin")
-                    .exists(),
+                !pkg_dir_exists("gate-fresh-plugin"),
                 "a refused fresh import must not create the package dir"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("gate-fresh-plugin")
-                    .unwrap()
-                    .is_none(),
+                !store_has_record("gate-fresh-plugin"),
                 "a refused fresh import must not write an install record"
             );
             let _ = std::fs::remove_file(&tmp);
@@ -2140,14 +2086,7 @@ mod tests {
             );
             let _ = std::fs::remove_file(&tmp);
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("tencent-docs-skill")
-                    .unwrap()
-                    .is_none()
-                    && crate::features::marketplace::store::BundleStore::new()
-                        .get("own-collide-pkg")
-                        .unwrap()
-                        .is_none(),
+                !store_has_record("tencent-docs-skill") && !store_has_record("own-collide-pkg"),
                 "refused collisions must not write install records"
             );
         });
@@ -2170,21 +2109,14 @@ mod tests {
             // Seed the gongwen claimant directly as an installed store record
             // instead of running the real preset install: the fold
             // (`skill_owner_package` → `bundle_installed`) consults the
-            // embedded catalog manifest plus the store record only, and the
-            // real install would run gongwen's legacy pip fallback
-            // (python-docx) on non-Windows hosts — network-dependent in CI.
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(crate::features::marketplace::store::BundleRecord {
-                    id: "gongwen".to_string(),
-                    source: crate::features::marketplace::store::BundleSource::Preset,
-                    installed: true,
-                    content_fingerprint: Some("fp".to_string()),
-                    installed_at: "2026-08-20T00:00:00+00:00".to_string(),
-                    degraded: None,
-                    assets: Vec::new(),
-                    extra: serde_json::Map::new(),
-                })
-                .expect("seed gongwen install record");
+            // embedded catalog manifest plus the store record only (id +
+            // installed flag), and the real install would run gongwen's
+            // legacy pip fallback (python-docx) on non-Windows hosts —
+            // network-dependent in CI.
+            crate::features::marketplace::store::plant_installed_record(
+                "gongwen",
+                crate::features::marketplace::store::BundleSource::Preset,
+            );
             init_code_scope();
 
             let manifest = r#"{"id":"government-writing","name":"Government Writing Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["draft_doc"],"command":"python","args":["server.py"]}"#;
@@ -2204,22 +2136,15 @@ mod tests {
                 "the refusal must name the owning package: {error}"
             );
             assert!(
-                !crate::platform::paths::bundles_root()
-                    .join("government-writing")
-                    .exists(),
+                !pkg_dir_exists("government-writing"),
                 "a refused owner-claimed import must not create the package dir"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("government-writing")
-                    .unwrap()
-                    .is_none(),
+                !store_has_record("government-writing"),
                 "a refused owner-claimed import must not write an install record"
             );
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the refused import must leave the deny list unchanged"
             );
@@ -2233,14 +2158,10 @@ mod tests {
             import_plugin_package_sync(&tmp.to_string_lossy(), "government-writing.zip")
                 .expect("without the installed claimant the id self-maps and must import");
             assert!(
-                crate::platform::paths::bundles_root()
-                    .join("government-writing")
-                    .exists(),
+                pkg_dir_exists("government-writing"),
                 "the round-trip import must land its package dir"
             );
-            let deny_list = crate::features::marketplace::load_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-            );
+            let deny_list = code_deny_list();
             assert!(
                 deny_list.iter().any(|id| id == "government-writing"),
                 "the fresh id must be deny-first registered once the claimant is gone: {deny_list:?}"
@@ -2276,22 +2197,15 @@ mod tests {
                 "a case-variant builtin CLI connector id must hit the CLI-collision refusal: {error}"
             );
             assert!(
-                !crate::platform::paths::bundles_root()
-                    .join("Dingtalk")
-                    .exists(),
+                !pkg_dir_exists("Dingtalk"),
                 "a refused case-variant import must not create the package dir"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("Dingtalk")
-                    .unwrap()
-                    .is_none(),
+                !store_has_record("Dingtalk"),
                 "a refused case-variant import must not write an install record"
             );
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the refused import must leave the deny list unchanged"
             );
@@ -2311,11 +2225,7 @@ mod tests {
         with_temp_home(|| {
             // Initialize the code scope so the DenyAll gate has somewhere to
             // write; the seed id keeps the assertion discriminating.
-            crate::features::marketplace::scope::save_disabled_bundles_for(
-                crate::features::marketplace::ConnectorScope::Code,
-                &["seed-bundle".to_string()],
-            )
-            .unwrap();
+            init_code_scope();
 
             let build_zip = |id: &str, skill_id: &str, with_manifest: bool| {
                 let skill_entry = format!("skills/{skill_id}/SKILL.md");
@@ -2342,11 +2252,6 @@ mod tests {
                 }
                 write_test_zip("standalone-component", &entries)
             };
-            let deny_list = || {
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code,
-                )
-            };
 
             // Undeclared component: the component id must carry its own
             // deny-first entry beside the package's, or the skill
@@ -2354,7 +2259,7 @@ mod tests {
             let tmp = build_zip("orphan-combo", "orphan-guide", false);
             import_plugin_package_sync(&tmp.to_string_lossy(), "orphan-combo.zip").unwrap();
             let _ = std::fs::remove_file(&tmp);
-            let list = deny_list();
+            let list = code_deny_list();
             assert!(
                 list.iter().any(|id| id == "orphan-combo"),
                 "the package id must be deny-first registered: {list:?}"
@@ -2382,7 +2287,7 @@ mod tests {
             let tmp = build_zip("claimed-combo", "claimed-guide", true);
             import_plugin_package_sync(&tmp.to_string_lossy(), "claimed-combo.zip").unwrap();
             let _ = std::fs::remove_file(&tmp);
-            let list = deny_list();
+            let list = code_deny_list();
             assert!(
                 list.iter().any(|id| id == "claimed-combo"),
                 "the declared combo must be deny-first registered: {list:?}"
@@ -2479,16 +2384,11 @@ mod tests {
                 "the pre-existing installation must be untouched by the gate"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("weather")
-                    .unwrap()
-                    .is_some(),
+                store_has_record("weather"),
                 "the pre-existing install record must survive"
             );
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the reinstall must not re-deny the enabled tool"
             );
@@ -2543,9 +2443,7 @@ mod tests {
                     .expect("a same-content reimport must succeed while the lock works");
             assert_eq!(report_again.id, "gate-rb-plugin");
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "a known-bundle reimport must not write consent state (working lock)"
             );
@@ -2572,16 +2470,11 @@ mod tests {
                 "the pre-existing v1 content must be intact: {content}"
             );
             assert!(
-                crate::features::marketplace::store::BundleStore::new()
-                    .get("gate-rb-plugin")
-                    .unwrap()
-                    .is_some(),
+                store_has_record("gate-rb-plugin"),
                 "the pre-existing install record must survive"
             );
             assert_eq!(
-                crate::features::marketplace::load_disabled_bundles_for(
-                    crate::features::marketplace::ConnectorScope::Code
-                ),
+                code_deny_list(),
                 vec!["seed-bundle".to_string()],
                 "the rejected re-import must not flip the package's consent state"
             );
@@ -2617,15 +2510,10 @@ mod tests {
             r#"{"id":"weather","name":"高德天气","description":"天气查询","version":"1.2.3","icon":"","category":"life","mcp_tools":[],"command":"","args":[],"config_fields":[{"key":"AMAP_KEY","label":"k","required":true,"secret":true}]}"#,
         )
         .unwrap();
-        let store = crate::features::marketplace::store::BundleStore::new();
-        store
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    "weather",
-                    crate::features::marketplace::store::BundleSource::Preset,
-                ),
-            )
-            .unwrap();
+        crate::features::marketplace::store::plant_installed_record(
+            "weather",
+            crate::features::marketplace::store::BundleSource::Preset,
+        );
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2726,12 +2614,7 @@ mod tests {
             recycled.join("skills/up-cmd-skill/SKILL.md").is_file(),
             "companion 技能应随整包回收，不得被物理删除"
         );
-        assert!(
-            !crate::platform::paths::bundles_root()
-                .join("up-cmd")
-                .exists(),
-            "整包应搬离 bundles_root"
-        );
+        assert!(!pkg_dir_exists("up-cmd"), "整包应搬离 bundles_root");
         let list = crate::features::marketplace::recycle_bin::RecycleBin::new()
             .list()
             .unwrap();

@@ -776,14 +776,10 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
     // 复刻命令层安装路径的**安装态**而不跑真实 install 管线（`mgr.install`
     // 会真实执行 pip install python-docx，邻测 mcp_install_links_companion_skills
     // 因此也不调它）：条件认领（bundle_installed）只查 BundleStore 记录。
-    crate::features::marketplace::store::BundleStore::new()
-        .upsert(
-            crate::features::marketplace::store::BundleRecord::installed_now(
-                "gongwen".to_string(),
-                crate::features::marketplace::store::BundleSource::Preset,
-            ),
-        )
-        .unwrap();
+    crate::features::marketplace::store::plant_installed_record(
+        "gongwen",
+        crate::features::marketplace::store::BundleSource::Preset,
+    );
     for sid in mgr.companion_skills("gongwen") {
         skill_mgr.install(&sid).unwrap();
     }
@@ -859,14 +855,10 @@ fn mcp_uninstall_aborts_when_companion_uninstall_fails() {
     let _home = TempPinvou3Home::new("companion-abort");
 
     // gongwen installed (store record drives the conditional claim).
-    crate::features::marketplace::store::BundleStore::new()
-        .upsert(
-            crate::features::marketplace::store::BundleRecord::installed_now(
-                "gongwen".to_string(),
-                crate::features::marketplace::store::BundleSource::Preset,
-            ),
-        )
-        .unwrap();
+    crate::features::marketplace::store::plant_installed_record(
+        "gongwen",
+        crate::features::marketplace::store::BundleSource::Preset,
+    );
     // Failure injection without platform-specific permission tricks: the
     // companion exists only as an *unmarked* legacy flat dir, which skill
     // uninstall refuses to delete ("非市场安装" protection).
@@ -2789,14 +2781,10 @@ async fn install_validation_failure_rollback_leaves_no_consent_rows() {
     // seeded consent rows below would strand — the pin would hold only via
     // the removed post-return strip instead of the in-lock teardown it
     // exists to pin.
-    crate::features::marketplace::store::BundleStore::new()
-        .upsert(
-            crate::features::marketplace::store::BundleRecord::installed_now(
-                "yuandian-mcp".to_string(),
-                crate::features::marketplace::store::BundleSource::Preset,
-            ),
-        )
-        .unwrap();
+    crate::features::marketplace::store::plant_installed_record(
+        "yuandian-mcp",
+        crate::features::marketplace::store::BundleSource::Preset,
+    );
 
     // Seed consent rows exactly where the pre-validation sync writes them:
     // `save_disabled_bundles_for` initializes both scopes with the pack
