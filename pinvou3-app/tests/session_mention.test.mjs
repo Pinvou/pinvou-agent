@@ -1289,7 +1289,7 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
   // wrapper) was written on a false premise — this tree carries the bare
   // `void sendWithSessionRefs(q);` form and nothing else; reverted to the
   // parent PR's strict pin.
-  assert.match(source, /void\s+sendWithSessionRefs\(q\)/, 'welcome-card onSend wiring');
+  assert.match(source, /void sendWithSessionRefs\(q\);/, 'welcome-card onSend wiring');
   const onSendSites = source.match(/onSend=\{sendWithSessionRefs\}/g) || [];
   assert.equal(onSendSites.length, 2, 'plan-option and memory-candidate bubbles both route through it');
   // No secondary surface dispatches sendChatMessage directly anymore.
