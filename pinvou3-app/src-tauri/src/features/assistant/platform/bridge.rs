@@ -1255,7 +1255,19 @@ impl Pinvou3Bridge {
     /// not cataloged yet. Truly custom OpenAI-compatible interfaces keep None,
     /// continuing with the foundation's safe default, never guessing thinking
     /// content from the reply text.
+    ///
+    /// The "vllm" route is NOT a truly custom interface: it only ever comes
+    /// from the LocalVllm preset, an explicit `DEEPSEEK_PROVIDER=vllm`
+    /// operator pin, or a probed local engine (vLLM / SGLang / llama.cpp /
+    /// KoboldCpp / LMDeploy / Docker Model Runner), and those servers place
+    /// thinking in the separate reasoning_content field whenever their
+    /// reasoning parser is enabled (model-store cards ship with one).
+    /// Keeping None here would hit the foundation's wildcard-proxy fallback,
+    /// which inlines reasoning-only deltas into the answer text.
     fn reasoning_stream_style(&self, provider: &str) -> Option<&'static str> {
+        if provider == "vllm" {
+            return Some(SEPARATE_REASONING_FIELD);
+        }
         if matches!(
             provider,
             "deepseek" | "moonshot" | "zai" | "minimax" | "xiaomi-mimo" | "volcengine"
@@ -9493,10 +9505,14 @@ mod tests {
     /// SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model Runner probe
     /// results all map to the engine's vllm provider (chat_template_kwargs +
     /// reasoning_effort wire are structurally identical), defaulting to the
-    /// lowest thinking tier low locally.
+    /// lowest thinking tier low locally. The route declares the
+    /// separate_field stream style so the server's reasoning_content deltas
+    /// surface as thinking instead of being inlined into the answer text by
+    /// the foundation's wildcard-proxy fallback.
     #[test]
     fn local_reasoning_frameworks_map_to_vllm_wire_and_default_low() {
         for kind in [
+            LocalServerKind::Vllm,
             LocalServerKind::Sglang,
             LocalServerKind::LlamaCpp,
             LocalServerKind::KoboldCpp,
@@ -9522,6 +9538,13 @@ mod tests {
             assert_eq!(
                 bridge.request_reasoning_effort().as_deref(),
                 Some("low"),
+                "{kind:?}"
+            );
+            let cfg = bridge.build_dt_config();
+            let providers = cfg.providers.as_ref().expect("providers config");
+            assert_eq!(
+                providers.vllm.reasoning_stream_style.as_deref(),
+                Some(SEPARATE_REASONING_FIELD),
                 "{kind:?}"
             );
         }
