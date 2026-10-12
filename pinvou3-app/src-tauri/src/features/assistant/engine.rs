@@ -3225,7 +3225,7 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
-    fn concurrent_rejection_happens_before_one_shot_state_is_consumed() {
+    fn concurrent_rejection_happens_before_admission_is_consumed() {
         let lifecycle = Arc::new(TurnLifecycle::default());
         let first = lifecycle.reserve().expect("first admission");
 

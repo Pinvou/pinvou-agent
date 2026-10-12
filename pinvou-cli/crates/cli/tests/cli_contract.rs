@@ -3,22 +3,18 @@ use pinvou_cli::{
     execute, parse_args, render_list,
 };
 use std::path::PathBuf;
-#[cfg(not(feature = "product-backend"))]
 use std::sync::Mutex;
 
 /// Serialises tests that mutate the process-global `PINVOU3_HOME` environment
 /// variable, preventing data races when the parallel test runner executes them
 /// concurrently.
-#[cfg(not(feature = "product-backend"))]
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Restores the previous `PINVOU3_HOME` on drop, so the restore survives a
 /// panicking assertion instead of leaking the polluted value into every later
 /// test in the process.
-#[cfg(not(feature = "product-backend"))]
 struct RestoreHome(Option<std::ffi::OsString>);
 
-#[cfg(not(feature = "product-backend"))]
 impl Drop for RestoreHome {
     fn drop(&mut self) {
         match self.0.take() {
@@ -412,6 +408,57 @@ fn gaia_run_requires_product_backend_without_exposing_error_chains() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert_eq!(error.to_string(), "product_backend_not_enabled");
     assert!(!error.to_string().contains("Caused by"));
+}
+
+#[test]
+fn gaia_score_rejects_a_run_id_that_differs_from_the_stored_manifest() {
+    use adapter_gaia::{GAIA_SPLIT, GaiaAdapter};
+    use benchmark_core::{
+        BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId,
+    };
+
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = std::env::temp_dir().join(format!(
+        "pinvou-cli-gaia-run-id-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _restore = RestoreHome(std::env::var_os("PINVOU3_HOME"));
+    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+    let adapter = GaiaAdapter::new();
+    let manifest = RunManifest::new(
+        "gaia-run-id-mismatch",
+        adapter.descriptor(),
+        Split::new(GAIA_SPLIT),
+        ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
+        ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+        1,
+    )
+    .unwrap();
+    let store = RunStore::create(&root, &manifest).unwrap();
+    let mut stored = serde_json::to_value(&manifest).unwrap();
+    stored["run_id"] = serde_json::json!("different-run-id");
+    std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
+
+    let parsed = parse_args([
+        "pinvou",
+        "benchmark",
+        "score",
+        "gaia",
+        "--run-id",
+        "gaia-run-id-mismatch",
+    ])
+    .unwrap();
+    let error = execute(parsed)
+        .expect_err("a stored manifest whose run_id differs from the request must be rejected");
+    assert_eq!(error.to_string(), "gaia_run_manifest_mismatch");
+
+    drop(_restore);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

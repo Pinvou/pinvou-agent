@@ -2824,6 +2824,18 @@ mod tests {
     }
 
     #[test]
+    fn compiled_defaults_target_the_local_dev_relay() {
+        assert_eq!(
+            DEFAULT_PUBLIC_BASE_URL,
+            "http://127.0.0.1:8787/pinvou3/remote"
+        );
+        assert_eq!(
+            DEFAULT_RELAY_WS_URL,
+            "ws://127.0.0.1:8787/pinvou3/remote/ws"
+        );
+    }
+
+    #[test]
     fn web_attachment_upload_accumulates_chunks_until_commit() {
         let mut inner = Inner::default();
 
