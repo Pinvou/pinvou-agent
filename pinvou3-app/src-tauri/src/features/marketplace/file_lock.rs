@@ -173,19 +173,16 @@ where
     f()
 }
 
-/// Bounded retry for transient OS-lock acquisition errors while taking a
-/// blocking write lock (the Windows blocking-LockFileEx ERROR_LOCK_VIOLATION
-/// race, which surfaces as a raw error instead of blocking); a persistent
-/// failure still refuses fail-closed after the bound.
-pub(super) const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
-pub(super) const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
-
 /// The one blocking `write()` discipline, shared by the lock funnel above and
 /// the landing-lease takers (round-28 review: the lease sites took the OS
 /// lock bare, so the same transient race failed an install/uninstall/restore
 /// that the funnel would have absorbed — fail-closed, but inconsistently
 /// hardened). A signal-interrupted flock retries instead of surfacing as a
-/// spurious write refusal.
+/// spurious write refusal; the other transient OS-lock acquisition errors
+/// (the Windows blocking-LockFileEx `ERROR_LOCK_VIOLATION` race, which
+/// surfaces as a raw error instead of blocking) retry on a bounded ladder —
+/// 3 retries, 2 ms apart — and a persistent failure still refuses fail-closed
+/// after the bound.
 ///
 /// A macro, not a function: the acquired guard borrows the caller's lock for
 /// the rest of its scope, and a helper returning that guard across a
@@ -195,19 +192,17 @@ pub(super) const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Durati
 /// compiled with.
 macro_rules! lock_write_with_transient_retry {
     ($lock:expr) => {{
+        const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
+        const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
         let mut retries = 0u32;
         loop {
             match $lock.write() {
                 Ok(guard) => break Ok(guard),
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    if retries
-                        < $crate::features::marketplace::file_lock::LOCK_WRITE_TRANSIENT_RETRIES
-                    {
+                    if retries < LOCK_WRITE_TRANSIENT_RETRIES {
                         retries += 1;
-                        std::thread::sleep(
-                            $crate::features::marketplace::file_lock::LOCK_WRITE_RETRY_DELAY,
-                        );
+                        std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
                         continue;
                     }
                     break Err(error);
@@ -269,47 +264,99 @@ where
     // Try the in-process mutex first, so a degraded read below is only ever
     // beaten by a *peer* process's OS lock (never by a local writer's).
     let process_mutex = process_mutex_for(&lock_path);
-    let process_guard = match process_mutex.try_lock() {
-        Ok(guard) => Some(guard),
+    // Held (unnamed) through the locked read so a local writer cannot enter.
+    let _process_guard = match process_mutex.try_lock() {
         // A local writer is inside its critical section (possibly parked on a
         // frozen peer's OS lock): degrade exactly like peer contention.
-        Err(TryLockError::WouldBlock) => None,
-        Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(TryLockError::WouldBlock) => return f(false),
+        Err(TryLockError::Poisoned(p)) => p.into_inner(),
+        Ok(guard) => guard,
     };
     // The OS write guard must outlive `f` but cannot outlive its lock, so the
     // lock stays the match scrutinee and the read runs (and returns) from
     // inside the guard arm. Every other arm falls through to the degraded,
     // unlocked snapshot below — bounded, silent, never persisting.
-    if process_guard.is_some() {
-        match open_lock_file(&lock_path) {
-            Ok(file) => match fd_lock::RwLock::new(file).try_write() {
-                Ok(_os_guard) => {
-                    let result = f(true);
-                    // Every degradation mode has recovered, so a later
-                    // persistent failure is diagnosable again.
-                    READ_FAILURE_LOGGED.store(0, std::sync::atomic::Ordering::Relaxed);
-                    return result;
-                }
-                // Peer contention is the designed, silent degradation.
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => log_read_failure(
-                    LOG_LOCK_PROBE,
-                    &format!(
-                        "cross-process lock probe failed on {}; unlocked read without persist: {error}",
-                        lock_path.display()
-                    ),
-                ),
-            },
+    match open_lock_file(&lock_path) {
+        Ok(file) => match fd_lock::RwLock::new(file).try_write() {
+            Ok(_os_guard) => {
+                let result = f(true);
+                // Every degradation mode has recovered, so a later
+                // persistent failure is diagnosable again.
+                READ_FAILURE_LOGGED.store(0, std::sync::atomic::Ordering::Relaxed);
+                return result;
+            }
+            // Peer contention is the designed, silent degradation.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => log_read_failure(
-                LOG_LOCK_OPEN,
+                LOG_LOCK_PROBE,
                 &format!(
-                    "cross-process lock unavailable on {}; unlocked read without persist: {error}",
+                    "cross-process lock probe failed on {}; unlocked read without persist: {error}",
                     lock_path.display()
                 ),
             ),
-        }
+        },
+        Err(error) => log_read_failure(
+            LOG_LOCK_OPEN,
+            &format!(
+                "cross-process lock unavailable on {}; unlocked read without persist: {error}",
+                lock_path.display()
+            ),
+        ),
     }
     f(false)
+}
+
+/// Test-only, shared by the cross-process regression suites (the tests in
+/// this module's siblings — scope.rs, store.rs, recycle_bin.rs, mod.rs — and
+/// runtime_bundle's boot-writer test): opens `lock_path` and holds a foreign
+/// OS write lock through a second fd (the peer-process shape) while `body`
+/// runs; the lock releases when `body` returns. Closure form: the guard
+/// borrows the lock, so it must never escape.
+#[cfg(test)]
+pub(crate) fn with_foreign_write_lock<T>(lock_path: &Path, body: impl FnOnce() -> T) -> T {
+    std::fs::create_dir_all(lock_path.parent().expect("lock path has a parent"))
+        .expect("test should be able to create the lock file's parent");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(lock_path)
+        .expect("test should be able to open the lock file");
+    let mut foreign = fd_lock::RwLock::new(file);
+    let _foreign_guard = foreign
+        .write()
+        .expect("test should be able to take the foreign cross-process write lock");
+    body()
+}
+
+/// Blocks until some thread of this process holds `lock_path`'s in-process
+/// mutex: with a foreign OS lock held by the test (see
+/// [`with_foreign_write_lock`]), a worker past the mutex is parked on (or
+/// just failed) the OS-lock acquisition. Without this handshake the caller's
+/// absence assert could pass before the worker even reached the lock (#517
+/// test shape, generalized to the per-path registry mutex). `what` names the
+/// lock in the deadline failure message.
+#[cfg(test)]
+pub(crate) fn wait_until_process_mutex_parked(lock_path: &Path, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match process_mutex_for(lock_path).try_lock() {
+            // Not held by the worker yet — retry shortly.
+            Ok(guard) => drop(guard),
+            // Held by the worker: with the foreign lock held, it is now
+            // either blocked on the OS lock or its acquisition failed.
+            Err(TryLockError::WouldBlock) => return,
+            Err(TryLockError::Poisoned(p)) => {
+                drop(p.into_inner());
+                return;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never reached the {what} lock acquisition point"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 #[cfg(test)]

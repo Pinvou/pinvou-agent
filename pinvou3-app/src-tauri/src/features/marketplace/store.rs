@@ -378,19 +378,15 @@ impl BundleStore {
     /// 局部更新：置 `Degraded` 原因（§3.2：登记在、资源缺），供 CLI 修复/断开
     /// 路径用。id 不存在 → Ok(false)；原因未变 → Ok(true) 但不写盘。
     pub fn mark_degraded(&self, id: &str, reason: &str) -> Result<bool, String> {
-        self.set_degraded(id, reason.to_string())
-    }
-
-    fn set_degraded(&self, id: &str, reason: String) -> Result<bool, String> {
         file_lock::with_file_lock(&self.file, || {
             let mut file = load_locked(&self.file)?;
             let Some(record) = file.records.iter_mut().find(|r| r.id == id) else {
                 return Ok(false);
             };
-            if record.degraded.as_deref() == Some(reason.as_str()) {
+            if record.degraded.as_deref() == Some(reason) {
                 return Ok(true);
             }
-            record.degraded = Some(reason);
+            record.degraded = Some(reason.to_string());
             save_locked(&self.file, &file)?;
             Ok(true)
         })
@@ -954,10 +950,25 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
     }
 }
 
+/// Test-only fixture: register `id` as an installed record of `source` in the
+/// default bundle store (`BundleRecord::installed_now`) — the shape the
+/// scope/command gate tests plant before exercising a gate. New gate tests
+/// copy this helper instead of re-stating the fully-qualified
+/// `BundleStore::new().upsert(...)` ceremony.
+#[cfg(test)]
+pub(crate) fn plant_installed_record(id: &str, source: BundleSource) {
+    BundleStore::new()
+        .upsert(BundleRecord::installed_now(id, source))
+        .unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::test_support::with_temp_home;
+    // The helper is `#[cfg(all(test, unix))]`; its callers are `#[cfg(unix)]` tests.
+    #[cfg(unix)]
+    use crate::platform::test_support::file_unreadable_or_skip;
 
     fn record(id: &str, source: BundleSource) -> BundleRecord {
         BundleRecord {
@@ -1118,16 +1129,12 @@ mod tests {
             let installed_path = home.join("marketplace/installed.json");
             std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
             std::fs::write(&installed_path, r#"["gongwen"]"#).unwrap();
-            std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
             // Root probe (mode bits are no-ops for root): if the file is still
             // readable, the unreadable-read branch never runs — skip loudly.
-            if std::fs::read(&installed_path).is_ok() {
-                std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[legacy_import_unreadable_registry_fails_without_latching_gate]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            if !file_unreadable_or_skip(
+                &installed_path,
+                "legacy_import_unreadable_registry_fails_without_latching_gate",
+            ) {
                 return;
             }
 
@@ -1335,7 +1342,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn legacy_import_unreadable_marker_aborts_before_gate_latches() {
-        use std::os::unix::fs::PermissionsExt;
         with_temp_home("pinvou3-store-test", || {
             let skills = paths::bundle_skills_dir();
             let good = skills.join("good");
@@ -1349,12 +1355,13 @@ mod tests {
             )
             .unwrap();
             let sealed_marker = sealed.join(".installed-from");
-            std::fs::set_permissions(&sealed_marker, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
-            if std::fs::read_to_string(&sealed_marker).is_ok() {
-                eprintln!(
-                    "ROOT-SKIP[legacy_import_unreadable_marker_aborts_before_gate_latches]: unreadable-file fixture not effective (root); NOT exercised"
-                );
+            // Root probe (mode bits are no-ops for root): if the marker is
+            // still readable, the unreadable-read branch never runs — skip
+            // loudly.
+            if !file_unreadable_or_skip(
+                &sealed_marker,
+                "legacy_import_unreadable_marker_aborts_before_gate_latches",
+            ) {
                 return;
             }
             // 无标记目录仍是普通跳过，不得触发任何错误路径。
@@ -1897,33 +1904,6 @@ mod tests {
         });
     }
 
-    /// Blocks until the spawned worker holds the bundles in-process mutex: with
-    /// the foreign OS lock held by the test, a worker past the mutex is parked
-    /// on (or just failed) the OS-lock acquisition. Without this handshake the
-    /// absence assert below could pass before the worker even reached the lock
-    /// (#517 test shape, generalized to the per-path registry mutex).
-    fn wait_until_bundles_mutex_held(lock_path: &Path) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match file_lock::process_mutex_for(lock_path).try_lock() {
-                // Not held by the worker yet — retry shortly.
-                Ok(guard) => drop(guard),
-                // Held by the worker: with the foreign lock held, it is now
-                // either blocked on the OS lock or its acquisition failed.
-                Err(std::sync::TryLockError::WouldBlock) => return,
-                Err(std::sync::TryLockError::Poisoned(p)) => {
-                    drop(p.into_inner());
-                    return;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "worker never reached the bundles lock acquisition point"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
-
     /// #515/#521 cross-process contention on the WRITE path: while a foreign
     /// fd holds the bundles OS lock, the save must not land first; after the
     /// release the write lands with its full content.
@@ -1933,36 +1913,25 @@ mod tests {
             let store = BundleStore::new();
             let data_path = store.file_path();
             let lock_path = file_lock::lock_path_for(&data_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let worker = std::thread::spawn(move || {
-                store
-                    .upsert(record("weather", BundleSource::Preset))
-                    .expect("write should succeed once the foreign lock is released");
+            let worker = file_lock::with_foreign_write_lock(&lock_path, || {
+                let worker = std::thread::spawn(move || {
+                    store
+                        .upsert(record("weather", BundleSource::Preset))
+                        .expect("write should succeed once the foreign lock is released");
+                });
+                file_lock::wait_until_process_mutex_parked(&lock_path, "bundles");
+                // The write must not land while the peer holds the lock.
+                let window = std::time::Duration::from_secs(2);
+                let deadline = std::time::Instant::now() + window;
+                while std::time::Instant::now() < deadline {
+                    assert!(
+                        !data_path.exists(),
+                        "data file written while the lock was still held — serialization is broken"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                worker
             });
-            wait_until_bundles_mutex_held(&lock_path);
-            // The write must not land while the peer holds the lock.
-            let window = std::time::Duration::from_secs(2);
-            let deadline = std::time::Instant::now() + window;
-            while std::time::Instant::now() < deadline {
-                assert!(
-                    !data_path.exists(),
-                    "data file written while the lock was still held — serialization is broken"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            drop(foreign_guard);
             worker
                 .join()
                 .expect("worker should finish once the foreign lock is released");
@@ -1984,40 +1953,28 @@ mod tests {
         with_temp_home("pinvou3-store-cross-process-read", || {
             let store = BundleStore::new();
             let lock_path = file_lock::lock_path_for(&store.file_path());
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let reader = std::thread::spawn(move || {
-                let got = BundleStore::new().load();
-                done_tx.send(got).expect("reader should send its result");
+            file_lock::with_foreign_write_lock(&lock_path, || {
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let reader = std::thread::spawn(move || {
+                    let got = BundleStore::new().load();
+                    done_tx.send(got).expect("reader should send its result");
+                });
+                // A contended read must return promptly. recv_timeout doubles as
+                // the regression assertion: a blocking read hangs here and fails
+                // the test with a bounded, diagnosable timeout.
+                let got = done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("contended read must degrade instead of blocking on the peer's lock");
+                assert!(
+                    got.unwrap().records.is_empty(),
+                    "a missing store reads as empty under contention"
+                );
+                assert!(
+                    !store.file_path().exists(),
+                    "a contended read must not persist (create) the store file"
+                );
+                reader.join().expect("reader thread should finish");
             });
-            // A contended read must return promptly. recv_timeout doubles as
-            // the regression assertion: a blocking read hangs here and fails
-            // the test with a bounded, diagnosable timeout.
-            let got = done_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("contended read must degrade instead of blocking on the peer's lock");
-            assert!(
-                got.unwrap().records.is_empty(),
-                "a missing store reads as empty under contention"
-            );
-            assert!(
-                !store.file_path().exists(),
-                "a contended read must not persist (create) the store file"
-            );
-
-            drop(foreign_guard);
-            reader.join().expect("reader thread should finish");
         });
     }
 

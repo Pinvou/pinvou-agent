@@ -132,7 +132,7 @@ pub(crate) fn mcp_json_unparseable() -> bool {
         // An unreadable file is treated like an unparseable one: the builtin
         // repair loader reads through `unwrap_or_default`, so a permission
         // failure would reset the file to an empty skeleton.
-        // Hardened read — family rationale on `open_private_data_file`.
+        // Hardened read — family rationale on `open_private_data_file_within`.
         Ok(read_private_data_file(&mcp_path)
             .ok()
             .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
@@ -306,6 +306,32 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         })
     }
 
+    /// Shared arm of the mcp.json entry builders for one secret placeholder.
+    /// `Ok(Some(placeholder))` — wire it; `Ok(None)` — the credential is
+    /// absent and `degrade_unresolved_secrets` allows skipping the wiring
+    /// (startup reconcile); `Err` — a required secret is missing (install
+    /// mode) or the credential store itself failed (both modes) — the caller
+    /// refuses the build so a transiently locked keyring is never baked into
+    /// a permanently unwired entry. Collapses the per-site 4-arm match over
+    /// `try_resolve_secret_placeholder`, which carries the
+    /// error-classification doctrine.
+    fn resolve_entry_secret(
+        &self,
+        tool_id: &str,
+        target: &str,
+        key: &str,
+        user_config: &HashMap<String, String>,
+        legacy_env: &HashMap<String, String>,
+        degrade_unresolved_secrets: bool,
+    ) -> Result<Option<String>, String> {
+        match self.try_resolve_secret_placeholder(tool_id, target, key, user_config, legacy_env) {
+            Ok(Some(placeholder)) => Ok(Some(placeholder)),
+            Ok(None) if degrade_unresolved_secrets => Ok(None),
+            Ok(None) => Err(mcp_secret_missing_error(tool_id, key)),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// Build the fresh-install mcp.json entry for one remote server (url/headers/oauth).
     /// Shared by the install writer (`add_to_mcp_json` remote branch) and the
     /// startup reconciliation
@@ -440,22 +466,19 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
 
         // 2. manifest.secret_headers 声明的敏感 header（不落明文）
         for secret in &manifest.secret_headers {
-            match self.try_resolve_secret_placeholder(
+            match self.resolve_entry_secret(
                 &manifest.id,
                 bundle::keyring_target(bundle::CredentialTarget::Bearer),
                 &secret.source_key,
                 user_config,
                 &manifest.env,
+                degrade_unresolved_secrets,
             ) {
                 // The user's current input must still be persisted to the
                 // store; the resolved placeholder value itself is unused here.
                 Ok(Some(_)) => {}
-                // An absent credential degrades at startup; a store failure
-                // propagates in both modes so a locked keyring is never baked
-                // into an unwired entry.
-                Ok(None) if degrade_unresolved_secrets => continue,
-                Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.source_key)),
-                Err(error) => return Err(error.to_string()),
+                Ok(None) => continue,
+                Err(error) => return Err(error),
             }
             set_remote_secret_header(
                 &mut env_headers,
@@ -474,12 +497,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         if headers.is_empty() && env_headers.is_empty() && bearer_token_env_var.is_none() {
             for k in manifest.env.keys() {
                 if is_sensitive_key_name(k) {
-                    match self.try_resolve_secret_placeholder(
+                    match self.resolve_entry_secret(
                         &manifest.id,
                         bundle::keyring_target(bundle::CredentialTarget::Bearer),
                         k,
                         user_config,
                         &manifest.env,
+                        degrade_unresolved_secrets,
                     ) {
                         // The resolved value is persisted to the store/registry
                         // inside `try_resolve_secret_placeholder`; the entry
@@ -493,9 +517,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                                 k,
                             )?;
                         }
-                        Ok(None) if degrade_unresolved_secrets => continue,
-                        Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, k)),
-                        Err(error) => return Err(error.to_string()),
+                        Ok(None) => continue,
+                        Err(error) => return Err(error),
                     }
                     break;
                 }
@@ -607,7 +630,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             Self::managed_python_runtime_fields(manifest, server_dir, environment)?;
         with_mcp_json_lock(|| {
             let mcp_path = paths::mcp_config_path();
-            // Hardened read — family rationale on `open_private_data_file`.
+            // Hardened read — family rationale on `open_private_data_file_within`.
             let content = read_private_data_file(&mcp_path)
                 .map_err(|error| format!("read mcp.json: {error}"))?;
             let mut mcp: serde_json::Value = serde_json::from_str(&content)
@@ -690,54 +713,56 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // the install writer filled from the user's input. An
                     // absent credential degrades; a store failure fails the
                     // rebuild so the next startup retries instead of silently
-                    // dropping the wiring.
-                    match self.try_resolve_secret_placeholder(
+                    // dropping the wiring. (The enclosing if guarantees
+                    // `degrade`, so `Ok(None)` always skips the wiring.)
+                    match self.resolve_entry_secret(
                         &manifest.id,
                         "env",
                         &field.key,
                         user_config,
                         &manifest.env,
+                        degrade_unresolved_secrets,
                     ) {
                         Ok(Some(placeholder)) => {
                             env.insert(field.key.clone(), placeholder);
                         }
                         Ok(None) => {}
-                        Err(error) => return Err(error.to_string()),
+                        Err(error) => return Err(error),
                     }
                 }
             }
         }
         for secret in &manifest.secret_env {
-            match self.try_resolve_secret_placeholder(
+            match self.resolve_entry_secret(
                 &manifest.id,
                 "env",
                 &secret.key,
                 user_config,
                 &manifest.env,
+                degrade_unresolved_secrets,
             ) {
                 Ok(Some(placeholder)) => {
                     env.insert(secret.key.clone(), placeholder);
                 }
-                Ok(None) if degrade_unresolved_secrets => continue,
-                Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, &secret.key)),
-                Err(error) => return Err(error.to_string()),
+                Ok(None) => continue,
+                Err(error) => return Err(error),
             }
         }
         for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
             if !env.contains_key(key) {
-                match self.try_resolve_secret_placeholder(
+                match self.resolve_entry_secret(
                     &manifest.id,
                     "env",
                     key,
                     user_config,
                     &manifest.env,
+                    degrade_unresolved_secrets,
                 ) {
                     Ok(Some(placeholder)) => {
                         env.insert(key.clone(), placeholder);
                     }
-                    Ok(None) if degrade_unresolved_secrets => continue,
-                    Ok(None) => return Err(mcp_secret_missing_error(&manifest.id, key)),
-                    Err(error) => return Err(error.to_string()),
+                    Ok(None) => continue,
+                    Err(error) => return Err(error),
                 }
             }
         }
