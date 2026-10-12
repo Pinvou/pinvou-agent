@@ -988,6 +988,9 @@ pub(crate) fn spawn_event_forwarder(
                     status,
                     error,
                     tool_catalog,
+                    turn_id: _,
+                    submission_id: _,
+                    compaction_id: _,
                     base_url: _,
                 } => {
                     #[cfg(not(feature = "benchmark-hooks"))]
