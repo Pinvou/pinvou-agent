@@ -1676,3 +1676,47 @@ explicitly enabled above. Production/cross-repository E2E remains unverified.
 Both independent scoped roles passed the frozen ninth-batch code, tests and
 documents after all findings were repaired. Continue actual owner composition.
 Service commit: `b1feb11` (pushed). Frozen reception SQL remains unchanged.
+
+### T20 tenth batch: registered fixed no-update owner (2026-10-12)
+
+The service now registers the single-event no-update owner with actual T06,
+including sealed checkpoint, fenced SQL reservation, recovery and completion.
+Original credentials/request bytes remain ephemeral; protected intent storage
+holds exact bounded event bytes, while encrypted recovery stores only derived
+binding and opaque references. Migration three is additive; migrations one and
+two remain byte-identical. Explicit initialization grants only two audited fixed
+ports. Actual native function-chain/structure/privilege checks reject drift,
+direct writes, public execution and delegation; standalone readers remain read-only.
+
+Permanent event identity binds original scope/lineage/windows and exact event
+bytes before acceptance. Processing attempts separately bind request bytes and
+current proof generation: lawful signature variants or freshly verified trust
+changes share the original intent/receipt without renewing windows. Real SQL
+operation lookup/digest, result ID and epoch checks prevent cross-event borrowing.
+Current denial precedes storage availability. Prospective computing frames include
+both new point references before reservation and enforce complete 1 MiB/4096
+limits. Apply joins Session/cursor, receipt/outbox and T06 completion atomically.
+
+Targeted PostgreSQL tests passed for live/late/replay and additive upgrade
+(15.498s), cross-intent/function/default drift (29.618s), actual 4096/4097 capacity
+(19.559s), natural lease recovery without an original request (34.62s), real child
+process exit and encrypted-frame tamper/restoration (37.25s), committed ACK loss
+(4.56s), write-after-Apply rollback/recovery and first-intent/signature controls
+(48.991s combined), and authority revocation/restoration/deny priority (26.497s).
+Exact whole-frame 1 MiB/+1 tests passed (1.564s; independent 1.771s).
+Independent review additionally required an explicit real-Apply-success marker
+before injecting the rollback failure; the strengthened actual test passed
+(40.16s). Both independent scoped roles passed the final code/tests/documents.
+Default full Go tests, vet, module verification, command builds, pinned contracts
+and client architecture/version checks passed. Default database/provider opt-ins
+remain skipped; complete actual PostgreSQL event regression runs separately.
+The complete actual PostgreSQL event regression passed (38 tests, 481.977s),
+including earlier reception/trust/ACL/clock cases. It compiled before the last
+test-only Apply marker change; the separate final 40.16s run verifies that change.
+Service commit: `6d3bf2a`. Continue the explicit runnable owner entry points;
+the fixed single-event owner does not close full T20.
+
+This completes no production HTTP or batch endpoint. Full T20 stays open until
+retention maintenance, transport, other event roles, quality composition and
+client outbox are implemented. Deployment/HA and cross-repository E2E remain
+postponed. Downloads have no hard total/cumulative time limit.
