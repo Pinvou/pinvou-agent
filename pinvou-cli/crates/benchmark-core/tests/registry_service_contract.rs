@@ -92,7 +92,12 @@ impl BenchmarkAdapter for FixtureAdapter {
 
     fn score(&self, _run: &CompletedRun) -> benchmark_core::Result<OfficialScoreReport> {
         self.calls.lock().unwrap().scored += 1;
-        Ok(OfficialScoreReport::new(1, 1))
+        Ok(OfficialScoreReport::partial(
+            1,
+            1,
+            "unspecified",
+            "unspecified",
+        ))
     }
 
     fn write_submission(
