@@ -498,6 +498,12 @@ mod tests {
     #[test]
     fn status_detects_logged_in() {
         assert!(status_is_logged_in("Logged in as user@example.com"));
+        // Deliberately a case-sensitive substring over the CLI's own report:
+        // the readiness probe accepts an installed-but-older CLI (the
+        // >=1.0.18 gate lives in the version gate, not here), so pin the
+        // exact match semantics as the contract.
+        assert!(!status_is_logged_in("logged in"));
+        assert!(status_is_logged_in("warning: Logged in on another device"));
         assert!(!status_is_logged_in(
             "Not logged in. Please use 'tmeet auth login' to authenticate."
         ));
