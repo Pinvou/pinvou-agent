@@ -448,6 +448,31 @@ assert.match(remoteControlCommands,
 assert.match(commands,
   /pub async fn list_codex_acp_sessions_for_web[\s\S]*?acp_pool\.is_acp_metadata\(metadata\)[\s\S]*?redact_codex_session_list_item_for_web/,
   'the Web code-session list must contain ACP sessions only');
+// 评审 M1（PR668 车道 gate 调用点源码 pin）：谓词与共享缝已有 Rust 单测，但
+// 此前没有任何测试执行或钉住调用点本身——回滚头版语义（如把 !is_scheduled
+// 改回 is_code_session、删掉 web 车道的 ACP 拒绝）可全绿通过。以下 pin 让
+// 一行回滚在 JS 契约测试层必红。
+assert.match(rustCommandBlock(commands, 'chat'),
+  /if !is_scheduled \{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'chat() must gate the pre-send snapshot on !is_scheduled — reverting the work-mode snapshot gate must fail here');
+assert.match(rustCommandBlock(commands, 'accept_plan'),
+  /if store\.scheduled_profile\(&session_id\)\.is_none\(\) \{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'accept_plan() must gate the pre-send snapshot on scheduled_profile(&session_id).is_none() — reverting the gate must fail here');
+assert.match(rustCommandBlock(commands, 'accept_plan'),
+  /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'accept_plan() must reject ACP sessions with the shared lane-rejected literal');
+assert.match(rustCommandBlock(remoteControlCommands, 'web_access_chat_for_session'),
+  /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'web_access_chat_for_session must reject ACP sessions before reserving a native-engine turn');
+// 评审 M2（PR668 同类 web 缝合）：edit_last_turn/compact_now 在 web 侧
+// access-policy allowlist 内，ACP-unaware 的 EnginePool 会为 ACP 会话 id 拉起
+// 原生引擎并改写历史——与 chat() 同口径的门必须钉住。
+assert.match(rustCommandBlock(commands, 'compact_now'),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'compact_now must reject ACP sessions before EnginePool rewrites their history');
+assert.match(rustCommandBlock(commands, 'edit_last_turn'),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'edit_last_turn must reject ACP sessions before the reserve-truncate-resend path runs');
 assert.match(remoteControlCommands,
   /struct WebSavedSession[\s\S]*?metadata: deepseek_tui::session_manager::SessionMetadata[\s\S]*?messages:[\s\S]*?artifacts:[\s\S]*?transcript_revision:/,
   'chunked Web session downloads must use an explicit browser field allowlist');

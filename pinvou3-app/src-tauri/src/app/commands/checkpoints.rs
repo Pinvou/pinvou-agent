@@ -1645,8 +1645,8 @@ mod tests {
         std::fs::write(execution.join("src/b.rs"), "b\n").expect("write");
         std::fs::write(execution.join(".env"), "SECRET=2\n").expect("write");
         std::fs::write(execution.join("node_modules/pkg/index.js"), "dep2\n").expect("write");
-        let diff = checkpoints::diff_checkpoint(&ledger, &execution, &snapshot, false)
-            .expect("diff");
+        let diff =
+            checkpoints::diff_checkpoint(&ledger, &execution, &snapshot, false).expect("diff");
         let paths: Vec<&str> = diff.changes.iter().map(|c| c.path.as_str()).collect();
         assert!(
             paths.contains(&"src/b.rs"),
