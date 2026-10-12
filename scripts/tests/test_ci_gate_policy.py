@@ -96,18 +96,29 @@ def _extract_consent_marker_read_targets(consent_test):
     return sorted(targets)
 
 
-def _frontend_filter_entries(workflow_text):
-    """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
-    changes = _without_yaml_comments(
+def _changes_block(workflow_text):
+    """pr-check.yml 的 changes 块(去注释),各 filter 组提取的公共上游。"""
+    return _without_yaml_comments(
         workflow_text.split("\n  changes:", maxsplit=1)[1].split(
             "\n  fast-gate:", maxsplit=1
         )[0]
     )
+
+
+def _frontend_filter_entries(workflow_text):
+    """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
+    changes = _changes_block(workflow_text)
     return _extract_quoted_paths(
         changes.split("            frontend:", maxsplit=1)[1].split(
             "            relay:", maxsplit=1
         )[0]
     )
+
+
+def _macos_job(workflow_text):
+    return workflow_text.split("\n  macos-rust-check:", maxsplit=1)[1].split(
+        "\n  windows-codex-runtime-test:", maxsplit=1
+    )[0]
 
 
 def _matches_paths_filter(path, patterns):
@@ -437,11 +448,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("Merge Queue 基础检查失败", required_gate)
 
     def test_standalone_knowledge_crate_has_its_own_required_gate(self):
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
+        changes = _changes_block(self.pr_workflow)
         self.assertIn("knowledge_rust:", changes)
         self.assertIn("knowledge_dependencies:", changes)
         knowledge_paths = changes.split(
@@ -510,11 +517,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("| sha256sum --check -", step)
         self.assertNotIn("download-actionlint.bash", step)
     def test_cli_crate_has_its_own_required_gate(self):
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
+        changes = _changes_block(self.pr_workflow)
         self.assertIn("cli_rust:", changes)
         cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
@@ -582,11 +585,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("benchmark_codewhale:", changes)
 
     def test_full_rust_filter_fails_closed_with_stable_module_boundaries(self):
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
+        changes = _changes_block(self.pr_workflow)
         rust_full = changes.split("            rust_full:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
         )[0]
@@ -634,14 +633,11 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"documented low-risk leaf should use the fast route: {path}",
             )
 
-        for workflow_path in (
+        self.assertNotIn(
             ".github/workflows/pr-check.yml",
-        ):
-            self.assertNotIn(
-                workflow_path,
-                rust_full_paths,
-                "workflow policy changes must not link the full application tests",
-            )
+            rust_full_paths,
+            "workflow policy changes must not link the full application tests",
+        )
 
         literal_feature_files = [
             path
@@ -1247,11 +1243,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
+        changes = _changes_block(self.pr_workflow)
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
         )[1].split("            pet:", maxsplit=1)[0]
@@ -1380,11 +1372,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # release-packages). VERSION is deliberately absent from the filter:
         # a real version-sync commit always touches
         # tauri.conf.json/package.json, entering bundle_chain through them.
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
+        changes = _changes_block(self.pr_workflow)
         self.assertIn("bundle_chain:", changes)
         bundle_chain_paths = _extract_quoted_paths(
             changes.split("            bundle_chain:", maxsplit=1)[1]
@@ -1407,9 +1395,7 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"changing would silently skip the bundle smoke: {entry}",
             )
 
-        macos_job = self.pr_workflow.split(
-            "\n  macos-rust-check:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        macos_job = _macos_job(self.pr_workflow)
         smoke_step = _without_yaml_comments(
             macos_job.split(
                 "- name: Tauri bundle smoke", maxsplit=1
@@ -1443,9 +1429,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # lockfile affects the build). Formerly pinned the standalone
         # mac-build.yml trigger; the workflow was folded into pr-check's
         # macos-rust-check in 2026-10.
-        macos_job = self.pr_workflow.split(
-            "\n  macos-rust-check:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        macos_job = _macos_job(self.pr_workflow)
         job_if = macos_job.split("\n    if: >-", maxsplit=1)[1].split(
             "\n    runs-on:", maxsplit=1
         )[0]
@@ -1472,11 +1456,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "the PR side must keep the rust-filter routing (high-risk draft/ready paths)",
         )
 
-        changes = _without_yaml_comments(
-            self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-                "\n  fast-gate:", maxsplit=1
-            )[0]
-        )
+        changes = _changes_block(self.pr_workflow)
         bundle_tail = changes.split("            bundle_chain:", maxsplit=1)[1]
         # bundle_chain is the last filter group and the extraction below has
         # no lower bound: a group appended after it would leak into the
@@ -1505,9 +1485,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # folded into macos-rust-check. Its old failure mode was silent: the
         # workflow kept "running" (cancel-failing) for weeks with zero
         # coverage. Pin each folded leg so removing one cannot go unnoticed.
-        macos_job = self.pr_workflow.split(
-            "\n  macos-rust-check:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        macos_job = _macos_job(self.pr_workflow)
         # mac-build died inside its own 50-minute cap; the fold replaces it
         # with 180. Reverting to the default (360) or deleting the cap burns
         # a hung runner for hours — the exact waste this PR removes.
@@ -1654,9 +1632,7 @@ class CiGatePolicyTests(unittest.TestCase):
         #   a usable lld fails in seconds ahead of any cache restore or
         #   build work (cargo fingerprints inside target/, not the cache
         #   key, keep the lld-built artifacts consistent).
-        macos_job = self.pr_workflow.split(
-            "\n  macos-rust-check:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        macos_job = _macos_job(self.pr_workflow)
 
         # No linker env at job level (comments excluded: they document
         # the scoping and legitimately name the variables).

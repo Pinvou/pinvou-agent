@@ -65,24 +65,9 @@ const FULL_PREFIXES = [
 
 function isFrontendRelevant(path) {
   return (
-    path === ".gitmodules" ||
-    path === ".github/workflows/pr-check.yml" ||
+    requiresFullSuite(path) ||
     path.startsWith("pinvou3-app/src/") ||
-    path.startsWith("pinvou3-app/tests/") ||
-    path.startsWith("pinvou3-app/scripts/tauri/") ||
-    path.startsWith("pinvou3-app/src-tauri/config/") ||
-    path.startsWith("pinvou3-app/src-tauri/packaging/") ||
-    path.startsWith("pinvou3-app/src-tauri/resources/platforms/linux/knowledge-host/") ||
-    path.startsWith("remote-control-relay/") ||
-    path === "pinvou3-app/package.json" ||
-    path === "pinvou3-app/package-lock.json" ||
-    path === "pinvou3-app/vite.config.mjs" ||
-    path === "pinvou3-app/eslint.config.mjs" ||
-    path === "pinvou3-app/src-tauri/tauri.conf.json" ||
-    path === "scripts/run-user-journey-tests.sh" ||
-    path === "scripts/run-frontend-smokes.mjs" ||
-    path === "scripts/mcp-server-contract-smoke.py" ||
-    path === "scripts/select-frontend-smokes.mjs"
+    path.startsWith("remote-control-relay/")
   );
 }
 
