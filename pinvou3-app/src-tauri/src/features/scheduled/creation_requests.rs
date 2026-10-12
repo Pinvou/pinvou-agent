@@ -197,7 +197,15 @@ fn check_sender_session_id(session_id: Option<&String>) -> Result<()> {
     // side-chats (the MCP server rejects all three for every request kind;
     // re-checked here because the spool directory is user-writable —
     // defense in depth, mirrors messaging).
-    if is_sched_session_id(id) || is_aux_session_id(id) || id.starts_with("eval_") {
+    // Round-15 REQUIRED-1: the eval_ leg folds case like the server's
+    // `.lower()` gate — a planted `EVAL_b1` sender used to pass the
+    // watcher while the server rejected it, and on case-insensitive
+    // filesystems `session_roots("EVAL_b1")` aliases the real benchmark
+    // session's audit root.
+    if is_sched_session_id(id)
+        || is_aux_session_id(id)
+        || id.to_ascii_lowercase().starts_with("eval_")
+    {
         bail!("from_session {id} is an isolated session and cannot request task operations");
     }
     Ok(())
@@ -1248,11 +1256,16 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 if let Err(error) = std::fs::remove_file(&path) {
                     // The marker exists, so the operation stays deduped, but
                     // a stuck file would loop Done/remove every poll — say
-                    // so instead of failing silently.
+                    // so instead of failing silently. Round-15 REQUIRED-4:
+                    // the budget stays PUT on a persisted removal failure
+                    // (with a failing marker write the record would
+                    // re-apply forever on a cleared budget).
                     log::warn!(
                         "[scheduled-creation] processed {name} but could not remove it: {error}"
                     );
+                    continue;
                 }
+                retries.attempts.remove(&name);
             }
             Processed::Poison(error) => {
                 retries.attempts.remove(&name);
@@ -1884,6 +1897,15 @@ mod tests {
         let mut request = valid_record();
         request.from_session = Some("sched-run1".to_string());
         assert!(request.validate().is_err(), "sched- senders are rejected");
+        // Round-15 REQUIRED-1: the eval_ leg folds case — the uppercase
+        // variant used to pass while the server rejected it.
+        request.from_session = Some("EVAL_b1".to_string());
+        assert!(
+            request.validate().is_err(),
+            "uppercase EVAL_ senders are rejected (case-folded)"
+        );
+        request.from_session = Some("AUX-side1".to_string());
+        assert!(request.validate().is_err(), "AUX- variants are rejected");
         request.from_session = Some("../escape".to_string());
         assert!(request.validate().is_err(), "traversal ids are rejected");
         request.from_session = None;
