@@ -214,19 +214,11 @@ pub fn web_access_rotate(
     manager.refresh()
 }
 
-/// 桌面专属：查询/设置自定义 Relay 地址。均不进 Web 命令白名单——Relay 指向
+/// 桌面专属：查询自定义 Relay 地址。不进 Web 命令白名单——Relay 指向
 /// 哪台服务器只能由桌面端决定。
 #[tauri::command]
 pub fn web_access_relay_settings(manager: State<'_, RemoteControlManager>) -> RelaySettingsInfo {
     manager.relay_settings()
-}
-
-#[tauri::command]
-pub fn web_access_set_relay(
-    address: String,
-    manager: State<'_, RemoteControlManager>,
-) -> Result<RelaySettingsInfo, String> {
-    manager.set_relay_address(&address)
 }
 
 /// Desktop-only readiness handshake. It is intentionally absent from the Web

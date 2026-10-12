@@ -457,14 +457,11 @@ const webActions = loadWebUserInputActionsSafe();
 }
 
 // parseUserAnswers/toolResultText 已随 dead-code dedup 合并进共享 payload（sharedBridgeBase
-// 单一共享实现），lane 里只剩转发函数，直接从 payload 提取实现。
+// 单一共享实现），lane 里只剩转发函数，直接从 payload 提取实现（共享实现只有一份，
+// 无需再按 lane 重复断言）。
 const parseHelpersSource = read('src', 'shared', 'bridge-shared-helpers.js');
 for (const [label, bridgeSource] of [
-  ['tauri bridge', parseHelpersSource.slice(
-    parseHelpersSource.indexOf('function sharedBridgeBase(deps)'),
-    parseHelpersSource.indexOf('const nestedInterruptedDisplayRange'),
-  )],
-  ['web bridge', parseHelpersSource.slice(
+  ['shared helpers payload', parseHelpersSource.slice(
     parseHelpersSource.indexOf('function sharedBridgeBase(deps)'),
     parseHelpersSource.indexOf('const nestedInterruptedDisplayRange'),
   )],

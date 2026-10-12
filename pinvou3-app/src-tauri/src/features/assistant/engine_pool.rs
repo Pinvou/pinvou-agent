@@ -284,13 +284,6 @@ impl EvalModelSnapshots {
     fn forget_session(&self, session_id: &str) {
         self.session_models.lock().remove(session_id);
     }
-
-    // Test-only: no benchmark-hooks or production caller consumes a pinned
-    // saved-model selection outside the snapshot-map tests.
-    #[cfg(test)]
-    fn discard(&self, selection: &EvalModelSelection) {
-        self.saved_models.lock().remove(selection.token());
-    }
 }
 
 #[derive(Clone, Default)]
@@ -5557,20 +5550,6 @@ mod scheduled_model_tests {
         let debug = format!("{selection:?}");
         assert!(!debug.contains("example.invalid"));
         assert!(!debug.contains("api_key"));
-    }
-
-    #[test]
-    fn discarded_eval_snapshot_releases_private_saved_model() {
-        let snapshots = EvalModelSnapshots::default();
-        let selection = snapshots.pin(
-            model("judge", "judge-wire"),
-            super::ModelIdentity::new("openai", "judge-wire"),
-        );
-        assert_eq!(snapshots.saved_models.lock().len(), 1);
-
-        snapshots.discard(&selection);
-
-        assert!(snapshots.saved_models.lock().is_empty());
     }
 
     #[test]

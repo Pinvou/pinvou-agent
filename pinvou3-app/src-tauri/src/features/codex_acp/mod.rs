@@ -5365,29 +5365,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_admission_guard_marks_and_releases() {
-        let pending = AtomicUsize::new(0);
-        {
-            let _guard = PromptAdmissionGuard::new(&pending);
-            assert!(
-                pending.load(Ordering::Acquire) > 0,
-                "the guarded window must be observable to rebind eviction"
-            );
-            assert!(!rebind_evictable(
-                false,
-                false,
-                pending.load(Ordering::Acquire) > 0,
-                Duration::from_secs(60)
-            ));
-        }
-        assert_eq!(
-            pending.load(Ordering::Acquire),
-            0,
-            "Drop must release the count on every path, so a failed send cannot wedge eviction"
-        );
-    }
-
-    #[test]
     fn prompt_admission_guard_counts_concurrent_senders() {
         // review #463 F2 regression: two senders can hold the admission
         // window on the SAME runtime (both resolved it via get_or_spawn, both

@@ -235,7 +235,10 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the JS-side resetWebRelayAddress
   // facade (web_access_reset_relay invoke) was removed — no production caller,
   // and the Rust command is removed in parallel by the backend sweep.
-  remoteControl: '099f4c07968f53331bac9e51b7379ab9fc8c3db4a7102d9629a652c26b5c99ae',
+  // Recomputed again for the dead-code sweep: the JS-side setWebRelayAddress
+  // facade (web_access_set_relay invoke) was removed — no production caller
+  // (tests/remote_control_race.test.mjs relay tests removed with it).
+  remoteControl: '3a12a5cab4a6c79aecd3772008736af138b192536564e0b64f69afeb36fd43df',
   // Recomputed for the shared-helper dedup (see batch note above).
   scheduled: '28247031a7401d232000c469c1eed0954c2eb1265817e7d0a1a5fd5768f5871a',
   // Recomputed for one-click full-fidelity session log export: the tauri

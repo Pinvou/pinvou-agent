@@ -577,9 +577,6 @@ impl OfficialScoreReport {
             level: level.into(),
         }
     }
-    pub fn new(evaluated: u64, correct: u64) -> Self {
-        Self::partial(evaluated, correct, "unspecified", "unspecified")
-    }
     pub fn evaluated(&self) -> u64 {
         self.evaluated
     }

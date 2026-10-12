@@ -3225,10 +3225,9 @@ mod turn_lifecycle_tests {
     }
 
     #[test]
-    fn concurrent_rejection_happens_before_one_shot_state_is_consumed() {
+    fn concurrent_rejection_happens_before_admission_is_consumed() {
         let lifecycle = Arc::new(TurnLifecycle::default());
         let first = lifecycle.reserve().expect("first admission");
-        let mut one_shot = Some("skill body".to_string());
 
         let rejected = lifecycle.reserve();
         assert!(
@@ -3236,10 +3235,7 @@ mod turn_lifecycle_tests {
                 .as_ref()
                 .is_err_and(|error| error.to_string().contains("session_turn_in_progress"))
         );
-        assert_eq!(one_shot.as_deref(), Some("skill body"));
 
-        let consumed_after_admission = one_shot.take();
-        assert_eq!(consumed_after_admission.as_deref(), Some("skill body"));
         drop(first);
         assert!(lifecycle.reserve().is_ok(), "drop restores admission");
     }

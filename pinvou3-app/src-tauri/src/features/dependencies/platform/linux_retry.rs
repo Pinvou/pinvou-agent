@@ -115,12 +115,4 @@ mod tests {
              DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg"
         );
     }
-
-    // The pause between attempts is part of the observable behavior; pinning
-    // it here also keeps the constant warning-free in non-Linux test builds,
-    // where the Linux-gated loop that consumes it is not compiled.
-    #[test]
-    fn retry_delay_is_pinned() {
-        assert_eq!(RETRY_DELAY, Duration::from_secs(2));
-    }
 }

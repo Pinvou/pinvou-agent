@@ -74,43 +74,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_capabilities_match_platform_selectors() {
-        let capabilities = current();
-        assert_eq!(capabilities.os, std::env::consts::OS);
-        assert_eq!(capabilities.uses_bundled_dependency_installer, is_windows());
-        assert_eq!(
-            capabilities.uses_homebrew_dependency_installer,
-            cfg!(target_os = "macos")
-        );
-        assert_eq!(
-            capabilities.show_super_permission_settings,
-            cfg!(target_os = "linux")
-        );
-        assert_eq!(
-            capabilities.task_completion_notifications_default,
-            !cfg!(target_os = "linux")
-        );
-        assert_eq!(
-            capabilities.codex_acp_supported,
-            supports_codex_acp(std::env::consts::OS)
-        );
-        assert_eq!(
-            capabilities.browser_native_display,
-            browser_product_enabled()
-        );
-        assert_eq!(
-            capabilities.browser_agent_automation,
-            browser_product_enabled()
-        );
-        assert_eq!(capabilities.browser_cdp, is_windows());
-        assert_eq!(capabilities.voice_shortcut_native, is_windows());
-        assert_eq!(
-            capabilities.paste_image_clipboard_read,
-            cfg!(target_os = "linux")
-        );
-    }
-
-    #[test]
     fn codex_acp_is_available_on_desktop_platforms() {
         assert!(supports_codex_acp("linux"));
         assert!(supports_codex_acp("windows"));

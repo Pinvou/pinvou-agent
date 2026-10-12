@@ -1338,7 +1338,12 @@ impl BenchmarkAdapter for ResumeProbeAdapter {
     }
 
     fn score(&self, _run: &CompletedRun) -> benchmark_core::Result<OfficialScoreReport> {
-        Ok(OfficialScoreReport::new(1, 1))
+        Ok(OfficialScoreReport::partial(
+            1,
+            1,
+            "unspecified",
+            "unspecified",
+        ))
     }
 
     fn write_submission(

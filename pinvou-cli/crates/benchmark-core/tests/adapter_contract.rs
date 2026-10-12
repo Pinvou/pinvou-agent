@@ -45,7 +45,12 @@ impl BenchmarkAdapter for ContractAdapter {
     }
 
     fn score(&self, _run: &CompletedRun) -> benchmark_core::Result<OfficialScoreReport> {
-        Ok(OfficialScoreReport::new(1, 1))
+        Ok(OfficialScoreReport::partial(
+            1,
+            1,
+            "unspecified",
+            "unspecified",
+        ))
     }
 
     fn write_submission(
@@ -185,17 +190,4 @@ fn official_score_zero_evaluated_is_not_compatible() {
     assert!(!empty.is_complete());
     assert!(!empty.is_official_dataset_compatible());
     assert_eq!(empty.comparable_accuracy(), None);
-}
-
-#[test]
-fn official_score_legacy_constructor_remains_partial_and_non_comparable() {
-    let legacy = OfficialScoreReport::new(2, 1);
-    assert_eq!(legacy.evaluated(), 2);
-    assert_eq!(legacy.correct(), 1);
-    assert_eq!(legacy.accuracy(), 0.5);
-    assert!(!legacy.is_complete());
-    assert!(!legacy.is_official_dataset_compatible());
-    assert_eq!(legacy.split(), "unspecified");
-    assert_eq!(legacy.level(), "unspecified");
-    assert_eq!(legacy.comparable_accuracy(), None);
 }
