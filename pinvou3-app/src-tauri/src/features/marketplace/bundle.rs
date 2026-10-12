@@ -258,34 +258,32 @@ pub(crate) fn skill_gating_owner_with(tools: &[super::ToolManifest], skill_name:
             return skill_name.to_string();
         }
     };
-    {
-        let mut owners: Vec<String> = rd
-            .filter_map(|entry| match entry {
-                Ok(entry) => Some(entry),
-                Err(e) => {
-                    log::warn!(
-                        "[bundle] gating-owner fallback skipped an unreadable bundles_root entry (consent-critical, refactor registered): {e}"
-                    );
-                    None
-                }
-            })
-            // Round-27 m4 (review #455): skip import staging (`<id>.tmp`) and
-            // landing backup (`<id>.old`) dirs — the same exclusion the two
-            // lenses this fallback shares with (materialization's
-            // `skill_source_dirs`, the expansion disk leg) already apply; a
-            // crash-residue staging dir could otherwise win the sorted-first
-            // race and render its skills ungated under the suffix owner id.
-            .filter(|pkg| {
-                let name = pkg.file_name().to_string_lossy().into_owned();
-                !name.ends_with(".tmp") && !name.ends_with(".old")
-            })
-            .filter(|pkg| pkg.path().join("skills").join(skill_name).is_dir())
-            .filter_map(|pkg| pkg.file_name().into_string().ok())
-            .collect();
-        owners.sort();
-        if let Some(pkg) = owners.first() {
-            return pkg.clone();
-        }
+    let mut owners: Vec<String> = rd
+        .filter_map(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                log::warn!(
+                    "[bundle] gating-owner fallback skipped an unreadable bundles_root entry (consent-critical, refactor registered): {e}"
+                );
+                None
+            }
+        })
+        // Round-27 m4 (review #455): skip import staging (`<id>.tmp`) and
+        // landing backup (`<id>.old`) dirs — the same exclusion the two
+        // lenses this fallback shares with (materialization's
+        // `skill_source_dirs`, the expansion disk leg) already apply; a
+        // crash-residue staging dir could otherwise win the sorted-first
+        // race and render its skills ungated under the suffix owner id.
+        .filter(|pkg| {
+            let name = pkg.file_name().to_string_lossy().into_owned();
+            !name.ends_with(".tmp") && !name.ends_with(".old")
+        })
+        .filter(|pkg| pkg.path().join("skills").join(skill_name).is_dir())
+        .filter_map(|pkg| pkg.file_name().into_string().ok())
+        .collect();
+    owners.sort();
+    if let Some(pkg) = owners.first() {
+        return pkg.clone();
     }
     skill_name.to_string()
 }
@@ -755,12 +753,7 @@ fn dedup_credential_declarations<T>(
 ) -> Vec<T> {
     let mut out: Vec<T> = Vec::new();
     let mut seen: Vec<(String, CredentialTarget)> = Vec::new();
-    let push = |seen: &mut Vec<(String, CredentialTarget)>,
-                out: &mut Vec<T>,
-                key: String,
-                target: CredentialTarget,
-                required: bool,
-                secret: bool| {
+    let mut push = |key: String, target: CredentialTarget, required: bool, secret: bool| {
         if seen.iter().any(|(k, t)| *k == key && *t == target) {
             return;
         }
@@ -769,8 +762,6 @@ fn dedup_credential_declarations<T>(
     };
     for f in &tool.config_fields {
         push(
-            &mut seen,
-            &mut out,
             f.key.clone(),
             parse_credential_target(&f.target),
             f.required,
@@ -778,19 +769,10 @@ fn dedup_credential_declarations<T>(
         );
     }
     for s in &tool.secret_env {
-        push(
-            &mut seen,
-            &mut out,
-            s.key.clone(),
-            CredentialTarget::Env,
-            s.required,
-            true,
-        );
+        push(s.key.clone(), CredentialTarget::Env, s.required, true);
     }
     for s in &tool.secret_headers {
         push(
-            &mut seen,
-            &mut out,
             s.source_key.clone(),
             CredentialTarget::Bearer,
             s.required,

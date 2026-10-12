@@ -104,7 +104,7 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
     match serde_json::from_str(&content) {
         Ok(mcp) => Ok((mcp_path, mcp)),
         Err(error) => {
-            backup_corrupt_mcp_json(&mcp_path, &content);
+            super::backup_corrupt_json_file(&mcp_path, "mcp.json.corrupt", &content);
             Err(format!(
                 "mcp.json is unparseable; the original file was backed up next to it \
                  (mcp.json.corrupt.<unix-time>) and left untouched — fix or remove it and \
@@ -124,8 +124,8 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
 /// try 锁读取（#521）：锁被占用/不可用时退化为不落盘的解锁快照——探测本身
 /// 永远只读，竞态下与既有解锁读同口径，bounded，绝不阻塞在 peer 临界区上。
 pub(crate) fn mcp_json_unparseable() -> bool {
-    file_lock::try_file_lock_for_read(&paths::mcp_config_path(), || {
-        let mcp_path = paths::mcp_config_path();
+    let mcp_path = paths::mcp_config_path();
+    file_lock::try_file_lock_for_read(&mcp_path, || {
         if !mcp_path.is_file() {
             return Ok(false);
         }
@@ -139,10 +139,6 @@ pub(crate) fn mcp_json_unparseable() -> bool {
             .is_none())
     })
     .unwrap_or(false)
-}
-
-fn backup_corrupt_mcp_json(mcp_path: &Path, content: &str) {
-    super::backup_corrupt_json_file(mcp_path, "mcp.json.corrupt", content);
 }
 
 impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S> {
@@ -195,7 +191,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         //    the official source at pypi.org. The default index going first is
         //    deliberate — it respects the user's own pip.conf/corporate index;
         //    the mirror is only the last fallback.
-        let run = |extra: &[&str]| -> std::io::Result<std::process::Output> {
+        let run = |extra: &[&str], index_args: &[&str]| -> std::io::Result<std::process::Output> {
             let mut cmd = std::process::Command::new(python_cmd);
             cmd.args([
                 "-m",
@@ -205,6 +201,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 "--no-input",
             ]);
             cmd.args(extra);
+            cmd.args(index_args);
             cmd.args(deps);
             cmd.output()
         };
@@ -226,10 +223,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         for (round_label, index_args) in pip_index_rounds() {
             let mut last_err = String::new();
             for extra in attempts {
-                let mut args: Vec<&str> = Vec::with_capacity(extra.len() + index_args.len());
-                args.extend(extra.iter().copied());
-                args.extend(index_args.iter().copied());
-                match run(&args) {
+                match run(extra, index_args) {
                     Ok(o) if o.status.success() => return Ok(()),
                     Ok(o) => {
                         last_err = String::from_utf8_lossy(&o.stderr)

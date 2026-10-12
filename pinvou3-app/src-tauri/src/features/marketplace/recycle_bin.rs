@@ -686,8 +686,6 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // the bin-side package dir — the bundles-side dir only exists after
     // take_back. A later install_upload failure still rolls the entry back
     // with the gate already written (consistent: bin + disabled).
-    let mut consent_ids = vec![pkg_id.to_string()];
-    consent_ids.extend(skill_names.iter().cloned());
     skill_names.sort();
     for name in &skill_names {
         super::skill_marketplace::ensure_skill_restorable(pkg_id, name)?;
@@ -730,11 +728,9 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => true,
     };
-    // consent_ids[0] is the pack id itself; it is passed separately and lands
-    // in the gate verbatim (round-24 MAJOR 1 — a pack row is never re-owned).
     // Skill dir names equal to the pack id (pure single-skill packs) are not
     // re-normalized either — the pack row already covers them.
-    let consent_skill_ids: Vec<String> = consent_ids[1..]
+    let consent_skill_ids: Vec<String> = skill_names
         .iter()
         .filter(|id| id.as_str() != pkg_id)
         .cloned()

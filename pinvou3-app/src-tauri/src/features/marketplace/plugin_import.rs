@@ -185,19 +185,11 @@ fn same_package_content(
     }
 
     // 2) 可落盘条目逐一比对（landing 与跳过口径与 pass2 完全一致）。
-    let bare_skill = det
-        .bare_skill
-        .as_ref()
-        .map(|(r, n)| (r.as_str(), n.as_str()));
-    let bare_mcp = det.bare_mcp.as_ref().map(|(r, n)| (r.as_str(), n.as_str()));
     let mut landed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for path_str in all_paths {
-        let Some((subdir, rel)) = landing_target(path_str, bare_skill, bare_mcp) else {
-            continue; // plugin.json / icon 单独比对
+        let Some((subdir, rel)) = landing_target(det, path_str) else {
+            continue; // plugin.json / 图标单独比对
         };
-        if rel.is_empty() || rel.split('/').any(|c| c.starts_with('.')) {
-            continue; // 与 pass2 相同的跳过口径（未落盘，不参与比对）
-        }
         let Ok(mut entry) = archive.by_name(path_str) else {
             return false;
         };
@@ -588,7 +580,8 @@ fn detect_components(
     })
 }
 
-/// 计算单个 zip 条目落盘的目标 `(subdir, rel)`（None = 跳过：plugin.json / 图标单独处理）。
+/// 计算单个 zip 条目落盘的目标 `(subdir, rel)`（None = 跳过：plugin.json / 图标单独处理，
+/// 以及隐藏/空 rel 的未落盘条目——与 pass2 相同的跳过口径）。
 ///
 /// 优先级：
 /// 1. 固定前缀 `mcp/` / `skills/`（本项目标准布局；旧 `spanner/`、`runtime/`
@@ -598,7 +591,21 @@ fn detect_components(
 ///
 /// 根级（root=""）裸包的消歧：裸 MCP 只认 `manifest.json` 与同目录非 `.md` 文件
 /// （服务器代码/依赖），裸技能认其余（SKILL.md 及资源），避免两者互相抢占。
-fn landing_target(
+fn landing_target(det: &ComponentDetection, path_str: &str) -> Option<(String, String)> {
+    let bare_skill = det
+        .bare_skill
+        .as_ref()
+        .map(|(r, n)| (r.as_str(), n.as_str()));
+    let bare_mcp = det.bare_mcp.as_ref().map(|(r, n)| (r.as_str(), n.as_str()));
+    let (subdir, rel) = landing_target_layout(path_str, bare_skill, bare_mcp)?;
+    if rel.is_empty() || rel.split('/').any(|c| c.starts_with('.')) {
+        return None;
+    }
+    Some((subdir, rel))
+}
+
+/// `landing_target` 的布局判定主体（固定前缀与裸包回退消歧），不含隐藏条目过滤。
+fn landing_target_layout(
     path_str: &str,
     bare_skill: Option<(&str, &str)>,
     bare_mcp: Option<(&str, &str)>,
@@ -1263,29 +1270,20 @@ pub(crate) fn import_plugin_package_gated(
     // real builtin's engine registration (uninstalling my-tool removes only
     // its own key, orphaning the hijacked entry). The probe folds case, the
     // same discipline as the package-id check.
-    for component in &det.mcp_servers {
-        if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(component).is_some() {
-            return Err(format!(
-                "组件 id '{component}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
-            ));
-        }
-    }
     // The inner mcp/manifest.json id is force-equal to the component id by
     // detect_components, but a bare mcp/ package without plugin.json computes
     // its components from the inner manifest — rejected by the same builtin
     // probe.
-    if let Some(bytes) = &mcp_manifest_bytes {
-        if let Ok(inner) =
-            serde_json::from_slice::<crate::features::marketplace::types::ToolManifest>(bytes)
-        {
-            if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(&inner.id)
-                .is_some()
-            {
-                return Err(format!(
-                    "组件 id '{}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装",
-                    inner.id
-                ));
-            }
+    let inner_mcp_id: Option<String> = mcp_manifest_bytes.as_deref().and_then(|b| {
+        serde_json::from_slice::<crate::features::marketplace::types::ToolManifest>(b)
+            .ok()
+            .map(|tm| tm.id)
+    });
+    for component in det.mcp_servers.iter().chain(inner_mcp_id.iter()) {
+        if crate::features::marketplace::mcp_catalog::spec_for_builtin_probe(component).is_some() {
+            return Err(format!(
+                "组件 id '{component}' 与市场预置 MCP 冲突，请改用其它 id 或通过市场直接安装"
+            ));
         }
     }
     // `cli_bundle_skill_dirs` matches bundle ids with exact equality, so a
@@ -1510,18 +1508,10 @@ pub(crate) fn import_plugin_package_gated(
     let write_result = (|| -> Result<String, String> {
         // 1) 统一落盘：mcp/ + skills/ 子树 + 裸包回退规范化（旧 spanner/、runtime/
         //    子树已删除，见 landing_target 注释）。
-        let bare_skill = det
-            .bare_skill
-            .as_ref()
-            .map(|(r, n)| (r.as_str(), n.as_str()));
-        let bare_mcp = det.bare_mcp.as_ref().map(|(r, n)| (r.as_str(), n.as_str()));
         for path_str in &all_paths {
-            let Some((subdir, rel)) = landing_target(path_str, bare_skill, bare_mcp) else {
-                continue; // plugin.json / icon 单独处理
+            let Some((subdir, rel)) = landing_target(&det, path_str) else {
+                continue; // plugin.json / icon / 隐藏与空路径条目单独处理
             };
-            if rel.is_empty() || rel.split('/').any(|c| c.starts_with('.')) {
-                continue;
-            }
             let target = staged.join(&subdir).join(&rel);
             if !target.starts_with(&staged) {
                 return Err("路径穿越,拒绝".to_string());
@@ -1532,18 +1522,7 @@ pub(crate) fn import_plugin_package_gated(
             let mut entry = archive
                 .by_name(path_str)
                 .map_err(|e| format!("读条目 {path_str}: {e}"))?;
-            let declared_size = entry.size();
-            let buf =
-                read_zip_entry_bounded(&mut entry, declared_size, &format!("条目 {path_str}"))?;
-            // 实际写盘计量：pass1 的头部声明预算可被伪造，这里按真实读出字节累计
-            // （zip bomb 兜底，二轮评审 M-4）。超限由调用方清 staged 拒收。
-            actual_total = actual_total.saturating_add(buf.len() as u64);
-            if actual_total > MAX_PLUGIN_SIZE_BYTES {
-                return Err(format!(
-                    "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                    MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-                ));
-            }
+            let buf = read_bounded_checked(&mut entry, &format!("条目 {path_str}"))?;
             std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
         }
 

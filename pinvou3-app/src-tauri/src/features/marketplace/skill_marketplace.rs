@@ -57,12 +57,10 @@ pub(crate) const RETIRED_SKILL_NAMES: &[&str] = &[
 
 #[derive(Debug, Clone)]
 struct SkillManifest {
-    /// 市场 key(前端/卸载用)
+    /// 市场 key(前端/卸载用),也是 MARKETPLACE_DIR 下的子目录名
     id: &'static str,
     /// = SKILL.md frontmatter name = 落盘目录名
     skill_name: &'static str,
-    /// MARKETPLACE_DIR 下的子目录名
-    source_dir: &'static str,
     title: &'static str,
     subtitle: &'static str,
     description: &'static str,
@@ -77,7 +75,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "government-writing",
             skill_name: "government-writing",
-            source_dir: "government-writing",
             title: "党政机关公文写作",
             subtitle: "通知/意见等法定文种，套话术、层级序号、自检",
             description: "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合插件中心的「公文写作」工具即可直出 GB/T 9704 合规 .docx。",
@@ -87,7 +84,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "pptx",
             skill_name: "pptx",
-            source_dir: "pptx",
             title: "PPT 生成",
             subtitle: "本地直出可编辑 PowerPoint，套主题模板、真图表、带封面",
             description: "本地直出可编辑 PowerPoint（.pptx）：先列大纲确认，再按内容自动选主题（9 套）产结构化 deck，渲染器套主题模板生成真·可编辑图表、自带封面缩略图的演示文稿，数据不出机。配合插件中心的「PPT 生成」工具即可直出 .pptx。",
@@ -97,7 +93,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "visualizer",
             skill_name: "visualizer",
-            source_dir: "visualizer",
             title: "数据分析可视化",
             subtitle: "Chart.js 仪表盘 / 图表分析 / HTML 可视化",
             description: "将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。",
@@ -107,7 +102,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "package-author",
             skill_name: "package-author",
-            source_dir: "package-author",
             title: "插件包标准化",
             subtitle: "把技能/MCP/函数整理成可上传的标准插件包",
             description: "把散乱的技能（SKILL.md）、MCP 服务或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。",
@@ -117,7 +111,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "skill-author",
             skill_name: "skill-author",
-            source_dir: "skill-author",
             title: "技能创建",
             subtitle: "用户描述一句话，生成规范的 SKILL.md 技能",
             description: "把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。",
@@ -127,7 +120,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "ima-skills",
             skill_name: "ima-skills",
-            source_dir: "ima-skills",
             title: "腾讯 ima",
             subtitle: "IMA OpenAPI 笔记 / 知识库读取、写入、检索",
             description: "接入腾讯 ima OpenAPI，用本机凭据调用官方接口管理 IMA 笔记与知识库。凭据由 Pinvou 工具市场写入本机系统凭据，不需要在对话里粘贴 Token。",
@@ -137,7 +129,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "tencent-docs-skill",
             skill_name: "tencent-docs",
-            source_dir: "tencent-docs-skill",
             title: "腾讯文档",
             subtitle: "在线文档/表格/幻灯片/智能表格 创建、编辑、管理",
             description: "腾讯文档官方 MCP Skill（v1.0.41 适配版）：配合插件中心「腾讯文档 MCP」连接器使用，内置官方品类路由（智能文档/Word/Excel/PPT/思维导图/流程图/智能表格）与完整工具 API 参考。Token 由连接器写入本机系统凭据。",
@@ -553,8 +544,8 @@ impl SkillMarketplaceManager {
             return Err(format!("技能名 '{}' 与已下线内置冲突", m.skill_name));
         }
         let src = MARKETPLACE_DIR
-            .get_dir(m.source_dir)
-            .ok_or_else(|| format!("嵌入资源缺失: {}", m.source_dir))?;
+            .get_dir(m.id)
+            .ok_or_else(|| format!("嵌入资源缺失: {}", m.id))?;
 
         let dest = self.package_skill_dir(m.skill_name);
         // bundles/<owner>/skills/<name> is joined from the root, so it always
@@ -591,7 +582,7 @@ impl SkillMarketplaceManager {
         std::fs::create_dir_all(&staged).map_err(|e| format!("创建暂存目录: {e}"))?;
 
         let result = (|| -> Result<String, String> {
-            extract_embedded_subdir(src, m.source_dir, &staged)
+            extract_embedded_subdir(src, m.id, &staged)
                 .map_err(|e| format!("解包嵌入资源: {e}"))?;
             // 校验 SKILL.md 存在 + name 与预期一致
             let name =
@@ -612,33 +603,49 @@ impl SkillMarketplaceManager {
             }
         };
 
+        // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
+        // upsert_preserving 保留首次安装时间）。
+        let mut record =
+            super::store::BundleRecord::installed_now(m.id, super::store::BundleSource::Preset);
+        record.content_fingerprint = Some(fingerprint);
+        self.land_staged_and_register(&staged, &dest, m.skill_name, record, "install")
+    }
+
+    /// Land the staged skill dir at `dest` and register it: delete-then-rename
+    /// (abort rather than leave a half-deleted old dir; same discipline as
+    /// mcp_catalog::release_package), sweep other physical copies (one skill keeps
+    /// exactly one market copy), upsert the store record (failure only logs; the
+    /// landed directory is authoritative). Caller holds the per-id import lock;
+    /// any failure removes `staged`.
+    fn land_staged_and_register(
+        &self,
+        staged: &Path,
+        dest: &Path,
+        skill_name: &str,
+        record: super::store::BundleRecord,
+        ctx: &str,
+    ) -> Result<(), String> {
         // 与 mcp_catalog::release_package 同一纪律：删旧目录失败即中止（吞错误
         // 会让"删一半"的残缺目录静默残留，rename 也必然失败）。
         if dest.exists() {
-            std::fs::remove_dir_all(&dest).map_err(|e| {
-                let _ = std::fs::remove_dir_all(&staged);
+            std::fs::remove_dir_all(dest).map_err(|e| {
+                let _ = std::fs::remove_dir_all(staged);
                 format!("清理旧技能目录失败（已中止，原目录可能部分删除）: {e}")
             })?;
         }
-        std::fs::rename(&staged, &dest).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&staged);
+        std::fs::rename(staged, dest).map_err(|e| {
+            let _ = std::fs::remove_dir_all(staged);
             format!("落盘: {e}")
         })?;
 
         // 一个技能只留一份市场副本：清扫认领翻转滞留/双份安装的其余物理副本
         // （F2：独立安装后又装 companion MCP；F3：迁移 kept 留下的双份）。
-        self.sweep_duplicate_skill_dirs(m.skill_name, &dest);
+        self.sweep_duplicate_skill_dirs(skill_name, dest);
 
-        // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
-        // upsert_preserving 保留首次安装时间）。失败只记日志，目录落盘仍是权威。
-        let mut record =
-            super::store::BundleRecord::installed_now(m.id, super::store::BundleSource::Preset);
-        record.content_fingerprint = Some(fingerprint);
+        // 失败只记日志，目录落盘仍是权威。
+        let id = record.id.clone();
         if let Err(e) = self.bundle_store.upsert_preserving(record) {
-            log::warn!(
-                "[skill-marketplace] bundles.json 镜像写入失败（install {}）: {e}",
-                m.id
-            );
+            log::warn!("[skill-marketplace] bundles.json 镜像写入失败（{ctx} {id}）: {e}");
         }
         Ok(())
     }
@@ -1302,29 +1309,14 @@ impl SkillMarketplaceManager {
         // 落盘改写段已自暂存前持同 id import_lock（见上）：与 update_display_meta
         // 的 SKILL.md 读改写段、与统一导入的 rename/重基线互斥，rename/清扫/
         // 重基线整段在锁内完成。
-        // 与 preset install 同一纪律：删旧目录失败即中止，不留"删一半"残缺目录。
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest).map_err(|e| {
-                let _ = std::fs::remove_dir_all(&staged);
-                format!("清理旧技能目录失败（已中止，原目录可能部分删除）: {e}")
-            })?;
-        }
-        std::fs::rename(&staged, &dest).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&staged);
-            format!("落盘: {e}")
-        })?;
-        // 一个技能只留一份市场副本：清扫认领翻转滞留/双份安装的其余物理副本。
-        self.sweep_duplicate_skill_dirs(&name, &dest);
         // 登记（上传 source=Upload(zip 展示名) + 内容指纹，记录 id = 落盘技能名，
-        // 与 import_legacy 的反推口径一致；`.installed-from` 标记已退役）。失败只记日志。
+        // 与 import_legacy 的反推口径一致；`.installed-from` 标记已退役）。
         let mut record = super::store::BundleRecord::installed_now(
             name.clone(),
             super::store::BundleSource::Upload(display_name.to_string()),
         );
         record.content_fingerprint = Some(fingerprint);
-        if let Err(e) = self.bundle_store.upsert_preserving(record) {
-            log::warn!("[skill-marketplace] bundles.json 镜像写入失败（import {name}）: {e}");
-        }
+        self.land_staged_and_register(&staged, &dest, &name, record, "import")?;
         // 包内容整体替换后，旧包的 SKILL.md 原说明备份（若有）随之失效——
         // upsert_preserving 原样保留 extra，备份里存的是**旧包**的引擎口径原值，
         // 不清掉会让之后的「清覆盖恢复」把旧描述写进新包。导入即重基线。
@@ -1369,12 +1361,11 @@ impl SkillMarketplaceManager {
             ));
         }
         super::store::validate_display_meta(display_name, display_description)?;
+        // None = 不动 SKILL.md（只更新展示字段）；Some("") = 清覆盖恢复备份；
+        // Some(非空) = 回写新说明。
         if let Some(desc) = display_description.map(str::trim) {
-            if desc.is_empty() {
-                self.sync_display_description(bundle_id, SyncDesc::Restore)?;
-            } else {
-                self.sync_display_description(bundle_id, SyncDesc::Set(desc))?;
-            }
+            let desc = if desc.is_empty() { None } else { Some(desc) };
+            self.sync_display_description(bundle_id, desc)?;
         }
         self.bundle_store
             .set_display_meta(bundle_id, display_name, display_description)
@@ -1387,7 +1378,9 @@ impl SkillMarketplaceManager {
     /// 多技能包、纯 MCP 包、目录缺失一律跳过（返回 Ok(())，不报错）。改文件后
     /// 重算**整包目录**内容指纹并经 upsert_preserving 补写登记（保留
     /// extra/来源/首装时间——display_* 覆盖与说明备份都在 extra，一并保留）。
-    fn sync_display_description(&self, bundle_id: &str, dir: SyncDesc<'_>) -> Result<(), String> {
+    ///
+    /// `desc`：Some = 回写新说明值；None = 清覆盖，从备份恢复 frontmatter 原值。
+    fn sync_display_description(&self, bundle_id: &str, desc: Option<&str>) -> Result<(), String> {
         let skills_dir = self.packages_root.join(bundle_id).join("skills");
         let Ok(rd) = std::fs::read_dir(&skills_dir) else {
             return Ok(()); // 非按包布局（纯 MCP 包/旧扁平残留）→ 跳过
@@ -1411,8 +1404,8 @@ impl SkillMarketplaceManager {
         if !md_path.is_file() {
             return Ok(());
         }
-        match dir {
-            SyncDesc::Set(desc) => {
+        match desc {
+            Some(desc) => {
                 let content = std::fs::read_to_string(&md_path)
                     .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
                 // 先纯校验/改写（rewrite 无 IO）：值不可单行表达（含引号/反斜杠等）
@@ -1433,7 +1426,7 @@ impl SkillMarketplaceManager {
                 self.write_skill_md_and_fingerprint(bundle_id, &md_path, content, new_content)?;
                 Ok(())
             }
-            SyncDesc::Restore => {
+            None => {
                 // 无备份（从未回写过，或非单技能包形态）→ 不动文件。
                 let Some(backup) = self.bundle_store.skill_desc_backup(bundle_id)? else {
                     return Ok(());
@@ -1476,15 +1469,7 @@ impl SkillMarketplaceManager {
         }
         crate::platform::filesystem::atomic_write_private(md_path, new_content.as_bytes())
             .map_err(|e| format!("写入 {} 失败: {e}", md_path.display()))?;
-        self.refresh_package_fingerprint(bundle_id)
-    }
-
-    /// 重算 `bundles/<id>/` 整包目录内容指纹并补写登记（**整包口径**，与
-    /// plugin_import 的登记基线一致——算技能子目录会把上传包的整包指纹静默
-    /// 缩窄，未来任何按整包口径重算比对的完整性校验都会对编辑过的包永久误报）。
-    /// 走 `update_content_fingerprint_if_exists` 单锁 RMW：登记已不在（并发
-    /// 卸载）则跳过，且不会把已删记录按 stale 快照复活。
-    fn refresh_package_fingerprint(&self, bundle_id: &str) -> Result<(), String> {
+        // 整包口径指纹（算技能子目录会静默缩窄上传包的整包指纹，按整包口径比对的完整性校验会对编辑过的包永久误报）+ `update_content_fingerprint_if_exists` 单锁 RMW（登记已不在（并发卸载）则跳过，不复活已删记录）。
         let fingerprint = dir_fingerprint(&self.packages_root.join(bundle_id))?;
         self.bundle_store
             .update_content_fingerprint_if_exists(bundle_id, &fingerprint)
@@ -1975,9 +1960,9 @@ pub(crate) fn dir_fingerprint(dir: &Path) -> Result<String, String> {
 
 /// 嵌入资源（预置技能当前版本）的内容指纹；嵌入目录缺失 → None。
 fn embedded_skill_fingerprint(m: &SkillManifest) -> Option<String> {
-    let dir = MARKETPLACE_DIR.get_dir(m.source_dir)?;
+    let dir = MARKETPLACE_DIR.get_dir(m.id)?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    collect_embedded_files(dir, m.source_dir, &mut files);
+    collect_embedded_files(dir, m.id, &mut files);
     Some(fingerprint_of(&mut files))
 }
 
@@ -2323,6 +2308,38 @@ fn restore_frontmatter_description(content: &str, backup: &str) -> Result<String
     replace_top_level_description(content, &new_lines, backup)
 }
 
+/// Frontmatter scaffolding shared by the description writers: split into lines
+/// with the closing-`---` index validated (both writers reject the same two
+/// malformed shapes, same messages). Returns `(lines, fm_end,
+/// had_trailing_newline)`; `fm_end` is the closing `---` line index.
+fn split_frontmatter(content: &str) -> Result<(Vec<&str>, usize, bool), String> {
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first().map(|l| l.trim()) != Some("---") {
+        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
+    }
+    // 前两个 --- 区间为 frontmatter；缺结束标记 = 畸形 frontmatter，拒绝改。
+    let Some(fm_end) = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.trim() == "---")
+        .map(|p| p + 1)
+    else {
+        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
+    };
+    Ok((lines, fm_end, had_trailing_newline))
+}
+
+/// 把改写后的行按原文件换行风格与尾随换行拼回全文（[`split_frontmatter`]
+/// 拆分结果的逆操作）。
+fn rejoin_content(lines: Vec<String>, newline: &str, had_trailing_newline: bool) -> String {
+    let mut s = lines.join(newline);
+    if had_trailing_newline {
+        s.push_str(newline);
+    }
+    s
+}
+
 /// 把顶层 description 行替换为 `new_lines`（单行 plain 或块状多行），Set 回写与
 /// Restore 共用：frontmatter 边界判定（前两个 `---`）、旧块状续行消费、插入
 /// 位置选择（嵌套 description 时插 frontmatter 末尾——last-wins）与全部结构
@@ -2339,20 +2356,7 @@ fn replace_top_level_description(
     } else {
         "\n"
     };
-    let had_trailing_newline = content.ends_with('\n');
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
-    }
-    // 前两个 --- 区间为 frontmatter；缺结束标记 = 畸形 frontmatter，拒绝改。
-    let Some(fm_end) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.trim() == "---")
-        .map(|p| p + 1)
-    else {
-        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
-    };
+    let (lines, fm_end, had_trailing_newline) = split_frontmatter(content)?;
 
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
     out.push(lines[0].to_string());
@@ -2446,10 +2450,7 @@ fn replace_top_level_description(
     for l in &lines[fm_end..] {
         out.push((*l).to_string());
     }
-    let mut s = out.join(newline);
-    if had_trailing_newline {
-        s.push_str(newline);
-    }
+    let s = rejoin_content(out, newline, had_trailing_newline);
     // 结构守卫：改写后行视图（第一个整行 --- 边界内）不得残留多个顶层
     // description。输入侧显式重复键（都替换成新值仍留两行）、或块状续行里的
     // 裸 `---` 让部分旧 description 落在写入器行边界外未被替换——这两种畸形
@@ -2469,13 +2470,6 @@ fn replace_top_level_description(
     Ok(s)
 }
 
-/// [`SkillMarketplaceManager::sync_display_description`] 的方向参数：
-/// `Set` = 回写新说明值；`Restore` = 清覆盖时从备份恢复 frontmatter 原值。
-enum SyncDesc<'a> {
-    Set(&'a str),
-    Restore,
-}
-
 /// 删除 SKILL.md frontmatter 里的顶层 description 行（含块状续行）——恢复
 /// 「原本没有 description」的空备份哨兵用。与 [`rewrite_frontmatter_description`]
 /// 同一套结构守卫（frontmatter 边界、多重定义拒绝、块状续行消费）；嵌套缩进的
@@ -2486,19 +2480,7 @@ fn remove_frontmatter_description(content: &str) -> Result<String, String> {
     } else {
         "\n"
     };
-    let had_trailing_newline = content.ends_with('\n');
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
-    }
-    let Some(fm_end) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.trim() == "---")
-        .map(|p| p + 1)
-    else {
-        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
-    };
+    let (lines, fm_end, had_trailing_newline) = split_frontmatter(content)?;
 
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     out.push(lines[0].to_string());
@@ -2536,10 +2518,7 @@ fn remove_frontmatter_description(content: &str) -> Result<String, String> {
     for l in &lines[fm_end..] {
         out.push((*l).to_string());
     }
-    let mut s = out.join(newline);
-    if had_trailing_newline {
-        s.push_str(newline);
-    }
+    let s = rejoin_content(out, newline, had_trailing_newline);
     // 结构守卫：删行后行视图不得残留任何顶层 description（显式重复键只删一个
     // 会留一个——畸形输入拒绝，口径同 rewrite_frontmatter_description）。
     if count_top_level_description_lines(&s) > 0 {
@@ -2567,26 +2546,21 @@ fn is_engine_block_marker(value: &str) -> bool {
 /// `description` 单词行对三方都不是 description，不得计入（计入会让守卫对
 /// 合法输入误报「多重定义」拒绝回写）。
 fn count_top_level_description_lines(content: &str) -> usize {
-    let lines: Vec<&str> = content.lines().collect();
-    let Some(fm_end) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.trim() == "---")
-        .map(|p| p + 1)
-    else {
-        return 0;
-    };
-    lines[1..fm_end]
-        .iter()
-        .filter(|l| {
-            let lt = l.trim();
-            lt.len() == l.len()
-                && lt
-                    .split_once(':')
-                    // 键名 trim 后再比对，口径同读端/引擎（`description : x` 也算）
-                    .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("description"))
+    split_frontmatter(content)
+        .map(|(lines, fm_end, _)| {
+            lines[1..fm_end]
+                .iter()
+                .filter(|l| {
+                    let lt = l.trim();
+                    lt.len() == l.len()
+                        && lt
+                            .split_once(':')
+                            // 键名 trim 后再比对，口径同读端/引擎（`description : x` 也算）
+                            .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("description"))
+                })
+                .count()
         })
-        .count()
+        .unwrap_or(0)
 }
 
 /// 值按 YAML plain scalar 写是否不安全（需双引号包裹）。保守口径：宁可多引。

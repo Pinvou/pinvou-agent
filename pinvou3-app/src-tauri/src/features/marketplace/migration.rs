@@ -52,22 +52,13 @@ fn legacy_mcp_secret_specs() -> &'static [LegacyMcpSecretSpec] {
     ]
 }
 
-fn legacy_spec_for_tool(tool_id: &str) -> Option<&'static LegacyMcpSecretSpec> {
+fn legacy_spec_for_server_name(server_name: &str) -> Option<&'static LegacyMcpSecretSpec> {
     legacy_mcp_secret_specs()
         .iter()
-        .find(|spec| spec.tool_id == tool_id)
-}
-
-fn legacy_spec_for_server_name(server_name: &str) -> Option<&'static LegacyMcpSecretSpec> {
-    if server_name == "weather" {
-        legacy_spec_for_tool("weather")
-    } else if server_name == "iwencai" {
-        legacy_spec_for_tool("iwencai")
-    } else if server_name.starts_with("qcc-") {
-        legacy_spec_for_tool("qcc")
-    } else {
-        None
-    }
+        .find(|spec| match spec.tool_id {
+            "qcc" => server_name.starts_with("qcc-"),
+            tool_id => server_name == tool_id,
+        })
 }
 
 impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S> {
