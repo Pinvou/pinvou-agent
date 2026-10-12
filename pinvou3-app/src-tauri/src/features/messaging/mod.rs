@@ -989,8 +989,11 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
             .and_then(|n| n.to_str())
             .map(str::to_string)
         else {
-            log::warn!("[messaging] quarantining non-UTF-8 spool name {:?}", path);
-            quarantine(&path);
+            // Round-14 minor 2: the landed-guard applies here too — no
+            // "quarantining" log for a rename that did not move the file.
+            if quarantine(&path) {
+                log::warn!("[messaging] quarantining non-UTF-8 spool name {:?}", path);
+            }
             continue;
         };
         // Round-8 minor 7: a file that vanished since read_dir leaves a
@@ -1168,10 +1171,15 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
             Processed::Retry(original, error) => {
                 let count = retries.record(&name);
                 if count >= MAX_DELIVERY_ATTEMPTS {
-                    // Round-10 M1: a keyed retry that landed during the
-                    // failing window must not be quarantined under the old
-                    // body's "failed 10 times" verdict — reset the budget so
-                    // the newest body gets its own full attempt series.
+                    // Round-10 M1: a MATERIALLY-DIFFERENT replacement
+                    // (spool_records_equal is false) must not be quarantined
+                    // under the old body's "failed 10 times" verdict — its
+                    // budget resets so the newest body gets its own full
+                    // attempt series. A SEMANTICALLY-EQUAL keyed retry
+                    // (fresh created_at/titles only) deliberately does NOT
+                    // reset: the budget is identity-level, so a same-key
+                    // retry loop cannot re-buy attempts forever
+                    // (round-14 minor 1).
                     if replaced_since_first_read(&path, Some(&original)) {
                         log::warn!(
                             "[messaging] {name} was replaced during its {count} failed \
@@ -2413,6 +2421,47 @@ mod spool_pipeline_tests {
     /// The pending-file ceiling bounds hostile growth: the sorted tail
     /// beyond the cap is quarantined with an audit record and never
     /// delivered.
+    /// Round-14 M1: the cap-before-gate ORDER is behaviorally pinned — a
+    /// SWITCHED-OFF spool above the ceiling still quarantines its excess
+    /// (the gate returning first re-opened the unbounded-accumulation hole
+    /// this ordering closes; the mutation shipped green before this pin).
+    #[tokio::test]
+    async fn switched_off_spool_still_caps_the_pending_tail() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        for i in 0..=(MAX_PENDING_FILES as u32) {
+            let name = format!("s{i:05}.json");
+            std::fs::write(spool.join(&name), record_json(&name, None)).unwrap();
+        }
+        // Disable the session-messaging feature through the production
+        // setter (the watcher consults feature_disabled_tool_names each
+        // poll).
+        crate::features::marketplace::builtin::set_feature_enabled("session-messaging", false)
+            .expect("disable session-messaging");
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert!(
+            failed_dir()
+                .join(format!("s{:05}.json", MAX_PENDING_FILES))
+                .exists(),
+            "the switched-off spool's sorted tail is still quarantined"
+        );
+        assert_eq!(*fake.calls.borrow(), 0, "switched off: nothing delivers");
+    }
+
     #[tokio::test]
     async fn pending_ceiling_quarantines_the_excess() {
         let _home = TempHome::new();

@@ -76,7 +76,9 @@ export function splitSessionMessageBlock(text) {
     return untouched;
   }
   if (!Array.isArray(parsed) && parsed !== null && typeof parsed === 'object') {
-    const sessionId = typeof parsed.sessionId === 'string' && parsed.sessionId ? parsed.sessionId : null;
+    // Round-14 minor 6: capped like the delivery-side 128-char id bound —
+    // a hand-forged line cannot flow an unbounded id into title/aria/testid.
+    const sessionId = typeof parsed.sessionId === 'string' && parsed.sessionId ? parsed.sessionId.slice(0, 128) : null;
     const rawTitle = typeof parsed.title === 'string' ? parsed.title : '';
     const sender = { sessionId, title: rawTitle.slice(0, MAX_SENDER_TITLE_LENGTH) || null };
     if (lines.length === jsonLineIndex + 1) return { sender, text: '' };
