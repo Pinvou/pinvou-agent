@@ -535,42 +535,7 @@ pub(crate) mod tests {
     /// through a single isolation layer.
     pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Panic-safe restore for process env vars a test overwrites: capture
-    /// each key's current value as `Option<OsString>`, and `Drop` puts back
-    /// exactly that state (re-set, or removed if it was absent) on every exit
-    /// path, including panics. `var_os`, not `var`: POSIX allows non-UTF-8
-    /// values and `var` panics on them (the lib.rs EnvSnapshot lesson).
-    /// Like the bridge tests' private EnvGuard, the guard does not acquire
-    /// ENV_LOCK itself — the caller must hold it from before `capture` until
-    /// after the guard drops.
-    pub(crate) struct EnvVarGuard {
-        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
-    }
-
-    impl EnvVarGuard {
-        pub(crate) fn capture(vars: &[&'static str]) -> Self {
-            Self {
-                saved: vars
-                    .iter()
-                    .map(|&name| (name, std::env::var_os(name)))
-                    .collect(),
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            for (name, value) in &self.saved {
-                match value {
-                    // SAFETY: the caller holds ENV_LOCK from before capture
-                    // until after this drop; env writes are serialized.
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    // SAFETY: same as above; removal serialized under ENV_LOCK.
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
+    pub(crate) use crate::platform::test_support::EnvRestore as EnvVarGuard;
 
     #[test]
     fn env_var_guard_restores_preexisting_absent_and_panic_paths() {

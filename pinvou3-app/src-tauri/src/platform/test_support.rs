@@ -274,16 +274,9 @@ pub(crate) fn dir_read_only_or_skip(dir: &std::path::Path, test: &str) -> bool {
 /// `None`.
 #[cfg(test)]
 pub(crate) fn permission_bits(path: &std::path::Path) -> Option<u32> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        Some(std::fs::metadata(path).ok()?.permissions().mode() & 0o777)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        None
-    }
+    crate::platform::filesystem::permission_bits(path)
+        .ok()
+        .flatten()
 }
 
 /// Loosens `path` to 0644 the way a pre-hardening build's umask left it, so a

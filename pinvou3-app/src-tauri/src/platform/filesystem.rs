@@ -134,17 +134,13 @@ mod libc {
 /// files/visual_preview artifact previews). Returns `None` for extensions
 /// outside the table so callers decide their own fallback or rejection.
 pub(crate) fn image_mime_type(path: &Path) -> Option<&'static str> {
-    image_mime_type_for_ext(
-        path.extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default(),
-    )
-}
-
-/// [`image_mime_type`] twin for callers holding a bare extension (no separators,
-/// no dot — e.g. `path.extension()` output) instead of a full path.
-pub(crate) fn image_mime_type_for_ext(ext: &str) -> Option<&'static str> {
-    match ext.to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "gif" => Some("image/gif"),
@@ -221,10 +217,6 @@ impl std::error::Error for ReplaceError {
 }
 
 pub(crate) type ReplaceResult = Result<ReplaceState, ReplaceError>;
-
-pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
-    replace_file_atomically_impl(tmp, target, backup)
-}
 
 /// Converge a layout left by an interrupted Windows replacement. Callers must
 /// hold the same lifecycle lock used for writes so active temporary files are
@@ -586,9 +578,7 @@ pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
 /// by [`read_capped`] so a file appended past the cap after the open-time
 /// gate is refused too.
 pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
-    let mut file = open_private_data_file_within(path, MAX_PRIVATE_DATA_READ_BYTES)?;
-    read_capped(&mut file, MAX_PRIVATE_DATA_READ_BYTES)
-        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+    read_private_data_file_bytes_within(path, MAX_PRIVATE_DATA_READ_BYTES)
 }
 
 /// [`read_private_data_file_bytes`] with a caller-chosen size bound: the
@@ -818,7 +808,7 @@ pub(crate) fn open_existing_private_file_directory(
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 )))]
-pub(crate) fn ensure_private_real_directory(_path: &Path) -> io::Result<RealDirectoryIdentity> {
+fn ensure_private_real_directory(_path: &Path) -> io::Result<RealDirectoryIdentity> {
     private_file_directory_unsupported()
 }
 
@@ -2124,7 +2114,7 @@ fn mark_windows_file_handle_for_deletion(file: &File) -> io::Result<()> {
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 ))]
-pub(crate) fn ensure_private_real_directory(path: &Path) -> io::Result<RealDirectoryIdentity> {
+fn ensure_private_real_directory(path: &Path) -> io::Result<RealDirectoryIdentity> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -2295,7 +2285,7 @@ fn windows_attributes_are_not_reparse(attributes: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
+pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
     replace_file_atomically_with(tmp, target, backup, system_replace_file)
 }
 
@@ -2422,16 +2412,12 @@ fn converge_failed_windows_replace(
 }
 
 #[cfg(not(windows))]
-fn replace_file_atomically_impl(tmp: &Path, target: &Path, _backup: &Path) -> ReplaceResult {
+pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, _backup: &Path) -> ReplaceResult {
     promote_replacement(tmp, target)
 }
 
-pub(crate) fn reserved_target_is_unchanged(file: &File, path: &Path) -> bool {
-    reserved_target_is_unchanged_impl(file, path)
-}
-
 #[cfg(unix)]
-fn reserved_target_is_unchanged_impl(file: &File, path: &Path) -> bool {
+pub(crate) fn reserved_target_is_unchanged(file: &File, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
     let (Ok(opened), Ok(named)) = (file.metadata(), std::fs::symlink_metadata(path)) else {
@@ -2441,7 +2427,7 @@ fn reserved_target_is_unchanged_impl(file: &File, path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
+pub(crate) fn reserved_target_is_unchanged(_file: &File, path: &Path) -> bool {
     use std::os::windows::fs::MetadataExt as _;
 
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -2452,7 +2438,7 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
+pub(crate) fn reserved_target_is_unchanged(_file: &File, path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
@@ -2504,16 +2490,41 @@ pub(crate) fn rotate_log_if_oversized(
     Ok(true)
 }
 
-/// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
-/// tests check the screenshot capture_and_store wrote through this — the target cfg stays
-/// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
-/// passes. The assertion message states only the outcome and never repeats the path
+/// Test helper: assert `path`'s POSIX mode equals `expected` (callers pass
+/// 0600 for files, 0700 for directories — see the thin wrappers below). The
+/// target cfg stays in this adapter layer (architecture guard rule). Windows
+/// has no POSIX mode bits, always passes. The assertion message states only the outcome and never repeats the path
 /// (round-12 review: the path contains a session id, and CodeQL models it formatted into
 /// panic/assert messages as sensitive information reaching logs; on test failure the
 /// specific file is identifiable from the call site).
 #[cfg(test)]
+pub(crate) fn assert_private_mode(path: &Path, expected: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = match std::fs::metadata(path) {
+            Ok(metadata) => metadata.permissions().mode(),
+            Err(_) => panic!("private-mode assertion failed: artifact is missing"),
+        };
+        assert!(
+            mode & 0o777 == expected,
+            "private-mode assertion failed: artifact is more permissive than {expected:o}"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, expected);
+    }
+}
+
+/// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
+/// tests check the screenshot capture_and_store wrote through this — the target cfg stays
+/// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
+/// passes. Thin wrapper over [`assert_private_mode`], which owns the round-12
+/// never-repeat-the-path rule.
+#[cfg(test)]
 pub(crate) fn assert_private_file_mode(path: &Path) {
-    assert_private_mode_impl(path, 0o600);
+    assert_private_mode(path, 0o600);
 }
 
 /// Test helper (review round-11): assert the directory mode is 0700. computer_use's audit
@@ -2522,27 +2533,7 @@ pub(crate) fn assert_private_file_mode(path: &Path) {
 /// mode bits, always passes.
 #[cfg(test)]
 pub(crate) fn assert_private_dir_mode(path: &Path) {
-    assert_private_mode_impl(path, 0o700);
-}
-
-#[cfg(test)]
-#[cfg(unix)]
-fn assert_private_mode_impl(path: &Path, expected: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = match std::fs::metadata(path) {
-        Ok(metadata) => metadata.permissions().mode(),
-        Err(_) => panic!("private-mode assertion failed: artifact is missing"),
-    };
-    assert!(
-        mode & 0o777 == expected,
-        "private-mode assertion failed: artifact is more permissive than {expected:o}"
-    );
-}
-
-#[cfg(test)]
-#[cfg(not(unix))]
-fn assert_private_mode_impl(path: &Path, expected: u32) {
-    let _ = (path, expected);
+    assert_private_mode(path, 0o700);
 }
 
 #[cfg(test)]
