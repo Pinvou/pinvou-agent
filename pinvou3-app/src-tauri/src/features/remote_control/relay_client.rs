@@ -464,12 +464,15 @@ async fn run_revocation_loop(
             }
         }
 
-        eprintln!("[web-access] relay revocation connection lost; reconnecting");
+        // Reached on both failure paths (read error) and the clean paths
+        // (server close / local ACK-timeout close), so the wording must not
+        // claim a lost connection.
+        eprintln!("[web-access] relay revocation socket closed; reconnecting");
         if tx_in
             .send(RelayInbound::Connection {
                 endpoint_id: endpoint_id.clone(),
                 connected: false,
-                error: Some("relay revocation connection lost; reconnecting".to_string()),
+                error: Some("relay revocation socket closed; reconnecting".to_string()),
             })
             .await
             .is_err()
