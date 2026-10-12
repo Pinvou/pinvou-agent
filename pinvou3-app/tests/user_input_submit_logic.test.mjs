@@ -461,7 +461,7 @@ const webActions = loadWebUserInputActionsSafe();
 // 无需再按 lane 重复断言）。
 const parseHelpersSource = read('src', 'shared', 'bridge-shared-helpers.js');
 for (const [label, bridgeSource] of [
-  ['tauri bridge', parseHelpersSource.slice(
+  ['shared helpers payload', parseHelpersSource.slice(
     parseHelpersSource.indexOf('function sharedBridgeBase(deps)'),
     parseHelpersSource.indexOf('const nestedInterruptedDisplayRange'),
   )],

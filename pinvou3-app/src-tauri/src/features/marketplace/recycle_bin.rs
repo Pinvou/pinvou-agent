@@ -1120,10 +1120,8 @@ mod tests {
         RecycleBin::new()
             .recycle_package("my-skill-rr", KIND_SKILL, "my-skill-rr.zip", record)
             .unwrap();
-        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(
-            "my-skill-rr",
-        )
-        .unwrap();
+        crate::features::marketplace::scope::remove_bundle_from_disabled_scopes("my-skill-rr")
+            .unwrap();
         assert!(
             !crate::features::marketplace::scope::load_disabled_bundles_for(
                 crate::features::marketplace::ConnectorScope::Plain

@@ -171,7 +171,7 @@ for (const bridgeRel of [['src', 'platform', 'web', 'bridge.js'], ['src', 'platf
     /function escapeHtml\(s\)/u,
     `${bridgeRel.join('/')} must define its own escapeHtml for the final fallback`,
   );
-  // 委托共享渲染器的主路径仍须保留（markdown_syntax_highlight 契约同样要求）。
+  // 委托共享渲染器的主路径仍须保留。
   assert.match(
     src,
     /window\.PinvouMarkdownRenderer\.renderMarkdown\(text\)/u,
