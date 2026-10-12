@@ -264,35 +264,20 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
       return;
     }
     if (verdict === 'restored') {
-      // Aborted materialization (round-16 MAJOR-2 + round-19 M1): undo the
-      // provisional supersession AND the carry — the scope effect misread
-      // the mid-await navigation as materialization and moved any chips
-      // picked in that window into the target's stash (and armed them live
-      // there). Migrate them back to the still-alive draft and disarm them
-      // in the misread scope.
+      // Aborted materialization (round-16 MAJOR-2 + rounds 19/20): undo the
+      // provisional supersession AND return the carry — the carried chips
+      // live in the ledger entry (never in the misread target's stash, so
+      // the target's own picks and cap slots were never touched). They go
+      // back to the still-alive draft; the target needs no repair.
       const carry = materializationCarry(draftKeyAtSend);
-      if (carry && carry.target !== draftKeyAtSend && carry.carriedIds.length) {
-        // Roll back ONLY the chips this migration carried from the draft
-        // (round-20 zhuowp): the misread target's OWN picks stay in the
-        // target — a whole-bag move would strand them in the draft.
-        const carriedIds = new Set(carry.carriedIds);
-        const targetStash = restoreSessionMentionDraft(carry.target);
-        const carriedOnly = targetStash.filter(ref => ref && carriedIds.has(ref.sessionId));
-        const targetOwn = targetStash.filter(ref => ref && !carriedIds.has(ref.sessionId));
-        if (carriedOnly.length) {
-          stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
-            [...restoreSessionMentionDraft(draftKeyAtSend), ...carriedOnly]));
-        }
-        // Preserve the target's own chips in the target either way.
-        stashSessionMentionDraft(carry.target, targetOwn);
-        if (mentionDraftKeyRef.current === carry.target) {
-          setSessionRefs(current => current.filter(ref => ref && !carriedIds.has(ref.sessionId)));
-        } else if (mentionDraftKeyRef.current === draftKeyAtSend) {
-          // The user is BACK on the draft (round-20 asto MAJOR-1): merge the
-          // carried picks into the live set too — stash-only would be
-          // overwritten by the next scope cleanup's live snapshot and the
-          // picks would vanish silently.
-          setSessionRefs(current => dedupeSessionRefs([...current, ...carriedOnly]));
+      if (carry && carry.carriedRefs.length) {
+        stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
+          [...carry.carriedRefs, ...restoreSessionMentionDraft(draftKeyAtSend)]));
+        if (mentionDraftKeyRef.current === draftKeyAtSend) {
+          // The user is BACK on the draft (round-20 asto MAJOR-1): merge
+          // the carried picks into the live set too — stash-only would be
+          // overwritten by the next scope cleanup's live snapshot.
+          setSessionRefs(current => dedupeSessionRefs([...current, ...carry.carriedRefs]));
         }
       }
       clearDraftMaterialization(draftKeyAtSend);
@@ -302,13 +287,18 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
     // session key; an aborted one was re-scoped to the draft above), live
     // when the current scope resolves to the same key — including the user
     // having navigated BACK to the draft while the mapping is still
-    // recorded (round-19 M2's discriminating race).
+    // recorded (round-19 M2's discriminating race). A real
+    // materialization's carried chips merge into the resolved key
+    // alongside the serialized set.
+    const carry = materializationCarry(draftKeyAtSend);
+    const carriedRefs = carry && carry.target === resolveMaterializedDraftKey(draftKeyAtSend)
+      ? carry.carriedRefs : [];
     const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
     if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
-      setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...current]));
+      setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...carriedRefs, ...current]));
     }
     stashSessionMentionDraft(stashKey, dedupeSessionRefs(
-      [...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
+      [...refsAtSend, ...carriedRefs, ...restoreSessionMentionDraft(stashKey)]));
   };
 
 // Unified scene table after the design lane was merged into work: a scene
@@ -1953,14 +1943,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           && previousKey.startsWith('draft:') && key.startsWith('session:')
           && mentionPendingDraftSendsRef.current.has(previousKey)) {
           const carried = restoreSessionMentionDraft(previousKey);
-          // Provenance travels WITH the record (round-20 zhuowp): the
-          // rollback must return exactly these ids, never the target's own.
-          recordDraftMaterialization(previousKey, key, carried.map(ref => ref && ref.sessionId));
-          if (carried.length) {
-            stashSessionMentionDraft(key, dedupeSessionRefs(
-              [...carried, ...restoreSessionMentionDraft(key)]));
-            stashSessionMentionDraft(previousKey, []);
-          }
+          // Ownership-separated carry (round-20 zhuowp follow-up): the
+          // carried chips live in the ledger entry, NOT in the target's
+          // stash — the target's own picks (and their cap slots) stay
+          // untouched, and the settle tails are the only consumers.
+          recordDraftMaterialization(previousKey, key, carried);
+          if (carried.length) stashSessionMentionDraft(previousKey, []);
         }
         mentionDraftKeyRef.current = key;
         setSessionRefs(restoreSessionMentionDraft(key));

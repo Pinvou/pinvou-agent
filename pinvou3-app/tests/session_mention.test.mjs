@@ -1741,7 +1741,7 @@ test('handleSend clears the refs at dispatch and restores them on non-acceptance
   const chatViewSource = readChatViewSource();
   assert.match(chatViewSource, /const refsAtSend = sessionMentionEnabled \? sessionRefs : \[\];/);
   assert.match(chatViewSource, /if \(refsAtSend\.length\) setSessionRefs\(\[\]\);/);
-  assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\.\.\.refsAtSend, \.\.\.current\]\)\);/);
+  assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\.\.\.refsAtSend, \.\.\.carriedRefs, \.\.\.current\]\)\);/);
 });
 
 test('the scene-send block-prepend into meta.pinvouPayloadText is pinned (round-8 M3)', () => {
@@ -2310,10 +2310,9 @@ test('failure restores are stash-backed across unmount and draft materialization
         sendChatMessage: async () => {
           // the scope effect misread the navigation as materialization and
           // CARRIED the mid-await pick into the target scope (stash + live)
-          recordDraftMaterialization('draft:12', 'session:TGT12', [midAwaitPick.sessionId]);
-          carryStore.stashSessionMentionDraft('session:TGT12', [midAwaitPick]);
+          recordDraftMaterialization('draft:12', 'session:TGT12', [midAwaitPick]);
           carryKeyRef.current = 'session:TGT12';
-          carryRefs.current = [midAwaitPick];
+          carryRefs.current = [];
           return 'restored';
         },
         setSessionRefs: (value) => { carryRefs.current = typeof value === 'function' ? value(carryRefs.current) : value; carryLive.applied.push([...carryRefs.current]); },
@@ -2377,12 +2376,10 @@ test('failure restores are stash-backed across unmount and draft materialization
         sendChatMessage: async () => {
           // carry: the misread scope stashed + armed the mid-await pick,
           // then the user navigated back to the draft (live = draft stash)
-          recordDraftMaterialization('draft:13', 'session:TGT13', [comboPick.sessionId]);
-          comboStore.stashSessionMentionDraft('session:TGT13', [comboPick]);
+          recordDraftMaterialization('draft:13', 'session:TGT13', [comboPick]);
           comboKeyRef.current = 'session:TGT13';
-          comboRefs.current = [comboPick];
-          comboKeyRef.current = 'draft:13';
           comboRefs.current = [];
+          comboKeyRef.current = 'draft:13';
           return 'restored';
         },
         setSessionRefs: (value) => { comboRefs.current = typeof value === 'function' ? value(comboRefs.current) : value; comboLive.applied.push([...comboRefs.current]); },
@@ -2449,14 +2446,13 @@ test('failure restores are stash-backed across unmount and draft materialization
         clearDraftMaterialization,
         sessionRefs: REFS,
         sendChatMessage: async () => {
-          // the misread scope: the target's own pick exists there (stash +
-          // live), and the effect recorded the carry with provenance
-          const carriedIds = ownCase.withCarry ? [ownCarry.sessionId] : [];
-          recordDraftMaterialization('draft:14', 'session:TGT14', carriedIds);
-          const targetStash = ownCase.withCarry ? [targetPick, ownCarry] : [targetPick];
-          ownStore.stashSessionMentionDraft('session:TGT14', targetStash);
+          // Ownership-separated model: the target's stash and live hold ONLY
+          // its own pick; the carry lives in the ledger entry.
+          const carriedRefs = ownCase.withCarry ? [ownCarry] : [];
+          recordDraftMaterialization('draft:14', 'session:TGT14', carriedRefs);
+          ownStore.stashSessionMentionDraft('session:TGT14', [targetPick]);
           ownKeyRef.current = 'session:TGT14';
-          ownRefs.current = [...targetStash];
+          ownRefs.current = [targetPick];
           return 'restored';
         },
         setSessionRefs: (value) => { ownRefs.current = typeof value === 'function' ? value(ownRefs.current) : value; ownLive.applied.push([...ownRefs.current]); },
@@ -2500,6 +2496,116 @@ test('failure restores are stash-backed across unmount and draft materialization
       }
       stashSessionMentionDraft('draft:14', []);
       stashSessionMentionDraft('session:TGT14', []);
+    }
+
+    // Round-20 zhuowp follow-ups — the two overlap shapes, by construction
+    // under ownership separation: (a) the carry references the SAME session
+    // id the target owns — the target's chip must not move; (b) five
+    // target-owned refs plus one distinct carry — the cap must not drop a
+    // target-owned ref for a chip it does not own.
+    {
+      const overlapStore = recordingDraftStore();
+      const overlapKeyRef = { current: null };
+      const overlapRefs = { current: [] };
+      const overlapSend = {
+        mentionDraftKeyRef: overlapKeyRef,
+        mentionPendingDraftSendsRef: { current: new Set() },
+        sessionMentionEnabledRef: { current: true },
+        isMultiAgentReadOnly: false,
+        canSend: true,
+        chatVoice: null,
+        inputText: '正文',
+        inputTextRef: { current: '正文' },
+        constrainChatInput: (value) => ({ text: value, truncated: false }),
+        setInputText: () => {},
+        sessionMentionEnabled: true,
+        buildSessionMentionBlock,
+        dedupeSessionRefs,
+        stashSessionMentionDraft: overlapStore.stashSessionMentionDraft,
+        restoreSessionMentionDraft: overlapStore.restoreSessionMentionDraft,
+        resolveMaterializedDraftKey,
+        materializationCarry,
+        clearDraftMaterialization,
+        sessionRefs: REFS,
+        sendChatMessage: async () => {
+          // (a) id overlap: target owns {same}, draft carried {same}
+          recordDraftMaterialization('draft:15', 'session:TGT15', [{ sessionId: 'same999', title: '草稿挑的同 id' }]);
+          overlapStore.stashSessionMentionDraft('session:TGT15', [{ sessionId: 'same999', title: '目标自选同 id' }]);
+          overlapKeyRef.current = 'session:TGT15';
+          overlapRefs.current = [{ sessionId: 'same999', title: '目标自选同 id' }];
+          return 'restored';
+        },
+        setSessionRefs: (value) => { overlapRefs.current = typeof value === 'function' ? value(overlapRefs.current) : value; },
+        bridge: { chat: { prefillComposer: () => {} } },
+        personalWorkbenchTemplateIdRef: { current: null },
+        setPersonalWorkbenchTemplateId: () => {},
+        console,
+      };
+      overlapKeyRef.current = 'draft:15';
+      vm.runInNewContext(`${settlePrefix}${sendFn}\nthis.handleSend = handleSend;`, overlapSend);
+      await overlapSend.handleSend();
+      assert.deepEqual(
+        restoreSessionMentionDraft('session:TGT15'),
+        [{ sessionId: 'same999', title: '目标自选同 id' }],
+        'id overlap: the target keeps ITS chip (ownership, not id identity)',
+      );
+      stashSessionMentionDraft('draft:15', []);
+      stashSessionMentionDraft('session:TGT15', []);
+    }
+    {
+      const capStore = recordingDraftStore();
+      const capKeyRef = { current: null };
+      const capRefs = { current: [] };
+      const fiveOwn = Array.from({ length: 5 }, (_, i) => ({ sessionId: `own${i}00`, title: `目标自选${i}` }));
+      const capSend = {
+        mentionDraftKeyRef: capKeyRef,
+        mentionPendingDraftSendsRef: { current: new Set() },
+        sessionMentionEnabledRef: { current: true },
+        isMultiAgentReadOnly: false,
+        canSend: true,
+        chatVoice: null,
+        inputText: '正文',
+        inputTextRef: { current: '正文' },
+        constrainChatInput: (value) => ({ text: value, truncated: false }),
+        setInputText: () => {},
+        sessionMentionEnabled: true,
+        buildSessionMentionBlock,
+        dedupeSessionRefs,
+        stashSessionMentionDraft: capStore.stashSessionMentionDraft,
+        restoreSessionMentionDraft: capStore.restoreSessionMentionDraft,
+        resolveMaterializedDraftKey,
+        materializationCarry,
+        clearDraftMaterialization,
+        sessionRefs: REFS,
+        sendChatMessage: async () => {
+          // (b) five target-owned + one distinct carry
+          recordDraftMaterialization('draft:16', 'session:TGT16', [{ sessionId: 'carried160', title: '草稿带来的' }]);
+          capStore.stashSessionMentionDraft('session:TGT16', fiveOwn);
+          capKeyRef.current = 'session:TGT16';
+          capRefs.current = [...fiveOwn];
+          return 'restored';
+        },
+        setSessionRefs: (value) => { capRefs.current = typeof value === 'function' ? value(capRefs.current) : value; },
+        bridge: { chat: { prefillComposer: () => {} } },
+        personalWorkbenchTemplateIdRef: { current: null },
+        setPersonalWorkbenchTemplateId: () => {},
+        console,
+      };
+      capKeyRef.current = 'draft:16';
+      vm.runInNewContext(`${settlePrefix}${sendFn}\nthis.handleSend = handleSend;`, capSend);
+      await capSend.handleSend();
+      assert.deepEqual(
+        restoreSessionMentionDraft('session:TGT16'),
+        fiveOwn,
+        'five target-owned refs plus a carry: none of the target-owned set is dropped',
+      );
+      assert.deepEqual(
+        restoreSessionMentionDraft('draft:16'),
+        [...REFS, { sessionId: 'carried160', title: '草稿带来的' }],
+        'the distinct carry returns to the draft with the aborted snapshot',
+      );
+      stashSessionMentionDraft('draft:16', []);
+      stashSessionMentionDraft('session:TGT16', []);
     }
 
     // Round-15 m1 (negative): plain navigation (no in-flight send) must NOT
