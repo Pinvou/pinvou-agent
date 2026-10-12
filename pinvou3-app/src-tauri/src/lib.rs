@@ -418,8 +418,9 @@ async fn reconcile_orphaned_session_browser_files_until_success(
 ///
 /// There is deliberately no process-lifetime deletion replay. Store boot can
 /// prune sessions before this hook is registered, but no WebView from a prior
-/// process survives; `spawn_orphaned_session_browser_reconciliation` scans and
-/// retries removal of their durable browser artifacts immediately afterwards.
+/// process survives; `reconcile_orphaned_session_browser_files_until_success`
+/// scans and retries removal of their durable browser artifacts immediately
+/// afterwards.
 fn spawn_deleted_session_browser_cleanup(app: tauri::AppHandle, store: SessionStore) {
     let deletion_queue = std::sync::Arc::new(SessionBrowserCleanupQueue::default());
     let app_for_hook = app.clone();
@@ -479,12 +480,6 @@ fn spawn_deleted_session_browser_cleanup(app: tauri::AppHandle, store: SessionSt
             }
         }
     });
-}
-
-fn spawn_orphaned_session_browser_reconciliation(app: tauri::AppHandle, store: SessionStore) {
-    tauri::async_runtime::spawn(reconcile_orphaned_session_browser_files_until_success(
-        app, store,
-    ));
 }
 
 /// Funnel for process env writes inside the single-threaded startup window
@@ -555,13 +550,12 @@ fn decide_main_navigation(url: &tauri::Url, initial_origin: Option<&str>) -> Mai
             None => MainNavigationVerdict::Block { detail: None },
         };
     }
-    let origin = format!(
-        "{}://{}:{}",
-        url.scheme(),
-        url.host_str().unwrap_or_default(),
-        url.port_or_known_default()
-            .map_or_else(|| "-".to_string(), |port| port.to_string())
-    );
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or_default();
+    let port = url
+        .port_or_known_default()
+        .map_or_else(|| "-".to_string(), |port| port.to_string());
+    let origin = format!("{scheme}://{host}:{port}");
     match initial_origin {
         None => MainNavigationVerdict::Allow {
             initial_origin: Some(origin),
@@ -570,23 +564,8 @@ fn decide_main_navigation(url: &tauri::Url, initial_origin: Option<&str>) -> Mai
             initial_origin: None,
         },
         Some(_) => MainNavigationVerdict::Block {
-            detail: Some(format!(
-                "scheme={} host={} port={}",
-                url.scheme(),
-                url.host_str().unwrap_or_default(),
-                url.port_or_known_default()
-                    .map_or_else(|| "-".to_string(), |port| port.to_string())
-            )),
+            detail: Some(format!("scheme={scheme} host={host} port={port}")),
         },
-    }
-}
-
-/// Non-blocking synchronous fallback for `RunEvent::Exit`. Explicit `app.restart()`
-/// bypasses this event and uses `prepare_app_restart()` to await the complete
-/// `shutdown_before_restart()` barrier.
-fn shutdown_browser_before_process_end(app: &tauri::AppHandle) {
-    if let Some(browser) = app.try_state::<features::browser::BrowserManager>() {
-        browser.shutdown_on_exit();
     }
 }
 
@@ -969,10 +948,10 @@ pub fn run() {
                     app.handle().clone(),
                     store_for_engine.clone(),
                 );
-                spawn_orphaned_session_browser_reconciliation(
+                tauri::async_runtime::spawn(reconcile_orphaned_session_browser_files_until_success(
                     app.handle().clone(),
                     store_for_engine.clone(),
-                );
+                ));
             }
             // 原生代码会话的执行根解析需要共享 AcpPool 持有的 SessionAgentStore
             // （多实例各自读盘，只有这份 clone 与 AcpPool 同一份 Arc）。
@@ -1116,10 +1095,13 @@ pub fn run() {
                     pool.bridge
                         .set_execution_root_resolver(execution_root_resolver.clone());
                     store_for_engine.set_execution_root_resolver(execution_root_resolver);
-                    pool.bridge.set_code_session_predicate(std::sync::Arc::new({
-                        let agents = code_session_agents.clone();
-                        move |session_id: &str| agents.is_code_session(session_id)
-                    }));
+                    let code_session_predicate: crate::features::sessions::CodeSessionPredicate =
+                        std::sync::Arc::new({
+                            let agents = code_session_agents.clone();
+                            move |session_id: &str| agents.is_code_session(session_id)
+                        });
+                    pool.bridge
+                        .set_code_session_predicate(code_session_predicate.clone());
                     pool.bridge
                         .set_external_acp_session_predicate(std::sync::Arc::new({
                             let acp_pool = acp_pool_for_capabilities.clone();
@@ -1127,10 +1109,7 @@ pub fn run() {
                         }));
                     // sessions feature 自己的 code 判定（mode 默认值解析 + 仅 code
                     // 持久化），与 bridge 共用同一份 SessionAgentStore 闭包。
-                    store_for_engine.set_code_session_predicate(std::sync::Arc::new({
-                        let agents = code_session_agents.clone();
-                        move |session_id: &str| agents.is_code_session(session_id)
-                    }));
+                    store_for_engine.set_code_session_predicate(code_session_predicate.clone());
                     // SessionStore::delete and deep deletion paths without
                     // an app handle (retention policy/scheduled cleanup)
                     // clear process-level per-session keys uniformly via
@@ -1168,10 +1147,7 @@ pub fn run() {
                         }));
                     // 远程端正式支持代码会话之前，先过滤原生代码会话事件（与 Engine
                     // bridge 共用同一份 SessionAgentStore 判定）。
-                    remote_control_manager.set_code_session_predicate(std::sync::Arc::new({
-                        let agents = code_session_agents.clone();
-                        move |session_id: &str| agents.is_code_session(session_id)
-                    }));
+                    remote_control_manager.set_code_session_predicate(code_session_predicate);
                     let scheduled_state = tauri::async_runtime::block_on(
                         scheduled_tasks::ScheduledTaskState::boot_runtime(
                             &pool.bridge,
@@ -1781,7 +1757,9 @@ pub fn run() {
             // On main-process exit, refresh browser URL restore manifests, destroy
             // in-app native WebViews, and clean runtime targets/endpoints. Preserve
             // restore manifests; there is no external Chrome process.
-            shutdown_browser_before_process_end(app);
+            if let Some(browser) = app.try_state::<features::browser::BrowserManager>() {
+                browser.shutdown_on_exit();
+            }
             // Exit semantics preserve the latest restore manifest. Do not asynchronously
             // call ordinary stop() here: if shutdown_on_exit skips explicit close because
             // of lock contention, a late stop could acquire the lock and delete restore

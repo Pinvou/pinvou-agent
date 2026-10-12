@@ -7,12 +7,15 @@
 //!
 //! 设计对照贡献者本地设计笔记「skill-scope-governance-实施方案」（已归档，不入库）
 //! （按 §2.1/§2.2/§2.3/§2.4 实现）：
-//!   - 开关落 `~/.pinvou3/disabled_skills.json`（`{scopes: {<mode>: [...]},
-//!     "initialized": [...]}`，scope 键即模式名，与 `disabled_connectors.json`
-//!     同构；旧裸数组/旧借道 `skill:` 条目/旧双 scope 对象迁移为 plain/新 map）；
+//!   - 开关单一真相源在 `features/marketplace/scope.rs` 的 `disabled_bundles.json`
+//!     （包 id × SessionMode 双 scope 持久化；旧 `disabled_skills.json` 双文件
+//!     设计已退役收敛），本模块按 scope 经 `unavailable_bundles_for` /
+//!     `project_skills_enabled` 读取；
 //!   - code scope 未初始化时默认全禁已装技能（外部能力显式开启，封泄露面）；
 //!   - 组合目录 = 来源（用户 skills 目录 + bundle/skills）中**启用**的技能，first-wins
-//!     同名去重，另排除该 scope 被禁用连接器的 companion skills（保持现状联动语义）；
+//!     同名去重，按包聚合排除禁用包的技能目录；未安装连接器声明的 companion
+//!     同名独立技能包保留（钉住测试
+//!     `standalone_companion_named_skill_survives_uninstalled_connector`）；
 //!   - 物化时机三段式：spawn 全量拼、toggle/安装/卸载事件驱动增量重写、发送路径
 //!     `exists()` 自愈；不做每轮 diff。
 //!
@@ -108,11 +111,11 @@ pub fn enabled_skills_for(
     // directory (the caller passes Some(workspace)) with the project-level skills
     // switch explicitly enabled get scanned — text inside a project is a
     // prompt-injection surface, independent of mode and tied to the binding.
-    if project_skills_enabled() {
-        if let Some(workspace) = project_workspace {
-            for src in project_skill_source_dirs(workspace) {
-                collect_source_skills(&src, &disabled, &mut seen, &mut out);
-            }
+    if project_skills_enabled()
+        && let Some(workspace) = project_workspace
+    {
+        for src in project_skill_source_dirs(workspace) {
+            collect_source_skills(&src, &disabled, &mut seen, &mut out);
         }
     }
     for src in skill_source_dirs() {

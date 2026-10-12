@@ -66,15 +66,12 @@ impl ConnectorGate {
             // refused write (lock unavailable) fails the call so the safety
             // default is never silently skipped.
             crate::features::marketplace::deny_first_register_connector(self.id, show)?;
-            if let Err(e) = (self.apply_bundle_skills)(show)
+            // The card renders a localized category message only; the raw
+            // cause is logged here (stdout in dev runs, the app log in
+            // packaged builds — the backend attaches in all builds now).
+            (self.apply_bundle_skills)(show)
                 .map_err(|e| format!("更新{}技能失败: {e}", self.display_name))
-            {
-                // The card renders a localized category message only; the raw
-                // cause is logged here (stdout in dev runs, the app log in
-                // packaged builds — the backend attaches in all builds now).
-                log::warn!("[{}] apply skills failed: {e}", self.id);
-                return Err(e);
-            }
+                .inspect_err(|e| log::warn!("[{}] apply skills failed: {e}", self.id))?;
             if show {
                 // Fail-visible belt-and-braces: deny-first above already
                 // registered the pair, and once the companion dirs are
@@ -205,41 +202,16 @@ mod tests {
     /// `disabled_path` 跟随 `PINVOU3_HOME`,且文件名由 `disabled_filename` 决定。
     #[test]
     fn disabled_path_is_derived_from_pinvou3_home() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let tmp = format!(
-            "{}/pinvou3-skillgate-path-{}-{}",
-            std::env::temp_dir().display(),
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let gate = fake_gate();
-        assert_eq!(
-            gate.disabled_path(),
-            crate::platform::paths::pinvou3_home().join("fake_disabled")
-        );
-        // 标志文件不存在 → 未停用;ready_probe 恒 false → 不应显示。
-        assert!(!gate.is_disabled());
-        assert!(!gate.skills_should_show());
-
-        match previous {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
-            // are serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes
-            // are serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-path", || {
+            let gate = fake_gate();
+            assert_eq!(
+                gate.disabled_path(),
+                crate::platform::paths::pinvou3_home().join("fake_disabled")
+            );
+            // 标志文件不存在 → 未停用;ready_probe 恒 false → 不应显示。
+            assert!(!gate.is_disabled());
+            assert!(!gate.skills_should_show());
+        });
     }
 
     /// Marker "materialization": the closure cannot capture, so it touches the

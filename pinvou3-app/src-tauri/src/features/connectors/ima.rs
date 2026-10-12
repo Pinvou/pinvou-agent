@@ -59,13 +59,6 @@ fn api_key_ref() -> CredentialReference {
     CredentialReference::for_ima_secret(API_KEY_SECRET)
 }
 
-fn skill_installed() -> bool {
-    SkillMarketplaceManager::new()
-        .list_skills()
-        .into_iter()
-        .any(|skill| skill.id == IMA_SKILL_ID && skill.installed)
-}
-
 fn credentials<S: CredentialStore>(store: &S) -> Result<Option<(String, String)>, String> {
     let client_id = store.get(&client_id_ref()).map_err(|e| e.user_message())?;
     let api_key = store.get(&api_key_ref()).map_err(|e| e.user_message())?;
@@ -81,7 +74,10 @@ fn credentials<S: CredentialStore>(store: &S) -> Result<Option<(String, String)>
 
 fn status_with_store<S: CredentialStore>(store: &S) -> Result<ImaConnectorStatus, String> {
     let credentials_present = credentials(store)?.is_some();
-    let skill_installed = skill_installed();
+    let skill_installed = SkillMarketplaceManager::new()
+        .list_skills()
+        .into_iter()
+        .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
     Ok(ImaConnectorStatus {
         connected: credentials_present && skill_installed,
         credentials_present,
@@ -184,14 +180,14 @@ async fn validate_credentials(client_id: &str, api_key: &str) -> Result<(), Stri
         .get("code")
         .and_then(Value::as_i64)
         .ok_or_else(|| "IMA 校验响应缺少 code 字段，请稍后重试。".to_string())?;
-    if code == 0 {
-        return Ok(());
+    if code != 0 {
+        let message = parsed
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("IMA OpenAPI 鉴权失败，请确认 Client ID / API Key。");
+        return Err(redact_secret(message));
     }
-    let message = parsed
-        .get("msg")
-        .and_then(Value::as_str)
-        .unwrap_or("IMA OpenAPI 鉴权失败，请确认 Client ID / API Key。");
-    Err(redact_secret(message))
+    Ok(())
 }
 
 /// Model-facing IMA tool. It owns no credential or endpoint input surface.
@@ -200,12 +196,6 @@ pub struct ImaOpenApiTool;
 impl ImaOpenApiTool {
     pub fn new() -> Self {
         Self
-    }
-}
-
-impl Default for ImaOpenApiTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -265,14 +255,12 @@ impl ToolSpec for ImaOpenApiTool {
             .get("api_path")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::missing_field("api_path"))?
-            .trim()
-            .to_string();
-        if !is_allowed_api_path(&api_path) {
+            .trim();
+        if !is_allowed_api_path(api_path) {
             return Err(ToolError::invalid_input("不支持的 IMA API 路径。"));
         }
         let body = input
             .get("body")
-            .cloned()
             .ok_or_else(|| ToolError::missing_field("body"))?;
         if !body.is_object() {
             return Err(ToolError::invalid_input(
@@ -291,7 +279,7 @@ impl ToolSpec for ImaOpenApiTool {
         .map_err(|e| ToolError::execution_failed(format!("读取 IMA 凭据失败: {e}")))?
         .map_err(ToolError::execution_failed)?;
 
-        let response = request_ima(&credentials.0, &credentials.1, &api_path, &body)
+        let response = request_ima(&credentials.0, &credentials.1, api_path, body)
             .await
             .map_err(|e| ToolError::execution_failed(redact_secret(&e)))?;
         let response = serde_json::to_string(&response)

@@ -429,24 +429,20 @@ impl Drop for PrepareCleanupGuard {
 
 impl ProductHeadlessBackend {
     pub fn from_runtime(runtime: Arc<dyn ProductRuntimePort>) -> Self {
-        Self {
-            runtime,
-            runtime_sessions: Arc::new(Mutex::new(HashMap::new())),
-            private_outputs: Arc::new(Mutex::new(PrivateOutputs::default())),
-            attachment_workspaces: Arc::new(Mutex::new(HashMap::new())),
-            tool_policies: Arc::new(Mutex::new(HashMap::new())),
-            suite_model_identity: None,
-        }
+        Self::with_suite_model_identity(runtime, None)
     }
 
-    fn with_identity(runtime: Arc<dyn ProductRuntimePort>, identity: SuiteModelIdentity) -> Self {
+    fn with_suite_model_identity(
+        runtime: Arc<dyn ProductRuntimePort>,
+        identity: Option<SuiteModelIdentity>,
+    ) -> Self {
         Self {
             runtime,
             runtime_sessions: Arc::new(Mutex::new(HashMap::new())),
             private_outputs: Arc::new(Mutex::new(PrivateOutputs::default())),
             attachment_workspaces: Arc::new(Mutex::new(HashMap::new())),
             tool_policies: Arc::new(Mutex::new(HashMap::new())),
-            suite_model_identity: Some(identity),
+            suite_model_identity: identity,
         }
     }
 
@@ -458,12 +454,12 @@ impl ProductHeadlessBackend {
             suite_model.identity().model.clone(),
         )
         .map_err(|_| anyhow::anyhow!("unsafe suite model identity"))?;
-        Ok(Self::with_identity(
+        Ok(Self::with_suite_model_identity(
             Arc::new(EnginePoolPort {
                 runtime,
                 suite_model,
             }),
-            identity,
+            Some(identity),
         ))
     }
 
@@ -563,13 +559,16 @@ impl ProductHeadlessBackend {
         Ok(())
     }
 
-    async fn fail_run_locked<T>(
+    /// Shared teardown behind `fail_run_locked` / `finish_failed_run_locked`:
+    /// drop the session's private state, close the runtime once, and remove
+    /// the id slot only while it still holds THIS session (the `Arc::ptr_eq`
+    /// guard keeps a newer session reusing the id slot intact).
+    async fn teardown_failed_run(
         &self,
         session_id: &str,
         runtime_session: &RuntimeSession,
         mut state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
-        error: AgentBackendError,
-    ) -> Result<T, AgentBackendError> {
+    ) {
         let _workspace = self.take_private_session_state(session_id);
         let _ = self.close_runtime_locked(session_id, &mut state).await;
         let closed = *state == RuntimeSessionState::Closed;
@@ -584,6 +583,17 @@ impl ProductHeadlessBackend {
                 }
             }
         }
+    }
+
+    async fn fail_run_locked<T>(
+        &self,
+        session_id: &str,
+        runtime_session: &RuntimeSession,
+        state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
+        error: AgentBackendError,
+    ) -> Result<T, AgentBackendError> {
+        self.teardown_failed_run(session_id, runtime_session, state)
+            .await;
         Err(error)
     }
 
@@ -591,25 +601,13 @@ impl ProductHeadlessBackend {
         &self,
         session_id: &str,
         runtime_session: &RuntimeSession,
-        mut state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
+        state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
         turn: ProductTurnOutcome,
         failure_code: &str,
         elapsed: Duration,
     ) -> Result<AgentTaskOutcome, AgentBackendError> {
-        let _workspace = self.take_private_session_state(session_id);
-        let _ = self.close_runtime_locked(session_id, &mut state).await;
-        let closed = *state == RuntimeSessionState::Closed;
-        drop(state);
-        if closed {
-            if let Ok(mut sessions) = self.runtime_sessions.lock() {
-                if sessions
-                    .get(session_id)
-                    .is_some_and(|current| Arc::ptr_eq(current, runtime_session))
-                {
-                    sessions.remove(session_id);
-                }
-            }
-        }
+        self.teardown_failed_run(session_id, runtime_session, state)
+            .await;
         let mut outcome = AgentTaskOutcome::failed(elapsed, failure_code)
             .with_model_request_metrics(turn.model_requests);
         if let Some(usage) = turn.usage {
@@ -1105,32 +1103,22 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                     SafeRunStatus::Failed,
                     started,
                 );
-                if staged_workspace.is_some() && error.to_string() == "unsupported_tool_policy" {
-                    return self
-                        .fail_run_locked(
-                            session_id,
-                            &runtime_session,
-                            runtime_state,
-                            backend_error("attachments_runtime_unsupported"),
-                        )
-                        .await;
-                }
-                for code in [
-                    "attachments_runtime_unsupported",
-                    "attachment_staging_failed",
-                ] {
-                    if error.to_string() == code {
-                        return self
-                            .fail_run_locked(
-                                session_id,
-                                &runtime_session,
-                                runtime_state,
-                                backend_error(code),
-                            )
-                            .await;
+                // A failed guard on "unsupported_tool_policy" falls through to
+                // classify_product_failure, whose exact-match arm returns
+                // "unsupported_tool_policy" — the pre-collapse if/for arms
+                // mapped identically.
+                let error_text = error.to_string();
+                let failure_code = match error_text.as_str() {
+                    "unsupported_tool_policy" if staged_workspace.is_some() => {
+                        "attachments_runtime_unsupported"
                     }
-                }
-                let failure_code = classify_product_failure(&error.to_string());
+                    // Exact-code arms re-yield the 'static literals: binding the
+                    // matched text would carry error_text's non-static borrow,
+                    // which backend_error(&'static str) rejects.
+                    "attachments_runtime_unsupported" => "attachments_runtime_unsupported",
+                    "attachment_staging_failed" => "attachment_staging_failed",
+                    _ => classify_product_failure(&error_text),
+                };
                 return self
                     .fail_run_locked(
                         session_id,
