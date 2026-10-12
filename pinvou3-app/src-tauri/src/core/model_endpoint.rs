@@ -833,14 +833,19 @@ pub enum LocalServerKind {
 /// called; all candidate signature endpoints are probed in parallel
 /// (`tokio::join!`, shared 3s timeout, a hung endpoint costs ~3s at worst),
 /// and once all complete the result is picked by signature-exclusivity
-/// priority: Ollama (`/api/tags`) > LM Studio (`/api/v0/models`) > KoboldCpp
+/// priority: LM Studio (`/api/v0/models`) > KoboldCpp
 /// (`/api/extra/version`) > LlamaCpp (`/props`) > Sglang
 /// (`/get_server_info`) > LmDeploy (`owned_by` in `/v1/models`) > Vllm
-/// (`owned_by`) > Generic. The only exception is DockerModelRunner
-/// port-gate priority: DMR also exposes an Ollama-compatible `/api/tags`, so
-/// on port 12434 only, the management API shape (JSON array) at the host
-/// root `/models` is checked before the Ollama decision — a hit means
-/// DockerModelRunner, a miss continues in the original order.
+/// (`owned_by`) > Ollama (`/api/tags`) > Generic. Ollama comes last among
+/// the specific signatures because `/api/tags` is the weakest one — wrapped
+/// deployments (model-store containers, DMR) expose an Ollama-compatible
+/// shim over the real engine; a genuine Ollama answers none of the stronger
+/// signatures, so its classification is unchanged (see
+/// [`select_local_server_kind`]). The only other exception is
+/// DockerModelRunner port-gate priority: DMR also exposes an
+/// Ollama-compatible `/api/tags`, so on port 12434 only, the management API
+/// shape (JSON array) at the host root `/models` is checked first — a hit
+/// means DockerModelRunner, a miss continues in the normal order.
 /// Probe failure
 /// (service not started/timeout/auth 401) returns `Generic`; callers keep the
 /// existing openai wire route and do not change behavior on probe failure.
@@ -1071,16 +1076,20 @@ struct ProbeCandidateHits {
 /// Ollama-compatible `/api/tags`; under the generic priority the Ollama
 /// branch would hit first and DockerModelRunner would be unreachable, so on
 /// port 12434 only, the management API shape is checked before the Ollama
-/// decision — a miss continues in the original order) > Ollama > LM Studio >
-/// KoboldCpp > LlamaCpp > Sglang > LmDeploy > Vllm > Generic. KoboldCpp is
-/// also compatible with llama.cpp's `/props`, so it must come before
-/// LlamaCpp; LMDeploy and vLLM share the owned_by signature, LMDeploy first.
+/// decision — a miss continues in the normal order) > LM Studio >
+/// KoboldCpp > LlamaCpp > Sglang > LmDeploy > Vllm > Ollama > Generic.
+/// KoboldCpp is also compatible with llama.cpp's `/props`, so it must come
+/// before LlamaCpp; LMDeploy and vLLM share the owned_by signature, LMDeploy
+/// first.
+/// Ollama is deliberately LAST among the specific signatures: `/api/tags`
+/// is the weakest signature — wrapped deployments (model-store containers,
+/// DMR) expose an Ollama-compatible shim on top of the real engine, and a
+/// first-place Ollama branch would shadow every one of them. A genuine
+/// Ollama server answers none of the stronger signatures, so demotion does
+/// not change its classification.
 fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
     if hits.docker_port_gated && hits.docker_mgmt_shape {
         return LocalServerKind::DockerModelRunner;
-    }
-    if hits.ollama {
-        return LocalServerKind::Ollama;
     }
     if hits.lmstudio_v0 {
         return LocalServerKind::LmStudio;
@@ -1111,6 +1120,9 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
         .is_some_and(|v| v1_models_owned_by_matches(v, "vllm"))
     {
         return LocalServerKind::Vllm;
+    }
+    if hits.ollama {
+        return LocalServerKind::Ollama;
     }
     LocalServerKind::Generic
 }
@@ -2939,6 +2951,47 @@ pub(crate) mod tests {
                 ..both_hit()
             }),
             LocalServerKind::Ollama
+        );
+    }
+
+    /// Wrapped deployments (model-store containers) expose an
+    /// Ollama-compatible `/api/tags` shim on top of the real engine: a
+    /// stronger signature (Sglang's `/get_server_info`, vLLM's owned_by)
+    /// must win over the shim, or the route silently degrades to the Ollama
+    /// wire (think boolean only, reasoning_content inlined into answer
+    /// text). A bare `/api/tags` hit with no stronger signature stays Ollama.
+    #[test]
+    fn select_local_server_kind_stronger_signatures_win_over_ollama_shim() {
+        let shimmed = || ProbeCandidateHits {
+            docker_port_gated: false,
+            docker_mgmt_shape: false,
+            ollama: true,
+            lmstudio_v0: false,
+            koboldcpp: false,
+            llamacpp: false,
+            sglang: false,
+            v1_models: None,
+        };
+        assert_eq!(
+            select_local_server_kind(ProbeCandidateHits {
+                sglang: true,
+                ..shimmed()
+            }),
+            LocalServerKind::Sglang,
+            "an /api/tags shim must not shadow the sglang /get_server_info signature"
+        );
+        assert_eq!(
+            select_local_server_kind(ProbeCandidateHits {
+                v1_models: Some(serde_json::json!({"data":[{"id":"m","owned_by":"vllm"}]})),
+                ..shimmed()
+            }),
+            LocalServerKind::Vllm,
+            "an /api/tags shim must not shadow the vLLM owned_by signature"
+        );
+        assert_eq!(
+            select_local_server_kind(shimmed()),
+            LocalServerKind::Ollama,
+            "a bare /api/tags hit with no stronger signature stays Ollama"
         );
     }
 
