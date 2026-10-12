@@ -1371,3 +1371,43 @@ work. Full T20 remains in progress. Downloads retain no hard total duration limi
 Both independent scoped roles gave final PASS; their actual original Node
 runs passed (4.335s/4.149s). Service commit: `5d47583`. Client architecture,
 version and diff checks passed. Continue actual protected source/ledger work.
+
+
+### T20 second batch: actual current protected event sources (2026-10-12)
+
+The service joins six-role original input verification to actual published T07
+Root, complete T08 role-specific deny, SQL time and exact same-transaction source
+revision/hash references. A shared signing read adapter preserves T09's existing
+API and fixed errors; its previously reviewed archive/Manifest batches are
+integrated without modifying frozen SQL or normative schemas.
+
+Configured endpoint/database/login, current identity, SERIALIZABLE isolation,
+pinned source owner and actual read-only rights guard each read. Catalog relations
+and functions are qualified; effective function/operator resolution must put
+pg_catalog before all other schemas, including temporary schemas, before any reused query. User triggers
+remain forbidden after their original creation grant is revoked. Unsafe paths,
+real column-write permission hidden behind a temporary catalog, source/owner
+changes and foreign/weak tokens produce no partial snapshots.
+
+Actual PostgreSQL fixtures publish both original Root generations with real
+protected genesis and dual approvals, then validate six process-local synthetic
+signed input families. They establish current role deny and real catalog,
+function, isolation, clock, comparison-operator, path-changing temporary-domain and persistent-trigger faults
+with restored positive controls. Targeted final search-path/operator controls
+passed (15.406s), and temporary-domain resolution controls passed (4.793s). Final
+combined eight-test actual PostgreSQL regression passed (46.714s), including
+catalog-first actual column-writer refusal independent of the path guard. Final
+default Go tests, full vet, module verification, all command builds, pinned
+contracts and diff checks passed. Client architecture/version checks passed.
+
+These checked inputs are not accepted events, production-issued lineage or
+execution/quality qualification. Durable ledger, real lineage/sequence, atomic
+T44 normal/late diagnostic/outbox/contribution composition and protected client
+outbox remain subsequent work. Full T20 stays open. Downloads have no hard total
+or cumulative duration limit; Previously recorded pending policy decisions and deployment remain deferred.
+
+
+Both independent scoped roles gave final PASS after the resolution, actual ACL
+and trigger fixes. Service commit: `cf73e49`. Integrated T09 prerequisite commits
+are `c34fc4a` and `f3a7529`. Continue durable event receipt/lineage composition;
+full T20 remains open at the explicitly listed boundaries.
