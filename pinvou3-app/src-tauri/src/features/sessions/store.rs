@@ -923,6 +923,25 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Roll back a session record a create path just persisted after a later
+    /// step failed: delete through the public [`Self::delete`] (which takes
+    /// the `scheduled_mutation` guard — no caller of this helper holds it) and
+    /// fold a failed rollback into the returned error so the caller sees both
+    /// failures. `what` names the rollback in the message; the chat paths
+    /// surface the session id, the aux path keeps ids out of its wording (the
+    /// command layer surfaces them and the boot log prints the chain).
+    fn rollback_created_session(
+        &self,
+        id: &str,
+        error: anyhow::Error,
+        what: &str,
+    ) -> anyhow::Error {
+        match self.delete(id) {
+            Ok(()) => error,
+            Err(rollback_error) => anyhow::anyhow!("{error:#}; {what}: {rollback_error:#}"),
+        }
+    }
+
     pub fn create_new(
         &self,
         model: String,
@@ -948,13 +967,11 @@ impl SessionStore {
             self.set_session_model_id(&id, Some(mid))?;
         }
         if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
-                }
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                error,
+                &format!("rollback Session {id}"),
+            ));
         }
         Ok(session)
     }
@@ -1004,15 +1021,8 @@ impl SessionStore {
     /// must go through [`Self::get_or_create_aux_session`].
     pub(crate) fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
         // Reject aux-of-aux in the creation path itself (not only via the
-        // get-or-create wrapper): an auxiliary conversation must not own
-        // another one, and an aux session is itself a Chat kind, so the
-        // command layer's `ensure_chat_session` cannot catch it.
-        if super::validators::is_aux_session_id(parent_id) {
-            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
-        }
-        if super::validators::is_sched_session_id(parent_id) {
-            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
-        }
+        // get-or-create wrapper).
+        ensure_parent_can_own_aux(parent_id)?;
         let parent = match self.load(parent_id) {
             Ok(parent) => parent,
             // A genuinely missing parent (deleted, or evicted between the
@@ -1076,15 +1086,11 @@ impl SessionStore {
             self.set_session_model_id(&id, Some(model_id))?;
         }
         if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!(
-                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
-                    )
-                }
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                error,
+                "rollback of the aux record failed",
+            ));
         }
         // The save above can trigger the retention sweep; the pair-liveness
         // ordering protects a parent whose aux record is fresh, but a
@@ -1105,17 +1111,11 @@ impl SessionStore {
             }
         };
         if parent_evicted {
-            let rollback = self.delete(&id);
-            // Ids stay out of these messages too: the command layer surfaces
-            // them to the caller and the boot log prints the chain.
-            return Err(match rollback {
-                Ok(()) => {
-                    anyhow::anyhow!("the parent session was evicted while creating its aux session")
-                }
-                Err(rollback_error) => anyhow::anyhow!(
-                    "the parent session was evicted while creating its aux session; rollback of the aux record failed: {rollback_error:#}"
-                ),
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                anyhow::anyhow!("the parent session was evicted while creating its aux session"),
+                "rollback of the aux record failed",
+            ));
         }
         Ok(session.metadata)
     }
@@ -1133,12 +1133,7 @@ impl SessionStore {
     /// `ensure_chat_session` cannot catch it — the single creation entry point
     /// must reject it explicitly.
     pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
-        if super::validators::is_aux_session_id(parent_id) {
-            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
-        }
-        if super::validators::is_sched_session_id(parent_id) {
-            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
-        }
+        ensure_parent_can_own_aux(parent_id)?;
         let aux_id = Self::aux_session_id_for(parent_id);
         match self.load(&aux_id) {
             Ok(aux) => Ok(aux.metadata),
@@ -1336,13 +1331,11 @@ impl SessionStore {
             self.set_session_model_id(&id, Some(model_id))?;
         }
         if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
-                }
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                error,
+                &format!("rollback Session {id}"),
+            ));
         }
         Ok(session)
     }
@@ -1405,6 +1398,21 @@ pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|e| e.kind() == ErrorKind::NotFound)
     })
+}
+
+/// The two ownership refusals shared by `create_aux_session` and
+/// `get_or_create_aux_session`: an auxiliary conversation must not own another
+/// aux (an aux session is itself a Chat kind, so the command layer's
+/// `ensure_chat_session` cannot catch it), and a scheduled session is deleted
+/// through its automation rather than gaining an aux.
+fn ensure_parent_can_own_aux(parent_id: &str) -> Result<()> {
+    if super::validators::is_aux_session_id(parent_id) {
+        bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+    }
+    if super::validators::is_sched_session_id(parent_id) {
+        bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+    }
+    Ok(())
 }
 
 /// True when `error` carries an `io::Error` of kind `InvalidData` anywhere in

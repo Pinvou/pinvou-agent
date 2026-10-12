@@ -334,6 +334,22 @@ impl L1Store {
 
     // ───────────────────────── 文档 ─────────────────────────
 
+    /// Row shape shared by every `documents JOIN collections` read below.
+    fn document_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
+        Ok(Document {
+            id: r.get(0)?,
+            collection_id: r.get(1)?,
+            coll_name: r.get(2)?,
+            path: r.get(3)?,
+            name: r.get(4)?,
+            ext: r.get(5)?,
+            size: r.get(6)?,
+            mtime: r.get(7)?,
+            parse_status: r.get(8)?,
+            n_chunks: r.get(9)?,
+        })
+    }
+
     /// 库里是否存在任意已入库文档（任一知识集）。用于「知识库为空时隐藏
     /// kb_search/kb_open_source 工具」门控：
     /// 删光所有文件后不让模型目录里还留着检索工具。EXISTS 子查询走索引，常数时间。
@@ -369,21 +385,7 @@ impl L1Store {
              ORDER BY d.parsed_at DESC, d.id DESC LIMIT ?2"
         };
         let mut stmt = c.prepare(sql)?;
-        let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Document> {
-            Ok(Document {
-                id: r.get(0)?,
-                collection_id: r.get(1)?,
-                coll_name: r.get(2)?,
-                path: r.get(3)?,
-                name: r.get(4)?,
-                ext: r.get(5)?,
-                size: r.get(6)?,
-                mtime: r.get(7)?,
-                parse_status: r.get(8)?,
-                n_chunks: r.get(9)?,
-            })
-        };
-        let rows = stmt.query_map(params![collection_id, lim], map)?;
+        let rows = stmt.query_map(params![collection_id, lim], Self::document_from_row)?;
         rows.collect()
     }
 
@@ -400,20 +402,7 @@ impl L1Store {
              FROM documents d JOIN collections c ON c.id=d.collection_id \
              WHERE d.id=?1 AND d.collection_id=?2 AND d.parse_status='parsed'",
             params![document_id, collection_id],
-            |r| {
-                Ok(Document {
-                    id: r.get(0)?,
-                    collection_id: r.get(1)?,
-                    coll_name: r.get(2)?,
-                    path: r.get(3)?,
-                    name: r.get(4)?,
-                    ext: r.get(5)?,
-                    size: r.get(6)?,
-                    mtime: r.get(7)?,
-                    parse_status: r.get(8)?,
-                    n_chunks: r.get(9)?,
-                })
-            },
+            Self::document_from_row,
         )
         .optional()
     }
@@ -447,8 +436,8 @@ impl L1Store {
 
     /// 插入或更新一条文档记录，返回 doc id。
     /// Test-only fixture seeding: production ingestion goes through the
-    /// resumable `ingest_import_item` staging pipeline, which has its own
-    /// document upsert.
+    /// resumable `ingest_import_item` staging pipeline, whose upsert
+    /// (`upsert_import_document`) this wraps so the SQL cannot drift.
     #[cfg(test)]
     pub fn upsert_document(
         &self,
@@ -459,20 +448,11 @@ impl L1Store {
         size: i64,
         mtime: i64,
     ) -> rusqlite::Result<i64> {
-        let c = self.conn.lock();
-        c.execute(
-            "INSERT INTO documents(collection_id,path,name,ext,size,mtime,parse_status,parsed_at) \
-             SELECT ?1,?2,?3,?4,?5,?6,'pending',0 \
-             WHERE EXISTS(SELECT 1 FROM collections WHERE id=?1) \
-             ON CONFLICT(collection_id,path) DO UPDATE SET \
-               name=excluded.name,ext=excluded.ext,size=excluded.size,mtime=excluded.mtime",
-            params![collection_id, path, name, ext, size, mtime],
-        )?;
-        c.query_row(
-            "SELECT id FROM documents WHERE collection_id=?1 AND path=?2",
-            params![collection_id, path],
-            |r| r.get(0),
-        )
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        let doc_id = upsert_import_document(&tx, collection_id, path, name, ext, size, mtime)?;
+        tx.commit()?;
+        Ok(doc_id)
     }
 
     /// 删除文档及其块。Returns whether the document existed (round-37
@@ -1083,16 +1063,16 @@ fn rrf_score(rank: usize) -> f64 {
 fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> {
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut keep: HashMap<String, ChunkHit> = HashMap::new();
-    for (rank, h) in fts.iter().enumerate() {
-        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
-        *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
-        keep.entry(key).or_insert_with(|| h.clone());
-    }
-    for (rank, h) in vec.iter().enumerate() {
-        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
-        *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
-        keep.entry(key).or_insert_with(|| h.clone());
-    }
+    // 每一路按各自从 0 计的排名给分，两路合并。
+    let mut add_stream = |hits: &[ChunkHit]| {
+        for (rank, h) in hits.iter().enumerate() {
+            let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
+            *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
+            keep.entry(key).or_insert_with(|| h.clone());
+        }
+    };
+    add_stream(&fts);
+    add_stream(&vec);
     let mut merged: Vec<ChunkHit> = keep
         .into_iter()
         .map(|(key, mut h)| {

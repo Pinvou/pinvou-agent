@@ -706,17 +706,10 @@ fn git_path(root: &Path, name: &str) -> Option<PathBuf> {
     if dot_git.is_dir() {
         return Some(dot_git.join(name));
     }
-    let mut command = crate::platform::process::HiddenCommand::new("git");
-    crate::platform::process::strip_git_override_env(&mut command);
-    let output = command
-        .current_dir(root)
-        .args(["rev-parse", "--git-path", name])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let relative = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let relative = git_output(root, &["rev-parse", "--git-path", name])
+        .ok()?
+        .trim()
+        .to_string();
     (!relative.is_empty()).then(|| root.join(relative))
 }
 
@@ -1286,17 +1279,12 @@ fn filesystem_changes(
 }
 
 fn git_root(root: &Path) -> Option<PathBuf> {
-    let mut command = crate::platform::process::HiddenCommand::new("git");
-    crate::platform::process::strip_git_override_env(&mut command);
-    let output = command
-        .current_dir(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).ok()
+    fs::canonicalize(
+        git_output(root, &["rev-parse", "--show-toplevel"])
+            .ok()?
+            .trim(),
+    )
+    .ok()
 }
 
 fn git_branch(root: &Path) -> Option<String> {

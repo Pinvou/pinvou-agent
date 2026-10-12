@@ -2034,11 +2034,7 @@ fn sweep_unreferenced_staged_copies(
 fn stage_and_ingest_batch(
     attachments: &[AgenticTaskAttachment],
     staging_root: &std::path::Path,
-) -> Result<(
-    Vec<IngestResult>,
-    Vec<std::path::PathBuf>,
-    Vec<std::path::PathBuf>,
-)> {
+) -> Result<StagedBatch> {
     let mut results = Vec::with_capacity(attachments.len());
     let mut consumed_sources: Vec<std::path::PathBuf> = Vec::new();
     // Every staged copy of this batch, for the failure sweep below.

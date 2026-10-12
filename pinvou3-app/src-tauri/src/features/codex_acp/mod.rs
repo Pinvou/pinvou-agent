@@ -282,14 +282,6 @@ const CLAUDE_INSTALL_SCRIPT_WINDOWS: &str = "https://claude.ai/install.ps1";
 const KIMI_INSTALL_SCRIPT_UNIX: &str = "https://code.kimi.com/kimi-code/install.sh";
 const KIMI_INSTALL_SCRIPT_WINDOWS: &str = "https://code.kimi.com/kimi-code/install.ps1";
 
-// ACP 空闲回收阈值/巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）、
-// 回收判定本体、锁内复核 + 原子移除（take_session_if_still_idle）与巡检
-// 句柄/循环（IdleReaperGuard / start_idle_reaper）收敛到 `core::reaper`：
-// 每个空闲会话都是一个活的 node/codex/kimi 子进程（spawn 带 kill_on_drop），
-// 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
-// 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
-// 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
-
 /// codex_acp 测试共用的临时目录夹具（attachments / workspace 的 tests 模块
 /// 复用）：`create_dir_all` 建目录，Drop 时 `remove_dir_all` 清理；目录名按
 /// `{prefix}-{label}-{pid}-{nonce}` 区分（nonce 取纳秒时间戳，避免并行轮次
@@ -530,20 +522,14 @@ async fn rebind_blocking_from_sessions<T>(
     )
 }
 
-fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
-    match model {
+/// 会话类型判定：ACP 后端直接生效；否则按创建时持久化的 `* (ACP)` 模型串兜底。
+fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
+    backend.is_acp().then_some(backend).or_else(|| match model {
         CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
         CLAUDE_ACP_SESSION_MODEL => Some(AgentBackend::ClaudeAcp),
         KIMI_ACP_SESSION_MODEL => Some(AgentBackend::KimiAcp),
         _ => None,
-    }
-}
-
-fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
-    backend
-        .is_acp()
-        .then_some(backend)
-        .or_else(|| backend_for_session_model(model))
+    })
 }
 
 fn same_workspace(left: &Path, right: &Path) -> bool {
@@ -1351,6 +1337,15 @@ impl AcpSession {
     }
 }
 
+/// 临时会话的执行目录：由 `SessionStore::session_roots` 按会话推导。
+/// 代码模块原生会话与 ACP 临时会话共用同一推导与错误语义。
+fn session_execution_workspace(session_store: &SessionStore, session_id: &str) -> Result<PathBuf> {
+    session_store
+        .session_roots(session_id)
+        .map(|roots| roots.execution)
+        .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))
+}
+
 /// “代码”模块原生（品悟 Engine）会话的工作区信息。
 ///
 /// 临时会话执行目录与 ACP 临时会话一样由 `SessionStore::session_roots` 推导；
@@ -1371,10 +1366,7 @@ fn code_native_workspace_info(
             workspace_path: path.to_string_lossy().into_owned(),
         });
     }
-    let path = session_store
-        .session_roots(session_id)
-        .map(|roots| roots.execution)
-        .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?;
+    let path = session_execution_workspace(session_store, session_id)?;
     Ok(CodexAcpWorkspaceInfo {
         workspace_kind: CodexWorkspaceKind::Temporary,
         workspace_path: path.to_string_lossy().into_owned(),
@@ -1427,10 +1419,6 @@ pub struct AcpPool {
     /// 退出自然终止；guard 的 Drop 清理仅作防御（见 start_idle_reaper 注释）。
     idle_reaper: Arc<parking_lot::Mutex<Option<IdleReaperGuard>>>,
 }
-
-/// `IdleReaperGuard`（Drop 时先 cancel 再 abort，双保险停止巡检，参考
-/// scheduled/tasks.rs ScheduledTaskState 的 Drop 清理模式）收敛到
-/// `core::reaper`，与 EnginePool 侧共用同一实现。
 
 /// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
 /// guard 在外部命令完成后显式 drop，使随后返回的 status 已恢复 installing=false；
@@ -1510,6 +1498,24 @@ fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 升级失败（含用户取消）时恢复移开的旧二进制：仅在备份仍存在且原路径已空时
+/// rename 回去，避免覆盖并发方刚写入的文件。npm 与官方脚本两条升级通道共用。
+fn restore_moved_aside_backups(moved_backups: &[(PathBuf, PathBuf)]) {
+    for (original, backup) in moved_backups {
+        if backup.is_file() && !original.exists() {
+            let _ = std::fs::rename(backup, original);
+        }
+    }
+}
+
+/// 升级验证通过后清理 .pre-upgrade 备份，释放磁盘空间（先验证后删除，假成功
+/// 时旧二进制备份保留）。
+fn discard_moved_aside_backups(moved_backups: &[(PathBuf, PathBuf)]) {
+    for (_, backup) in moved_backups {
+        let _ = std::fs::remove_file(backup);
+    }
 }
 
 /// Degradation decision for the `official_script` action (pure-function core,
@@ -1865,11 +1871,9 @@ impl AcpPool {
             CodexWorkspaceKind::Project => record
                 .workspace_path
                 .context("Codex 项目会话缺少工作目录记录")?,
-            CodexWorkspaceKind::Temporary => self
-                .session_store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?,
+            CodexWorkspaceKind::Temporary => {
+                session_execution_workspace(&self.session_store, session_id)?
+            }
         };
         let available = match record.workspace_kind {
             CodexWorkspaceKind::Project => path.is_dir(),
@@ -1900,19 +1904,13 @@ impl AcpPool {
                     )
                 });
             }
-            return self
-                .session_store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"));
+            return session_execution_workspace(&self.session_store, session_id);
         }
         let record = self.acp_record(session_id)?;
         match record.workspace_kind {
-            CodexWorkspaceKind::Temporary => self
-                .session_store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败")),
+            CodexWorkspaceKind::Temporary => {
+                session_execution_workspace(&self.session_store, session_id)
+            }
             CodexWorkspaceKind::Project => {
                 let path = record.workspace_path.with_context(|| {
                     format!("{} 项目会话缺少工作目录记录", record.backend.display_name())
@@ -2837,11 +2835,7 @@ impl AcpPool {
         if result.is_err() && !moved_backups.is_empty() {
             // npm install failed (including user cancel): restore the old
             // files so the previous version is not lost.
-            for (original, backup) in &moved_backups {
-                if backup.is_file() && !original.exists() {
-                    let _ = std::fs::rename(backup, original);
-                }
-            }
+            restore_moved_aside_backups(&moved_backups);
             diagnostics::write(
                 &operation_id,
                 "npm:restore_backups",
@@ -2866,9 +2860,7 @@ impl AcpPool {
                     .finalize_agent_install(backend, previous_codex_version)
                     .await;
                 if finalized.is_ok() {
-                    for (_, backup) in &moved_backups {
-                        let _ = std::fs::remove_file(backup);
-                    }
+                    discard_moved_aside_backups(&moved_backups);
                 }
                 finalized
             }
@@ -2955,11 +2947,7 @@ impl AcpPool {
         .await;
         if result.is_err() && !moved_backups.is_empty() {
             // 脚本失败（含用户取消）：恢复旧文件，避免旧版本丢失。
-            for (original, backup) in &moved_backups {
-                if backup.is_file() && !original.exists() {
-                    let _ = std::fs::rename(backup, original);
-                }
-            }
+            restore_moved_aside_backups(&moved_backups);
             diagnostics::write(
                 &operation_id,
                 "script:restore_backups",
@@ -2985,9 +2973,7 @@ impl AcpPool {
                     .finalize_agent_install(backend, previous_codex_version)
                     .await;
                 if finalized.is_ok() {
-                    for (_, backup) in &moved_backups {
-                        let _ = std::fs::remove_file(backup);
-                    }
+                    discard_moved_aside_backups(&moved_backups);
                 }
                 finalized
             }

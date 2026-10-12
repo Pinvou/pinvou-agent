@@ -1340,37 +1340,6 @@ pub async fn purge_recycled_plugin(id: String) -> Result<(), String> {
     .map_err(|e| format!("任务执行失败: {e}"))?
 }
 
-/// Shared save-dialog + off-executor tail for the two plugin-zip export
-/// commands. Default name `<id>.zip`: the id is already [a-z0-9-_]; do not
-/// use display_name (a bare-.md upload's display_name is "SKILL.md", which
-/// would export a meaningless "SKILL.md.zip").
-async fn export_plugin_zip_via_dialog(
-    id: &str,
-    app: &tauri::AppHandle,
-    export: impl FnOnce(&str, &std::path::Path) -> Result<(), String> + Send + 'static,
-) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    let default_name = format!("{id}.zip");
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .set_file_name(&default_name)
-        .add_filter("插件包 (zip)", &["zip"])
-        .blocking_save_file()
-    else {
-        return Ok(None); // 用户取消保存对话框
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("解析文件路径: {e}"))?;
-    let dest = path.to_string_lossy().into_owned();
-    let export_id = id.to_string();
-    tokio::task::spawn_blocking(move || export(&export_id, std::path::Path::new(&dest)))
-        .await
-        .map_err(|e| format!("任务执行失败: {e}"))??;
-    Ok(Some(path.to_string_lossy().into_owned()))
-}
-
 /// 导出回收站包为 zip 插件包（变更操作；Web 只读不放行）：弹原生保存对话框，
 /// zip 内容对齐插件包规范（可经统一导入管线重新导入）。
 /// 返回 Some(保存路径)；用户取消 → None；失败 Err。
@@ -1379,8 +1348,11 @@ pub async fn export_recycled_plugin(
     id: String,
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    export_plugin_zip_via_dialog(&id, &app, |id, dest| {
-        crate::features::marketplace::recycle_bin::RecycleBin::new().export_package(id, dest)
+    let default_name = recycle_export_default_name(&id);
+    let export_id = id.clone();
+    run_plugin_export(&app, default_name, move |dest| {
+        crate::features::marketplace::recycle_bin::RecycleBin::new()
+            .export_package(&export_id, &dest)
     })
     .await
 }
@@ -1394,10 +1366,39 @@ pub async fn export_installed_plugin(
     id: String,
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    export_plugin_zip_via_dialog(&id, &app, |id, dest| {
-        crate::features::marketplace::package_export::export_installed_plugin(id, dest)
+    let default_name = recycle_export_default_name(&id);
+    let export_id = id.clone();
+    run_plugin_export(&app, default_name, move |dest| {
+        crate::features::marketplace::package_export::export_installed_plugin(&export_id, &dest)
     })
     .await
+}
+
+/// 插件包导出共用的保存对话框 + 后台导出管线：`export` 在 `spawn_blocking`
+/// 工作线程上执行，收到目标路径（Move 语义，成功路径即用户选定的保存位置）。
+async fn run_plugin_export(
+    app: &tauri::AppHandle,
+    default_name: String,
+    export: impl FnOnce(std::path::PathBuf) -> Result<(), String> + Send + 'static,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("插件包 (zip)", &["zip"])
+        .blocking_save_file()
+    else {
+        return Ok(None); // 用户取消保存对话框
+    };
+    let path = picked
+        .into_path()
+        .map_err(|e| format!("解析文件路径: {e}"))?;
+    let task_path = path.clone();
+    tokio::task::spawn_blocking(move || export(task_path))
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))??;
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 // ---------------------------------------------------------------------------

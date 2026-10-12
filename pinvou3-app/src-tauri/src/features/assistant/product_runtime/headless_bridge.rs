@@ -585,6 +585,23 @@ impl ProductHeadlessBackend {
         }
     }
 
+    /// Roll back a failed prepare tail (both `prepare` registration failures
+    /// below): drop the private state registered so far and close the runtime
+    /// session. When the close fails the cleanup guard stays armed so its
+    /// Drop retries the close on unwind.
+    async fn abort_failed_prepare(
+        &self,
+        cleanup: &mut PrepareCleanupGuard,
+        session_id: &str,
+        code: &'static str,
+    ) -> AgentBackendError {
+        let _ = self.take_private_session_state(session_id);
+        if self.close_runtime_session(session_id).await.is_ok() {
+            cleanup.disarm();
+        }
+        backend_error(code)
+    }
+
     async fn fail_run_locked<T>(
         &self,
         session_id: &str,
@@ -996,11 +1013,9 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
             .map(|mut policies| policies.insert(id.clone(), policy).is_none())
             .unwrap_or(false);
         if !policy_inserted {
-            let _ = self.take_private_session_state(&id);
-            if self.close_runtime_session(&id).await.is_ok() {
-                cleanup.disarm();
-            }
-            return Err(backend_error("prepare_failed"));
+            return Err(self
+                .abort_failed_prepare(&mut cleanup, &id, "prepare_failed")
+                .await);
         }
         if let Some(workspace) = workspace {
             let inserted = if let Ok(mut workspaces) = self.attachment_workspaces.lock() {
@@ -1010,11 +1025,9 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                 false
             };
             if !inserted {
-                let _ = self.take_private_session_state(&id);
-                if self.close_runtime_session(&id).await.is_ok() {
-                    cleanup.disarm();
-                }
-                return Err(backend_error("attachment_staging_failed"));
+                return Err(self
+                    .abort_failed_prepare(&mut cleanup, &id, "attachment_staging_failed")
+                    .await);
             }
         }
         cleanup.disarm();

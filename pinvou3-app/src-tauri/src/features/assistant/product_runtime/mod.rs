@@ -343,20 +343,14 @@ impl EnginePoolRuntime {
     pub(crate) async fn submit(&self, input: &TurnInput) -> Result<TurnHandle> {
         let turn_id = timing::start_turn(&input.session_id);
         if let Some(policy_id) = input.eval_tool_policy {
-            let policy = match policy_id {
-                eval_tool_policy::EvalToolPolicy::ProductV1 => {
-                    eval_tool_policy::resolve_eval_policy("pinvou-read-only-web/v1")?
-                }
-                eval_tool_policy::EvalToolPolicy::GaiaPublicWebV1 => {
-                    eval_tool_policy::resolve_eval_policy("pinvou-gaia-public-web/v1")?
-                }
-                eval_tool_policy::EvalToolPolicy::GaiaOfflineV1 => {
-                    eval_tool_policy::resolve_eval_policy("pinvou-gaia-offline/v1")?
-                }
+            let policy = eval_tool_policy::resolve_eval_policy(match policy_id {
+                eval_tool_policy::EvalToolPolicy::ProductV1 => "pinvou-read-only-web/v1",
+                eval_tool_policy::EvalToolPolicy::GaiaPublicWebV1 => "pinvou-gaia-public-web/v1",
+                eval_tool_policy::EvalToolPolicy::GaiaOfflineV1 => "pinvou-gaia-offline/v1",
                 eval_tool_policy::EvalToolPolicy::GaiaFinalAnswerOnlyV1 => {
-                    eval_tool_policy::resolve_eval_policy("pinvou-gaia-final-answer-only/v1")?
+                    "pinvou-gaia-final-answer-only/v1"
                 }
-            };
+            })?;
             self.pool
                 .send_eval_user_message(&input.session_id, input.content.clone(), policy)
                 .await?;

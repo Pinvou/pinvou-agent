@@ -94,16 +94,21 @@ fn lark_cli_probe() -> Result<bool, cc::ProbeError> {
     cc::run_probe(lark(&["--version"])).map(|(ok, _, _)| ok)
 }
 
+/// `auth status` JSON 里用户身份是否 ready(已授权)。`is_user_ready` 与
+/// `feishu_status` 的 connected 判定共用同一提取,避免两处口径漂移。
+fn auth_status_user_ready(parsed: &Value) -> bool {
+    parsed
+        .pointer("/identities/user/status")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "ready")
+        .unwrap_or(false)
+}
+
 /// `auth status` 里用户身份是否 ready(已授权)。
 pub(crate) fn is_user_ready() -> bool {
     if let Ok((_, so, se)) = cc::run(lark(&["auth", "status", "--json"])) {
         let p = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
-        return p
-            .as_ref()
-            .and_then(|v| v.pointer("/identities/user/status"))
-            .and_then(|v| v.as_str())
-            .map(|s| s == "ready")
-            .unwrap_or(false);
+        return p.as_ref().map(auth_status_user_ready).unwrap_or(false);
     }
     false
 }
@@ -142,12 +147,7 @@ pub async fn feishu_status() -> Result<Value, String> {
         }
         let (ok, so, se) = cc::run(lark(&["auth", "status", "--json"]))?;
         let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
-        let connected = parsed
-            .as_ref()
-            .and_then(|v| v.pointer("/identities/user/status"))
-            .and_then(|v| v.as_str())
-            .map(|s| s == "ready")
-            .unwrap_or(false);
+        let connected = parsed.as_ref().map(auth_status_user_ready).unwrap_or(false);
         // 是否已配过 app:看 auth status 里有没有非空 appId。
         let configured = parsed
             .as_ref()

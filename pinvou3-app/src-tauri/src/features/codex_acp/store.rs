@@ -1696,8 +1696,8 @@ impl AcpConfigDefaultsStore {
         // would let two surfaces rename each other's half-written file into
         // place), the fsync-before-rename the sibling stores migrated for,
         // and the same two-arm tmp cleanup.
-        crate::platform::filesystem::atomic_write(&self.path, &serde_json::to_vec_pretty(&value)?)
-            .map_err(Into::into)
+        crate::platform::filesystem::atomic_write(&self.path, &serde_json::to_vec_pretty(&value)?)?;
+        Ok(())
     }
 }
 

@@ -105,16 +105,12 @@ fn reserve_unique_staged_file(
     None
 }
 
-fn staged_reserved_target_is_unchanged(file: &std::fs::File, path: &std::path::Path) -> bool {
-    crate::platform::filesystem::reserved_target_is_unchanged(file, path)
-}
-
 fn staged_target_is_safe(
     file: &std::fs::File,
     path: &std::path::Path,
     canonical_workspace: &std::path::Path,
 ) -> bool {
-    staged_reserved_target_is_unchanged(file, path)
+    crate::platform::filesystem::reserved_target_is_unchanged(file, path)
         && std::fs::canonicalize(path)
             .is_ok_and(|resolved| resolved.starts_with(canonical_workspace))
 }

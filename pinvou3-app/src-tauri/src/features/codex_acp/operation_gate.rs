@@ -24,14 +24,14 @@ pub(super) fn begin_configuration<'a>(
     busy_error: &str,
 ) -> Result<ConfigurationGuard<'a>> {
     if busy.load(Ordering::Acquire) {
-        bail!(busy_error.to_string());
+        bail!("{busy_error}");
     }
     if configuring.swap(true, Ordering::AcqRel) {
         bail!("ACP 会话已有配置正在同步");
     }
     if busy.load(Ordering::Acquire) {
         configuring.store(false, Ordering::Release);
-        bail!(busy_error.to_string());
+        bail!("{busy_error}");
     }
     Ok(ConfigurationGuard { configuring })
 }

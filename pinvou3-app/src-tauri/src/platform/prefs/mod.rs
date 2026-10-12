@@ -1266,11 +1266,7 @@ impl UserPrefs {
     /// `pub(crate)`:bridge 测试模拟 `load()` 的迁移路径(custom_* → active model)。
     pub(crate) fn migrate_models(&mut self) {
         if !self.advanced.saved_models.is_empty() {
-            for model in &mut self.advanced.saved_models {
-                model.normalize_alias();
-                model.normalize_provider_metadata();
-                model.normalize_route_limits();
-            }
+            self.normalize_saved_model_metadata();
             return;
         }
         let preset = self.advanced.model_preset.unwrap_or_default();
