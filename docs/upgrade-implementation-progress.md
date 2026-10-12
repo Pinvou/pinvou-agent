@@ -1411,3 +1411,34 @@ Both independent scoped roles gave final PASS after the resolution, actual ACL
 and trigger fixes. Service commit: `cf73e49`. Integrated T09 prerequisite commits
 are `c34fc4a` and `f3a7529`. Continue durable event receipt/lineage composition;
 full T20 remains open at the explicitly listed boundaries.
+
+
+### T20 third batch: immutable receipt/replay calculation (2026-10-12)
+
+The service domain calculates bounded original event receipts with immutable
+credential/event/full-digest binding, original disposition/commit time and exact
+exp plus two-minute retention. Canonical tuple lookup excludes ambiguous string
+concatenation and event-only keys. Exact replay changes no original receipt,
+sequence, terminal outcome or retention, including beyond T06's 24-hour response.
+Upload expiry still refuses and impossible/corrupt values return no partial plan.
+
+All six original signed families cover seven/37-day replay and exact expiry.
+All 24 actual original planEvent receipt projections agree for three transaction
+purposes, fresh/late, 24-hour and post-timeout replay, changed event/credential and
+expired upload (complete receipt run: 4.383s). Key binding/ambiguity, safe-integer,
+input mutation and stored corruption controls pass. No SQL/provider behavior
+changes; calculation grants no persisted acceptance, ACK, execution or quality.
+
+Actual current Root/deny/input and lineage binding precede every future lookup,
+including replay. The owner must still join protected receipts with actual
+normal/diagnostic cursors, T44 state writes, outbox and contribution watermark.
+SQL ownership, key usage and protected client transport remain subsequent work;
+full T20 stays open. Downloads retain no hard total/cumulative duration limit.
+
+
+Final default Go tests passed (events: 7.564s) with the actual original reference
+enabled. Full vet, module verification, all command builds, pinned artifacts and
+diff checks passed. Both independent scoped roles gave final PASS; their events
+runs with 24 receipt and 168 input comparisons passed (12.009s/13.425s). Service
+commit: `45e73ee`. Client architecture/version checks passed. Continue actual
+protected historical lineage and durable composition without pausing the task.
