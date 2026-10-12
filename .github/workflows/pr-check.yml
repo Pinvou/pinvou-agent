@@ -2697,23 +2697,9 @@ jobs:
   # that risk class. No Tauri system packages are needed on macOS (system frameworks
   # are preinstalled; same minimum as the Windows compile check), and no zram setup
   # is required (macOS runners are out of the gate-policy memory scope).
-  # Cache policy (round 18): the same restorable treatment as macos-rust-check.
-  # A rust-cache entry saved only on the main push (save-if: main) is what a
-  # refs/pull/N/merge run restores: PR-to-PR cache scopes are mutually invisible,
-  # but main-scoped saves are restorable by every PR through rust-cache's prefix
-  # fallback (this is the workflow header's documented warm-cache design; the
-  # old claim that no restorable macOS cache existed was wrong — macos-rust-check
-  # configures exactly one in this same workflow with the same save-if). PR and
-  # Merge Queue runs now
-  # compile incrementally instead of paying the full cold compile on every run
-  # of the serialized macOS queue. The key stays separate from both siblings
-  # per the documented sibling policy (macOS artifacts are not interchangeable
-  # with Linux/Windows ones, and cli-test's cache is ~/.cargo-only under the
-  # standing incident directive); this leg caches the pinvou-cli workspace
-  # target dir like macos-rust-check does for src-tauri; a check-only target
-  # dir holds rmeta-size artifacts, not linked test binaries, so the link-time
-  # runner deaths behind the cli-test/rust-test cache-targets: false directive
-  # cannot recur here.
+  # Cache policy: this leg gets the same restorable treatment as
+  # macos-rust-check — the save/restore fallback, separate-key, cached-dir
+  # and rmeta-only rationale are documented once at the Cargo cache step below.
   # Still compile-only (no test execution): cli-test already runs the CLI
   # contract suite on Linux, and executing it here too would double the macOS
   # runner minutes for a second copy of behavior Linux already exercises —
