@@ -306,8 +306,13 @@ pub(crate) fn rename_dir_with_retry(
 /// 规范化字节（补了 `version: null` 等 default 字段），与 zip 原始字节不能直比——
 /// 两侧各自解析为 `PluginManifest` 再序列化为 canonical Value 比较（键序/空白/
 /// default 字段差异不误判）；任一侧解析失败回退字节直比（保守）。
+///
+/// 磁盘侧读取同样走 [`read_landed_payload_bytes`]（包预算）：显式 plugin.json
+/// 经 `PluginManifest` 扁平 extra 字段保留未知元数据，首导可在 200 MiB 包预算
+/// 内放行一张 >16 MiB 的清单，重导比对若走 16 MiB 私有状态上限会被拒收，
+/// 同一包被误判「内容不同」（round-31 P2 显式清单支线）。
 fn plugin_manifest_semantic_eq(disk_path: &std::path::Path, incoming: &[u8]) -> bool {
-    let Ok(existing) = crate::platform::filesystem::read_private_data_file_bytes(disk_path) else {
+    let Ok(existing) = read_landed_payload_bytes(disk_path) else {
         return false;
     };
     match (
@@ -3061,6 +3066,85 @@ mod tests {
         make_zip(&dir.join("v2.zip"), &changed);
         let err = import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip")
             .expect_err("内容不同的大包必须判冲突");
+        assert!(
+            err.contains("已存在且内容不同"),
+            "不同内容应报冲突，实际: {err}"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-31 review P2（显式清单支线）：plugin.json 可经 flatten extra 字段
+    /// 保留 >16 MiB 的未知元数据——首导按 200 MiB 包预算放行，落盘的规范化
+    /// 清单字节同样超 16 MiB 私有状态上限；重导的清单语义比对若按状态上限
+    /// 读取磁盘侧，同一包会被误判「内容不同」。磁盘侧必须与首导同按包预算
+    /// 收口。对照组：同 id、清单内容不同（同样超限）仍必须判冲突。回归测试
+    /// 按评审要求走完整 导入 → 重导 路径，而非只测读原语。
+    #[test]
+    fn reimport_above_the_private_read_cap_with_a_large_explicit_manifest_is_still_same_content() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-reimport-large-manifest-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        // 17 MiB 未知元数据字符串：经 flatten extra 原样保留，清单超过 16 MiB
+        // 状态上限、远低于 200 MiB 包预算（首导的放行口径）。
+        let retained = format!("\"x_retained_note\":\"{}\"", "A".repeat(17 * 1024 * 1024));
+        let make_zip = |path: &std::path::Path, name: &str| {
+            let manifest = format!(
+                r#"{{"manifest_version":1,"id":"demo","name":"{name}",{retained},"components":{{"mcp_servers":[{{"id":"demo","dir":"mcp"}}]}}}}"#
+            );
+            let f = std::fs::File::create(path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("plugin.json", opts).unwrap();
+            zw.write_all(manifest.as_bytes()).unwrap();
+            zw.start_file("mcp/manifest.json", opts).unwrap();
+            zw.write_all(
+                r#"{"id":"demo","name":"演示组合包","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.finish().unwrap();
+        };
+        make_zip(&dir.join("v1.zip"), "演示组合包");
+
+        let first = import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
+        assert_eq!(first.id, "demo");
+        // fixture 前提：落盘规范化清单经 flatten extra 保留大元数据，本身超过
+        // 16 MiB 状态上限（否则测试根本走不到回归支线）。
+        let landed_manifest = dir.join("bundles/demo/plugin.json");
+        assert!(
+            std::fs::metadata(&landed_manifest).unwrap().len() > 16 * 1024 * 1024,
+            "落盘 plugin.json 必须保留大元数据（fixtures 的前提）"
+        );
+
+        // 回归点：同包重导放行（清单语义比对的磁盘侧按包预算读取，而非
+        // 16 MiB 状态上限）。
+        let second = import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip")
+            .unwrap_or_else(|e| panic!("同包重导（>16 MiB 显式清单）应放行，实际报错: {e}"));
+        assert_eq!(second.id, "demo");
+
+        // 对照：同 id、清单内容不同（同样超限）仍必须判冲突。
+        make_zip(&dir.join("v2.zip"), "另一个包");
+        let err = import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip")
+            .expect_err("清单内容不同的大包必须判冲突");
         assert!(
             err.contains("已存在且内容不同"),
             "不同内容应报冲突，实际: {err}"
