@@ -58,8 +58,10 @@ export function useRewindController({
   // enabled 翻转——语义与原视图内联编排一致。
   const { preview: previewCheckpointDiff, refresh: refreshCheckpoints } = checkpoints;
   const rewindEntries = useMemo(
-    () => (enabled ? rewindEntriesByTurnId(turns, checkpoints.checkpoints) : new Map()),
-    [enabled, turns, checkpoints.checkpoints],
+    () => (enabled
+      ? rewindEntriesByTurnId(turns, checkpoints.checkpoints, checkpoints.userTurns)
+      : new Map()),
+    [enabled, turns, checkpoints.checkpoints, checkpoints.userTurns],
   );
 
   // 待确认的回退目标（{ keepTurns, checkpoint, conversationOnly }）；非 null 时渲染确认弹窗。
