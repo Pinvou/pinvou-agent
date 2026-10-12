@@ -1905,16 +1905,24 @@ mod startup_order_contract {
         );
         // The console bin mirrors via eprintln (the
         // startup timeline is pub(crate) and this host has no window at all);
-        // deleting that mirror passed every leg — pin it with the same
-        // fragment needle (this leg still counts the message text itself,
-        // which the bin owns directly instead of calling the helper).
+        // deleting that mirror passed every leg — pin it. The wording lives
+        // once in scope's FREEZE_PERSIST_FAILURE_NOTICE (every host mirror
+        // shares it), so pin both halves: the const keeps the message text,
+        // and the bin still references the const from its eprintln.
         let mirror_needle = [
             "CRITICAL: the fresh-vs-",
             "upgraded verdict could not be persisted",
         ]
         .concat();
-        let bin_mirrors = include_str!("bin/dump_system_prompt.rs")
+        let const_carries_text = include_str!("features/marketplace/scope.rs")
             .matches(&mirror_needle)
+            .count();
+        assert!(
+            const_carries_text >= 1,
+            "scope.rs must keep the freeze-persist failure notice wording (every host mirror shares it)"
+        );
+        let bin_mirrors = include_str!("bin/dump_system_prompt.rs")
+            .matches("FREEZE_PERSIST_FAILURE_NOTICE")
             .count();
         assert!(
             bin_mirrors >= 1,

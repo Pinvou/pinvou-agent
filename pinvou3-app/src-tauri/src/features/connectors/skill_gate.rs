@@ -50,12 +50,6 @@ impl ConnectorGate {
         !self.is_disabled() && (self.ready_probe)()
     }
 
-    /// 按 visible 写 / 删技能文件(带用户可见错误前缀)。
-    fn apply_skills(&self, visible: bool) -> Result<(), String> {
-        (self.apply_bundle_skills)(visible)
-            .map_err(|e| format!("更新{}技能失败: {e}", self.display_name))
-    }
-
     /// `*_apply_skills` 命令公共体:按当前"应否可见"状态写 / 删技能文件。
     /// scope 门禁同步：连接器转为可用等同「新装」——已初始化 code 开关时加入
     /// code 禁用集，保持「code 会话外部能力默认关」语义（与 MCP 新装连接器一致）。
@@ -72,7 +66,9 @@ impl ConnectorGate {
             // refused write (lock unavailable) fails the call so the safety
             // default is never silently skipped.
             crate::features::marketplace::deny_first_register_connector(self.id, show)?;
-            if let Err(e) = self.apply_skills(show) {
+            if let Err(e) = (self.apply_bundle_skills)(show)
+                .map_err(|e| format!("更新{}技能失败: {e}", self.display_name))
+            {
                 // The card renders a localized category message only; the raw
                 // cause is logged here (stdout in dev runs, the app log in
                 // packaged builds — the backend attaches in all builds now).
@@ -258,6 +254,31 @@ mod tests {
         }
     }
 
+    /// A connected, not-disabled harness gate: the only per-site variation is
+    /// the id (the derived `{id}_disabled` filename is itself the pinned
+    /// invariant `gates_table_covers_the_four_cli_connectors` asserts).
+    fn connected_gate(id: &'static str) -> ConnectorGate {
+        ConnectorGate {
+            id,
+            disabled_filename: Box::leak(format!("{id}_disabled").into()),
+            display_name: "测试连接器",
+            ready_probe: || true,
+            apply_bundle_skills: |_| Ok(()),
+        }
+    }
+
+    /// Seed the post-migration plain-scope shape ("plain" initialized, nothing
+    /// stored) — the load-bearing precondition the ledger tests share verbatim.
+    fn seed_initialized_plain_scope() {
+        let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"scopes":{},"initialized":["plain"],"plain_defaults_migrated":true}"#,
+        )
+        .unwrap();
+    }
+
     /// The deny-first wiring is pinned THROUGH the two production command
     /// bodies (`apply_skills_command`, `refresh_step`), not only through
     /// `deny_first_register_connector` driven directly — a revert of these
@@ -278,11 +299,9 @@ mod tests {
             // somewhere to land instead of vanishing into the default.
             save_disabled_bundles_for(ConnectorScope::Code, &[]).unwrap();
             let home = crate::platform::paths::pinvou3_home();
-            let lock_dir = home.join("disabled_bundles.lock");
             // The save above created the lock FILE; replace it with a
             // directory so every lock open fails.
-            let _ = std::fs::remove_file(&lock_dir);
-            std::fs::create_dir_all(&lock_dir).unwrap();
+            crate::features::marketplace::scope::break_scope_lock_for_test();
             let marker = home.join("gatetest-skills");
             // apply_skills_command takes &'static self (production gates are
             // process-static table entries); leak the harness gate to match.
@@ -321,7 +340,7 @@ mod tests {
             );
 
             // Lock available: both bodies proceed, register the fresh id, land.
-            std::fs::remove_dir_all(&lock_dir).unwrap();
+            std::fs::remove_dir_all(home.join("disabled_bundles.lock")).unwrap();
             let value = rt.block_on(gate.apply_skills_command()).unwrap();
             assert_eq!(value["visible"], serde_json::json!(true));
             assert!(marker.exists(), "the unrefused apply must materialize");
@@ -370,13 +389,7 @@ mod tests {
         with_temp_home("pinvou3-skillgate-ledger", || {
             // Initialize plain via the raw store shape (the migration's own
             // verdict write; the composer's first write seeds the same).
-            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &path,
-                r#"{"scopes":{},"initialized":["plain"],"plain_defaults_migrated":true}"#,
-            )
-            .unwrap();
+            seed_initialized_plain_scope();
 
             // First sync (install/connect equivalent): the row lands and the
             // pair is ledgered.
@@ -398,13 +411,7 @@ mod tests {
 
             // The startup refresh runs for the connected connector (probe
             // true, no disable flag): the LEDGER must keep it from re-adding.
-            let gate = ConnectorGate {
-                id: "connector-x",
-                disabled_filename: "connector-x_disabled",
-                display_name: "测试连接器",
-                ready_probe: || true,
-                apply_bundle_skills: |_| Ok(()),
-            };
+            let gate = connected_gate("connector-x");
             let visible = gate.refresh_step().unwrap();
             assert!(
                 visible,
@@ -488,13 +495,7 @@ mod tests {
 
             // The startup refresh must stay gated by the ledger the ENABLE
             // wrote — no silent default-off backfill over the enable.
-            let gate = ConnectorGate {
-                id: "feishu",
-                disabled_filename: "feishu_disabled",
-                display_name: "测试连接器",
-                ready_probe: || true,
-                apply_bundle_skills: |_| Ok(()),
-            };
+            let gate = connected_gate("feishu");
             gate.refresh_step().unwrap();
             assert!(
                 !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
@@ -547,13 +548,7 @@ mod tests {
             // Restart equivalent: the startup refresh runs for the connected
             // gate — the ledger entry recorded by the uninitialized connect
             // sync must keep the enable in place.
-            let gate = ConnectorGate {
-                id: "feishu",
-                disabled_filename: "feishu_disabled",
-                display_name: "测试连接器",
-                ready_probe: || true,
-                apply_bundle_skills: |_| Ok(()),
-            };
+            let gate = connected_gate("feishu");
             gate.refresh_step().unwrap();
             assert!(
                 !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
@@ -579,21 +574,9 @@ mod tests {
         with_temp_home("pinvou3-skillgate-ledger-backfill", || {
             // Initialized plain (post-migration shape), connector-x never
             // seen by any sync: no stored row, no ledger entry.
-            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &path,
-                r#"{"scopes":{},"initialized":["plain"],"plain_defaults_migrated":true}"#,
-            )
-            .unwrap();
+            seed_initialized_plain_scope();
 
-            let gate = ConnectorGate {
-                id: "connector-x",
-                disabled_filename: "connector-x_disabled",
-                display_name: "测试连接器",
-                ready_probe: || true,
-                apply_bundle_skills: |_| Ok(()),
-            };
+            let gate = connected_gate("connector-x");
             gate.refresh_step().unwrap();
             assert!(
                 load_disabled_bundles_for(ConnectorScope::Plain)
@@ -631,13 +614,8 @@ mod tests {
         use crate::platform::test_support::with_temp_home;
 
         with_temp_home("pinvou3-skillgate-ledger-teardown", || {
+            seed_initialized_plain_scope();
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(
-                &path,
-                r#"{"scopes":{},"initialized":["plain"],"plain_defaults_migrated":true}"#,
-            )
-            .unwrap();
 
             // Install/connect sync: the row and the ledger entry land.
             sync_deny_all_scopes_after_install("connector-x").unwrap();
@@ -668,13 +646,7 @@ mod tests {
 
             // …which re-arms the GATED startup refresh for the same pack (a
             // fresh install seen at boot before the connect sync runs).
-            let gate = ConnectorGate {
-                id: "connector-x",
-                disabled_filename: "connector-x_disabled",
-                display_name: "测试连接器",
-                ready_probe: || true,
-                apply_bundle_skills: |_| Ok(()),
-            };
+            let gate = connected_gate("connector-x");
             gate.refresh_step().unwrap();
             assert!(
                 load_disabled_bundles_for(ConnectorScope::Plain)

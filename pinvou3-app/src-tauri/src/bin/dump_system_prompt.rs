@@ -33,8 +33,10 @@ fn main() -> Result<()> {
         // Mirror the GUI/headless hosts: the CRITICAL log fired inside the
         // read and this tool attaches no logger. It is a console tool, so
         // stderr is visible (the platform startup timeline is pub(crate)).
+        // The copy is the shared scope.rs const so the two sites cannot drift.
         eprintln!(
-            "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart"
+            "{}",
+            pinvou3_lib::features::marketplace::scope::FREEZE_PERSIST_FAILURE_NOTICE
         );
     }
 

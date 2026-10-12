@@ -483,13 +483,6 @@ mod tests {
         .expect("code scope must initialize while the lock works");
     }
 
-    /// Replace the scope lock FILE with a directory so every lock open fails.
-    fn break_scope_lock() {
-        let lock = crate::platform::paths::pinvou3_home().join("disabled_bundles.lock");
-        std::fs::remove_file(&lock).unwrap();
-        std::fs::create_dir_all(&lock).unwrap();
-    }
-
     #[test]
     fn status_requires_both_credentials() {
         let store = MemoryCredentialStore::default();
@@ -512,7 +505,7 @@ mod tests {
             // Initialize the code scope (makes the DenyAll sync a required
             // write), then make the lock file unopenable so the sync refuses.
             init_code_scope(&["seed-bundle"]);
-            break_scope_lock();
+            crate::features::marketplace::scope::break_scope_lock_for_test();
 
             let error =
                 ima_connect_sync_with_store("client-v2".to_string(), "key-v2".to_string(), &store)
@@ -563,7 +556,7 @@ mod tests {
             // Initialize the code scope (ima stays absent = enabled), then
             // break the lock to prove the reconnect needs no scope write.
             init_code_scope(&["seed-bundle"]);
-            break_scope_lock();
+            crate::features::marketplace::scope::break_scope_lock_for_test();
 
             ima_connect_sync_with_store("client-v2".to_string(), "key-v2".to_string(), &store)
                 .expect("a known bundle's reconnect must not need the consent-gate write");

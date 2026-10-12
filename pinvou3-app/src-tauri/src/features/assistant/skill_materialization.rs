@@ -195,10 +195,6 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
             };
             let owner =
                 crate::features::marketplace::bundle::skill_gating_owner_with(&tools, &name);
-            if disabled_packages.contains(&owner) {
-                names.insert(name);
-                continue;
-            }
             // Preset id alias: a standalone preset directory
             // carries the frontmatter skill_name, but its deny entry is stored
             // under the marketplace id (tencent-docs <-> tencent-docs-skill).
@@ -206,9 +202,12 @@ pub(crate) fn disabled_skill_names_for(scope: ConnectorScope) -> HashSet<String>
             // MCP package's id, so the alias is consulted here — where the
             // owner claim already had its chance and missed — never inside
             // skill_owner_package (see the helper's doc).
-            if crate::features::marketplace::skill_marketplace::preset_id_for_skill_name(&name)
-                .is_some_and(|id| disabled_packages.contains(id))
-            {
+            // `||` short-circuits: the alias walk only runs when the owner
+            // claim missed, exactly the old `continue` boundary.
+            let excluded = disabled_packages.contains(&owner)
+                || crate::features::marketplace::skill_marketplace::preset_id_for_skill_name(&name)
+                    .is_some_and(|id| disabled_packages.contains(id));
+            if excluded {
                 names.insert(name);
             }
         }
