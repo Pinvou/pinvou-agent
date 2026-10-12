@@ -297,17 +297,24 @@ export function restoreSessionMentionDraft(key) {
  * are tiny and bounded like the drafts store itself.
  */
 const materializedDraftKeys = new Map();
-export function recordDraftMaterialization(draftKey, sessionKey, carriedIds = []) {
+/**
+ * Ownership-separated carry (round-20 zhuowp, follow-up): the chips a
+ * materialization migrates from the draft live IN THE LEDGER ENTRY, not in
+ * the target scope's stash — a target session's own picks (and their cap
+ * slots) are never touched by chips it does not own, and id overlap between
+ * a carried chip and a target-owned chip cannot transfer ownership. The
+ * send settle tails are the only consumers: a real materialization merges
+ * the carried refs into the resolved session key; an aborted one returns
+ * them to the draft.
+ */
+export function recordDraftMaterialization(draftKey, sessionKey, carriedRefs = []) {
   if (!draftKey || !sessionKey || !draftKey.startsWith('draft:') || !sessionKey.startsWith('session:')) return;
   if (!materializedDraftKeys.has(draftKey) && materializedDraftKeys.size >= MENTION_DRAFT_CACHE_LIMIT) {
     materializedDraftKeys.delete(materializedDraftKeys.keys().next().value);
   }
-  // Provenance (round-20 zhuowp): the rollback must move back only the
-  // chips this migration CARRIED from the draft — the target scope's own
-  // picks stay in the target.
   materializedDraftKeys.set(draftKey, {
     sessionKey,
-    carriedIds: Array.isArray(carriedIds) ? carriedIds.filter(Boolean) : [],
+    carriedRefs: dedupeSessionRefs(Array.isArray(carriedRefs) ? carriedRefs : []),
   });
 }
 /** Resolve a stash key through the materialization ledger (identity for unmapped keys). */
@@ -316,14 +323,14 @@ export function resolveMaterializedDraftKey(key) {
   return entry ? entry.sessionKey : key;
 }
 /**
- * The recorded migration's provenance: the misread target key and the ids
- * actually carried from the draft (round-20 zhuowp). Returns null when the
- * key has no live entry.
+ * The recorded migration's provenance: the target key and the refs carried
+ * from the draft (round-20 zhuowp). Returns null when the key has no live
+ * entry.
  */
 export function materializationCarry(key) {
   const entry = materializedDraftKeys.get(key);
   if (!entry) return null;
-  return { target: entry.sessionKey, carriedIds: [...entry.carriedIds] };
+  return { target: entry.sessionKey, carriedRefs: [...entry.carriedRefs] };
 }
 
 /**
