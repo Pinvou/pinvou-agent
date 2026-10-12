@@ -453,8 +453,8 @@ assert.match(commands,
 // 改回 is_code_session、删掉 web 车道的 ACP 拒绝）可全绿通过。以下 pin 让
 // 一行回滚在 JS 契约测试层必红。
 assert.match(rustCommandBlock(commands, 'chat'),
-  /if !is_scheduled \{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
-  'chat() must gate the pre-send snapshot on !is_scheduled — reverting the work-mode snapshot gate must fail here');
+  /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here');
 assert.match(rustCommandBlock(commands, 'accept_plan'),
   /if store\.scheduled_profile\(&session_id\)\.is_none\(\) \{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
   'accept_plan() must gate the pre-send snapshot on scheduled_profile(&session_id).is_none() — reverting the gate must fail here');

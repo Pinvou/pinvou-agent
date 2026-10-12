@@ -1809,6 +1809,19 @@ function pinvouSharedtauriMainN99856() {
   return pinvouSharedtauriMainN99856Cache;
 }
 
+    // 压缩载体识别（评审 M2；镜像 CodeWhale history_recognition 的判定）：
+    // role=User、首块文本以压缩摘要头（当前/历史前缀）开头、其余为空或仅
+    // provenance 注释。与 web 车道同款。
+    function isCompactionCarrierBlocks(blocks) {
+      if (!Array.isArray(blocks) || !blocks.length || !(blocks[0] && blocks[0].type === "text")) return false;
+      const t = String(blocks[0].text || "");
+      if (!(t.indexOf("Another language model started to solve this problem") === 0
+        || t.indexOf("Conversation Summary (Auto-Generated)") === 0)) return false;
+      const rest = blocks.slice(1);
+      return rest.length === 0 || (rest.length === 1 && rest[0].type === "text"
+        && String(rest[0].text || "").trim() === "<!-- codewhale.compaction-checkpoint.v1 -->");
+    }
+
 
     state.chatItems = [];
     itemIdSeq = 0;
@@ -1879,6 +1892,10 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
       const m = state.messages[mi];
       const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
+        // 压缩载体（评审 M2）：role=User 的运行时内部消息（摘要头 + provenance
+        // 注释），后端 is_compaction_checkpoint_message 判定不计 turn——重载时
+        // 不还原为用户气泡，否则时间线多一个幻影“用户轮”、回退序号被顶 +1。
+        if (isCompactionCarrierBlocks(blocks)) continue;
         // Always strip exact internal envelopes: sessions saved before the
         // persistence alignment still carry the engine-baked <turn_meta>
         // block on mid-turn steered messages, and without the filter the
