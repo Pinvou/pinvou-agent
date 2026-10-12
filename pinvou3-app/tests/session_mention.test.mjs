@@ -21,6 +21,7 @@ import {
   restoreSessionMentionDraft,
   resolveMaterializedDraftKey,
   clearDraftMaterialization,
+  materializationCarry,
   recordDraftMaterialization,
 } from '../src/features/chat/session-mention.js';
 
@@ -399,6 +400,7 @@ test('handleSend assembles and prepends the injection block on dispatch (behavio
       sessionMentionEnabledRef: { current: true },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       recordDraftMaterialization,
     isMultiAgentReadOnly: false,
     canSend: true,
@@ -445,6 +447,7 @@ test('handleSend acceptance keeps chips picked during the send await (round-9)',
     sessionMentionEnabledRef: { current: true },
     resolveMaterializedDraftKey,
     clearDraftMaterialization,
+    materializationCarry,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -488,6 +491,7 @@ test('handleSend treats "restored" as a non-dispatch and keeps the chips armed (
     sessionMentionEnabledRef: { current: true },
     resolveMaterializedDraftKey,
     clearDraftMaterialization,
+    materializationCarry,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -530,6 +534,7 @@ test('handleSend clears the serialized chips at dispatch, before the send settle
     sessionMentionEnabledRef: { current: true },
     resolveMaterializedDraftKey,
     clearDraftMaterialization,
+    materializationCarry,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -598,6 +603,7 @@ test('every send lane writes the switched-away scope stash through the choke poi
       sessionMentionEnabledRef: { current: true },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       isMultiAgentReadOnly: false,
       canSend: true,
       chatVoice: null,
@@ -641,6 +647,7 @@ test('every send lane writes the switched-away scope stash through the choke poi
       sessionMentionEnabledRef: { current: true },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       useCallback: (callback) => callback,
       sessionMentionEnabled: true,
       buildSessionMentionBlock,
@@ -665,6 +672,7 @@ test('every send lane writes the switched-away scope stash through the choke poi
       sessionMentionEnabledRef: { current: true },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       useCallback: (callback) => callback,
       selectedDesignElement: null,
       chatViewCopy: { designElementFallback: '选中元素', designAdjustSelected: (label, raw) => `【调整${label}】${raw}` },
@@ -694,6 +702,7 @@ test('every send lane writes the switched-away scope stash through the choke poi
       sessionMentionEnabledRef: { current: true },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       inputTextRef: { current: '帮我把这份纪要排成 PPT' },
       activeSessionIdRef: { current: 'sess-1' },
       draftEpoch: 3,
@@ -862,6 +871,7 @@ test('handleSend sends the bare body when the feature gate is off (behavioral)',
       mentionPendingDraftSendsRef: { current: new Set() },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,
@@ -1060,6 +1070,7 @@ test('voice sendTask assembles the block under the gate and consumes chips on ac
       mentionPendingDraftSendsRef: { current: new Set() },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       inputTextRef: { current: '帮我把这份纪要排成 PPT' },
       activeSessionIdRef: { current: 'sess-1' },
       draftEpoch: 3,
@@ -1148,6 +1159,7 @@ test('handleDesignAiSubmit assembles the block under the gate and consumes chips
       mentionPendingDraftSendsRef: { current: new Set() },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       useCallback: (callback) => callback,
       selectedDesignElement: selectedElement,
       chatViewCopy: {
@@ -1230,6 +1242,7 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
       sessionMentionEnabledRef: { current: enabled },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       useCallback: (callback) => callback,
       sessionMentionEnabled: enabled,
       buildSessionMentionBlock,
@@ -1766,6 +1779,7 @@ test('failure restores are stash-backed across unmount and draft materialization
       sessionMentionEnabledRef: { current: true },
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       isMultiAgentReadOnly: false,
       canSend: true,
       chatVoice: null,
@@ -1872,6 +1886,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         restoreSessionMentionDraft: store.restoreSessionMentionDraft,
         resolveMaterializedDraftKey,
         clearDraftMaterialization,
+        materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
           store.stashSessionMentionDraft('draft:3', []);
@@ -1983,6 +1998,7 @@ test('failure restores are stash-backed across unmount and draft materialization
       restoreSessionMentionDraft: store.restoreSessionMentionDraft,
       resolveMaterializedDraftKey,
       clearDraftMaterialization,
+      materializationCarry,
       sessionRefs: REFS,
       sendChatMessage: async () => {
         // mid-await: the bridge materializes the draft — the scope effect
@@ -2065,6 +2081,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         restoreSessionMentionDraft: stayStore.restoreSessionMentionDraft,
         resolveMaterializedDraftKey,
         clearDraftMaterialization,
+        materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
           // mid-await materialization, stay mounted in the new session
@@ -2159,6 +2176,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         restoreSessionMentionDraft: navStore.restoreSessionMentionDraft,
         resolveMaterializedDraftKey,
         clearDraftMaterialization,
+        materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
           // the user clicks an EXISTING session while create_session is in
@@ -2224,6 +2242,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         restoreSessionMentionDraft: backStore.restoreSessionMentionDraft,
         resolveMaterializedDraftKey,
         clearDraftMaterialization,
+        materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
           // materialize (records the mapping, moves the scope) …
@@ -2286,11 +2305,12 @@ test('failure restores are stash-backed across unmount and draft materialization
         restoreSessionMentionDraft: carryStore.restoreSessionMentionDraft,
         resolveMaterializedDraftKey,
         clearDraftMaterialization,
+        materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
           // the scope effect misread the navigation as materialization and
           // CARRIED the mid-await pick into the target scope (stash + live)
-          recordDraftMaterialization('draft:12', 'session:TGT12');
+          recordDraftMaterialization('draft:12', 'session:TGT12', [midAwaitPick.sessionId]);
           carryStore.stashSessionMentionDraft('session:TGT12', [midAwaitPick]);
           carryKeyRef.current = 'session:TGT12';
           carryRefs.current = [midAwaitPick];
@@ -2352,11 +2372,12 @@ test('failure restores are stash-backed across unmount and draft materialization
         restoreSessionMentionDraft: comboStore.restoreSessionMentionDraft,
         resolveMaterializedDraftKey,
         clearDraftMaterialization,
+        materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
           // carry: the misread scope stashed + armed the mid-await pick,
           // then the user navigated back to the draft (live = draft stash)
-          recordDraftMaterialization('draft:13', 'session:TGT13');
+          recordDraftMaterialization('draft:13', 'session:TGT13', [comboPick.sessionId]);
           comboStore.stashSessionMentionDraft('session:TGT13', [comboPick]);
           comboKeyRef.current = 'session:TGT13';
           comboRefs.current = [comboPick];
@@ -2388,6 +2409,97 @@ test('failure restores are stash-backed across unmount and draft materialization
         'the cleanup snapshot keeps the carried pick',
       );
       stashSessionMentionDraft('draft:13', []);
+    }
+
+    // Round-20 zhuowp (target-own preservation): the rollback must move
+    // back ONLY the chips the migration carried from the draft — chips the
+    // user picked in the misread TARGET scope stay in the target. Both of
+    // zhuowp's reproduced shapes: target-own-only, and target-own plus a
+    // mid-await carry.
+    const targetOwnCases = [
+      { name: 'target-own only', withCarry: false },
+      { name: 'target-own plus carried', withCarry: true },
+    ];
+    for (const ownCase of targetOwnCases) {
+      const ownStore = recordingDraftStore();
+      const ownKeyRef = { current: null };
+      const ownRefs = { current: [] };
+      const ownLive = { applied: [] };
+      const ownSends = { current: new Set() };
+      const targetPick = { sessionId: 'own555', title: '目标会话自选' };
+      const ownCarry = { sessionId: 'carried556', title: '草稿带来的' };
+      const ownSend = {
+        mentionDraftKeyRef: ownKeyRef,
+        mentionPendingDraftSendsRef: ownSends,
+        sessionMentionEnabledRef: { current: true },
+        isMultiAgentReadOnly: false,
+        canSend: true,
+        chatVoice: null,
+        inputText: '正文',
+        inputTextRef: { current: '正文' },
+        constrainChatInput: (value) => ({ text: value, truncated: false }),
+        setInputText: () => {},
+        sessionMentionEnabled: true,
+        buildSessionMentionBlock,
+        dedupeSessionRefs,
+        stashSessionMentionDraft: ownStore.stashSessionMentionDraft,
+        restoreSessionMentionDraft: ownStore.restoreSessionMentionDraft,
+        resolveMaterializedDraftKey,
+        materializationCarry,
+        clearDraftMaterialization,
+        sessionRefs: REFS,
+        sendChatMessage: async () => {
+          // the misread scope: the target's own pick exists there (stash +
+          // live), and the effect recorded the carry with provenance
+          const carriedIds = ownCase.withCarry ? [ownCarry.sessionId] : [];
+          recordDraftMaterialization('draft:14', 'session:TGT14', carriedIds);
+          const targetStash = ownCase.withCarry ? [targetPick, ownCarry] : [targetPick];
+          ownStore.stashSessionMentionDraft('session:TGT14', targetStash);
+          ownKeyRef.current = 'session:TGT14';
+          ownRefs.current = [...targetStash];
+          return 'restored';
+        },
+        setSessionRefs: (value) => { ownRefs.current = typeof value === 'function' ? value(ownRefs.current) : value; ownLive.applied.push([...ownRefs.current]); },
+        bridge: { chat: { prefillComposer: () => {} } },
+        personalWorkbenchTemplateIdRef: { current: null },
+        setPersonalWorkbenchTemplateId: () => {},
+        console,
+      };
+      ownKeyRef.current = 'draft:14';
+      vm.runInNewContext(`${settlePrefix}${sendFn}\nthis.handleSend = handleSend;`, ownSend);
+      await ownSend.handleSend();
+      assert.deepEqual(
+        restoreSessionMentionDraft('session:TGT14'),
+        [targetPick],
+        `${ownCase.name}: the target's own pick stays in the target`,
+      );
+      const draftStash = restoreSessionMentionDraft('draft:14');
+      assert.equal(
+        draftStash.some(ref => ref && ref.sessionId === targetPick.sessionId),
+        false,
+        `${ownCase.name}: the target's own pick never lands in the draft`,
+      );
+      if (ownCase.withCarry) {
+        assert.equal(
+          draftStash.some(ref => ref && ref.sessionId === ownCarry.sessionId),
+          true,
+          'target-own plus carried: the carried pick returns to the draft',
+        );
+      }
+      assert.equal(
+        ownRefs.current.some(ref => ref && ref.sessionId === targetPick.sessionId),
+        true,
+        `${ownCase.name}: the target's own pick stays live-armed in the target`,
+      );
+      if (ownCase.withCarry) {
+        assert.equal(
+          ownRefs.current.some(ref => ref && ref.sessionId === ownCarry.sessionId),
+          false,
+          'target-own plus carried: the carried pick is disarmed live in the target',
+        );
+      }
+      stashSessionMentionDraft('draft:14', []);
+      stashSessionMentionDraft('session:TGT14', []);
     }
 
     // Round-15 m1 (negative): plain navigation (no in-flight send) must NOT

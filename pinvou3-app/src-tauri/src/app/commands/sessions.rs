@@ -2041,7 +2041,10 @@ mod web_projection_tests {
         // behavior-level harness (the JS↔Rust differential covers the
         // function itself; these pins cover the wiring) — reverting any
         // call site must turn rust-test red.
-        let chat = include_str!("chat.rs");
+        // CRLF checkouts (round-20 zhuowp): the needles are LF-anchored
+        // multi-line strings — normalize the included source so the pins
+        // behave identically on Windows checkouts.
+        let chat = include_str!("chat.rs").replace("\r\n", "\n");
         assert!(
             chat.contains("let checkpoint_label = super::sessions::strip_session_mention_block(&display_content)"),
             "the turn-checkpoint label must strip the injection block (round-10 M1)"
@@ -2054,7 +2057,7 @@ mod web_projection_tests {
             chat.contains("let title_source = super::sessions::first_send_title_source("),
             "the native auto-title path must route through first_send_title_source (round-17 m8)"
         );
-        let codex = include_str!("codex.rs");
+        let codex = include_str!("codex.rs").replace("\r\n", "\n");
         assert!(
             codex.contains(".or_else(|| workspace_references.first().map(String::as_str)),"),
             "the ACP first-send fallback must stay conditional — no unconditional 附件 floor (round-15 m6)"
