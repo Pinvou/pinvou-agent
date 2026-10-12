@@ -104,18 +104,14 @@ fn write_default_icon(pkg_dir: &Path) -> Result<String, String> {
 /// file_name 必须是无路径分隔符的纯文件名（不接受 `a/icon.png` / `../icon.svg` 等
 /// 路径形式），扩展名限定为 `svg`/`png`。
 fn write_icon_bytes(pkg_dir: &Path, file_name: &str, bytes: &[u8]) -> Result<String, String> {
-    if file_name.is_empty()
-        || file_name.contains('/')
-        || file_name.contains('\\')
-        || file_name.contains("..")
-    {
-        return Err(format!("非法图标文件名 '{file_name}'"));
+    if !is_supported_icon(file_name) {
+        return Err(format!("非法或不受支持的图标文件名 '{file_name}'"));
     }
-    let ext = Path::new(file_name)
-        .extension()
-        .and_then(|e| e.to_str())
-        .filter(|e| *e == "svg" || *e == "png")
-        .ok_or_else(|| format!("不支持的图标格式 '{file_name}'"))?;
+    let ext = if file_name.to_ascii_lowercase().ends_with(".png") {
+        "png"
+    } else {
+        "svg"
+    };
     let rel = format!("icon.{ext}");
     std::fs::create_dir_all(pkg_dir).map_err(|e| format!("创建包目录: {e}"))?;
     std::fs::write(pkg_dir.join(&rel), bytes).map_err(|e| format!("写图标: {e}"))?;
