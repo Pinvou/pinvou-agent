@@ -14,9 +14,10 @@ pub async fn compact_now(
 ) -> Result<(), String> {
     let sid = require_active_sid(session_id, &store)?;
     // 车道门（与 chat()/accept_plan 同口径）：compact_now 在 web 侧 access-policy
-    // allowlist 内，ACP 会话 id 直发会让 ACP-unaware 的 EnginePool 无感知拉起
-    // 原生引擎并改写该会话历史；桌面侧唯一调用方（代码页原生车道）自带
-    // isNativeAgent 前置门，不受影响。
+    // allowlist 内而 EnginePool 不感知 ACP——若该 id 恰有存活的原生引擎，ACP
+    // 会话 id 直发会经原生车道改写其历史（压缩不会拉起引擎：无存活引擎时直接
+    // 以 session_engine_not_running 失败，故本门为纵深防御）。桌面侧唯一调用方
+    // （代码页原生车道）自带 isNativeAgent 前置门，不受影响。
     if acp_pool.is_acp(&sid) {
         return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
     }

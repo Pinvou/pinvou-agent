@@ -126,4 +126,48 @@ mod tests {
         let invalid = vec![serde_json::json!({ "role": 42 })];
         assert!(count_user_turns_in_json(&invalid).is_err());
     }
+
+    /// 工作车道附件-only 发送的真实落盘形态必须计为用户 turn（评审 M1 对齐 pin）。
+    /// 两个附件构造器（`prepare_native_user_message_in_dir` /
+    /// `build_message_with_attachments_in_dir`）对空草稿文本也总是生成非空包装段
+    /// （"---\n用户附上了以下文件:\n\n…"），引擎 `user_content_blocks` 把该完整
+    /// 文本作为第一个 Text 块落盘、ImageUrl 与 turn_meta 随后追加。因此工作车道
+    /// 的附件-only 轮次在 `classify_user_turn_prompt` 下是 Editable——后端计数
+    /// **包含**它们，与前端 `rewindEntriesByTurnId` 逐 userItem 计数对齐（若任
+    /// 一侧改变——比如包装文本被剥离、该形态退化成上面的裸 ImageUrl fixture——
+    /// 本 pin 与 image-only fixture 的计数差即暴露错位）。
+    #[test]
+    fn attachment_wrapped_image_turn_counts_as_user_turn() {
+        let wrapper = "---\n用户附上了以下文件:\n\n### shot.png (image, 12345 bytes)\n\
+                       [Attached image: /ws/attachments/shot.png]\n\n---\n";
+        let wrapped = Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: wrapper.to_string(),
+                    cache_control: None,
+                },
+                ContentBlock::ImageUrl {
+                    image_url: deepseek_tui::models::ImageUrlContent {
+                        url: "file:///ws/attachments/shot.png".to_string(),
+                    },
+                },
+            ],
+        };
+        assert!(is_user_turn_prompt(&wrapped));
+        assert_eq!(count_user_turns(std::slice::from_ref(&wrapped)), 1);
+
+        // 对照组：同一张图去掉包装文本（CLI 车道的裸形态）不计——证明两个
+        // fixture 之间隔着的正是构造器的包装文本，而非图片块本身。
+        let bare = Message {
+            role: deepseek_tui::models::Role::User,
+            content: vec![ContentBlock::ImageUrl {
+                image_url: deepseek_tui::models::ImageUrlContent {
+                    url: "file:///ws/attachments/shot.png".to_string(),
+                },
+            }],
+        };
+        assert!(!is_user_turn_prompt(&bare));
+        assert_eq!(count_user_turns(std::slice::from_ref(&bare)), 0);
+    }
 }

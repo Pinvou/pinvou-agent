@@ -148,6 +148,29 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(entries.get('t2').keepTurns, 1);
 }
 
+// 附件-only 轮次占序号（评审 M1 对齐 pin）：后端把附件-only 发送落盘为
+// 「包装文本 Text 块 + ImageUrl + turn_meta」——两个附件构造器对空草稿也总是
+// 生成非空包装段（"---\n用户附上了以下文件:…"），classify_user_turn_prompt
+// 只认非 turn_meta 的 Text 块 → 后端计数包含该轮（Rust 侧 pin 见
+// code_checkpoints::turns::tests::attachment_wrapped_image_turn_counts_as_user_turn）。
+// 因此前端序号必须同样把它计入：text(1) → 附件-only(2) → text(3) 的序号是
+// 1/2/3，t3 的快照对齐在 turn 3 上。若后端语义变化（裸 ImageUrl 不计数），
+// 本 pin 与 Rust fixture 的计数差即暴露两侧漂移。
+{
+  const attachOnlyTurn = { id: 't2', userItem: { type: 'user', text: '📎 ["shot.png"]', attachments: ['shot.png'] } };
+  const turns = [userTurn('t1'), attachOnlyTurn, userTurn('t3')];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ]);
+  assert.equal(entries.get('t1').keepTurns, 0);
+  assert.equal(entries.get('t2').keepTurns, 1, '附件-only 轮次消耗序号（与后端包装文本形态对齐）');
+  assert.equal(entries.get('t2').checkpoint.id, 'c2');
+  assert.equal(entries.get('t3').keepTurns, 2, '后续边界序号不漂移');
+  assert.equal(entries.get('t3').checkpoint.id, 'c3', 'text(3) 的快照对齐在 turn 3，不因附件-only 轮次降级');
+}
+
 // checkpoint 列表为空（系统无 git/快照全部失败）→ 整个会话无入口（设计 §5）。
 {
   const turns = [userTurn('t1'), userTurn('t2')];

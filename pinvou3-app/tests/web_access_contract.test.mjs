@@ -465,8 +465,9 @@ assert.match(rustCommandBlock(remoteControlCommands, 'web_access_chat_for_sessio
   /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'web_access_chat_for_session must reject ACP sessions before reserving a native-engine turn');
 // 评审 M2（PR668 同类 web 缝合）：edit_last_turn/compact_now 在 web 侧
-// access-policy allowlist 内，ACP-unaware 的 EnginePool 会为 ACP 会话 id 拉起
-// 原生引擎并改写历史——与 chat() 同口径的门必须钉住。
+// access-policy allowlist 内而 EnginePool 不感知 ACP——edit_last_turn 的
+// reserve→truncate→resend 会为 ACP 会话 id 拉起原生引擎并改写历史；compact_now
+// 不拉起引擎（无存活引擎即失败），同门为纵深防御。与 chat() 同口径的门必须钉住。
 assert.match(rustCommandBlock(commands, 'compact_now'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'compact_now must reject ACP sessions before EnginePool rewrites their history');
