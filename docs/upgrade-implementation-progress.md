@@ -1252,3 +1252,26 @@ unblocked T21 quality calculation/projection work; recorded owner decisions stay
 deferred. Downloads have no hard total/cumulative time limit.
 
 Service commit: `f12f3e5`. Client architecture/version checks passed.
+
+
+### T21 first batch: exact conservative assessment (2026-10-12)
+
+The service quality feature now evaluates all original required metrics/groups
+against a complete frozen normal/forced/silent plan and bounded original-schema
+observation. Exact arbitrary-precision rational arithmetic preserves threshold
+equality and category sums beyond safe integers. Confirmed failures and unknown
+upper bounds reach freezing; incomplete alone waits. Every group/metric needs
+its own approved confirmed sample denominator and both strictly-below ratios.
+The full observation period remains required, without a total download limit.
+
+Both independent roles passed the complete frozen code/test/documentation delta.
+All 36 actual original Node canonical vectors and domain controls passed (2.051s;
+independent 4.419s/8.401s). This calculation has no production command, permission
+or write registration. Actual T25 purpose-bound eligibility, original T17/T20
+lineage, permanent evidence/source processing, watermarks and freeze-reason
+latching remain subsequent T21 work. A supplied group set, time or local pass
+cannot authorize expansion/completion. Full T21 remains in progress; unchanged
+database/provider/browser/deployment opt-ins are not applicable to this batch.
+
+Final default tests/vet, module verification, all command builds, pinned contracts
+and client architecture/version/diff checks passed. Service commit: `b85476b`.
