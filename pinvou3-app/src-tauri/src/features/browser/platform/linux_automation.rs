@@ -2089,10 +2089,11 @@ fn webdriver_error(value: &Value, status: u16) -> String {
 }
 
 /// Named-key lookup for the WebDriver key-dispatch path. Matching is
-/// case-insensitive and the aliases mirror the macOS adapter and the
-/// computer-use key parser (`enter|return`, `esc|escape`, `left|arrowleft`,
-/// ...). Unknown names return `None` so callers fail closed instead of typing
-/// the raw word into the page as literal text.
+/// case-insensitive and the vocabulary mirrors the macOS adapter's
+/// `named_key` exactly (same names and aliases: `enter|return`, `esc|escape`,
+/// arrows, `home`, `end`, `pageup`, `pagedown`, ...). Unknown names return
+/// `None` so callers fail closed instead of typing the raw word into the page
+/// as literal text.
 fn named_key_value(value: &str) -> Option<&'static str> {
     match value.to_ascii_lowercase().as_str() {
         "enter" | "return" => Some("\u{E007}"),
@@ -2104,6 +2105,10 @@ fn named_key_value(value: &str) -> Option<&'static str> {
         "down" | "arrowdown" => Some("\u{E015}"),
         "left" | "arrowleft" => Some("\u{E012}"),
         "right" | "arrowright" => Some("\u{E014}"),
+        "pageup" => Some("\u{E00E}"),
+        "pagedown" => Some("\u{E00F}"),
+        "home" => Some("\u{E011}"),
+        "end" => Some("\u{E010}"),
         "space" => Some(" "),
         _ => None,
     }
@@ -2268,6 +2273,10 @@ mod tests {
         assert_eq!(webdriver_key_sequence("ArrowDown").unwrap(), "\u{E015}");
         assert_eq!(webdriver_key_sequence("right").unwrap(), "\u{E014}");
         assert_eq!(webdriver_key_sequence("ArrowRight").unwrap(), "\u{E014}");
+        assert_eq!(webdriver_key_sequence("Home").unwrap(), "\u{E011}");
+        assert_eq!(webdriver_key_sequence("END").unwrap(), "\u{E010}");
+        assert_eq!(webdriver_key_sequence("PageUp").unwrap(), "\u{E00E}");
+        assert_eq!(webdriver_key_sequence("pagedown").unwrap(), "\u{E00F}");
         assert_eq!(webdriver_key_sequence("Space").unwrap(), " ");
         assert_eq!(webdriver_key_sequence("space").unwrap(), " ");
         assert_eq!(webdriver_key_sequence("Tab").unwrap(), "\u{E004}");
@@ -2301,13 +2310,17 @@ mod tests {
 
     #[test]
     fn webdriver_unknown_named_keys_fail_closed_instead_of_typing_text() {
-        assert_eq!(
-            webdriver_key_sequence("Home").unwrap_err(),
-            "browser/unsupported-key: Home"
-        );
+        // Everything outside the macOS-mirroring vocabulary fails closed,
+        // including words that look like keys ("hometry") and names the
+        // computer-use parser accepts but the browser adapter does not
+        // ("pgup" has no macOS browser counterpart to mirror).
         assert_eq!(
             webdriver_key_sequence("hometry").unwrap_err(),
             "browser/unsupported-key: hometry"
+        );
+        assert_eq!(
+            webdriver_key_sequence("pgup").unwrap_err(),
+            "browser/unsupported-key: pgup"
         );
         assert_eq!(
             webdriver_key_sequence("ctrl+hometry").unwrap_err(),
