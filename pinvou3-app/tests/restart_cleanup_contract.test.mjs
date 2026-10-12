@@ -103,6 +103,6 @@ test('restart cleanup closes browser before harvesting child processes', () => {
   );
   assert.match(
     lib,
-    /RunEvent::Exit[\s\S]*?shutdown_browser_before_process_end\(app\);[\s\S]*?block_on\(harvest_child_processes\(app\)\)/,
+    /RunEvent::Exit[\s\S]*?browser\.shutdown_on_exit\(\);[\s\S]*?block_on\(harvest_child_processes\(app\)\)/,
   );
 });

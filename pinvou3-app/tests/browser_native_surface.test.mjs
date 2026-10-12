@@ -448,12 +448,11 @@ test('exit events do not wait on the browser lock and always clean coordination 
   const exitEnd = tauriApp.indexOf('tauri::RunEvent::Resumed', exitStart);
   assert.ok(exitStart >= 0 && exitEnd > exitStart, 'Tauri exit handler must remain discoverable');
   const exitHandler = tauriApp.slice(exitStart, exitEnd);
-  assert.match(exitHandler, /shutdown_browser_before_process_end\(app\)/);
-  const shutdownHelper = tauriApp.slice(
-    tauriApp.indexOf('fn shutdown_browser_before_process_end'),
-    tauriApp.indexOf('pub(crate) async fn prepare_app_restart'),
+  assert.match(
+    exitHandler,
+    /browser\.shutdown_on_exit\(\)/,
+    'the inlined exit branch must keep the nonblocking browser shutdown',
   );
-  assert.match(shutdownHelper, /browser\.shutdown_on_exit\(\)/);
   assert.doesNotMatch(
     exitHandler,
     /mgr\.stop\(\)\.await/,
