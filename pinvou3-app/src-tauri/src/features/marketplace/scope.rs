@@ -1707,8 +1707,14 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
 /// Shared whole-list writer prelude: the input fold reads
 /// the bundles manifests, not the locked state, so it belongs ABOVE the
 /// exclusive section (same shape as enable_packages_in_scope /
-/// apply_restore_consent_gate_impl) — the OS-lock hold narrows to the pure
-/// JSON RMW instead of a full manifest walk plus per-row canonicalize.
+/// apply_restore_consent_gate_impl) — the steady-state OS-lock hold narrows
+/// to the pure JSON RMW instead of a full manifest walk plus per-row
+/// canonicalize. The one-shot exceptions run the full DenyAll expansion
+/// (`resolve_scope_disabled_ids`) inside the lock: the seeding arm of a
+/// first write to an uninitialized DenyAll scope, enable's uninitialized
+/// arm, and the restore gate's force pass — each fires once per scope
+/// state, and peers' hot reads degrade (over-deny, never persist) for the
+/// span.
 /// Persist deduped: read-side
 /// normalization dedups anyway, so repeated toggles cannot accumulate
 /// duplicate entries on disk.

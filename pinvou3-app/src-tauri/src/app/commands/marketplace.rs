@@ -1059,16 +1059,21 @@ fn import_plugin_package_sync(
 /// executor: the sync waits on the cross-process scope flock, which a frozen
 /// peer holds indefinitely. No rollback runs behind this wrapper: a failure
 /// leaves the pack in place with zero consent rows, so the marker copy must
-/// say exactly that.
+/// say exactly that. (For the unified import channel the PRE-land gate has
+/// already registered rows + ledger, so this post-land sync is a known-skip
+/// no-op and can only fail if a concurrent teardown stripped the rows
+/// between landing and here — the copy's "will enable by default" then
+/// overstates, an accepted exotic-interleaving cost. For the legs where no
+/// pre-land gate ran, the zero-rows phrasing holds literally.)
 async fn persist_upload_consent_default(what: &str, id: &str) -> Result<(), String> {
     let owned = id.to_string();
     let sync_result = tokio::task::spawn_blocking(move || {
         crate::features::marketplace::sync_deny_all_scopes_after_install(&owned)
     })
     .await
-    // A join failure leaves the same terminal state as a persist failure
-    // (pack in place, zero consent rows), so it flows into the same marker
-    // copy with the join failure as the error detail.
+    // A join failure leaves the same terminal state as a persist failure,
+    // so it flows into the same marker copy with the join failure as the
+    // error detail.
     .map_err(|e| format!("background task failed: {e}"))
     .and_then(|inner| inner);
     sync_result.map_err(|e| {
