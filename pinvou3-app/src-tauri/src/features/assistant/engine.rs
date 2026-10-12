@@ -30,6 +30,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 
+use crate::features::assistant::engine_pool::TURN_GATE_AWAIT_TIMEOUT;
 use crate::features::assistant::engine_pool::turn_tool_restrict::TurnToolRestrict;
 pub(crate) use crate::features::assistant::engine_support::EngineTurnSignal;
 use crate::features::assistant::engine_support::{
@@ -1516,6 +1517,30 @@ impl TurnLifecycle {
     }
 }
 
+/// Joins a side-effect `spawn_blocking` task under a budget and detaches it
+/// on timeout (the dropped join handle lets it finish in the background).
+/// Returns `None` when the task outlived `budget`. Used for the reclaimed
+/// turn's fallback persistence (issue #525): reclaim runs inside the session
+/// turn gate, and a disk-stalled save must not extend the gate hold — the
+/// same reasoning as #483's shell-reclaim finalize bound. The caller presets
+/// the terminal to `Failed` on `None`: an unverified persistence must not be
+/// reported as clean, even though the detached save can still land later.
+async fn bounded_join_detached_on_timeout<T>(
+    what: &str,
+    budget: std::time::Duration,
+    task: tokio::task::JoinHandle<T>,
+) -> Option<Result<T, tokio::task::JoinError>> {
+    match tokio::time::timeout(budget, task).await {
+        Ok(joined) => Some(joined),
+        Err(_) => {
+            eprintln!(
+                "[pinvou3-app] {what} did not settle within {budget:?}; letting it finish in the background (issue #525)"
+            );
+            None
+        }
+    }
+}
+
 async fn finish_reclaimed_lifecycle_turn(
     lifecycle: &TurnLifecycle,
     app: &AppHandle,
@@ -1532,17 +1557,22 @@ async fn finish_reclaimed_lifecycle_turn(
     if let Some(fallback) = transition.fallback.filter(|_| !operation_rejected) {
         let store_for_save = store.clone();
         let session_for_save = session_id.to_string();
-        let saved = tokio::task::spawn_blocking(move || {
+        let persistence = tokio::task::spawn_blocking(move || {
             store_for_save.persist_admitted_chat_display(
                 &session_for_save,
                 &fallback.baseline_revision,
                 fallback.display_message,
                 fallback.operation == TranscriptOperation::EditLast,
             )
-        })
+        });
+        let saved = bounded_join_detached_on_timeout(
+            "reclaimed transcript persistence",
+            TURN_GATE_AWAIT_TIMEOUT,
+            persistence,
+        )
         .await;
         match saved {
-            Ok(Ok(saved)) => match transcript_revision(&saved.messages) {
+            Some(Ok(Ok(saved))) => match transcript_revision(&saved.messages) {
                 Ok(revision) => {
                     emit_transcript_committed(
                         app,
@@ -1559,16 +1589,26 @@ async fn finish_reclaimed_lifecycle_turn(
                     ));
                 }
             },
-            Ok(Err(save_error)) => {
+            Some(Ok(Err(save_error))) => {
                 terminal_status = TurnOutcomeStatus::Failed;
                 terminal_error = Some(format!(
                     "Reclaimed transcript persistence failed: {save_error:#}"
                 ));
             }
-            Err(join_error) => {
+            Some(Err(join_error)) => {
                 terminal_status = TurnOutcomeStatus::Failed;
                 terminal_error = Some(format!(
                     "Reclaimed transcript persistence task failed: {join_error}"
+                ));
+            }
+            None => {
+                // The detached save may still land later, but the emitted
+                // terminal must not claim a persistence it did not see
+                // settle — the honest preset is Failed, mirroring the
+                // conservative cleanup_failed preset of the shell reclaim.
+                terminal_status = TurnOutcomeStatus::Failed;
+                terminal_error = Some(format!(
+                    "Reclaimed transcript persistence timed out after {TURN_GATE_AWAIT_TIMEOUT:?}"
                 ));
             }
         }
@@ -1599,6 +1639,34 @@ async fn finish_reclaimed_lifecycle_turn(
         operation_rejected,
     );
     Some(transition.terminal)
+}
+
+/// Bounds the reserved-submit op send (issue #525, the submit-side residual
+/// of #255/#483): the caller holds the session turn gate across this send,
+/// and a wedged engine (ops channel full, never drained) never grants it
+/// capacity — one in-flight submit would then wedge evict/delete behind the
+/// same gate, the exact hole #483 closed on the cancel side. On timeout the
+/// send future is dropped, which fails the reservation cleanly through its
+/// `Drop` (rolling back the prepared transcript rule) and lets the prepared
+/// shell scope abandon itself; the gate stays responsive for
+/// evict/delete/reclaim. A timed-out send was never enqueued (tokio's
+/// bounded `reserve`/`send` is cancel-safe), so the turn verifiably never
+/// started and the surfaced failure is truthful.
+async fn bounded_reserved_submit_send<Fut>(send: Fut) -> Result<()>
+where
+    Fut: Future<Output = Result<()>>,
+{
+    match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send).await {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!(
+                "[pinvou3-app] reserved turn submit did not settle within {TURN_GATE_AWAIT_TIMEOUT:?}; the engine may be wedged - failing the turn instead of holding the gate (issue #525)"
+            );
+            anyhow::bail!(
+                "the engine did not accept the submitted turn within {TURN_GATE_AWAIT_TIMEOUT:?}; the turn was not started, please retry"
+            );
+        }
+    }
 }
 
 impl AppEngine {
@@ -2090,7 +2158,7 @@ impl AppEngine {
             ),
             None => None,
         };
-        match self.handle.send(op).await {
+        match bounded_reserved_submit_send(self.handle.send(op)).await {
             Ok(()) => {
                 if let Some(scope) = shell_scope {
                     scope.commit();
@@ -4096,6 +4164,186 @@ mod expert_turn_invariant_tests {
         assert!(
             both.to_string().contains("expert snapshot"),
             "快照守卫必须先于候选行守卫（与生产装配顺序一致）: {both}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod submit_gate_bound_tests {
+    use super::Op;
+    use super::bounded_join_detached_on_timeout;
+    use super::bounded_reserved_submit_send;
+    use crate::features::assistant::engine_pool::TURN_GATE_AWAIT_TIMEOUT;
+
+    // issue #525: the reserved-submit send must give up within the
+    // turn-gate bound when the engine ops channel is full and never
+    // drained, and the timed-out op must verifiably never reach the
+    // channel (tokio reserve/send cancel-safety), so the surfaced failure
+    // is truthful: the turn did not start. The forkguard_ prefix registers
+    // it as a fork-guard layer-3 behavior test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_reserved_submit_send_fails_cleanly_on_wedged_engine() {
+        // Capacity 1, filled and never drained: the gate-held submit send
+        // parks exactly like on a wedged engine.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
+        tx.send(Op::CancelSubAgents)
+            .await
+            .expect("wedged slot filled");
+        // Measured from before the call: elapsed >= the bound pins "the
+        // submit really waited the full budget" (an unbounded regression
+        // hangs the 2× wrapper as a fast red; a silently shrunken bound
+        // fails this assert).
+        let started = std::time::Instant::now();
+        // The submit keeps its own sender clone: dropping the last Sender
+        // would close the channel and turn the cancel-safety probe below
+        // into a Closed instead of an Empty.
+        let submit_tx = tx.clone();
+        let result = tokio::time::timeout(
+            2 * TURN_GATE_AWAIT_TIMEOUT,
+            bounded_reserved_submit_send(async move {
+                submit_tx
+                    .send(Op::Shutdown)
+                    .await
+                    .map_err(anyhow::Error::from)
+            }),
+        )
+        .await
+        .expect(
+            "the bounded submit must settle within twice the gate bound; an unbounded regression would hang here",
+        );
+        assert!(
+            started.elapsed() >= TURN_GATE_AWAIT_TIMEOUT,
+            "the submit must wait the full budget"
+        );
+        let error = result.expect_err("a wedged engine must fail the reserved submit cleanly");
+        assert!(
+            error.to_string().contains("the turn was not started"),
+            "the failure must state that the turn never started: {error:#}"
+        );
+        // Cancel-safety: the only buffered op is the filler — the timed-out
+        // submit never entered the channel, so no turn can start late.
+        assert!(matches!(rx.try_recv(), Ok(Op::CancelSubAgents)));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    // Control for the wedge test: a healthy engine accepts the submit and
+    // the op is delivered — the helper bounds the wait, it does not skip
+    // the send.
+    #[tokio::test]
+    async fn reserved_submit_send_delivers_when_engine_accepts() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
+        let result = bounded_reserved_submit_send(async move {
+            tx.send(Op::Shutdown).await.map_err(anyhow::Error::from)
+        })
+        .await;
+        assert!(result.is_ok(), "an accepting engine must deliver the op");
+        assert!(matches!(rx.recv().await, Some(Op::Shutdown)));
+    }
+
+    // issue #525: the reclaimed turn's fallback persistence join must not
+    // wait on a disk-stalled save past the budget — the join is detached
+    // (the save keeps running) and the caller presets the terminal to
+    // Failed instead of claiming a persistence it did not see settle.
+    #[tokio::test]
+    async fn forkguard_reclaimed_persistence_join_detaches_task_that_outlives_budget() {
+        let started = std::time::Instant::now();
+        let joined = bounded_join_detached_on_timeout(
+            "test persistence",
+            std::time::Duration::from_millis(50),
+            tokio::task::spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(1))),
+        )
+        .await;
+        assert!(
+            joined.is_none(),
+            "an over-budget save must be reported as detached"
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+
+        // Control: a save that settles in time is joined, not detached.
+        let joined = bounded_join_detached_on_timeout(
+            "test persistence",
+            std::time::Duration::from_secs(5),
+            tokio::task::spawn_blocking(|| 7_u32),
+        )
+        .await;
+        assert!(matches!(joined, Some(Ok(7))));
+    }
+}
+
+// Wiring pins (review #463 round-14 R2 precedent): the behavioral tests in
+// `submit_gate_bound_tests` cover the bounded helpers, but the production
+// call sites need an AppEngine / a full reclaim and cannot be
+// unit-constructed — pin the wiring in the production bodies so deleting
+// the bound ships red instead of green. The source is cut at the first
+// test module so the probes' own assertion strings can never self-match.
+#[cfg(test)]
+mod submit_gate_bound_wiring_tests {
+    /// Cut the source at the body of the function named by `signature`.
+    /// Ends at the next item (method or free item), not at the next `pub `
+    /// token, so a `pub(crate)` item cannot dilute the span.
+    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect("production fn must exist");
+        let rest = &src[start + signature.len()..];
+        let end = [
+            "\n    pub ",
+            "\n    pub(crate) ",
+            "\n    pub(super) ",
+            "\n    fn ",
+            "\n    async fn ",
+            "\n    ///",
+            "\nasync fn ",
+            "\nimpl ",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
+        &src[start..end]
+    }
+
+    fn production_source() -> String {
+        let src = include_str!("engine.rs");
+        // Column-0 anchor: indented `#[cfg(test)]` attributes mark test-only
+        // methods inside the production region and must not cut it.
+        let cut = src
+            .find("\n#[cfg(test)]")
+            .expect("a column-0 test module marker must exist");
+        src[..cut].to_string()
+    }
+
+    #[test]
+    fn reserved_submit_send_is_bounded_in_production() {
+        let src = production_source();
+        let body = production_body(
+            &src,
+            "async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {",
+        );
+        assert!(
+            body.contains("bounded_reserved_submit_send(self.handle.send(op))"),
+            "the reserved submit must route through the gate-bounded send (issue #525)"
+        );
+        assert!(
+            !body.contains("self.handle.send(op).await"),
+            "no direct unbounded ops send may remain in the reserved submit path"
+        );
+    }
+
+    #[test]
+    fn reclaimed_persistence_join_is_bounded_in_production() {
+        let src = production_source();
+        let body = production_body(src.as_str(), "async fn finish_reclaimed_lifecycle_turn(");
+        let spawn_at = body
+            .find("tokio::task::spawn_blocking(")
+            .expect("the fallback persistence must run as a blocking task");
+        let join_at = body
+            .find("bounded_join_detached_on_timeout(")
+            .expect("the persistence join must be bounded (issue #525)");
+        assert!(
+            spawn_at < join_at,
+            "the blocking task must be handed to the bounded join, not awaited directly"
         );
     }
 }
