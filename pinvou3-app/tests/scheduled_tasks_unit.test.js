@@ -40,10 +40,10 @@ const bridgeSharedHelpers = fs.readFileSync(
 );
 // Test glue evaluated between the feature files and bridge.js: wrap every
 // feature factory so its exported surface is captured verbatim. The dead-code
-// cleanup removed some feature methods (interruptAndSend, ...) from the
-// assembled flat facade; the tests that exercise those paths call them through
-// the captured feature surface instead — same function objects, same closures,
-// identical behavior.
+// cleanup removed some feature methods (readScheduledTask, loadScheduledTaskRuns,
+// interruptAndSend, ...) from the assembled flat facade; the tests that exercise
+// those paths call them through the captured feature surface instead — same
+// function objects, same closures, identical behavior.
 const captureFeatureSurfaceGlue = `
 ;(function () {
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__;
@@ -932,6 +932,11 @@ function createBridgeHarness(sharedStorage, runtimeOptions) {
       interruptAndSend: function (sid, text, displayText, attachments, meta, restrictTools) {
         return featureSurface.chat.interruptAndSend(sid, text, displayText, attachments, meta, restrictTools);
       },
+    },
+    scheduled: {
+      ...rawBridge.scheduled,
+      readScheduledTask: function (id) { return featureSurface.scheduled.readScheduledTask(id); },
+      loadScheduledTaskRuns: function (id, limit) { return featureSurface.scheduled.loadScheduledTaskRuns(id, limit); },
     },
     attachments: {
       ...rawBridge.attachments,
@@ -2468,7 +2473,8 @@ async function scheduledRunUnreadBehavior() {
   await bridge.sessions.switchToSession("chat-origin");
   await bridge.scheduled.loadScheduledTasks();
   bridge.scheduled.selectScheduledTask(task.id);
-  await bridge.scheduled.refreshScheduledTaskData(20);
+  await bridge.scheduled.readScheduledTask(task.id);
+  await bridge.scheduled.loadScheduledTaskRuns(task.id, 20);
   await bridge.scheduled.loadScheduledTaskRecentRuns();
   assert.strictEqual(
     harness.calls.filter(function (call) { return call.cmd === "mark_scheduled_run_viewed"; }).length,
@@ -7053,11 +7059,8 @@ async function scheduledOwnerRegistryIsBoundedAndProtectsLive() {
       };
     });
   };
-  harness.handlers.list_scheduled_tasks = function () {
-    return [{ id: "automation-owner-history", name: "Owner history task" }];
-  };
   bridge.scheduled.selectScheduledTask("automation-owner-history");
-  await bridge.scheduled.refreshScheduledTaskData(80);
+  await bridge.scheduled.loadScheduledTaskRuns("automation-owner-history", 80);
   assert.strictEqual(bridge.state.getMany(['sessions', 'chat', 'scheduled']).activeSessionId, liveRun.sessionId);
   assert.ok(
     JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems).includes("protected owner live output"),
@@ -7283,7 +7286,8 @@ async function scheduledUnreadPollingRaceBehavior() {
   };
   await bridge.scheduled.loadScheduledTasks();
   bridge.scheduled.selectScheduledTask(task.id);
-  await bridge.scheduled.refreshScheduledTaskData(20);
+  await bridge.scheduled.readScheduledTask(task.id);
+  await bridge.scheduled.loadScheduledTaskRuns(task.id, 20);
 
   const staleTasks = deferred();
   const staleDetail = deferred();
@@ -7311,14 +7315,12 @@ async function scheduledRunNavigationBehavior() {
   const bridge = harness.bridge;
 
   assert.strictEqual(await bridge.sessions.switchToSession("chat-origin"), true);
-  harness.handlers.list_scheduled_tasks = function () {
-    return [{ id: "automation-1", name: "Nightly report" }];
-  };
   bridge.scheduled.selectScheduledTask("automation-1");
+  await bridge.scheduled.readScheduledTask("automation-1");
   harness.handlers.list_scheduled_task_runs = function () {
     return [{ id: "run-1", automationId: "automation-1", sessionId: "sched-run-1", status: "completed" }];
   };
-  await bridge.scheduled.refreshScheduledTaskData(20);
+  await bridge.scheduled.loadScheduledTaskRuns("automation-1", 20);
   assert.strictEqual(
     await bridge.scheduled.openScheduledRunChat(
       { id: "run-1", automationId: "automation-1", sessionId: "sched-run-1", status: "completed" },
@@ -7432,16 +7434,18 @@ async function scheduledSelectionGenerationBehavior() {
   };
 
   harness.bridge.scheduled.selectScheduledTask("automation-a");
-  const readA = harness.bridge.scheduled.refreshScheduledTaskData(20);
+  const readA = harness.bridge.scheduled.readScheduledTask("automation-a");
+  const loadRunsA = harness.bridge.scheduled.loadScheduledTaskRuns("automation-a", 20);
   harness.bridge.scheduled.selectScheduledTask("automation-b");
-  const readB = harness.bridge.scheduled.refreshScheduledTaskData(20);
+  const readB = harness.bridge.scheduled.readScheduledTask("automation-b");
+  const loadRunsB = harness.bridge.scheduled.loadScheduledTaskRuns("automation-b", 20);
   detailB.resolve({ id: "automation-b", name: "B detail" });
   runsB.resolve([{ id: "run-b", automationId: "automation-b" }]);
-  await readB;
+  await Promise.all([readB, loadRunsB]);
   assert.strictEqual(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTaskLoading, false, "old detail/run requests must not keep the current selection loading");
   detailA.resolve({ id: "automation-a", name: "A detail" });
   runsA.resolve([{ id: "run-a", automationId: "automation-a" }]);
-  await readA;
+  await Promise.all([readA, loadRunsA]);
   state = harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']);
   assert.strictEqual(state.selectedScheduledTaskId, "automation-b");
   assert.strictEqual(state.scheduledTaskDetail.id, "automation-b");
@@ -7469,9 +7473,7 @@ async function scheduledSelectionGenerationBehavior() {
   harness.emit("scheduled_task:run_updated", { automationId: "automation-b" });
   await new Promise(function (resolve) { setTimeout(resolve, 450); });
   await tick();
-  // 2 initial task loads + 1 task load per selection refresh (2 refreshes,
-  // via refreshScheduledTaskData) + exactly 1 debounced burst refresh.
-  assert.strictEqual(listCalls, 5, "burst run events should debounce to one global task refresh");
+  assert.strictEqual(listCalls, 3, "burst run events should debounce to one global task refresh");
   assert.strictEqual(harness.bridge.state.getMany(['sessions', 'chat', 'scheduled']).scheduledTasks[0].hasUnreadRuns, true, "the unselected task unread summary should enter global state");
   assert.strictEqual(refreshes, 1, "the selected task detail should refresh once after the event burst");
   assert.strictEqual(aggregateRefreshes, 1, "the global scheduled-run sidebar should refresh once after the event burst");

@@ -112,6 +112,15 @@ impl KnowledgeService {
         Self::open(db_path, true)
     }
 
+    /// Like [`Self::new`], but a crashed import is NOT reconciled at boot.
+    /// Read-only consumers (the headless CLI) must be able to open the store
+    /// without degrading an import a live app process is still running:
+    /// recovery flips that job to terminal state, which would wedge the
+    /// owner's bookkeeping. Write paths keep [`Self::new`].
+    pub fn new_without_recovery(db_path: &Path) -> rusqlite::Result<Self> {
+        Self::open(db_path, false)
+    }
+
     fn open(db_path: &Path, recover: bool) -> rusqlite::Result<Self> {
         let store = Store::open(db_path)?;
         let last_scan_finished_at = store.last_scan_finished_at().unwrap_or(0);
@@ -569,6 +578,33 @@ impl KnowledgeService {
     pub fn status(&self) -> ScanState {
         self.scan_state.lock().clone()
     }
+
+    // ───────────────────── headless (CLI) read entry points ─────────────────────
+    //
+    // Same semantics as the Tauri commands below (kb_stats / kb_type_counts /
+    // kb_search), but synchronous: `spawn_db` exists to move blocking queries
+    // off the Tauri **main thread** (synchronous commands run there, and a
+    // full-table COUNT on a large library freezes the UI). A headless caller
+    // (the one-shot pinvou-cli process) runs outside the async runtime / UI
+    // main thread, so querying the store directly needs no runtime dependency
+    // and must not introduce one.
+
+    /// L0 index overview (same semantics as `kb_stats`).
+    pub fn stats(&self) -> Result<Stats, String> {
+        self.store.stats().map_err(|e| e.to_string())
+    }
+
+    /// L0: per-extension counts (same semantics as `kb_type_counts`).
+    pub fn type_counts(&self) -> Result<Vec<TypeCount>, String> {
+        self.store.type_counts().map_err(|e| e.to_string())
+    }
+
+    /// Instant search (same semantics as `kb_search`, including the NL-rule
+    /// merge through `merge_nl_rules`).
+    pub fn search(&self, query: SearchQueryDto) -> Result<Vec<FileHit>, String> {
+        let sq = merge_nl_rules(query.into());
+        self.store.search(&sq).map_err(|e| e.to_string())
+    }
 }
 
 /// 后台索引入口的补载实现已上收到 `KnowledgeService::
@@ -919,5 +955,259 @@ mod tests {
             Some("再次失败"),
             "后续失败覆盖旧诊断，状态不得停留在上一次的错误上"
         );
+    }
+
+    /// Headless read contract (stats / type_counts / search): zero-state
+    /// reads, post-seed reads, search with the NL-rule merge ("上周的 pdf" →
+    /// exts + mtime filter + residual text stripping) matching kb_stats /
+    /// kb_type_counts / kb_search semantics; explicit structured filters win
+    /// over the parsed result.
+    #[test]
+    fn headless_stats_type_counts_and_search_match_gui_semantics() {
+        let svc = service();
+        assert_eq!(svc.stats().expect("zero-state stats"), Stats::default());
+        assert!(
+            svc.type_counts()
+                .expect("zero-state type counts")
+                .is_empty()
+        );
+
+        // Seed one L0 record through the same upsert path the scanner uses
+        // (no full scan involved).
+        svc.store
+            .upsert_many(&[store::FileRecord {
+                path: "/tmp/docs/季度报告.pdf".into(),
+                name: "季度报告.pdf".into(),
+                ext: Some("pdf".into()),
+                size: 2048,
+                mtime: now(),
+                is_dir: false,
+            }])
+            .expect("seed one file record");
+
+        let stats = svc.stats().expect("stats after seed");
+        assert_eq!(stats.total_files, 1);
+        assert_eq!(
+            svc.type_counts().expect("type counts after seed"),
+            vec![TypeCount {
+                ext: "pdf".into(),
+                count: 1
+            }]
+        );
+
+        // Explicit structured search: text goes through FTS/LIKE on the same
+        // store path as the GUI command.
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("季度报告".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("structured search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].ext.as_deref(), Some("pdf"));
+
+        // NL-rule merge: "上周的 pdf" → exts=[pdf] + mtime_after ≈ 7 days ago
+        // + empty residual text. Without the merge (raw FTS on "上周的 pdf")
+        // nothing would match.
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("nl-rule merged search");
+        assert_eq!(hits.len(), 1, "NL merge must hit the seeded pdf: {hits:?}");
+        assert_eq!(hits[0].name, "季度报告.pdf");
+
+        // Explicit exts win over the parsed result and are not overwritten
+        // (GUI contract).
+        let hits = svc
+            .search(SearchQueryDto {
+                text: Some("上周的 pdf".into()),
+                exts: vec!["txt".into()],
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("explicit ext wins over parsed");
+        assert!(
+            hits.is_empty(),
+            "explicit txt filter must not hit a pdf: {hits:?}"
+        );
+    }
+
+    /// Unique per-test db path (see `service()` for why the path must be
+    /// unique), returning the path so a SECOND service can be opened over
+    /// the same file — that is the whole point of these tests.
+    fn unique_db_path(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3_kb_headless_{}_{}_{}",
+            tag,
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        dir.join("index.db")
+    }
+
+    /// `new_without_recovery` is the headless open: it must NOT run
+    /// `recover_interrupted`, or a read-only CLI glance over a live store
+    /// flips a GUI import's running job to interrupted. The contrast arm
+    /// (plain `new`) must still recover.
+    #[test]
+    fn new_without_recovery_leaves_running_imports_alone() {
+        let db = unique_db_path("norecover");
+        let svc = KnowledgeService::new(&db).expect("seed service");
+        let collection = svc
+            .l1
+            .create_collection("seed 集", None, None)
+            .expect("seed collection");
+        let job = svc
+            .imports
+            .create(collection, &[std::path::PathBuf::from("/tmp")])
+            .expect("seed import job");
+        // create() lands state='preparing' — the exact in-flight shape
+        // recover_interrupted() exists to terminalize.
+        let seeded = svc.imports.state(&job).expect("seeded job state");
+        assert!(seeded.running, "seeded job must be in-flight: {seeded:?}");
+
+        let headless =
+            KnowledgeService::new_without_recovery(&db).expect("headless open over the live store");
+        let untouched = headless.imports.state(&job).expect("headless view of job");
+        assert!(
+            untouched.running && !untouched.resumable,
+            "headless open must not terminalize a live GUI import: {untouched:?}"
+        );
+
+        // Contrast: the recovering open flips it to interrupted/resumable.
+        let recovering = KnowledgeService::new(&db).expect("recovering open");
+        assert!(
+            recovering
+                .imports
+                .state(&job)
+                .expect("recovered view of job")
+                .resumable,
+            "plain open must still recover a dead process's in-flight job"
+        );
+    }
+
+    /// `document_exists` is the headless existence probe: true for an id the
+    /// store knows, false for one it does not (and for one deleted in
+    /// between).
+    #[test]
+    fn document_exists_reports_store_truth() {
+        let db = unique_db_path("docexists");
+        let svc = KnowledgeService::new(&db).expect("seed service");
+        let collection = svc
+            .l1
+            .create_collection("seed 集", None, None)
+            .expect("seed collection");
+        let doc = svc
+            .l1
+            .upsert_document(collection, "/tmp/a.pdf", "a.pdf", Some("pdf"), 10, now())
+            .expect("seed document");
+
+        assert!(
+            svc.l1.document_exists(doc).expect("probe existing doc"),
+            "seeded document must exist"
+        );
+        assert!(
+            !svc.l1.document_exists(doc + 1).expect("probe unknown doc"),
+            "unknown id must report absent, not error"
+        );
+
+        svc.l1.remove_document(doc).expect("remove document");
+        assert!(
+            !svc.l1.document_exists(doc).expect("probe removed doc"),
+            "removed document must report absent"
+        );
+    }
+
+    /// `mtime_before` upper-bound filter: inclusive at the boundary, excludes
+    /// newer files, composes with `mtime_after` into a half-open window.
+    #[test]
+    fn search_mtime_before_bounds_the_window() {
+        let db = unique_db_path("mtimebefore");
+        let svc = KnowledgeService::new(&db).expect("seed service");
+        let old_mt = now() - 10_000;
+        let new_mt = now();
+        svc.store
+            .upsert_many(&[
+                store::FileRecord {
+                    path: "/tmp/old.txt".into(),
+                    name: "old.txt".into(),
+                    ext: Some("txt".into()),
+                    size: 1,
+                    mtime: old_mt,
+                    is_dir: false,
+                },
+                store::FileRecord {
+                    path: "/tmp/new.txt".into(),
+                    name: "new.txt".into(),
+                    ext: Some("txt".into()),
+                    size: 1,
+                    mtime: new_mt,
+                    is_dir: false,
+                },
+            ])
+            .expect("seed two records");
+
+        // The bound is inclusive: at mtime_before == old_mt only the old
+        // file passes (newer file excluded) — pin that exclusion direction.
+        let old_only = svc
+            .search(SearchQueryDto {
+                mtime_before: Some(old_mt),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("before-old search");
+        assert_eq!(
+            old_only.len(),
+            1,
+            "newer file must be excluded: {old_only:?}"
+        );
+        assert_eq!(old_only[0].name, "old.txt");
+
+        // An inclusive boundary means mtime_before == new_mt still returns
+        // BOTH files (<= matches at the boundary value itself).
+        let both = svc
+            .search(SearchQueryDto {
+                mtime_before: Some(new_mt),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("inclusive-boundary search");
+        assert_eq!(
+            both.len(),
+            2,
+            "inclusive at the exact boundary value: {both:?}"
+        );
+
+        // Below the oldest mtime, nothing.
+        let none = svc
+            .search(SearchQueryDto {
+                mtime_before: Some(old_mt - 1),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("before-oldest search");
+        assert!(none.is_empty(), "below the oldest mtime: {none:?}");
+
+        // The two-sided window (after old, before new] excludes nothing here;
+        // a tighter after bound proves composition.
+        let window = svc
+            .search(SearchQueryDto {
+                mtime_after: Some(old_mt + 1),
+                mtime_before: Some(new_mt),
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("window search");
+        assert_eq!(
+            window.len(),
+            1,
+            "after+before composes into a half-open window: {window:?}"
+        );
+        assert_eq!(window[0].name, "new.txt");
     }
 }

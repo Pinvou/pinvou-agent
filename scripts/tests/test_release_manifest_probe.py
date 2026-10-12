@@ -5,6 +5,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_SCRIPTS = (
+    REPO_ROOT / "scripts" / "release-deb.sh",
     REPO_ROOT / "scripts" / "release-macos.sh",
 )
 
@@ -35,6 +36,13 @@ class CommunityReleaseContractTests(unittest.TestCase):
                 self.assertIn('< "$REPO_ROOT/VERSION"', source)
                 self.assertNotIn("V_TAURI", source)
                 self.assertNotIn("Version mismatch", source)
+
+    def test_deb_script_reads_the_architecture_off_the_built_artifact(self):
+        """dpkg's `|| echo amd64` default guessed, then failed on a name never built."""
+        source = (REPO_ROOT / "scripts" / "release-deb.sh").read_text(encoding="utf-8")
+        self.assertNotIn("dpkg --print-architecture", source)
+        self.assertIn('BUILT=("$DEB_DIR/pinvou3_${VERSION}_"*.deb)', source)
+        self.assertIn('[ "${#BUILT[@]}" -ne 1 ]', source)
 
 
 if __name__ == "__main__":

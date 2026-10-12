@@ -1525,7 +1525,32 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
     Ok(())
 }
 
-/// Disabled-scope teardown sync for a caller that already holds the
+/// Sync every scope after a bundle uninstall/disconnect: drop the id from each
+/// scope's disabled and visibility sets so no stale entry keeps pointing at a
+/// missing package. Shared entry point for connector, skill, and package
+/// teardown: the argument may be a connector id / skill id / package id and is
+/// normalized to the package id.
+///
+/// Fail-visible (round-17 minor 1): a lost removal save leaves the stale
+/// stored entry + install-default marker behind, and a same-id reinstall
+/// inherits them through the install sync's initialized-arm no-op — the
+/// mirror image of the install-sync fail-visible direction (round-13 B3), so
+/// the persist propagates instead of degrading to a log line.
+///
+/// Round-26 MAJOR 1 (review #455): writers that run **after** the package
+/// directory is gone (uninstall/rollback/companion teardown) must NOT use
+/// this normalized form — with the dir absent the fallback can be hijacked
+/// by a foreign pack's `companion_skills` claim or physical nesting, and the
+/// removal erases the foreign pack's consent rows. Those writers snapshot
+/// the owner with [`resolve_pack_owner_id`] before the deletion (or pass the
+/// pack id they already hold) and call
+/// [`remove_bundle_from_disabled_scopes_exact`].
+pub fn remove_bundle_from_disabled_scopes(raw_id: &str) -> Result<(), String> {
+    let package_id = to_package_id(raw_id);
+    remove_bundle_from_disabled_scopes_exact(&package_id)
+}
+
+/// [`remove_bundle_from_disabled_scopes`] for a caller that already holds the
 /// **package id** — no re-normalization, on **either** side (round-26 MAJOR 1,
 /// review #455). Post-teardown cleanup writers use this: the normalized
 /// load would re-own a dir-absent id onto a foreign pack's claim/nesting
@@ -2470,7 +2495,7 @@ mod tests {
                 r#"{"scopes":{"plain":["pptx"]},"default_off_scopes":{"plain":["pptx"]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
             )
             .unwrap();
-            remove_bundle_from_disabled_scopes_exact("pptx").unwrap();
+            remove_bundle_from_disabled_scopes("pptx").unwrap();
             let file = load_disabled_bundles_file();
             // Round-21 minor 2: assert BOTH halves — a mutation that cleared
             // the marker but leaked the stored entry must fail here.
@@ -2566,7 +2591,7 @@ mod tests {
         with_temp_home("pinvou3-scope", || {
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
             save_hidden_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes_exact("weather").unwrap();
+            remove_bundle_from_disabled_scopes("weather").unwrap();
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert!(load_hidden_bundles_for(ConnectorScope::Plain).is_empty());
         });
@@ -2742,7 +2767,7 @@ mod tests {
             .unwrap();
             save_hidden_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
 
-            remove_bundle_from_disabled_scopes_exact("weather").unwrap();
+            remove_bundle_from_disabled_scopes("weather").unwrap();
 
             assert!(load_disabled_bundles_for(ConnectorScope::Plain).is_empty());
             assert_eq!(
