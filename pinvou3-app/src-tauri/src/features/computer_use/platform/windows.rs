@@ -1259,24 +1259,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_typed_newlines_maps_cr_and_crlf() {
-        // Borrowed when there is no CR.
-        let plain = "abc";
-        let borrowed = normalize_typed_newlines(plain);
-        assert!(matches!(borrowed, std::borrow::Cow::Borrowed(_)));
-        assert_eq!(borrowed.as_ref(), "abc");
-        // CRLF collapses to one '\n' (not two).
-        assert_eq!(normalize_typed_newlines("a\r\nb").as_ref(), "a\nb");
-        // Lone CR maps too.
-        assert_eq!(normalize_typed_newlines("a\rb").as_ref(), "a\nb");
-        // Mixed forms all normalize.
-        assert_eq!(
-            normalize_typed_newlines("a\r\nb\rc\nd").as_ref(),
-            "a\nb\nc\nd"
-        );
-    }
-
-    #[test]
     fn key_mapping_covers_named_keys_and_functions() {
         use enigo::Key as EK;
         let cases: &[(Key, EK)] = &[

@@ -675,8 +675,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
     const TsConfigDialog = ({ config, onConfirm, onCancel, copy }) => {
+      const [values, setValues] = useState({});
       if (!config) return null;
-      const [values, setValues] = useState({}); // eslint-disable-line react-hooks/rules-of-hooks -- when config is null the component returns null before any other hook; for one instance config only goes null→object, so the hook count is stable
       const fields = config.fields || [];
       // required:false 的字段可留空；required:true 字段必须填写后才能连接。
       const canSubmit = fields.every(f => f.required === false || (values[f.key] || '').trim().length > 0);
@@ -2161,6 +2161,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
           )}
           {createPortal(<TsConfigDialog
+            // 配置对象在不同工具之间复用同一弹窗组件；用工具 id 作为 key，
+            // 关闭或切换工具时重建本地字段状态，避免把上一工具的 Key 带入安装请求。
+            key={(externalAuthAvailable && configDialog?.backendId) || 'closed'}
             config={externalAuthAvailable ? configDialog : null}
             copy={storeCopy}
             onCancel={() => setConfigDialog(null)}

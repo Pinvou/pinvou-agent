@@ -263,4 +263,15 @@ assert.match(
   'drop imports must be refused while the edit-display dialog is open',
 );
 
+// 9. TsConfigDialog 的 portal 子元素必须按 backendId 携带 key：弹窗打开时蒙层后
+// 的安装按钮仍可被键盘 Tab 聚焦（backdrop 无焦点陷阱），回车会不经过关闭直接把
+// configDialog 换成另一工具；此时无 key 的实例复用会让 values 整体随 onConfirm
+// 进入下一个工具的安装请求（API key 泄漏面；鼠标路径被全屏 backdrop 挡住）。
+// 无 key 的回归模式是整行删除，因此对 key 表达式本体做正则钉。
+assert.match(
+  toolStoreSource,
+  /key=\{\(externalAuthAvailable && configDialog\?\.backendId\) \|\| 'closed'\}/,
+  'the config dialog portal child must stay keyed by backendId so typed values never survive a tool switch',
+);
+
 console.log('tool store edit-display contract tests passed');

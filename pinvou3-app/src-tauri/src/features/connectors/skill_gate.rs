@@ -318,17 +318,15 @@ mod tests {
     /// failure copy carries the ONE shared frontend marker
     /// (`scope::CONSENT_SYNC_FAILURE_MARKER`) — the localized template on the
     /// store cards keys on exactly this string, so a rewording here must move
-    /// the frontend matcher in the same commit.
+    /// the frontend matcher in the same commit. The literal is asserted (not
+    /// reformatted and re-matched) so a marker rename fails here instead of
+    /// silently degrading the frontend guidance to generic copy.
     #[test]
     fn skill_gate_consent_failure_message_keeps_the_frontend_marker() {
-        let message = format!(
-            "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: store down",
-            "wecom",
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-        );
-        assert!(
-            message.contains(crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER),
-            "the shipped message must carry the frontend-matched marker: {message}"
+        assert_eq!(
+            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
+            "persisting their default-off consent state failed",
+            "the shipped marker is the string the frontend consentFailure matcher keys on"
         );
     }
 

@@ -285,21 +285,4 @@ mod tests {
             ]
         );
     }
-
-    #[test]
-    #[ignore = "live probe: needs Screen Recording TCC grant on a real desktop"]
-    fn live_capture_region_returns_matching_pixel_buffer() {
-        if !available() {
-            return;
-        }
-        let shot = capture_region(0, 0, 800, 600).expect("live ScreenCaptureKit capture");
-        assert!(shot.width > 0 && shot.height > 0);
-        assert_eq!(shot.rgba.len(), shot.width * shot.height * 4);
-        // A real desktop is never pure black (menu bar/wallpaper/windows: at least one
-        // nonzero pixel).
-        assert!(
-            shot.rgba.chunks_exact(4).any(|px| px[..3] != [0, 0, 0]),
-            "capture is entirely black"
-        );
-    }
 }

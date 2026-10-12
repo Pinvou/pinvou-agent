@@ -62,8 +62,9 @@ npm --prefix pinvou3-app run runtime:windows:init
 
 `CodeWhale` 当前没有嵌套 submodule，因此不需要 `--recursive`。`runtime:windows:init` 会比较主仓库 gitlink 与本地 runtime
 commit；一致且工作树中不存在 LFS pointer 时，跳过 submodule update 和 `git lfs pull`。脚本输出的
-`PINVOU3_WINDOWS_RUNTIME_CACHE_KEY=pinvou3-windows-runtime-<commit>` 可作为 Jenkins 缓存键，缓存 runtime checkout、
-Git LFS objects 和 `pinvou3-app/src-tauri/target/windows-runtime`。
+`PINVOU3_WINDOWS_RUNTIME_CACHE_KEY=pinvou3-windows-runtime-v5-<commit>-<lock-sha-prefix>` 可作为 Jenkins 缓存键，缓存
+runtime checkout、Git LFS objects 和 `pinvou3-app/src-tauri/target/windows-runtime`；lock 文件内容变化时缓存键随之
+变化，不会复用旧缓存，lock 文件缺失时脚本直接失败（不输出缓存键）。
 
 Jenkins 的 `CheckoutSubmodule` 阶段只负责准备 submodule，不再单独执行 `runtime:windows:validate`。后续直接运行
 `npm --prefix pinvou3-app run build:nsis`：统一的 `build.js` 入口只执行一次 runtime 校验和 staging，读取
@@ -76,8 +77,11 @@ npm --prefix pinvou3-app run runtime:windows:cache-key
 ```
 
 建议缓存 `.git/modules/private-runtimes/windows/lfs/objects` 与 `pinvou3-app/src-tauri/target/windows-runtime`；前者避免重复下载
-LFS 对象，后者复用已验证、已展开的安装资源。每次构建都会按 runtime manifest 重新核对源文件 SHA-256；复用 staging 前还会按
-`.verified-stage.json` 对全部会进入构建链路的展开文件重新核对路径、大小和 SHA-256，缓存内容发生缺失或修改时自动回退到原子 staging。
+LFS 对象，后者复用已验证、已展开的安装资源。完整源校验通过后会在 `target/windows-runtime/.verified-lock` 记录源校验元数据缓存：
+Stage 模式命中时只复核源文件大小，Validate 模式仍逐文件重新核对 SHA-256；复用 staging 前还会按 `.verified-stage.json` 对全部
+会进入构建链路的展开文件重新核对路径、大小和 SHA-256，缓存内容发生缺失或修改时自动回退到原子 staging，重建前会对源文件重新
+执行完整校验。同一 `target/windows-runtime` 目录上的并发初始化与 staging 调用通过 `.resolver.lock` 串行化；等待方最多
+阻塞 120 秒，超时即失败退出，稍后重试即可（元数据缓存与 staging 复用让重试代价很低）。
 
 主仓库 checkout 的 refspec、tag 获取和 shallow clone 由 Jenkins SCM 插件控制，不在仓库脚本内。发布 Job 应启用
 `Honor refspec on initial clone`、`No tags`，并把 refspec 限制为实际构建分支或 MR ref；不要在每次构建中抓取全部分支和 tag。

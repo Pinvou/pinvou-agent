@@ -4,7 +4,7 @@ import { Check, Filter, PinIcon, X } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
 import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { RecentItem } from '../../components/layout/NavigationComponents.jsx';
-import { ArchivedDeleteConfirmDialog } from '../sessions/ArchiveConfirmDialog.jsx';
+import { ArchivedDeleteConfirmDialog } from '../../components/ArchiveConfirmDialog.jsx';
 import { SessionAttachmentTitle } from '../attachments/SessionAttachmentTitle.jsx';
 import {
   sessionTitlePlainText,

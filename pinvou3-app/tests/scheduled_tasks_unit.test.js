@@ -18,7 +18,8 @@ const indexHtml = [
   'components/layout/NavigationComponents.jsx',
   'features/chat/ChatView.jsx',
   'features/scheduled/ScheduledTasksView.jsx',
-  'features/conversation/ConversationTimeline.jsx' // second-level countdown tick has been consolidated into useConversationSecondClock
+  'features/conversation/ConversationTimeline.jsx',
+  'hooks/useConversationSecondClock.js' // second-level countdown tick has been consolidated into useConversationSecondClock
 ].map(file => fs.readFileSync(path.join(__dirname, '..', 'src', file), 'utf8')).join('\n');
 // Derived from the bridge feature directory so a new feature file cannot be
 // forgotten here again (a missing entry makes bridge.js throw

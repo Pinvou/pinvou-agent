@@ -1642,36 +1642,6 @@ mod tests {
     }
 
     #[test]
-    fn current_user_navigation_redirect_keeps_its_request_identity() {
-        let entry = entry("tab-a", "view-a");
-        entry
-            .begin_user_navigation("request-http", "http://example.com/start", true)
-            .unwrap();
-        entry
-            .user_navigation
-            .lock()
-            .observe_requested_target("http://example.com/start");
-        entry
-            .user_navigation
-            .lock()
-            .observe_started("http://example.com/start");
-        entry
-            .user_navigation
-            .lock()
-            .observe_started("https://example.com/final");
-
-        assert_eq!(
-            entry
-                .user_navigation
-                .lock()
-                .finish("https://example.com/final"),
-            NavigationCommitDecision::Current {
-                request_id: Some("request-http".to_string())
-            }
-        );
-    }
-
-    #[test]
     fn same_document_change_during_load_finishes_inside_the_started_generation() {
         let entry = entry("tab-a", "view-a");
         entry

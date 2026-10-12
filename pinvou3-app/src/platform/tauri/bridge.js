@@ -2637,7 +2637,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       stopRemoteControl,
       refreshRemoteControlQr,
       getWebRelaySettings: remoteControlFeature.getWebRelaySettings,
-      setWebRelayAddress: remoteControlFeature.setWebRelayAddress,
     },
     artifacts: {
       artifactInfo,

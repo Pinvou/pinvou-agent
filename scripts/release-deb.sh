@@ -34,6 +34,9 @@ ARCH="$(basename "$SOURCE" .deb)"
 ARCH="${ARCH#pinvou3_"${VERSION}"_}"
 ASSET="$DEB_DIR/pinvou-agent_${VERSION}_linux-${ARCH}-community.deb"
 
+# Same maximum-compression repack as release-packages.yml (data.tar gzip-6 → xz -9).
+"$REPO_ROOT/scripts/repack-deb-xz.sh" "$SOURCE"
+
 cp "$SOURCE" "$ASSET"
 sha256sum "$ASSET" > "$ASSET.sha256"
 gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber

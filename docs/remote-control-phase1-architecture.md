@@ -86,12 +86,11 @@ Web 构建以 `/pinvou3/remote/` 为默认 base path。Relay 对 HTML 禁止缓�
 前退出时，下次启动继续重放；只有收到 `desktop_endpoint_revoked`、明确的
 `endpoint_not_found` 或 endpoint 已被替换的终态后才清除记录。
 
-Relay 地址可在桌面「WebUI 访问」面板中自定义：填域名或 IP（无 TLS 的环境显式写
-`ws://` 前缀，不做静默降级），后端规范化为 WebSocket 地址 + 页面基址一对并保存在
-`~/.pinvou3/web-relay.json`。已启用时保存即触发凭据刷新——旧 endpoint 的撤销意图
-仍指向旧 relay，新凭据注册到新 relay。非默认 relay 的分享链接自动携带 `&relay=`
+Relay 地址没有应用内设置入口：变更只能通过 `PINVOU_REMOTE_RELAY_WS_URL` /
+`PINVOU_REMOTE_PUBLIC_URL` 环境变量，或手工编辑 `~/.pinvou3/web-relay.json`
+（与内置默认相同的 ws/http 地址对校验）。非默认 relay 的分享链接自动携带 `&relay=`
 参数，浏览器端优先使用该地址建连。生效优先级：运行时 env 覆盖 > `PINVOU_REMOTE_*`
-env > 用户设置 > 内置默认。
+env > `web-relay.json` > 内置默认。
 
 用户粘贴的链接形如：
 

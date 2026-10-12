@@ -126,3 +126,23 @@ unwrap_used = "warn"
 expect_used = "warn"
 unwrap_in_result = "warn"
 exit = "warn"
+
+# =============================================================================
+# Release optimization profile — the standalone pinvou-knowledge-server ELF
+# shipped inside the Linux deb
+# =============================================================================
+# This binary is built separately by pinvou3-app/scripts/tauri/knowledge-host.js
+# via `cargo build --manifest-path pinvou-knowledge/Cargo.toml --release`
+# (its own target dir, outside the src-tauri workspace); it previously used
+# cargo's default release profile: no LTO, symbol table fully kept. This
+# aligns it with the main app's release size policy: thin LTO for cross-crate
+# inlining plus link-time symbol stripping. When compiled as a src-tauri
+# dependency this section is ignored by Cargo (profiles come from the
+# top-level build workspace), so the main app artifacts are unaffected.
+# debug is not declared: the cargo release default is already false. ICF/lld
+# are injected by the CI job's RUSTFLAGS (-fuse-ld=lld + -Wl,--icf=safe);
+# this file deliberately hardcodes no linker.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

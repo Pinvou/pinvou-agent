@@ -5,7 +5,7 @@ import { bridge, useBridgeState } from '../../hooks/useBridge.js';
 import { formatLocalDateTime } from '../../shared/date-utils.js';
 import { visibleUserModels } from '../../shared/model-options.js';
 import { selectorMainLabel } from '../settings/model-catalog.js';
-import { useConversationSecondClock } from '../conversation/ConversationTimeline.jsx';
+import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import { can } from '../../shared/platform.js';
 import dailyBriefImage from '../../assets/scheduled/daily-brief.jpg';
 import followUpMonitorImage from '../../assets/scheduled/follow-up-monitor.jpg';

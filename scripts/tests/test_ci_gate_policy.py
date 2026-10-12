@@ -619,7 +619,7 @@ class CiGatePolicyTests(unittest.TestCase):
         rust_lint = self.pr_workflow.split(
             "\n  rust-lint:", maxsplit=1
         )[1].split("\n  rust-test:", maxsplit=1)[0]
-        self.assertIn("timeout-minutes: 30", rust_lint)
+        self.assertIn("timeout-minutes: 60", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
@@ -1604,8 +1604,9 @@ class CiGatePolicyTests(unittest.TestCase):
         #   ld linking,
         # - the probe emitting a step output instead of GITHUB_ENV, so
         #   nothing downstream inherits the probed linker by default,
-        # - the strip workaround writing a plain RUSTFLAGS (a composition
-        #   would re-propagate the probe's flags onto the release legs),
+        # - no global RUSTFLAGS write: the obsolete strip workaround is
+        #   removed with the pinned toolchain fix, and a global write could
+        #   re-propagate the probe's flags onto the release legs,
         # - the probe staying before the cache step, so a toolchain without
         #   a usable lld fails in seconds ahead of any cache restore or
         #   build work (cargo fingerprints inside target/, not the cache
@@ -1657,15 +1658,13 @@ class CiGatePolicyTests(unittest.TestCase):
             macos_job.index("uses: Swatinem/rust-cache@v2"),
         )
 
-        # The strip workaround must not re-propagate the probed flags onto
-        # the release legs below it: a plain write only.
-        strip_step = macos_job.split(
-            "- name: macOS 27+ strip workaround", maxsplit=1
-        )[1].split("\n      - name:", maxsplit=1)[0]
-        self.assertIn(
-            'echo "RUSTFLAGS=-C strip=none" >> "$GITHUB_ENV"', strip_step
-        )
-        self.assertNotIn("${RUSTFLAGS:+", strip_step)
+        # Release builds use the profile's strip policy now that the pinned
+        # toolchain includes the Mach-O fix. No step may export RUSTFLAGS
+        # globally and accidentally carry the dev linker into those builds.
+        self.assertNotIn("- name: macOS 27+ strip workaround", macos_job)
+        for line in _without_yaml_comments(macos_job).splitlines():
+            if "GITHUB_ENV" in line:
+                self.assertNotIn("RUSTFLAGS", line)
 
         # The push-only release legs carry no linker env of their own.
         for step_name in (

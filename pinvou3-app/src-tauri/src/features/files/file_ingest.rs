@@ -1281,7 +1281,7 @@ mod multi_type_dispatch_e2e {
     //
     // 每种类型用唯一标记字符串,断言它出现在 ingest 结果里(text/markdown 正文、
     // pdf 的 markdown、docx 的 pandoc markdown、xlsx 的 calamine 表格、png 的
-    // image data-URI kind)。工具缺失时跳过(不 FAIL),与 visual_preview_smoke 同策略。
+    // image data-URI kind)。工具缺失时跳过(不 FAIL)。
     // 这是评审要求的「真实文件类型不被丢失」等价证据 —— 不经过浏览器,直接证明
     // ingest 分派层对真实扩展名生效(small.txt 全链路经 pinvou3-app 的 WebUI v2
     // smoke 上传场景覆盖 → "已就绪")。

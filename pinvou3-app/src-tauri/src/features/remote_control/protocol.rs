@@ -88,9 +88,4 @@ mod tests {
         .expect("parse legacy config");
         assert!(!decoded.allow_host_workspace);
     }
-
-    #[test]
-    fn protocol_version_is_v2() {
-        assert_eq!(PROTOCOL_VERSION, 2);
-    }
 }

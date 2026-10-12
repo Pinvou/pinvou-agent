@@ -144,10 +144,6 @@ for (const command of [
   'install_marketplace_tool',
   'uninstall_marketplace_skill',
   'uninstall_marketplace_tool',
-  'install_marketplace_skill',
-  'install_marketplace_tool',
-  'uninstall_marketplace_skill',
-  'uninstall_marketplace_tool',
   'codex_acp_prompt',
   'get_codex_acp_timeline',
   'get_codex_acp_session_info',
@@ -624,7 +620,6 @@ assert.match(attachmentDropController, /setActive\(false\)/);
 assert.match(bootstrap, /sendReady\(false\)/);
 assert.match(bootstrap, /state_ready: stateReady/);
 assert.match(bootstrap, /markStateReady\(\)/);
-assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 assert.match(bootstrap, /if \(!this\.frontendReady \|\| !this\.stateReady\)/);
 const main = readSource(path.join(root, 'src', 'app', 'main.jsx'), 'utf8');
 // The desktop-only saveSearchSettingsAndRestart wrapper (and its

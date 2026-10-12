@@ -1072,7 +1072,6 @@ mod tests {
             .expect("bind");
 
         // Baseline: a live record probes alive, a removed record probes dead.
-        assert!(store.workspace_binding_owner_exists(&session.metadata.id) || true);
         let owner_file = store
             .manager
             .sessions_dir()

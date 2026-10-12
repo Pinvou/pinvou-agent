@@ -31,13 +31,14 @@ pub use persistence::RelaySettingsInfo;
 
 // Persistent config / RPC ledger / pending revocation / relay settings helpers
 // are pure and stateless; the facade calls them by name.
+#[cfg(test)]
+use persistence::atomic_write_private_json;
 use persistence::{
     acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
-    atomic_write_private_json, eligible_pending_revocations, fresh_config, load_config,
-    load_or_initialize_rpc_ledger, load_pending_revocations, load_relay_settings, new_stream_epoch,
-    normalize_relay_address, pairing_info, pending_revocation_key, persist_config,
-    persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
-    relay_settings_path, remote_public_base_url, remote_relay_ws_url, remove_config,
+    eligible_pending_revocations, fresh_config, load_config, load_or_initialize_rpc_ledger,
+    load_pending_revocations, load_relay_settings, new_stream_epoch, pairing_info,
+    pending_revocation_key, persist_config, persist_rpc_ledger, process_lock_path, public_url,
+    queue_pending_revocation, remote_public_base_url, remote_relay_ws_url, remove_config,
     remove_rpc_ledger, validate_config,
 };
 
@@ -113,15 +114,28 @@ fn validate_multi_agent_session_web_scope(
     command: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    // Documented exception (round-34 minor 7): the three aux commands are
-    // NOT in the denylist even when the MAIN session runs multi-agent — an
-    // aux conversation on a multi-agent main stays fully usable over the
-    // relay. Intended: the aux engine is the isolated pure-Q&A config
-    // (zero tools, no subagents — the denylist's threat model never
-    // applies to it), the desktop offers the same entry, and blocking it
-    // would break the side chat for exactly the heaviest users. The
-    // denylist's "web is read-only" promise is scoped to the multi-agent
-    // EXECUTION surface, not to its side chat.
+    // Documented exception (round-34 minor 7; comment reworded per the
+    // round-37 review — that reword (commit ef48f0701) was dropped by a
+    // branch rewrite before it could merge, never reaching main in any
+    // form, and is restored here re-keyed on the mechanism, ADR-0024): the
+    // early return keys on the SESSION ARGUMENT being aux-shaped — an
+    // `aux-` id bypasses this denylist scope check for ANY command. That
+    // is exactly what keeps an aux conversation fully usable over the
+    // relay while its MAIN session runs multi-agent. The aux-id carriers
+    // through this validator today are the WebUI aux send (`web_access_chat`,
+    // denylist entry #11) and the aux panel's hydration reads
+    // (`web_access_load_session_chunk`, `get_session_timeline`, the
+    // persona/reviews/scene sidecar reads, `web_access_cancel_session_download`);
+    // the three aux management commands carry the PARENT id (the aux id is
+    // minted server-side and never sent back). The invariant to preserve is
+    // "aux ids are never subject to the multi-agent web execution denylist",
+    // because the aux engine is the isolated pure-Q&A config (at most one
+    // scoped read-only context tool, never an execution surface, no
+    // subagents — the denylist's threat model never applies to it), the
+    // desktop offers the same entry, and blocking it would break the side
+    // chat for exactly the heaviest users. The denylist's "web is read-only"
+    // promise is scoped to the multi-agent EXECUTION surface, not to its
+    // side chat.
     if crate::features::sessions::is_aux_session_id(session_id) {
         return Ok(());
     }
@@ -902,23 +916,10 @@ impl RemoteControlManager {
         }
     }
 
-    /// 设置自定义 Relay 地址（域名/IP，见 `normalize_relay_address`）。
-    /// 已有 endpoint 时走完整 refresh：旧 endpoint 的撤销意图先落盘（指向旧
-    /// relay），新凭据注册到新 relay，分享链接与二维码随之更新。
     /// 注入原生代码会话判定闭包；之后带代码会话 id 的事件不再转发到远程 WebUI。
     /// （含已 manage 进 Tauri 的那份）都能读到。
     pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
         self.inner.lock().code_session_predicate = Some(predicate);
-    }
-
-    pub fn set_relay_address(&self, input: &str) -> Result<RelaySettingsInfo, String> {
-        let settings = normalize_relay_address(input)?;
-        atomic_write_private_json(&relay_settings_path(), &settings, "Web relay settings")?;
-        let has_endpoint = self.inner.lock().endpoint.is_some();
-        if has_endpoint || load_config()?.is_some() {
-            self.refresh()?;
-        }
-        Ok(self.relay_settings())
     }
 
     pub fn stop_current(&self) -> Result<(), String> {
@@ -3223,78 +3224,6 @@ mod tests {
             !staging.exists(),
             "turn cleanup must delete a browser-discarded attachment"
         );
-    }
-
-    #[test]
-    fn normalize_relay_address_accepts_bare_domain_as_tls() {
-        let settings = normalize_relay_address("relay.example.com").expect("bare domain");
-        assert_eq!(
-            settings.relay_url,
-            "wss://relay.example.com/pinvou3/remote/ws"
-        );
-        assert_eq!(
-            settings.public_base_url,
-            "https://relay.example.com/pinvou3/remote"
-        );
-    }
-
-    #[test]
-    fn normalize_relay_address_accepts_ip_with_port_and_explicit_ws() {
-        let settings = normalize_relay_address("ws://192.168.1.20:8080").expect("plain ip");
-        assert_eq!(
-            settings.relay_url,
-            "ws://192.168.1.20:8080/pinvou3/remote/ws"
-        );
-        assert_eq!(
-            settings.public_base_url,
-            "http://192.168.1.20:8080/pinvou3/remote"
-        );
-    }
-
-    #[test]
-    fn normalize_relay_address_bare_ip_defaults_to_tls_without_downgrade() {
-        let settings = normalize_relay_address("203.0.113.7").expect("bare ip");
-        assert_eq!(settings.relay_url, "wss://203.0.113.7/pinvou3/remote/ws");
-    }
-
-    #[test]
-    fn normalize_relay_address_roundtrips_pasted_full_ws_url() {
-        let settings = normalize_relay_address("wss://relay.example.com/pinvou3/remote/ws")
-            .expect("full ws url");
-        assert_eq!(
-            settings.relay_url,
-            "wss://relay.example.com/pinvou3/remote/ws"
-        );
-        assert_eq!(
-            settings.public_base_url,
-            "https://relay.example.com/pinvou3/remote"
-        );
-    }
-
-    #[test]
-    fn normalize_relay_address_respects_custom_path_and_trailing_slash() {
-        let settings = normalize_relay_address("https://cdn.example.com/proxy/").expect("custom");
-        assert_eq!(settings.relay_url, "wss://cdn.example.com/proxy/ws");
-        assert_eq!(settings.public_base_url, "https://cdn.example.com/proxy");
-    }
-
-    #[test]
-    fn normalize_relay_address_rejects_garbage() {
-        for input in [
-            "",
-            "   ",
-            "ftp://x.example.com",
-            "wss://",
-            "https://user:pw@host/x",
-            "host/path?query=1",
-            "host/#frag",
-            "has space.example.com",
-        ] {
-            assert!(
-                normalize_relay_address(input).is_err(),
-                "should reject {input:?}"
-            );
-        }
     }
 
     fn record_stream_event(stream: &mut StreamState, event: &str, payload: Value) {

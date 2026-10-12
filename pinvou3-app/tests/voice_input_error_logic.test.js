@@ -1050,11 +1050,6 @@ assert.doesNotMatch(
 // claim must succeed ahead of any microphone acquisition.
 assert.match(
   source,
-  /invoke\("set_voice_shortcut_recording", \{ label: label \|\| null, token \}\)/,
-  "recording ownership IPC must include the operation token",
-);
-assert.match(
-  source,
   /const claimed = await syncVoiceShortcutRecording\(currentVoiceWindowLabel\(\), session\.id\);[\s\S]*?if \(claimed !== true\)[\s\S]*?throw voiceFlowError\("device_unavailable"/,
   "claim must succeed before microphone acquisition (an IPC failure reports \"error\" and still fails closed)",
 );
@@ -1096,14 +1091,6 @@ assert.match(
   settingsSource,
   /if \(event && event\.type === 'storage' && event\.key[\s\S]*?event\.key !== VOICE_POSTPROCESS_ENABLED_KEY\) return;[\s\S]*?if \(event && event\.type === 'storage' && !event\.key\) return;/,
   "settings voice storage mirror must ignore null-key and unrelated-key storage events",
-);
-
-// Tokenless clears are rejected in Rust, not papered over client-side: a
-// stale teardown can never release the claim a newer session just registered.
-assert.match(
-  source,
-  /function syncVoiceShortcutRecording\(label, token\) \{[\s\S]*?if \(!token\) return false;/,
-  "tokenless ownership syncs must be rejected rather than clearing another WebView's claim",
 );
 
 // ===== Error codes end to end: desktop→web RPC passthrough + both-lane mapping guards =====

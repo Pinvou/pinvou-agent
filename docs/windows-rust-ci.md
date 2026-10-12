@@ -7,9 +7,9 @@ gate also has `windows-codex-runtime-test`, which is out of scope here). It is
 a two-leg matrix on `windows-latest` (`fail-fast: false`, `max-parallel: 2`);
 the required gate aggregates the matrix result, so both legs must pass:
 
-- `all-targets-check` runs the metadata-only checks (steps 6-7 below).
+- `all-targets-check` runs the metadata-only checks (steps 7-8 below).
 - `regression` links the `pinvou3_lib` test executable and runs everything
-  that needs it (steps 8-12 below).
+  that needs it (steps 9-13 below).
 
 Routing is job level and identical for both legs. The job runs on every push
 to `main` (cumulative Windows coverage plus cache warm-up) and on ready,
@@ -29,7 +29,7 @@ on the app crate; only `pet` is exempt from both filters.
 
 ## What the job runs
 
-The job shell is `bash`; four steps opt into `pwsh`. Steps 1-5 and the
+The job shell is `bash`; five steps opt into `pwsh`. Steps 1-6 and the
 cache restore run on both legs; the leg of every later step is noted. In
 order:
 
@@ -41,39 +41,45 @@ order:
    `RUSTC_WRAPPER`: compile-time-only `RUST_MIN_STACK=16MiB`; the `.exe` form
    avoids the cmd.exe 8191-character command-line limit.
    `AWS_LC_SYS_PREBUILT_NASM=1` substitutes for the NASM the runner lacks.
-4. (`both legs`) `Probe and export the Windows lld link flags`: compile a
+4. (`both legs`) `dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)`: append
+   `[profile.dev.package.codewhale-tui] opt-level = 0` to
+   `CARGO_HOME/config.toml` before anything compiles — a package-level
+   profile override can only come from config, and the repo `Cargo.toml`
+   stays untouched (see "Link memory on the hosted runner" for why both
+   legs need this crate back at O0).
+5. (`both legs`) `Probe and export the Windows lld link flags`: compile a
    hello-world with `-C linker-features=+lld` (falling back to the explicit
    `-C linker=rust-lld -C linker-flavor=lld-link` pair) and export the
    working flags as `RUSTFLAGS` via `GITHUB_ENV`, so an unsupported flag
    fails in seconds instead of hours into the cold build. See the
    "Link memory on the hosted runner" section for why lld is required.
-5. (`both legs`) `Windows Rust cache baseline diagnostics`: print the
+6. (`both legs`) `Windows Rust cache baseline diagnostics`: print the
    `WINDOWS_RUST_CACHE` marker (target presence plus fingerprint and
    direct dependency-artifact counts, no recursive scan) so cold-cache
    regressions are visible per leg without leaking cache contents.
-6. (`all-targets-check`) `cargo check --manifest-path
+7. (`all-targets-check`) `cargo check --manifest-path
    pinvou3-app/src-tauri/Cargo.toml --all-targets --features dev-tools`.
-7. (`all-targets-check`) `cargo check --manifest-path pinvou-cli/Cargo.toml --workspace
+8. (`all-targets-check`) `cargo check --manifest-path pinvou-cli/Cargo.toml --workspace
    --all-targets --locked`: the CLI's Windows-only branches (exe/cmd
    candidates, `cmd /D /S /C` shims, taskkill tree kill, `CREATE_NO_WINDOW`)
    compile-check only on a Windows runner.
-8. (`regression`) Link check: `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
+9. (`regression`) Link check: `cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml
    --lib --no-run --message-format=json`, capturing the `pinvou3_lib` test
    executable as `PINVOU3_TEST_EXE`.
-9. (`regression`) Embed the Common-Controls v6 manifest (resource `#1`) with the Windows SDK
+10. (`regression`) Embed the Common-Controls v6 manifest (resource `#1`) with the Windows SDK
    `mt.exe`: `muda` statically imports `TaskDialogIndirect`, which exists only
    in the Common-Controls v6 side-by-side assembly, and Windows ignores a
    side-by-side `<exe>.manifest` once `link.exe` embedded a default one.
-10. (`regression`) Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
+11. (`regression`) Run `python scripts/ci-windows-imports-diagnose.py` on `PINVOU3_TEST_EXE`
    — a non-blocking PE import-table diagnostic (`continue-on-error`), after
-   step 9 so the embedded manifest exempts SxS DLLs such as `comctl32`.
-11. (`regression`) Run the CodeWhale PowerShell regression filters
+   step 10 so the embedded manifest exempts SxS DLLs such as `comctl32`.
+12. (`regression`) Run the CodeWhale PowerShell regression filters
    (`forkguard_powershell` and `forkguard_windows_shell_text`) from the
    dependency crate itself. The parent application jobs do not execute a
    dependency crate's lib tests. The step unsets `SHELL` so the Windows
    fallback to `pwsh.exe` is deterministic, and each filter must match at
    least one test so a rename cannot silently pass.
-12. (`regression`) Regression loop: run the patched application binary directly — re-invoking
+13. (`regression`) Regression loop: run the patched application binary directly — re-invoking
    `cargo test` could relink and drop the embedded manifest — once per filter
    with `--test-threads=1`; each filter must match at least one test
    (`running [1-9][0-9]* tests?`) so a renamed test fails loudly:
@@ -154,8 +160,25 @@ because no bitcode reaches the linker — it stays only pending a separately
 evaluated removal). Growing the hosted runner's pagefile is not an option: a
 pagefile change requires a reboot a CI job cannot perform,
 so peak link memory is cut below RAM instead. The linker-selection flags are
-probed per toolchain by step 4, since the stable surface for picking lld has
+probed per toolchain by step 5, since the stable surface for picking lld has
 moved between releases.
+
+Peak memory is also cut before the link: both `rust-test` legs pin
+`codewhale-tui` back to dev-default opt-level 0 by appending a
+`[profile.dev.package.codewhale-tui]` section to `CARGO_HOME/config.toml`
+(a package-level profile override can only come from config — cargo has no
+environment-variable equivalent — and the repo's `Cargo.toml` is left
+untouched, so local builds and release artifacts are unaffected). The
+v0.9.12 base restored dependency-level O2 and the 16 GB hosted runners
+went out-of-memory: on the windows leg rustc/LLVM died compiling that
+crate itself, while on the linux leg the crate's O2-sized LLVM IR pushed
+the final-crate thin-LTO compile (the `pinvou3-tauri` lib test) over the
+memory watchdog; on the windows leg, converging codegen-units instead
+stretched that crate's compile time far beyond its earlier timings
+(measured), so the O0 override is that leg's mitigation.
+The linux leg complements it with `CARGO_PROFILE_DEV_CODEGEN_UNITS=16`
+(the dev default of 256 codegen units expands the large test harness into
+too many ThinLTO inputs and amplifies the link peak).
 
 ## Duration, timeout, and failure diagnosis
 
@@ -186,8 +209,8 @@ together with the link-memory recipe above, with headroom for one fully cold
 toolchain rollover per channel bump; the cap
 applies per leg, since either leg can still compile cold on a cache miss.
 
-On failure, read the import-diagnostic output (step 10) and the failing filter
-name (steps 11-12); cache restore misses stay visible rollback signals. Do not
+On failure, read the import-diagnostic output (step 11) and the failing filter
+name (steps 12-13); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, moving a step to the other leg
 without its prerequisites, skipping the manifest or import contract, changing
 failures to warnings, or adding another independent large target cache beyond

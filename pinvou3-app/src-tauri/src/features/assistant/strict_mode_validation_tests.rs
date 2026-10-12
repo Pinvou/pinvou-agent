@@ -97,10 +97,6 @@ fn validate_terminal_outcome(summary: &TurnSummary, strict: bool) -> Result<(), 
     }
 }
 
-fn is_authoritative_turn_complete(event: &Event) -> bool {
-    matches!(event, Event::TurnComplete { .. })
-}
-
 #[test]
 fn strict_mode_rejects_runtime_engine_error() {
     let timeline = vec![(
@@ -143,24 +139,4 @@ fn strict_mode_rejects_failed_turn_without_error_event() {
     );
     assert!(validate_terminal_outcome(&summary, true).is_err());
     assert!(validate_terminal_outcome(&summary, false).is_ok());
-}
-
-#[test]
-fn strict_mode_waits_for_turn_complete_after_error() {
-    use deepseek_tui::models::Usage;
-
-    let error = Event::error(ErrorEnvelope::classify(
-        "temporary stream error".to_string(),
-        true,
-    ));
-    let complete = Event::TurnComplete {
-        usage: Usage::default(),
-        status: TurnOutcomeStatus::Failed,
-        error: Some("stream recovery failed".to_string()),
-        tool_catalog: None,
-        base_url: None,
-    };
-
-    assert!(!is_authoritative_turn_complete(&error));
-    assert!(is_authoritative_turn_complete(&complete));
 }

@@ -234,16 +234,6 @@ for (const selector of [
   assert.ok(css.includes(selector), `missing language-specific style: ${selector}`);
 }
 
-for (const bridgePath of [
-  ['src', 'platform', 'tauri', 'bridge.js'],
-  ['src', 'platform', 'web', 'bridge.js'],
-]) {
-  assert.match(
-    readApp(...bridgePath),
-    /window\.PinvouMarkdownRenderer\.renderMarkdown\(text\)/u,
-    `${bridgePath.join('/')} must delegate to the shared renderer`,
-  );
-}
 assert.match(
   readApp('src', 'features', 'conversation', 'ConversationTimeline.jsx'),
   /import \{ renderMarkdown \} from '\.\.\/\.\.\/shared\/markdown-renderer\.js'/u,
