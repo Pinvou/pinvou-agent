@@ -43,12 +43,16 @@ function makeVmRoot() {
     console,
   });
   vm.runInContext(
-    fs.readFileSync(path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
+    readNormalized('src', 'shared', 'bridge-shared-helpers.js'),
     context,
     { filename: 'src/shared/bridge-shared-helpers.js' },
   );
   return root;
 }
+
+// Windows-CRLF portability (round-20 zhuowp): normalize source reads so
+// loader markers and brace matching behave identically on CRLF checkouts.
+const readNormalized = (...segments) => fs.readFileSync(path.join(appRoot, ...segments), 'utf8').replace(/\r\n/g, '\n');
 
 function loadChatFeature(root) {
   const context = vm.createContext({
@@ -59,12 +63,12 @@ function loadChatFeature(root) {
     console,
   });
   vm.runInContext(
-    fs.readFileSync(path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
+    readNormalized('src', 'shared', 'bridge-shared-helpers.js'),
     context,
     { filename: 'src/shared/bridge-shared-helpers.js' },
   );
   vm.runInContext(
-    fs.readFileSync(path.join(appRoot, 'src', 'platform', 'tauri', 'bridge', 'chat.js'), 'utf8'),
+    readNormalized('src', 'platform', 'tauri', 'bridge', 'chat.js'),
     context,
     { filename: 'src/platform/tauri/bridge/chat.js' },
   );

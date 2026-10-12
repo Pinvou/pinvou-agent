@@ -24,6 +24,12 @@ import {
   recordDraftMaterialization,
 } from '../src/features/chat/session-mention.js';
 
+// Windows-CRLF portability (round-20 zhuowp): multi-line extraction and
+// contract compares are LF-anchored; normalize at the read boundary so the
+// suites behave identically on CRLF checkouts without touching assertions.
+const readChatViewSource = () => readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const readSessionsRsSource = () => readFileSync(new URL('../src-tauri/src/app/commands/sessions.rs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
 const REFS = [
   { sessionId: 'abc123', title: '修复登录页样式' },
   { sessionId: 'def456', title: '销量 PPT' },
@@ -33,7 +39,7 @@ const REFS = [
 // behavioral sandboxes run the SAME code the component runs, not a copy.
 const refsSurvivingAcceptanceFn = (() => {
   const marker = 'const refsSurvivingAcceptance = (refsAtSend, currentRefs, featureOn) =>';
-  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const source = readChatViewSource();
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, 'refsSurvivingAcceptance helper not found in ChatView');
   const open = source.indexOf('{', start);
@@ -51,7 +57,7 @@ const refsSurvivingAcceptanceFn = (() => {
 // the behavioral sandboxes execute the SAME verdict/ledger code the
 // component runs, not a copy.
 const makeSettleSessionRefSendFn = (() => {
-  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const source = readChatViewSource();
   const marker = 'const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef, setSessionRefs }) =>';
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, 'makeSettleSessionRefSend not found in ChatView');
@@ -73,7 +79,7 @@ const makeSettleSessionRefSendFn = (() => {
 // The real secondary sender source (round-19 M3): the design lane delegates
 // to it, so its behavioral sandboxes need both functions in scope.
 const sendWithSessionRefsSrc = (() => {
-  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const source = readChatViewSource();
   const marker = 'const sendWithSessionRefs = useCallback((text) => {';
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, 'sendWithSessionRefs not found');
@@ -377,7 +383,7 @@ function extractNamedFunction(source, header) {
 }
 
 function extractChatViewFunction(header) {
-  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const source = readChatViewSource();
   return extractNamedFunction(source, header);
 }
 
@@ -581,7 +587,7 @@ test('every send lane writes the switched-away scope stash through the choke poi
   // (deleted arm) or overwriting what the cleanup stashed (pre-fix failure
   // arm). No behavioral test ever moved the draft key mid-await before, which
   // is exactly how the deletions stayed green.
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
 
   const makeHandleSend = ({ accepted, onAwait } = {}) => {
     const store = recordingDraftStore();
@@ -886,7 +892,7 @@ test('handleSend sends the bare body when the feature gate is off (behavioral)',
 
 test('composer session drop invokes the guarded add path (behavioral)', () => {
   const fn = extractChatViewFunction('const handleComposerSessionDrop = (e) =>');
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   // Wiring pin: the composer hot zone must actually register the handler
   // (deleting onDrop={handleComposerSessionDrop} fails here) — and the
   // dragover wiring, whose preventDefault is what lets a drop fire at all
@@ -1040,7 +1046,7 @@ test('registry refresh closure applies the host switch state and keeps state on 
   }
   // The effect wires this closure to mount and to the tools-changed event;
   // dropping the subscription or the initial refetch fails here.
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   assert.match(chatViewSource, /refresh\(\);\s*\n\s*window\.addEventListener\('pinvou:tools-changed', refresh\);/);
 });
 
@@ -1208,7 +1214,7 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
   // consumes only the serialized set on TRUE acceptance; a "restored"
   // verdict keeps the chips armed.
   const marker = 'const sendWithSessionRefs = useCallback((text) => {';
-  const source = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const source = readChatViewSource();
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, 'sendWithSessionRefs not found');
   const tailMarker = '}, [sessionMentionEnabled, sessionRefs, sendChatMessage, settleSessionRefSend]);';
@@ -1275,7 +1281,7 @@ test('secondary send surfaces ride the composer refs (welcome card / plan option
 });
 
 test('composer chip drafts are wired to the restore/stash store (round-6 minor 8)', () => {
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   assert.match(chatViewSource, /setSessionRefs\(restoreSessionMentionDraft\(key\)\)/);
   assert.match(chatViewSource, /stashSessionMentionDraft\(key, sessionRefsRef\.current\)/);
 });
@@ -1323,8 +1329,7 @@ test('Rust mirror still carries the verbatim block contract (drift pin)', () => 
   // what turns the suite red — never a stale test-local copy.
   const sample = buildSessionMentionBlock([{ sessionId: 'probe', title: 'probe' }]);
   const [header, contract1, contract2, contract3] = sample.split('\n');
-  const sessionsRs = readFileSync(
-    new URL('../src-tauri/src/app/commands/sessions.rs', import.meta.url), 'utf8');
+  const sessionsRs = readSessionsRsSource();
   // Anchor to the PRODUCTION const declarations specifically (round-17 M3):
   // the literals also exist inside #[cfg(test)] fixtures, so an unanchored
   // includes() over the whole file stays green when only the production
@@ -1629,7 +1634,7 @@ test('steer-loss branches route the notice on the restore verdict (round-8 M1)',
 });
 
 test('the web-connection recovery re-read and the ref cap are pinned (round-19 m5/m6)', () => {
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   // Deleting refreshOnWebConnection or either listener line must red —
   // round-13 minor 3's fix regressed silently otherwise.
   assert.match(chatViewSource, /const refreshOnWebConnection = \(event\) => \{/);
@@ -1673,7 +1678,7 @@ test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', (
   assert.match(webSource, /const restoredBody = stripMentionBlockForComposerRestore\(text\);\s*\n\s*if \(!restoredBody\) return "restored";\s*\n\s*return restoreTaskDraft\(restoredBody, draftOwner\) \? "restored" : false;/);
   // The voice task lane carries the same dispatch-time chip semantics as
   // handleSend (refs-only double-send race / unmount resurrect).
-  const chatViewSourceAll = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSourceAll = readChatViewSource();
   const sendTaskSlice = chatViewSourceAll.slice(chatViewSourceAll.indexOf('sendTask: async (outgoing, context)'));
   assert.match(sendTaskSlice, /const refsAtSend = sessionMentionEnabled \? sessionRefs : \[\];/);
   assert.match(sendTaskSlice, /settleSessionRefSend\(refsAtSend, draftKeyAtSend, result\);/);
@@ -1688,7 +1693,7 @@ test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', (
 });
 
 test('composer drop validates the session id and dragOver gates on the switch (round-8 M4 + minor 3)', () => {
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   assert.match(chatViewSource, /if \(!knownSessionMentionIds\.has\(sessionId\)\) return;/);
   assert.match(chatViewSource, /if \(!isSessionRowDrag\(e\) \|\| !sessionMentionEnabled\) return;\s*\n\s*if \(sessionRefs\.length >= MAX_SESSION_REFS\) return;\s*\n\s*e\.preventDefault\(\); \/\/ allow the drop/);
 });
@@ -1720,14 +1725,14 @@ test('a full chip strip rejects the session drop up front (round-18 MAJOR-3)', (
 });
 
 test('handleSend clears the refs at dispatch and restores them on non-acceptance (round-8 M5)', () => {
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   assert.match(chatViewSource, /const refsAtSend = sessionMentionEnabled \? sessionRefs : \[\];/);
   assert.match(chatViewSource, /if \(refsAtSend\.length\) setSessionRefs\(\[\]\);/);
   assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\.\.\.refsAtSend, \.\.\.current\]\)\);/);
 });
 
 test('the scene-send block-prepend into meta.pinvouPayloadText is pinned (round-8 M3)', () => {
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   // Round-20 MAJOR-2: the gate itself is part of the pin — the round-9 M1
   // regex omitted it, so deleting `sessionMentionEnabled &&` stayed green
   // (reviewer-verified twice). With the gate in the pattern, a feature-off
@@ -1740,7 +1745,7 @@ test('the disabledNotice copy lives in uiSessionMention in all three locales (ro
     const source = readFileSync(new URL(`../src/shared/i18n/${locale}.js`, import.meta.url), 'utf8');
     assert.match(source, /uiSessionMention = \{.*disabledNotice:/, `${locale} must ship uiSessionMention.disabledNotice`);
   }
-  const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   assert.equal(chatViewSource.includes('t.uiBuiltinFeatures.disabledNotice'), false);
 });
 
@@ -1805,7 +1810,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         name: 'sendWithSessionRefs',
         build: (sandbox) => {
           const marker = 'const sendWithSessionRefs = useCallback((text) => {';
-          const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+          const chatViewSource = readChatViewSource();
           const start = chatViewSource.indexOf(marker);
           const tailMarker = '}, [sessionMentionEnabled, sessionRefs, sendChatMessage, settleSessionRefSend]);';
           const tail = chatViewSource.indexOf(tailMarker, start);
