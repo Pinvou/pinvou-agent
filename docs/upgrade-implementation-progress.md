@@ -1867,3 +1867,52 @@ This batch does not close accepted cleanup, full T20, other event roles, quality
 public batch transport or client outbox. Deployment and cross-platform/repository
 acceptance remain deferred. Downloads retain no hard cumulative duration limit.
 Service inspection batch commit: `582f325`.
+
+### T20 fourteenth batch: three-purpose transaction event calculation (2026-10-12)
+
+The service adds a complete pure single-event calculator for preinstall/install/
+activate transactions. Original verified request and actual immutable Session/
+transaction binding precede receipt evaluation. Replay returns only the original
+receipt, without re-running an edge, extending retention or inspecting a damaged
+cursor. Original 30-day occurrence and 37-day upload windows remain unchanged.
+
+Fresh live candidates reuse T44's transaction transitions. Purpose terminal state
+or original start+30d selects diagnostics evaluated at original occurrence. Known
+cursor history takes priority over a missing previous-state field in an older
+terminal row; without either source the calculation refuses. Current timeout
+reason/cancellation markers are removed only from the ephemeral historical view.
+Original terminal/state/start/revision/credential and all protected records remain
+unchanged; cursor/sequence growth stays bounded. Returned anchors/update bytes
+are independently owned.
+
+The exact original shared facts union is compiled from the pinned API. The local-
+state kind relation, live telemetry-only progress branch, lawful other shared
+facts and historical transaction branch are preserved. Explicit JSON-null
+boundary presence is required for safe termination; missing is not null proof.
+Initial consumption self-observation also requires its original kind. No second
+caller facts projection or fabricated quality watermark is accepted.
+
+The initial test fixture
+primitive-JCS snapshot mistake was repaired; the initial 198 original Node model
+cases then passed, including an independent role's own run (5.391s). The cursor
+priority finding adds six original positive/negative controls, for 204 cases;
+the root's expanded targeted run passed (5.557s package). Default pure tests
+cover all three original signed consumption profiles, original revision MAX,
+timeout replay, unknown/known historical cursor, parser shape and output ownership.
+
+Final full Go tests with original Node reference opt-ins passed (events package
+22.852s), including the final cursor output-alias controls. Vet, module checks,
+all command builds, pinned comparison and client architecture/version/diff checks
+passed. Database/provider opt-ins stay skipped by default; this pure batch claims
+no real-database or physical E2E.
+Both independent roles passed the final frozen code/tests/documents without
+required findings; final independent pure tests including 204 reference cases
+and the last alias controls passed (5.292s). This closes only this calculation.
+
+Outputs are candidates rather than event ACK or database commit permissions.
+Stage, activation terminal/cancellation, occupancy and quality contribution still
+require real final T44/T25 owner composition with receipt/outbox/T06. No native
+SQL migration changes, actual writer registration, public atomic batches or
+physical/database E2E are claimed. Full T20 remains open. Deployment stays
+deferred; downloads have no hard total/cumulative duration limit.
+Service transaction calculation commit: `b159d18`.
