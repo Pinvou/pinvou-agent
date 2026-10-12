@@ -313,28 +313,26 @@ impl BundleStore {
     pub fn upsert_preserving(&self, record: BundleRecord) -> Result<(), String> {
         file_lock::with_file_lock(&self.file, || {
             let mut file = load_locked(&self.file)?;
-            let merged = match file.records.iter().find(|r| r.id == record.id) {
-                Some(existing) => BundleRecord {
-                    id: record.id,
-                    source: existing.source.clone(),
-                    installed: record.installed,
-                    assets: if record.assets.is_empty() {
-                        existing.assets.clone()
-                    } else {
-                        record.assets
-                    },
-                    content_fingerprint: record
-                        .content_fingerprint
-                        .or_else(|| existing.content_fingerprint.clone()),
-                    installed_at: existing.installed_at.clone(),
-                    degraded: record.degraded,
-                    extra: existing.extra.clone(),
-                },
-                None => record,
-            };
-            match file.records.iter_mut().find(|r| r.id == merged.id) {
-                Some(slot) => *slot = merged,
-                None => file.records.push(merged),
+            match file.records.iter_mut().find(|r| r.id == record.id) {
+                Some(existing) => {
+                    *existing = BundleRecord {
+                        id: record.id,
+                        source: existing.source.clone(),
+                        installed: record.installed,
+                        assets: if record.assets.is_empty() {
+                            existing.assets.clone()
+                        } else {
+                            record.assets
+                        },
+                        content_fingerprint: record
+                            .content_fingerprint
+                            .or_else(|| existing.content_fingerprint.clone()),
+                        installed_at: existing.installed_at.clone(),
+                        degraded: record.degraded,
+                        extra: existing.extra.clone(),
+                    };
+                }
+                None => file.records.push(record),
             }
             save_locked(&self.file, &file)
         })
@@ -693,7 +691,14 @@ fn load_locked(path: &Path) -> Result<BundlesFile, String> {
                     path.display()
                 )
             })?;
-            warn_unrecognized_assets(path, &file);
+            let flagged = unrecognized_asset_record_ids(&file);
+            if !flagged.is_empty() {
+                log::warn!(
+                    "[marketplace] {}: unreadable assets entries kept verbatim in {}",
+                    path.display(),
+                    flagged.join(", ")
+                );
+            }
             Ok(file)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BundlesFile::default()),
@@ -701,24 +706,14 @@ fn load_locked(path: &Path) -> Result<BundlesFile, String> {
     }
 }
 
+/// Record ids carrying at least one entry this binary cannot read; the
+/// flag-and-log lives at the load site so the targeting rule is testable
+/// without capturing log output.
+///
 /// Unparsable `assets` entries are kept verbatim per the `AssetEntry`
 /// contract, but a silent degrade hides data-quality problems (a `sha_256`
 /// misspelling from a future pin writer, for example). Report them once per
 /// load so the anomaly is diagnosable instead of just invisible.
-fn warn_unrecognized_assets(path: &Path, file: &BundlesFile) {
-    let flagged = unrecognized_asset_record_ids(file);
-    if !flagged.is_empty() {
-        log::warn!(
-            "[marketplace] {}: unreadable assets entries kept verbatim in {}",
-            path.display(),
-            flagged.join(", ")
-        );
-    }
-}
-
-/// Record ids carrying at least one entry this binary cannot read; split
-/// from `warn_unrecognized_assets` so the targeting rule is testable
-/// without capturing log output.
 fn unrecognized_asset_record_ids(file: &BundlesFile) -> Vec<String> {
     file.records
         .iter()
@@ -787,14 +782,8 @@ fn legacy_mcp_records() -> Result<Vec<BundleRecord>, String> {
     Ok(installed
         .into_iter()
         .map(|id| BundleRecord {
-            id,
-            source: BundleSource::Preset,
-            installed: true,
-            assets: Vec::new(),
-            content_fingerprint: None,
             installed_at: now.clone(),
-            degraded: None,
-            extra: serde_json::Map::new(),
+            ..BundleRecord::installed_now(id, BundleSource::Preset)
         })
         .collect())
 }
@@ -855,14 +844,8 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
             continue;
         }
         out.push(BundleRecord {
-            id,
-            source,
-            installed: true,
-            assets: Vec::new(),
-            content_fingerprint: None,
             installed_at: now.clone(),
-            degraded: None,
-            extra: serde_json::Map::new(),
+            ..BundleRecord::installed_now(id, source)
         });
     }
     Ok(out)
@@ -900,14 +883,9 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
             continue;
         }
         out.push(BundleRecord {
-            id: id.to_string(),
-            source: BundleSource::Builtin,
-            installed: true,
-            assets: Vec::new(),
-            content_fingerprint: None,
             installed_at: now.clone(),
             degraded,
-            extra: serde_json::Map::new(),
+            ..BundleRecord::installed_now(id, BundleSource::Builtin)
         });
     }
     out
