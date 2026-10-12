@@ -1722,7 +1722,15 @@ mod tests {
         let _env_lock = crate::support::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let root = crate::support::test_support::TempHome::new("projects-backslash");
+        let home = crate::support::test_support::TempHome::new("projects-backslash");
+        // Rebind matches in the canonicalized domain (`rebind_source_display`
+        // resolves through existing ancestors), so the fixture must seed the
+        // stores with a canonical root: on macOS `temp_dir()` hands out
+        // `/var/folders/...` while canonicalization yields
+        // `/private/var/folders/...`, and a raw-path binding would live in
+        // another domain than the rebind key — an alias artifact of the
+        // fixture, not the backslash behavior this test pins.
+        let root = std::fs::canonicalize(&*home).expect("canonicalize temp home");
         let from = root.join("proj\\");
         std::fs::create_dir_all(&from).expect("create the backslash directory");
         let sessions = SessionStore::boot().expect("boot the session store");
