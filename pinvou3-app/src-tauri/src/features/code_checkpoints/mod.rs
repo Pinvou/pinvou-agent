@@ -1055,6 +1055,133 @@ fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<Checkpoint
         .with_context(|| format!("checkpoint '{checkpoint_id}' 不存在"))
 }
 
+/// 待完成回退的暂记（评审 r6 M2）：rewind 的恢复阶段已创建（或复用）PreRestore
+/// 但整个回退未走完（恢复或截断中途失败）时，把「目标 checkpoint + keepTurns +
+/// PreRestore id」记到账本根 `pending_rewind.json`。同目标的引导重试据此复用
+/// 首个 PreRestore——否则重试会对混合/已回退的工作区新拍快照并把 undo 绑定到
+/// 错误状态（恢复失败重试绑混合态；截断失败重试绑已回退态，评审 M2 两条腿）。
+#[derive(Serialize, Deserialize)]
+struct PendingRewind {
+    checkpoint_id: String,
+    keep_turns: u32,
+    pre_restore_id: String,
+    /// 写暂记时的会话 transcript revision：重试复用仅当其未变——新轮次/
+    /// 编辑/成功回退/撤销都会改变它，届时退回「新建 PreRestore」（对那些
+    /// 场景新建才是正确语义：undo 应绑定重试时刻的真实前置状态）。
+    transcript_revision: String,
+}
+
+fn pending_rewind_path(ledger_root: &Path) -> std::path::PathBuf {
+    ledger_root.join("pending_rewind.json")
+}
+
+pub fn write_pending_rewind(
+    ledger_root: &Path,
+    checkpoint_id: &str,
+    keep_turns: u32,
+    pre_restore_id: &str,
+    transcript_revision: &str,
+) -> Result<()> {
+    let pending = PendingRewind {
+        checkpoint_id: checkpoint_id.to_string(),
+        keep_turns,
+        pre_restore_id: pre_restore_id.to_string(),
+        transcript_revision: transcript_revision.to_string(),
+    };
+    fs::write(
+        pending_rewind_path(ledger_root),
+        serde_json::to_vec(&pending).context("序列化 pending_rewind 失败")?,
+    )
+    .context("写入 pending_rewind 失败")
+}
+
+/// 读取匹配「同目标 + 同 keepTurns」的暂记 PreRestore id。陈旧性（该
+/// PreRestore 已被成功回退绑定）由调用方核对——本层无会话侧备份记录视图。
+/// 损坏的暂记删除后退回「新建 PreRestore」路径。
+pub fn matching_pending_pre_restore(
+    ledger_root: &Path,
+    checkpoint_id: &str,
+    keep_turns: u32,
+    transcript_revision: &str,
+) -> Result<Option<String>> {
+    let path = pending_rewind_path(ledger_root);
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(None);
+    };
+    let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
+        // 损坏的暂记不阻塞回退：删除后退回「新建 PreRestore」路径。
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    };
+    if pending.checkpoint_id != checkpoint_id
+        || pending.keep_turns != keep_turns
+        || pending.transcript_revision != transcript_revision
+    {
+        return Ok(None);
+    }
+    Ok(Some(pending.pre_restore_id))
+}
+
+/// 清理性质：失败只记日志（陈旧暂记由调用方的已绑定检查兜底，不会把
+/// undo 绑到已完成回退的旧快照上）。
+pub fn clear_pending_rewind(ledger_root: &Path) {
+    if let Err(error) = fs::remove_file(pending_rewind_path(ledger_root)) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("[checkpoints] 清理 pending_rewind 失败（仅清理未做）: {error:#}");
+        }
+    }
+}
+
+/// 恢复准备段：解析目标 + 创建（或按 `reuse_pre_restore` 复用）PreRestore，
+/// **不动工作区**。拆出本段让调用方能在「PreRestore 已存在」与「开始变更
+/// 工作区」之间落暂记（评审 r6 M2）。
+pub fn prepare_restore(
+    ledger_root: &Path,
+    execution_root: &Path,
+    checkpoint_id: &str,
+    reuse_pre_restore: Option<&str>,
+) -> Result<(CheckpointMeta, CheckpointMeta)> {
+    let meta = find_checkpoint(ledger_root, checkpoint_id)?;
+    let execution_root = canonical_execution_root(execution_root)?;
+    let undo = match reuse_pre_restore {
+        Some(id) => find_checkpoint(ledger_root, id)?,
+        None => create_checkpoint_preserving(
+            ledger_root,
+            &execution_root,
+            None,
+            CheckpointKind::PreRestore,
+            // Fixed zh label persisted as ledger fidelity data (byte-identical
+            // with the pre-cleanup surface) and printed verbatim by the CLI;
+            // localizing it is a consumer-side decision (PR #602).
+            &format!("回滚到 {} 前的自动快照", meta.id),
+            &[&meta.id],
+        )
+        .context("回滚前自动快照失败，已中止回滚")?,
+    };
+    Ok((meta, undo))
+}
+
+/// 恢复执行段：read-tree → 清 index → checkout-index → clean，幂等可重入。
+pub fn apply_restore(
+    ledger_root: &Path,
+    execution_root: &Path,
+    meta: &CheckpointMeta,
+) -> Result<()> {
+    let execution_root = canonical_execution_root(execution_root)?;
+    let repo = repo_dir(ledger_root);
+    git_ok(&repo, &execution_root, &["read-tree", &meta.commit])
+        .context("读取 checkpoint 快照失败")?;
+    // read-tree 整体替换 index：迁移前打的旧快照 tree 里可能仍含敏感文件，
+    // 不清理就会被 checkout-index 写回工作区并被后续 add -A 重新跟踪（一次性
+    // 迁移的效果被一次回滚复活）。恢复前按同一模式清影子 index（只动 index）。
+    purge_secret_patterns_from_index(&repo, &execution_root)
+        .context("清理快照中的敏感文件条目失败")?;
+    git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
+        .context("写回 checkpoint 文件失败")?;
+    git_ok(&repo, &execution_root, &["clean", "-fd"]).context("清理快照后新建文件失败")?;
+    Ok(())
+}
+
 /// `diff --cached --raw` 输出行解析（`:<srcmode> <dstmode> <srcsha> <dstsha> <status>\t<path>`，
 /// rename/copy 多一个 `\t<newpath>`）。gitlink（嵌套仓库/submodule，mode 160000）
 /// 单独标注——快照不跟踪其内容、restore 不会 materialize 它（评审 M4）。
@@ -1405,35 +1532,13 @@ pub fn restore_checkpoint(
     execution_root: &Path,
     checkpoint_id: &str,
 ) -> Result<CheckpointMeta> {
-    let meta = find_checkpoint(ledger_root, checkpoint_id)?;
-    let execution_root = canonical_execution_root(execution_root)?;
-    // 回滚点快照失败必须中止：没有可反悔的兜底就不能动用户文件。
+    // 单段组合（undo 流程用：undo 的恢复 SHOULD 对当前（回退后）状态新拍
+    // PreRestore 以支持「反悔可再反悔」，因此不走暂记/复用路径）。
     // preserve 传入恢复目标：PreRestore 触发的 LRU/存储压力淘汰不得把目标
     // 本身裁掉（ref 删除 + commit prune 会让随后的 read-tree 失败，用户请求
-    // 的历史被销毁，评审 M2）。
-    let undo = create_checkpoint_preserving(
-        ledger_root,
-        &execution_root,
-        None,
-        CheckpointKind::PreRestore,
-        // Fixed zh label persisted as ledger fidelity data (byte-identical
-        // with the pre-cleanup surface) and printed verbatim by the CLI;
-        // localizing it is a consumer-side decision (PR #602).
-        &format!("回滚到 {} 前的自动快照", meta.id),
-        &[&meta.id],
-    )
-    .context("回滚前自动快照失败，已中止回滚")?;
-    let repo = repo_dir(ledger_root);
-    git_ok(&repo, &execution_root, &["read-tree", &meta.commit])
-        .context("读取 checkpoint 快照失败")?;
-    // read-tree 整体替换 index：迁移前打的旧快照 tree 里可能仍含敏感文件，
-    // 不清理就会被 checkout-index 写回工作区并被后续 add -A 重新跟踪（一次性
-    // 迁移的效果被一次回滚复活）。恢复前按同一模式清影子 index（只动 index）。
-    purge_secret_patterns_from_index(&repo, &execution_root)
-        .context("清理快照中的敏感文件条目失败")?;
-    git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
-        .context("写回 checkpoint 文件失败")?;
-    git_ok(&repo, &execution_root, &["clean", "-fd"]).context("清理快照后新建文件失败")?;
+    // 的历史被销毁，评审 M2）——见 prepare_restore 内 create_checkpoint_preserving。
+    let (meta, undo) = prepare_restore(ledger_root, execution_root, checkpoint_id, None)?;
+    apply_restore(ledger_root, execution_root, &meta)?;
     Ok(undo)
 }
 
