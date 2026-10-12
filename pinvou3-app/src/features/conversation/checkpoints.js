@@ -60,8 +60,18 @@ export function summarizeCheckpointChanges(changes) {
  * - 该边界对应的 Turn 快照存在 → conversationOnly=false（文件+对话一起回退）；
  *   快照缺失 → conversationOnly=true 的「仅回退对话」变体（设计 §5/§7）。
  * checkpoint 列表为空（系统无 git/快照全部失败）时整个会话不渲染入口（设计 §5）。
+ *
+ * 序号剔除（评审 M1）：userItem.frontendEcho 的 turn（卡片答案等前端-only 回显，
+ * 不落盘、后端以 ToolResult 归入当前 turn）不占序号——否则其后所有入口序号 +1、
+ * 最后一个必被后端 total_turns 预检拒绝。
+ *
+ * 计数调和门（评审 M2）：backendUserTurns（list_checkpoints 响应携带的后端
+ * count_user_turns）非空时，若时间线数出的用户 turn 总数与之不一致（如压缩后
+ * 前端时间线保留全部气泡而后端已收缩为载体+摘要尾），序号↔后端 turn 的映射
+ * 不再可靠——返回空 map 不渲染任何入口，把「错点成功」降级为诚实拒绝； durable
+ * 重载后时间线按收缩后的 messages 重建（载体被投影过滤），两侧重新对齐。
  */
-export function rewindEntriesByTurnId(turns, checkpoints) {
+export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns) {
   const entries = new Map();
   const list = Array.isArray(checkpoints) ? checkpoints : [];
   if (!list.length) return entries;
@@ -69,6 +79,7 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
   let ordinal = 0;
   for (const turn of turns || []) {
     if (!turn || !turn.userItem || turn.id == null) continue;
+    if (turn.userItem.frontendEcho) continue;
     ordinal += 1;
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {
@@ -76,6 +87,9 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
       checkpoint,
       conversationOnly: !checkpoint,
     });
+  }
+  if (Number.isSafeInteger(backendUserTurns) && backendUserTurns >= 0 && ordinal !== backendUserTurns) {
+    return new Map();
   }
   return entries;
 }
@@ -157,6 +171,9 @@ export async function reloadSessionAfterRewind({ reload, bumpTick }) {
  */
 export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   const [checkpoints, setCheckpoints] = useState([]);
+  // 后端权威用户 turn 计数（list_checkpoints 响应携带；评审 M2 调和门）：
+  // null = 后端未提供（旧响应/失败），调和门退化为不比对。
+  const [userTurns, setUserTurns] = useState(null);
   const [previews, setPreviews] = useState({});
   const [undoState, setUndoState] = useState(null);
   const sessionRef = useRef(sessionId);
@@ -168,14 +185,21 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     // 不渲染入口，不为每个 refreshKey 边沿发两个必被 access-policy 拒的请求。
     if (!id || !enabled || !canInvoke('list_checkpoints')) {
       setCheckpoints([]);
+      setUserTurns(null);
       setPreviews({});
       setUndoState(null);
       return;
     }
     try {
-      const list = await invoke('list_checkpoints', { sessionId: id });
+      const payload = await invoke('list_checkpoints', { sessionId: id });
       if (sessionRef.current === id) {
-        setCheckpoints(Array.isArray(list) ? list : []);
+        // 响应体 r5 起为 { checkpoints, userTurns }；数组形态兜底仅为容错。
+        const list = Array.isArray(payload)
+          ? payload
+          : (Array.isArray(payload?.checkpoints) ? payload.checkpoints : []);
+        const backendTurns = Number.isSafeInteger(payload?.userTurns) ? payload.userTurns : null;
+        setCheckpoints(list);
+        setUserTurns(backendTurns);
       }
     } catch {
       // 列表失败（会话被删/索引损坏/非原生车道）不打扰主流程：该会话没有回退入口。
@@ -205,6 +229,7 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
       previewSessionRef.current = sessionId;
       setPreviews({});
       setCheckpoints([]);
+      setUserTurns(null);
       setUndoState(null);
     }
   }, [sessionId]);
@@ -234,7 +259,7 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   }, []);
 
   return useMemo(
-    () => ({ checkpoints, previews, preview, refresh, undoState }),
-    [checkpoints, previews, preview, refresh, undoState],
+    () => ({ checkpoints, userTurns, previews, preview, refresh, undoState }),
+    [checkpoints, userTurns, previews, preview, refresh, undoState],
   );
 }

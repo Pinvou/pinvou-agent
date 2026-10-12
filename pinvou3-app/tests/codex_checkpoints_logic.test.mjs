@@ -171,6 +171,47 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(entries.get('t3').checkpoint.id, 'c3', 'text(3) 的快照对齐在 turn 3，不因附件-only 轮次降级');
 }
 
+// 前端-only 回显不占序号（评审 r5 M1）：卡片答案的 ✓ 回显是 persist=false 的
+// type:"user" chatItem（不落盘；后端以 ToolResult 归入当前 turn，不计 turn）。
+// pushUserEcho 对 !persist 标记 frontendEcho，序号构建必须剔除——否则其后所有
+// 入口序号 +1、最后一个 keepTurns == 后端 total_turns 必被预检拒绝。
+{
+  const echoTurn = { id: 'e1', userItem: { type: 'user', text: '✓ Q1: A · B', frontendEcho: true } };
+  const turns = [userTurn('t1'), userTurn('t2'), echoTurn, userTurn('t3')];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ]);
+  assert.equal(entries.has('e1'), false, '前端-only 回显不生成入口');
+  assert.equal(entries.get('t1').keepTurns, 0);
+  assert.equal(entries.get('t2').keepTurns, 1);
+  assert.equal(entries.get('t3').keepTurns, 2, '回显之后的边界序号不受顶偏');
+  assert.equal(entries.get('t3').checkpoint.id, 'c3');
+}
+
+// 计数调和门（评审 r5 M2）：backendUserTurns 与时间线数出的用户 turn 总数
+// 不一致（如压缩后前端时间线保留全部气泡、后端已收缩）→ 序号映射不可靠，
+// 整体不渲染入口（诚实拒绝）；一致时照常。null/非整数（后端未提供）不比对。
+{
+  const turns = [userTurn('t1'), userTurn('t2'), userTurn('t3')];
+  const checkpoints = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 3).size, 3, '一致 → 照常渲染');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 2).size, 0, '后端计数收缩（压缩）→ 整体不渲染');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 4).size, 0, '后端计数偏多同样拒绝（双向校验）');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, null).size, 3, '未提供（null）→ 不比对');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints).size, 3, '缺省参数 → 不比对');
+  // 回显剔除与调和门叠加：回显不计数后前端总数 3 == 后端 3 → 渲染。
+  const echoTurn = { id: 'e1', userItem: { type: 'user', text: '✓ Q1: A', frontendEcho: true } };
+  const turnsWithEcho = [userTurn('t1'), echoTurn, userTurn('t2'), userTurn('t3')];
+  assert.equal(rewindEntriesByTurnId(turnsWithEcho, checkpoints, 3).size, 3, '回显剔除 + 调和一致 → 照常渲染');
+  assert.equal(rewindEntriesByTurnId(turnsWithEcho, checkpoints, 4).size, 0, '回显未剔除（计数 4 ≠ 3）→ 拒绝（调和门兜底）');
+}
+
 // checkpoint 列表为空（系统无 git/快照全部失败）→ 整个会话无入口（设计 §5）。
 {
   const turns = [userTurn('t1'), userTurn('t2')];

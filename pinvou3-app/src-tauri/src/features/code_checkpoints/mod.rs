@@ -343,6 +343,24 @@ fn shadow_repo_bytes(repo: &Path) -> u64 {
     total
 }
 
+/// 已打包体积（`git count-objects -v` 的 `size-pack`，字节）。只读对象库统计，
+/// 不做任何打包/回收动作——供存储压力闸判断超额是否为内容性（打包体积本身
+/// 超预算 → gc 无法收敛，评审 M5 断路）。读取失败按 0：门保守走旧路径
+/// （裁剪 + gc），与改动前行为一致。
+fn packed_repo_bytes(repo: &Path, work_tree: &Path) -> u64 {
+    let Ok(output) = git_ok(repo, work_tree, &["count-objects", "-v"]) else {
+        return 0;
+    };
+    for line in output.lines() {
+        if let Some(kb) = line.strip_prefix("size-pack:") {
+            if let Ok(kb) = kb.trim().parse::<u64>() {
+                return kb.saturating_mul(1024);
+            }
+        }
+    }
+    0
+}
+
 /// checkpoint id 校验：命令入口的路径安全闸（id 会拼进 git ref/日志，不进文件路径，
 /// 但仍按 SessionRoots 的 validate 惯例收紧字符集，防注入）。
 fn validate_checkpoint_id(id: &str) -> Result<()> {
@@ -966,6 +984,21 @@ fn create_checkpoint_preserving(
     // 项目单靠条目数守不住体积。超预算时裁到一半条目 + 主动 gc 收敛（至少保留
     // 最新一条——刚登记的本条；被裁的 undo 绑定由可反悔判定如实收敛）。
     if shadow_repo_bytes(&repo) > MAX_SHADOW_REPO_BYTES && index.entries.len() > 1 {
+        // 评审 M5 内容性超额断路：先读打包体积（count-objects -v 的 size-pack，
+        // 只读对象库统计、不做任何打包）。打包体积本身已 ≥ 预算 → 超额是内容
+        // 性的（工作区大且不可压缩），gc --prune=now 无法收敛——此前该分支每轮
+        // 登记都触发「裁半 + 全量 gc」（591MB 实测一次 10s+，且在持有 turn 预约
+        // 的发送路径内联执行），条目数 1↔2 振荡、只剩最近一轮可回退，与确认
+        // 弹窗「最近 20 个」披露矛盾。跳过裁剪与 gc：条目仍受 MAX_CHECKPOINTS
+        // 上限约束，磁盘增长仍受工作区准入（2GB）与每轮内容变化量约束。
+        if packed_repo_bytes(&repo, &execution_root) >= MAX_SHADOW_REPO_BYTES as u64 {
+            eprintln!(
+                "[checkpoints] shadow repo over {}MB budget is content-driven (packed size ≥ budget); keeping entries, skipping futile gc",
+                MAX_SHADOW_REPO_BYTES / 1024 / 1024,
+            );
+            save_index(ledger_root, &index)?;
+            return Ok(meta);
+        }
         let target = (index.entries.len() / 2).max(1);
         let drain_count = index.entries.len() - target;
         let evicted = evict_oldest(&mut index, drain_count);

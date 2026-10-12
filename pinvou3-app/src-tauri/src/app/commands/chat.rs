@@ -315,16 +315,18 @@ pub(crate) async fn chat_with_reservation(
     // （影子 git，数据落账本根，机制见 features/code_checkpoints）。车道口径：
     // ACP 在两个入口已拒（chat() 本体与 web seam 的 web_access_chat_for_session，
     // 口径一致）；scheduled 会话维持无快照（与 fork 拒绝口径一致，chat 续跑同样
-    // 排除）；其余原生会话（含未绑定会话——两根同为会话私有目录，ensure_repo
-    // 自排除 checkpoints；aux 侧聊会话同形状，快照其私有目录、无 UI 消费）默认
-    // 开启。快照必须先于引擎写文件，因此在 send 前同步等待；失败不阻断 turn——
+    // 排除）；aux 侧聊零工具且无回退 UI 消费，跳过整套快照成本（评审 round-5
+    // minor 2）；其余原生会话（含未绑定会话——两根同为会话私有目录，ensure_repo
+    // 自排除 checkpoints）默认开启。快照必须先于引擎写文件，因此在 send 前同步等待；失败不阻断 turn——
     // 如实记日志，该轮只是没有回退入口（设计 §5 降级语义）。
     // created_snapshot_id 记录本轮成功登记的快照：发送失败时它是「未成活」
     // 快照——重试同号 turn 的 first-wins 对齐会锚到失败那次（内容还可能混入两次
     // 尝试之间的外部改动），发送失败路径按 id 精确作废（见下方 Err 分支；按 id
     // 也覆盖计数失败导致的 None 序号快照）。
     let mut created_snapshot_id: Option<String> = None;
-    if !is_scheduled {
+    // aux 侧聊会话零工具、无回退 UI 消费快照（评审 round-5 minor 2）：跳过整套
+    // per-turn 快照成本（树遍历 + git 登记），与定时会话同款排除。
+    if !is_scheduled && !crate::features::sessions::is_aux_session_id(&sid) {
         // The turn-checkpoint label is user-facing on the rewind surface: strip
         // the session-mention injection block the way titles/bubbles do, so a
         // refs-carrying first turn labels the checkpoint with the user's text
