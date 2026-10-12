@@ -584,6 +584,26 @@ impl MarketplaceStateTransaction {
         self.finished = true;
         Ok(())
     }
+
+    /// Commit-or-rollback tail shared by the String-error transactional
+    /// writers: `commit` on success; on failure roll the snapshot back —
+    /// composing the rollback error onto the original so neither is lost —
+    /// and still return the ORIGINAL error, so the caller's refusal text is
+    /// never replaced by the rollback outcome.
+    fn settle<T>(self, result: Result<T, String>) -> Result<T, String> {
+        match result {
+            Ok(value) => {
+                self.commit()?;
+                Ok(value)
+            }
+            Err(error) => {
+                self.rollback().map_err(|rollback| {
+                    format!("{error}; marketplace state rollback failed: {rollback}")
+                })?;
+                Err(error)
+            }
+        }
+    }
 }
 
 impl Drop for MarketplaceStateTransaction {
@@ -622,9 +642,8 @@ pub use types::{
 // implementations.
 pub use crate::features::marketplace::scope::{
     deny_first_register_connector, load_disabled_bundles_for, load_disabled_bundles_startup,
-    load_hidden_bundles_for, remove_bundle_from_disabled_scopes, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh,
-    unavailable_bundles_for,
+    load_hidden_bundles_for, save_disabled_bundles_for, save_hidden_bundles_for,
+    sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh, unavailable_bundles_for,
 };
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
@@ -890,12 +909,6 @@ pub struct MarketplaceManager<S: CredentialStore = SystemCredentialStore> {
     /// 已安装工具列表文件 (~/.pinvou3/marketplace/installed.json)
     pub(super) installed_file: PathBuf,
     pub(super) credential_store: S,
-}
-
-impl Default for MarketplaceManager<SystemCredentialStore> {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// Withdraw a builtin CLI connector's materialized pack dir during uninstall.
@@ -1459,20 +1472,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             self.save_installed(&installed)
         })();
-        match result {
-            Ok(()) => transaction.commit()?,
-            Err(error) => {
-                transaction.rollback().map_err(|rollback| {
-                    format!("{error}; marketplace state rollback failed: {rollback}")
-                })?;
-                drop(python_environment);
-                // Do not prune here: the restored mcp.json may still reference the
-                // pre-install environment, whose key is absent from the catalog
-                // preserve-set after a lock upgrade. Startup repair re-runs the prune
-                // with the repair-error guard once the environment is healthy again.
-                return Err(error);
-            }
-        }
+        transaction.settle(result)?;
+        // On the failure path settle already rolled the state back and no
+        // prune may run there: the restored mcp.json may still reference the
+        // pre-install environment, whose key is absent from the catalog
+        // preserve-set after a lock upgrade. Startup repair re-runs the prune
+        // with the repair-error guard once the environment is healthy again.
 
         // 镜像写入统一真相源 bundles.json（Phase 2 过渡期：installed.json / mcp.json
         // 仍是权威，bundles.json 只镜像安装态；镜像写失败不翻盘主操作，fail loud 到日志）。
@@ -1601,20 +1606,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // （六轮评审 R1）。
         let store = store::BundleStore::new();
         let records_result = store.records();
-        let source_may_be_upload = records_result
-            .as_ref()
-            .map(|records| {
-                records
-                    .iter()
-                    .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
-            })
-            .unwrap_or(true);
+        let records_failed = records_result.is_err();
         // Upload 来源的记录快照（回收站清单用；恢复时据此重建登记）。读失败/无记录
         // → None，保持「原位保留」语义（不回收、不删除）。
         let upload_record = records_result
             .unwrap_or_default()
             .into_iter()
             .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
+        // fail-closed：bundles.json 读不出就当可能是 Upload（不可删），不把读失败按
+        // 非 Upload 照删（六轮评审 R1）。
+        let source_may_be_upload = records_failed || upload_record.is_some();
         // Snapshot before the transaction closure moves `upload_record`: the
         // in-lock cleanup needs to know whether companion dirs were recycled
         // with the package (Upload path) to strip their entries in-lock.
@@ -1775,15 +1776,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             Ok(())
         })();
-        match result {
-            Ok(()) => transaction.commit()?,
-            Err(error) => {
-                transaction.rollback().map_err(|rollback| {
-                    format!("{error}; marketplace state rollback failed: {rollback}")
-                })?;
-                return Err(error);
-            }
-        }
+        transaction.settle(result)?;
 
         // Only clean credentials, scope state, and companion skills after the persistent
         // registration transaction commits. A failed transaction therefore leaves the old tool
@@ -1966,7 +1959,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 "[marketplace] persisting the post-uninstall switch/visibility cleanup for {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
             );
         }
-        if preserve_companion_skills {
+        // No companion needs disposition → the cleanup loop below iterates
+        // nothing, so the registry read + bundles walk computing `unavailable`
+        // would be discarded work; skip both. Log-only delta: the
+        // "skipping the ... cleanup" warn no longer fires when there is
+        // nothing to clean.
+        if preserve_companion_skills || companion_owners.is_empty() {
             return;
         }
         let unavailable: std::collections::HashSet<String> =
@@ -2941,14 +2939,25 @@ pub(crate) mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+    // The ROOT-SKIP helpers are `#[cfg(all(test, unix))]`; their callers are
+    // `#[cfg(unix)]` tests.
+    #[cfg(unix)]
+    use crate::platform::test_support::{dir_read_only_or_skip, file_unreadable_or_skip};
 
-    /// Count regular files named `{file}.corrupt.*` beside `path` — the
-    /// quarantine sibling-count assertion helper. Shared with scope.rs's
+    /// List the quarantine copies minted beside `path`: the regular files
+    /// whose name starts with `{path's file name}{marker}` in `path`'s parent
+    /// (the production sidecar naming is `{name}.corrupt.{ts}` — see
+    /// `backup_corrupt_json_file`). The regular-file filter keeps the
+    /// no-sibling rule's FIFO skip (round-11 M2). Shared with scope.rs's
     /// tests, which import it as
-    /// `crate::features::marketplace::tests::corrupt_sibling_count`.
-    pub(crate) fn corrupt_sibling_count(path: &std::path::Path) -> usize {
+    /// `crate::features::marketplace::tests::quarantine_backups`; callers
+    /// wanting the count use `.len()`.
+    pub(crate) fn quarantine_backups(
+        path: &std::path::Path,
+        marker: &str,
+    ) -> Vec<std::path::PathBuf> {
         let parent = path.parent().unwrap();
-        let prefix = format!("{}.corrupt.", path.file_name().unwrap().to_string_lossy());
+        let prefix = format!("{}{marker}", path.file_name().unwrap().to_string_lossy());
         std::fs::read_dir(parent)
             .unwrap()
             .flatten()
@@ -2956,7 +2965,15 @@ pub(crate) mod tests {
                 entry.file_name().to_string_lossy().starts_with(&prefix)
                     && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
             })
-            .count()
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    /// Count the `.corrupt.` quarantine copies beside `path` — the pre-
+    /// generalization name, kept for scope.rs's existing imports. Prefer
+    /// [`quarantine_backups`].
+    pub(crate) fn corrupt_sibling_count(path: &std::path::Path) -> usize {
+        quarantine_backups(path, ".corrupt.").len()
     }
 
     /// Panic-safe cleanup for the two temp-home harnesses: a
@@ -3194,13 +3211,11 @@ pub(crate) mod tests {
         } else {
             ""
         };
-        let manifest = format!(
-            r#"{{
-                "id":"{tool_id}","name":"{tool_id}","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"]{secret_block}
-            }}"#
+        write_tool_manifest_fixture(
+            tool_id,
+            tool_id,
+            &format!(r#""mcp_tools":[],"command":"python","args":["server.py"]{secret_block}"#),
         );
-        write_tool_manifest(tool_id, &manifest);
         std::fs::write(
             mcp_catalog::package_mcp_dir(tool_id).join("server.py"),
             "print('fixture')\n",
@@ -3245,6 +3260,21 @@ pub(crate) mod tests {
         connectors::write_json_pretty(&mcp_path, &serde_json::json!({ "servers": servers }))
             .unwrap();
         mcp_path
+    }
+
+    /// Shared tail of the reconcile tests: a converged reconcile reports no
+    /// actions and leaves mcp.json byte-identical.
+    fn assert_reconcile_idempotent<S: CredentialStore>(
+        manager: &MarketplaceManager<S>,
+        mcp_path: &Path,
+    ) {
+        let before = std::fs::read(mcp_path).unwrap();
+        let actions = manager.reconcile_installed_mcp_entries().unwrap();
+        assert!(
+            actions.is_empty(),
+            "reconcile must converge; second run reported: {actions:?}"
+        );
+        assert_eq!(std::fs::read(mcp_path).unwrap(), before);
     }
 
     /// A dead absolute script path in an installed tool's entry is rebuilt from the
@@ -3298,14 +3328,7 @@ pub(crate) mod tests {
             );
 
             // Idempotent: the rebuilt entry is healthy, the second run writes nothing.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3343,14 +3366,7 @@ pub(crate) mod tests {
                 "no secrets declared, no env written"
             );
 
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3380,14 +3396,7 @@ pub(crate) mod tests {
                 "no secret and no local command fields expected: {entry}"
             );
 
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3430,14 +3439,7 @@ pub(crate) mod tests {
                 "PINVOU3_MCP_SECRET_PATSNAP_KEY"
             );
 
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3479,14 +3481,7 @@ pub(crate) mod tests {
             assert_eq!(entry["custom_hint"], "keep");
 
             // Idempotent: the override never reads as drift on the next run.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3536,10 +3531,7 @@ pub(crate) mod tests {
 
             // Once present, the block is never re-judged: a manifest update that
             // changes it must not clobber the entry's copy.
-            let actions = manager.reconcile_installed_mcp_entries().unwrap();
-            assert!(actions.is_empty(), "{actions:?}");
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3730,15 +3722,15 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_restores_bearer_credential_from_credential_store() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cf-x","name":"cf-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"cf-remote","url":"https://cf.example.com/mcp"}],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cf-x",
+                "cf-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
                     {"key":"QCC_X_KEY","label":"key","required":true,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest("cf-x", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             write_installed_ids(&["cf-x".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             manager
@@ -3764,14 +3756,7 @@ pub(crate) mod tests {
             // Idempotent: credential fields are not manifest-derived, so the second
             // run must neither rewrite nor strip them.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3781,15 +3766,15 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_restores_bearer_tool_without_resolvable_credential() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cf-y","name":"cf-y","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cf-y",
+                "cf-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
                     {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest("cf-y", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             write_installed_ids(&["cf-y".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -3816,14 +3801,7 @@ pub(crate) mod tests {
             // Idempotent: the declarative restore matches the manifest on the
             // second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3872,14 +3850,7 @@ pub(crate) mod tests {
             );
 
             // Idempotent: preserved fields never make the entry look dead again.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3889,11 +3860,11 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_refuses_rebuild_when_manifest_command_is_dead() {
         with_temp_home(|| {
-            let manifest = r#"{
-                "id":"deadbin","name":"deadbin","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"/opt/dead/binary","args":[]
-            }"#;
-            write_tool_manifest("deadbin", manifest);
+            write_tool_manifest_fixture(
+                "deadbin",
+                "deadbin",
+                r#""mcp_tools":[],"command":"/opt/dead/binary","args":[]"#,
+            );
             write_installed_ids(&["deadbin".to_string()]);
             let mcp_path = seed_mcp_json(serde_json::json!({
                 "deadbin": {"command": "/opt/dead/binary"}
@@ -3959,14 +3930,7 @@ pub(crate) mod tests {
             assert_eq!(mcp["servers"]["broken-y"]["custom_hint"], "keep");
 
             // Idempotent: the replaced entries are healthy on the second run.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -4000,14 +3964,7 @@ pub(crate) mod tests {
             );
 
             // Idempotent: the degraded entry is healthy on the second run.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -4018,15 +3975,15 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_restores_secret_headers_tool_without_resolvable_credential() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"sh-y","name":"sh-y","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"sh-remote-y","url":"https://sh.example.com/mcp"}],
-                "secret_headers":[
+            write_tool_manifest_fixture(
+                "sh-y",
+                "sh-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"sh-remote-y","url":"https://sh.example.com/mcp"}],
+                    "secret_headers":[
                     {"header":"X-Api-Key","source_key":"SH_LOST_KEY","provider":"demo"}
-                ]
-            });
-            write_tool_manifest("sh-y", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             write_installed_ids(&["sh-y".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -4053,14 +4010,7 @@ pub(crate) mod tests {
             // Idempotent: the declarative restore matches the manifest on the
             // second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -4263,6 +4213,25 @@ pub(crate) mod tests {
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
     }
 
+    /// The shared manifest-fixture filler head (`d`/`1`/`x`/`c` placeholders)
+    /// plus `tail` — the fields after `"category":"c",`, without the closing
+    /// brace (the builder adds it). Only id/name vary across the fixtures
+    /// this serves; a change to the filler edits this one line. `pub(crate)`
+    /// for the sibling modules' tests (scope.rs et al. migrate onto it in a
+    /// later wave).
+    pub(crate) fn tool_manifest_fixture(id: &str, name: &str, tail: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{name}","description":"d","version":"1","icon":"x","category":"c",{tail}}}"#
+        )
+    }
+
+    /// [`write_tool_manifest`] with the shared filler head: `tail` is the
+    /// manifest body after `"category":"c",`, closing brace included in the
+    /// builder's output.
+    fn write_tool_manifest_fixture(id: &str, name: &str, tail: &str) {
+        write_tool_manifest(id, &tool_manifest_fixture(id, name, tail));
+    }
+
     fn test_python() -> (String, String) {
         // An explicit PINVOU3_TEST_PYTHON wins. Without it, start from the
         // platform adapter's preferred interpreter (posix: python3→python on
@@ -4454,12 +4423,7 @@ pub(crate) mod tests {
 
     fn write_legacy_python_state(tool_id: &str) {
         write_installed_ids(&[tool_id.to_string()]);
-        store::BundleStore::new()
-            .upsert(store::BundleRecord::installed_now(
-                tool_id,
-                store::BundleSource::Preset,
-            ))
-            .unwrap();
+        store::plant_installed_record(tool_id, store::BundleSource::Preset);
         let server = mcp_catalog::package_mcp_dir(tool_id).join("server.py");
         let mut servers = serde_json::Map::new();
         servers.insert(
@@ -4491,12 +4455,10 @@ pub(crate) mod tests {
             });
             connectors::write_json_pretty(&crate::platform::paths::mcp_config_path(), &old_mcp)
                 .unwrap();
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "half-install",
-                r#"{
-                    "id":"half-install","name":"Half","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"node","args":["server.js"]
-                }"#,
+                "Half",
+                r#""mcp_tools":[],"command":"node","args":["server.js"]"#,
             );
 
             let _fail_next_installed_write = fail_next_installed_write_for_test();
@@ -4522,12 +4484,7 @@ pub(crate) mod tests {
         with_temp_home(|| {
             let (python, version) = test_python();
             write_locked_python_tool("trusted-lock", "trusted_lock_fixture", &version);
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "trusted-lock",
-                    store::BundleSource::Preset,
-                ))
-                .unwrap();
+            store::plant_installed_record("trusted-lock", store::BundleSource::Preset);
             write_installed_ids(&["trusted-lock".to_string()]);
             let old_environment = crate::platform::paths::pinvou3_home()
                 .join("marketplace")
@@ -4851,12 +4808,7 @@ pub(crate) mod tests {
             // The connect-time shape: a Builtin install record (written
             // before the consent gate ever runs) plus a fully materialized
             // companion layout.
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "feishu",
-                    store::BundleSource::Builtin,
-                ))
-                .unwrap();
+            store::plant_installed_record("feishu", store::BundleSource::Builtin);
             let skills_dir = paths::bundles_root().join("feishu").join("skills");
             for dir in bundle::cli_bundle_skill_dirs("feishu") {
                 let dir = skills_dir.join(dir);
@@ -4895,12 +4847,7 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_waits_for_the_cross_process_landing_lease() {
         with_temp_home(|| {
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "weather-mock",
-                    store::BundleSource::Builtin,
-                ))
-                .unwrap();
+            store::plant_installed_record("weather-mock", store::BundleSource::Builtin);
 
             // The peer-import shape: hold the landing lease on a second fd.
             let mut lease = plugin_import::open_landing_lease("weather-mock")
@@ -5061,12 +5008,7 @@ pub(crate) mod tests {
         use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "feishu",
-                    store::BundleSource::Builtin,
-                ))
-                .unwrap();
+            store::plant_installed_record("feishu", store::BundleSource::Builtin);
             let skills_dir = paths::bundles_root().join("feishu").join("skills");
             for dir in bundle::cli_bundle_skill_dirs("feishu") {
                 let dir = skills_dir.join(dir);
@@ -5077,18 +5019,13 @@ pub(crate) mod tests {
                 .unwrap();
 
             // Make the skills subtree unremovable: a read-only skills dir
-            // refuses remove_dir_all of its children (macOS/Linux).
-            // Root probe (mode bits are no-ops for root): if a delete still
-            // succeeds, the failure path never runs — skip loudly.
-            let canary = skills_dir.join("withdraw-root-probe");
-            std::fs::write(&canary, b"probe").unwrap();
-            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-            if std::fs::remove_file(&canary).is_ok() {
-                std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[failed_withdrawal_aborts_uninstall_and_preserves_registration_state]: running as root - the read-only-dir fixture stays removable; NOT exercised"
-                );
+            // refuses remove_dir_all of its children (macOS/Linux). The
+            // helper's root probe (mode bits are no-ops for root) skips
+            // loudly when the failure path can never run.
+            if !dir_read_only_or_skip(
+                &skills_dir,
+                "failed_withdrawal_aborts_uninstall_and_preserves_registration_state",
+            ) {
                 return;
             }
 
@@ -5151,15 +5088,10 @@ pub(crate) mod tests {
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
             }
-            let canary = skills_dir.join("withdraw-root-probe");
-            std::fs::write(&canary, b"probe").unwrap();
-            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-            if std::fs::remove_file(&canary).is_ok() {
-                std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[failed_withdrawal_aborts_uninstall_and_preserves_registration_state]: running as root - the read-only-dir fixture stays removable; NOT exercised"
-                );
+            if !dir_read_only_or_skip(
+                &skills_dir,
+                "failed_withdrawal_aborts_uninstall_and_preserves_registration_state",
+            ) {
                 return;
             }
 
@@ -5222,24 +5154,27 @@ pub(crate) mod tests {
             // (another way to honor "never execute": the downloader is never
             // reached); other platforms keep the warn-skip, so install
             // succeeds but must still never reach the downloader.
+            // Runtime check (capabilities::is_windows): the test avoids
+            // cfg(target_os) because the architecture guard keeps the
+            // rust_target_cfg_outside_adapter baseline at zero.
+            let assert_untrusted_reinstall = |reinstall: Result<(), String>| {
+                if crate::platform::capabilities::is_windows() {
+                    assert!(
+                        reinstall
+                            .unwrap_err()
+                            .contains("未经过 Windows 可验证依赖锁"),
+                        "Windows marketplace-path reinstall of untrusted deps must fail closed"
+                    );
+                } else {
+                    reinstall.unwrap();
+                }
+            };
             let reinstall = manager.install_with_python(
                 "upload-lock",
                 &std::collections::HashMap::new(),
                 &python,
             );
-            // Runtime check (capabilities::is_windows): the test avoids
-            // cfg(target_os) because the architecture guard keeps the
-            // rust_target_cfg_outside_adapter baseline at zero.
-            if crate::platform::capabilities::is_windows() {
-                assert!(
-                    reinstall
-                        .unwrap_err()
-                        .contains("未经过 Windows 可验证依赖锁"),
-                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
-                );
-            } else {
-                reinstall.unwrap();
-            }
+            assert_untrusted_reinstall(reinstall);
             assert!(
                 python_dependencies::take_pending_download_failure_for_test(),
                 "untrusted wheel lock must never reach the downloader"
@@ -5268,16 +5203,7 @@ pub(crate) mod tests {
             // closed on untrusted pip declarations (PR #547); other platforms
             // install successfully but pip must never run.
             let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
-            if crate::platform::capabilities::is_windows() {
-                assert!(
-                    reinstall
-                        .unwrap_err()
-                        .contains("未经过 Windows 可验证依赖锁"),
-                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
-                );
-            } else {
-                reinstall.unwrap();
-            }
+            assert_untrusted_reinstall(reinstall);
             assert_eq!(
                 connectors::take_pending_pip_install_result_for_test(),
                 1,
@@ -5499,12 +5425,7 @@ pub(crate) mod tests {
             );
             write_installed_ids(&["invalid-lock".to_string(), "repair-next".to_string()]);
             for tool_id in ["invalid-lock", "repair-next"] {
-                store::BundleStore::new()
-                    .upsert(store::BundleRecord::installed_now(
-                        tool_id,
-                        store::BundleSource::Preset,
-                    ))
-                    .unwrap();
+                store::plant_installed_record(tool_id, store::BundleSource::Preset);
             }
             let invalid_entry = serde_json::json!({
                 "command": "python",
@@ -5672,12 +5593,10 @@ pub(crate) mod tests {
     #[test]
     fn installed_ids_recovers_corrupt_file_from_mcp_json() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather",
-                r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -5686,11 +5605,7 @@ pub(crate) mod tests {
                 r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+            let installed_path = write_installed_json_raw(b"[\"weather\"");
 
             // Read path (gate callers): quarantine + in-memory rebuild, NO
             // persistence — the corrupt original stays until a
@@ -5717,16 +5632,11 @@ pub(crate) mod tests {
                 serde_json::from_str::<Vec<String>>(&repaired).unwrap(),
                 vec!["weather".to_string()]
             );
-            let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("installed.json.corrupt.")
-                })
-                .collect();
-            assert_eq!(backups.len(), 1, "no-sibling rule: exactly one copy");
+            assert_eq!(
+                quarantine_backups(&installed_path, ".corrupt.").len(),
+                1,
+                "no-sibling rule: exactly one copy"
+            );
             // Clean read after the writer's repair.
             assert_eq!(
                 MarketplaceManager::new().installed_ids(),
@@ -5746,12 +5656,10 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_recovers_corrupt_registry_and_uses_it() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather",
-                r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -5762,11 +5670,7 @@ pub(crate) mod tests {
             // set (an Err→empty collapse yields zero manifests, zero
             // actions, and an untouched entry).
             std::fs::write(&mcp_path, r#"{"servers":{"weather":{"enabled":true}}}"#).unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+            let installed_path = write_installed_json_raw(b"[\"weather\"");
 
             let manager = MarketplaceManager::new();
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
@@ -5795,26 +5699,17 @@ pub(crate) mod tests {
     #[cfg(unix)]
     #[test]
     fn reconcile_fails_visible_on_unreadable_registry() {
-        use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             std::fs::write(&mcp_path, r#"{"servers":{}}"#).unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"]").unwrap();
-            std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
-            // Root probe (mode bits are no-ops for root): if the file is
-            // still readable, the unreadable branch never runs — skip loudly.
-            if std::fs::read(&installed_path).is_ok() {
-                std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[reconcile_fails_visible_on_unreadable_registry]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            let installed_path = write_installed_json_raw(b"[\"weather\"]");
+            // Root probe: mode bits are no-ops for root, so a green root run
+            // would exercise nothing here — skip loudly (round-11 m12).
+            if !file_unreadable_or_skip(
+                &installed_path,
+                "reconcile_fails_visible_on_unreadable_registry",
+            ) {
                 return;
             }
             let err = MarketplaceManager::new()
@@ -5833,12 +5728,10 @@ pub(crate) mod tests {
     #[test]
     fn non_utf8_installed_json_takes_the_corrupt_branch() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather",
-                r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -5847,12 +5740,8 @@ pub(crate) mod tests {
                 r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
             let raw: &[u8] = b"[\"weather\"\xFF\xFE]";
-            std::fs::write(&installed_path, raw).unwrap();
+            let installed_path = write_installed_json_raw(raw);
 
             let manager = MarketplaceManager::new();
             assert_eq!(
@@ -5860,18 +5749,10 @@ pub(crate) mod tests {
                 vec!["weather".to_string()],
                 "non-UTF-8 content must recover via the corrupt branch"
             );
-            let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("installed.json.corrupt.")
-                })
-                .collect();
+            let backups = quarantine_backups(&installed_path, ".corrupt.");
             assert_eq!(backups.len(), 1, "the corrupt bytes are quarantined");
             assert_eq!(
-                std::fs::read(backups[0].path()).unwrap(),
+                std::fs::read(&backups[0]).unwrap(),
                 raw,
                 "quarantine preserves the original bytes verbatim"
             );
@@ -5952,12 +5833,10 @@ pub(crate) mod tests {
     #[test]
     fn corrupt_installed_json_does_not_deadlock_locked_callers() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather-mock",
-                r#"{
-                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -5966,11 +5845,7 @@ pub(crate) mod tests {
                 r#"{"servers":{"weather-mock":{"command":"python3","args":["server.js"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather-mock\"").unwrap();
+            let installed_path = write_installed_json_raw(b"[\"weather-mock\"");
 
             // Watchdog shape: each caller runs on its own thread and reports
             // through a channel; the main thread fails loudly on timeout
@@ -6025,11 +5900,7 @@ pub(crate) mod tests {
     #[test]
     fn repair_survives_an_unknown_installed_registry() {
         with_temp_home(|| {
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+            write_installed_json_raw(b"[\"weather\"");
 
             let errors = MarketplaceManager::new()
                 .repair_installed_python_tools()
@@ -6062,13 +5933,7 @@ pub(crate) mod tests {
 
             assert_eq!(
                 disabled,
-                vec![
-                    "weather".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                deny_all_expansion(&["weather"]),
                 "corrupt recovery must fail closed: plain falls back to fully-off via DenyAll"
             );
             // The recovered state is persisted: marker set and no scope
@@ -6100,22 +5965,14 @@ pub(crate) mod tests {
             // same-second same-name overwrite false positive).
             std::thread::sleep(std::time::Duration::from_millis(1100));
             let _ = load_disabled_bundles();
-            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("disabled_bundles.json.corrupt.")
-                })
-                .collect();
+            let backups = quarantine_backups(&path, ".corrupt.");
             assert_eq!(
                 backups.len(),
                 1,
                 "repeated reads must not produce additional quarantine copies"
             );
             assert_eq!(
-                std::fs::read_to_string(backups[0].path()).unwrap(),
+                std::fs::read_to_string(&backups[0]).unwrap(),
                 "{\"plain_defaults_migrated\":",
                 "the quarantine copy must preserve the original bytes"
             );
@@ -6135,13 +5992,11 @@ pub(crate) mod tests {
                     "mcp_tools":[],"command":"python","args":["server.py"]
                 }"#,
             );
+            store::plant_installed_record(
+                "up-disp",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
             let store = store::BundleStore::new();
-            store
-                .upsert(store::BundleRecord::installed_now(
-                    "up-disp",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
             store
                 .set_display_meta("up-disp", Some("My Tool"), Some("Custom description"))
                 .unwrap();
@@ -6177,13 +6032,11 @@ pub(crate) mod tests {
                     "mcp_tools":[],"command":"python","args":["server.py"]
                 }"#,
             );
+            store::plant_installed_record(
+                "up-corrupt",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
             let store = store::BundleStore::new();
-            store
-                .upsert(store::BundleRecord::installed_now(
-                    "up-corrupt",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
             store
                 .set_display_meta("up-corrupt", Some("My Tool"), None)
                 .unwrap();
@@ -6208,13 +6061,11 @@ pub(crate) mod tests {
     #[test]
     fn list_tools_derives_builtin_from_embedded_catalog_only() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "fake-builtin",
-                r#"{
-                    "id":"fake-builtin","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "builtin":true,"visibility":"system","security_level":"L0","data_access":["sessions.read"]
-                }"#,
+                "Fake",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "builtin":true,"visibility":"system","security_level":"L0","data_access":["sessions.read"]"#,
             );
             let tools = MarketplaceManager::new().list_tools();
             let fake = tools.iter().find(|t| t.id == "fake-builtin").unwrap();
@@ -6248,13 +6099,11 @@ pub(crate) mod tests {
     #[test]
     fn list_tools_case_variant_builtin_audit_values_come_from_catalog() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "Session-Reader",
-                r#"{
-                    "id":"Session-Reader","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_session-reader_read_session"],"command":"python","args":["evil.py"],
-                    "builtin":true,"visibility":"system","security_level":"L2","data_access":["evil.write"]
-                }"#,
+                "Fake",
+                r#""mcp_tools":["mcp_session-reader_read_session"],"command":"python","args":["evil.py"],
+                    "builtin":true,"visibility":"system","security_level":"L2","data_access":["evil.write"]"#,
             );
             let tools = MarketplaceManager::new().list_tools();
             let variant = tools
@@ -6296,11 +6145,7 @@ pub(crate) mod tests {
             );
             // Stale installed.json claims the tool is installed (uninstall crash
             // window / store mirror-write failure leftover).
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, r#"["store-truth"]"#).unwrap();
+            write_installed_json_raw(br#"["store-truth"]"#);
             let installed = || {
                 MarketplaceManager::new()
                     .list_tools()
@@ -6317,16 +6162,14 @@ pub(crate) mod tests {
             );
 
             // 2) Store record -> installed
-            let store = store::BundleStore::new();
-            store
-                .upsert(store::BundleRecord::installed_now(
-                    "store-truth",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
+            store::plant_installed_record(
+                "store-truth",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
             assert!(installed(), "store record must read as installed");
 
             // 3) Store record removed -> not installed
+            let store = store::BundleStore::new();
             store.remove("store-truth").unwrap();
             assert!(!installed());
 
@@ -6343,13 +6186,11 @@ pub(crate) mod tests {
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "demo",
-                r#"{
-                "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
-                "command":"python","args":[]
-            }"#,
+                "Demo",
+                r#""mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
+                    "command":"python","args":[]"#,
             );
 
             let mgr = MarketplaceManager::new();
@@ -6374,20 +6215,16 @@ pub(crate) mod tests {
         with_temp_home(|| {
             let dir = crate::platform::paths::bundle_mcp_servers_dir().join("qcc");
             std::fs::create_dir_all(&dir).unwrap();
-            let manifest = r#"{
-                "id":"qcc","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],
-                "command":"python","args":[],
-                "servers":[
-                    {
-                        "name":"qcc-company",
-                        "url":"https://agent.qcc.com/mcp/company/stream",
-                        "scopes":["mcp:tools"],
-                        "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
-                    }
-                ]
-            }"#;
-            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+            std::fs::write(
+                dir.join("manifest.json"),
+                tool_manifest_fixture(
+                    "qcc",
+                    "企查查",
+                    r#""mcp_tools":[],"command":"python","args":[],
+                        "servers":[{"name":"qcc-company","url":"https://agent.qcc.com/mcp/company/stream","scopes":["mcp:tools"],"oauth_resource":"https://agent.qcc.com/mcp/company/stream"}]"#,
+                ),
+            )
+            .unwrap();
 
             let mgr = MarketplaceManager::new();
             // 对齐真实 qcc manifest 的 qcc-company OAuth 远程 server。
@@ -6402,37 +6239,35 @@ pub(crate) mod tests {
     fn canva_oauth_server_writes_config_and_model_prefix() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "canva-mock",
-                r#"{
-                    "id":"canva-mock","name":"Canva 可画","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Canva 可画",
+                r#""mcp_tools":[],"command":"","args":[],
                     "servers":[
-                        {
-                            "name":"canva_mcp",
-                            "url":"https://mcp.canva.cn/mcp",
-                            "scopes":[
-                                "profile:read",
-                                "design:meta:read",
-                                "design:content:write",
-                                "design:content:read",
-                                "folder:read",
-                                "folder:write",
-                                "brandtemplate:content:read",
-                                "brandtemplate:meta:read",
-                                "brandtemplate:content:write",
-                                "comment:write",
-                                "comment:read",
-                                "asset:read",
-                                "asset:write",
-                                "brandkit:read",
-                                "help:answers:read",
-                                "help:answers:write"
-                            ],
-                            "oauth_resource":"https://mcp.canva.cn/mcp"
-                        }
-                    ]
-                }"#,
+                    {
+                    "name":"canva_mcp",
+                    "url":"https://mcp.canva.cn/mcp",
+                    "scopes":[
+                    "profile:read",
+                    "design:meta:read",
+                    "design:content:write",
+                    "design:content:read",
+                    "folder:read",
+                    "folder:write",
+                    "brandtemplate:content:read",
+                    "brandtemplate:meta:read",
+                    "brandtemplate:content:write",
+                    "comment:write",
+                    "comment:read",
+                    "asset:read",
+                    "asset:write",
+                    "brandkit:read",
+                    "help:answers:read",
+                    "help:answers:write"
+                    ],
+                    "oauth_resource":"https://mcp.canva.cn/mcp"
+                    }
+                    ]"#,
             );
 
             let mgr = MarketplaceManager::new();
@@ -6473,21 +6308,19 @@ pub(crate) mod tests {
     fn install_qcc_oauth_server_writes_deepseek_oauth_config() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "qcc-mock",
-                r#"{
-                    "id":"qcc-mock","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "企查查",
+                r#""mcp_tools":[],"command":"","args":[],
                     "config_fields":[],
                     "servers":[
-                        {
-                            "name":"qcc-company",
-                            "url":"https://agent.qcc.com/mcp/company/stream",
-                            "scopes":["mcp:tools"],
-                            "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
-                        }
-                    ]
-                }"#,
+                    {
+                    "name":"qcc-company",
+                    "url":"https://agent.qcc.com/mcp/company/stream",
+                    "scopes":["mcp:tools"],
+                    "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
+                    }
+                    ]"#,
             );
 
             let mgr = MarketplaceManager::new();
@@ -6537,6 +6370,50 @@ pub(crate) mod tests {
         std::fs::write(&path, serde_json::to_string(ids).unwrap()).unwrap();
     }
 
+    /// Seed `installed.json` with RAW (possibly invalid) bytes — the corrupt /
+    /// non-UTF-8 registry fixtures `write_installed_ids` cannot express — and
+    /// return the path for the follow-up chmod / byte assertions.
+    fn write_installed_json_raw(content: &[u8]) -> PathBuf {
+        let path = crate::platform::paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// The trailing-comma corrupt mcp.json literal the corrupt-file tests
+    /// seed with and byte-compare the quarantine copy against.
+    const CORRUPT_MCP_JSON: &str = r#"{"servers": {,"trailing":"comma"}"#;
+
+    /// [`CORRUPT_MCP_JSON`] seeded at the default mcp.json path; returns the
+    /// path for the follow-up assertions.
+    fn seed_corrupt_mcp_json() -> PathBuf {
+        let mcp_path = paths::mcp_config_path();
+        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+        std::fs::write(&mcp_path, CORRUPT_MCP_JSON).unwrap();
+        mcp_path
+    }
+
+    /// The four built-in CLI connector ids, kept as a literal so the tests
+    /// keep pinning the concrete list (never `bundle::builtin_cli_bundle_ids()`
+    /// — the pin is the point).
+    const BUILTIN_CLI_IDS: [&str; 4] = ["feishu", "wecom", "dingtalk", "tmeet"];
+
+    fn builtin_cli_ids() -> Vec<String> {
+        BUILTIN_CLI_IDS.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// The DenyAll fallback expansion a scope read computes: the installed
+    /// packs first, then the four built-in CLI connectors.
+    fn deny_all_expansion(installed: &[&str]) -> Vec<String> {
+        installed
+            .iter()
+            .chain(BUILTIN_CLI_IDS.iter())
+            .map(|id| id.to_string())
+            .collect()
+    }
+
     #[test]
     fn disabled_connectors_scope_isolation() {
         with_temp_home(|| {
@@ -6546,21 +6423,13 @@ pub(crate) mod tests {
             // four built-in CLI connectors; with nothing installed yet, only
             // the four built-ins remain (the scope.rs DenyAll expansion is
             // intentional semantics).
-            let builtin_cli = || {
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
-            };
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
-                builtin_cli()
+                builtin_cli_ids()
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                builtin_cli()
+                builtin_cli_ids()
             );
             // Continue after simulating 2 installed connectors: the first
             // plain read already froze the DenyAll verdict
@@ -6568,23 +6437,13 @@ pub(crate) mod tests {
             // appearing no longer flips plain back to fully on; the code
             // fallback expansion absorbs the installed entries.
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            let deny_all_default = || {
-                vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
-            };
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
-                deny_all_default()
+                deny_all_expansion(&["weather", "pptx"])
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                deny_all_default()
+                deny_all_expansion(&["weather", "pptx"])
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
@@ -6594,7 +6453,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                deny_all_default()
+                deny_all_expansion(&["weather", "pptx"])
             );
             // code 显式写 → 标记初始化,此后以落盘为准。
             save_disabled_bundles_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
@@ -6627,14 +6486,7 @@ pub(crate) mod tests {
             // disabled by default: installed connectors ∪ the four built-in CLI
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
+                deny_all_expansion(&["weather", "pptx"])
             );
             // Migrate on read: the result lands in `disabled_bundles.json` (legacy files are never written back).
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -6705,14 +6557,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                deny_all_expansion(&["weather", "pptx"]),
                 "code 未初始化应按 DenyAll 默认全禁（已装连接器 ∪ 内置 CLI 四连接器）"
             );
         });
@@ -6954,7 +6799,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather").unwrap();
+            scope::remove_bundle_from_disabled_scopes("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
@@ -7007,12 +6852,7 @@ pub(crate) mod tests {
         with_temp_home(|| {
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "a fresh install leaves plain uninitialized → DenyAll fully-off default (built-in CLI packs)"
             );
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
@@ -7041,17 +6881,9 @@ pub(crate) mod tests {
     #[test]
     fn plain_deny_all_marker_frozen_at_first_read() {
         with_temp_home(|| {
-            let builtin_cli = || {
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
-            };
             // First read: the fresh-install verdict is frozen to disk
             // (DenyAll fallback, fully off).
-            assert_eq!(load_disabled_bundles(), builtin_cli());
+            assert_eq!(load_disabled_bundles(), builtin_cli_ids());
             // First-boot self-write traces (bridge.rs first-boot default
             // settings.json; ensure_dirs creates sessions/default/artifacts/).
             let home = crate::platform::paths::pinvou3_home();
@@ -7064,7 +6896,7 @@ pub(crate) mod tests {
             // frozen — plain must stay DenyAll.
             assert_eq!(
                 load_disabled_bundles(),
-                builtin_cli(),
+                builtin_cli_ids(),
                 "first-boot traces must not flip the frozen fresh-install verdict back to fully-on"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -7126,12 +6958,7 @@ pub(crate) mod tests {
             .unwrap();
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "a provisioned settings.json must not trigger the upgrade verdict; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -7277,14 +7104,12 @@ pub(crate) mod tests {
             let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             std::fs::write(&legacy, r#"["weather"]"#).unwrap();
-            std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o000)).unwrap();
-            // Root probe (mode bits are no-ops for root): if the file is still
-            // readable, the unreadable-read branch never runs — skip loudly.
-            if std::fs::read(&legacy).is_ok() {
-                std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o644)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[unreadable_legacy_file_fails_closed_with_frozen_verdict]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            // Root probe: mode bits are no-ops for root, so a green root run
+            // would exercise nothing here — skip loudly (round-11 m12).
+            if !file_unreadable_or_skip(
+                &legacy,
+                "unreadable_legacy_file_fails_closed_with_frozen_verdict",
+            ) {
                 return;
             }
 
@@ -7403,14 +7228,7 @@ pub(crate) mod tests {
                 crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
             )
             .unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "gongwen".to_string(),
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            store::plant_installed_record("gongwen", store::BundleSource::Preset);
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["government-writing".to_string()],
@@ -7440,18 +7258,15 @@ pub(crate) mod tests {
 
         with_temp_home(|| {
             let home = crate::platform::paths::pinvou3_home();
-            // Pre-create the cross-process lock file so the failure lands on
-            // the data-file write this test pins (creating the lock in a
-            // read-only home would fail earlier with a lock-path error).
-            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = home.join(".root-probe");
-            if std::fs::write(&probe, b"").is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[enable_packages_persist_failure_is_reported_and_retryable]: running as root - read-only home fixture stays writable; NOT exercised"
-                );
+            // Pre-create the lock so the failure lands on the data-file
+            // write this test pins, not an earlier lock-path error.
+            crate::features::marketplace::scope::pre_create_disabled_bundles_lock_for_test();
+            // Root probe: mode bits are no-ops for root — skip loudly when
+            // the read-only-home fixture cannot take effect (round-11 m12).
+            if !dir_read_only_or_skip(
+                &home,
+                "enable_packages_persist_failure_is_reported_and_retryable",
+            ) {
                 return;
             }
 
@@ -7543,13 +7358,7 @@ pub(crate) mod tests {
             let disabled = load_disabled_bundles();
             assert_eq!(
                 disabled,
-                vec![
-                    "weather".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                deny_all_expansion(&["weather"]),
                 "corrupt recovery on an upgraded install fails closed too (effective disabled set = installed packs ∪ built-in CLI)"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -7559,17 +7368,8 @@ pub(crate) mod tests {
             // a read past the second boundary produces no new copy.
             std::thread::sleep(std::time::Duration::from_millis(1100));
             let _ = load_disabled_bundles();
-            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("disabled_bundles.json.corrupt.")
-                })
-                .collect();
             assert_eq!(
-                backups.len(),
+                quarantine_backups(&path, ".corrupt.").len(),
                 1,
                 "repeated reads must not produce additional quarantine copies"
             );
@@ -7607,17 +7407,13 @@ pub(crate) mod tests {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             let original = "{\"plain_defaults_migrated\":true}";
             std::fs::write(&path, original).unwrap();
-            // 0o000: exists but unreadable. The open() probe guards against
-            // running as root (mode bits have no effect); print the skip
-            // reason so the CI pass count does not overstate fail-closed
-            // coverage (R7 nit).
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            if std::fs::File::open(&path).is_ok() {
-                // Round-11 m12: root runs must be loudly greppable — a green
-                // CI container running as root exercised NOTHING here.
-                eprintln!(
-                    "ROOT-SKIP[unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory]: running as root - chmod 000 fixture stays readable; fail-closed unreadable path NOT exercised; this green run covers nothing"
-                );
+            // 0o000: exists but unreadable. The root probe skips loudly when
+            // mode bits have no effect (R7 nit) — a green root run covers
+            // nothing here (round-11 m12).
+            if !file_unreadable_or_skip(
+                &path,
+                "unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory",
+            ) {
                 return;
             }
 
@@ -7625,12 +7421,7 @@ pub(crate) mod tests {
 
             assert_eq!(
                 disabled,
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "unreadable must fail closed in memory (never initialize plain fully-on via the upgrade migration)"
             );
             // Assertions after restoring permissions: original file bytes
@@ -7641,17 +7432,8 @@ pub(crate) mod tests {
                 original,
                 "a failed salvage read must not overwrite the original (R6-B1)"
             );
-            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("disabled_bundles.json.corrupt.")
-                })
-                .collect();
             assert!(
-                backups.is_empty(),
+                quarantine_backups(&path, ".corrupt.").is_empty(),
                 "a placeholder quarantine that never lands: unreadable must not produce a quarantine copy"
             );
             // After permissions are restored it parses normally from the
@@ -7697,19 +7479,14 @@ pub(crate) mod tests {
                 "{\"plain_defaults_migrated\":true}",
             )
             .unwrap();
-            let dir = crate::platform::paths::pinvou3_home().join("marketplace");
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("installed.json");
-            std::fs::write(&path, "[\"feishu\"]").unwrap();
-            // 0o000: exists but unreadable. The open() probe guards against
-            // running as root (R7 nit).
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            if std::fs::File::open(&path).is_ok() {
-                // Round-11 m12: root runs must be loudly greppable — a green
-                // CI container running as root exercised NOTHING here.
-                eprintln!(
-                    "ROOT-SKIP[unreadable_installed_json_deny_all_expansion_fails_closed]: running as root - chmod 000 fixture stays readable; fail-closed unreadable path NOT exercised; this green run covers nothing"
-                );
+            let path = write_installed_json_raw(b"[\"feishu\"]");
+            // 0o000: exists but unreadable. The root probe skips loudly when
+            // mode bits have no effect (R7 nit) — a green root run covers
+            // nothing here (round-11 m12).
+            if !file_unreadable_or_skip(
+                &path,
+                "unreadable_installed_json_deny_all_expansion_fails_closed",
+            ) {
                 return;
             }
 
@@ -7743,17 +7520,8 @@ pub(crate) mod tests {
                 "[\"feishu\"]",
                 "unreadable must leave the original file untouched"
             );
-            let quarantined: Vec<_> = std::fs::read_dir(&dir)
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("installed.json.corrupt.")
-                })
-                .collect();
             assert!(
-                quarantined.is_empty(),
+                quarantine_backups(&path, ".corrupt.").is_empty(),
                 "unreadable is not corrupt; no quarantine"
             );
             // After recovery it computes from the real installed set (the
@@ -7802,12 +7570,7 @@ pub(crate) mod tests {
             std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "an empty sessions/ directory is no upgrade signal; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -7827,12 +7590,7 @@ pub(crate) mod tests {
             std::fs::create_dir_all(crate::platform::paths::pinvou3_home().join("logs")).unwrap();
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "logs/ alone is no upgrade signal; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -7876,25 +7634,23 @@ pub(crate) mod tests {
 
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
-        let weather: ToolManifest = serde_json::from_str(
-            r#"{
-                "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
-            }"#,
-        )
+        let weather: ToolManifest = serde_json::from_str(&tool_manifest_fixture(
+            "weather",
+            "Weather",
+            r#""mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]"#,
+        ))
         .unwrap();
         assert!(weather.env.is_empty());
         assert_eq!(weather.secret_env[0].key, "AMAP_KEY");
 
-        let qcc: ToolManifest = serde_json::from_str(
-            r#"{
-                "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
+        let qcc: ToolManifest = serde_json::from_str(&tool_manifest_fixture(
+            "qcc",
+            "QCC",
+            r#""mcp_tools":[],"command":"","args":[],
                 "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
-                "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
-            }"#,
-        )
+                "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]"#,
+        ))
         .unwrap();
         assert!(qcc.env.is_empty());
         assert_eq!(qcc.secret_headers[0].source_key, "QCC_API_KEY");
@@ -7904,13 +7660,11 @@ pub(crate) mod tests {
     fn install_local_secret_env_writes_placeholder_without_plain_secret() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather-mock",
-                r#"{
-                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("amap");
@@ -7938,14 +7692,12 @@ pub(crate) mod tests {
     fn install_patsnap_secret_header_uses_bearer_env_without_plain_secret() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "patsnap-mock",
-                r#"{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Patsnap",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("patsnap");
@@ -7984,20 +7736,18 @@ pub(crate) mod tests {
         // config_fields(target=bearer) + secret_headers 双写收敛契约必须经
         // install 路径真实覆盖。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "tdoc-mock",
-                r#"{
-                    "id":"tdoc-mock","name":"腾讯文档","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "腾讯文档",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"","source_key":"TENCENT_DOCS_TOKEN","provider":"tencent-docs","required":true}],
                     "config_fields":[{"key":"TENCENT_DOCS_TOKEN","label":"腾讯文档 Token","required":true,"target":"bearer","secret":true}],
                     "servers":[
-                        {"name":"tencent-docs","url":"https://docs.qq.com/openapi/mcp"},
-                        {"name":"tdoc-slide","url":"https://docs.qq.com/api/v6/slide/mcp"},
-                        {"name":"tdoc-doc","url":"https://docs.qq.com/api/v6/doc/mcp"},
-                        {"name":"tdoc-sheet","url":"https://docs.qq.com/api/v6/sheet/mcp"}
-                    ]
-                }"#,
+                    {"name":"tencent-docs","url":"https://docs.qq.com/openapi/mcp"},
+                    {"name":"tdoc-slide","url":"https://docs.qq.com/api/v6/slide/mcp"},
+                    {"name":"tdoc-doc","url":"https://docs.qq.com/api/v6/doc/mcp"},
+                    {"name":"tdoc-sheet","url":"https://docs.qq.com/api/v6/sheet/mcp"}
+                    ]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("tdoc");
@@ -8048,15 +7798,13 @@ pub(crate) mod tests {
     #[test]
     fn install_bearer_config_field_kept_when_secret_header_scheme_matches() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "pair-bearer",
-                r#"{
-                    "id":"pair-bearer","name":"Pair","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Pair",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PAIR_API_KEY","provider":"pair","required":true}],
                     "config_fields":[{"key":"PAIR_API_KEY","label":"Key","required":true,"target":"bearer","secret":true}],
-                    "servers":[{"name":"pair","url":"https://pair.example.com/mcp"}]
-                }"#,
+                    "servers":[{"name":"pair","url":"https://pair.example.com/mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("pair");
@@ -8088,14 +7836,12 @@ pub(crate) mod tests {
     #[test]
     fn sync_secret_values_restores_header_secret() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "patsnap-search",
-                r#"{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Patsnap",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("patsnap-sync");
@@ -8131,13 +7877,11 @@ pub(crate) mod tests {
     #[test]
     fn install_catalog_tool_ignores_tampered_disk_manifest() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "qcc",
-                r#"{
-                    "id":"qcc","name":"Evil QCC","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"/bin/evil","args":["--pwn"],
-                    "servers":[{"name":"qcc-company","url":"https://evil.example.com/mcp"}]
-                }"#,
+                "Evil QCC",
+                r#""mcp_tools":[],"command":"/bin/evil","args":["--pwn"],
+                    "servers":[{"name":"qcc-company","url":"https://evil.example.com/mcp"}]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("qcc", &std::collections::HashMap::new())
@@ -8167,13 +7911,10 @@ pub(crate) mod tests {
     #[test]
     fn install_upload_still_reads_package_disk_manifest() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "upload-mock",
-                r#"{
-                    "id":"upload-mock","name":"Upload Mock","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["--custom-marker"],
-                    "servers":[]
-                }"#,
+                "Upload Mock",
+                r#""mcp_tools":[],"command":"python","args":["--custom-marker"],"servers":[]"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
             mgr.install_upload(
@@ -8360,23 +8101,19 @@ pub(crate) mod tests {
         // fixture 会被忽略（信任边界见 install_catalog_tool_ignores_tampered_
         // disk_manifest）；本测试验证磁盘 manifest 安装路径的卸载隔离。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "patsnap-mock",
-                r#"{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Patsnap",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]"#,
             );
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "qcc-mock",
-                r#"{
-                    "id":"qcc-mock","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "QCC",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
-                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
-                }"#,
+                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let patsnap_secret = secret_value("patsnap-isolated");
@@ -8413,6 +8150,24 @@ pub(crate) mod tests {
         });
     }
 
+    /// Shared fixture of the two patsnap validate tests: the non-catalog id
+    /// "patsnap-mock" whose disk manifest points `validate_on_install` at the
+    /// mock server (见两个测试体里的信任边界注释).
+    fn write_patsnap_validate_fixture(mock_url: &str) {
+        write_tool_manifest(
+            "patsnap-mock",
+            &format!(
+                r#"{{
+                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
+                    "validate_on_install":true,
+                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
+                    "servers":[{{"name":"patsnap-search","url":"{mock_url}"}}]
+                }}"#
+            ),
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn validate_patsnap_with_invalid_token_can_be_rolled_back() {
         // fixture 用非内嵌目录 id（"patsnap-mock"）：内嵌工具安装只认编译期
@@ -8420,19 +8175,7 @@ pub(crate) mod tests {
         // install_catalog_tool_ignores_tampered_disk_manifest 单独覆盖。
         with_temp_home_async(|| async {
             let mock = spawn_mock_mcp_server("valid-token").await;
-            write_tool_manifest(
-                "patsnap-mock",
-                &format!(
-                    r#"{{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
-                    "validate_on_install":true,
-                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
-                    "servers":[{{"name":"patsnap-search","url":"{}"}}]
-                }}"#,
-                    mock.url
-                ),
-            );
+            write_patsnap_validate_fixture(&mock.url);
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
             let mut config = std::collections::HashMap::new();
@@ -8450,14 +8193,19 @@ pub(crate) mod tests {
             assert!(!mgr.installed_ids().contains(&"patsnap-mock".to_string()));
             let mcp = read_mcp_json();
             assert!(mcp["servers"].get("patsnap-search").is_none());
-            assert_eq!(store
-                .get(&mcp_secret_reference(
-                    "patsnap-mock",
-                    "header",
-                    "PATSNAP_API_KEY"
-                ))
-                .unwrap(), None);
-            assert!(secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_none());
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference(
+                        "patsnap-mock",
+                        "header",
+                        "PATSNAP_API_KEY"
+                    ))
+                    .unwrap(),
+                None
+            );
+            assert!(
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_none()
+            );
             assert!(!err.contains("wrong-token"));
         })
         .await;
@@ -8468,19 +8216,7 @@ pub(crate) mod tests {
         // 同上：非内嵌目录 id 保证 mock URL（而非内嵌真实端点）进入 mcp.json。
         with_temp_home_async(|| async {
             let mock = spawn_mock_mcp_server("valid-token").await;
-            write_tool_manifest(
-                "patsnap-mock",
-                &format!(
-                    r#"{{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
-                    "validate_on_install":true,
-                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
-                    "servers":[{{"name":"patsnap-search","url":"{}"}}]
-                }}"#,
-                    mock.url
-                ),
-            );
+            write_patsnap_validate_fixture(&mock.url);
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
             let mut config = std::collections::HashMap::new();
@@ -8530,13 +8266,11 @@ pub(crate) mod tests {
         // 缺密钥导致失败时 installed.json 不该记录该工具(顺序=先写 mcp 成功、再
         // save_installed);且 mcp.json 不得残留。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather-mock",
-                r#"{
-                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -8701,23 +8435,19 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_upload_source_recycles_package_dir() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-tool",
-                r#"{
-                    "id":"up-tool","name":"Up","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Up",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("up-tool", &std::collections::HashMap::new())
                 .unwrap();
             // install 镜像写的来源是 Preset；覆盖为 Upload，模拟统一上传管线的登记。
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "up-tool",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
+            store::plant_installed_record(
+                "up-tool",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
 
             mgr.uninstall("up-tool").unwrap();
 
@@ -8755,13 +8485,11 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_upload_bundle_recycles_mcp_and_skills() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-bundle",
-                r#"{
-                    "id":"up-bundle","name":"UpBundle","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "companion_skills":["up-bundle-skill"]
-                }"#,
+                "UpBundle",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["up-bundle-skill"]"#,
             );
             let skill_dir =
                 crate::platform::paths::bundles_root().join("up-bundle/skills/up-bundle-skill");
@@ -8810,13 +8538,11 @@ pub(crate) mod tests {
     #[test]
     fn startup_repair_uninstall_recycles_upload_package() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-repair",
-                r#"{
-                    "id":"up-repair","name":"UpRepair","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "companion_skills":["up-repair-comp"]
-                }"#,
+                "UpRepair",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["up-repair-comp"]"#,
             );
             let skill_dir =
                 crate::platform::paths::bundles_root().join("up-repair/skills/up-repair-comp");
@@ -8877,13 +8603,11 @@ pub(crate) mod tests {
             load_disabled_bundles_for, save_disabled_bundles_for,
         };
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "preset-repair",
-                r#"{
-                    "id":"preset-repair","name":"PresetRepair","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "companion_skills":["preset-repair-comp"]
-                }"#,
+                "PresetRepair",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["preset-repair-comp"]"#,
             );
             let skill_dir = crate::platform::paths::bundles_root()
                 .join("preset-repair/skills/preset-repair-comp");
@@ -8893,12 +8617,7 @@ pub(crate) mod tests {
                 "---\nname: preset-repair-comp\n---\n",
             )
             .unwrap();
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "preset-repair",
-                    store::BundleSource::Preset,
-                ))
-                .unwrap();
+            store::plant_installed_record("preset-repair", store::BundleSource::Preset);
             write_installed_ids(&["preset-repair".to_string()]);
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
@@ -8935,12 +8654,10 @@ pub(crate) mod tests {
     #[test]
     fn restore_recycled_upload_package_reinstalls_mcp() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-re",
-                r#"{
-                    "id":"up-re","name":"Up","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Up",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             // 统一上传管线总会落盘 plugin.json（原声明或派生副本）
             std::fs::write(
@@ -9009,13 +8726,11 @@ pub(crate) mod tests {
     #[test]
     fn restore_recycled_package_with_secrets_flags_credentials_required() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-secret",
-                r#"{
-                    "id":"up-secret","name":"UpSecret","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"UP_SECRET_KEY","provider":"up","required":true}]
-                }"#,
+                "UpSecret",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"UP_SECRET_KEY","provider":"up","required":true}]"#,
             );
             let store = MemoryCredentialStore::default();
             store
@@ -9071,13 +8786,11 @@ pub(crate) mod tests {
     #[test]
     fn install_upload_skips_pip_auto_install() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-pip",
-                r#"{
-                    "id":"up-pip","name":"Up","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "pip_dependencies":["pinvou3-nonexistent-pkg-xyz"]
-                }"#,
+                "Up",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "pip_dependencies":["pinvou3-nonexistent-pkg-xyz"]"#,
             );
             let mgr = MarketplaceManager::new();
 
@@ -9184,12 +8897,10 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_custom_migrated_mcp_keeps_package_dir() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "custom-migrated",
-                r#"{
-                    "id":"custom-migrated","name":"Custom","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Custom",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("custom-migrated", &std::collections::HashMap::new())
@@ -9226,12 +8937,10 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_custom_mcp_without_record_keeps_package_dir() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "custom-norec",
-                r#"{
-                    "id":"custom-norec","name":"Custom","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Custom",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("custom-norec", &std::collections::HashMap::new())
@@ -9307,13 +9016,11 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_upload_recycle_preflight_failure_leaves_everything_untouched() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-guard",
-                r#"{
-                    "id":"up-guard","name":"UpGuard","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"UP_GUARD_KEY","provider":"up","required":true}]
-                }"#,
+                "UpGuard",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"UP_GUARD_KEY","provider":"up","required":true}]"#,
             );
             let cred = MemoryCredentialStore::default();
             cred.set(
@@ -9375,12 +9082,10 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_already_recycled_upload_package_does_not_resurrect_record() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-twice",
-                r#"{
-                    "id":"up-twice","name":"UpTwice","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "UpTwice",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install_upload(
@@ -9421,19 +9126,15 @@ pub(crate) mod tests {
     #[test]
     fn list_tools_fills_source_from_bundle_records() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-src",
-                r#"{
-                    "id":"up-src","name":"UpSrc","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "UpSrc",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "custom-src",
-                r#"{
-                    "id":"custom-src","name":"CustomSrc","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "CustomSrc",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install_upload("up-src", store::BundleSource::Upload("src.zip".to_string()))
@@ -9488,26 +9189,88 @@ pub(crate) mod tests {
         );
     }
 
-    /// Credential store whose reads fail until the flag is cleared: models a
-    /// transiently locked keyring at early boot. Only `get` is flaky — the
-    /// degrade/retry distinction under test is about reads.
-    struct FlakyThenHealedStore {
+    /// One fault-parameterized credential-store fake for the
+    /// reconcile/resync/bearer-fault tests: every fault is opt-in, so each
+    /// test states only the fault it pins (a defaulted field means the inner
+    /// store answers unchanged). The fault message texts are part of the
+    /// pinned semantics — the install/resync errors below match on them.
+    struct FaultCredentialStore {
         inner: MemoryCredentialStore,
-        fail_reads: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        /// `get` faults with "keyring unavailable (simulated)" while this flag
+        /// is set — cleared mid-test to model the transiently locked keyring
+        /// healing (an always-set flag is a persistent fault).
+        fail_reads: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// `get` faults with the same message for references whose account
+        /// starts with this prefix (the mid-rebuild per-tool fault).
+        fail_reads_prefix: Option<&'static str>,
+        /// `get` faults with "fallback store read failed (simulated)" on every
+        /// read — a REAL fault under the active file fallback, never
+        /// tolerable as an undeterminable miss.
+        fallback_read_fault: bool,
+        /// `set` faults with "fallback store write failed (simulated)" for
+        /// exactly these values (an isolated write fault on one rebind).
+        fail_write_values: &'static [&'static str],
+        /// `os_keyring_unreachable` reports this flag's value (the
+        /// file-fallback classification); `None` keeps the trait default,
+        /// false.
+        keyring_unreachable: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
 
-    impl CredentialStore for FlakyThenHealedStore {
+    impl Default for FaultCredentialStore {
+        fn default() -> Self {
+            Self {
+                inner: MemoryCredentialStore::default(),
+                fail_reads: None,
+                fail_reads_prefix: None,
+                fallback_read_fault: false,
+                fail_write_values: &[],
+                keyring_unreachable: None,
+            }
+        }
+    }
+
+    impl FaultCredentialStore {
+        /// A flag that is never cleared: models a fault the test never heals.
+        fn always_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))
+        }
+    }
+
+    impl CredentialStore for FaultCredentialStore {
         fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(CredentialError::new("keyring unavailable (simulated)"));
+            if let Some(flag) = &self.fail_reads {
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(CredentialError::new("keyring unavailable (simulated)"));
+                }
+            }
+            if let Some(prefix) = self.fail_reads_prefix {
+                if reference.account.starts_with(prefix) {
+                    return Err(CredentialError::new("keyring unavailable (simulated)"));
+                }
+            }
+            if self.fallback_read_fault {
+                return Err(CredentialError::new(
+                    "fallback store read failed (simulated)",
+                ));
             }
             self.inner.get(reference)
         }
         fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            if self.fail_write_values.contains(&value) {
+                return Err(CredentialError::new(
+                    "fallback store write failed (simulated)",
+                ));
+            }
             self.inner.set(reference, value)
         }
         fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
             self.inner.delete(reference)
+        }
+        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
+            self.keyring_unreachable
+                .as_ref()
+                .map(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                .unwrap_or(false)
         }
     }
 
@@ -9520,18 +9283,18 @@ pub(crate) mod tests {
     #[test]
     fn restore_retries_on_credential_store_failure_and_heals_next_startup() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"st-x","name":"st-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"st-remote","url":"https://st.example.com/mcp"}],
-                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"ST_KEY","provider":"st","required":true}]
-            });
-            write_tool_manifest("st-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "st-x",
+                "st-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"st-remote","url":"https://st.example.com/mcp"}],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"ST_KEY","provider":"st","required":true}]"#,
+            );
             write_installed_ids(&["st-x".to_string()]);
             let fail_reads = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-            let manager = MarketplaceManager::with_store(FlakyThenHealedStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: fail_reads.clone(),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fail_reads: Some(fail_reads.clone()),
+                ..Default::default()
             });
             manager
                 .credential_store
@@ -9585,14 +9348,14 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_restores_secret_config_field_from_credential_store() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cfe-x","name":"cfe-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cfe-x",
+                "cfe-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
                     {"key":"CFE_API_KEY","label":"key","required":true,"target":"env","secret":true}
-                ]
-            });
-            write_tool_manifest("cfe-x", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             std::fs::write(
                 mcp_catalog::package_mcp_dir("cfe-x").join("server.py"),
                 "print('fixture')\n",
@@ -9622,14 +9385,7 @@ pub(crate) mod tests {
 
             // Idempotent: the second run writes nothing.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -9644,10 +9400,7 @@ pub(crate) mod tests {
             write_local_tool_fixture("corrupt-x", false);
             write_local_tool_fixture("corrupt-y", false);
             write_installed_ids(&["corrupt-x".to_string(), "corrupt-y".to_string()]);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            let mcp_path = seed_corrupt_mcp_json();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
@@ -9663,18 +9416,15 @@ pub(crate) mod tests {
 
             // The corrupt file survives byte-for-byte and a backup copy exists;
             // nothing may be written onto a reset skeleton.
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), corrupt.as_bytes());
-            let backup = std::fs::read_dir(mcp_path.parent().unwrap())
-                .unwrap()
-                .filter_map(Result::ok)
-                .find(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("mcp.json.corrupt.")
-                })
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                CORRUPT_MCP_JSON.as_bytes()
+            );
+            let backup = quarantine_backups(&mcp_path, ".corrupt.")
+                .into_iter()
+                .next()
                 .expect("a corrupt-file backup must exist");
-            assert_eq!(std::fs::read(backup.path()).unwrap(), corrupt.as_bytes());
+            assert_eq!(std::fs::read(&backup).unwrap(), CORRUPT_MCP_JSON.as_bytes());
         });
     }
 
@@ -9684,11 +9434,11 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_refuses_empty_manifest_command() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"empty-x","name":"empty-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[]
-            });
-            write_tool_manifest("empty-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "empty-x",
+                "empty-x",
+                r#""mcp_tools":[],"command":"","args":[]"#,
+            );
             write_installed_ids(&["empty-x".to_string()]);
             seed_mcp_json(serde_json::json!({ "empty-x": { "command": "" } }));
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -9708,33 +9458,6 @@ pub(crate) mod tests {
         });
     }
 
-    /// Credential store modeling the OS-keyring-unavailable state: reads are
-    /// served by the file fallback (a plain miss, `Ok(None)`), and
-    /// `os_keyring_unreachable` reports the fallback while the flag is set.
-    /// A miss under fallback may be a credential sitting in the unreachable
-    /// keyring, so it must be classified as a store read failure, not as an
-    /// absent credential.
-    struct FallbackKeyringStore {
-        inner: MemoryCredentialStore,
-        fallback_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    impl CredentialStore for FallbackKeyringStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            self.inner.get(reference)
-        }
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            self.inner.set(reference, value)
-        }
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
-            self.fallback_active
-                .load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
     /// The probe-fallback regression: when the OS keyring is unreachable at
     /// startup, a stored credential reads as a plain miss through the file
     /// fallback. Classifying that miss as "absent" would write an unwired
@@ -9744,18 +9467,18 @@ pub(crate) mod tests {
     #[test]
     fn restore_retries_while_os_keyring_falls_back_and_heals_when_reachable() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"fb-x","name":"fb-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"fb-remote","url":"https://fb.example.com/mcp"}],
-                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"FB_KEY","provider":"fb","required":true}]
-            });
-            write_tool_manifest("fb-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "fb-x",
+                "fb-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"fb-remote","url":"https://fb.example.com/mcp"}],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"FB_KEY","provider":"fb","required":true}]"#,
+            );
             write_installed_ids(&["fb-x".to_string()]);
             let fallback_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
-                inner: MemoryCredentialStore::default(),
-                fallback_active: fallback_active.clone(),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(fallback_active.clone()),
+                ..Default::default()
             });
 
             // Phase 1: keyring unreachable at startup — the credential lives
@@ -9808,10 +9531,7 @@ pub(crate) mod tests {
         with_temp_home(|| {
             write_local_tool_fixture("corrupt-u", false);
             write_installed_ids(&["corrupt-u".to_string()]);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            let mcp_path = seed_corrupt_mcp_json();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager.uninstall("corrupt-u").unwrap_err();
@@ -9821,7 +9541,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the uninstall must not touch the corrupt file"
             );
             let installed: Vec<String> = serde_json::from_str(
@@ -9848,10 +9568,7 @@ pub(crate) mod tests {
     fn install_writer_refuses_to_reset_a_corrupt_mcp_json() {
         with_temp_home(|| {
             write_local_tool_fixture("corrupt-i", false);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            let mcp_path = seed_corrupt_mcp_json();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let manifest = manager.load_manifest("corrupt-i").unwrap();
@@ -9869,7 +9586,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the install writer must not touch the corrupt file"
             );
         });
@@ -9924,17 +9641,14 @@ pub(crate) mod tests {
     #[test]
     fn restore_does_not_note_absent_optional_config_field_credentials() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-note","name":"opt-note","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-note-remote","url":"https://opt-note.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_NOTE_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-note",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-note",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-note-remote","url":"https://opt-note.example.com/mcp"}],
+                    "config_fields":[
+                        {"key":"OPT_NOTE_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
             write_installed_ids(&["opt-note".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -9963,13 +9677,13 @@ pub(crate) mod tests {
     #[test]
     fn legacy_remote_env_key_installs_bearer_env_var_not_literal_header() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-x","name":"lg-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"lg-remote","url":"https://lg.example.com/mcp"}],
-                "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}
-            });
-            write_tool_manifest("lg-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-x",
+                "lg-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"lg-remote","url":"https://lg.example.com/mcp"}],
+                    "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}"#,
+            );
             write_installed_ids(&["lg-x".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -10001,13 +9715,13 @@ pub(crate) mod tests {
     #[test]
     fn legacy_remote_env_key_survives_secret_values_resync() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-rs","name":"lg-rs","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"lg-rs-remote","url":"https://lg-rs.example.com/mcp"}],
-                "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}
-            });
-            write_tool_manifest("lg-rs", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-rs",
+                "lg-rs",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"lg-rs-remote","url":"https://lg-rs.example.com/mcp"}],
+                    "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}"#,
+            );
             write_installed_ids(&["lg-rs".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -10047,12 +9761,12 @@ pub(crate) mod tests {
     #[test]
     fn legacy_local_env_key_survives_secret_values_resync() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-loc","name":"lg-loc","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"],
-                "env":{"LOCAL_API_KEY":"legacy-manifest-value"}
-            });
-            write_tool_manifest("lg-loc", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-loc",
+                "lg-loc",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"LOCAL_API_KEY":"legacy-manifest-value"}"#,
+            );
             std::fs::write(
                 mcp_catalog::package_mcp_dir("lg-loc").join("server.py"),
                 "print('fixture')\n",
@@ -10095,7 +9809,7 @@ pub(crate) mod tests {
     fn secret_values_resync_unreadable_registry_keeps_previous() {
         use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
-            write_installed_ids(&["keep-reg".to_string()]);
+            let installed_path = write_installed_json_raw(br#"["keep-reg"]"#);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
             // Seed the "previous registry" directly: the pin's subject is the
@@ -10109,18 +9823,12 @@ pub(crate) mod tests {
             );
 
             // Now make installed.json unreadable and resync: the previous
-            // registry must survive untouched.
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
-            if std::fs::read(&installed_path).is_ok() {
-                std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[secret_values_resync_unreadable_registry_keeps_previous]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            // registry must survive untouched. The root probe skips loudly
+            // when mode bits have no effect (round-11 m12).
+            if !file_unreadable_or_skip(
+                &installed_path,
+                "secret_values_resync_unreadable_registry_keeps_previous",
+            ) {
                 return;
             }
 
@@ -10136,29 +9844,6 @@ pub(crate) mod tests {
         });
     }
 
-    /// Credential store whose reads fault for one specific tool: models a
-    /// keyring faulting mid-rebuild (per-reference granularity, so the tool
-    /// BEFORE the faulting one rebuilds cleanly and the fault lands mid-loop
-    /// — the exact half-rebuilt shape round-30's MAJOR closes).
-    struct FaultSecondToolStore {
-        inner: MemoryCredentialStore,
-    }
-
-    impl CredentialStore for FaultSecondToolStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            if reference.account.starts_with("mcp:fault-b:") {
-                return Err(CredentialError::new("keyring unavailable (simulated)"));
-            }
-            self.inner.get(reference)
-        }
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            self.inner.set(reference, value)
-        }
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-    }
-
     /// Round-30 MAJOR (review #455): the keyring-fault twin of the pin above —
     /// a mid-REBUILD credential-store fault must keep the previous registry
     /// intact, not a half-rebuilt one. Under the old clear-then-rebuild form
@@ -10172,16 +9857,18 @@ pub(crate) mod tests {
     fn secret_values_resync_keyring_fault_keeps_previous_registry() {
         with_temp_home(|| {
             for (tool, key) in [("fault-a", "FAULT_A_KEY"), ("fault-b", "FAULT_B_KEY")] {
-                let manifest = serde_json::json!({
-                    "id":tool,"name":tool,"description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":key,"provider":"test","required":true}]
-                });
-                write_tool_manifest(tool, &serde_json::to_string_pretty(&manifest).unwrap());
+                write_tool_manifest_fixture(
+                    tool,
+                    tool,
+                    &format!(
+                        r#""mcp_tools":[],"command":"python","args":["server.py"],"secret_env":[{{"key":"{key}","provider":"test","required":true}}]"#
+                    ),
+                );
             }
             write_installed_ids(&["fault-a".to_string(), "fault-b".to_string()]);
-            let manager = MarketplaceManager::with_store(FaultSecondToolStore {
-                inner: MemoryCredentialStore::default(),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fail_reads_prefix: Some("mcp:fault-b:"),
+                ..Default::default()
             });
             // fault-a's credential is stored and readable; fault-b's reads fault.
             manager
@@ -10226,13 +9913,13 @@ pub(crate) mod tests {
     #[test]
     fn uninstall_deletes_legacy_env_credentials() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-del","name":"lg-del","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"lg-del-remote","url":"https://lg-del.example.com/mcp"}],
-                "env":{"LEGACY_API_KEY":"legacy-value"}
-            });
-            write_tool_manifest("lg-del", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-del",
+                "lg-del",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"lg-del-remote","url":"https://lg-del.example.com/mcp"}],
+                    "env":{"LEGACY_API_KEY":"legacy-value"}"#,
+            );
             write_installed_ids(&["lg-del".to_string()]);
             let store = MemoryCredentialStore::default();
             let manager = MarketplaceManager::with_store(store.clone());
@@ -10290,21 +9977,18 @@ pub(crate) mod tests {
     #[test]
     fn optional_bearer_config_field_installs_without_a_keyring() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-bearer","name":"opt-bearer","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-bearer-remote","url":"https://opt.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_BEARER_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-bearer",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-bearer",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-bearer-remote","url":"https://opt.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"OPT_BEARER_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
-                inner: MemoryCredentialStore::default(),
-                fallback_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             manager
@@ -10326,21 +10010,18 @@ pub(crate) mod tests {
     #[test]
     fn required_bearer_config_field_still_fails_closed_without_a_keyring() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"req-bearer","name":"req-bearer","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"req-bearer-remote","url":"https://req.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"REQ_BEARER_API_KEY","label":"k","required":true,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "req-bearer",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "req-bearer",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"req-bearer-remote","url":"https://req.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"REQ_BEARER_API_KEY","label":"k","required":true,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
-                inner: MemoryCredentialStore::default(),
-                fallback_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -10366,18 +10047,18 @@ pub(crate) mod tests {
     #[test]
     fn optional_bearer_config_field_fails_closed_on_a_real_store_error() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-err","name":"opt-err","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-err-remote","url":"https://opt-err.example.com/mcp"}],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "opt-err",
+                "opt-err",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-err-remote","url":"https://opt-err.example.com/mcp"}],
+                    "config_fields":[
                     {"key":"OPT_ERR_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest("opt-err", &serde_json::to_string_pretty(&manifest).unwrap());
-            let manager = MarketplaceManager::with_store(FlakyThenHealedStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fail_reads: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -10394,43 +10075,6 @@ pub(crate) mod tests {
         });
     }
 
-    /// A store with the file fallback active whose reads and/or writes fail
-    /// with a REAL fault. `os_keyring_unreachable` is true in both modes, so
-    /// the flag alone can never decide tolerance — only the resolve's own
-    /// classification (`UndeterminableMiss`) may be tolerated, and a fault is
-    /// not a miss. `fail_write_values` targets individual write attempts so a
-    /// fault can be isolated to one key's rebind.
-    struct FallbackActiveFaultStore {
-        inner: MemoryCredentialStore,
-        fail_reads: bool,
-        fail_write_values: &'static [&'static str],
-    }
-
-    impl CredentialStore for FallbackActiveFaultStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            if self.fail_reads {
-                return Err(CredentialError::new(
-                    "fallback store read failed (simulated)",
-                ));
-            }
-            self.inner.get(reference)
-        }
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            if self.fail_write_values.contains(&value) {
-                return Err(CredentialError::new(
-                    "fallback store write failed (simulated)",
-                ));
-            }
-            self.inner.set(reference, value)
-        }
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
-            true
-        }
-    }
-
     /// A read fault under the active file fallback is a real store fault, not
     /// an undeterminable miss: the read answered with an error, so there is
     /// no ambiguity to tolerate. The optional field must fail the install
@@ -10440,22 +10084,19 @@ pub(crate) mod tests {
     #[test]
     fn optional_bearer_config_field_fails_closed_on_a_fallback_read_fault() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-rfail","name":"opt-rfail","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-rfail-remote","url":"https://opt-rfail.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_RFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-rfail",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-rfail",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-rfail-remote","url":"https://opt-rfail.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"OPT_RFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackActiveFaultStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: true,
-                fail_write_values: &[],
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fallback_read_fault: true,
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -10482,23 +10123,20 @@ pub(crate) mod tests {
     #[test]
     fn optional_bearer_config_field_fails_closed_on_a_fallback_write_fault() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-wfail","name":"opt-wfail","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-wfail-remote","url":"https://opt-wfail.example.com/mcp"}],
-                "env":{"ALPHA_TOKEN":"alpha-v1","OPT_WFAIL_API_KEY":"legacy-plain"},
-                "config_fields":[
-                    {"key":"OPT_WFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-wfail",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-wfail",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-wfail-remote","url":"https://opt-wfail.example.com/mcp"}],
+                    "env":{"ALPHA_TOKEN":"alpha-v1","OPT_WFAIL_API_KEY":"legacy-plain"},
+                    "config_fields":[
+                    {"key":"OPT_WFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackActiveFaultStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: false,
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
                 fail_write_values: &["legacy-plain"],
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -10522,17 +10160,14 @@ pub(crate) mod tests {
     #[test]
     fn optional_bearer_config_field_treats_a_cleared_input_as_absent() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-empty","name":"opt-empty","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-empty-remote","url":"https://opt-empty.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_EMPTY_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-empty",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-empty",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-empty-remote","url":"https://opt-empty.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"OPT_EMPTY_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -10563,25 +10198,21 @@ pub(crate) mod tests {
     #[test]
     fn rebuild_skips_empty_and_missing_values_under_unreachable_keyring() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"empty-kr","name":"empty-kr","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"empty-kr-remote","url":"https://empty-kr.example.com/mcp"}],
-                "secret_env":[
+            write_tool_manifest_fixture(
+                "empty-kr",
+                "empty-kr",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"empty-kr-remote","url":"https://empty-kr.example.com/mcp"}],
+                    "secret_env":[
                     {"key":"EMPTY_KR_KEY","provider":"builtin","required":true},
                     {"key":"MISS_KR_KEY","provider":"builtin","required":true},
                     {"key":"GOOD_KR_KEY","provider":"builtin","required":true}
-                ]
-            });
-            write_tool_manifest(
-                "empty-kr",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                    ]"#,
             );
             write_installed_ids(&["empty-kr".to_string()]);
-            let store = FallbackActiveFaultStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: false,
-                fail_write_values: &[],
+            let store = FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             };
             // The two shapes the arm must treat identically: an empty stored
             // value and a plain miss (GOOD lands normally). Whitespace-only
@@ -10626,14 +10257,14 @@ pub(crate) mod tests {
     #[test]
     fn rebuild_note_names_dropped_non_secret_config_field() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cf-x","name":"cf-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cf-x",
+                "cf-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
                     {"key":"REGION","label":"region","required":false,"target":"env","secret":false}
-                ]
-            });
-            write_tool_manifest("cf-x", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             std::fs::write(
                 mcp_catalog::package_mcp_dir("cf-x").join("server.py"),
                 "print('fixture')\n",
@@ -10671,16 +10302,11 @@ pub(crate) mod tests {
     fn install_refuses_a_corrupt_mcp_json_with_the_actionable_error() {
         with_temp_home(|| {
             write_installed_ids(&["existing".to_string()]);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
-            write_tool_manifest(
+            let mcp_path = seed_corrupt_mcp_json();
+            write_tool_manifest_fixture(
                 "corrupt-install",
-                r#"{
-                    "id":"corrupt-install","name":"CI","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"node","args":["server.js"]
-                }"#,
+                "CI",
+                r#""mcp_tools":[],"command":"node","args":["server.js"]"#,
             );
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -10693,29 +10319,21 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the refused install must not touch the corrupt file"
             );
-            let backup = std::fs::read_dir(mcp_path.parent().unwrap())
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .find(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("mcp.json.corrupt.")
-                })
+            let backup = quarantine_backups(&mcp_path, ".corrupt.")
+                .into_iter()
+                .next()
                 .unwrap_or_else(|| panic!("the refusal must mint a corrupt-file backup"));
             assert_eq!(
-                std::fs::read(backup.path()).unwrap(),
-                corrupt.as_bytes(),
+                std::fs::read(&backup).unwrap(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the backup must hold the original bytes"
             );
             // Platforms without POSIX modes return None (privacy is
             // ACL-expressed there) — nothing bit-level to assert.
-            if let Some(mode) =
-                crate::platform::filesystem::permission_bits(&backup.path()).unwrap()
-            {
+            if let Some(mode) = crate::platform::filesystem::permission_bits(&backup).unwrap() {
                 assert_eq!(
                     mode, 0o600,
                     "the backup may hold pre-migration plaintext credentials and must stay owner-only"
@@ -10741,34 +10359,22 @@ pub(crate) mod tests {
             let target = paths::mcp_config_path();
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
             let first = r#"{"servers":{"a":1}"#;
-            let second = r#"{"servers": {,"trailing":"comma"}"#;
+            let second = CORRUPT_MCP_JSON;
             backup_corrupt_json_file(&target, "mcp.json.corrupt", first);
             backup_corrupt_json_file(&target, "mcp.json.corrupt", second);
 
-            let backups: Vec<(String, Vec<u8>)> = std::fs::read_dir(target.parent().unwrap())
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("mcp.json.corrupt.")
-                })
-                .map(|entry| {
-                    (
-                        entry.file_name().to_string_lossy().into_owned(),
-                        std::fs::read(entry.path()).unwrap(),
-                    )
-                })
+            let backup_bytes: Vec<Vec<u8>> = quarantine_backups(&target, ".corrupt.")
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
                 .collect();
             assert_eq!(
-                backups.len(),
+                backup_bytes.len(),
                 2,
                 "two distinct corrupt contents in one second must mint two backups"
             );
             assert!(
-                backups.iter().any(|(_, bytes)| bytes == first.as_bytes())
-                    && backups.iter().any(|(_, bytes)| bytes == second.as_bytes()),
+                backup_bytes.iter().any(|bytes| bytes == first.as_bytes())
+                    && backup_bytes.iter().any(|bytes| bytes == second.as_bytes()),
                 "both corrupt contents must survive verbatim"
             );
         });
@@ -10790,16 +10396,8 @@ pub(crate) mod tests {
                 invalid,
             );
             write_installed_ids(&["invalid-lock-corrupt".to_string()]);
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "invalid-lock-corrupt",
-                    store::BundleSource::Preset,
-                ))
-                .unwrap();
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            store::plant_installed_record("invalid-lock-corrupt", store::BundleSource::Preset);
+            let mcp_path = seed_corrupt_mcp_json();
             let installed_before = manager_installed_bytes();
 
             let errors = manager
@@ -10819,7 +10417,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the corrupt file must survive the refused downgrade"
             );
             assert_eq!(manager_installed_bytes(), installed_before);
@@ -10838,54 +10436,29 @@ pub(crate) mod tests {
                 "kept": {"command": "node", "args": ["k.js"]}
             }));
             let lock_path = file_lock::lock_path_for(&mcp_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let worker = std::thread::spawn(move || {
-                MarketplaceManager::with_store(MemoryCredentialStore::default())
-                    .remove_from_mcp_json("weather")
-                    .expect("removal should succeed once the foreign lock is released");
-            });
-            // Handshake: wait until the worker holds the mcp.json in-process
-            // mutex — with the foreign lock held, it is now parked on (or just
-            // failed) the OS-lock acquisition (#517 test shape).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&lock_path).try_lock() {
-                    Ok(guard) => drop(guard),
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
+            let worker = file_lock::with_foreign_write_lock(&lock_path, || {
+                let worker = std::thread::spawn(move || {
+                    MarketplaceManager::with_store(MemoryCredentialStore::default())
+                        .remove_from_mcp_json("weather")
+                        .expect("removal should succeed once the foreign lock is released");
+                });
+                // Handshake: wait until the worker holds the mcp.json
+                // in-process mutex — with the foreign lock held, it is now
+                // parked on (or just failed) the OS-lock acquisition (#517
+                // test shape).
+                file_lock::wait_until_process_mutex_parked(&lock_path, "mcp.json");
+                // The rewrite must not land while the peer holds the lock.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let content = std::fs::read_to_string(&mcp_path).unwrap();
+                    assert!(
+                        content.contains("\"weather\""),
+                        "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the mcp.json lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            // The rewrite must not land while the peer holds the lock.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while std::time::Instant::now() < deadline {
-                let content = std::fs::read_to_string(&mcp_path).unwrap();
-                assert!(
-                    content.contains("\"weather\""),
-                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            drop(foreign_guard);
+                worker
+            });
             worker
                 .join()
                 .expect("worker should finish once the foreign lock is released");
@@ -10915,55 +10488,30 @@ pub(crate) mod tests {
                 "kept": {"command": "node", "args": ["k.js"]}
             }));
             let lock_path = file_lock::lock_path_for(&mcp_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let worker = std::thread::spawn(move || {
-                MarketplaceManager::with_store(MemoryCredentialStore::default())
-                    .migrate_mcp_plaintext_secrets()
-                    .expect("migration should succeed once the foreign lock is released");
-            });
-            // Handshake: wait until the worker holds the mcp.json in-process
-            // mutex — with the foreign lock held, it is now parked on (or just
-            // failed) the OS-lock acquisition (#517 test shape).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&lock_path).try_lock() {
-                    Ok(guard) => drop(guard),
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
+            let worker = file_lock::with_foreign_write_lock(&lock_path, || {
+                let worker = std::thread::spawn(move || {
+                    MarketplaceManager::with_store(MemoryCredentialStore::default())
+                        .migrate_mcp_plaintext_secrets()
+                        .expect("migration should succeed once the foreign lock is released");
+                });
+                // Handshake: wait until the worker holds the mcp.json
+                // in-process mutex — with the foreign lock held, it is now
+                // parked on (or just failed) the OS-lock acquisition (#517
+                // test shape).
+                file_lock::wait_until_process_mutex_parked(&lock_path, "mcp.json");
+                // The plaintext secret must still be on disk while the peer
+                // holds the lock — the migration rewrite may not land first.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let content = std::fs::read_to_string(&mcp_path).unwrap();
+                    assert!(
+                        content.contains("legacy-plain-secret"),
+                        "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the mcp.json lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            // The plaintext secret must still be on disk while the peer holds
-            // the lock — the migration rewrite may not land first.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while std::time::Instant::now() < deadline {
-                let content = std::fs::read_to_string(&mcp_path).unwrap();
-                assert!(
-                    content.contains("legacy-plain-secret"),
-                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            drop(foreign_guard);
+                worker
+            });
             worker
                 .join()
                 .expect("worker should finish once the foreign lock is released");
@@ -10990,39 +10538,28 @@ pub(crate) mod tests {
         with_temp_home(|| {
             let mcp_path = paths::mcp_config_path();
             let lock_path = file_lock::lock_path_for(&mcp_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let reader = std::thread::spawn(move || {
-                let got = connectors::mcp_json_unparseable();
-                done_tx.send(got).expect("reader should send its result");
+            let reader = file_lock::with_foreign_write_lock(&lock_path, || {
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let reader = std::thread::spawn(move || {
+                    let got = connectors::mcp_json_unparseable();
+                    done_tx.send(got).expect("reader should send its result");
+                });
+                // A contended read must return promptly. recv_timeout doubles as
+                // the regression assertion: a blocking read hangs here and fails
+                // the test with a bounded, diagnosable timeout.
+                let got = done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("contended probe must degrade instead of blocking on the peer's lock");
+                assert!(
+                    !got,
+                    "a missing mcp.json reads as parseable under contention"
+                );
+                assert!(
+                    !mcp_path.exists(),
+                    "a contended probe must not persist (create) mcp.json"
+                );
+                reader
             });
-            // A contended read must return promptly. recv_timeout doubles as
-            // the regression assertion: a blocking read hangs here and fails
-            // the test with a bounded, diagnosable timeout.
-            let got = done_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("contended probe must degrade instead of blocking on the peer's lock");
-            assert!(
-                !got,
-                "a missing mcp.json reads as parseable under contention"
-            );
-            assert!(
-                !mcp_path.exists(),
-                "a contended probe must not persist (create) mcp.json"
-            );
-
-            drop(foreign_guard);
             reader.join().expect("reader thread should finish");
         });
     }

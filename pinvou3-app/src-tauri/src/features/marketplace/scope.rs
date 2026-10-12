@@ -293,6 +293,46 @@ pub(crate) fn fail_next_disabled_bundles_write_for_test() -> super::FailpointRes
     super::arm_failpoint(&FAIL_NEXT_DISABLED_BUNDLES_WRITE)
 }
 
+/// Test fixture: initialize the Code scope through the real guarded writer
+/// while the cross-process lock still works ("initialized" is what makes the
+/// DenyAll sync a required write). Canonical home of the deny-first seed —
+/// previously hand-rolled twins in connectors/ima.rs and
+/// app/commands/marketplace.rs; new deny-first tests copy this helper. Must
+/// run BEFORE any read-only-home chmod (the write needs a writable home; see
+/// [`pre_create_disabled_bundles_lock_for_test`] for the lock-file ordering).
+#[cfg(test)]
+pub(crate) fn seed_initialized_code_scope_for_test(ids: &[&str]) {
+    let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+    save_disabled_bundles_for(ConnectorScope::Code, &ids)
+        .expect("code scope must initialize while the lock works");
+}
+
+/// Test fixture: replace the scope lock FILE with a DIRECTORY so every lock
+/// open fails — the deny-first refusal fixture (the consent-gate sync then
+/// refuses with the lock-path error). Canonical home of the idiom (also
+/// ima.rs, skill_gate.rs, and the commands tests), next to
+/// [`fail_next_disabled_bundles_write_for_test`]. The remove tolerates a
+/// not-yet-created lock so a fresh home works; the directory creation pins.
+#[cfg(test)]
+pub(crate) fn break_scope_lock_for_test() {
+    let lock = disabled_bundles_lock_path();
+    let _ = std::fs::remove_file(&lock);
+    std::fs::create_dir_all(&lock).unwrap();
+}
+
+/// Test fixture: pre-create the cross-process lock FILE before a test turns
+/// the home read-only. Opening an EXISTING file in a read-only home
+/// succeeds, so the failure lands on the data-file write the test pins;
+/// without the pre-create the lock OPEN itself fails and the read takes the
+/// degraded arm — a different (also-honest) failure than the one under test,
+/// and a degraded read neither persists nor memoizes. Canonical home of the
+/// doctrine sentence previously spelled at every read-only-home test site
+/// (scope.rs tests; the mod.rs / recycle_bin.rs copies migrate here).
+#[cfg(test)]
+pub(crate) fn pre_create_disabled_bundles_lock_for_test() {
+    std::fs::write(disabled_bundles_lock_path(), b"").unwrap();
+}
+
 /// The fail-closed recovered state shared by the corrupt/lost-store recovery
 /// arms: only the migration marker is set and no scope is initialized, so the
 /// DenyAll fallback keeps every previously opted-out pack off.
@@ -762,6 +802,13 @@ pub fn load_disabled_bundles_startup() -> bool {
     freeze_persist_failed
 }
 
+/// The freeze-persist failure notice shared by every host channel: the GUI
+/// and windowless hosts mirror it onto the startup timeline and the console
+/// bin eprintlns it (`src/bin/dump_system_prompt.rs` interpolates this
+/// const — the startup timeline is `pub(crate)` and invisible to the bin,
+/// so the two channels cannot share the emitter, only the string).
+pub const FREEZE_PERSIST_FAILURE_NOTICE: &str = "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart";
+
 /// The shared host-side shape of a startup read: run the fully locked freeze
 /// read and, when the verdict this boot relies on is not persisted, mirror
 /// the failure onto the startup timeline — the CRITICAL log fires inside the
@@ -777,7 +824,7 @@ pub(crate) fn load_disabled_bundles_startup_mirrored() {
         crate::platform::startup::mark_with_detail(
             "rust",
             "disabled_bundles_migration",
-            "CRITICAL: the fresh-vs-upgraded verdict could not be persisted; the in-process verdict holds until restart",
+            FREEZE_PERSIST_FAILURE_NOTICE,
         );
     }
 }
@@ -1083,9 +1130,7 @@ fn normalize_stored_pkg_ids_with(tools: &[super::ToolManifest], ids: &[String]) 
         if crate::features::marketplace::builtin::is_builtin_tool(&pkg) {
             continue;
         }
-        if !out.iter().any(|x| x == &pkg) {
-            out.push(pkg);
-        }
+        push_unique(&mut out, pkg);
     }
     out
 }
@@ -1106,33 +1151,24 @@ fn normalize_stored_pkg_ids_with(tools: &[super::ToolManifest], ids: &[String]) 
 fn migrate_from_legacy_files() -> (DisabledBundlesFile, bool) {
     let mut file = DisabledBundlesFile::default();
     let mut unconsumable = false;
-    unconsumable |= merge_connector_scopes_into(&mut file);
-    unconsumable |= merge_skill_scopes_into(&mut file);
-    (file, unconsumable)
-}
-
-/// 把旧 `disabled_connectors.json` 的各 scope 条目映射为包 id 并并进 `file`
-/// （scope 条目按旧文件**覆盖写**）。返回「文件存在但不可消费」。
-fn merge_connector_scopes_into(file: &mut DisabledBundlesFile) -> bool {
-    merge_legacy_scope_file_into(
-        file,
+    // Connector scopes overwrite the scope entry; skill scopes union and
+    // inherit `project_skills_enabled` — the two legacy files' distinct
+    // 落库 semantics stay visible here at their only use site.
+    unconsumable |= merge_legacy_scope_file_into(
+        &mut file,
         &paths::pinvou3_home().join("disabled_connectors.json"),
         |file, key, ids| {
             file.scopes.insert(key.to_string(), ids);
         },
         false,
-    )
-}
-
-/// 把旧 `disabled_skills.json` 的各 scope 条目映射为包 id 并并进 `file`（取并集），
-/// 并继承 `project_skills_enabled`。返回「文件存在但不可消费」。
-fn merge_skill_scopes_into(file: &mut DisabledBundlesFile) -> bool {
-    merge_legacy_scope_file_into(
-        file,
+    );
+    unconsumable |= merge_legacy_scope_file_into(
+        &mut file,
         &paths::pinvou3_home().join("disabled_skills.json"),
-        |file, key, ids| merge_ids_into_scope(file, key, ids),
+        merge_ids_into_scope,
         true,
-    )
+    );
+    (file, unconsumable)
 }
 
 /// 旧 scope 文件（`disabled_connectors.json` / `disabled_skills.json`）的共用解析
@@ -1291,6 +1327,15 @@ fn merge_legacy_scope_file_into(
     false
 }
 
+/// Append `id` to an order-preserving dedup list only when absent. The
+/// disabled/hidden/catalog lists are match-exact by id and must keep
+/// first-write order, so a HashSet-backed set is not a drop-in.
+fn push_unique(out: &mut Vec<String>, id: String) {
+    if !out.iter().any(|x| x == &id) {
+        out.push(id);
+    }
+}
+
 /// 并集合并到某 scope（去重、保序）。
 fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<String>) {
     if ids.is_empty() {
@@ -1298,9 +1343,7 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
     let entry = file.scopes.entry(key.to_string()).or_default();
     for id in ids {
-        if !entry.iter().any(|e| e == &id) {
-            entry.push(id);
-        }
+        push_unique(entry, id);
     }
 }
 
@@ -1528,168 +1571,155 @@ pub fn load_disabled_bundles_for(scope: ConnectorScope) -> Vec<String> {
 /// `load_disabled_bundles_for` 与持锁写方（单临界区 RMW）共用，口径一致。
 fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope) -> Vec<String> {
     let key = scope.as_str();
-    if file.initialized.contains(key) {
+    // Initialized scopes follow the persisted list. The AllowAll arm shared
+    // that exact body (and no shipped mode packs AllowAll today — see
+    // session_mode.rs), so both collapse into one guard; a hypothetical
+    // third policy variant would fall through to the DenyAll expansion
+    // below, the fail-closed direction.
+    if file.initialized.contains(key) || scope.pack_default_policy() == PackDefaultPolicy::AllowAll
+    {
         return normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default());
     }
-    match scope.pack_default_policy() {
-        PackDefaultPolicy::AllowAll => {
-            normalize_stored_pkg_ids(&file.scopes.get(key).cloned().unwrap_or_default())
+    // DenyAll expansion: 已按当前认领推导包 id，无需再归一。
+    // installed.json exists but cannot be read (permissions/lock in
+    // use): the "installed set" is unknown — must fail closed by
+    // disabling all installable packs; treating it as an empty set
+    // would strip every installed pack from an uninitialized scope's
+    // effective disabled set (plain sessions pass with zero consent,
+    // a fail-open flip), and an enable at that moment would
+    // materialize the shrunken expansion into a permanent opt-in
+    // (review #455 R5-B2). Over-disabling uninstalled packs is
+    // harmless: packs installed later are still off by default,
+    // consistent with this branch's semantics.
+    let manager = MarketplaceManager::new();
+    // Round-23 MINOR 3 hoist: one manifest walk per resolution pass —
+    // `skill_owner_package`/`skill_gating_owner` each parse every
+    // manifest under `bundles_root`, so the skill arms below were
+    // O(skills × packs) manifest reads per expansion before this.
+    let tools = manager.available_tools();
+    let mut ids: Vec<String> = match manager.try_installed_ids() {
+        Ok(ids) => ids,
+        Err(error) => {
+            // Latched once per process — this expansion
+            // runs per turn on the hot path while installed.json
+            // stays unreadable (the shared latch also covers
+            // mod.rs's recovery notices).
+            super::log_installed_recovery_once(format!(
+                "[scope] {error}; DenyAll expansion falls back to the full available catalog (fail-closed)"
+            ));
+            let mut catalog: Vec<String> =
+                tools.iter().map(|manifest| manifest.id.clone()).collect();
+            // The two record arms deliberately use the claim mapping
+            // (`skill_owner_package`): their inputs are ids the registry itself claims —
+            // identical to the gating mapping whenever a claim exists, and standalone
+            // registered skills have no physical nested layout to fall back to. Only the
+            // disk leg below walks `skill_gating_owner`: it enumerates exactly the
+            // **unclaimed** physical directories and must stay on the same lens as
+            // materialization's directory scan (round-20 minor 3: the asymmetry vs the
+            // record arms is annotated here deliberately, not an oversight).
+            for info in SkillMarketplaceManager::new().list_skills() {
+                let pkg = skill_owner_package_with(&tools, &info.id);
+                push_unique(&mut catalog, pkg);
+            }
+            catalog
         }
-        PackDefaultPolicy::DenyAll => {
-            // 现算分支：已按当前认领推导包 id，无需再归一。
-            // installed.json exists but cannot be read (permissions/lock in
-            // use): the "installed set" is unknown — must fail closed by
-            // disabling all installable packs; treating it as an empty set
-            // would strip every installed pack from an uninitialized scope's
-            // effective disabled set (plain sessions pass with zero consent,
-            // a fail-open flip), and an enable at that moment would
-            // materialize the shrunken expansion into a permanent opt-in
-            // (review #455 R5-B2). Over-disabling uninstalled packs is
-            // harmless: packs installed later are still off by default,
-            // consistent with this branch's semantics.
-            let manager = MarketplaceManager::new();
-            // Round-23 MINOR 3 hoist: one manifest walk per resolution pass —
-            // `skill_owner_package`/`skill_gating_owner` each parse every
-            // manifest under `bundles_root`, so the skill arms below were
-            // O(skills × packs) manifest reads per expansion before this.
-            let tools = manager.available_tools();
-            let mut ids: Vec<String> = match manager.try_installed_ids() {
-                Ok(ids) => ids,
-                Err(error) => {
-                    // Latched once per process — this expansion
-                    // runs per turn on the hot path while installed.json
-                    // stays unreadable (the shared latch also covers
-                    // mod.rs's recovery notices).
-                    super::log_installed_recovery_once(format!(
-                        "[scope] {error}; DenyAll expansion falls back to the full available catalog (fail-closed)"
-                    ));
-                    let mut catalog: Vec<String> =
-                        tools.iter().map(|manifest| manifest.id.clone()).collect();
-                    // The two record arms deliberately use the claim mapping
-                    // (`skill_owner_package`): their inputs are ids the registry itself claims —
-                    // identical to the gating mapping whenever a claim exists, and standalone
-                    // registered skills have no physical nested layout to fall back to. Only the
-                    // disk leg below walks `skill_gating_owner`: it enumerates exactly the
-                    // **unclaimed** physical directories and must stay on the same lens as
-                    // materialization's directory scan (round-20 minor 3: the asymmetry vs the
-                    // record arms is annotated here deliberately, not an oversight).
-                    for info in SkillMarketplaceManager::new().list_skills() {
-                        let pkg = skill_owner_package_with(&tools, &info.id);
-                        if !catalog.iter().any(|id| id == &pkg) {
-                            catalog.push(pkg);
-                        }
-                    }
-                    catalog
-                }
-            };
-            ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-            // Same as above (round-20 minor 3): the record arm uses the claim mapping, the disk leg the gating mapping.
-            // #584 composition: the record arm probes STRICTLY — when skill
-            // enumeration degrades, the blanket union below biases the freshly
-            // computed default toward over-denial instead of letting a failed
-            // probe silently shrink the consent set.
-            let skill_market = SkillMarketplaceManager::new();
-            let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
-            if skill_scan_degraded {
-                // Enumeration degraded (#531): a failed probe can masquerade an
-                // installed skill as absent, so the default deny set must not
-                // shrink because of it. Blanket-union the owner packages of
-                // every preset skill (compile-time manifests) and of every
-                // known upload record — an uninitialized DenyAll scope would
-                // rather have the user enable a package explicitly than hand
-                // the consent gate a default silently narrowed by an
-                // enumeration failure. Owner mapping is the same
-                // `skill_owner_package` path as the normal loop below.
-                // Accepted residual: with an unreadable bundle store the upload
-                // population itself is unknowable (the lenient upload read
-                // yields nothing to union); with an unreadable packages root,
-                // straggler-copy-only skills of neither kind can be seen.
-                log::warn!(
-                    "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
-                );
-                let mut blanket: Vec<String> =
-                    SkillMarketplaceManager::preset_skill_ids().collect();
-                blanket.extend(skill_market.uploaded_skill_ids());
-                for skill_id in blanket {
-                    let pkg = skill_owner_package_with(&tools, &skill_id);
-                    if !ids.iter().any(|id| id == &pkg) {
-                        ids.push(pkg);
-                    }
-                }
-            }
-            for skill_id in skill_ids {
-                let pkg = skill_owner_package_with(&tools, &skill_id);
-                if !ids.iter().any(|id| id == &pkg) {
-                    ids.push(pkg);
-                }
-            }
-            // Disk-derived skill arm (round-19 MAJOR 2): the record-driven
-            // enumeration above misses packs whose skills live on disk but
-            // whose ids never enter the records — MCP-free plugin.json packs
-            // (import skips install_upload), under-declared combinations,
-            // half-registered states. Materialization is directory-scan
-            // based, so derive the same owners from the same walk: every
-            // nested skill dir claims its physical owner pack
-            // (`skill_gating_owner`), keeping the expansion and
-            // materialization on one truth.
-            if let Ok(rd) = std::fs::read_dir(paths::bundles_root()) {
-                for entry in rd.flatten() {
-                    // Round-26 minor 8 (review #455): skip import staging
-                    // (`<id>.tmp`) and landing backup (`<id>.old`) dirs — the
-                    // same exclusion materialization's scan applies
-                    // (skill_materialization::skill_source_dirs). A staging
-                    // dir resolving through the physical fallback to a
-                    // suffix-owner id would be persisted by the composer's
-                    // first-write seeding as a stored row + install-default
-                    // marker (inert junk after the window; over-deny).
-                    let pack_name = entry.file_name().to_string_lossy().into_owned();
-                    if pack_name.ends_with(".tmp") || pack_name.ends_with(".old") {
-                        continue;
-                    }
-                    let Ok(skills_dir) = std::fs::read_dir(entry.path().join("skills")) else {
-                        continue;
-                    };
-                    for skill in skills_dir.flatten() {
-                        // Same walk, one truth (round-23 MINOR 2): skip stray
-                        // non-directory entries exactly like materialization's
-                        // scan — a `skills/README.md` file would otherwise
-                        // become a junk owner id that the seeding below then
-                        // persists with an install-default marker (over-deny).
-                        if !skill.path().is_dir() {
-                            continue;
-                        }
-                        let name = skill.file_name().to_string_lossy().into_owned();
-                        if name.is_empty() {
-                            continue;
-                        }
-                        let pkg = crate::features::marketplace::bundle::skill_gating_owner_with(
-                            &tools, &name,
-                        );
-                        if !ids.iter().any(|id| id == &pkg) {
-                            ids.push(pkg);
-                        }
-                    }
-                }
-            }
-            // Builtins are feature-switch-governed, never package-governed
-            // (§3.1, same consent semantics as the DenyAll install-sync
-            // exemption): the boot seed installs session-reader into
-            // installed.json, and a computed default containing it would make
-            // the echoed full-set write that initializes the scope fail
-            // `reject_builtin_ids` — every composer toggle on an uninitialized
-            // DenyAll profile then errors forever with no UI recovery. Drop
-            // ids that normalize to a builtin, the same predicate
-            // `normalize_stored_pkg_ids` and the guard itself apply.
-            // Merge note: the retain runs AFTER the disk-derived arm so the
-            // filter covers disk-derived ids too.
-            ids.retain(|id| {
-                !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id_with(
-                    &tools, id,
-                ))
-            });
-            ids
+    };
+    ids.extend(builtin_cli_bundle_ids().map(str::to_string));
+    // Same as above (round-20 minor 3): the record arm uses the claim mapping, the disk leg the gating mapping.
+    // #584 composition: the record arm probes STRICTLY — when skill
+    // enumeration degrades, the blanket union below biases the freshly
+    // computed default toward over-denial instead of letting a failed
+    // probe silently shrink the consent set.
+    let skill_market = SkillMarketplaceManager::new();
+    let (skill_ids, skill_scan_degraded) = skill_market.installed_skill_ids_strict();
+    if skill_scan_degraded {
+        // Enumeration degraded (#531): a failed probe can masquerade an
+        // installed skill as absent, so the default deny set must not
+        // shrink because of it. Blanket-union the owner packages of
+        // every preset skill (compile-time manifests) and of every
+        // known upload record — an uninitialized DenyAll scope would
+        // rather have the user enable a package explicitly than hand
+        // the consent gate a default silently narrowed by an
+        // enumeration failure. Owner mapping is the same
+        // `skill_owner_package` path as the normal loop below.
+        // Accepted residual: with an unreadable bundle store the upload
+        // population itself is unknowable (the lenient upload read
+        // yields nothing to union); with an unreadable packages root,
+        // straggler-copy-only skills of neither kind can be seen.
+        log::warn!(
+            "[scope] DenyAll default deny list degraded (skill enumeration failed); biasing to over-deny"
+        );
+        let mut blanket: Vec<String> = SkillMarketplaceManager::preset_skill_ids().collect();
+        blanket.extend(skill_market.uploaded_skill_ids());
+        for skill_id in blanket {
+            let pkg = skill_owner_package_with(&tools, &skill_id);
+            push_unique(&mut ids, pkg);
         }
     }
+    for skill_id in skill_ids {
+        let pkg = skill_owner_package_with(&tools, &skill_id);
+        push_unique(&mut ids, pkg);
+    }
+    // Disk-derived skill arm (round-19 MAJOR 2): the record-driven
+    // enumeration above misses packs whose skills live on disk but
+    // whose ids never enter the records — MCP-free plugin.json packs
+    // (import skips install_upload), under-declared combinations,
+    // half-registered states. Materialization is directory-scan
+    // based, so derive the same owners from the same walk: every
+    // nested skill dir claims its physical owner pack
+    // (`skill_gating_owner`), keeping the expansion and
+    // materialization on one truth.
+    if let Ok(rd) = std::fs::read_dir(paths::bundles_root()) {
+        for entry in rd.flatten() {
+            // Round-26 minor 8 (review #455): skip import staging
+            // (`<id>.tmp`) and landing backup (`<id>.old`) dirs — the
+            // same exclusion materialization's scan applies
+            // (skill_materialization::skill_source_dirs). A staging
+            // dir resolving through the physical fallback to a
+            // suffix-owner id would be persisted by the composer's
+            // first-write seeding as a stored row + install-default
+            // marker (inert junk after the window; over-deny).
+            let pack_name = entry.file_name().to_string_lossy().into_owned();
+            if pack_name.ends_with(".tmp") || pack_name.ends_with(".old") {
+                continue;
+            }
+            let Ok(skills_dir) = std::fs::read_dir(entry.path().join("skills")) else {
+                continue;
+            };
+            for skill in skills_dir.flatten() {
+                // Same walk, one truth (round-23 MINOR 2): skip stray
+                // non-directory entries exactly like materialization's
+                // scan — a `skills/README.md` file would otherwise
+                // become a junk owner id that the seeding below then
+                // persists with an install-default marker (over-deny).
+                if !skill.path().is_dir() {
+                    continue;
+                }
+                let name = skill.file_name().to_string_lossy().into_owned();
+                if name.is_empty() {
+                    continue;
+                }
+                let pkg =
+                    crate::features::marketplace::bundle::skill_gating_owner_with(&tools, &name);
+                push_unique(&mut ids, pkg);
+            }
+        }
+    }
+    // Builtins are feature-switch-governed, never package-governed
+    // (§3.1, same consent semantics as the DenyAll install-sync
+    // exemption): the boot seed installs session-reader into
+    // installed.json, and a computed default containing it would make
+    // the echoed full-set write that initializes the scope fail
+    // `reject_builtin_ids` — every composer toggle on an uninitialized
+    // DenyAll profile then errors forever with no UI recovery. Drop
+    // ids that normalize to a builtin, the same predicate
+    // `normalize_stored_pkg_ids` and the guard itself apply.
+    // Merge note: the retain runs AFTER the disk-derived arm so the
+    // filter covers disk-derived ids too.
+    ids.retain(|id| {
+        !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id_with(&tools, id))
+    });
+    ids
 }
 
 /// Shared whole-list writer prelude: the input fold reads
@@ -1873,9 +1903,7 @@ pub fn unavailable_bundles_for(scope: ConnectorScope) -> Vec<String> {
     let file = load_disabled_bundles_file();
     let mut ids = resolve_scope_disabled_ids(&file, scope);
     for id in resolve_scope_hidden_ids(&file, scope) {
-        if !ids.iter().any(|x| x == &id) {
-            ids.push(id);
-        }
+        push_unique(&mut ids, id);
     }
     ids
 }
@@ -1977,13 +2005,23 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
     sync_deny_all_scopes_after_install(connector_id)
 }
 
+/// One constructor for the sync-ledger key wire format
+/// (`"<scope>:<package_id>"`): the writers (install/connect sync, the
+/// enable-path recording) and the read sides (gate probe, teardown clear)
+/// must spell the same format — the ledger is match-EXACT by design (see the
+/// round-32 minor 1 note at the teardown clear), so a divergence between any
+/// writer and the probe/clear silently breaks ledger attribution.
+fn ledger_key(scope: &str, package_id: &str) -> String {
+    format!("{scope}:{package_id}")
+}
+
 /// The sync-ledger keys a pack owns across all scope modes
 /// (`"<mode>:<package_id>"`; the teardown clear must match them exactly —
 /// see the round-32 minor 1 note at the clear).
 fn ledger_keys_for(package_id: &str) -> Vec<String> {
     SessionMode::ALL
         .iter()
-        .map(|mode| format!("{}:{package_id}", mode.as_str()))
+        .map(|mode| ledger_key(mode.as_str(), package_id))
         .collect()
 }
 
@@ -2114,7 +2152,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
                 continue;
             }
             let key = mode.as_str();
-            let ledger_key = format!("{key}:{package_id}");
+            let ledger_key = ledger_key(key, &package_id);
             if !file.initialized.contains(key) {
                 // Round-32 MAJOR 1 (review #455): the uninitialized arm must still
                 // record the pair. A connect/install sync on a fresh home runs
@@ -2142,9 +2180,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
                 // default, not a user verdict — later user-initiated enables may
                 // remove it without tripping the explicit-opt-out refusal.
                 let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
-                if !defaults.iter().any(|id| id == &package_id) {
-                    defaults.push(package_id.clone());
-                }
+                push_unique(defaults, package_id.clone());
                 changed = true;
             }
             // Recorded even when the row already existed — the ledger answers
@@ -2229,26 +2265,22 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
             }
         };
         let mut changed = false;
-        for ids in file.scopes.values_mut() {
+        // The removal sweeps all three maps identically: the stored switches,
+        // the visibility sets (a leftover hidden entry would keep a future
+        // same-id reinstall invisible), and the install-default markers
+        // (round-12 self-review: a stale marker would later let a
+        // welcome/scene opt-in lift a *user* off that re-added the same id
+        // — uninstall or logout clears the stored entry, then the user
+        // switches the connector off again).
+        for ids in file
+            .scopes
+            .values_mut()
+            .chain(file.hidden_scopes.values_mut())
+            .chain(file.default_off_scopes.values_mut())
+        {
             let before = ids.len();
             ids.retain(|id| id != package_id);
             changed |= ids.len() != before;
-        }
-        // The visibility sets are cleared too: a leftover hidden entry would
-        // keep a future same-id reinstall invisible.
-        for ids in file.hidden_scopes.values_mut() {
-            let before = ids.len();
-            ids.retain(|id| id != package_id);
-            changed |= ids.len() != before;
-        }
-        // The marker must go with the entry (round-12 self-review): a stale
-        // install-default marker would later let a welcome/scene opt-in lift a
-        // *user* off that re-added the same id (uninstall or logout clears the
-        // stored entry, then the user switches the connector off again).
-        for defaults in file.default_off_scopes.values_mut() {
-            let before = defaults.len();
-            defaults.retain(|id| id != package_id);
-            changed |= defaults.len() != before;
         }
         // Round-31 BLOCKER (review #455): teardown also clears the pack's
         // install-default sync ledger entries, so a fresh install / reconnect
@@ -2430,7 +2462,7 @@ pub fn enable_packages_in_scope(
         // not_applied id was never enabled, and ledgering it would suppress the
         // legitimate backfill of its default-off row.
         for id in &applied {
-            let ledger_key = format!("{key}:{id}");
+            let ledger_key = ledger_key(key, id);
             if !file.install_default_synced.contains(&ledger_key) {
                 file.install_default_synced.push(ledger_key);
                 changed = true;
@@ -2515,9 +2547,7 @@ fn apply_restore_consent_gate_impl(
     // zero consent once the restore completes and its own claims resolve. The
     // pack id lands verbatim, like the round-23 MINOR 1 shield guarantees for
     // physically present packs.
-    if !ids.iter().any(|id| id == pack_id) {
-        ids.push(pack_id.to_string());
-    }
+    push_unique(&mut ids, pack_id.to_string());
     if ids.is_empty() {
         return Ok(());
     }
@@ -2539,9 +2569,7 @@ fn apply_restore_consent_gate_impl(
                 }
                 let mut stored = resolve_scope_disabled_ids(&file, *mode);
                 for id in &ids {
-                    if !stored.iter().any(|x| x == id) {
-                        stored.push(id.clone());
-                    }
+                    push_unique(&mut stored, id.clone());
                 }
                 file.scopes.insert(key.to_string(), stored.clone());
                 file.default_off_scopes.insert(key.to_string(), stored);
@@ -2549,14 +2577,17 @@ fn apply_restore_consent_gate_impl(
                 changed = true;
             }
         }
+        // Hidden leftover cleanup: hidden entries left after an uninstall
+        // would wrongly hide restored packs. Batched ahead of the per-id
+        // loop — removing the whole set at once is the same union of
+        // per-id removals, and `changed` still tracks exactly whether any
+        // list shrank.
+        for hidden in file.hidden_scopes.values_mut() {
+            let before = hidden.len();
+            hidden.retain(|x| !ids.contains(x));
+            changed |= hidden.len() != before;
+        }
         for id in &ids {
-            // Hidden leftover cleanup: hidden entries left after an uninstall
-            // would wrongly hide restored packs.
-            for hidden in file.hidden_scopes.values_mut() {
-                let before = hidden.len();
-                hidden.retain(|x| x != id);
-                changed |= hidden.len() != before;
-            }
             // Initialized DenyAll scopes: add the id back into the disabled set
             // (consent gate) and mark it install-default (round-11 B2): the
             // restore click is not a verdict against future opt-ins — the
@@ -2617,8 +2648,15 @@ pub fn set_project_skills_enabled(enabled: bool) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::features::marketplace::file_lock;
-    use crate::features::marketplace::tests::corrupt_sibling_count;
+    use crate::features::marketplace::store::{BundleSource, plant_installed_record};
+    use crate::features::marketplace::tests::{
+        corrupt_sibling_count, quarantine_backups, tool_manifest_fixture,
+    };
     use crate::platform::test_support::{make_dir_unreadable_for_test, with_temp_home};
+    // The ROOT-SKIP helpers are `#[cfg(all(test, unix))]`; their callers are
+    // `#[cfg(unix)]` tests.
+    #[cfg(unix)]
+    use crate::platform::test_support::{dir_read_only_or_skip, file_unreadable_or_skip};
 
     /// Round-19 MAJOR 2 regression: an MCP-free skills-only plugin pack whose
     /// skill ids differ from the pack id is invisible to the record-driven
@@ -2656,19 +2694,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_over_unreadable_original_preserves_bytes() {
-        use std::os::unix::fs::PermissionsExt;
         with_temp_home("pinvou3-scope", || {
             let path = disabled_bundles_path();
             let original = b"unrecoverable-user-optouts{{{".to_vec();
             std::fs::write(&path, &original).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            // Root probe (mode bits are no-ops for root): if the file is still
-            // readable, the unreadable-read branch never runs — skip loudly.
-            if std::fs::read(&path).is_ok() {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[save_over_unreadable_original_preserves_bytes]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            if !file_unreadable_or_skip(&path, "save_over_unreadable_original_preserves_bytes") {
                 return;
             }
 
@@ -2679,22 +2709,7 @@ mod tests {
             );
 
             // The unreadable original survived the overwrite, renamed aside.
-            let parent = path.parent().unwrap();
-            let sidecars = evidence_sidecars(parent, ".unreadable.");
-            assert_eq!(
-                sidecars.len(),
-                1,
-                "exactly one preserved copy: {sidecars:?}"
-            );
-            // The rename preserves the 0o000 mode: grant read access to prove
-            // the original bytes survived (only the test can do this — the
-            // production path never needs to read them).
-            std::fs::set_permissions(&sidecars[0], std::fs::Permissions::from_mode(0o644)).unwrap();
-            assert_eq!(
-                std::fs::read(&sidecars[0]).unwrap(),
-                original,
-                "the preserved copy must carry the original bytes"
-            );
+            assert_one_preserved_sidecar(&path, ".unreadable.", &original);
 
             // The store is the new write's state again and loads cleanly.
             let file = load_disabled_bundles_file();
@@ -2715,19 +2730,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn failed_write_after_rename_aside_restores_original() {
-        use std::os::unix::fs::PermissionsExt;
         with_temp_home("pinvou3-scope", || {
             let path = disabled_bundles_path();
             let original = b"unrecoverable-user-optouts{{{".to_vec();
             std::fs::write(&path, &original).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            // Root probe (mode bits are no-ops for root): if the file is still
-            // readable, the unreadable-read branch never runs — skip loudly.
-            if std::fs::read(&path).is_ok() {
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[failed_write_after_rename_aside_restores_original]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            if !file_unreadable_or_skip(&path, "failed_write_after_rename_aside_restores_original")
+            {
                 return;
             }
             // A read of the unreadable file arms the marker (fail-closed
@@ -2745,8 +2753,7 @@ mod tests {
             // The unreadable original is back in place, byte-identical, and
             // no sidecar remains.
             assert!(path.exists(), "the store must not sit absent");
-            let parent = path.parent().unwrap();
-            let sidecars = evidence_sidecars(parent, ".unreadable.");
+            let sidecars = quarantine_backups(&path, ".unreadable.");
             assert!(
                 sidecars.is_empty(),
                 "the sidecar was renamed back: {sidecars:?}"
@@ -2759,18 +2766,7 @@ mod tests {
                 result.is_ok(),
                 "a writable home lets the retry succeed: {result:?}"
             );
-            let sidecars = evidence_sidecars(parent, ".unreadable.");
-            assert_eq!(
-                sidecars.len(),
-                1,
-                "the retry preserved the original: {sidecars:?}"
-            );
-            std::fs::set_permissions(&sidecars[0], std::fs::Permissions::from_mode(0o644)).unwrap();
-            assert_eq!(
-                std::fs::read(&sidecars[0]).unwrap(),
-                original,
-                "the preserved copy must carry the original bytes"
-            );
+            assert_one_preserved_sidecar(&path, ".unreadable.", &original);
         });
     }
 
@@ -2791,24 +2787,16 @@ mod tests {
             let path = disabled_bundles_path();
             let original = b"corrupt-user-optouts{{{".to_vec();
             std::fs::write(&path, &original).unwrap();
-            // Pre-create the cross-process lock file so the read runs FULLY
-            // LOCKED (opening an existing file in a read-only home succeeds):
-            // without it the lock OPEN itself fails and the read takes the
-            // degraded arm — a different failure than the quarantine-failure
-            // arm this test pins.
-            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
+            // The quarantine-failure arm under test is a fully-locked-read arm.
+            pre_create_disabled_bundles_lock_for_test();
 
             // Read-only DIRECTORY (0o555): the file itself stays readable, so
             // the read reaches the parse-corrupt branch, but the quarantine
             // copy cannot land (it needs directory write permission).
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = home.join(".quarantine-fail-probe");
-            if std::fs::write(&probe, b"probe").is_ok() {
-                std::fs::remove_file(&probe).ok();
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[quarantine_failure_arms_marker_so_later_writer_preserves_corrupt_bytes]: read-only-dir fixture not effective (root); NOT exercised"
-                );
+            if !dir_read_only_or_skip(
+                &home,
+                "quarantine_failure_arms_marker_so_later_writer_preserves_corrupt_bytes",
+            ) {
                 return;
             }
 
@@ -2822,9 +2810,9 @@ mod tests {
                 original,
                 "the failing read must not touch the unquarantined original"
             );
-            let siblings: Vec<std::path::PathBuf> = evidence_sidecars(&home, ".corrupt.")
+            let siblings: Vec<std::path::PathBuf> = quarantine_backups(&path, ".corrupt.")
                 .into_iter()
-                .chain(evidence_sidecars(&home, ".unreadable."))
+                .chain(quarantine_backups(&path, ".unreadable."))
                 .collect();
             assert!(
                 siblings.is_empty(),
@@ -2838,17 +2826,7 @@ mod tests {
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
             try_save_disabled_bundles_file(&recovered).unwrap();
 
-            let sidecars = evidence_sidecars(&home, ".unreadable.");
-            assert_eq!(
-                sidecars.len(),
-                1,
-                "the writer preserved the unquarantined original: {sidecars:?}"
-            );
-            assert_eq!(
-                std::fs::read(&sidecars[0]).unwrap(),
-                original,
-                "the preserved copy must carry the original corrupt bytes"
-            );
+            assert_one_preserved_sidecar(&path, ".unreadable.", &original);
             let on_disk: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(&path).expect("the persist must land"),
             )
@@ -3053,13 +3031,11 @@ mod tests {
         });
     }
 
-    /// Round-20 MAJOR B, crash-window arm: the live store is gone but a
-    /// `.corrupt.*` sibling proves it existed — the NotFound read must
-    /// recover fail-closed (no scope initialized, freeze persisted) instead
-    /// of letting the wide upgrade signal (installed.json ∪ non-empty
-    /// sessions/) initialize plain empty: every opt-out back ON.
-    #[test]
-    fn not_found_read_with_corrupt_sidecar_fails_closed() {
+    /// Shared body of the twin NotFound-with-sidecar-evidence tests: a lost
+    /// store plus one `{sidecar_name}` sibling (either quarantine namespace)
+    /// must recover fail-closed instead of letting the wide upgrade signal
+    /// initialize plain empty.
+    fn pin_not_found_with_sidecar_evidence_fails_closed(sidecar_name: &str) {
         with_temp_home("pinvou3-scope", || {
             let home = paths::pinvou3_home();
             // Both wide-signal legs present: without the sibling-evidence arm
@@ -3069,7 +3045,7 @@ mod tests {
             std::fs::write(&installed, "[\"weather\"]").unwrap();
             std::fs::create_dir_all(home.join("sessions").join("default")).unwrap();
             std::fs::write(home.join("sessions").join("default").join("t.json"), "{}").unwrap();
-            std::fs::write(home.join("disabled_bundles.json.corrupt.123"), b"lost").unwrap();
+            std::fs::write(home.join(sidecar_name), b"lost").unwrap();
 
             let file = load_disabled_bundles_file();
             assert!(
@@ -3087,6 +3063,16 @@ mod tests {
         });
     }
 
+    /// Round-20 MAJOR B, crash-window arm: the live store is gone but a
+    /// `.corrupt.*` sibling proves it existed — the NotFound read must
+    /// recover fail-closed (no scope initialized, freeze persisted) instead
+    /// of letting the wide upgrade signal (installed.json ∪ non-empty
+    /// sessions/) initialize plain empty: every opt-out back ON.
+    #[test]
+    fn not_found_read_with_corrupt_sidecar_fails_closed() {
+        pin_not_found_with_sidecar_evidence_fails_closed("disabled_bundles.json.corrupt.123");
+    }
+
     /// Round-24 minor 1: the NotFound sidecar-evidence rule covers BOTH
     /// namespaces — quarantine's `.corrupt.<ts>` AND the rename-aside
     /// `.unreadable.<ts>` half. This twin of
@@ -3096,31 +3082,7 @@ mod tests {
     /// (the wide upgrade signal judging a lost store as fresh).
     #[test]
     fn not_found_read_with_unreadable_sidecar_fails_closed() {
-        with_temp_home("pinvou3-scope", || {
-            let home = paths::pinvou3_home();
-            // Both wide-signal legs present: without the sibling-evidence arm
-            // this home judges "upgraded" and initializes plain empty.
-            let installed = home.join("marketplace").join("installed.json");
-            std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
-            std::fs::write(&installed, "[\"weather\"]").unwrap();
-            std::fs::create_dir_all(home.join("sessions").join("default")).unwrap();
-            std::fs::write(home.join("sessions").join("default").join("t.json"), "{}").unwrap();
-            std::fs::write(home.join("disabled_bundles.json.unreadable.456"), b"lost").unwrap();
-
-            let file = load_disabled_bundles_file();
-            assert!(
-                file.plain_defaults_migrated,
-                "the lost-store recovery is frozen: {file:?}"
-            );
-            assert!(
-                !file.initialized.contains("plain"),
-                "plain must NOT initialize — DenyAll fallback keeps the stranded opt-outs off: {file:?}"
-            );
-            // The freeze persisted: a second read is stable (no re-evaluation).
-            let again = load_disabled_bundles_file();
-            assert_eq!(again.initialized, file.initialized);
-            assert!(again.plain_defaults_migrated);
-        });
+        pin_not_found_with_sidecar_evidence_fails_closed("disabled_bundles.json.unreadable.456");
     }
 
     #[test]
@@ -3465,7 +3427,11 @@ mod tests {
             std::fs::create_dir_all(shadow.join("mcp")).unwrap();
             std::fs::write(
                 shadow.join("mcp").join("manifest.json"),
-                r#"{"id":"shadow-pack","name":"shadow","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["victim"]}"#,
+                tool_manifest_fixture(
+                    "shadow-pack",
+                    "shadow",
+                    r#""mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["victim"]"#,
+                ),
             )
             .unwrap();
             std::fs::create_dir_all(shadow.join("skills/victim")).unwrap();
@@ -3525,8 +3491,6 @@ mod tests {
     /// default-off row for it).
     #[test]
     fn teardown_ledger_clear_is_exact_not_suffix_based() {
-        use crate::platform::test_support::with_temp_home;
-
         with_temp_home("pinvou3-scope-ledger-exact", || {
             let path = disabled_bundles_path();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -3597,14 +3561,7 @@ mod tests {
             );
 
             // 登记 gongwen 安装态后：companion 技能归属到包 → 归一为 gongwen。
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "gongwen".to_string(),
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            plant_installed_record("gongwen", BundleSource::Preset);
             save_disabled_bundles_for(
                 ConnectorScope::Plain,
                 &[
@@ -3641,14 +3598,7 @@ mod tests {
             );
 
             // 后装 gongwen → 认领翻转 government-writing → gongwen
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "gongwen".to_string(),
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            plant_installed_record("gongwen", BundleSource::Preset);
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["gongwen".to_string()],
@@ -3696,70 +3646,57 @@ mod tests {
 
     /// Legacy migration never persists builtin ids: entries normalizing to a
     /// builtin package (including the `skill:`-prefixed alias) are skipped,
-    /// not written.
+    /// not written — across all three legacy file shapes (bare array,
+    /// `{scopes, initialized}` object, oldest `{plain, code,
+    /// code_initialized}`). Table-driven: one body, per-shape rows; the
+    /// shape name in every failure message keeps the rows diagnosable.
     #[test]
     fn legacy_migration_skips_builtin_ids() {
-        with_temp_home("pinvou3-scope", || {
-            let conn = paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
-            std::fs::write(
-                &conn,
+        let cases: &[(&str, &str, &[&str], Option<&[&str]>)] = &[
+            (
+                "bare array",
                 r#"["weather", "skill:session-reader", "session-reader"]"#,
-            )
-            .unwrap();
-            assert_eq!(
-                load_disabled_bundles_for(ConnectorScope::Plain),
-                vec!["weather".to_string()]
-            );
-        });
-    }
-
-    /// Same builtin-skip migration for the legacy `{scopes, initialized}`
-    /// object shape (the bare-array branch is covered above).
-    #[test]
-    fn legacy_migration_scopes_object_skips_builtin_ids() {
-        with_temp_home("pinvou3-scope", || {
-            let conn = paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
-            std::fs::write(
-                &conn,
+                &["weather"],
+                None,
+            ),
+            (
+                "scopes object",
                 r#"{"scopes":{"plain":["session-reader","weather"],"code":["skill:session-reader"]},"initialized":["plain","code"]}"#,
-            )
-            .unwrap();
-            assert_eq!(
-                load_disabled_bundles_for(ConnectorScope::Plain),
-                vec!["weather".to_string()],
-                "the builtin id must be dropped from the migrated plain scope"
-            );
-            // The code scope contained only the poisoned entry: after the
-            // skip nothing is migrated for it, and as an initialized scope it
-            // reads back empty (its persisted list wins over the default).
-            assert_eq!(
-                load_disabled_bundles_for(ConnectorScope::Code),
-                Vec::<String>::new(),
-                "an initialized scope whose only entry was poisoned migrates to empty"
-            );
-        });
-    }
-
-    /// Same builtin-skip migration for the oldest legacy shape
-    /// `{plain, code, code_initialized}`.
-    #[test]
-    fn legacy_migration_dual_scope_object_skips_builtin_ids() {
-        with_temp_home("pinvou3-scope", || {
-            let conn = paths::pinvou3_home().join("disabled_connectors.json");
-            std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
-            std::fs::write(
-                &conn,
+                &["weather"],
+                Some(&[]),
+            ),
+            (
+                "dual-scope object",
                 r#"{"plain":["session-reader","weather"],"code_initialized":true}"#,
-            )
-            .unwrap();
-            assert_eq!(
-                load_disabled_bundles_for(ConnectorScope::Plain),
-                vec!["weather".to_string()],
-                "the builtin id must be dropped from the migrated plain scope"
-            );
-        });
+                &["weather"],
+                None,
+            ),
+        ];
+        for &(shape, json, expect_plain, expect_code) in cases {
+            with_temp_home("pinvou3-scope", || {
+                let conn = paths::pinvou3_home().join("disabled_connectors.json");
+                std::fs::create_dir_all(conn.parent().unwrap()).unwrap();
+                std::fs::write(&conn, json).unwrap();
+                let expect_plain: Vec<String> =
+                    expect_plain.iter().map(|id| id.to_string()).collect();
+                assert_eq!(
+                    load_disabled_bundles_for(ConnectorScope::Plain),
+                    expect_plain,
+                    "the builtin id must be dropped from the migrated plain scope ({shape})"
+                );
+                if let Some(expect_code) = expect_code {
+                    // The code scope contained only the poisoned entry: after
+                    // the skip nothing is migrated for it, and as an
+                    // initialized scope it reads back empty (its persisted
+                    // list wins over the default).
+                    assert_eq!(
+                        load_disabled_bundles_for(ConnectorScope::Code),
+                        expect_code,
+                        "an initialized scope whose only entry was poisoned migrates to empty ({shape})"
+                    );
+                }
+            });
+        }
     }
 
     /// Live read path self-heal: a builtin id that already landed in
@@ -3910,6 +3847,29 @@ mod tests {
             .collect()
     }
 
+    /// The rename-aside preservation assertion shared by the fail-closed
+    /// write tests: exactly one `{marker}` sidecar sits beside `path` and
+    /// carries `expected`'s bytes. The sidecar may still carry the denial
+    /// mode (a rename preserves it), so the helper grants read access
+    /// before comparing — only the test ever needs to read the preserved
+    /// copy; the production path never does.
+    #[cfg(unix)]
+    fn assert_one_preserved_sidecar(path: &std::path::Path, marker: &str, expected: &[u8]) {
+        use std::os::unix::fs::PermissionsExt;
+        let sidecars = quarantine_backups(path, marker);
+        assert_eq!(
+            sidecars.len(),
+            1,
+            "exactly one preserved copy: {sidecars:?}"
+        );
+        std::fs::set_permissions(&sidecars[0], std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::read(&sidecars[0]).unwrap(),
+            expected,
+            "the preserved copy must carry the original bytes"
+        );
+    }
+
     /// Opens the scope lock file and holds a foreign OS write lock through a
     /// second fd (the peer-process shape) while `body` runs; the lock
     /// releases when `body` returns. Closure form: the guard borrows the
@@ -3941,27 +3901,19 @@ mod tests {
         with_temp_home("pinvou3-scope-quarantine-latch", || {
             READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
             clear_unpersisted_verdict_for_test();
-            // Pre-create the lock file so the reads below stay FULLY locked
-            // after the home turns read-only (a read-only home cannot create
-            // it, and a degraded read would never clear the bits anyway).
+            // The reads below must stay FULLY locked after the home turns
+            // read-only (a degraded read would never clear the bits anyway).
             try_save_disabled_bundles_file(&DisabledBundlesFile::default())
                 .expect("the fixture store must save");
-            std::fs::write(disabled_bundles_lock_path(), b"").expect("pre-create the lock file");
+            pre_create_disabled_bundles_lock_for_test();
             // Corrupt store bytes so every read re-enters the parse-error
             // recovery.
             std::fs::write(disabled_bundles_path(), b"not-json{{{").unwrap();
             let home = paths::pinvou3_home();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555))
-                .expect("chmod the home read-only");
-            // Root probe (mode bits are no-ops for root): if a write still
-            // succeeds, the quarantine-failure arm never runs — skip loudly.
-            let root_probe = home.join("quarantine-root-probe");
-            if std::fs::write(&root_probe, b"probe").is_ok() {
-                let _ = std::fs::remove_file(&root_probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[quarantine_failure_keeps_the_latch_armed_across_locked_reads]: running as root - the read-only-home fixture stays writable; NOT exercised"
-                );
+            if !dir_read_only_or_skip(
+                &home,
+                "quarantine_failure_keeps_the_latch_armed_across_locked_reads",
+            ) {
                 return;
             }
 
@@ -4067,22 +4019,17 @@ mod tests {
             // present.
             try_save_disabled_bundles_file(&DisabledBundlesFile::default())
                 .expect("the fixture store must save");
-            // Pre-create the lock file too: a read-only home cannot create it,
-            // and a degraded read would never attempt the freeze persist.
-            std::fs::write(disabled_bundles_lock_path(), b"").expect("pre-create the lock file");
+            // A read-only home cannot create the lock file, and a degraded
+            // read would never attempt the freeze persist.
+            pre_create_disabled_bundles_lock_for_test();
             let path = disabled_bundles_path();
             let sidecar = path.with_extension("json.corrupt.1790000000000000000");
             std::fs::rename(&path, &sidecar).expect("stage the lost-store sibling");
             let home = paths::pinvou3_home();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555))
-                .expect("chmod the home read-only");
-            let root_probe = home.join("freeze-root-probe");
-            if std::fs::write(&root_probe, b"probe").is_ok() {
-                let _ = std::fs::remove_file(&root_probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[freeze_persist_failure_is_latched_but_still_retried_until_it_lands]: running as root - the read-only-home fixture stays writable; NOT exercised"
-                );
+            if !dir_read_only_or_skip(
+                &home,
+                "freeze_persist_failure_is_latched_but_still_retried_until_it_lands",
+            ) {
                 return;
             }
 
@@ -4355,14 +4302,7 @@ mod tests {
             .join("government-writing");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), "# government-writing").unwrap();
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    "gongwen".to_string(),
-                    crate::features::marketplace::store::BundleSource::Preset,
-                ),
-            )
-            .unwrap();
+        plant_installed_record("gongwen", BundleSource::Preset);
         skill_dir
     }
 
@@ -4373,15 +4313,53 @@ mod tests {
         let skill_dir = paths::bundles_root().join(name).join("skills").join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), format!("# {name}")).unwrap();
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    name.to_string(),
-                    crate::features::marketplace::store::BundleSource::Upload(name.to_string()),
-                ),
-            )
-            .unwrap();
+        plant_installed_record(name, BundleSource::Upload(name.to_string()));
         skill_dir
+    }
+
+    /// Shared body of the two #531 degraded-scan pins (preset and upload
+    /// halves): install the fixture skill, pin the clean baseline, sabotage
+    /// the skill dir, and pin the degraded over-deny. Returns the clean
+    /// baseline so a host test can pin extra clean-shape facts; `None` = the
+    /// unreadable-dir fixture was not effective (root, non-unix) and the
+    /// host must return — the pin would otherwise pass vacuously (loud
+    /// ROOT-SKIP per the round-11 m12 convention; round-26 minor 9,
+    /// review #455).
+    fn pin_degraded_scan_biases_to_overdeny(
+        install: &dyn Fn() -> PathBuf,
+        owner: &str,
+        test: &str,
+    ) -> Option<Vec<String>> {
+        let skill_dir = install();
+        // Clean baseline: the installed owner package is denied by default,
+        // the not-installed preset owner (pptx) is not.
+        let clean = load_disabled_bundles_for(ConnectorScope::Code);
+        assert!(
+            clean.contains(&owner.to_string()),
+            "installed owner package must be denied by default: {clean:?}"
+        );
+
+        // Make the skill dir unreadable → the SKILL.md probe hits EACCES:
+        // the lenient path would read "not installed" (fail-open), the
+        // strict enumeration reports degradation and biases to over-deny.
+        // Skip the assertions when the platform/environment cannot simulate
+        // unreadable dirs (Windows, root).
+        let Some(_unreadable) = make_dir_unreadable_for_test(&skill_dir) else {
+            eprintln!(
+                "ROOT-SKIP[{test}]: unreadable-dir fixture not effective (root or non-unix); NOT exercised"
+            );
+            return None;
+        };
+        let degraded = load_disabled_bundles_for(ConnectorScope::Code);
+        assert!(
+            degraded.contains(&owner.to_string()),
+            "degraded enumeration must keep the installed owner package denied: {degraded:?}"
+        );
+        assert!(
+            degraded.contains(&"pptx".to_string()),
+            "degradation must bias to over-deny (not-installed preset owner joins): {degraded:?}"
+        );
+        Some(clean)
     }
 
     /// Clause 1 of the consent gate must not trust a stored `installed` flag
@@ -4395,17 +4373,8 @@ mod tests {
     #[test]
     fn consent_gate_requires_content_behind_installed_records() {
         with_temp_home("pinvou3-scope-gate-stale-record", || {
-            let store = crate::features::marketplace::store::BundleStore::new();
-
             // Stale record with NO content behind it: must err toward register.
-            store
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "stale-mirror",
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            plant_installed_record("stale-mirror", BundleSource::Preset);
             assert!(
                 !consent_gate_bundle_already_known("stale-mirror"),
                 "an installed record without content must err toward NOT known (register)"
@@ -4431,29 +4400,16 @@ mod tests {
     fn consent_gate_errs_not_known_when_the_store_is_unreadable() {
         use std::os::unix::fs::PermissionsExt;
         with_temp_home("pinvou3-scope-gate-unreadable-store", || {
-            let store = crate::features::marketplace::store::BundleStore::new();
-            store
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "unreadable-store-pack",
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            plant_installed_record("unreadable-store-pack", BundleSource::Preset);
             // Positive control precondition: the record is corroborated by its
             // content dir, so with a WORKING store the gate vouches known.
             std::fs::create_dir_all(paths::bundles_root().join("unreadable-store-pack")).unwrap();
             assert!(consent_gate_bundle_already_known("unreadable-store-pack"));
-            let store_path = store.file_path();
-            std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            // Root probe (mode bits are no-ops for root): skip loudly when the
-            // fixture cannot make the store unreadable.
-            if std::fs::read(&store_path).is_ok() {
-                std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[consent_gate_errs_not_known_when_the_store_is_unreadable]: running as root - the unreadable-store fixture stays readable; NOT exercised"
-                );
+            let store_path = crate::features::marketplace::store::BundleStore::new().file_path();
+            if !file_unreadable_or_skip(
+                &store_path,
+                "consent_gate_errs_not_known_when_the_store_is_unreadable",
+            ) {
                 return;
             }
 
@@ -4478,20 +4434,13 @@ mod tests {
     #[test]
     fn connector_gate_registers_only_when_shown() {
         with_temp_home("pinvou3-scope-gate-shown", || {
-            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+            seed_initialized_code_scope_for_test(&["seed-bundle"]);
             // The connect flow writes the Builtin install record BEFORE the
             // consent gate runs (`bundle_store_on_connected` precedes the
             // connected event that triggers `*_apply_skills`); reproduce that
             // ordering so the fixture cannot false-pass on a known-skip that
             // vouches for the connector.
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "feishu",
-                        crate::features::marketplace::store::BundleSource::Builtin,
-                    ),
-                )
-                .unwrap();
+            plant_installed_record("feishu", BundleSource::Builtin);
 
             deny_first_register_connector("feishu", false)
                 .expect("a hidden connector needs no registration");
@@ -4523,14 +4472,7 @@ mod tests {
                 !crate::features::marketplace::bundle::cli_connector_skills_materialized("wecom"),
                 "fixture precondition: the bare dir must not count as a materialized layout"
             );
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "wecom",
-                        crate::features::marketplace::store::BundleSource::Builtin,
-                    ),
-                )
-                .unwrap();
+            plant_installed_record("wecom", BundleSource::Builtin);
             sync_deny_all_scopes_after_install("wecom")
                 .expect("a fresh id must register even with a Builtin record plus a bare dir");
             assert_eq!(
@@ -4605,18 +4547,8 @@ mod tests {
                 r#"{"id":"evil","name":"Evil","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["feishu"]}"#,
             )
             .unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "evil",
-                        crate::features::marketplace::store::BundleSource::Upload(
-                            "Evil".to_string(),
-                        ),
-                    ),
-                )
-                .unwrap();
-            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()])
-                .expect("code scope must initialize while the lock works");
+            plant_installed_record("evil", BundleSource::Upload("Evil".to_string()));
+            seed_initialized_code_scope_for_test(&["seed-bundle"]);
 
             let error = deny_first_register_connector("feishu", true).unwrap_err();
             assert!(
@@ -4671,7 +4603,7 @@ mod tests {
         with_temp_home("pinvou3-scope-gate-ledger-trace", || {
             // Initialize the code scope so the re-registration has a row to
             // land.
-            save_disabled_bundles_for(ConnectorScope::Code, &["seed-bundle".to_string()]).unwrap();
+            seed_initialized_code_scope_for_test(&["seed-bundle"]);
             let skills_dir = paths::bundles_root().join("wecom").join("skills");
             for dir in crate::features::marketplace::bundle::cli_bundle_skill_dirs("wecom") {
                 let dir = skills_dir.join(dir);
@@ -4911,36 +4843,16 @@ mod tests {
     #[test]
     fn denyall_default_degraded_scan_biases_to_overdeny() {
         with_temp_home("pinvou3-scope-denyall-degraded", || {
-            let skill_dir = install_preset_skill_under_claimed_owner();
-
-            // Clean baseline: the claimed owner package is denied by default,
-            // the not-installed preset owner (pptx) is not.
-            let clean = load_disabled_bundles_for(ConnectorScope::Code);
-            assert!(clean.contains(&"gongwen".to_string()));
-            assert!(!clean.contains(&"pptx".to_string()));
-
-            // Make the skill dir unreadable → the SKILL.md probe hits EACCES:
-            // the lenient path would read "not installed" (fail-open), the
-            // strict enumeration reports degradation and biases to over-deny.
-            // Skip the assertions when the platform/environment cannot simulate
-            // unreadable dirs (Windows, root).
-            let Some(_unreadable) = make_dir_unreadable_for_test(&skill_dir) else {
-                // Round-26 minor 9 (review #455): an ineffective fixture (root,
-                // Windows) previously skipped silently — the pin then passed
-                // vacuously. Loud ROOT-SKIP, per the round-11 m12 convention.
-                eprintln!(
-                    "ROOT-SKIP[denyall_default_degraded_scan_biases_to_overdeny]: unreadable-dir fixture not effective (root or non-unix); NOT exercised"
-                );
+            let Some(clean) = pin_degraded_scan_biases_to_overdeny(
+                &install_preset_skill_under_claimed_owner,
+                "gongwen",
+                "denyall_default_degraded_scan_biases_to_overdeny",
+            ) else {
                 return;
             };
-            let degraded = load_disabled_bundles_for(ConnectorScope::Code);
             assert!(
-                degraded.contains(&"gongwen".to_string()),
-                "degraded enumeration must keep the installed skill's owner package denied: {degraded:?}"
-            );
-            assert!(
-                degraded.contains(&"pptx".to_string()),
-                "degradation must bias to over-deny (not-installed preset owner joins): {degraded:?}"
+                !clean.contains(&"pptx".to_string()),
+                "the not-installed preset owner stays enabled under a clean scan: {clean:?}"
             );
         });
     }
@@ -4953,33 +4865,13 @@ mod tests {
     #[test]
     fn denyall_default_degraded_upload_scan_biases_to_overdeny() {
         with_temp_home("pinvou3-scope-upload-degraded", || {
-            let skill_dir = install_upload_skill("my-weather");
-
-            // Clean baseline: the upload's self-mapped owner package is denied.
-            let clean = load_disabled_bundles_for(ConnectorScope::Code);
-            assert!(
-                clean.contains(&"my-weather".to_string()),
-                "installed upload owner package must be denied by default: {clean:?}"
-            );
-
-            let Some(_unreadable) = make_dir_unreadable_for_test(&skill_dir) else {
-                // Round-26 minor 9 (review #455): an ineffective fixture (root,
-                // Windows) previously skipped silently — the pin then passed
-                // vacuously. Loud ROOT-SKIP, per the round-11 m12 convention.
-                eprintln!(
-                    "ROOT-SKIP[denyall_default_degraded_upload_scan_biases_to_overdeny]: unreadable-dir fixture not effective (root or non-unix); NOT exercised"
-                );
+            let Some(_clean) = pin_degraded_scan_biases_to_overdeny(
+                &|| install_upload_skill("my-weather"),
+                "my-weather",
+                "denyall_default_degraded_upload_scan_biases_to_overdeny",
+            ) else {
                 return;
             };
-            let degraded = load_disabled_bundles_for(ConnectorScope::Code);
-            assert!(
-                degraded.contains(&"my-weather".to_string()),
-                "degraded enumeration must keep the installed upload owner package denied: {degraded:?}"
-            );
-            assert!(
-                degraded.contains(&"pptx".to_string()),
-                "degradation must bias to over-deny (not-installed preset owner joins): {degraded:?}"
-            );
         });
     }
 
@@ -5120,20 +5012,14 @@ mod tests {
             .unwrap();
 
             let home = crate::platform::paths::pinvou3_home();
-            // The cross-process lock file must already exist: opening an
-            // existing file in a read-only home succeeds, so the failure lands
-            // on the data-file write this test pins (creating the lock in a
-            // read-only home would fail earlier with a lock-path error — a
-            // different, also-honest failure).
-            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = home.join(".root-probe");
-            if std::fs::write(&probe, b"").is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[install_sync_persist_failure_is_reported_and_retryable]: running as root - read-only home fixture stays writable; NOT exercised"
-                );
+            // The failure must land on the data-file write this test pins,
+            // not on a lock-path error — the pre-create ordering doctrine
+            // lives on the helper.
+            pre_create_disabled_bundles_lock_for_test();
+            if !dir_read_only_or_skip(
+                &home,
+                "install_sync_persist_failure_is_reported_and_retryable",
+            ) {
                 return;
             }
 
@@ -5181,27 +5067,17 @@ mod tests {
 
         with_temp_home("pinvou3-scope", || {
             let home = crate::platform::paths::pinvou3_home();
-            // The cross-process lock file must already exist: opening an
-            // existing file in a read-only home succeeds, so the failure lands
-            // on the data-file write this test pins (creating the lock in a
-            // read-only home would fail earlier with a lock-path error — a
-            // different, also-honest failure).
-            std::fs::write(home.join("disabled_bundles.lock"), b"").unwrap();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = home.join(".root-probe");
-            if std::fs::write(&probe, b"").is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[freeze_persist_failure_survives_first_boot_trace_within_process]: running as root - read-only home fixture stays writable; NOT exercised"
-                );
+            // The freeze memo under test is a locked-read artifact: the lock
+            // file must pre-exist so the first read runs FULLY LOCKED (a
+            // degraded read neither persists nor memoizes) and the failure
+            // lands on the data-file write, not on a lock-path error.
+            pre_create_disabled_bundles_lock_for_test();
+            if !dir_read_only_or_skip(
+                &home,
+                "freeze_persist_failure_survives_first_boot_trace_within_process",
+            ) {
                 return;
             }
-
-            // The cross-process lock file must already exist so the first
-            // read runs FULLY LOCKED (opening an existing file in a read-only
-            // home succeeds): the freeze memo under test is a locked-read
-            // artifact — a degraded read neither persists nor memoizes.
 
             // First read on a fresh home: fresh-install verdict, persist fails,
             // the in-process memo carries the verdict.
