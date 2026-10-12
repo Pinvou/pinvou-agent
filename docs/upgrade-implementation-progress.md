@@ -1556,3 +1556,43 @@ Both independent scoped roles passed the complete frozen code/tests/documents;
 their independent targeted Node/domain runs passed (7.384s and 3.490s).
 Service commit: `a92fbf4` (pushed). Continue actual diagnostic SQL composition
 without rewriting the frozen reception migration or pausing later work.
+
+### T20 seventh batch: actual no-update diagnostic transactions (2026-10-12)
+
+Additive reception migration two supports private live/late/replay composition
+while preserving migration one's exact bytes, original receipt and outbox.
+Explicit initialization records/verifies the new digest and grants runtime only
+reads. Shared helpers recheck actual T06 owner, locked current Root/deny bytes,
+canonical input/facts and original scope/Session binding before receipt lookup.
+Existing committed/diagnostic receipts replay unchanged; malformed/null/unsupported
+dispositions refuse. No production command or HTTP is enabled.
+
+Late observations call T44's historical edge calculation and write only a protected
+diagnostic cursor, immutable receipt and original-byte outbox together. Original
+Session/Scope revision and terminal state are preserved; sequence/edge and channel
+cutoffs remain strict. Final NULL/unsafe/backward/expired clock faults roll back
+all late writes. Cursor compatibility covers the original reservation and optional
+null/absent fields, closing the independent review finding with six lawful
+profiles and twelve actual corruption/restoration controls.
+Explicit string guards prevent JSON number/bool identity coercion. A real signed
+Session "123" has numeric cursor/event lineage single-field counterexamples with
+zero-write checks and same-owner original-string restoration.
+
+Real PostgreSQL tests include unswept two-day history, actual T44 expire_pending
+versus stale preparation/rebinding, exact domain receipt/cursor comparison,
+rollback/replay/sequence/cutoff/deny ordering and predecessor upgrade/digest drift.
+Final twenty-test actual event regression passed (123.749s); the new migration is
+LF-only and predecessor upgrade/digest checks passed independently (18.616s).
+Default full Go tests, vet, module verification, all command builds, pinned
+contract and client architecture/version/diff checks passed. Other database/
+provider opt-ins remain skipped by default; this scope's PostgreSQL cases were
+enabled explicitly. Production/cross-repository E2E remains unverified. The frozen
+first migration was untouched. Fixtures establish private
+storage behavior, not credential issuance, T17 decisions or registered recovery.
+Runtime readiness, recoverable owner, transport, other event kinds and quality
+composition remain later work. Full T20 stays open; downloads have no time cap.
+Both independent scoped roles passed the final complete code, tests and documents
+after all compatibility/type findings were repaired. Continue runtime verification
+and actual recoverable owner composition without pausing the remaining tasks.
+Service commit: `49eaf63` (pushed). Reception migration two is now frozen;
+subsequent SQL behavior changes require additive migrations.
