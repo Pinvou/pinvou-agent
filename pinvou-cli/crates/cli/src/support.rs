@@ -504,13 +504,25 @@ pub fn collapse_block_control_characters(value: &str) -> String {
         .collect()
 }
 
-/// The display-hygiene set behind [`collapse_control_characters`], copied —
-/// not invented — from the GUI's `features::marketplace::store::
-/// is_display_unsafe_char` (crate-private there), which this crate already
-/// mirrors in `plugins::is_display_unsafe_char`. Same set, different verb:
-/// `plugins` *rejects* a stored display name containing any of these, while
-/// this helper *sanitizes* strings that are only rendered. Keeping one set
-/// means a title the GUI would refuse cannot slip through the CLI's rows.
+/// Joins one sanitized tab-separated row per item — the scaffold every
+/// store/remote-derived human listing across the families shares, stated
+/// once here in `support`. The caller owns the empty case (its own honest
+/// message) and any incremental `lines` vec; each row closure keeps its
+/// per-cell `collapse_control_characters` discipline visible at the site.
+pub(crate) fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
+    items.iter().map(row).collect::<Vec<_>>().join("\n")
+}
+
+/// The display-hygiene set behind [`collapse_control_characters`]: a
+/// superset of the GUI's `features::marketplace::store::
+/// is_display_unsafe_char` (crate-private there), which this crate mirrors
+/// verbatim in `plugins::is_display_unsafe_char` for stored display names —
+/// the control check plus the first six ranges below. This helper
+/// *sanitizes* strings that are only rendered, so it deliberately extends
+/// the mirrored GUI set with the further terminal-row invisible-character
+/// classes listed below (where `plugins` *rejects* a stored name, this one
+/// collapses the character in place); the divergence is intentional, not
+/// drift.
 fn is_row_unsafe_char(ch: char) -> bool {
     ch.is_control()
         || matches!(ch,
@@ -605,6 +617,18 @@ pub(crate) fn require_family_id(
         )));
     }
     Ok(id.clone())
+}
+
+/// The leaf-subcommand guard the families share: an empty argument tail
+/// passes, anything at all is a usage error.
+pub(crate) fn expect_no_arguments(values: &[String], command: &str) -> Result<(), CliError> {
+    if values.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::usage(format!(
+            "{command} accepts no options or arguments"
+        )))
+    }
 }
 
 /// The shape [`parse_family_flags`] returns: value-flag pairs in argv order,
@@ -857,6 +881,17 @@ pub fn resolve_secret(
         return Ok(Some(trimmed));
     }
     Ok(None)
+}
+
+/// Single home for the two-pass error scrub: strip URL userinfo first, then
+/// the secret-shaped token patterns. Order is load-bearing and pinned by
+/// monitor's `redact_scrubs_url_userinfo_before_token_shapes` and models'
+/// `transport_error_scrubs_url_userinfo_before_the_report` once they route
+/// through here.
+pub(crate) fn redact_error_text(rendered: &str) -> String {
+    pinvou3_lib::platform::credential_store::redact_secret(
+        &pinvou3_lib::platform::redact_url_credentials_in_text(rendered),
+    )
 }
 
 pub fn success(stdout: String) -> crate::CliOutcome {
