@@ -1635,3 +1635,44 @@ Both independent scoped roles passed the complete eighth-batch code, tests and
 documents after all findings were repaired. Continue actual recovery/owner
 composition; this completes only the protected point-observation batch.
 Service commit: `143c943` (pushed). Continue without rewriting frozen SQL.
+
+### T20 ninth batch: minimal recovery observation context (2026-10-12)
+
+The service derives a minimal T06 projection only after original signed input,
+current trust, actual lineage and reception validation. It stores derived fixed
+bindings and one canonical event, without the credential envelope/raw request.
+Closed canonical decoding and original scope/pair/lineage/facts/time checks reject
+invalid contexts. The complete frame, including every read, obeys the original
+1 MiB bound and rejects overflow without truncation.
+
+The internal recovery read port is for the future fixed owner's authenticated
+engine projection; parsing does not authenticate a proof or accept client input.
+Current actual Root/deny must match the original proof, with denied signing keys
+refused first. Independent review found and repaired the historical Root expiry
+exception leaking into current recovery observations: both trust reads now reuse
+the original RootBody validator at returned SQL time with expiry acceptance off.
+Changed proof refuses instead of renewal. Actual lifecycle timeouts refresh only
+mutable CAS observations, preserve original event/proof/windows and terminal
+Session, and calculate diagnostic output. Existing receipt replay omits cursor
+work; all final references/time remain actual complete protected observations.
+
+Actual PostgreSQL recovery tests passed (three tests, 61.986s), covering minimal
+context exclusion, real timeout/reconstructed adapter/private binding, replay,
+malformed context and deny/proof drift with restoration. Unchanged short-lived
+Root tests delay the actual deny read across expiry for fresh and existing receipts
+while credential remains valid: pre-expiry succeeds, post-expiry yields no partial
+snapshot. Pure Root issuedAt/expiry-1/equality/after and whole-frame exact/+1 tests
+passed (1.573s); independent targeted run passed (1.709s).
+
+These are recovery observations, not a registered/sealed production owner or
+AES/restart/crash certification. No writer, SQL migration or HTTP is enabled.
+Actual T06 completion, transport, other event kinds and contribution composition
+continue as later work. Full T20 is open; downloads have no time cap.
+
+Final default full Go tests, vet, module verification, command builds, pinned
+contracts and client architecture/version/diff checks passed. Database/provider
+opt-ins remain skipped by default; this scope's actual PostgreSQL cases were
+explicitly enabled above. Production/cross-repository E2E remains unverified.
+Both independent scoped roles passed the frozen ninth-batch code, tests and
+documents after all findings were repaired. Continue actual owner composition.
+Service commit: `b1feb11` (pushed). Frozen reception SQL remains unchanged.
