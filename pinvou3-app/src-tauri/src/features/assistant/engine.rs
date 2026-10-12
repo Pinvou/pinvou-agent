@@ -1652,12 +1652,11 @@ async fn finish_reclaimed_lifecycle_turn(
 /// evict/delete/reclaim. A timed-out send was never enqueued (tokio's
 /// bounded `reserve`/`send` is cancel-safe), so the turn verifiably never
 /// started and the surfaced failure is truthful.
-async fn bounded_reserved_submit_send<F, Fut>(send: F) -> Result<()>
+async fn bounded_reserved_submit_send<Fut>(send: Fut) -> Result<()>
 where
-    F: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send()).await {
+    match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send).await {
         Ok(result) => result,
         Err(_) => {
             eprintln!(
@@ -2159,7 +2158,7 @@ impl AppEngine {
             ),
             None => None,
         };
-        match bounded_reserved_submit_send(|| self.handle.send(op)).await {
+        match bounded_reserved_submit_send(self.handle.send(op)).await {
             Ok(()) => {
                 if let Some(scope) = shell_scope {
                     scope.commit();
@@ -4199,11 +4198,17 @@ mod submit_gate_bound_tests {
         // hangs the 2× wrapper as a fast red; a silently shrunken bound
         // fails this assert).
         let started = std::time::Instant::now();
+        // The submit keeps its own sender clone: dropping the last Sender
+        // would close the channel and turn the cancel-safety probe below
+        // into a Closed instead of an Empty.
+        let submit_tx = tx.clone();
         let result = tokio::time::timeout(
             2 * TURN_GATE_AWAIT_TIMEOUT,
-            bounded_reserved_submit_send(|| {
-                let tx = tx.clone();
-                async move { tx.send(Op::Shutdown).await.map_err(anyhow::Error::from) }
+            bounded_reserved_submit_send(async move {
+                submit_tx
+                    .send(Op::Shutdown)
+                    .await
+                    .map_err(anyhow::Error::from)
             }),
         )
         .await
@@ -4234,9 +4239,8 @@ mod submit_gate_bound_tests {
     #[tokio::test]
     async fn reserved_submit_send_delivers_when_engine_accepts() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
-        let result = bounded_reserved_submit_send(|| {
-            let tx = tx.clone();
-            async move { tx.send(Op::Shutdown).await.map_err(anyhow::Error::from) }
+        let result = bounded_reserved_submit_send(async move {
+            tx.send(Op::Shutdown).await.map_err(anyhow::Error::from)
         })
         .await;
         assert!(result.is_ok(), "an accepting engine must deliver the op");
@@ -4291,6 +4295,8 @@ mod submit_gate_bound_wiring_tests {
             "\n    pub ",
             "\n    pub(crate) ",
             "\n    pub(super) ",
+            "\n    fn ",
+            "\n    async fn ",
             "\n    ///",
             "\nasync fn ",
             "\nimpl ",
@@ -4320,7 +4326,7 @@ mod submit_gate_bound_wiring_tests {
             "async fn send_reserved_turn_op(&self, op: Op, reservation: TurnReservation) -> Result<()> {",
         );
         assert!(
-            body.contains("bounded_reserved_submit_send(|| self.handle.send(op))"),
+            body.contains("bounded_reserved_submit_send(self.handle.send(op))"),
             "the reserved submit must route through the gate-bounded send (issue #525)"
         );
         assert!(

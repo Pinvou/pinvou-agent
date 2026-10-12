@@ -2990,14 +2990,10 @@ impl EnginePool {
                 // detached straggler lingers like an undelivered Shutdown
                 // does (accepted #483 residue), and holds no gate, pool, or
                 // session-map state, so it cannot re-block evict/delete.
-                if tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)
-                    .await
-                    .is_err()
-                {
-                    eprintln!(
-                        "[engine_pool] forwarder drain did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; detaching it (issue #525)"
-                    );
-                }
+                bounded_while_holding_turn_gate("forwarder drain", async move {
+                    let _ = forwarder.await;
+                })
+                .await;
             },
             || {
                 engine.finish_reclaimed_turn(
@@ -8587,6 +8583,8 @@ mod scheduled_model_tests {
             "\n    pub ",
             "\n    pub(crate) ",
             "\n    pub(super) ",
+            "\n    fn ",
+            "\n    async fn ",
             "\n    ///",
         ]
         .iter()
@@ -8670,14 +8668,14 @@ mod scheduled_model_tests {
             .find("forwarder.abort()")
             .expect("reclaim must abort the forwarder");
         let join_at = body
-            .find("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)")
+            .find("bounded_while_holding_turn_gate(\"forwarder drain\", async move {")
             .expect("the forwarder abort-join must be bounded (issue #525)");
         assert!(
             abort_at < join_at,
             "the forwarder must be aborted before the bounded join"
         );
         assert!(
-            !body.contains("let _ = forwarder.await;"),
+            !body.contains("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)"),
             "no direct unbounded forwarder join may remain in reclaim"
         );
     }
