@@ -4,8 +4,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/release-packages.yml"
+PR_CHECK_WORKFLOW = REPO_ROOT / ".github/workflows/pr-check.yml"
 RUST_CACHE_ACTION = "uses: Swatinem/rust-cache@v2"
 NO_SAVE = "save-if: false"
+MAIN_ONLY_SAVE = "save-if: ${{ github.ref == 'refs/heads/main' }}"
 
 
 def _without_yaml_comments(block):
@@ -51,6 +53,26 @@ class ReleaseCachePolicyTests(unittest.TestCase):
                     step,
                     "a release cache must not condition a save on any ref (save-if: false is the policy)",
                 )
+
+    def test_rust_test_allows_main_to_rebuild_cold_cache(self):
+        # 与上方 release 测试同款：先剥注释行，被注释掉的 save-if/key/timeout
+        # 不得充当活配置钉的满足条件。
+        workflow = _without_yaml_comments(
+            PR_CHECK_WORKFLOW.read_text(encoding="utf-8")
+        )
+        rust_test_job = workflow.split("\n  rust-test:", maxsplit=1)[1].split(
+            "\n  windows-rust-test:", maxsplit=1
+        )[0]
+
+        self.assertIn("timeout-minutes: 120", rust_test_job)
+        self.assertIn("shared-key: rust-test-v2", rust_test_job)
+        # 主保存策略必须落在 rust-test 自己的 Cargo cache 步骤内断言：rust-test
+        # 与 windows-rust-test 之间还排着 cli-test job，其 save-if 文本与本 job
+        # 完全相同，对整段切片断言会让本 job 丢掉 save-if 依旧绿灯。
+        cargo_cache_step = rust_test_job.split(
+            "- name: Cargo cache", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(MAIN_ONLY_SAVE, cargo_cache_step)
 
 
 if __name__ == "__main__":
