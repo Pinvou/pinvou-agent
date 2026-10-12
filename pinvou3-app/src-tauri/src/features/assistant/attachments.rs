@@ -115,6 +115,14 @@ fn staged_target_is_safe(
             .is_ok_and(|resolved| resolved.starts_with(canonical_workspace))
 }
 
+/// Discard a rejected/partial staged file: close the destination FIRST
+/// (Windows cannot unlink an open handle), then remove it. Best-effort —
+/// a failed unlink must not fail the staging rejection.
+fn discard_staged_partial(destination: std::fs::File, path: &std::path::Path) {
+    drop(destination);
+    let _ = std::fs::remove_file(path);
+}
+
 pub(crate) fn stage_file_in_workspace_with_copier<F>(
     src: &str,
     basename: &str,
@@ -140,13 +148,11 @@ where
         // not leave it behind (the same cleanup the copier-error arm below
         // runs — the doc contract covers every error return, not just the
         // copy itself).
-        drop(destination);
-        let _ = std::fs::remove_file(&path);
+        discard_staged_partial(destination, &path);
         return None;
     }
     if let Err(error) = copier(&mut source, &mut destination) {
-        drop(destination);
-        let _ = std::fs::remove_file(&path);
+        discard_staged_partial(destination, &path);
         // The Option contract degrades every consumer to a generic failure
         // (the GUI silently drops the attachment, headless reports a staging
         // error); log the cause so a refused cap or an IO fault — both
@@ -161,8 +167,7 @@ where
     if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
         // The same litter rule as the arms above: a rejected target must
         // not leave the staged file (here fully written) behind.
-        drop(destination);
-        let _ = std::fs::remove_file(&path);
+        discard_staged_partial(destination, &path);
         return None;
     }
     Some(format!("{attachment_dir}/{candidate}"))
@@ -330,8 +335,7 @@ where
         // The reservation created a zero-byte file; a rejected target must
         // not leave it behind (the same litter rule the file lane's
         // identical arm applies — round-37 review).
-        drop(destination);
-        let _ = std::fs::remove_file(&path);
+        discard_staged_partial(destination, &path);
         return None;
     }
     if writer(&mut destination, &path).is_err() {
@@ -348,8 +352,7 @@ where
         // this call owns (round-48 review: reconcile with the rationale
         // above — that arm's orphan belongs to nobody anymore; this one is
         // still ours).
-        drop(destination);
-        let _ = std::fs::remove_file(&path);
+        discard_staged_partial(destination, &path);
         return None;
     }
     Some(format!("{attachment_dir}/{candidate}"))

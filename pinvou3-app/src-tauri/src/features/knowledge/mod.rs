@@ -542,14 +542,15 @@ impl KnowledgeService {
         }
         refuse_fresh_foreign_running_import(&self.imports, &self.l1, Some(&job_id))?;
         self.imports.retry_item(&job_id, item_id).map_err(|error| {
-            // Strip the driver's "Invalid parameter name:" wrapper off
-            // the item-level miss marker (round-45) so the CLI's
-            // `knowledge_index_item_not_found` line reads cleanly.
-            let text = error.to_string();
-            if text.contains(INDEX_ITEM_NOT_FAILED_MARKER) {
-                format!("knowledge index item {item_id}{INDEX_ITEM_NOT_FAILED_MARKER}{job_id}")
-            } else {
-                text
+            // The item-level miss marker (round-45) arrives as the payload of
+            // `rusqlite::Error::InvalidParameterName`; pass that payload
+            // through verbatim instead of round-tripping Display and
+            // re-formatting a second copy, so the CLI's
+            // `knowledge_index_item_not_found` line reads exactly what the
+            // store wrote.
+            match error {
+                rusqlite::Error::InvalidParameterName(text) => text,
+                other => other.to_string(),
             }
         })?;
         *active = Some(job_id.clone());
@@ -956,11 +957,10 @@ fn refuse_fresh_foreign_running_import(
     requested_job: Option<&str>,
 ) -> Result<(), String> {
     if let Ok(Some(previous)) = imports.latest_state() {
-        let foreign = previous
-            .job_id
-            .as_deref()
-            .map(|id| Some(id) != requested_job)
-            .unwrap_or(true);
+        // `read_state`, the only `ImportJobState` constructor, always sets
+        // `job_id: Some(id)` from the row's primary key, so the plain
+        // Option comparison needs no None-arm fallback.
+        let foreign = previous.job_id.as_deref() != requested_job;
         if previous.running && foreign {
             if foreign_row_is_fresh(previous.updated_at) {
                 return Err(FOREIGN_IMPORT_RUNNING_MARKER.into());

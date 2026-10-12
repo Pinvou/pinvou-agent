@@ -105,6 +105,10 @@ pub(crate) use self::store::MAX_SESSIONS_PER_KIND;
 /// the command layer must compare against the same value GUI-created and kept
 /// headless sessions carry, or a renamed constant silently breaks auto-rename.
 pub(crate) use self::store::NEW_CHAT_TITLE;
+/// Re-export the not-found predicate: the scheduled compact's liveness oracle
+/// must classify a missing automation definition exactly as the store does —
+/// a genuine disk miss, with every other failure kind kept "unknown".
+pub(crate) use self::store::is_not_found_error;
 /// Re-export transcript helpers (consumed across engine / remote-control).
 pub use self::transcript::transcript_revision;
 pub use self::validators::is_aux_session_id;

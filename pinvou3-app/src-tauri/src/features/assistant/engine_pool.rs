@@ -4674,23 +4674,22 @@ where
 mod scheduled_model_tests {
     const TEST_SUBMISSION: &str = "sub-test";
     use super::{
-        AUX_ZERO_TOOL_REMINDER, bounded_join_while_holding_turn_gate, bounded_shutdown_sends,
-        bounded_teardown_shutdown, BoundedJoinOutcome, cancel_turn_with_gates, DELETE_GATE_WAIT,
-        DeleteGateRecheck, EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op,
-        Pinvou3Bridge, PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT, ScheduledUnattendedGuard,
-        SESSION_MODEL_BINDING_STALE_ERROR, SessionShellManagers, SessionTurnLifecycles,
-        SessionTurnLocks, SessionTurnShellTasks, TranscriptOperation, TURN_GATE_AWAIT_TIMEOUT,
-        TurnIdentity
-        default_model_for_new_session_from, delete_chat_session_with_aux_cascade,
-        delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
-        dispatch_turn_bound_cancel, entry_is_fresh, evict_if_idle_with_gates,
-        forward_edit_resend_with_reminder, forward_forced_turn_restrict, generation_matches,
-        identity_for_active_model, identity_for_saved_model, merge_aux_zero_tool_reminder,
-        quiesce_engine_before_reclaim, rebind_evict_with_gates, rebind_evictable,
-        reset_aux_session_delete_with_gate, resolve_eval_model_selection_from,
-        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
-        retry_shutdown_sends, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
-        turn_restrict_tools, user_display_message,
+        AUX_ZERO_TOOL_REMINDER, BoundedJoinOutcome, DELETE_GATE_WAIT, DeleteGateRecheck,
+        EvalModelSnapshots, ModelIdentity, ModelUpdateRevisions, Op, Pinvou3Bridge,
+        PreparedRuntimeState, REBIND_EVICT_GATE_TIMEOUT, SESSION_MODEL_BINDING_STALE_ERROR,
+        ScheduledUnattendedGuard, SessionShellManagers, SessionTurnLifecycles, SessionTurnLocks,
+        SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT, TranscriptOperation, TurnIdentity,
+        bounded_join_while_holding_turn_gate, bounded_shutdown_sends, bounded_teardown_shutdown,
+        cancel_turn_with_gates, default_model_for_new_session_from,
+        delete_chat_session_with_aux_cascade, delete_chat_session_with_gate,
+        delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
+        entry_is_fresh, evict_if_idle_with_gates, forward_edit_resend_with_reminder,
+        forward_forced_turn_restrict, generation_matches, identity_for_active_model,
+        identity_for_saved_model, merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
+        rebind_evict_with_gates, rebind_evictable, reset_aux_session_delete_with_gate,
+        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
+        resolve_spawn_model, retry_shutdown_sends, scheduled_profile_after_turn_gate,
+        should_still_reap_after_snapshot, turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};

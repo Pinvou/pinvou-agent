@@ -758,35 +758,18 @@ fn backup_once(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// read-modify-write + `*.tmp` + `fs::rename` 原子写。
+/// 原子写 CLI 配置:一次性 `.pinvou3-bak` 备份 + 平台 `atomic_write_private`。
+/// 平台 helper 提供 0600 创建临时文件（配置含明文 key，避免 0644 暴露窗口）、
+/// rename 前 fsync + 目录 fsync（掉电不再落下半写的配置）、pid+纳秒唯一
+/// staging 名（两个 surface 并发写互不踩踏）与 Windows 崩溃安全的替换状态机。
 fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    // 一次性 `.pinvou3-bak` 备份是平台 helper 不覆盖的语义，保留在本层。
     backup_once(path)?;
-    // The staging name carries the pid, exactly like `persist_locked`:
-    // a fixed `.tmp` name let two surfaces rename each other's half-written
-    // file into place — and unlike the store file, this helper writes the
-    // user's REAL claude/codex/kimi CLI config, now from two processes
-    // (GUI + the CLI's `providers add/switch`) since this diff made the
-    // mutators cross-surface.
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    // 直接以 0600 创建临时文件（配置含明文 key，kimi/claude 的 CLI 配置），
-    // 避免默认 umask 0644 让同机其他用户可读，也无「先 0644 写、后收紧」的
-    // 暴露窗口（评审中危项 + 复审低危 4）。平台细节在 platform/filesystem.rs，
-    // 本层不含目标平台 cfg。
-    {
-        use std::io::Write as _;
-        let mut file = crate::platform::filesystem::create_secret_file(&tmp)
-            .with_context(|| format!("创建临时文件 {} 失败", tmp.display()))?;
-        file.write_all(content)
-            .with_context(|| format!("写入临时文件 {} 失败", tmp.display()))?;
-    }
-    if let Err(error) = fs::rename(&tmp, path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(error).with_context(|| format!("替换 {} 失败", path.display()));
-    }
-    Ok(())
+    crate::platform::filesystem::atomic_write_private(path, content)
+        .with_context(|| format!("写入 {} 失败", path.display()))
 }
 
 pub(crate) use claude::ClaudeConfigWriter;

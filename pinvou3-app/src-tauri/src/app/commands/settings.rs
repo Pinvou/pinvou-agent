@@ -1,5 +1,8 @@
 use super::prelude::*;
-use crate::platform::credential_store::{CredentialReference, CredentialStore};
+use crate::platform::credential_store::{
+    CREDENTIAL_STORE_UNAVAILABLE_ERROR, CredentialReference, CredentialStore,
+};
+use crate::platform::prefs::MODEL_API_KEY_ENV_OVERRIDE;
 
 /// Round-51 review: the settings transaction holds the cross-process
 /// settings.json.lock across keychain I/O (the CLI's models family writes
@@ -36,7 +39,7 @@ fn prepare_prefs_for_save(
     prefs.normalize_saved_model_metadata();
     let migration = prefs.migrate_plaintext_api_keys_with_store(store);
     if migration.has_failures() {
-        return Err("credential store unavailable; please reconfigure API Key".to_string());
+        return Err(CREDENTIAL_STORE_UNAVAILABLE_ERROR.to_string());
     }
     // The migration DEFERS destructive keyring deletes (see the search
     // Delete arm in `migrate_plaintext_api_keys_with_store`): surface them so
@@ -223,7 +226,7 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
         env_overrides.push("base_url".to_string());
     }
-    let env_api_key = std::env::var("DEEPSEEK_API_KEY")
+    let env_api_key = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
     if env_api_key {

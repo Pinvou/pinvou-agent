@@ -489,22 +489,22 @@ impl MarketplaceWriteLock {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = crate::platform::paths::bundles_root().join(".imports.lock");
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+        // 与 file_lock::open_lock_file 同一开启纪律（见
+        // `open_private_lock_file`）：O_NOFOLLOW 拒绝被植入的符号链接，
+        // O_NONBLOCK 不给 FIFO 阻塞 open 的机会，权限漂移收紧失败即整体
+        // 失败——这里不再保留手写 open+chmod 的弱化副本。先开启，仅在
+        // 缺失（父目录未建）时补建后重试。
+        let open = || crate::platform::filesystem::open_private_lock_file(&path);
+        let file = match open() {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                open()?
+            }
+            Err(e) => return Err(e),
+        };
         // 阻塞等待而非 try+busy：导入/安装本就是秒级用户动作，持锁方死亡
         // 由内核释放，存活方只在各自的暂存窗口内持锁。
         file.lock()?;

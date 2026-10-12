@@ -841,8 +841,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     /// Applies this store's quarantine policy and reports whether the
     /// canonical file was renamed AWAY (Rename strategy, rename succeeded) —
     /// the fact the absent-file read arm needs to keep memory over an empty
-    /// default. (Round-40 review: the stale first summary line that used to
-    /// sit above this one is gone.)
+    /// default.
     fn handle_invalid(path: &Path, reason: &str) -> bool {
         match T::QUARANTINE {
             QuarantineStrategy::LogInPlace => {

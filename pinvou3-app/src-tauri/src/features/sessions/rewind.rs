@@ -204,9 +204,10 @@ fn load_rewound_turns_map_with(
                             // file between our read and this quarantine.
                             match std::fs::read(&path).map_err(anyhow::Error::new).and_then(
                                 |fresh| {
-                                    serde_json::from_slice(&fresh)
-                                        .map_err(anyhow::Error::new)
-                                        .map(|map: HashMap<String, Vec<RewoundTurnsRecord>>| map)
+                                    serde_json::from_slice::<
+                                        HashMap<String, Vec<RewoundTurnsRecord>>,
+                                    >(&fresh)
+                                    .map_err(anyhow::Error::new)
                                 },
                             ) {
                                 Ok(fresh_map) => {

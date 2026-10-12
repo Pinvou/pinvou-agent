@@ -66,22 +66,17 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// ([`crosses_sensitive_component`]) while the prefix half cannot apply.
 use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
 
-/// Mirror of the component half of `path_policy::check_sensitive_components`.
+/// The component half of `path_policy::check_sensitive_components`.
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
-/// the blacklisted component it crosses, if any. The comparison reproduces
-/// `platform::os::path_component_eq`, which is byte-exact on unix and ASCII
+/// the blacklisted component it crosses, if any. The comparison delegates to
+/// `pinvou3_lib::platform::path_component_eq` (byte-exact on unix, ASCII
 /// case-insensitive on Windows — a case-sensitive compare there would let
-/// `ID_RSA` through on a filesystem that treats it as the same file.
-pub(crate) fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
+/// `ID_RSA` through on a filesystem that treats it as the same file).
+fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
     SENSITIVE_PATH_COMPONENTS.iter().copied().find(|blocked| {
         canonical.components().any(|component| {
-            let value = component.as_os_str();
-            if cfg!(windows) {
-                value.to_string_lossy().eq_ignore_ascii_case(blocked)
-            } else {
-                value == std::ffi::OsStr::new(*blocked)
-            }
+            pinvou3_lib::platform::path_component_eq(component.as_os_str(), blocked)
         })
     })
 }

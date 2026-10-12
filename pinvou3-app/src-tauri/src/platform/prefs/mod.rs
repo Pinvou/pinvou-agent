@@ -9,8 +9,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::core::mode_state::SerializableMode;
 use crate::platform::credential_store::{
-    CredentialEditAction, CredentialMigrationResult, CredentialReference, CredentialState,
-    CredentialStore, SystemCredentialStore,
+    CREDENTIAL_STORE_UNAVAILABLE_ERROR, CredentialEditAction, CredentialMigrationResult,
+    CredentialReference, CredentialState, CredentialStore, SystemCredentialStore,
 };
 
 mod search;
@@ -1220,7 +1220,7 @@ impl UserPrefs {
         // 还报成功。与 GUI `prepare_prefs_for_save` 同一闸门：拒绝整个事务，
         // settings.json 保持原样，等用户修复凭据存储（或切 file 后端）再写。
         if migration.has_failures() {
-            return Err("credential store unavailable; please reconfigure API Key".to_string());
+            return Err(CREDENTIAL_STORE_UNAVAILABLE_ERROR.to_string());
         }
         mutate(&mut prefs)?;
         prefs
@@ -2456,44 +2456,7 @@ mod tests {
     #[test]
     fn load_persists_legacy_local_output_sentinel_migration() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // RAII cleanup: PINVOU3_HOME and the temporary home must be reclaimed
-        // even on assertion/panic — the previous restore was only written at
-        // the normal end, so a mid-test failure leaked the env + directory
-        // and polluted later tests in the same process (same recipe as the
-        // bridge tests' TempDirGuard; the directory name stacks pid + an
-        // in-process atomic suffix so concurrent cargo test from two
-        // terminals does not collide).
-        struct PrefsHomeGuard {
-            previous: Option<std::ffi::OsString>,
-            home: std::path::PathBuf,
-        }
-        impl PrefsHomeGuard {
-            fn set(home: std::path::PathBuf) -> Self {
-                let previous = std::env::var_os("PINVOU3_HOME");
-                // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
-                unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-                Self { previous, home }
-            }
-        }
-        impl Drop for PrefsHomeGuard {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.home);
-                match self.previous.take() {
-                    // SAFETY: holding ENV_LOCK (first line of this test); restore-side writes serialized.
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-            }
-        }
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-prefs-local-output-sentinel-{}-{}",
-            std::process::id(),
-            super::super::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("create temporary prefs home");
-        let _prefs_home = PrefsHomeGuard::set(home);
+        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-local-output-sentinel", &[]);
 
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(SavedModel {
@@ -2588,16 +2551,15 @@ mod tests {
             .expect("custom on disk");
         assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
         // PINVOU3_HOME restoration and temporary home reclamation are
-        // handled by PrefsHomeGuard's Drop (also on assertion/panic paths);
-        // no hand-written restore block here.
+        // handled by the `pinned_temp_prefs_home` guard's Drop (also on
+        // assertion/panic paths); no hand-written restore block here.
     }
 
     /// Panic-safe `PINVOU3_HOME` pin for the prefs tests: `set` records the
     /// previous env values, points `PINVOU3_HOME` at `home` and applies the
     /// `extra` name→value pins on top (`None` removes the variable); Drop
     /// reclaims the directory and restores every previous value — including
-    /// on assertion/panic paths (the module-level shape of the per-test
-    /// `PrefsHomeGuard` copies below; same recipe as the bridge tests'
+    /// on assertion/panic paths (same recipe as the bridge tests'
     /// TempDirGuard). Callers must hold `ENV_LOCK` (acquired on the test's
     /// first line), so the env writes here are serialized in-process.
     struct TempHomeGuard {
@@ -2805,37 +2767,7 @@ mod tests {
     #[test]
     fn load_migrates_legacy_local_thinking_off() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        struct PrefsHomeGuard {
-            previous: Option<std::ffi::OsString>,
-            home: std::path::PathBuf,
-        }
-        impl PrefsHomeGuard {
-            fn set(home: std::path::PathBuf) -> Self {
-                let previous = std::env::var_os("PINVOU3_HOME");
-                // SAFETY: holding ENV_LOCK (first line of this test); env writes serialized.
-                unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-                Self { previous, home }
-            }
-        }
-        impl Drop for PrefsHomeGuard {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.home);
-                match self.previous.take() {
-                    // SAFETY: holding ENV_LOCK (first line of this test); restore-side writes serialized.
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-            }
-        }
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-prefs-legacy-thinking-off-{}-{}",
-            std::process::id(),
-            super::super::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("create temporary prefs home");
-        let _prefs_home = PrefsHomeGuard::set(home);
+        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-legacy-thinking-off", &[]);
 
         let mut prefs = UserPrefs::default();
         // Machine-written population: must be stripped.
@@ -2949,37 +2881,7 @@ mod tests {
     #[test]
     fn load_marker_blocks_second_thinking_off_migration() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        struct PrefsHomeGuard {
-            previous: Option<std::ffi::OsString>,
-            home: std::path::PathBuf,
-        }
-        impl PrefsHomeGuard {
-            fn set(home: std::path::PathBuf) -> Self {
-                let previous = std::env::var_os("PINVOU3_HOME");
-                // SAFETY: holding ENV_LOCK (first line of this test); env writes serialized.
-                unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-                Self { previous, home }
-            }
-        }
-        impl Drop for PrefsHomeGuard {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.home);
-                match self.previous.take() {
-                    // SAFETY: holding ENV_LOCK (first line of this test); restore-side writes serialized.
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-            }
-        }
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-prefs-thinking-off-marker-{}-{}",
-            std::process::id(),
-            super::super::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("create temporary prefs home");
-        let _prefs_home = PrefsHomeGuard::set(home);
+        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-thinking-off-marker", &[]);
 
         let mut prefs = UserPrefs::default();
         prefs.local_thinking_default_migrated = true;
@@ -3015,37 +2917,7 @@ mod tests {
     #[test]
     fn load_persists_thinking_marker_without_local_models() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        struct PrefsHomeGuard {
-            previous: Option<std::ffi::OsString>,
-            home: std::path::PathBuf,
-        }
-        impl PrefsHomeGuard {
-            fn set(home: std::path::PathBuf) -> Self {
-                let previous = std::env::var_os("PINVOU3_HOME");
-                // SAFETY: holding ENV_LOCK (first line of this test); env writes serialized.
-                unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-                Self { previous, home }
-            }
-        }
-        impl Drop for PrefsHomeGuard {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.home);
-                match self.previous.take() {
-                    // SAFETY: holding ENV_LOCK (first line of this test); restore-side writes serialized.
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-            }
-        }
-        let home = std::env::temp_dir().join(format!(
-            "pinvou3-prefs-thinking-marker-cloud-only-{}-{}",
-            std::process::id(),
-            super::super::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("create temporary prefs home");
-        let _prefs_home = PrefsHomeGuard::set(home);
+        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-thinking-marker-cloud-only", &[]);
 
         let mut prefs = UserPrefs::default();
         prefs.advanced.saved_models.push(legacy_model_fixture(

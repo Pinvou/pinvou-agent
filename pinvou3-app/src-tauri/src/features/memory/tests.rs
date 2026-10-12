@@ -2644,7 +2644,7 @@ async fn organize_memory_releases_pass_lock_after_mid_pass_failure() {
     // extracted, so the pass errors out mid-way (lock acquired, no actions
     // applied, no report persisted).
     let failing_bridge = FakeOrganizeModel {
-        base_url: spawn_chat_completions_stub(format!("not json {{")),
+        base_url: spawn_chat_completions_stub("not json {".to_string()),
     };
     let error = organize_memory_with_llm(&failing_bridge, None)
         .await

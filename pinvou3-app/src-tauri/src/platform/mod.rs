@@ -46,6 +46,12 @@ pub use download::redact_url_credentials_in_text;
 // (Windows case-only spellings slipped past the nested arm).
 pub use os::filesystem_path_identity_key;
 pub use os::path_identity_is_same_or_nested;
+// Same crate-boundary shape as the re-exports above: the CLI's artifacts
+// lane answers its credential-component blacklist through the same
+// platform-aware component compare as the GUI's `path_policy` (byte-exact
+// on unix, ASCII case-insensitive on Windows) instead of a drifting
+// `cfg!(windows)` re-copy.
+pub use os::path_component_eq;
 // Same crate-boundary shape as the re-exports above: the headless CLI's
 // file-persisting lanes (`artifacts write`, `feedback submit`) were the last
 // holders of a drifting local stage-then-rename copy; they now consume the

@@ -216,6 +216,14 @@ impl CredentialMigrationResult {
     }
 }
 
+/// The refusal text every persisting caller returns when
+/// [`CredentialMigrationResult::has_failures`] is true: the plaintext key
+/// exists in memory only, and a save would sanitize it out of settings.json.
+/// Defined once so the prefs transaction gate and the GUI settings command
+/// return (and tests assert) one identical string.
+pub(crate) const CREDENTIAL_STORE_UNAVAILABLE_ERROR: &str =
+    "credential store unavailable; please reconfigure API Key";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialError {
     message: String,

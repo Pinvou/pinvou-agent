@@ -1392,7 +1392,7 @@ impl SessionStore {
 /// chain — the "record is not on disk" case. Any other failure kind must be
 /// treated as "unknown" rather than "absent", so transient IO errors are never
 /// conflated with a missing record.
-pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
+pub(crate) fn is_not_found_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()

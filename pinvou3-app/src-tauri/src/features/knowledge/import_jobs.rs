@@ -506,14 +506,7 @@ impl ImportJobStore {
         Ok(FailedImportFilePage {
             files: files.into_iter().take(limit).collect(),
             // Only compute the next page offset when a next page exists.
-            // The checked add stays as belt-and-braces even though the i64
-            // clamp above bounds `offset` (≤ i64::MAX) far below u64 range,
-            // so the add cannot overflow today.
-            next_offset: if has_more {
-                (offset as u64).checked_add(limit as u64)
-            } else {
-                None
-            },
+            next_offset: has_more.then(|| (offset as u64) + (limit as u64)),
         })
     }
 

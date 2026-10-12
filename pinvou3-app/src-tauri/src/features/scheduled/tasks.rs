@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::scheduled::executor::{ScheduledChatExecutor, current_yolo_allow_shell};
-use crate::features::sessions::SessionStore;
+use crate::features::sessions::{SessionStore, is_not_found_error};
 use crate::platform::prefs::UserPrefs;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1615,10 +1615,7 @@ pub async fn list_scheduled_tasks(
     // scanner's walk-error veto.
     let is_live = |id: &str| match manager.get_automation(id) {
         Ok(_) => true,
-        Err(error) => !error
-            .chain()
-            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-            .any(|io_error| io_error.kind() == std::io::ErrorKind::NotFound),
+        Err(error) => !is_not_found_error(&error),
     };
     if let Err(error) = state.model_bindings.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled model bindings: {error:#}");
