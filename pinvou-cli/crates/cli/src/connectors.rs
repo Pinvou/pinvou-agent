@@ -1005,23 +1005,25 @@ fn logout_probe(spec: &VendorSpec, deadline: Instant) -> LogoutGate {
 /// the connect budget a wrapper scripted (`connect --timeout 30` used to be
 /// able to observe ~90 s).
 fn run_status_probe_bounded(
-    spec: &VendorSpec,
+    kind: ConnectorKind,
     deadline: Instant,
 ) -> Result<(bool, String, String), CliError> {
-    match spec.id {
-        "feishu" => run_cli_bounded(spec, &["auth", "status", "--json"], deadline),
-        "wecom" => run_cli_bounded(spec, &["auth", "show", "--status"], deadline),
-        "dingtalk" => run_cli_bounded(spec, &["auth", "status", "--format", "json"], deadline),
-        "tmeet" => run_cli_bounded(spec, &["auth", "status"], deadline),
-        _ => Ok((false, String::new(), String::new())),
+    let spec = kind.spec();
+    match kind {
+        ConnectorKind::Feishu => run_cli_bounded(spec, &["auth", "status", "--json"], deadline),
+        ConnectorKind::Wecom => run_cli_bounded(spec, &["auth", "show", "--status"], deadline),
+        ConnectorKind::Dingtalk => {
+            run_cli_bounded(spec, &["auth", "status", "--format", "json"], deadline)
+        }
+        ConnectorKind::Tmeet => run_cli_bounded(spec, &["auth", "status"], deadline),
     }
 }
 
 /// [`cli_connected`] under the caller's budget: the probe still gets its own
 /// full window when the budget allows, but never runs past `deadline`.
-fn cli_connected_bounded(spec: &VendorSpec, deadline: Instant) -> bool {
-    run_status_probe_bounded(spec, deadline)
-        .map(|(ok, stdout, stderr)| connected_from_probe(spec, ok, &stdout, &stderr))
+fn cli_connected_bounded(kind: ConnectorKind, deadline: Instant) -> bool {
+    run_status_probe_bounded(kind, deadline)
+        .map(|(ok, stdout, stderr)| connected_from_probe(kind, ok, &stdout, &stderr))
         .unwrap_or(false)
 }
 
@@ -1031,20 +1033,20 @@ fn cli_connected_bounded(spec: &VendorSpec, deadline: Instant) -> bool {
 /// - wecom: exit ok and the whole line `authorized` (case-insensitive);
 /// - dingtalk: JSON `authenticated: true`;
 /// - tmeet: output contains `Logged in`.
-fn cli_connected(spec: &VendorSpec) -> Result<bool, CliError> {
+fn cli_connected(kind: ConnectorKind) -> Result<bool, CliError> {
     let (ok, stdout, stderr) = run_status_probe_bounded(
-        spec,
+        kind,
         Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
     )?;
-    Ok(connected_from_probe(spec, ok, &stdout, &stderr))
+    Ok(connected_from_probe(kind, ok, &stdout, &stderr))
 }
 
 /// The per-connector `connected` verdict over one status-probe capture —
 /// the single authority both `status` entries and the connect/login gates
 /// read, so the four vendor branches cannot drift apart.
-fn connected_from_probe(spec: &VendorSpec, ok: bool, stdout: &str, stderr: &str) -> bool {
-    match spec.id {
-        "feishu" => parse_json(stdout)
+fn connected_from_probe(kind: ConnectorKind, ok: bool, stdout: &str, stderr: &str) -> bool {
+    match kind {
+        ConnectorKind::Feishu => parse_json(stdout)
             .or_else(|| parse_json(stderr))
             .and_then(|value| {
                 value
@@ -1053,10 +1055,9 @@ fn connected_from_probe(spec: &VendorSpec, ok: bool, stdout: &str, stderr: &str)
                     .map(|status| status == "ready")
             })
             .unwrap_or(false),
-        "wecom" => ok && (authorized_line(stdout) || authorized_line(stderr)),
-        "dingtalk" => authenticated_json(stdout) || authenticated_json(stderr),
-        "tmeet" => stdout.contains("Logged in") || stderr.contains("Logged in"),
-        _ => false,
+        ConnectorKind::Wecom => ok && (authorized_line(stdout) || authorized_line(stderr)),
+        ConnectorKind::Dingtalk => authenticated_json(stdout) || authenticated_json(stderr),
+        ConnectorKind::Tmeet => stdout.contains("Logged in") || stderr.contains("Logged in"),
     }
 }
 
@@ -1537,7 +1538,7 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
             entry["upgrade_required"] = json!(upgrade_required);
             entry["version"] = json!(raw);
             let (ok, stdout, stderr) = match run_status_probe_bounded(
-                spec,
+                kind,
                 Instant::now() + Duration::from_secs(PROBE_TIMEOUT_SECS),
             ) {
                 Ok(result) => result,
@@ -1546,7 +1547,7 @@ fn vendor_status_entry(kind: ConnectorKind) -> Result<Value, CliError> {
                     return Ok(entry);
                 }
             };
-            let connected = connected_from_probe(spec, ok, &stdout, &stderr);
+            let connected = connected_from_probe(kind, ok, &stdout, &stderr);
             if !upgrade_required && spec.id == "feishu" {
                 // Mirror `feishu_status`'s extra `configured` flag (non-empty
                 // appId in the auth status payload). Gated on the usable
@@ -1662,7 +1663,7 @@ fn set_enabled(
     // JSON key stays present but null (the ima degrade row's "null is not
     // false") and the human row says "unknown"; the gating above is
     // untouched.
-    let connected = cli_connected(spec).ok();
+    let connected = cli_connected(kind).ok();
     let enable_probe_errored = enabled && connected.is_none();
     // GUI parity (round-18 finding 1): the on-disk skill gate looks ONLY at
     // the connection state + the legacy `<id>_disabled` marker
@@ -1739,18 +1740,22 @@ fn set_enabled(
     Ok(success(render(output, human, &value)))
 }
 
-/// The consent-failure wrapping shared by the two vendor consent syncs
-/// (`apply_skills`' show branch and `finish_connect_side_effects`): the GUI
-/// fails the command with the shared consent-failure marker instead of
-/// letting the connector go live with zero consent; the CLI mirrors that
-/// contract. The scope layer logs nothing on write failure, so the error
-/// carries the reason. `verb` is the outcome already reported for the
-/// connector ("applied" / "connected").
-fn sync_consent_after_install(id: &str, verb: &str) -> Result<(), CliError> {
+/// The consent-failure wrapping shared by the three vendor consent syncs
+/// (`apply_skills`' show branch, `finish_connect_side_effects`, and
+/// `ima_connect`'s rollback closure): the GUI fails the command with the
+/// shared consent-failure marker instead of letting the connector go live
+/// with zero consent; the CLI mirrors that contract. The scope layer logs
+/// nothing on write failure, so the error carries the reason. `subject` is
+/// the outcome already reported, up to the ", but" ("feishu connected" /
+/// "ima skills installed"); `pronoun` agrees with it ("it" for one
+/// connector, "them" for ima's skills). `id` stays the scope-layer argument
+/// (the skill id, normalized to its package id there), not necessarily the
+/// subject's first word.
+fn sync_consent_after_install(id: &str, subject: &str, pronoun: &str) -> Result<(), CliError> {
     pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(id).map_err(|error| {
         CliError::failed(format!(
-            "{id} {verb}, but {}: new sessions will enable it by default — \
-turn it off in the tools list: {error}",
+            "{subject}, but {}: new sessions will enable {pronoun} by default — \
+turn {pronoun} off in the tools list: {error}",
             pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
         ))
     })
@@ -1783,12 +1788,12 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     // not RESOLVE at all cannot be connected (the knowable state this
     // command's degrade contract is written against), so only a probe that
     // ran and failed (wedge, wait error, timeout) is unknown.
-    let probe = cli_connected(spec);
+    let probe = cli_connected(kind);
     let probe_errored = probe.is_err() && resolve_vendor_cli(spec).is_some();
     let connected = probe.unwrap_or(false);
     let visible = gui_skill_gate_shows_with(kind, connected);
     if visible {
-        sync_consent_after_install(spec.id, "applied")?;
+        sync_consent_after_install(spec.id, &format!("{} applied", spec.id), "it")?;
     } else {
         hide_connector_skills(kind)?;
     }
@@ -2119,36 +2124,11 @@ fn ensure_cli(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, Cli
     }
     match spec.id {
         // Mirror `install_tmeet_cli`: npm global install of the pinned spec.
-        "tmeet" => {
-            if !run_npm_install(spec)? {
-                // The hint only names the log that actually exists: npm's
-                // stdio falls back to null when the log file cannot be
-                // created, and pointing at a file that was never written
-                // sends the user hunting a empty trail.
-                let log_path = pinvou3_home().join("cli-install.log");
-                let hint = if log_path.is_file() {
-                    format!(", see {}", log_path.display())
-                } else {
-                    String::new()
-                };
-                // Round-46 review: this arm is the MOST COMMON npm failure
-                // shape (both registry attempts end in clean non-zero exits
-                // — `run_npm_install` returns `Ok(false)`) and it was the
-                // one install lane without the stable code the docs
-                // advertise; only the hard-error arm inside
-                // `run_npm_install` carried it.
-                return Err(CliError::failed(format!(
-                    "connectors_npm_install_failed: {} CLI install failed{hint}",
-                    spec.display_name
-                )));
-            }
-        }
+        "tmeet" => run_npm_install(spec)?,
         // Mirror `native_installer::ensure_native_cli`: download the pinned
         // archive, verify both hashes, stage the executable into the
         // versioned asset directory.
-        _ => {
-            ensure_native_cli(spec)?;
-        }
+        _ => ensure_native_cli(spec)?,
     };
     ensure_cli_execution_verdict(spec, output)
 }
@@ -2197,8 +2177,11 @@ fn success_or_render(
 
 /// Mirror of `install_tmeet_cli` + `connector_cli::run_with_timeout`:
 /// stdin nulled (installers hang on an inherited TTY-less stdin), output
-/// captured to `~/.pinvou3/cli-install.log`, hard timeout.
-fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
+/// captured to `~/.pinvou3/cli-install.log`, hard timeout. Owns both npm
+/// failure shapes: a clean double non-zero exit fails with the
+/// `connectors_npm_install_failed: {display_name} CLI install failed` shape
+/// below, any hard `Err` with the aggregated-causes shape.
+fn run_npm_install(spec: &VendorSpec) -> Result<(), CliError> {
     // Same cross-process serialization as the native lane's lock (see
     // `ensure_native_cli`): concurrent `ensure-cli` runs — npm and native
     // alike — must not race (here on npm's global prefix tree and the shared
@@ -2235,20 +2218,19 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     pinvou3_lib::features::append_cli_install_log("── npm install (default npm registry) ──");
     let first = run_npm_attempt(spec, &npm, None);
     if first.as_ref().is_ok_and(|ok| *ok) {
-        return Ok(true);
+        return Ok(());
     }
     pinvou3_lib::features::append_cli_install_log(
         "── default registry failed, retrying via npmmirror ──",
     );
     let second = run_npm_attempt(spec, &npm, Some(pinvou3_lib::platform::NPM_MIRROR_REGISTRY));
     if second.as_ref().is_ok_and(|ok| *ok) {
-        return Ok(true);
+        return Ok(());
     }
-    // Both attempts failed. Clean double non-zero exits keep the caller's
-    // `{display_name} CLI install failed` + log-hint shape; any hard `Err`
-    // (timeout/wait/spawn) is aggregated starting from the FIRST error,
-    // the GUI's rule — reporting only the retry error would bury a first
-    // failure unrelated to the network.
+    // Both attempts failed. Any hard `Err` (timeout/wait/spawn) is
+    // aggregated starting from the FIRST error, the GUI's rule — reporting
+    // only the retry error would bury a first failure unrelated to the
+    // network.
     let mut causes: Vec<String> = Vec::new();
     if let Err(primary) = &first {
         causes.push(format!("default registry error: {primary}"));
@@ -2256,10 +2238,24 @@ fn run_npm_install(spec: &VendorSpec) -> Result<bool, CliError> {
     if let Err(retry) = &second {
         causes.push(format!("npmmirror retry error: {retry}"));
     }
-    if causes.is_empty() {
-        return Ok(false);
-    }
     let log_path = pinvou3_home().join("cli-install.log");
+    if causes.is_empty() {
+        // Round-46 review: a clean double non-zero exit is the MOST COMMON
+        // npm failure shape and this lane must still lead with the stable
+        // code the docs advertise. The hint only names the log that actually
+        // exists: npm's stdio falls back to null when the log file cannot
+        // be created, and pointing at a file that was never written sends
+        // the user hunting a empty trail.
+        let hint = if log_path.is_file() {
+            format!(", see {}", log_path.display())
+        } else {
+            String::new()
+        };
+        return Err(CliError::failed(format!(
+            "connectors_npm_install_failed: {} CLI install failed{hint}",
+            spec.display_name
+        )));
+    }
     // Round-45: code-prefixed per the family error-code convention; the
     // causes and log path stay as the human explanation.
     Err(CliError::failed(format!(
@@ -2444,10 +2440,6 @@ fn install_lock_unavailable(error: impl std::fmt::Display) -> CliError {
     ))
 }
 
-// Returns `Result<()>`: both arms used to return an always-`Ok(true)` whose
-// two-valued `Ok(false)` semantics died when the verdict tail became
-// unconditional — a vestigial bool a future caller could misread (round-39
-// review).
 fn ensure_native_cli(spec: &VendorSpec) -> Result<(), CliError> {
     // Serialize concurrent CLI installs (two `ensure-cli` processes would
     // race on the shared staging archive and destination); blocking wait is
@@ -3227,7 +3219,7 @@ fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     // (skill_gate's marker contract); the CLI mirrors that instead of
     // reporting a connection whose consent never landed — the scope layer
     // logs nothing on write failure, so the error carries the reason.
-    sync_consent_after_install(spec.id, "connected")?;
+    sync_consent_after_install(spec.id, &format!("{} connected", spec.id), "it")?;
     Ok(())
 }
 
@@ -3244,8 +3236,8 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
     // are the only things worth interrupting the terminal for, and a chatty
     // vendor CLI would bury them. It is attached to failure messages only.
     let mut tail: Vec<String> = Vec::new();
-    match spec.id {
-        "feishu" => {
+    match kind {
+        ConnectorKind::Feishu => {
             // Phase 1 (register app): `config init --new` until exit. The
             // register link is printed and noted live by
             // `spawn_and_capture_url` while the vendor CLI runs.
@@ -3327,13 +3319,13 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // `is_user_ready`): a spawn failure or probe timeout must
                 // not abort the connect after a successful login — the next
                 // tick retries and the loop deadline still bounds the wait.
-                if cli_connected_bounded(spec, deadline) {
+                if cli_connected_bounded(kind, deadline) {
                     finish_connect_side_effects(spec)?;
                     break;
                 }
             }
         }
-        "wecom" => {
+        ConnectorKind::Wecom => {
             let qr_dir = std::env::temp_dir().join(format!(
                 "pinvou-cli-wecom-qr-{}-{}",
                 std::process::id(),
@@ -3408,7 +3400,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // hiccup reports the honest "did not complete" verdict
                 // below instead of surfacing the probe's own error as the
                 // connect failure.
-                if !cli_connected_bounded(spec, deadline) {
+                if !cli_connected_bounded(kind, deadline) {
                     return Err(CliError::failed(format!(
                         "wecom authorization did not complete (cancelled or timed out){}",
                         connect_failure_suffix(spec, &notes, &tail)
@@ -3436,7 +3428,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             }
             let _ = std::fs::remove_dir_all(&qr_dir);
         }
-        "dingtalk" | "tmeet" => {
+        ConnectorKind::Dingtalk | ConnectorKind::Tmeet => {
             let args: &[&str] = if spec.id == "dingtalk" {
                 &["auth", "login", "--device"]
             } else {
@@ -3466,11 +3458,11 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             // exits because `tmeet auth status` can lag credential
             // persistence at process exit; mirror that so a successful login
             // is not misreported as a failure.
-            let mut connected = cli_connected_bounded(spec, deadline);
+            let mut connected = cli_connected_bounded(kind, deadline);
             let grace_started = std::time::Instant::now();
             while !connected && grace_started.elapsed() < Duration::from_secs(5) {
                 std::thread::sleep(Duration::from_millis(200));
-                connected = cli_connected_bounded(spec, deadline);
+                connected = cli_connected_bounded(kind, deadline);
             }
             if !connected {
                 return Err(CliError::failed(format!(
@@ -3481,7 +3473,6 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
             }
             finish_connect_side_effects(spec)?;
         }
-        _ => return Err(CliError::usage("unknown connector")),
     }
     notes.push(format!("{} connected", spec.id));
     // The DenyAll scope sync ran inside `finish_connect_side_effects` on
@@ -3500,8 +3491,11 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
 /// Spawns a long-running login command, captures the first authorization URL
 /// from its output (auth-domain filtered, mirror of `drain_for_url` /
 /// `CliCtx::extract_url`), waits for exit within `deadline` and returns
-/// `(url, exit_success)`. stdin is nulled like the GUI flows; `work_dir`
-/// keeps relative scratch output (wecom's `qr.png`) out of the user's cwd.
+/// `(url, user_code, status_ok)`: the captured URL, the separately drained
+/// user code (dingtalk prints it on its own line and the caller composes it
+/// into the login URL), and whether the child exited successfully. stdin is
+/// nulled like the GUI flows; `work_dir` keeps relative scratch output
+/// (wecom's `qr.png`) out of the user's cwd.
 fn spawn_and_capture_url(
     spec: &VendorSpec,
     args: &[&str],
@@ -4211,14 +4205,7 @@ fn ima_connect(
         // committed and consent state lost. The pack itself is not
         // uninstalled (live-by-absence until the denied state applies on
         // reconnect); that residual is what the marker message names.
-        pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(IMA_SKILL_ID)
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "ima skills installed, but {}: new sessions will enable them by \
-default — turn them off in the tools list: {error}",
-                    pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-                ))
-            })?;
+        sync_consent_after_install(IMA_SKILL_ID, "ima skills installed", "them")?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -4443,7 +4430,7 @@ mod tests {
     /// Unique temp root for this process: `<label>-<pid>-<nanos>` under the
     /// system temp dir. Path construction only — callers keep their own
     /// create/write/cleanup. (Deliberately NOT used where the path must key
-    /// by thread name, e.g. `VerdictEnvGuard`.)
+    /// by thread name, e.g. `EnvSwapGuard::stage_fake`.)
     fn unique_temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "{label}-{}-{}",
@@ -4455,59 +4442,15 @@ mod tests {
         ))
     }
 
-    // ── install-lane hash gate (round-38 review: the gate primitive had no
-    // negative coverage — a refactor that verified after the rename or
-    // dropped the archive check would have passed the whole suite) ──────
+    // ── env-swapping test guard (the single ENV_LOCK-holding sandbox shared
+    // by the execution-verdict and install-lock tests) ───────────────────
 
-    const KNOWN_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256("")
-
-    fn hash_fixture(name: &str, contents: &[u8]) -> PathBuf {
-        let path = unique_temp_root(&format!("pinvou-connectors-hash-{name}"));
-        std::fs::write(&path, contents).unwrap();
-        path
-    }
-
-    #[test]
-    fn file_is_sha256_accepts_the_matching_payload_and_nothing_else() {
-        let empty = hash_fixture("empty", b"");
-        assert!(file_is_sha256(&empty, KNOWN_SHA256));
-        // One flipped byte must not match, and the mismatch must be against
-        // the CONTENT hash, not a prefix/length artifact.
-        let flipped = hash_fixture("flipped", b"x");
-        assert!(!file_is_sha256(&flipped, KNOWN_SHA256));
-        let _ = std::fs::remove_file(&empty);
-        let _ = std::fs::remove_file(&flipped);
-    }
-
-    #[test]
-    fn file_is_sha256_refuses_missing_and_unreadable_paths() {
-        // A missing file (the common "download never landed" shape) must
-        // read as a mismatch, not panic the install lane.
-        assert!(!file_is_sha256(
-            &PathBuf::from("/nonexistent/pinvou-hash-probe"),
-            KNOWN_SHA256
-        ));
-        #[cfg(unix)]
-        {
-            let dir_as_file = hash_fixture("dir", b"placeholder");
-            std::fs::remove_file(&dir_as_file).unwrap();
-            std::fs::create_dir_all(&dir_as_file).unwrap();
-            assert!(!file_is_sha256(&dir_as_file, KNOWN_SHA256));
-            let _ = std::fs::remove_dir_all(&dir_as_file);
-        }
-    }
-
-    // ── ensure-cli execution verdict (hermetic) ─────────────────────────
-    // The end-to-end `ensure-cli` test executes the live download lane (its
-    // verdict is coupled to network reachability, so it is `#[ignore]`
-    // opt-in); these unit tests pin the hermetic half — the verdict tail
-    // that must refuse exit 0 while the resolved binary cannot execute, and
-    // report success once it can.
-
-    // The fake's executability is a unix permission bit, so the whole
-    // guard family stays unix-only behind its unix-gated callers.
-    #[cfg(unix)]
-    struct VerdictEnvGuard {
+    /// Environment swap held under the crate's shared env lock: a thin
+    /// constructor snapshots the keys it is about to touch, applies its
+    /// overrides while the lock is held, and the guard restores the exact
+    /// previous values — and removes the constructor's scratch directories —
+    /// on drop.
+    struct EnvSwapGuard {
         saved: Vec<(&'static str, Option<OsString>)>,
         // Held for the guard's whole lifetime: PATH/PINVOU3_HOME mutation is
         // process-global, and the crate's shared ENV_LOCK is what every other
@@ -4515,17 +4458,42 @@ mod tests {
         // TempHome holds it for its whole lifetime), so this test cannot
         // interleave its env swaps with theirs.
         _lock: std::sync::MutexGuard<'static, ()>,
-        bin_dir: PathBuf,
-        home_dir: PathBuf,
+        cleanup_dirs: Vec<PathBuf>,
     }
 
-    #[cfg(unix)]
-    impl VerdictEnvGuard {
+    impl EnvSwapGuard {
+        fn acquire_env_lock() -> std::sync::MutexGuard<'static, ()> {
+            crate::support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+        }
+
+        /// Points `PINVOU3_HOME` at a fresh throwaway root for the duration
+        /// of the test (ENV_LOCK held for the guard's whole lifetime, like
+        /// every env-touching unit test in this binary) and restores the
+        /// previous value on drop.
+        fn stage_home(label: &str) -> Self {
+            let lock = Self::acquire_env_lock();
+            let root = unique_temp_root(&format!("pinvou-connectors-lock-home-{label}"));
+            std::fs::create_dir_all(&root).unwrap();
+            let saved = vec![("PINVOU3_HOME", std::env::var_os("PINVOU3_HOME"))];
+            // SAFETY: ENV_LOCK serializes every env access in this binary.
+            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+            Self {
+                saved,
+                _lock: lock,
+                cleanup_dirs: vec![root],
+            }
+        }
+
+        /// Stages a fake `<binary>` in a throwaway bin dir (prepended to
+        /// PATH) plus a throwaway home (`PINVOU3_HOME` + `HOME`), with the
+        /// npm prefix variables cleared — the sandbox the execution-verdict
+        /// tests resolve the vendor CLI under.
+        #[cfg(unix)]
         fn stage_fake(binary: &str, executable: bool) -> Self {
             use std::os::unix::fs::PermissionsExt as _;
-            let lock = crate::support::ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let lock = Self::acquire_env_lock();
             let test = std::thread::current()
                 .name()
                 .unwrap_or_default()
@@ -4592,17 +4560,16 @@ mod tests {
             Self {
                 saved,
                 _lock: lock,
-                bin_dir,
-                home_dir,
+                cleanup_dirs: vec![bin_dir, home_dir],
             }
         }
     }
 
-    #[cfg(unix)]
-    impl Drop for VerdictEnvGuard {
+    impl Drop for EnvSwapGuard {
         fn drop(&mut self) {
             for (key, value) in &self.saved {
-                // SAFETY: same VERDICT_ENV_LOCK serialization as staging.
+                // SAFETY: ENV_LOCK is held for the guard's whole lifetime
+                // (same serialization as staging).
                 unsafe {
                     match value {
                         Some(value) => std::env::set_var(key, value),
@@ -4610,15 +4577,68 @@ mod tests {
                     }
                 }
             }
-            let _ = std::fs::remove_dir_all(&self.bin_dir);
-            let _ = std::fs::remove_dir_all(&self.home_dir);
+            for dir in &self.cleanup_dirs {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
     }
+
+    // ── install-lane hash gate (round-38 review: the gate primitive had no
+    // negative coverage — a refactor that verified after the rename or
+    // dropped the archive check would have passed the whole suite) ──────
+
+    const KNOWN_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // sha256("")
+
+    fn hash_fixture(name: &str, contents: &[u8]) -> PathBuf {
+        let path = unique_temp_root(&format!("pinvou-connectors-hash-{name}"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn file_is_sha256_accepts_the_matching_payload_and_nothing_else() {
+        let empty = hash_fixture("empty", b"");
+        assert!(file_is_sha256(&empty, KNOWN_SHA256));
+        // One flipped byte must not match, and the mismatch must be against
+        // the CONTENT hash, not a prefix/length artifact.
+        let flipped = hash_fixture("flipped", b"x");
+        assert!(!file_is_sha256(&flipped, KNOWN_SHA256));
+        let _ = std::fs::remove_file(&empty);
+        let _ = std::fs::remove_file(&flipped);
+    }
+
+    #[test]
+    fn file_is_sha256_refuses_missing_and_unreadable_paths() {
+        // A missing file (the common "download never landed" shape) must
+        // read as a mismatch, not panic the install lane.
+        assert!(!file_is_sha256(
+            &PathBuf::from("/nonexistent/pinvou-hash-probe"),
+            KNOWN_SHA256
+        ));
+        #[cfg(unix)]
+        {
+            let dir_as_file = hash_fixture("dir", b"placeholder");
+            std::fs::remove_file(&dir_as_file).unwrap();
+            std::fs::create_dir_all(&dir_as_file).unwrap();
+            assert!(!file_is_sha256(&dir_as_file, KNOWN_SHA256));
+            let _ = std::fs::remove_dir_all(&dir_as_file);
+        }
+    }
+
+    // ── ensure-cli execution verdict (hermetic) ─────────────────────────
+    // The end-to-end `ensure-cli` test executes the live download lane (its
+    // verdict is coupled to network reachability, so it is `#[ignore]`
+    // opt-in); these unit tests pin the hermetic half — the verdict tail
+    // that must refuse exit 0 while the resolved binary cannot execute, and
+    // report success once it can.
+
+    // The fake's executability is a unix permission bit, so fake staging
+    // (`EnvSwapGuard::stage_fake`) and its tests stay unix-only.
 
     #[test]
     #[cfg(unix)]
     fn execution_verdict_refuses_a_present_but_unspawnable_binary() {
-        let _guard = VerdictEnvGuard::stage_fake("lark-cli", false);
+        let _guard = EnvSwapGuard::stage_fake("lark-cli", false);
         let outcome = ensure_cli_execution_verdict(ConnectorKind::Feishu.spec(), OutputMode::Human);
         let error = outcome.expect_err("an unexecutable binary must not pass the verdict");
         assert!(
@@ -4630,7 +4650,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn execution_verdict_reports_success_once_the_binary_runs() {
-        let _guard = VerdictEnvGuard::stage_fake("lark-cli", true);
+        let _guard = EnvSwapGuard::stage_fake("lark-cli", true);
         let outcome = ensure_cli_execution_verdict(ConnectorKind::Feishu.spec(), OutputMode::Human);
         outcome.expect("an executable binary must pass the verdict");
     }
@@ -5031,53 +5051,12 @@ mod tests {
     // acquire arm pins above — a script matching the documented code must
     // not depend on WHICH lock step failed.
 
-    /// Points `PINVOU3_HOME` at a fresh throwaway root for the duration of
-    /// the test (ENV_LOCK held for the guard's whole lifetime, like every
-    /// env-touching unit test in this binary) and restores the previous
-    /// value on drop.
-    struct LockHomeGuard {
-        previous: Option<OsString>,
-        root: PathBuf,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl LockHomeGuard {
-        fn stage(label: &str) -> Self {
-            let lock = crate::support::ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let root = unique_temp_root(&format!("pinvou-connectors-lock-home-{label}"));
-            std::fs::create_dir_all(&root).unwrap();
-            let previous = std::env::var_os("PINVOU3_HOME");
-            // SAFETY: ENV_LOCK serializes every env access in this binary.
-            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-            Self {
-                previous,
-                root,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for LockHomeGuard {
-        fn drop(&mut self) {
-            // SAFETY: ENV_LOCK is held for the guard's whole lifetime.
-            unsafe {
-                match self.previous.take() {
-                    Some(value) => std::env::set_var("PINVOU3_HOME", value),
-                    None => std::env::remove_var("PINVOU3_HOME"),
-                }
-            }
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
     #[test]
     fn install_lock_dir_create_failure_carries_the_code_prefix() {
-        let guard = LockHomeGuard::stage("dir-arm");
+        let guard = EnvSwapGuard::stage_home("dir-arm");
         // A FILE at the locks path: create_dir_all cannot create the
         // directory, which is the CreateDir arm.
-        std::fs::write(guard.root.join("locks"), b"not a directory").unwrap();
+        std::fs::write(guard.cleanup_dirs[0].join("locks"), b"not a directory").unwrap();
         let error = match open_install_lock() {
             Ok(_) => panic!("a file standing in for locks/ must fail the create arm"),
             Err(error) => error,
@@ -5095,10 +5074,15 @@ mod tests {
 
     #[test]
     fn install_lock_file_open_failure_carries_the_code_prefix() {
-        let guard = LockHomeGuard::stage("open-arm");
+        let guard = EnvSwapGuard::stage_home("open-arm");
         // A DIRECTORY at the lock path: create_dir_all succeeds, the open
         // cannot — the Open arm, deterministically and on every platform.
-        std::fs::create_dir_all(guard.root.join("locks").join("connector-install.lock")).unwrap();
+        std::fs::create_dir_all(
+            guard.cleanup_dirs[0]
+                .join("locks")
+                .join("connector-install.lock"),
+        )
+        .unwrap();
         let error = match open_install_lock() {
             Ok(_) => panic!("a directory at the lock path must fail the open arm"),
             Err(error) => error,

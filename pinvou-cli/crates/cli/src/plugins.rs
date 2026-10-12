@@ -123,7 +123,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::support::{
-    collapse_control_characters, family_option, render, require_yes, sandbox_home, success,
+    collapse_control_characters, family_option, join_rows, render, require_yes, sandbox_home,
+    success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::{
@@ -206,11 +207,11 @@ pub enum PluginsCommand {
     ToolsAuth {
         id: String,
     },
+    // `--timeout` is parsed and positively validated for argv compatibility
+    // (a bad value still fails as a usage error) but has no consumer after
+    // parsing: no login runs headless, so nothing reads the value.
     ToolsOauthLogin {
         id: String,
-        // Parsed (and positively validated) for argv compatibility; there is
-        // no login to time out, so nothing reads it after parsing.
-        timeout: Option<u64>,
     },
     ToolsOauthCancel {
         id: String,
@@ -404,9 +405,11 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         "oauth-login" => {
             let id = require_id(tail.first())?;
             let (options, _) = parse_flags(&tail[1..], TOOLS_OAUTH_LOGIN_OPTIONS, &[])?;
-            let timeout =
+            // Still validated (positively) for argv compatibility, then
+            // discarded: the value has no consumer after parsing.
+            let _validated =
                 crate::support::parse_family_positive::<u64>(&options, "--timeout", "plugins")?;
-            Ok(PluginsCommand::ToolsOauthLogin { id, timeout })
+            Ok(PluginsCommand::ToolsOauthLogin { id })
         }
         "oauth-cancel" => {
             let id = require_id(tail.first())?;
@@ -709,7 +712,7 @@ pub fn execute(command: PluginsCommand, output: OutputMode) -> Result<CliOutcome
         PluginsCommand::ToolsInstall { id, secrets } => tools_install(&id, &secrets, output),
         PluginsCommand::ToolsUninstall { id, yes } => tools_uninstall(&id, yes, output),
         PluginsCommand::ToolsAuth { id } => tools_auth(&id, output),
-        PluginsCommand::ToolsOauthLogin { id, .. } => Err(tools_oauth_login(&id)),
+        PluginsCommand::ToolsOauthLogin { id } => Err(tools_oauth_login(&id)),
         PluginsCommand::ToolsOauthCancel { id } => tools_oauth_cancel(&id, output),
         PluginsCommand::SkillsList { installed_only } => skills_list(installed_only, output),
         PluginsCommand::SkillsInstall { id } => skills_install(&id, output),
@@ -773,24 +776,20 @@ fn tools_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, Cl
     // Human rows must not be forgeable: tool name/description come from
     // package manifests (including imported ones) and go through the shared
     // collapse like every sibling family (JSON keeps the originals).
-    let human = tools
-        .iter()
-        .map(|tool| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}",
-                collapse_control_characters(&tool.id),
-                if tool.installed { "installed" } else { "-" },
-                collapse_control_characters(&tool.source),
-                collapse_control_characters(&tool.version),
-                format_args!(
-                    "{}: {}",
-                    collapse_control_characters(&tool.name),
-                    collapse_control_characters(&tool.description)
-                ),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&tools, |tool| {
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            collapse_control_characters(&tool.id),
+            if tool.installed { "installed" } else { "-" },
+            collapse_control_characters(&tool.source),
+            collapse_control_characters(&tool.version),
+            format_args!(
+                "{}: {}",
+                collapse_control_characters(&tool.name),
+                collapse_control_characters(&tool.description)
+            ),
+        )
+    });
     // Round-46 review: a serialization failure is a failure, not an empty
     // deck — exit 0 with a placeholder `tools: []` would hand the caller a
     // fabricated fact (personas.rs closed this exact class with the same
@@ -1343,32 +1342,28 @@ fn skills_list(installed_only: bool, output: OutputMode) -> Result<CliOutcome, C
         skills.retain(|skill| skill.installed);
     }
     // Same no-forgeable-rows rule as `tools_list`.
-    let human = skills
-        .iter()
-        .map(|skill| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}",
-                collapse_control_characters(&skill.id),
-                if skill.installed { "installed" } else { "-" },
-                if skill.user_uploaded {
-                    "uploaded"
-                } else {
-                    "preset"
-                },
-                if skill.update_available {
-                    "update-available"
-                } else {
-                    "-"
-                },
-                format_args!(
-                    "{}: {}",
-                    collapse_control_characters(&skill.title),
-                    collapse_control_characters(&skill.description)
-                ),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&skills, |skill| {
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            collapse_control_characters(&skill.id),
+            if skill.installed { "installed" } else { "-" },
+            if skill.user_uploaded {
+                "uploaded"
+            } else {
+                "preset"
+            },
+            if skill.update_available {
+                "update-available"
+            } else {
+                "-"
+            },
+            format_args!(
+                "{}: {}",
+                collapse_control_characters(&skill.title),
+                collapse_control_characters(&skill.description)
+            ),
+        )
+    });
     // Round-46 review: same not-a-placeholder rule as `tools list`.
     render_list_rows(
         "skills list",
@@ -1849,31 +1844,27 @@ fn recycle_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let entries = recycle_bin::RecycleBin::new()
         .list()
         .map_err(|error| CliError::failed(format!("plugins recycle list: {error:#}")))?;
-    let human = entries
-        .iter()
-        .map(|entry| {
-            // Same no-forgeable-rows discipline as `tools list` / `skills list`:
-            // id/kind/display_name are user- or import-derived cells, so they
-            // go through the shared collapse before reaching the terminal
-            // (JSON keeps the originals, as everywhere else). The GUI's own
-            // display-name sanitizer drops only Cc controls plus slashes, so
-            // bidi/zero-width characters can legitimately sit in a stored
-            // name — collapse, don't trust.
-            format!(
-                "{}\t{}\t{}\t{}\t{}",
-                collapse_control_characters(&entry.id),
-                collapse_control_characters(&entry.kind),
-                collapse_control_characters(&entry.display_name),
-                collapse_control_characters(&entry.recycled_at),
-                if entry.package_missing {
-                    "package-missing"
-                } else {
-                    "-"
-                },
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&entries, |entry| {
+        // Same no-forgeable-rows discipline as `tools list` / `skills list`:
+        // id/kind/display_name are user- or import-derived cells, so they
+        // go through the shared collapse before reaching the terminal
+        // (JSON keeps the originals, as everywhere else). The GUI's own
+        // display-name sanitizer drops only Cc controls plus slashes, so
+        // bidi/zero-width characters can legitimately sit in a stored
+        // name — collapse, don't trust.
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            collapse_control_characters(&entry.id),
+            collapse_control_characters(&entry.kind),
+            collapse_control_characters(&entry.display_name),
+            collapse_control_characters(&entry.recycled_at),
+            if entry.package_missing {
+                "package-missing"
+            } else {
+                "-"
+            },
+        )
+    });
     // Round-46 review: same not-a-placeholder rule as `tools list`.
     render_list_rows(
         "recycle list",
@@ -2072,24 +2063,20 @@ fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
         .map(|bundle| readiness_row_for_bundle(bundle, &credential_store))
         .collect::<Result<Vec<_>, CliError>>()?;
     let value = serde_json::json!({ "bundles": rows });
-    let human = rows
-        .iter()
-        .map(|row| {
-            // The probe column is part of the human line too: without it a
-            // reader cannot tell a verdict that was computed from a verdict
-            // that could not be computed here.
-            format!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                row["bundle_id"].as_str().unwrap_or(""),
-                row["kind"].as_str().unwrap_or(""),
-                row["installed"].as_bool().unwrap_or(false),
-                row["ready"].as_bool().unwrap_or(false),
-                row["reason"].as_str().unwrap_or("-"),
-                row["probe"].as_str().unwrap_or("-"),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&rows, |row| {
+        // The probe column is part of the human line too: without it a
+        // reader cannot tell a verdict that was computed from a verdict
+        // that could not be computed here.
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            row["bundle_id"].as_str().unwrap_or(""),
+            row["kind"].as_str().unwrap_or(""),
+            row["installed"].as_bool().unwrap_or(false),
+            row["ready"].as_bool().unwrap_or(false),
+            row["reason"].as_str().unwrap_or("-"),
+            row["probe"].as_str().unwrap_or("-"),
+        )
+    });
     Ok(success(render(output, human, &value)))
 }
 

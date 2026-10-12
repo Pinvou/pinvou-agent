@@ -260,7 +260,7 @@ pub enum CodeCommand {
     WorkspaceCheckout {
         session: String,
         branch: String,
-        mode: BranchSwitchMode,
+        mode: workspace::BranchSwitchMode,
         message: Option<String>,
         yes: bool,
     },
@@ -295,15 +295,6 @@ pub enum CodeCommand {
         request_id: String,
         allow: bool,
     },
-}
-
-/// Dirty-worktree branch switch strategy, mirroring
-/// `features::codex_acp::workspace::BranchSwitchMode`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BranchSwitchMode {
-    Carry,
-    Stash,
-    Commit,
 }
 
 pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
@@ -744,18 +735,16 @@ fn parse_workspace(rest: &[String]) -> Result<CodeCommand, CliError> {
                 &["--yes"],
                 "workspace checkout",
             )?;
-            let mode = match option(&options, "--mode") {
-                Some("carry") => BranchSwitchMode::Carry,
-                Some("stash") => BranchSwitchMode::Stash,
-                Some("commit") => BranchSwitchMode::Commit,
-                _ => {
-                    return Err(CliError::usage(
-                        "code workspace checkout requires --mode carry|stash|commit",
-                    ));
-                }
-            };
+            // The app type's own `parse` is the single source of truth for the
+            // accepted set (carry|stash|commit); `None` (flag absent) and an
+            // unlisted value share the usage refusal below.
+            let mode = option(&options, "--mode")
+                .and_then(|value| workspace::BranchSwitchMode::parse(value).ok())
+                .ok_or_else(|| {
+                    CliError::usage("code workspace checkout requires --mode carry|stash|commit")
+                })?;
             let message = option(&options, "--message").map(str::to_owned);
-            if mode == BranchSwitchMode::Commit
+            if mode == workspace::BranchSwitchMode::Commit
                 && message
                     .as_deref()
                     .is_none_or(|message| message.trim().is_empty())
@@ -1166,6 +1155,19 @@ fn claude_missing_slots(slots: Option<&HashMap<String, String>>) -> Vec<&'static
             })
         })
         .collect()
+}
+
+/// The shared claude required-slot message of the add lane (`usage`) and the
+/// merged-update lane (`failed`) in `providers_save`: same bytes, only the
+/// error class differs between the two call sites.
+fn claude_slot_gap(lane: &str, missing: &[&str], valid: &str) -> String {
+    format!(
+        "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
+         model slot (a missing slot falls back to official traffic); missing: {} \
+         (valid slots: {})",
+        missing.join(", "),
+        valid,
+    )
 }
 
 fn parse_model_slot_pairs(
@@ -3221,19 +3223,17 @@ fn render_provider_view(agent: &str, view: &AcpProvidersView) -> String {
 }
 
 fn parse_wire_api_value(value: Option<&str>) -> Result<ProviderWireApi, CliError> {
-    match value {
-        None
-        | Some("anthropic")
-        | Some("openai")
-        | Some("openai_compatible")
-        | Some("chat")
-        | Some("kimi") => ProviderWireApi::parse(value)
-            .map_err(|error| CliError::failed(format!("wire api: {error:#}"))),
-        Some(other) => Err(CliError::usage(format!(
+    // `ProviderWireApi::parse` is the single source of truth for the accepted
+    // set (None → anthropic; anthropic; openai|openai_compatible|chat; kimi),
+    // so an error here always means an unlisted value; interpolate the raw
+    // input rather than the parse error to keep the usage wording stable.
+    ProviderWireApi::parse(value).map_err(|_| {
+        CliError::usage(format!(
             "--wire-api must be anthropic|openai|kimi (aliases: openai_compatible|chat, mirroring \
-             ProviderWireApi::parse) (got {other})"
-        ))),
-    }
+             ProviderWireApi::parse) (got {})",
+            value.unwrap_or_default()
+        ))
+    })
 }
 
 /// The add/update inputs `providers_save` acts on, built from either parse
@@ -3324,12 +3324,10 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
         let provided: HashMap<String, String> = model_slots.iter().cloned().collect();
         let missing = claude_missing_slots(Some(&provided));
         if !missing.is_empty() {
-            return Err(CliError::usage(format!(
-                "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
-                 model slot (a missing slot falls back to official traffic); missing: {} \
-                 (valid slots: {})",
-                missing.join(", "),
-                valid_slots,
+            return Err(CliError::usage(claude_slot_gap(
+                lane,
+                &missing,
+                &valid_slots,
             )));
         }
     }
@@ -3412,12 +3410,10 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
         // only a legacy/incomplete record can fail here.
         let missing = claude_missing_slots(model_slots.as_ref());
         if !missing.is_empty() {
-            return Err(CliError::failed(format!(
-                "code providers {lane}: claude requires --model-slot SLOT=MODEL for every Claude \
-                 model slot (a missing slot falls back to official traffic); missing: {} \
-                 (valid slots: {})",
-                missing.join(", "),
-                valid_slots,
+            return Err(CliError::failed(claude_slot_gap(
+                lane,
+                &missing,
+                &valid_slots,
             )));
         }
     }
@@ -5143,7 +5139,7 @@ fn workspace_checkout(
     session: &str,
     root: &Path,
     branch: &str,
-    mode: BranchSwitchMode,
+    mode: workspace::BranchSwitchMode,
     commit_message: Option<&str>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
@@ -5184,10 +5180,10 @@ fn workspace_checkout(
         return finish_checkout(&root, branch, output);
     }
     match mode {
-        BranchSwitchMode::Carry => {
+        workspace::BranchSwitchMode::Carry => {
             git_output(&root, &["checkout", branch])?;
         }
-        BranchSwitchMode::Stash => {
+        workspace::BranchSwitchMode::Stash => {
             // Stash (with untracked files) → checkout → pop. Pop only when the
             // push actually created an entry; on checkout failure restore the
             // stash first, and report honestly when the restore also fails.
@@ -5222,13 +5218,11 @@ fn workspace_checkout(
                 )));
             }
         }
-        BranchSwitchMode::Commit => {
+        workspace::BranchSwitchMode::Commit => {
+            // `code::parse` — the sole constructor of this command — already
+            // refuses `--mode commit` without a non-empty `--message`, so the
+            // trimmed message here cannot be empty; only the trim remains.
             let message = commit_message.map(str::trim).unwrap_or_default();
-            if message.is_empty() {
-                return Err(CliError::usage(
-                    "code workspace checkout --mode commit requires --message",
-                ));
-            }
             git_output(&root, &["add", "-A"])?;
             let commit_args = commit_command_args(&root, message);
             let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();

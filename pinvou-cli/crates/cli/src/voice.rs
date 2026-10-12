@@ -309,7 +309,9 @@ pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, 
     // relative PINVOU3_HOME would silently resolve against the cwd.
     crate::support::sandbox_home()?;
     match command {
-        VoiceCommand::Transcribe { path } => transcribe(&path, output),
+        VoiceCommand::Transcribe { path } => {
+            transcribe_with(&path, output, installed_lanes, run_recognition)
+        }
         VoiceCommand::Postprocess {
             mode,
             text,
@@ -483,13 +485,68 @@ impl Drop for StagedFile {
     }
 }
 
+/// How [`wait_bounded`] left a child: exited (and already reaped), or one of
+/// the branches that killed it without reaping.
+enum BoundedWait {
+    Exited(std::process::ExitStatus),
+    Interrupted,
+    TimedOut,
+    Failed(std::io::Error),
+}
+
+/// One copy of the bounded-wait loop and its kill/reap rule: kill only on
+/// branches that leave the child unreaped.
+///
+/// Both ffmpeg spawns ([`run_bounded_child`]) and both ASR lanes
+/// ([`wait_asr_child`]) run this loop; they differ only in how they map these
+/// outcomes onto their caller-visible verdicts. The group kill lives on the
+/// branches that leave the child unreaped — an observed Ctrl-C, a timeout, a
+/// broken wait — where the leader is verifiably still alive and its
+/// descendants must not be orphaned. Once `try_wait` has reaped the child,
+/// whatever its exit status, the pid is free for reuse and `kill(-pgid)`
+/// could hit an unrelated process group with this user's privileges, so no
+/// kill happens there (the same rule every `connectors` call site follows).
+/// The observed Ctrl-C is the standing exception in spirit: the watcher is
+/// taking this process down, unwinding here lets the callers' staged-file
+/// guards run, and the child is verifiably still alive at this point in the
+/// loop.
+fn wait_bounded(child: &mut std::process::Child, timeout: Duration) -> BoundedWait {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return BoundedWait::Exited(status),
+            Ok(None) => {
+                // A Ctrl-C the supervisor (installed first-thing in main)
+                // has already observed kills this child's group in the
+                // watcher; unwinding here instead of waiting for that to
+                // work through the pipe lets the callers' staged-file guards
+                // run while the process is still alive.
+                if crate::support::supervise::sigint_seen() {
+                    crate::support::kill_process_tree(child);
+                    return BoundedWait::Interrupted;
+                }
+                if started.elapsed() >= timeout {
+                    // Tree kill: a bare `kill()` would orphan descendants.
+                    crate::support::kill_process_tree(child);
+                    return BoundedWait::TimedOut;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                crate::support::kill_process_tree(child);
+                return BoundedWait::Failed(error);
+            }
+        }
+    }
+}
+
 /// The supervised bounded run shared by this module's two ffmpeg spawns
 /// (the `-version` probe and the wav conversion): process-group leader,
-/// supervised spawn, the `GroupGuard::arm` bracket, and the bounded wait —
-/// process-group semantics documented once, here. The wait mirrors the
-/// bounded-wait loop of the ASR lanes: on timeout or wait error the child
-/// is killed and `false` is returned (the caller treats it like any other
-/// probe failure); on success the exit status's success is returned.
+/// supervised spawn, the `GroupGuard::arm` bracket, and the bounded wait
+/// ([`wait_bounded`]) — process-group semantics documented once, there. Any
+/// kill branch or wait failure maps to `false` (the caller treats it like
+/// any other probe failure); on success the exit status's success is
+/// returned.
 fn run_bounded_child(command: &mut std::process::Command, timeout: Duration) -> bool {
     crate::support::set_process_group(command);
     // `spawn_supervised` closes the spawn→register window (see
@@ -503,32 +560,11 @@ fn run_bounded_child(command: &mut std::process::Command, timeout: Duration) -> 
     // CLI instead of orphaning it behind its own process group (the same
     // bracket `code.rs`'s login lane installs by hand).
     let _supervised = crate::support::supervise::GroupGuard::arm(child.id());
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    // Tree kill: a bare `kill()` would orphan descendants.
-                    crate::support::kill_process_tree(&mut child);
-                    return false;
-                }
-                // A Ctrl-C the supervisor (installed first-thing in main)
-                // has already observed kills this child's group in the
-                // watcher; unwinding here instead of waiting for that to
-                // work through the pipe lets the caller's staged-file guards
-                // run while the process is still alive.
-                if crate::support::supervise::sigint_seen() {
-                    crate::support::kill_process_tree(&mut child);
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => {
-                crate::support::kill_process_tree(&mut child);
-                return false;
-            }
-        }
+    match wait_bounded(&mut child, timeout) {
+        BoundedWait::Exited(status) => status.success(),
+        // Every kill/failure branch reads as an ordinary probe failure here:
+        // this short-lived process is going away either way.
+        BoundedWait::Interrupted | BoundedWait::TimedOut | BoundedWait::Failed(_) => false,
     }
 }
 
@@ -1312,10 +1348,6 @@ fn asr_preflight(lanes: AsrLanes, extension: Option<&str>) -> AsrPreflight {
     AsrPreflight::Reject(asr_engine_missing_message())
 }
 
-fn transcribe(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
-    transcribe_with(path, output, installed_lanes, run_recognition)
-}
-
 /// `transcribe` with its two environment-dependent steps injected — the
 /// component probe and the recognition dispatch — so a test can pin what the
 /// gate does for an install the test host cannot produce. Both are taken lazily
@@ -1744,19 +1776,10 @@ fn spawn_capped_drains(
 }
 
 /// The bounded wait both ASR lanes share, parameterized only by the lane's
-/// timeout and its three error texts. The group kill lives on the two
-/// branches that leave the child unreaped — a timeout and a broken wait —
-/// where the leader is verifiably still alive and its descendants must not
-/// be orphaned. Once `try_wait` has reaped the child, whatever its exit
-/// status, the pid is free for reuse and `kill(-pgid)` could hit an
-/// unrelated process group with this user's privileges, so no kill happens
-/// there (the same rule every `connectors` call site follows). A Ctrl-C
-/// already observed by the supervisor is the standing exception: the
-/// watcher is taking this process down, unwinding here lets the staged-file
-/// guards run, and the child is verifiably still alive at this point in the
-/// loop. `interrupt` is the Ctrl-C message verbatim; the timeout and
-/// wait-error messages arrive as closures so each lane keeps its exact
-/// text.
+/// timeout and its three error texts; the loop and its kill/reap rule live
+/// once in [`wait_bounded`]. `interrupt` is the Ctrl-C message verbatim; the
+/// timeout and wait-error messages arrive as closures so each lane keeps its
+/// exact text.
 fn wait_asr_child(
     child: &mut std::process::Child,
     timeout_secs: u64,
@@ -1764,26 +1787,11 @@ fn wait_asr_child(
     timeout_msg: impl FnOnce(u64) -> String,
     wait_err: impl FnOnce(std::io::Error) -> String,
 ) -> Result<std::process::ExitStatus, CliError> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {
-                if crate::support::supervise::sigint_seen() {
-                    crate::support::kill_process_tree(child);
-                    return Err(CliError::failed(interrupt.to_owned()));
-                }
-                if started.elapsed() >= Duration::from_secs(timeout_secs) {
-                    crate::support::kill_process_tree(child);
-                    return Err(CliError::failed(timeout_msg(timeout_secs)));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(error) => {
-                crate::support::kill_process_tree(child);
-                return Err(CliError::failed(wait_err(error)));
-            }
-        }
+    match wait_bounded(child, Duration::from_secs(timeout_secs)) {
+        BoundedWait::Exited(status) => Ok(status),
+        BoundedWait::Interrupted => Err(CliError::failed(interrupt.to_owned())),
+        BoundedWait::TimedOut => Err(CliError::failed(timeout_msg(timeout_secs))),
+        BoundedWait::Failed(error) => Err(CliError::failed(wait_err(error))),
     }
 }
 
@@ -2279,6 +2287,49 @@ const POSTPROCESS_NOTE: &str = "Note: the model output is returned as written; t
 /// the model phase when boot already blew past it.
 const POSTPROCESS_TOTAL_BUDGET: Duration = Duration::from_secs(60);
 
+/// One copy of the postprocess source-reading match for the two input pairs
+/// (`--text` / `--text-file`, `--draft` / `--draft-file`): an inline value
+/// wins, else the file lane runs, else `None` (the `--text` caller turns
+/// that into the exactly-one-of usage error; `--draft` genuinely allows
+/// none).
+///
+/// Round-40 review: the file lane applies the gated-file-read rule this PR
+/// applies everywhere else user-pointed file content enters a model context
+/// — `feedback submit` gates even its never-leaving-the-machine body file
+/// ("a scripted `--body-file ~/.aws/credentials` is the same footgun"),
+/// `files ingest` refuses credential locations outright, `agent run
+/// --attach` gates — and docs/pinvou-cli.md lists the gated lanes. The
+/// `--*-file` inputs were the one missing lane, and their content IS the
+/// payload: a scripted alias could ship a credential file verbatim to the
+/// configured model endpoint. Same shape as the feedback lane:
+/// canonicalize (symlink-accurate), then the sensitive-path refusal.
+fn read_source(
+    value: Option<String>,
+    file: Option<PathBuf>,
+    role: &str,
+) -> Result<Option<String>, CliError> {
+    match (value, file) {
+        (Some(value), _) => Ok(Some(value)),
+        (None, Some(file)) => {
+            // Round-43 review: read the CANONICAL path — it is what was
+            // policy-checked. Reading the original spelling would let a
+            // symlink swapped in between the two calls route unverified
+            // content past the refusal (the exact fix feedback.rs/artifacts.rs
+            // already carry).
+            let canonical = crate::support::gate_canonical_path(
+                &file,
+                "voice postprocess",
+                &format!("{role} file"),
+                "voice postprocess",
+                &format!("{role} file"),
+            )?;
+            crate::support::read_text_file_capped(&canonical, 64 * 1024, "voice postprocess")
+                .map(Some)
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 fn postprocess(
     mode: PostprocessMode,
     text: Option<String>,
@@ -2287,61 +2338,20 @@ fn postprocess(
     draft_file: Option<PathBuf>,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
-    // Round-40 review: the gated-file-read rule this PR applies everywhere
-    // else user-pointed file content enters a model context — `feedback
-    // submit` gates even its never-leaving-the-machine body file ("a
-    // scripted `--body-file ~/.aws/credentials` is the same footgun"),
-    // `files ingest` refuses credential locations outright, `agent run
-    // --attach` gates — and docs/pinvou-cli.md lists the gated lanes.
-    // `--text-file` was the one missing lane, and its content IS the
-    // payload: a scripted alias could ship a credential file verbatim to
-    // the configured model endpoint. Same shape as the feedback lane:
-    // canonicalize (symlink-accurate), then the sensitive-path refusal.
-    let gate_file = |path: &Path, role: &str| -> Result<PathBuf, CliError> {
-        crate::support::gate_canonical_path(
-            path,
-            "voice postprocess",
-            &format!("{role} file"),
-            "voice postprocess",
-            &format!("{role} file"),
-        )
-    };
-    let raw_input = match (text, text_file) {
-        (Some(text), _) => text,
-        (None, Some(file)) => {
-            // Round-43 review: read the CANONICAL path — it is what was
-            // policy-checked. Reading the original spelling would let a
-            // symlink swapped in between the two calls route unverified
-            // content past the refusal (the exact fix feedback.rs/artifacts.rs
-            // already carry).
-            let canonical = gate_file(&file, "text")?;
-            crate::support::read_text_file_capped(&canonical, 64 * 1024, "voice postprocess")?
-        }
+    // Both source pairs go through one gated-file read ([`read_source`]):
+    // canonicalize (symlink-accurate), the sensitive-path refusal, then the
+    // same 64 KiB cap as every other user-pointed read.
+    let raw_input = read_source(text, text_file, "text")?.ok_or_else(|| {
         // The parser enforces exactly one text source, but `execute` is a
         // `pub` entry point of the lib crate: a command constructed directly
         // with neither field gets the parser's own usage error instead of a
         // panic here.
-        (None, None) => {
-            return Err(CliError::usage(
-                "voice postprocess requires exactly one of --text or --text-file",
-            ));
-        }
-    };
+        CliError::usage("voice postprocess requires exactly one of --text or --text-file")
+    })?;
     // Same input hygiene as the ASR text: regular files only, 64 KiB cap,
     // then the app's 4000-character model-input truncation
     // (`truncate_voice_postprocess_input` is applied to the draft there too).
-    let draft_input = match (draft, draft_file) {
-        (Some(draft), _) => Some(draft),
-        (None, Some(file)) => {
-            let canonical = gate_file(&file, "draft")?;
-            Some(crate::support::read_text_file_capped(
-                &canonical,
-                64 * 1024,
-                "voice postprocess",
-            )?)
-        }
-        (None, None) => None,
-    };
+    let draft_input = read_source(draft, draft_file, "draft")?;
     let draft_text = draft_input
         .map(|draft| truncate_postprocess_input(draft.trim()))
         .filter(|draft| !draft.is_empty());
@@ -2583,6 +2593,22 @@ fn postprocess_http_exchange(
             request
         }
     };
+    // The send→status→json chain both wire lanes share, with the one failure
+    // message both carry verbatim (`summarize_postprocess_error` keeps only
+    // the error class, never the URL).
+    let send_json =
+        |request: reqwest::blocking::RequestBuilder| -> Result<serde_json::Value, CliError> {
+            request
+                .send()
+                .and_then(|response| response.error_for_status())
+                .and_then(|response| response.json())
+                .map_err(|error| {
+                    CliError::failed(format!(
+                        "model endpoint request failed: {}",
+                        summarize_postprocess_error(&error)
+                    ))
+                })
+        };
 
     if preset == pinvou3_lib::platform::prefs::ModelPreset::Anthropic {
         // Mirror of core::model_endpoint::post_anthropic_messages.
@@ -2603,16 +2629,7 @@ fn postprocess_http_exchange(
         if !api_key.trim().is_empty() {
             request = request.header("x-api-key", api_key.trim());
         }
-        let value: serde_json::Value = request
-            .send()
-            .and_then(|response| response.error_for_status())
-            .and_then(|response| response.json())
-            .map_err(|error| {
-                CliError::failed(format!(
-                    "model endpoint request failed: {}",
-                    summarize_postprocess_error(&error)
-                ))
-            })?;
+        let value = send_json(request)?;
         // GUI parity (`post_anthropic_messages` errors with "no text block
         // in anthropic messages response"): a 200 with no text block is a
         // malformed endpoint answer, not an empty edit — `unwrap_or_default`
@@ -2661,18 +2678,7 @@ fn postprocess_http_exchange(
     ));
     // Same conditional gateway header as the Anthropic lane above.
     request = with_opencode_session(request);
-    let value: serde_json::Value = request
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .and_then(|response| response.error_for_status())
-        .and_then(|response| response.json())
-        .map_err(|error| {
-            CliError::failed(format!(
-                "model endpoint request failed: {}",
-                summarize_postprocess_error(&error)
-            ))
-        })?;
+    let value = send_json(request.bearer_auth(api_key).json(&body))?;
     let message = value
         .get("choices")
         .and_then(|choices| choices.as_array())

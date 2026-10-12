@@ -201,7 +201,7 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             }
             Ok(SessionsCommand::Rename { id, title })
         }
-        "pin" | "unpin" | "archive" | "restore" => {
+        "pin" | "unpin" | "archive" | "restore" | "timeline" | "subagents" | "folder" => {
             let id = require_id(rest.first())?;
             if rest.len() > 1 {
                 return Err(CliError::usage(format!(
@@ -212,7 +212,10 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
                 "pin" => SessionsCommand::Pin { id },
                 "unpin" => SessionsCommand::Unpin { id },
                 "archive" => SessionsCommand::Archive { id },
-                _ => SessionsCommand::Restore { id },
+                "restore" => SessionsCommand::Restore { id },
+                "timeline" => SessionsCommand::Timeline { id },
+                "subagents" => SessionsCommand::Subagents { id },
+                _ => SessionsCommand::Folder { id },
             })
         }
         "delete" => {
@@ -244,19 +247,6 @@ pub fn parse(values: &[String]) -> Result<SessionsCommand, CliError> {
             };
             let output = crate::support::family_option(&options, "--output").map(PathBuf::from);
             Ok(SessionsCommand::Export { id, format, output })
-        }
-        "timeline" | "subagents" | "folder" => {
-            let id = require_id(rest.first())?;
-            if rest.len() > 1 {
-                return Err(CliError::usage(format!(
-                    "sessions {subcommand} accepts no options"
-                )));
-            }
-            Ok(match subcommand.as_str() {
-                "timeline" => SessionsCommand::Timeline { id },
-                "subagents" => SessionsCommand::Subagents { id },
-                _ => SessionsCommand::Folder { id },
-            })
         }
         _ => Err(CliError::usage(USAGE)),
     }
@@ -559,10 +549,10 @@ fn show(
         let start = session.messages.len().saturating_sub(last);
         session.messages.drain(..start);
     }
-    let metadata = serde_json::to_value(&session.metadata)
-        .map_err(|error| CliError::failed(format!("sessions show({id}): {error}")))?;
-    let messages = serde_json::to_value(&session.messages)
-        .map_err(|error| CliError::failed(format!("sessions show({id}): {error}")))?;
+    let metadata =
+        serde_json::to_value(&session.metadata).map_err(|error| store_error("show", id, error))?;
+    let messages =
+        serde_json::to_value(&session.messages).map_err(|error| store_error("show", id, error))?;
     drop(session);
     // Take the array by value; `as_array().cloned()` would reintroduce a copy
     // of the very window this function just narrowed. (`to_value` of a `Vec`
@@ -903,11 +893,10 @@ fn export(
     // moving the session in lets it be freed as soon as the `Value` exists,
     // instead of being held alive alongside both the `Value` and the rendered
     // `content` string until the end of this function.
-    let value = serde_json::to_value(session)
-        .map_err(|error| CliError::failed(format!("sessions export({id}): {error}")))?;
+    let value = serde_json::to_value(session).map_err(|error| store_error("export", id, error))?;
     let content = match format {
         ExportFormat::Json => serde_json::to_string_pretty(&value)
-            .map_err(|error| CliError::failed(format!("sessions export({id}): {error}")))?,
+            .map_err(|error| store_error("export", id, error))?,
         ExportFormat::Markdown => render_markdown(id, &value),
     };
     match destination {
@@ -1250,8 +1239,8 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     // a script "no subagents dispatched" when the listing could not be
     // rendered turns a reportable error into a wrong answer (same propagation
     // as `show` and `export` above).
-    let serialized = serde_json::to_value(&summaries)
-        .map_err(|error| CliError::failed(format!("sessions subagents({id}): {error}")))?;
+    let serialized =
+        serde_json::to_value(&summaries).map_err(|error| store_error("subagents", id, error))?;
     let value = serde_json::json!({ "id": id, "subagents": serialized });
     Ok(success(render(output, human, &value)))
 }
@@ -1298,11 +1287,7 @@ mod tests {
         // arguments start at the subcommand token; parse_args strips argv[0].
         owned.insert(0, "sessions".to_owned());
         owned.insert(0, "pinvou".to_owned());
-        sessions_parse(&owned)
-    }
-
-    fn sessions_parse(values: &[String]) -> Result<SessionsCommand, CliError> {
-        match parse_args(values)?.command() {
+        match parse_args(&owned)?.command() {
             CliCommand::Sessions(command) => Ok(command.clone()),
             _other => panic!(
                 "parsed an unexpected command family; the fixture argv does not match the test"

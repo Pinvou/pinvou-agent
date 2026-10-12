@@ -47,8 +47,6 @@ mod sessions;
 pub mod support;
 mod voice;
 
-pub use agent_task::AgentCommand;
-
 #[cfg(any(test, feature = "product-backend"))]
 use adapter_smoke::{
     SmokeAnalysisMaterial, SmokeRecord, SmokeToolEvent, analyze_rules, calculate_product_score,
@@ -217,7 +215,7 @@ pub enum CliCommand {
     /// `pinvou --help` / `-h`: the top-level surface, as a successful answer.
     Help,
     Benchmark(BenchmarkCommand),
-    Agent(AgentCommand),
+    Agent(agent_task::AgentCommand),
     Sessions(sessions::SessionsCommand),
     Models(models::ModelsCommand),
     Memory(memory::MemoryCommand),

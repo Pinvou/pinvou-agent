@@ -226,6 +226,31 @@ pub(crate) fn translate_deps_error(message: &str) -> String {
             "当前系统不支持一键安装依赖",
             "one-click dependency installation is not supported on this platform; install the missing tools manually",
         ),
+        // The winget adapter's three failure shapes (windows_install_text.rs):
+        // a UAC/winget cancellation, a missing winget, and a failed install
+        // carrying a compacted vendor detail. All three reach an English-only
+        // terminal here, so each gets English copy; the 300-char vendor detail
+        // tail is third-party output and survives as-is. No winget message
+        // carries any needle above, so appending the rows here preserves
+        // every resolution.
+        (
+            "已取消 LibreOffice 安装",
+            "the LibreOffice installation was cancelled",
+        ),
+        (
+            "未找到 winget",
+            "winget was not found; one-click dependency installation on Windows requires \
+             the App Installer package (winget), or install LibreOffice manually",
+        ),
+        // The no-detail winget failure carries a Chinese tail AFTER the exit
+        // code, so it must be matched whole in this table — ahead of the
+        // generic `安装失败 (exit ` split below (which would preserve that
+        // tail verbatim behind a mangled exit field).
+        (
+            "请检查 winget",
+            "LibreOffice install failed; check that winget is available, or install \
+             LibreOffice manually",
+        ),
     ] {
         if message.contains(needle) {
             return english.to_owned();
@@ -246,27 +271,6 @@ pub(crate) fn translate_deps_error(message: &str) -> String {
         } else {
             format!("package is not in the dependency allowlist: {tail}")
         };
-    }
-    // The winget adapter's three failure shapes (windows_install_text.rs):
-    // a UAC/winget cancellation, a missing winget, and a failed install
-    // carrying a compacted vendor detail. All three reach an English-only
-    // terminal here, so each gets English copy; the 300-char vendor detail
-    // tail is third-party output and survives as-is.
-    if message.contains("已取消 LibreOffice 安装") {
-        return "the LibreOffice installation was cancelled".to_owned();
-    }
-    if message.contains("未找到 winget") {
-        return "winget was not found; one-click dependency installation on Windows requires \
-                the App Installer package (winget), or install LibreOffice manually"
-            .to_owned();
-    }
-    // The no-detail winget failure carries a Chinese tail AFTER the exit
-    // code, so it must be matched whole before the generic `安装失败`
-    // block below (which would preserve that tail verbatim).
-    if message.contains("请检查 winget") {
-        return "LibreOffice install failed; check that winget is available, or install \
-                LibreOffice manually"
-            .to_owned();
     }
     // `安装失败` appears in three adapter shapes: Linux bare
     // (`安装失败 (exit …)`), macOS package-prefixed (`ffmpeg 安装失败

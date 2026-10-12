@@ -58,15 +58,26 @@ const MEMORY_USAGE: &str = "usage: pinvou memory <overview|profile|list|add|upda
 archive|pending|organize|organize-history>\n\
 note: adding to preferences/work-context replaces the previous item in that topic bucket";
 
-/// Disclosure for the one mutation `memory overview` performs. The command
-/// reads like a read-only summary but rewrites the shared `snapshot.md`, and
-/// with `runtime: None` it drops the runtime section the desktop app wrote for
-/// its active session (see the module header). A caller polling `overview` in
-/// a loop must not degrade the app's snapshot silently, so the rewrite is
-/// reported on the command's own output as well as on stderr.
-const OVERVIEW_SNAPSHOT_REWRITE_NOTE: &str = "Note: this overview rewrote snapshot.md without \
-its runtime section (a one-shot CLI owns no active session); the desktop app restores that \
-section on its next refresh";
+/// Disclosure for the snapshot rewrites `memory overview` and `memory
+/// organize` perform. Both commands read like storage operations but rewrite
+/// the shared `snapshot.md`, and with `runtime: None` they drop the runtime
+/// section the desktop app wrote for its active session (see the module
+/// header). A caller polling either command in a loop must not degrade the
+/// app's snapshot silently, so the rewrite is reported on the command's own
+/// output as well as on stderr.
+///
+/// Single-sourced so the two disclosures cannot drift apart; `lane` is the
+/// command's self-description ("overview", "organize pass"). The organize
+/// site converged onto this template (it previously read "the runtime
+/// section"/"restores it"); no contract test pins that variant, while the
+/// pinned `rewrote snapshot.md without` substring survives in both.
+fn snapshot_rewrite_note(lane: &str) -> String {
+    format!(
+        "Note: this {lane} rewrote snapshot.md without its runtime section (a one-shot \
+         CLI owns no active session); the desktop app restores that section on its \
+         next refresh"
+    )
+}
 
 /// Stores addressable by `memory list|update|delete`. Hyphenated values are
 /// canonical, the GUI's underscore spellings are accepted as aliases.
@@ -219,7 +230,7 @@ pub fn parse(values: &[String]) -> Result<MemoryCommand, CliError> {
     let subcommand = values.get(1).ok_or_else(|| CliError::usage(MEMORY_USAGE))?;
     match subcommand.as_str() {
         "overview" => {
-            expect_no_arguments(&values[2..], "memory overview")?;
+            support::expect_no_arguments(&values[2..], "memory overview")?;
             Ok(MemoryCommand::Overview)
         }
         "profile" => parse_profile(&values[2..]),
@@ -232,7 +243,7 @@ pub fn parse(values: &[String]) -> Result<MemoryCommand, CliError> {
                 .get(2)
                 .cloned()
                 .ok_or_else(|| CliError::usage("usage: pinvou memory archive <id>"))?;
-            expect_no_arguments(&values[3..], "memory archive")?;
+            support::expect_no_arguments(&values[3..], "memory archive")?;
             Ok(MemoryCommand::Archive { id })
         }
         "pending" => parse_pending(&values[2..]),
@@ -247,7 +258,7 @@ pub fn parse(values: &[String]) -> Result<MemoryCommand, CliError> {
             })
         }
         "organize-history" => {
-            expect_no_arguments(&values[2..], "memory organize-history")?;
+            support::expect_no_arguments(&values[2..], "memory organize-history")?;
             Ok(MemoryCommand::OrganizeHistory)
         }
         other => Err(CliError::usage(format!(
@@ -264,7 +275,7 @@ fn parse_profile(values: &[String]) -> Result<MemoryCommand, CliError> {
     })?;
     match action.as_str() {
         "get" => {
-            expect_no_arguments(&values[1..], "memory profile get")?;
+            support::expect_no_arguments(&values[1..], "memory profile get")?;
             Ok(MemoryCommand::ProfileGet)
         }
         "set" => {
@@ -467,16 +478,6 @@ pinvou memory pending confirm|ignore|never <id>"
 'memory list --store never' and re-shaped by 'memory organize', not edited per item"
         ))),
         _ => unreachable!("editable stores are filtered above"),
-    }
-}
-
-fn expect_no_arguments(values: &[String], command: &str) -> Result<(), CliError> {
-    if values.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::usage(format!(
-            "{command} accepts no options or arguments"
-        )))
     }
 }
 
@@ -850,7 +851,7 @@ fn overview(output: OutputMode) -> Result<CliOutcome, CliError> {
     // source-availability diagnostics a consumer branches on.
     let snapshot_rewritten = !snapshot_path.is_empty();
     if snapshot_rewritten {
-        lines.push(OVERVIEW_SNAPSHOT_REWRITE_NOTE.to_owned());
+        lines.push(snapshot_rewrite_note("overview"));
     }
     append_warning_lines(&mut lines, &warnings);
     let value = serde_json::json!({
@@ -2032,27 +2033,22 @@ work-context, current-focus, recent-activity)",
     };
     // The warning composes filesystem paths (cleanup failures), so it gets
     // the same collapse as user-data cells before it reaches the terminal.
-    let mut human = match &warning {
-        Some(warning) => format!(
-            "{human}\nwarning: {}",
-            support::collapse_control_characters(warning)
-        ),
-        None => human,
-    };
-    // Item fields stay top-level with `warning` appended (mirroring `add`):
-    // nesting the item under a key only when a warning exists would change
-    // the JSON shape exactly when a consumer is least likely to re-check it.
-    let mut value = match warning {
-        Some(warning) => {
-            let mut object = match value {
-                serde_json::Value::Object(map) => map,
-                other => serde_json::Map::from_iter([("item".to_owned(), other)]),
-            };
+    let mut human = human;
+    let mut value = value;
+    if let Some(warning) = warning {
+        human.push_str(&format!(
+            "\nwarning: {}",
+            support::collapse_control_characters(&warning)
+        ));
+        // Item fields stay top-level with `warning` appended (mirroring
+        // `add`): nesting the item under a key only when a warning exists
+        // would change the JSON shape exactly when a consumer is least
+        // likely to re-check it. `value` is always `to_value` of a DTO
+        // struct, so the object arm always matches.
+        if let Some(object) = value.as_object_mut() {
             object.insert("warning".to_owned(), serde_json::Value::String(warning));
-            serde_json::Value::Object(object)
         }
-        None => value,
-    };
+    }
     // The command succeeded, but "succeeded" can still mean "stored fewer
     // characters than submitted" — the same disclosure `add` appends for its
     // own truncations, on both output channels (the stderr note already fired
@@ -2423,10 +2419,8 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
         Err(error) => {
             // Round-44 review: scrub URL userinfo before token shapes — the
             // transport error can embed the request URL of a free-form
-            // stored base_url.
-            let detail = pinvou3_lib::platform::credential_store::redact_secret(
-                &pinvou3_lib::platform::redact_url_credentials_in_text(&format!("{error:#}")),
-            );
+            // stored base_url. The shared helper keeps that two-pass order.
+            let detail = support::redact_error_text(&format!("{error:#}"));
             return Err(map_organize_error_detail(&detail));
         }
     };
@@ -2457,12 +2451,7 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
         ),
     ];
     if snapshot_rewritten_without_runtime {
-        lines.push(
-            "Note: this organize pass rewrote snapshot.md without the runtime section \
-             (a one-shot CLI owns no active session); the desktop app restores it on \
-             its next refresh"
-                .to_string(),
-        );
+        lines.push(snapshot_rewrite_note("organize pass"));
     }
     if !report.warnings.is_empty() {
         // Warnings quote store ids and pass names: collapse like every
@@ -2683,72 +2672,60 @@ fn one_line(value: &str) -> String {
         .join(" ")
 }
 
+/// The row scaffolding the six per-store renderers share: sanitize every
+/// cell through [`one_line`] and tab-join the row (same shape as the
+/// personas family's `collapsed_row`).
+fn row(cells: &[&str]) -> String {
+    cells
+        .iter()
+        .map(|cell| one_line(cell))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
 /// The row contract must not depend on which cell happened to be
 /// machine-made: id/topic/status/kind collapse through the same helper as
 /// the text cell (the topic is engine/user-derived, and a forged column or
 /// row must stay impossible). JSON keeps the originals.
 fn render_preference(item: &PreferenceFile) -> String {
-    format!(
-        "{}\t{}\t{}",
-        one_line(&item.id),
-        one_line(&item.topic),
-        one_line(&item.text)
-    )
+    row(&[&item.id, &item.topic, &item.text])
 }
 
 fn render_work_context(item: &WorkContextFile) -> String {
-    format!(
-        "{}\t{}\t{}",
-        one_line(&item.id),
-        one_line(&item.topic),
-        one_line(&item.text)
-    )
+    row(&[&item.id, &item.topic, &item.text])
 }
 
 fn render_timed(item: &TimedMemoryItem) -> String {
-    format!(
-        "{}\t{}\t{}\t{}",
-        one_line(&item.id),
-        one_line(&item.topic),
-        one_line(&item.text),
-        one_line(item.status.as_str())
-    )
+    row(&[&item.id, &item.topic, &item.text, item.status.as_str()])
 }
 
 fn render_recent_work(item: &RecentWorkItem) -> String {
-    format!(
-        "{}\t{}\t{}",
-        one_line(&item.id),
-        one_line(item.status.as_str()),
-        one_line(&item.title)
-    )
+    row(&[&item.id, item.status.as_str(), &item.title])
 }
 
 fn render_pending(item: &feature::PendingMemoryItem) -> String {
-    format!(
-        "{}\t{}\t{}\t{}",
-        one_line(&item.id),
-        one_line(item.status.as_str()),
-        one_line(item.kind.as_str()),
-        one_line(&item.content)
-    )
+    row(&[
+        &item.id,
+        item.status.as_str(),
+        item.kind.as_str(),
+        &item.content,
+    ])
 }
 
 /// `never` rows read back what `memory pending never` recorded: id, the
 /// blocked-content pattern, the caller's reason, and the stamp. The reason is
 /// optional in the store, so it renders as `-` like the other absent cells.
 fn render_never(item: &feature::NeverMemoryItem) -> String {
-    format!(
-        "{}\t{}\t{}\t{}",
-        one_line(&item.id),
-        one_line(&item.pattern),
-        one_line(if item.reason.is_empty() {
+    row(&[
+        &item.id,
+        &item.pattern,
+        if item.reason.is_empty() {
             "-"
         } else {
             &item.reason
-        }),
-        one_line(&item.created_at)
-    )
+        },
+        &item.created_at,
+    ])
 }
 
 #[cfg(test)]

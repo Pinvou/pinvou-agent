@@ -60,28 +60,8 @@ use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelsCommand {
     List,
-    Add {
-        preset: ModelPreset,
-        name: String,
-        model: String,
-        base_url: String,
-        api_key_env: Option<String>,
-        api_key_stdin: bool,
-        context_window: Option<u32>,
-        max_output: Option<u32>,
-        reasoning_effort: Option<String>,
-        metadata: ModelMetadata,
-        set_active: bool,
-    },
-    Edit {
-        id: String,
-        changes: Box<ModelEdit>,
-        api_key_env: Option<String>,
-        api_key_stdin: bool,
-        clear_api_key: bool,
-        yes: bool,
-        set_active: bool,
-    },
+    Add(AddModel),
+    Edit(EditModel),
     Remove {
         id: String,
         yes: bool,
@@ -118,6 +98,38 @@ pub enum ModelsCommand {
     SearchTest {
         provider: SearchProvider,
     },
+}
+
+/// The `models add` payload: every flag value named once here, so the
+/// command variant, the execute arm and the `add` worker pass one struct
+/// instead of re-listing eleven fields positionally.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddModel {
+    pub preset: ModelPreset,
+    pub name: String,
+    pub model: String,
+    pub base_url: String,
+    pub api_key_env: Option<String>,
+    pub api_key_stdin: bool,
+    pub context_window: Option<u32>,
+    pub max_output: Option<u32>,
+    pub reasoning_effort: Option<String>,
+    pub metadata: ModelMetadata,
+    pub set_active: bool,
+}
+
+/// The `models edit` payload: the target id, the parsed [`ModelEdit`] patch
+/// and the credential / destructive-consent / activation flags, named once
+/// instead of flowing through a nine-parameter worker signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditModel {
+    pub id: String,
+    pub changes: Box<ModelEdit>,
+    pub api_key_env: Option<String>,
+    pub api_key_stdin: bool,
+    pub clear_api_key: bool,
+    pub yes: bool,
+    pub set_active: bool,
 }
 
 /// The optional model metadata the GUI's model form sends on every save
@@ -767,7 +779,7 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         parse_positive_u32("--max-output", raw)
     })?;
     let reasoning_effort = opt_flag(&options, "reasoning-effort", parse_reasoning_effort)?;
-    Ok(ModelsCommand::Add {
+    Ok(ModelsCommand::Add(AddModel {
         preset: parse_preset(options.required("preset")?)?,
         name: options.required("name")?.trim().to_owned(),
         model: options.required("model")?.trim().to_owned(),
@@ -779,7 +791,7 @@ fn parse_add(rest: &[String]) -> Result<ModelsCommand, CliError> {
         reasoning_effort,
         metadata: parse_metadata(&options)?,
         set_active: options.has("set-active"),
-    })
+    }))
 }
 
 /// The literal that clears an optional field on `models edit`. Reusing the
@@ -914,7 +926,7 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
              than the one being edited",
         ));
     }
-    Ok(ModelsCommand::Edit {
+    Ok(ModelsCommand::Edit(EditModel {
         id,
         changes: Box::new(changes),
         api_key_env,
@@ -922,7 +934,7 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         clear_api_key,
         yes: options.has("yes"),
         set_active: options.has("set-active"),
-    })
+    }))
 }
 
 /// Trims an identity field and refuses a whitespace-only value, matching what
@@ -991,52 +1003,8 @@ pub fn execute(command: ModelsCommand, output: OutputMode) -> Result<CliOutcome,
     crate::support::sandbox_home()?;
     let outcome = match command {
         ModelsCommand::List => list(&store, output),
-        ModelsCommand::Add {
-            preset,
-            name,
-            model,
-            base_url,
-            api_key_env,
-            api_key_stdin,
-            context_window,
-            max_output,
-            reasoning_effort,
-            metadata,
-            set_active,
-        } => add(
-            &store,
-            preset,
-            &name,
-            &model,
-            &base_url,
-            &api_key_env,
-            api_key_stdin,
-            context_window,
-            max_output,
-            reasoning_effort,
-            metadata,
-            set_active,
-            output,
-        ),
-        ModelsCommand::Edit {
-            id,
-            changes,
-            api_key_env,
-            api_key_stdin,
-            clear_api_key,
-            yes,
-            set_active,
-        } => edit(
-            &store,
-            &id,
-            &changes,
-            &api_key_env,
-            api_key_stdin,
-            clear_api_key,
-            yes,
-            set_active,
-            output,
-        ),
+        ModelsCommand::Add(spec) => add(&store, spec, output),
+        ModelsCommand::Edit(spec) => edit(&store, spec, output),
         ModelsCommand::Remove { id, yes } => remove(&store, &id, yes, output),
         ModelsCommand::Use { id } => use_model(&id, output),
         ModelsCommand::Show { id, reveal_key } => show(&store, &id, reveal_key, output),
@@ -1253,22 +1221,24 @@ fn apply_new_model_credential<S: CredentialStore>(
     Ok(model)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn add<S: CredentialStore>(
     store: &S,
-    preset: ModelPreset,
-    name: &str,
-    model: &str,
-    base_url: &str,
-    api_key_env: &Option<String>,
-    api_key_stdin: bool,
-    context_window: Option<u32>,
-    max_output: Option<u32>,
-    reasoning_effort: Option<String>,
-    metadata: ModelMetadata,
-    set_active: bool,
+    spec: AddModel,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    let AddModel {
+        preset,
+        name,
+        model,
+        base_url,
+        api_key_env,
+        api_key_stdin,
+        context_window,
+        max_output,
+        reasoning_effort,
+        metadata,
+        set_active,
+    } = spec;
     if name.is_empty() || model.is_empty() || base_url.is_empty() {
         return Err(CliError::usage(
             "--name, --model and --base-url must not be empty",
@@ -1276,7 +1246,7 @@ fn add<S: CredentialStore>(
     }
     // Resolved before any prefs mutation so a missing environment variable is
     // reported without side effects.
-    let secret = resolve_secret(api_key_env, api_key_stdin)?;
+    let secret = resolve_secret(&api_key_env, api_key_stdin)?;
     let stores_secret = secret.is_some();
     let id = new_model_id();
     let saved = SavedModel {
@@ -1396,41 +1366,18 @@ fn apply_model_edit(model: &mut SavedModel, changes: &ModelEdit) {
     }
 }
 
-/// `models edit <id>`: mutate an existing model IN PLACE. Rotating a key or
-/// fixing a `base_url` used to require `remove` + `add`, which mints a new id
-/// (`new_model_id`) and therefore orphans per-session model bindings and
-/// scheduled-task model pins — the edit that silently breaks other features.
-///
-/// The credential lanes mirror the GUI's `apply_model_credential`:
-/// - no credential flag  -> `KeepExisting`: `credential_ref`,
-///   `credential_state` and `has_secret` are carried over untouched;
-/// - `--api-key-env` / `--api-key-stdin` -> `Replace`: `.set()` runs INSIDE
-///   the transaction closure, so a save failure never leaves a model marked
-///   configured against a secret that was never written;
-/// - `--clear-api-key` -> `Delete`: the record is marked missing inside the
-///   closure and the keyring `.delete()` is DEFERRED to after the commit
-///   (`save_model_inner`/`delete_model_inner`'s ordering contract — deleting
-///   first would leave a configured-but-secretless model if the save failed;
-///   an orphaned entry is the benign direction). The delete targets only the
-///   model's stored `credential_ref`: a never-configured model has no keyring
-///   entry, so there is nothing to delete (the same gate `models remove` and
-///   `search set --clear` apply).
-///   Round-50 review: the post-flock rollback below is single-homed in
-///   [`rollback_keyring_write`] — the two write lanes used to carry
-///   line-for-line copies of the module's subtlest invariant, where a
-///   one-line divergence would be invisible.
-///   Single home for the failed-write keyring rollback `edit` and
-///   `settings search set` share. The restore is narrowed to the value THIS
-///   call wrote (`wrote`) — a peer rotation landing in the post-flock window
-///   must not be rolled back to a stale secret, so if the reference no longer
-///   holds what this call wrote (or the check cannot be done) the keyring is
-///   left untouched. A pre-transaction read error means the old state is
-///   unknown, and unknown leaves the keyring alone rather than destroy a
-///   secret prefs may still reference (a stale orphaned entry is the benign
-///   direction). `previous` being `None` means this call wrote nothing and
-///   there is nothing to roll back. Residual (round-49 review): a peer write
-///   landing between this post-flock re-read and the restoring set/delete is
-///   the last unclosable sub-window without a keyring compare-and-swap.
+/// Single home for the failed-write keyring rollback `edit` and
+/// `settings search set` share. The restore is narrowed to the value THIS
+/// call wrote (`wrote`) — a peer rotation landing in the post-flock window
+/// must not be rolled back to a stale secret, so if the reference no longer
+/// holds what this call wrote (or the check cannot be done) the keyring is
+/// left untouched. A pre-transaction read error means the old state is
+/// unknown, and unknown leaves the keyring alone rather than destroy a
+/// secret prefs may still reference (a stale orphaned entry is the benign
+/// direction). `previous` being `None` means this call wrote nothing and
+/// there is nothing to roll back. Residual (round-49 review): a peer write
+/// landing between this post-flock re-read and the restoring set/delete is
+/// the last unclosable sub-window without a keyring compare-and-swap.
 fn rollback_keyring_write<S: CredentialStore>(
     store: &S,
     reference: &CredentialReference,
@@ -1484,18 +1431,43 @@ fn delete_after_commit<S: CredentialStore>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `models edit <id>`: mutate an existing model IN PLACE. Rotating a key or
+/// fixing a `base_url` used to require `remove` + `add`, which mints a new id
+/// (`new_model_id`) and therefore orphans per-session model bindings and
+/// scheduled-task model pins — the edit that silently breaks other features.
+///
+/// The credential lanes mirror the GUI's `apply_model_credential`:
+/// - no credential flag  -> `KeepExisting`: `credential_ref`,
+///   `credential_state` and `has_secret` are carried over untouched;
+/// - `--api-key-env` / `--api-key-stdin` -> `Replace`: `.set()` runs INSIDE
+///   the transaction closure, so a save failure never leaves a model marked
+///   configured against a secret that was never written;
+/// - `--clear-api-key` -> `Delete`: the record is marked missing inside the
+///   closure and the keyring `.delete()` is DEFERRED to after the commit
+///   (`save_model_inner`/`delete_model_inner`'s ordering contract — deleting
+///   first would leave a configured-but-secretless model if the save failed;
+///   an orphaned entry is the benign direction). The delete targets only the
+///   model's stored `credential_ref`: a never-configured model has no keyring
+///   entry, so there is nothing to delete (the same gate `models remove` and
+///   `search set --clear` apply).
+///   Round-50 review: the post-flock rollback is single-homed in
+///   [`rollback_keyring_write`] — the two write lanes used to carry
+///   line-for-line copies of the module's subtlest invariant, where a
+///   one-line divergence would be invisible.
 fn edit<S: CredentialStore>(
     store: &S,
-    id: &str,
-    changes: &ModelEdit,
-    api_key_env: &Option<String>,
-    api_key_stdin: bool,
-    clear_api_key: bool,
-    yes: bool,
-    set_active: bool,
+    spec: EditModel,
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
+    let EditModel {
+        id,
+        changes,
+        api_key_env,
+        api_key_stdin,
+        clear_api_key,
+        yes,
+        set_active,
+    } = spec;
     // `--clear-api-key` deletes the stored credential (keyring entry and
     // configured bookkeeping), so it opts in explicitly exactly like
     // `models remove` (`require_yes`): destructive actions must not be
@@ -1512,12 +1484,12 @@ fn edit<S: CredentialStore>(
     // pre-check can rewrite settings.json before the command fails — the
     // same disclosed trade-off the `remove` lane carries (idempotent
     // migrations only; round-40 review names it here too).
-    if UserPrefs::load().model_by_id(id).is_none() {
+    if UserPrefs::load().model_by_id(&id).is_none() {
         return Err(CliError::failed(format!("model not found: {id}")));
     }
     // Resolved before any prefs mutation so a missing environment variable is
     // reported without side effects (same ordering as `add`).
-    let secret = resolve_secret(api_key_env, api_key_stdin)?;
+    let secret = resolve_secret(&api_key_env, api_key_stdin)?;
     let replacement = secret.map(|raw| secret_for_storage(&raw).to_owned());
     // The deferred keyring delete travels from the mutate closure (which
     // discovers the reference) to the post-commit hook (which issues it)
@@ -1545,11 +1517,11 @@ fn edit<S: CredentialStore>(
     let mut written: Option<(CredentialReference, Result<Option<String>, String>)> = None;
     let transaction = UserPrefs::update_transaction_with_post_commit(
         |prefs| {
-            let Some(existing) = prefs.model_by_id(id) else {
+            let Some(existing) = prefs.model_by_id(&id) else {
                 return Err(format!("model not found: {id}"));
             };
             let mut updated = existing.clone();
-            apply_model_edit(&mut updated, changes);
+            apply_model_edit(&mut updated, &changes);
             // Validate only the reference this edit WRITES: a pre-existing
             // dangling `vision_model_id` (the referenced model was removed —
             // `remove_model` does not cascade) must not fail an unrelated edit,
@@ -1988,11 +1960,10 @@ fn connection_error_result(error: &reqwest::Error) -> ConnectionProbe {
     // Round-43 review: reqwest's Display embeds the full URL, userinfo
     // included, and `redact_secret`'s generic heuristic needs a digit — a
     // `http://user:pass@host` base_url on a transport error would reach the
-    // report verbatim. The purpose-built scrubber (the connectors lanes
-    // already apply it) strips URL userinfo before the token-shape pass.
-    let raw = redact_secret(&pinvou3_lib::platform::redact_url_credentials_in_text(
-        &error.to_string(),
-    ));
+    // report verbatim. The shared two-pass scrubber
+    // (`support::redact_error_text`, the connectors lanes apply it too)
+    // strips URL userinfo before the token-shape pass.
+    let raw = crate::support::redact_error_text(&error.to_string());
     let lower = raw.to_lowercase();
     let code = if error.is_timeout() {
         "timeout"
@@ -3450,6 +3421,18 @@ impl SearchProbe {
             verified: VERIFIED_NOTHING,
         }
     }
+
+    /// The row for a probe that could not run at all: the HTTP client would
+    /// not build, so no request was sent and nothing about the provider was
+    /// learned.
+    fn client_error() -> Self {
+        Self {
+            ok: false,
+            code: "client_error",
+            detail: None,
+            verified: VERIFIED_NOTHING,
+        }
+    }
 }
 
 /// The search endpoints the product actually calls, copied from
@@ -3565,12 +3548,7 @@ fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
 /// pointed at a real provider's 200-with-error-code answer.
 fn run_search_api_probe_at(provider: SearchProvider, key: &str, endpoint: &str) -> SearchProbe {
     let Some(client) = search_probe_client() else {
-        return SearchProbe {
-            ok: false,
-            code: "client_error",
-            detail: None,
-            verified: VERIFIED_NOTHING,
-        };
+        return SearchProbe::client_error();
     };
     let Some(request) = search_api_request_at(client, provider, key, endpoint) else {
         return SearchProbe::unsupported(provider);
@@ -3750,12 +3728,7 @@ fn run_bing_probe() -> SearchProbe {
     // connection pool instead of the 8 s per-request client this lane used
     // to build on every call.
     let Some(client) = search_probe_client() else {
-        return SearchProbe {
-            ok: false,
-            code: "client_error",
-            detail: None,
-            verified: VERIFIED_NOTHING,
-        };
+        return SearchProbe::client_error();
     };
     match client
         .get("https://www.bing.com/search")
@@ -3884,6 +3857,19 @@ fn resolve_search_key<S: CredentialStore>(
 mod tests {
     use super::*;
     use pinvou3_lib::platform::credential_store::CredentialError;
+
+    // The credential-lane tests all steer the product through the
+    // process-wide environment (`PINVOU3_HOME`, the `--api-key-env`
+    // variable), so they run one at a time under this lock — the same rule
+    // the integration suites' `ENV_LOCK` enforces. Each test takes the lock
+    // itself and declares the guard BEFORE its `TempHome`/`TempEnv` guards,
+    // so the fixture restores the environment while the lock is still held.
+    //
+    // This is the lib test binary's SHARED env lock (the gaia tests in
+    // `lib.rs` hold the same one through their `RestoreHomeGuard`), not a
+    // models-local static: a per-module lock would serialize inside this
+    // module and still race the gaia fixtures' `PINVOU3_HOME` swaps.
+    use crate::support::{ENV_LOCK, test_support::TempHome};
 
     #[test]
     fn transport_error_scrubs_url_userinfo_before_the_report() {
@@ -4882,72 +4868,10 @@ mod tests {
         }
     }
 
-    /// The credential-lane tests all steer the product through the
-    /// process-wide environment (`PINVOU3_HOME`, the `--api-key-env`
-    /// variable), so they run one at a time under this lock — the same rule
-    /// the integration suites' `ENV_LOCK` enforces. Guards are held by
-    /// `TempHome`/`TempEnv` for their whole lifetime, so the lock covers the
-    /// full body of every test that constructs either.
-    ///
-    /// This is the lib test binary's SHARED env lock (the gaia tests in
-    /// `lib.rs` hold the same one through their `RestoreHomeGuard`), not a
-    /// models-local static: a per-module lock would serialize inside this
-    /// module and still race the gaia fixtures' `PINVOU3_HOME` swaps.
-    use crate::support::ENV_LOCK;
-
-    /// Points `PINVOU3_HOME` at a fresh temp dir for one test and restores
-    /// the previous value on drop — the RAII rule the integration tests'
-    /// `SandboxHome` applies; engine tests need the same isolation because
-    /// `UserPrefs::load` resolves the product root from the environment.
-    /// Holding `ENV_LOCK` for the lifetime serializes the whole test against
-    /// every other env-mutating test in this module.
-    struct TempHome(
-        Option<std::sync::MutexGuard<'static, ()>>,
-        Option<std::ffi::OsString>,
-        std::path::PathBuf,
-    );
-
-    impl TempHome {
-        fn new(label: &str) -> Self {
-            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-            let root = std::env::temp_dir().join(format!(
-                "pinvou-cli-models-unit-{label}-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&root).expect("create temp home");
-            let previous = std::env::var_os("PINVOU3_HOME");
-            unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-            Self(Some(guard), previous, root)
-        }
-
-        /// The root this test's `PINVOU3_HOME` points at, for tests that
-        /// need to shape the product data dir itself (e.g. force a commit
-        /// failure).
-        fn root(&self) -> &std::path::Path {
-            &self.2
-        }
-    }
-
-    impl Drop for TempHome {
-        fn drop(&mut self) {
-            if let Some(value) = self.1.take() {
-                unsafe { std::env::set_var("PINVOU3_HOME", value) };
-            } else {
-                unsafe { std::env::remove_var("PINVOU3_HOME") };
-            }
-            drop(self.0.take());
-            let _ = std::fs::remove_dir_all(&self.2);
-        }
-    }
-
     /// Sets one environment variable for one test and restores it on drop.
-    /// Takes the `ENV_LOCK` for its lifetime like `TempHome`; constructing
-    /// one `TempHome` THEN a `TempEnv` (the common order) therefore works
-    /// with a single lock — `TempEnv` assumes the caller already holds it.
+    /// Assumes the caller already holds `ENV_LOCK` (each env-steering test
+    /// takes it itself), so constructing one `TempHome` THEN a `TempEnv`
+    /// (the common order) works with a single lock acquisition.
     struct TempEnv(&'static str, Option<std::ffi::OsString>);
 
     impl TempEnv {
@@ -4981,17 +4905,19 @@ mod tests {
     ) -> String {
         let outcome = add(
             store,
-            ModelPreset::Deepseek,
-            name,
-            model,
-            base_url,
-            &key.map(str::to_owned),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
+            AddModel {
+                preset: ModelPreset::Deepseek,
+                name: name.to_owned(),
+                model: model.to_owned(),
+                base_url: base_url.to_owned(),
+                api_key_env: key.map(str::to_owned),
+                api_key_stdin: false,
+                context_window: None,
+                max_output: None,
+                reasoning_effort: None,
+                metadata: ModelMetadata::default(),
+                set_active: false,
+            },
             OutputMode::Human,
         )
         .expect("add succeeds");
@@ -5015,13 +4941,15 @@ mod tests {
     ) -> Result<CliOutcome, CliError> {
         edit(
             store,
-            id,
-            &ModelEdit::default(),
-            &api_key_env.map(str::to_owned),
-            false,
-            clear,
-            clear,
-            false,
+            EditModel {
+                id: id.to_owned(),
+                changes: Box::new(ModelEdit::default()),
+                api_key_env: api_key_env.map(str::to_owned),
+                api_key_stdin: false,
+                clear_api_key: clear,
+                yes: clear,
+                set_active: false,
+            },
             OutputMode::Human,
         )
     }
@@ -5050,6 +4978,7 @@ mod tests {
     /// commit, and the persisted model is marked missing, not configured.
     #[test]
     fn credential_lane_stores_reveals_and_clears_through_the_injected_store() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("lane");
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-lane\n");
         let store = RecordingStore::new();
@@ -5122,6 +5051,7 @@ mod tests {
     /// anything under any reference.
     #[test]
     fn edit_clear_without_a_stored_reference_never_deletes_from_the_keyring() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("edit-clear-no-ref");
         let store = RecordingStore::new();
 
@@ -5189,6 +5119,7 @@ mod tests {
     /// stores the secret.
     #[test]
     fn add_rollback_deletes_the_orphaned_secret() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let home = TempHome::new("add-rollback");
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-rollback");
         let store = RecordingStore::new();
@@ -5196,22 +5127,23 @@ mod tests {
         // holds no file), but the commit's tmp->rename cannot replace a
         // non-empty directory target, so `save_unlocked` fails after the
         // closure already stored the secret.
-        std::fs::create_dir_all(home.root().join("settings.json"))
-            .expect("place the commit blocker");
+        std::fs::create_dir_all(home.join("settings.json")).expect("place the commit blocker");
 
         let error = add(
             &store,
-            ModelPreset::Deepseek,
-            "Roll",
-            "M",
-            "https://api.deepseek.com",
-            &Some("MODELS_UNIT_TEST_KEY".to_owned()),
-            false,
-            None,
-            None,
-            None,
-            ModelMetadata::default(),
-            false,
+            AddModel {
+                preset: ModelPreset::Deepseek,
+                name: "Roll".to_owned(),
+                model: "M".to_owned(),
+                base_url: "https://api.deepseek.com".to_owned(),
+                api_key_env: Some("MODELS_UNIT_TEST_KEY".to_owned()),
+                api_key_stdin: false,
+                context_window: None,
+                max_output: None,
+                reasoning_effort: None,
+                metadata: ModelMetadata::default(),
+                set_active: false,
+            },
             OutputMode::Human,
         )
         .expect_err("must fail: the settings commit fails");
@@ -5239,6 +5171,7 @@ mod tests {
     /// failure stays honest instead of half-applied.
     #[test]
     fn edit_rotation_store_failure_fails_the_save_cleanly() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("edit-store-failure");
         let _old = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-old");
         let store = RecordingStore::new();
@@ -5288,6 +5221,7 @@ mod tests {
     fn edit_rotation_rollback_restores_the_previous_secret() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("edit-rollback");
         let _old = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-old");
         let store = RecordingStore::new();
@@ -5303,14 +5237,14 @@ mod tests {
         // The commit must fail while the load still succeeds: read-only on
         // the product data dir blocks the atomic write's staging (`create_new`
         // tmp file) without touching settings.json's readability.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o555))
             .expect("make the data dir read-only");
 
         // The rotation wrote the new key over the old one; the commit then
         // fails, so the rollback must put the OLD value back.
         let result = edit_credential(&store, &id, Some("MODELS_UNIT_TEST_KEY"), false);
         // Restore write permission first so TempHome's cleanup can delete.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
         let error = result.expect_err("must fail: the settings commit fails");
         assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -5326,6 +5260,7 @@ mod tests {
     /// `delete_model_inner` implements identically.
     #[test]
     fn remove_deletes_the_key_through_the_injected_store() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("remove-key");
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-remove");
         let store = RecordingStore::new();
@@ -5375,6 +5310,7 @@ mod tests {
     fn remove_defers_the_keyring_delete_until_after_the_commit() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("remove-order");
         let _first = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-keep");
         let store = RecordingStore::new();
@@ -5400,11 +5336,11 @@ mod tests {
         // The commit must fail while the loads still succeed: read-only on
         // the product data dir blocks the atomic write's staging (`create_new`
         // tmp file) without touching settings.json's readability.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o555))
             .expect("make the data dir read-only");
         let result = remove(&store, &id, true, OutputMode::Human);
         // Restore write permission first so TempHome's cleanup can delete.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
         let error = result.expect_err("must fail: the settings commit fails");
         assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -5430,6 +5366,7 @@ mod tests {
     fn edit_clear_defers_the_keyring_delete_until_after_the_commit() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("clear-order");
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-clear");
         let store = RecordingStore::new();
@@ -5445,11 +5382,11 @@ mod tests {
         // Read-only on the product data dir blocks the commit's staging tmp
         // file while the transaction's load still succeeds (the same pattern
         // as `remove_defers_the_keyring_delete_until_after_the_commit`).
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o555))
             .expect("make the data dir read-only");
         let result = edit_credential(&store, &id, None, true);
         // Restore write permission first so TempHome's cleanup can delete.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
         let error = result.expect_err("must fail: the settings commit fails");
         assert_eq!(error.exit_code, ExitCode::Failed);
@@ -5470,6 +5407,7 @@ mod tests {
     /// value, trailing newline and all), and `--clear` deletes afterwards.
     #[test]
     fn search_set_stores_and_clears_through_the_injected_store() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("search-key");
         let _key = TempEnv::set("METASO_API_KEY", "sk-search\n");
         let store = RecordingStore::new();
@@ -5508,6 +5446,7 @@ mod tests {
     fn search_clear_defers_the_keyring_delete_until_after_the_commit() {
         use std::os::unix::fs::PermissionsExt as _;
 
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("search-clear-order");
         let _key = TempEnv::set("METASO_API_KEY", "sk-search-defer");
         let store = RecordingStore::new();
@@ -5517,11 +5456,11 @@ mod tests {
 
         // Same failure mechanism as the remove lane: a read-only data dir
         // blocks the atomic write's staging while reads keep working.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o555))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o555))
             .expect("make the data dir read-only");
         let result = search_set_key(&store, None, true);
         // Restore write permission first so TempHome's cleanup can delete.
-        std::fs::set_permissions(_home.root(), std::fs::Permissions::from_mode(0o755))
+        std::fs::set_permissions(&*_home, std::fs::Permissions::from_mode(0o755))
             .expect("restore the data dir");
         let error = result.expect_err("must fail: the settings commit fails");
         assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -5550,6 +5489,7 @@ mod tests {
     /// touched, because the verdict short-circuits before any request.
     #[test]
     fn probe_lanes_report_credential_unavailable_when_the_keyring_is_unreachable() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _home = TempHome::new("probe-unreachable");
         let _key = TempEnv::set("MODELS_UNIT_TEST_KEY", "sk-unreachable");
         let store = RecordingStore::unreachable_keyring();

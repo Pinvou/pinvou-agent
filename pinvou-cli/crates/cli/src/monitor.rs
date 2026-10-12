@@ -111,6 +111,25 @@ const STATUS_KEYS: &[&str] = &[
     "target_kind",
 ];
 
+/// The two absent-cell renderings the family's human rows share. A
+/// remote-sourced name (a served model name from `/v1/models`, a
+/// driver-reported device name) collapses control characters so one cannot
+/// forge extra rows or terminal escapes — JSON mode keeps the originals,
+/// which serde escapes. A measured count renders as its decimal value. Both
+/// fall back to `-` when the measurement could not be taken, so an absent
+/// reading never prints as an empty cell.
+fn remote_cell(value: Option<&str>) -> String {
+    value
+        .map(crate::support::collapse_control_characters)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn measured_cell(value: Option<impl std::fmt::Display>) -> String {
+    value
+        .map(|measured| measured.to_string())
+        .unwrap_or_else(|| "-".to_owned())
+}
+
 /// Builds both renderings of `monitor status` from the probe result.
 ///
 /// Pure (no host, no clock, no I/O) so the shape contract can be asserted
@@ -143,9 +162,7 @@ fn status_payload(
         .unwrap_or_else(|| "unavailable".to_owned());
     // An unreadable clock renders like the other absent measurements: `null`
     // in JSON, `-` in the human row.
-    let checked = now_ms
-        .map(|ms| ms.to_string())
-        .unwrap_or_else(|| "-".to_owned());
+    let checked = measured_cell(now_ms);
     let value = serde_json::json!({
         "vllm_online": online,
         "last_check_ms": now_ms,
@@ -161,23 +178,12 @@ fn status_payload(
         snapshot
             .map(|snapshot| status_label(snapshot.status))
             .unwrap_or("-"),
-        // The served/configured model names are remote-sourced cells: the
-        // same collapse `snapshot_payload` applies to the Backend row.
-        snapshot
-            .and_then(|snapshot| snapshot.model.as_deref())
-            .map(crate::support::collapse_control_characters)
-            .unwrap_or_else(|| "-".to_owned()),
-        snapshot
-            .and_then(|snapshot| snapshot.configured_model.as_deref())
-            .map(crate::support::collapse_control_characters)
-            .unwrap_or_else(|| "-".to_owned()),
+        remote_cell(snapshot.and_then(|snapshot| snapshot.model.as_deref())),
+        remote_cell(snapshot.and_then(|snapshot| snapshot.configured_model.as_deref())),
         snapshot
             .map(|snapshot| snapshot.target_kind.as_str())
             .unwrap_or("-"),
-        snapshot
-            .and_then(|snapshot| snapshot.max_model_len)
-            .map(|len| len.to_string())
-            .unwrap_or_else(|| "-".to_owned()),
+        measured_cell(snapshot.and_then(|snapshot| snapshot.max_model_len)),
     );
     (human, value)
 }
@@ -294,17 +300,9 @@ fn snapshot_payload(
         Some(vllm) => format!(
             "Backend: {}\thealth={}\tmodel={}\twindow={}",
             status_label(vllm.status),
-            // `health_status` is machine-made, but the served model name is
-            // remote-sourced (`/v1/models`) — the same class as the GPU/CPU
-            // names above — so it collapses before it reaches the terminal.
             vllm.health_status,
-            vllm.model
-                .as_deref()
-                .map(crate::support::collapse_control_characters)
-                .unwrap_or_else(|| "-".to_owned()),
-            vllm.max_model_len
-                .map(|len| len.to_string())
-                .unwrap_or_else(|| "-".to_owned()),
+            remote_cell(vllm.model.as_deref()),
+            measured_cell(vllm.max_model_len),
         ),
         None => "Backend: unavailable".to_owned(),
     };
@@ -330,10 +328,12 @@ fn snapshot_payload(
             // `generated_at_ms` left the upstream snapshot (removed from
             // `MonitorSnapshot` as wire-dead for the GUI); the CLI stamps
             // the capture time itself so the published shape holds.
-            // `not_applicable_headless` is CLI-injected too: the marking
-            // pass below fills it after the rebuild.
+            // `not_applicable_headless` is CLI-injected too: the pointer
+            // list is static, so it is published verbatim right here.
             None if *key == "generated_at_ms" => serde_json::json!(generated_at_ms),
-            None if *key == "not_applicable_headless" => serde_json::Value::Null,
+            None if *key == "not_applicable_headless" => {
+                serde_json::json!(NOT_APPLICABLE_HEADLESS)
+            }
             // `cpu` is the one legitimately absent field
             // (`skip_serializing_if` upstream) and publishes its documented
             // null.
@@ -376,25 +376,7 @@ fn snapshot_payload(
         })?;
         *slot = serde_json::Value::Null;
     }
-    // `value` was constructed as a `Value::Object` right above (the ordered
-    // rebuild against [`SNAPSHOT_KEYS`]), so this cannot fail — the error
-    // arm it replaced was unreachable and carried a message no input could
-    // ever produce.
-    let object = value
-        .as_object_mut()
-        .expect("monitor snapshot: payload was just constructed as a JSON object");
-    object.insert(
-        "not_applicable_headless".to_owned(),
-        serde_json::Value::Array(
-            NOT_APPLICABLE_HEADLESS
-                .iter()
-                .map(|pointer| serde_json::Value::String((*pointer).to_owned()))
-                .collect(),
-        ),
-    );
-    let generated_at_human = generated_at_ms
-        .map(|millis| millis.to_string())
-        .unwrap_or_else(|| "-".to_owned());
+    let generated_at_human = measured_cell(generated_at_ms);
     let human = format!(
         "GeneratedAt: {}\n{gpu_line}\n{cpu_line}\n{ram_line}\n{vllm_line}\n\
          SelfPerf: n/a (headless; per-turn token/TTFT counters accumulate inside the running desktop app)\n\
@@ -416,16 +398,12 @@ fn status_label(status: VllmStatus) -> &'static str {
 
 /// Probe failures may embed request URLs but never secrets; still, the
 /// redaction pass keeps any credential that leaked into an error chain out of
-/// CLI output (same guard the memory organize lane uses). Round-47 review:
-/// the URL-userinfo scrub runs first — a stored free-form `base_url` carrying
-/// `user:pass@host` used to reach `monitor status`/`snapshot` output with the
-/// userinfo intact (the exact class fixed for `models test`). Generic over
-/// the error type so this module never needs to name the host's error
-/// type (which is feature-gated upstream).
+/// CLI output (same guard the memory organize lane uses). Generic over the
+/// error type so this module never needs to name the host's error type
+/// (which is feature-gated upstream); the two-pass scrub order lives on
+/// [`crate::support::redact_error_text`] and is pinned by the test below.
 fn redact(error: &impl std::fmt::Display) -> String {
-    let rendered = format!("{error:#}");
-    let rendered = pinvou3_lib::platform::redact_url_credentials_in_text(&rendered);
-    pinvou3_lib::platform::credential_store::redact_secret(&rendered)
+    crate::support::redact_error_text(&format!("{error:#}"))
 }
 
 #[cfg(test)]
@@ -476,6 +454,7 @@ mod tests {
 
     /// A clock that cannot be read has no timestamp to publish. Reporting `0`
     /// made "the host clock is broken" indistinguishable from a genuine
+    /// 1970-01-01 reading, which a consumer checking freshness cannot detect.
     /// The snapshot lane answers an unreadable host clock the same way the
     /// `status` lane does: null in JSON, `-` in human output — never a
     /// synthetic epoch zero a freshness check would read as real.
@@ -495,7 +474,7 @@ mod tests {
         );
     }
 
-    /// 1970-01-01 reading, which a consumer checking freshness cannot detect.
+    /// `status` answers an unreadable clock the same way; a real `0` still prints as `0`.
     #[test]
     fn status_reports_an_unreadable_clock_as_unknown_rather_than_epoch_zero() {
         let (human, value) = status_payload(None, None);

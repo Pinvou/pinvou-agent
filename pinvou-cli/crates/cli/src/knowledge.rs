@@ -137,7 +137,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::support::{render, require_yes, sandbox_home, success};
+use crate::support::{join_rows, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 use pinvou3_lib::features::knowledge::model_download::MODEL_VERSION;
 use pinvou3_lib::features::knowledge::{
@@ -678,21 +678,10 @@ fn model_download_unavailable() -> CliError {
     )
 }
 
-/// Constructs the per-invocation `KnowledgeService` over
-/// `~/.pinvou3/knowledge/index.db` (temp-`PINVOU3_HOME` aware) WITHOUT the
-/// GUI's boot-time recovery of interrupted imports.
-///
-/// No command in this family ever runs that recovery: it is the *desktop
-/// app's* crash-handler (a dead process's `running` jobs cannot still be
-/// executing, so it safely flips them to `interrupted`/resumable — plus
-/// transaction-safe re-queueing of in-flight staged chunks — on every boot).
-/// A one-shot CLI process exits while its import threads are still live, so
-/// running it here is not crash cleanup but an unprovoked flip of jobs from
-/// `running` to `interrupted` — including a job a live desktop-app process is
-/// executing on the same database right now, for which there is no
-/// cross-process owner heartbeat in the job store. Recovery belongs to the
-/// processes that own the store's lifecycle, plus the jobs' own
-/// `resume`/`retry` state transitions.
+/// Opens the per-invocation `KnowledgeService` over the index database
+/// (temp-`PINVOU3_HOME` aware) WITHOUT the GUI's boot-time recovery of
+/// interrupted imports — every command in this family opens through here, and
+/// recovery is NEVER run (see the module docs' Boot recovery section).
 fn open_service() -> Result<KnowledgeService, CliError> {
     sandbox_home()?;
     let db = default_db_path();
@@ -708,15 +697,6 @@ fn open_service() -> Result<KnowledgeService, CliError> {
 /// the operation as context prefix.
 fn feature_error(operation: &str, error: impl std::fmt::Display) -> CliError {
     CliError::failed(format!("knowledge {operation}: {error}"))
-}
-
-/// Joins one sanitized tab-separated row per item — the scaffold every
-/// store/remote-derived human listing in this family shares. The caller owns
-/// the empty case (its own honest message) and any incremental `lines` vec;
-/// each row closure keeps its per-cell `collapse_control_characters`
-/// discipline visible at the site.
-fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
-    items.iter().map(row).collect::<Vec<_>>().join("\n")
 }
 
 pub fn execute(command: KnowledgeCommand, output: OutputMode) -> Result<CliOutcome, CliError> {

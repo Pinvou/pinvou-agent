@@ -85,8 +85,9 @@ use pinvou3_lib::features::sessions::SessionStore;
 use pinvou3_lib::platform::prefs::UserPrefs;
 
 use crate::support::{
-    collapse_control_characters, family_lock, family_option, gate_canonical_path,
-    parse_family_positive, render, require_family_id, require_yes, sandbox_home, success,
+    collapse_control_characters, expect_no_arguments, family_lock, family_option,
+    gate_canonical_path, parse_family_positive, redact_error_text, render, require_family_id,
+    require_yes, sandbox_home, success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
 
@@ -452,16 +453,6 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
         rrule,
         model_id,
     })
-}
-
-fn expect_no_arguments(values: &[String], command: &str) -> Result<(), CliError> {
-    if values.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::usage(format!(
-            "{command} accepts no options or arguments"
-        )))
-    }
 }
 
 fn require_id(value: Option<&String>, command: &str) -> Result<String, CliError> {
@@ -2181,47 +2172,36 @@ enabled in settings",
         })?;
     let id = created.id.clone();
     // The workspace is allocated from the automation id exactly like the GUI
-    // (`ensure_automation_workspace`); clients cannot provide a path.
-    let workspace = store_holder.workspace_dir(&id);
-    if let Err(error) = std::fs::create_dir_all(&workspace) {
-        // Round-49 review: `create_automation` above already persisted the
-        // record — for an ACTIVE create with an eagerly resolved
-        // `next_run_at` — so a bare `?` here left a committed, schedulable
-        // task on disk while the command exited 1 (the next app tick would
-        // fire a task whose command reported failure). Roll back exactly
-        // like the sibling arms below. The failure can precede the
-        // workspace leaf (a refused parent), so a NotFound there means
-        // there is nothing to remove, not a failed rollback step.
+    // (`ensure_automation_workspace`); clients cannot provide a path —
+    // `create_automation` receives `cwds: Vec::new()`, so the def never
+    // arrives pre-pinned and the shared helper always persists the pin here.
+    // Round-48/49 review: `create_automation` above already persisted the
+    // record — for an ACTIVE create with an eagerly resolved `next_run_at` —
+    // so either half of the workspace step failing (directory creation, pin
+    // write) must roll the committed task back: a bare `?` left a committed,
+    // schedulable task on disk while the command exited 1 (the next app tick
+    // would fire a task whose command reported failure). The may-be-absent
+    // flag stays `true` for both halves because the helper's error text is
+    // byte-identical across them and the workspace leaf already exists by the
+    // time the pin write runs.
+    let mut def = def_to_value(&created);
+    if let Err(error) = ensure_workspace(&store_holder, &mut def) {
         rollback_created_task(&store_holder, &id, true);
-        return Err(CliError::failed(format!(
-            "scheduled_workspace_unavailable: cannot create {}: {error}",
-            workspace.display()
-        )));
+        return Err(error);
     }
-    let def = if created.cwds.first().is_some_and(|cwd| cwd == &workspace) {
-        def_to_value(&created)
-    } else {
-        let mut def = def_to_value(&created);
-        def["cwds"] = serde_json::json!([workspace.display().to_string()]);
-        if let Err(error) = store_holder.write_def(&def) {
-            // Round-48 review: the two sibling arms below roll the create
-            // back on sidecar-write failure; this arm's failure left a
-            // committed, schedulable ACTIVE task on disk while the command
-            // exited 1 — the caller believes the create failed. Roll back
-            // exactly like the siblings.
-            rollback_created_task(&store_holder, &id, false);
-            return Err(error);
-        }
-        def
-    };
     // Only touch the shared bindings sidecar when a binding was actually
     // requested: an unconditional write widens the last-writer-wins window
     // against a concurrently persisting GUI and turns a sidecar-write
     // failure into a failed create where the GUI would succeed. The pair
     // written matches the definition's model by construction (resolved
-    // together above), so the executor accepts it.
+    // together above; the wire name comes from the def just persisted), so
+    // the executor accepts it.
     if validated_model_id.as_deref().is_some()
-        && let Err(error) = write_model_binding(&store_holder, &id, validated_model_id.as_deref())
+        && let Err(error) = write_model_binding(
+            &store_holder,
+            &id,
+            validated_model_id.as_deref().zip(str_field(&def, "model")),
+        )
     {
         // Roll back the just-created task so no kind-less/binding-less task
         // lingers, mirroring the GUI create rollback.
@@ -2422,7 +2402,13 @@ fn update(
         && let Err(error) = write_model_binding(
             &store_holder,
             id,
-            model_pair.as_ref().map(|pair| pair.1.as_str()),
+            // Same pair shape as create: the id half comes from the resolved
+            // pair, the wire name from the def just persisted (the foundation
+            // update applied exactly that model, normalized identically).
+            model_pair
+                .as_ref()
+                .map(|pair| pair.1.as_str())
+                .zip(str_field(&def, "model")),
         )
     {
         // The definition's new model wire name is already committed, so
@@ -2504,48 +2490,34 @@ fn mutate_sidecar_tasks(
 /// pair is the executor's acceptance contract (`resolve_scheduled_model`
 /// rejects a task whose bound wire model diverges from the saved model id's
 /// current wire name), so callers resolve BOTH halves together from the same
-/// saved model before calling (see `create`/`update`); the wire name is
-/// re-read from the definition only as a consistency fallback — and only
-/// when a binding is actually written: the clearing arm also runs from
-/// create's rollback, after the definition has already been removed.
+/// saved model and pass the pair they already hold: the wire name comes from
+/// the def each caller just persisted (create) or built from the foundation's
+/// update result (update), byte-identical to the disk re-read this helper
+/// used to perform — the typed def write/read round-trip preserves the model
+/// string exactly. `None` clears the binding; the clearing arm also runs
+/// from create's rollback, after the definition has already been removed.
 fn write_model_binding(
     store_holder: &TaskStore,
     id: &str,
-    model_id: Option<&str>,
+    pair: Option<(&str, &str)>,
 ) -> Result<(), CliError> {
-    let model_id = model_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned);
-    let model = match model_id {
-        Some(_) => store_holder
-            .read_def(id)?
-            .get("model")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_owned(),
-        None => String::new(),
-    };
-    mutate_sidecar_tasks(
-        &store_holder.model_bindings_path(),
-        |tasks| match model_id {
-            Some(model_id) => {
-                tasks.insert(
-                    id.to_owned(),
-                    serde_json::json!({
-                        "model_id": model_id,
-                        "model": model,
-                        "updated_at": now_string(),
-                    }),
-                );
-            }
-            // The GUI clears a binding when model id and model are not both
-            // present; a bare --model-id always carries both here.
-            None => {
-                tasks.remove(id);
-            }
-        },
-    )
+    mutate_sidecar_tasks(&store_holder.model_bindings_path(), |tasks| match pair {
+        Some((model_id, model)) => {
+            tasks.insert(
+                id.to_owned(),
+                serde_json::json!({
+                    "model_id": model_id,
+                    "model": model,
+                    "updated_at": now_string(),
+                }),
+            );
+        }
+        // The GUI clears a binding when model id and model are not both
+        // present; a bare --model-id always carries both here.
+        None => {
+            tasks.remove(id);
+        }
+    })
 }
 
 fn persist_task_kind(
@@ -3176,13 +3148,12 @@ fn organize_headless() -> Result<(), String> {
     match result {
         Ok(()) => Ok(()),
         // Round-44 review: the transport error carries the request URL, and
-        // a free-form stored base_url may embed userinfo. Scrub URLs first,
-        // then token shapes — the detail is persisted into the durable run
-        // record and re-rendered by `scheduled runs`, so token-shape
-        // redaction alone leaks `user:pass@host` userinfo.
-        Err(error) => Err(pinvou3_lib::platform::credential_store::redact_secret(
-            &pinvou3_lib::platform::redact_url_credentials_in_text(&format!("{error:#}")),
-        )),
+        // a free-form stored base_url may embed userinfo. The shared
+        // two-pass scrub (`support::redact_error_text`) strips URL
+        // credentials before token shapes because the detail is persisted
+        // into the durable run record and re-rendered by `scheduled runs` —
+        // token-shape redaction alone leaks `user:pass@host` userinfo.
+        Err(error) => Err(redact_error_text(&format!("{error:#}"))),
     }
 }
 

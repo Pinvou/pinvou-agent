@@ -302,6 +302,7 @@ pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOu
     // not be the one surface that copies `~/.aws/credentials` into a session
     // ledger and renders it into the prompt. Canonicalized first so the
     // component check cannot be escaped by a symlink or a `..` hop.
+    let mut total_bytes: u64 = 0;
     let attachments = attachments
         .into_iter()
         .map(|path| {
@@ -353,6 +354,12 @@ pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOu
                     pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENT_BYTES
                 )));
             }
+            // Round-48 review: a stat failure here fails closed exactly as it
+            // did when the total was re-stat'd below — the accumulated size is
+            // the one this gate already vetted, so a vanished file can no
+            // longer masquerade as 0 bytes and push the refusal engine-side
+            // (after the windowless-host boot).
+            total_bytes += size;
             Ok(pinvou3_lib::agentic_task::AgenticTaskAttachment {
                 path: resolved,
                 remove_after_ingest: false,
@@ -368,24 +375,6 @@ pub(crate) fn execute(command: AgentCommand, output: OutputMode) -> Result<CliOu
             attachments.len()
         )));
     }
-    // Round-48 review: a stat failure here must fail closed exactly like the
-    // per-file gate above — counting a vanished file as 0 bytes let an
-    // under-counted total pass the pre-boot gate and push the refusal
-    // engine-side (after the windowless-host boot), the wasted-boot outcome
-    // this gate exists to prevent.
-    let total_bytes: u64 = attachments
-        .iter()
-        .map(|attachment| {
-            std::fs::metadata(&attachment.path)
-                .map(|metadata| metadata.len())
-                .map_err(|error| {
-                    CliError::failed(format!(
-                        "cannot stat attachment {}: {error}",
-                        attachment.path.display()
-                    ))
-                })
-        })
-        .sum::<Result<u64, CliError>>()?;
     if total_bytes > pinvou3_lib::headless_bridge::MAX_STAGED_ATTACHMENTS_TOTAL_BYTES {
         return Err(CliError::failed(format!(
             "agent_attachment_too_large: attachments total {total_bytes} bytes (limit {})",
