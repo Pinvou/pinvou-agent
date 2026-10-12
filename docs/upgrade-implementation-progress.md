@@ -1810,3 +1810,60 @@ capacity fixtures do not certify authentication/recovery of new attempts. Actual
 deployment, HA and cross-repository/platform E2E remain deferred. Downloads retain
 no hard total or cumulative elapsed deadline.
 Service maintenance batch commit: `083d404`.
+
+### T20 thirteenth batch: read-only accepted retention inspection (2026-10-12)
+
+The service adds an explicit protected-owner `inspect-no-update-retention`
+command, with no role/key/request arguments. Serializable READ ONLY pages
+authenticate native receipt/outbox bytes, canonical shape, original JTI/event
+identity, disposition and SQL acceptance time. The actual scope and original
+Session must match the no-update event and explicitly contain updateAvailable
+false; null contribution watermark is insufficient. Native local-state facts
+are checked through the existing pinned private helper.
+
+The pure time floor covers original Session start plus seven days and two
+minutes, including still-unseen original credentials. Original receipt retention
+must fit that window. Expiry, terminal/fence state, Root or channel changes do
+not create deletion or replay authority. Every accepted receipt, outbox, intent,
+attempt, shared cursor and T44 row remains intact. Legacy acceptance without
+later intent scaffolding stays visible. Actual cursor retention and complete
+operation closure are not inspected or claimed as proved.
+
+Each page has at most 32 points and 32 MiB conservative logical payload charges.
+Native scalar size preflight precedes payload transfer/decoding; an over-budget
+point is uninspected and counted while the private cursor advances. The output
+reports only elapsed/pending protocol floors, outside-scope kinds and oversize
+counts. A kind does not identify its signing role. Pages are separate consistent
+observations, not one global inventory snapshot under concurrent acceptance.
+
+Current V1 does not specify accepted outbox consumption/archive ACK or the final
+diagnostic/audit retention policy. That decision and real narrow interfaces stay
+deferred; minimum exp+two-minute dedup retention cannot authorize deleting the
+outbox. The archived historical record supplies no active retention rule.
+Independent implementation work continues without expanding the delete surface.
+
+Final serial actual PostgreSQL verification passed all four cases (179.353s):
+capacity preflight (7.67s), accepted/legacy/built command (8.21s), original-source
+and native-constraint controls (5.83s), and natural shared-window boundary
+(154.95s). The original actual
+run passed accepted/legacy and genuine expiry/grace cases, but failed two test
+fixture expectations; it is not called a full pass. Native Session ID/revision
+constraints are now tested as database refusals. The capacity fix moves preflight
+before transfer and has a separate synthetic outside-scope payload sentinel;
+these copied native rows do not certify signing/acceptance of another role.
+The aged Session is seeded explicitly; its genuine signed event's unchanged
+upload expiry plus two minutes elapses naturally without rewriting clocks,
+credentials, leases or Session timestamps after acceptance.
+
+Full default Go tests with original Node references, vet, module verification,
+all command builds, pinned comparison and client architecture/version/diff checks
+passed. Database/providers stay skipped by default; actual PostgreSQL/command
+evidence above was explicitly enabled. No SQL migration bytes changed. Final
+independent review of this frozen code, tests and evidence passed both roles
+without remaining required findings. This closes the read-only inspection
+capability, not accepted-data deletion or full T20.
+
+This batch does not close accepted cleanup, full T20, other event roles, quality,
+public batch transport or client outbox. Deployment and cross-platform/repository
+acceptance remain deferred. Downloads retain no hard cumulative duration limit.
+Service inspection batch commit: `582f325`.
