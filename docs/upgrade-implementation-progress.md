@@ -1275,3 +1275,27 @@ database/provider/browser/deployment opt-ins are not applicable to this batch.
 
 Final default tests/vet, module verification, all command builds, pinned contracts
 and client architecture/version/diff checks passed. Service commit: `b85476b`.
+
+
+### T21 second batch: original evidence outcome calculation (2026-10-12)
+
+The bounded sample reducer preserves exact original workflow, source/hop group,
+target, installation scope, metric and window. Legal late original evidence may
+resolve unknown; confirmed failure stays latched even when older than the source
+watermark. Higher-version repair and auxiliary health cannot replace original
+candidate outcomes or increase its success denominator. Successful original
+outcomes do not regress through incomplete/unknown progress. Deduplication uses
+an independent immutable point receipt; exact replay changes nothing and a
+different digest conflicts. No growing event array is embedded in the sample.
+
+Both independent roles passed the complete frozen code/test/docs delta. All 148
+actual original projectEvidence comparisons, 36 assessment vectors and domain
+controls passed (2.359s; independent 4.634s/27.621s). Final default Go tests/vet,
+module verification, command builds, pinned contracts and diff checks passed.
+No SQL/provider behavior changed. Actual accepted-event sources, atomic ledger/
+sample/source cursor, contribution eligibility/limits and freeze reasons remain
+subsequent work; a caller-provided receipt lookup does not grant evidence rights.
+Full T21 remains in progress. Continue the protected persistence batch without
+introducing any download time cap.
+
+Service commit: `d2ac3ae`. Client architecture/version checks passed.
