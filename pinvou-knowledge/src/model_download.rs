@@ -69,7 +69,7 @@ pub const KNOWLEDGE_MODEL_FILES: [KnowledgeModelFile; 5] = [
     },
 ];
 
-pub use crate::model_layout::{MODEL_ONNX_CANDIDATES, MODEL_TOKENIZER_FILES, find_onnx_in};
+use crate::model_layout::{MODEL_ONNX_CANDIDATES, MODEL_TOKENIZER_FILES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KnowledgeModelDownloadStage {
