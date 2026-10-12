@@ -124,7 +124,7 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
 // testids derive from `testid` (…-title / …-cancel / …-ok) so both dialogs
 // keep their existing hooks.
 function RewindDialogShell({
-  testid, isDark, busy, title, error, okLabel, copy, onCancel, onConfirm, children,
+  testid, isDark, busy, okDisabled = false, title, error, okLabel, copy, onCancel, onConfirm, children,
 }) {
   return (
     <ModalShell
@@ -156,7 +156,7 @@ function RewindDialogShell({
             type="button"
             data-testid={`${testid}-ok`}
             className="rounded-xl px-3 py-1.5 text-[12px] font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={busy}
+            disabled={busy || okDisabled}
             onClick={onConfirm}
           >{okLabel}</button>
         </div>
@@ -231,6 +231,11 @@ function RewindChangesBody({ entry, previewState, filesWillRewind, isDark, copy 
             <ChangeSummary summary={summary} copy={copy} />
           </div>
           <ChangeFileList changes={changes} copy={copy} />
+          {/* 评审 M2：预览里「新增」项的真实代价是删除（恢复走 clean -fd）——
+              必须在决策点点名，不能只显示为计数。 */}
+          <div className="mt-1.5 text-[11px] leading-5 text-gray-400">
+            {copy.rewindFilesDeleteNote}
+          </div>
         </>
       )}
     </div>
@@ -272,11 +277,21 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
     else onConfirm();
   };
 
+  // 评审 M2：双层回退的代价（diff 预览）必须在决策点可见——预览未决（未加载/
+  // 加载中/失败）时禁用确认键，杜绝用户在从未看到变更摘要的情况下执行默认勾选
+  // 的破坏性恢复（tracked 文件强制恢复 + 快照后新建的未忽略文件被删除）。预览
+  // 失败时关闭重开弹窗即重试；取消键保持可用。
+  const previewUndecided = filesWillRewind
+    && !entry.conversationOnly
+    && !reloadFailed
+    && (!previewState || previewState.loading || previewState.error);
+
   return (
     <RewindDialogShell
       testid="rewind-confirm"
       isDark={isDark}
       busy={busy}
+      okDisabled={previewUndecided}
       title={copy.rewindDialogTitle}
       error={error}
       okLabel={busy ? copy.rewindBusy : reloadFailed ? copy.rewindRetryReload : copy.rewindConfirm}
@@ -348,6 +363,13 @@ export function RewindUndoConfirmDialog({ state, error, busy, theme, copy, onCan
       <div className={`mt-3 text-[12px] leading-5 ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>
         {state.reloadFailed ? copy.rewindReloadRetryNote : rewindUndoBodyText(copy, state)}
       </div>
+      {/* 评审 M2：反悔窗口的失效条件（回退后发新消息/尾部被编辑即失效；回滚点
+          仅保留最近 20 个）此前无处告知——在决策点如实披露。 */}
+      {!state.reloadFailed && (
+        <div className="mt-1.5 text-[11px] leading-5 text-gray-400">
+          {copy.rewindUndoExpiryNote}
+        </div>
+      )}
     </RewindDialogShell>
   );
 }
