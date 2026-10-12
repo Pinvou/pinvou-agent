@@ -462,7 +462,15 @@ the uninstall and its rows are cleaned together with the records this
 uninstall removes, or the gate runs after the uninstall, re-registers as a
 new install, and the landing is governed — the cross-process window "import
 passes the gate (skips registration) → uninstall commits and clears rows →
-import lands ungoverned" on the tool/pack channel is closed.
+import lands ungoverned" on the import channel is closed. The **by-name
+catalog lane** (`install_marketplace_tool_sync` → `install_inner`) is *not*
+lease-covered: it serializes only on the process-local transaction lock,
+so a same-id catalog reinstall racing a lease-held uninstall can still run
+its known-skip gate against records the uninstall is about to clear and
+land with zero consent rows in initialized DenyAll scopes — the narrow
+same-id window is the #515 class without a startup backfill arm for MCP
+packs (round-31 review MAJOR 3; registered in §7 with its convergence
+directions).
 
 **The import pipeline additionally refuses owner-claim-divergent ids**: a new import whose
 pack id, after `to_package_id` folding, lands on another installed claimant
@@ -775,6 +783,15 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   materializing write — in steady state the owner row survives whole-table
   writes except under boundary (1)'s stale-snapshot race (see boundary (1)
   above) — and that exposure does not disappear across scope migration.
+- **By-name catalog reinstall is not landing-lease-covered**（round-31 review
+  MAJOR 3，评审 #5482149908）：`install_marketplace_tool_sync` →
+  `install_inner` 只串行于进程内事务锁，而 landing lease 的取用方是导入管
+  道、用户卸载、回收站还原与启动残留清扫——同 id 目录重装与持 lease 卸载
+  跨进程交错时，重装门的 known-skip 可对卸载即将清除的登记放行，包落地时
+  已初始化 DenyAll scope 零同意行（同 id 毫秒级窗口，#515 类；MCP 包无启
+  动回填臂，不自愈）。收敛方向（二选一，后续版本）：`install_inner` 取
+  landing lease（锁序 lease → 事务，与上文锁序图一致），或随 #521 把目录
+  通道纳入跨进程串行化。
 
 ## 8. 相关文件
 
