@@ -1487,3 +1487,42 @@ Service commit: `28659ce`. Both independent roles passed the final complete
 historical-source code/tests/documentation. Client architecture/version/diff
 checks passed. Continue protected durable reception and final trust locking;
 source snapshots remain observations rather than acceptance authority.
+
+### T20 fifth batch: private no-update durable receipt kernel (2026-10-12)
+
+The service prepares one original signed no-update telemetry event from current
+protected Root/deny and actual historical Session. A new explicitly provisioned
+private reception schema joins real T06 fixed-command ownership, final Root/deny
+row locking, live Session CAS, immutable receipt and original-byte outbox in one
+transaction. It creates no quality contribution or runtime writer grant.
+
+The private ABI requires canonical original event/binding bytes and facts digest;
+public integral JSON spellings are normalized by original validation/JCS first.
+Shorter lawful occurrence windows and an end equal to upload expiry are preserved.
+Existing receipts retain all original fields and are checked for canonical shape,
+digest, row binding, original retention and commit chronology. Fresh and replay
+both recheck owner and SQL time at return, including NULL/unsafe/backward time,
+credential expiry and Root expiry. Actual inherited/SET/default ACLs and catalog
+ownership/function configuration/trigger drift refuse unsafe provisioning.
+
+This is a private live no-update/replay kernel. Its real PostgreSQL fixtures use
+actual protected Root and T06 reservations with test-only opaque projections;
+they do not certify credential issuance, an actual T17 decision or a registered
+processable owner. Initial late reporting, diagnostic cursors, workflow/download
+handoff, transaction/task events, contribution projection, resumable protected
+input storage, runtime readiness and production HTTP/client transport remain
+subsequent work. No legacy SQL bytes or normative schema change. Full T20 stays
+open; download duration is unlimited and undecidable items remain skipped.
+
+Final actual PostgreSQL event regression: fourteen tests PASS (97.135s); isolated
+reception suite: six tests PASS (40.885s). It covers canonical/short-window controls,
+receipt corruption/restoration, fresh/replay final clocks, stale Root/deny snapshots,
+deny-before-receipt-existence, default inherited/SET ACLs and real wrong-command/
+epoch refusal. Full default Go tests, vet, module verification, command builds,
+pinned contract, client architecture/version and diff checks passed. Other opt-in
+database/provider tests are skipped by the default run; this batch's PostgreSQL
+tests were explicitly enabled. Production/cross-repository E2E is not certified.
+Both independent scoped roles gave final PASS for the complete fifth-batch code,
+tests and documents. Continue protected recovery and actual owner composition.
+Service commit: `fff5e1c` (pushed). This freezes the new reception migration;
+subsequent SQL changes must use additive migrations.
