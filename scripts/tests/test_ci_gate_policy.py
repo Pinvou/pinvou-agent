@@ -172,6 +172,35 @@ def _matches_paths_filter(path, patterns):
     return included and not excluded
 
 
+def _job_between(text, start, end):
+    """切出 `start` job 的完整块:从它的 2 空格键到 `end` 键之前(注释保留)。
+
+    套件里十余处逐字相同的
+    `split("\\n  <job>:", maxsplit=1)[1].split("\\n  <end>:", maxsplit=1)[0]`
+    的共享形状;切分 token 与各调用点原本的字面量完全一致。
+    """
+    return text.split(f"\n  {start}:", maxsplit=1)[1].split(f"\n  {end}:", maxsplit=1)[0]
+
+
+def _changes_block(text):
+    """changes job 的完整块(含注释);按路径路由的 pin 在其上继续切片。"""
+    return _job_between(text, "changes", "fast-gate")
+
+
+def _frontend_filter_paths(changes):
+    """frontend filter 组的条目切片(frontend: 键到 relay: 键之间)。"""
+    return changes.split("            frontend:", maxsplit=1)[1].split(
+        "            relay:", maxsplit=1
+    )[0]
+
+
+def _dorny_filter_group(changes, group):
+    """按 12 空格缩进锚定 dorny filter 组,只取该组的条目行。"""
+    return re.search(
+        rf"\n            {group}:\n((?:              .*(?:\n|$))+)", changes
+    ).group(1)
+
+
 JOB_HEADER = re.compile(r"^  (\S.*):\s*$")
 
 
@@ -503,7 +532,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # only run inside frontend-test, so their config files must be in the
         # frontend path filter; otherwise a config-only PR skips every gate
         # that consumes the file it changed.
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_paths = _frontend_filter_paths(changes)
         for path in (
             "pinvou3-app/.oxlintrc.json",
             "pinvou3-app/biome.jsonc",
@@ -525,7 +555,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # the frontend path filter, a Rust-only PR silently skips that node
         # gate — the same structural blind spot the static-analysis configs
         # above guard against.
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_paths = _frontend_filter_paths(changes)
         for path in (
             "pinvou3-app/src-tauri/src/features/assistant/**",
             "pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs",
@@ -554,7 +585,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # 均归一化匹配),逐一断言 frontend filter 覆盖。给契约测试新增
         # Rust read 而不路由、或把已路由文件挪走,都会在这里失败(本套件
         # 在 fast-gate 每个 PR 必跑)。
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_entries = _extract_quoted_paths(_frontend_filter_paths(changes))
         contract_test = (
             ROOT / "pinvou3-app/tests/multiagent_plan_normalize.test.mjs"
         ).read_text(encoding="utf-8")
@@ -755,9 +787,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):
-        changes = self.pr_workflow.split(
-            "\n  changes:", maxsplit=1
-        )[1].split("\n  fast-gate:", maxsplit=1)[0]
+        changes = _changes_block(self.pr_workflow)
         self.assertIn("uses: dorny/paths-filter@v4", changes)
         self.assertIn(
             "github.event_name == 'merge_group'",
@@ -793,7 +823,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("Merge Queue 基础检查失败", required_gate)
 
     def test_standalone_knowledge_crate_has_its_own_required_gate(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         self.assertIn("knowledge_rust:", changes)
         self.assertIn("knowledge_dependencies:", changes)
         knowledge_paths = changes.split(
@@ -813,9 +843,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         knowledge = _without_yaml_comments(
-            self.pr_workflow.split("\n  knowledge-rust:", maxsplit=1)[1].split(
-                "\n  rust-lint:", maxsplit=1
-            )[0]
+            _job_between(self.pr_workflow, "knowledge-rust", "rust-lint")
         )
         self.assertIn("needs.changes.outputs.knowledge_rust == 'true'", knowledge)
         self.assertIn(
@@ -923,18 +951,21 @@ class CiGatePolicyTests(unittest.TestCase):
             msg or f"no run_filtered line pins -p {package} --locked {filter}",
         )
 
-    def _required_gate(self):
+    def _required_gate(self, text=None):
         # Split off everything from the required-gate job onward. Required-
         # gate's display `name:` is the branch-protection check name; the
         # suite locates the job only by its YAML key, so a display-name
         # rename would silently orphan the required check. Pin it in every
-        # test that asserts on this block.
-        required_gate = self.pr_workflow.split("\n  required-gate:", maxsplit=1)[1]
+        # test that asserts on this block. `text` lets the comment-stripped
+        # body variants reuse the same split and the same name pin.
+        required_gate = (self.pr_workflow if text is None else text).split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
         self.assertIn("name: required-gate", required_gate)
         return required_gate
 
     def test_cli_crate_has_its_own_required_gate(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         self.assertIn("cli_rust:", changes)
         cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
@@ -1199,9 +1230,7 @@ class CiGatePolicyTests(unittest.TestCase):
             assert_group_paths_reachable(block, group)
 
         cli_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
-                "\n  windows-rust-test:", maxsplit=1
-            )[0]
+            _job_between(self.pr_workflow, "cli-test", "windows-rust-test")
         )
         self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
         self.assertIn(
@@ -1266,9 +1295,9 @@ class CiGatePolicyTests(unittest.TestCase):
         # CLI's cfg(target_os = "windows") branches (exe/cmd shims, taskkill,
         # CREATE_NO_WINDOW) only type-check on a Windows runner, and cli_rust
         # must trigger that leg exactly like it triggers cli-test.
-        windows_rust_test = self.pr_workflow.split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        windows_rust_test = _job_between(
+            self.pr_workflow, "windows-rust-test", "windows-codex-runtime-test"
+        )
         self.assertIn(
             "needs.changes.outputs.cli_rust == 'true'",
             windows_rust_test,
@@ -1718,8 +1747,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # `failure` to the accepted set) would accept every failed gate
         # while every other test here stays green, so pin the exact
         # accepted set and forbid a bare catch-all accept.
-        body = _without_yaml_comments(self.pr_workflow)
-        required_gate = body.split("\n  required-gate:", maxsplit=1)[1]
+        required_gate = self._required_gate(_without_yaml_comments(self.pr_workflow))
         self.assertIn(
             "success|skipped) ;;",
             required_gate,
@@ -1971,8 +1999,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # summary-loop entry) kept the whole suite green while the gate
         # silently stopped consuming that leg. Pin the same triple for
         # each: needs entry, `<JOB>_RESULT:` backfill, loop entry.
-        body = _without_yaml_comments(self.pr_workflow)
-        required_gate = body.split("\n  required-gate:", maxsplit=1)[1]
+        required_gate = self._required_gate(_without_yaml_comments(self.pr_workflow))
         self.assertIn("name: required-gate", required_gate)
         for job, result_env in (
             ("rust-test", "RUST_RESULT"),
@@ -2074,16 +2101,14 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
         self.assertNotIn("\n  benchmark-test:", self.pr_workflow)
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         self.assertNotIn("benchmark:", changes)
         self.assertNotIn("benchmark_cli:", changes)
         self.assertNotIn("benchmark_headless:", changes)
         self.assertNotIn("benchmark_codewhale:", changes)
 
     def test_full_rust_filter_fails_closed_with_stable_module_boundaries(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         rust_full = changes.split("            rust_full:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
         )[0]
@@ -2153,18 +2178,14 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_rust_modes_run_combined_full_regression_only_for_high_risk(self):
         self.assertIn("merge_group:", self.pr_workflow)
         self.assertIn("ci:full-rust", self.pr_workflow)
-        rust_lint = self.pr_workflow.split(
-            "\n  rust-lint:", maxsplit=1
-        )[1].split("\n  rust-test:", maxsplit=1)[0]
+        rust_lint = _job_between(self.pr_workflow, "rust-lint", "rust-test")
         self.assertIn("timeout-minutes: 60", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
         self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
-        rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[0]
+        rust_test = _job_between(self.pr_workflow, "rust-test", "windows-rust-test")
         self.assertRegex(
             rust_test,
             r"github\.event_name == 'merge_group'\s*&&\s*"
@@ -2391,9 +2412,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # turn either leg into an optional check, add a cache writer, or drop
         # a step from its leg.
         windows_rust_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
-                "\n  macos-rust-check:", maxsplit=1
-            )[0]
+            _job_between(self.pr_workflow, "windows-rust-test", "macos-rust-check")
         )
         self.assertIn("name: windows-rust-test (${{ matrix.phase }})", windows_rust_test)
         self.assertIn("fail-fast: false", windows_rust_test)
@@ -2570,9 +2589,9 @@ class CiGatePolicyTests(unittest.TestCase):
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
-        windows_rust_test = self.pr_workflow.split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
+        windows_rust_test = _job_between(
+            self.pr_workflow, "windows-rust-test", "windows-codex-runtime-test"
+        )
         self.assertIn(
             "github.event_name == 'push' ||", windows_rust_test
         )
@@ -2596,9 +2615,9 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 240", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
-                "\n  windows-codex-runtime-test:", maxsplit=1
-            )[0]
+            _job_between(
+                self.pr_workflow, "windows-rust-test", "windows-codex-runtime-test"
+            )
         )
         self.assertIn(
             "defaults:\n      run:\n        shell: bash",
@@ -2668,9 +2687,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn('"macos-rust-check:$MACOS_RUST_CHECK_RESULT"', required_gate)
 
     def test_windows_browser_wrapper_lifecycle_runs_in_required_native_job(self):
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         windows_codex_filter = changes.split("windows_codex:", maxsplit=1)[1]
         self.assertIn(
             "resources/common/bundle/mcp-servers/browser-*",
@@ -2703,16 +2720,11 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_CODEX_RESULT", required_gate)
 
     def test_windows_python_dependency_contract_runs_in_required_native_job(self):
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         # Anchor on the 12-space-indented dorny filter key (not the 8-space outputs
         # mapping) and capture only the entry lines of that one filter group, so
         # moving the ps1 route into another filter fails this assertion.
-        windows_codex_filter = re.search(
-            r"\n            windows_codex:\n((?:              .*(?:\n|$))+)",
-            changes,
-        ).group(1)
+        windows_codex_filter = _dorny_filter_group(changes, "windows_codex")
         self.assertIn(
             "windows_python_dependency_contract.ps1",
             windows_codex_filter,
@@ -2737,17 +2749,12 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("- windows-codex-runtime-test", required_gate)
 
     def test_windows_rustup_repair_runs_in_required_native_job(self):
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         self.assertIn(
             "windows_rustup_repair: ${{ steps.filter.outputs.windows_rustup_repair }}",
             changes,
         )
-        repair_filter = re.search(
-            r"\n            windows_rustup_repair:\n((?:              .*(?:\n|$))+)",
-            changes,
-        ).group(1)
+        repair_filter = _dorny_filter_group(changes, "windows_rustup_repair")
         for trigger in (
             ".github/workflows/pr-check.yml",
             "pinvou3-app/scripts/ci/**",
@@ -2785,9 +2792,7 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Same three-wiring rule as the other native legs: needs entry, env
         # backfill, and summary-loop entry.
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertIn("- windows-rustup-repair-test", required_gate)
         self.assertIn(
             "WINDOWS_RUSTUP_REPAIR_RESULT: "
@@ -2800,7 +2805,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
         )[1].split("            pet:", maxsplit=1)[0]
@@ -2822,9 +2827,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         release_contract = _without_yaml_comments(
-            self.pr_workflow.split("\n  release-contract-test:", maxsplit=1)[1].split(
-                "\n  knowledge-rust:", maxsplit=1
-            )[0]
+            _job_between(self.pr_workflow, "release-contract-test", "knowledge-rust")
         )
         self.assertIn(
             "needs.changes.outputs.release_contract == 'true'",
@@ -2929,7 +2932,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # release-packages). VERSION is deliberately absent from the filter:
         # a real version-sync commit always touches
         # tauri.conf.json/package.json, entering bundle_chain through them.
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         self.assertIn("bundle_chain:", changes)
         bundle_chain_paths = _extract_quoted_paths(
             changes.split("            bundle_chain:", maxsplit=1)[1]
@@ -2952,7 +2955,9 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"changing would silently skip the bundle smoke: {entry}",
             )
 
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _job_between(
+            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
+        )
         smoke_step = _without_yaml_comments(
             macos_job.split(
                 "- name: Tauri bundle smoke", maxsplit=1
@@ -2986,7 +2991,9 @@ class CiGatePolicyTests(unittest.TestCase):
         # lockfile affects the build). Formerly pinned the standalone
         # mac-build.yml trigger; the workflow was folded into pr-check's
         # macos-rust-check in 2026-10.
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _job_between(
+            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
+        )
         job_if = macos_job.split("\n    if: >-", maxsplit=1)[1].split(
             "\n    runs-on:", maxsplit=1
         )[0]
@@ -3013,7 +3020,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "the PR side must keep the rust-filter routing (high-risk draft/ready paths)",
         )
 
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         bundle_tail = changes.split("            bundle_chain:", maxsplit=1)[1]
         # bundle_chain is the last filter group and the extraction below has
         # no lower bound: a group appended after it would leak into the
@@ -3042,7 +3049,9 @@ class CiGatePolicyTests(unittest.TestCase):
         # folded into macos-rust-check. Its old failure mode was silent: the
         # workflow kept "running" (cancel-failing) for weeks with zero
         # coverage. Pin each folded leg so removing one cannot go unnoticed.
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _job_between(
+            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
+        )
         # mac-build died inside its own 50-minute cap; the fold replaces it
         # with 180. Reverting to the default (360) or deleting the cap burns
         # a hung runner for hours — the exact waste this PR removes.
@@ -3070,13 +3079,13 @@ class CiGatePolicyTests(unittest.TestCase):
         # The universal build needs both darwin targets installed; dropping
         # this step resurfaces as MODULE/target errors on the first
         # bundle_chain push, weeks after the fold (same class as the npm
-        # provisioning miss the review caught).
-        targets_step = _without_yaml_comments(
-            macos_job.split(
-                "- name: Install both targets (universal bundle smoke, push only)",
-                maxsplit=1,
-            )[1].split("\n      - name:", maxsplit=1)[0]
-        )
+        # provisioning miss the review caught). The raw slice is computed
+        # once here; the bundle_chain gate pin further down reuses it.
+        dual_target_step = macos_job.split(
+            "- name: Install both targets (universal bundle smoke, push only)",
+            maxsplit=1,
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        targets_step = _without_yaml_comments(dual_target_step)
         self.assertIn("github.event_name == 'push'", targets_step)
         self.assertIn(
             "rustup target add aarch64-apple-darwin x86_64-apple-darwin",
@@ -3146,11 +3155,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # The dual rustup targets feed the same universal build (lipo needs
         # both arches); they are smoke-only provisioning too, so they carry
         # the identical gate — otherwise unrelated pushes pay rustup while
-        # node/npm skip.
-        dual_target_step = macos_job.split(
-            "- name: Install both targets (universal bundle smoke, push only)",
-            maxsplit=1,
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        # node/npm skip. `dual_target_step` is the same step's raw slice,
+        # already extracted above for the darwin-targets pin.
         self.assertIn(
             "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
             dual_target_step,
@@ -3189,7 +3195,9 @@ class CiGatePolicyTests(unittest.TestCase):
         #   a usable lld fails in seconds ahead of any cache restore or
         #   build work (cargo fingerprints inside target/, not the cache
         #   key, keep the lld-built artifacts consistent).
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _job_between(
+            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
+        )
 
         # No linker env at job level (comments excluded: they document
         # the scoping and legitimately name the variables).
@@ -3314,9 +3322,9 @@ class CiGatePolicyTests(unittest.TestCase):
         #   regenerated a lockfile instead of honoring it (--locked parity).
         self.assertIn('CARGO_INCREMENTAL: "0"', self.pr_workflow)
 
-        knowledge_job = self.pr_workflow.split(
-            "\n  knowledge-rust:", maxsplit=1
-        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        knowledge_job = _job_between(
+            self.pr_workflow, "knowledge-rust", "rust-lint"
+        )
         knowledge_cache = _without_yaml_comments(
             knowledge_job.split(
                 "uses: Swatinem/rust-cache@v2", maxsplit=1
@@ -3324,9 +3332,9 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("cache-targets: false", knowledge_cache)
 
-        windows_rust_job = self.pr_workflow.split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[1].split("\n  macos-rust-check:", maxsplit=1)[0]
+        windows_rust_job = _job_between(
+            self.pr_workflow, "windows-rust-test", "macos-rust-check"
+        )
         self.assertIn(
             "RUSTUP_TOOLCHAIN: ${{ steps.pinned_toolchain.outputs.version }}",
             _without_yaml_comments(windows_rust_job),
