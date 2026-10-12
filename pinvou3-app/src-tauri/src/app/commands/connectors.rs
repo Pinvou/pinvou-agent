@@ -65,14 +65,11 @@ pub async fn set_bundle_visibility(
     // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     crate::features::marketplace::builtin::reject_builtin_ids(&bundle_ids)?;
-    let ids = bundle_ids.clone();
     // The visibility write shares the fail-loud contract restored by round-19
     // MAJOR 1: a save failure propagates via `??` (the frontend rolls the
-    // toggle back and alerts) instead of degrading to a log line. The
-    // cross-process RMW and stale-snapshot concerns stay with the #515 rework
-    // (the caller-visible failure shape is unchanged).
+    // toggle back and alerts) instead of degrading to a log line.
     tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::save_hidden_bundles_for(scope, &ids)
+        crate::features::marketplace::save_hidden_bundles_for(scope, &bundle_ids)
     })
     .await
     .map_err(|e| format!("set_bundle_visibility join: {e}"))??;
@@ -175,7 +172,8 @@ pub async fn enable_marketplace_packages(
     })
     .await
     .map_err(|e| format!("enable_marketplace_packages join: {e}"))??;
-    let outcome: EnablePackagesOutcome = domain_outcome.clone().into();
+    let state_changed = domain_outcome.state_changed;
+    let outcome: EnablePackagesOutcome = domain_outcome.into();
     // Round-26 minor 1 (review #455): the refresh gate is "did the persisted
     // state actually change", not the IPC `enabled` coverage flag. A mixed
     // batch (some ids applied+persisted, some `not_applied`) and a
@@ -186,7 +184,7 @@ pub async fn enable_marketplace_packages(
     // Round-24 minor 11's underlying point stands for the truly-inert case:
     // a refused batch and a not_applied-only batch change nothing, so the
     // full hot refresh stays skipped there (state_changed is false).
-    if domain_outcome.state_changed {
+    if state_changed {
         // Identical finalization to the other switch writers (round-16 minor
         // 9: previously re-inlined the same seven statements). Skipped only
         // when the batch was refused (round-10 Major 2) and no state changed.

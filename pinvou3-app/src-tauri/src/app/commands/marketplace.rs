@@ -908,10 +908,16 @@ pub async fn update_bundle_display_meta(
     result
 }
 
-/// 中文文件名 md 导入的无 frontmatter 兜底 id 派生。与 DefaultHasher 不同，
-/// 不依赖进程内随机种子，重导/跨进程 id 一致。
-fn stable_stem_hash(stem: &str) -> String {
-    format!("{:016x}", crate::platform::paths::fnv1a64(stem.as_bytes()))
+/// Unique temp zip path for the upload channels (pid + monotonic nanos).
+fn temp_upload_zip_path(prefix: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}.zip",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ))
 }
 
 /// 把单个 `.md`/`.markdown` 技能文件的内容包装成「根放 SKILL.md 的裸 skill 包」走
@@ -933,7 +939,10 @@ fn import_skill_md_content(
     // 静默互覆盖（二轮评审）。用文件名的稳定哈希派生唯一 id——同一文件重导 = 同 id
     // = 升级覆盖；不同文件 = 不同 id（FNV-1a 64 位，确定性、跨平台稳定）。
     let fallback = if fallback == "skill" && !stem.is_empty() {
-        format!("skill-{}", stable_stem_hash(stem))
+        format!(
+            "skill-{:016x}",
+            crate::platform::paths::fnv1a64(stem.as_bytes())
+        )
     } else {
         fallback
     };
@@ -942,14 +951,7 @@ fn import_skill_md_content(
         md = format!("---\nname: {fallback}\n---\n\n{md}");
     }
     // 包装成临时 zip（根放 SKILL.md）走统一导入。
-    let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-skillmd-{}-{}.zip",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let tmp = temp_upload_zip_path("pinvou3-skillmd");
     {
         let f = std::fs::File::create(&tmp).map_err(|e| format!("写临时文件: {e}"))?;
         let mut zw = zip::ZipWriter::new(f);
@@ -989,16 +991,11 @@ fn import_skill_md_content(
 fn deny_all_pre_land(id: &str, skills: &[String]) -> Result<(), String> {
     crate::features::marketplace::sync_deny_all_scopes_after_install(id)
         .map_err(|refused| refused_sync_error(&format!("package '{id}'"), refused))?;
-    // A component no installed manifest claims materializes as its own
-    // standalone package (owner claim falls through to the component id), so
-    // the package-level entry never covers it — standalone components are
-    // registered deny-first too, or an undeclared component would land
-    // enabled in initialized DenyAll scopes. One exception
-    // keeps reimports honest: a component already materialized under an
-    // INSTALLED copy of this same package ships with it, so its consent is
-    // the package's recorded state (the known-skip above covered the package
-    // id) — re-registering it would re-deny recorded consent on every
-    // conflict-rejected reimport and mask the content-conflict refusal
+    // One exception keeps reimports honest: a component already materialized
+    // under an INSTALLED copy of this same package ships with it, so its
+    // consent is the package's recorded state (the known-skip above covered
+    // the package id) — re-registering it would re-deny recorded consent on
+    // every conflict-rejected reimport and mask the content-conflict refusal
     // behind a lock refusal. Without the installed-record requirement, an
     // uninstalled custom package's kept dir beside a stale `installed=false`
     // record would suppress a genuinely fresh registration.
@@ -1166,14 +1163,7 @@ pub async fn import_plugin_package_bytes_cmd(
     }
     // 展示名净化(仅写 bundles.json 的 upload 来源标记用):去路径分隔符/控制字符,截 128
     let safe_name = sanitize_display_name(&filename);
-    let tmp = std::env::temp_dir().join(format!(
-        "pinvou3-plugin-{}-{}.zip",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let tmp = temp_upload_zip_path("pinvou3-plugin");
     std::fs::write(&tmp, &bytes).map_err(|e| format!("写临时文件: {e}"))?;
     let tmp_for_import = tmp.clone();
     // Import + DenyAll consent gate in one blocking step (see
@@ -1338,19 +1328,17 @@ pub async fn purge_recycled_plugin(id: String) -> Result<(), String> {
     .map_err(|e| format!("任务执行失败: {e}"))?
 }
 
-/// 导出回收站包为 zip 插件包（变更操作；Web 只读不放行）：弹原生保存对话框，
-/// zip 内容对齐插件包规范（可经统一导入管线重新导入）。
-/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
-#[tauri::command]
-pub async fn export_recycled_plugin(
-    id: String,
-    app: tauri::AppHandle,
+/// Shared save-dialog + off-executor tail for the two plugin-zip export
+/// commands. Default name `<id>.zip`: the id is already [a-z0-9-_]; do not
+/// use display_name (a bare-.md upload's display_name is "SKILL.md", which
+/// would export a meaningless "SKILL.md.zip").
+async fn export_plugin_zip_via_dialog(
+    id: &str,
+    app: &tauri::AppHandle,
+    export: impl FnOnce(&str, &std::path::Path) -> Result<(), String> + Send + 'static,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    // 默认文件名：<包id>.zip（id 已满足 [a-z0-9-_] 安全字符集，无需净化；
-    // 不用 display_name——裸 .md 上传的技能 display_name 是 "SKILL.md"，
-    // 导出默认名会变成无意义的 "SKILL.md.zip"）。
-    let default_name = recycle_export_default_name(&id);
+    let default_name = format!("{id}.zip");
     let Some(picked) = app
         .dialog()
         .file()
@@ -1364,19 +1352,25 @@ pub async fn export_recycled_plugin(
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
     let dest = path.to_string_lossy().into_owned();
-    let export_id = id.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::recycle_bin::RecycleBin::new()
-            .export_package(&export_id, std::path::Path::new(&dest))
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {e}"))??;
+    let export_id = id.to_string();
+    tokio::task::spawn_blocking(move || export(&export_id, std::path::Path::new(&dest)))
+        .await
+        .map_err(|e| format!("任务执行失败: {e}"))??;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-/// 导出默认文件名：`<包id>.zip`（id 已是安全字符集，直接使用）。
-fn recycle_export_default_name(id: &str) -> String {
-    format!("{id}.zip")
+/// 导出回收站包为 zip 插件包（变更操作；Web 只读不放行）：弹原生保存对话框，
+/// zip 内容对齐插件包规范（可经统一导入管线重新导入）。
+/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
+#[tauri::command]
+pub async fn export_recycled_plugin(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    export_plugin_zip_via_dialog(&id, &app, |id, dest| {
+        crate::features::marketplace::recycle_bin::RecycleBin::new().export_package(id, dest)
+    })
+    .await
 }
 
 /// 导出已安装包为标准插件包 zip（变更操作；Web 只读不放行）：弹原生保存
@@ -1388,31 +1382,10 @@ pub async fn export_installed_plugin(
     id: String,
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    let default_name = recycle_export_default_name(&id);
-    let Some(picked) = app
-        .dialog()
-        .file()
-        .set_file_name(&default_name)
-        .add_filter("插件包 (zip)", &["zip"])
-        .blocking_save_file()
-    else {
-        return Ok(None); // 用户取消保存对话框
-    };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("解析文件路径: {e}"))?;
-    let dest = path.to_string_lossy().into_owned();
-    let export_id = id.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::features::marketplace::package_export::export_installed_plugin(
-            &export_id,
-            std::path::Path::new(&dest),
-        )
+    export_plugin_zip_via_dialog(&id, &app, |id, dest| {
+        crate::features::marketplace::package_export::export_installed_plugin(id, dest)
     })
     .await
-    .map_err(|e| format!("任务执行失败: {e}"))??;
-    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1476,7 +1449,10 @@ where
                 "tmeet" => crate::features::connectors::tmeet::tmeet_status().await?,
                 other => return Err(format!("未知 CLI 包 '{other}'")),
             };
-            let connected = connected_of(&status);
+            let connected = status
+                .get("connected")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
             // wecom/dingtalk/tmeet 返回 installed（CLI 二进制在位），
             // feishu 返回 configured（已配置）；都没有则退化为 connected。
             let installed = status
@@ -1573,11 +1549,6 @@ where
     })
 }
 
-fn connected_of(v: &serde_json::Value) -> bool {
-    v.get("connected")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false)
-}
 use super::prelude::*;
 
 /// 导出《插件包设计规范》Markdown：打开系统保存对话框写入规范文档，方便用户
@@ -2488,90 +2459,62 @@ mod tests {
     /// 不触碰真实系统凭据仓库（真 keychain 在 macOS 会触发授权弹窗挂起测试线程）。
     #[test]
     fn bundle_readiness_carries_bundle_facts() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-readiness-test-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-
-        // 带必填凭据的 MCP manifest + BundleStore 安装记录
-        let manifest_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("weather");
-        std::fs::create_dir_all(&manifest_dir).unwrap();
-        std::fs::write(
-            manifest_dir.join("manifest.json"),
-            r#"{"id":"weather","name":"高德天气","description":"天气查询","version":"1.2.3","icon":"","category":"life","mcp_tools":[],"command":"","args":[],"config_fields":[{"key":"AMAP_KEY","label":"k","required":true,"secret":true}]}"#,
-        )
-        .unwrap();
-        crate::features::marketplace::store::plant_installed_record(
-            "weather",
-            crate::features::marketplace::store::BundleSource::Preset,
-        );
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        // 空内存凭据库：必填凭据缺失 → 未就绪（任何平台结果确定，不依赖本机 keychain 状态）
-        let cred_store = crate::platform::credential_store::MemoryCredentialStore::default();
-        let result = rt
-            .block_on(bundle_readiness_with_store(
-                "weather".to_string(),
-                cred_store.clone(),
-            ))
-            .unwrap();
-
-        assert!(result.installed, "store 有记录应已安装");
-        assert!(!result.ready, "缺必填凭据应未就绪");
-        assert!(result.actions.iter().any(|a| a.id == "configure"));
-        let bundle = result.bundle.expect("响应应携带 BundleInfo");
-        assert_eq!(bundle.version, "1.2.3");
-        assert_eq!(bundle.description, "天气查询");
-        assert_eq!(bundle.config_fields.len(), 1);
-        assert_eq!(bundle.config_fields[0].key, "AMAP_KEY");
-        assert!(bundle.config_fields[0].secret);
-
-        // 反向断言：内存库写入必填凭据后应就绪——证明就绪判定确实消费注入的
-        // store（而非恒定返回缺失）。target 缺省映射 env，与 tool_credentials 一致。
-        cred_store
-            .set(
-                &crate::platform::credential_store::CredentialReference::for_mcp_secret(
-                    "weather", "env", "AMAP_KEY",
-                ),
-                "test-amap-key",
+        crate::platform::test_support::with_temp_home("pinvou3-readiness", || {
+            // 带必填凭据的 MCP manifest + BundleStore 安装记录
+            let manifest_dir =
+                crate::features::marketplace::mcp_catalog::package_mcp_dir("weather");
+            std::fs::create_dir_all(&manifest_dir).unwrap();
+            std::fs::write(
+                manifest_dir.join("manifest.json"),
+                r#"{"id":"weather","name":"高德天气","description":"天气查询","version":"1.2.3","icon":"","category":"life","mcp_tools":[],"command":"","args":[],"config_fields":[{"key":"AMAP_KEY","label":"k","required":true,"secret":true}]}"#,
             )
             .unwrap();
-        let result = rt
-            .block_on(bundle_readiness_with_store(
-                "weather".to_string(),
-                cred_store,
-            ))
-            .unwrap();
-        assert!(result.ready, "必填凭据已注入内存库应就绪");
+            crate::features::marketplace::store::plant_installed_record(
+                "weather",
+                crate::features::marketplace::store::BundleSource::Preset,
+            );
 
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            // 空内存凭据库：必填凭据缺失 → 未就绪（任何平台结果确定，不依赖本机 keychain 状态）
+            let cred_store = crate::platform::credential_store::MemoryCredentialStore::default();
+            let result = rt
+                .block_on(bundle_readiness_with_store(
+                    "weather".to_string(),
+                    cred_store.clone(),
+                ))
+                .unwrap();
 
-    /// 导出默认文件名：恒为 `<包id>.zip`（id 安全字符集，无需净化；不再用
-    /// display_name——裸 .md 上传的技能 display_name 是 "SKILL.md"，会导出
-    /// 无意义的 "SKILL.md.zip"）。
-    #[test]
-    fn recycle_export_default_name_is_package_id_zip() {
-        assert_eq!(recycle_export_default_name("my-pkg"), "my-pkg.zip");
-        assert_eq!(recycle_export_default_name("up-skill"), "up-skill.zip");
+            assert!(result.installed, "store 有记录应已安装");
+            assert!(!result.ready, "缺必填凭据应未就绪");
+            assert!(result.actions.iter().any(|a| a.id == "configure"));
+            let bundle = result.bundle.expect("响应应携带 BundleInfo");
+            assert_eq!(bundle.version, "1.2.3");
+            assert_eq!(bundle.description, "天气查询");
+            assert_eq!(bundle.config_fields.len(), 1);
+            assert_eq!(bundle.config_fields[0].key, "AMAP_KEY");
+            assert!(bundle.config_fields[0].secret);
+
+            // 反向断言：内存库写入必填凭据后应就绪——证明就绪判定确实消费注入的
+            // store（而非恒定返回缺失）。target 缺省映射 env，与 tool_credentials 一致。
+            cred_store
+                .set(
+                    &crate::platform::credential_store::CredentialReference::for_mcp_secret(
+                        "weather", "env", "AMAP_KEY",
+                    ),
+                    "test-amap-key",
+                )
+                .unwrap();
+            let result = rt
+                .block_on(bundle_readiness_with_store(
+                    "weather".to_string(),
+                    cred_store,
+                ))
+                .unwrap();
+            assert!(result.ready, "必填凭据已注入内存库应就绪");
+        });
     }
 
     /// B1 全链路回归：Upload 组合包（mcp/ + skills/）经真实命令路径
@@ -2582,53 +2525,36 @@ mod tests {
     /// 借 ENV_LOCK 与其它 mutate PINVOU3_HOME 的测试串行。
     #[test]
     fn uninstall_upload_bundle_via_command_recycles_companion_skills() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-uninstall-cmd-test-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        crate::platform::test_support::with_temp_home("pinvou3-uninstall-cmd", || {
+            // 组合包落盘：mcp/manifest.json（声明 companion_skills）+ skills/<sid>/SKILL.md。
+            let skill_dir = seed_upload_combo("up-cmd", "up-cmd-skill");
+            assert!(
+                skill_dir.join("SKILL.md").is_file(),
+                "前置：companion 已落盘"
+            );
 
-        // 组合包落盘：mcp/manifest.json（声明 companion_skills）+ skills/<sid>/SKILL.md。
-        let skill_dir = seed_upload_combo("up-cmd", "up-cmd-skill");
-        assert!(
-            skill_dir.join("SKILL.md").is_file(),
-            "前置：companion 已落盘"
-        );
+            uninstall_marketplace_tool_sync("up-cmd").expect("命令路径卸载应成功");
 
-        uninstall_marketplace_tool_sync("up-cmd").expect("命令路径卸载应成功");
-
-        let recycled =
-            crate::platform::paths::pinvou3_home().join("marketplace/recycle-bin/up-cmd");
-        assert!(
-            recycled.join("mcp/manifest.json").is_file(),
-            "mcp/ 应完整保留在回收站"
-        );
-        assert!(
-            recycled.join("skills/up-cmd-skill/SKILL.md").is_file(),
-            "companion 技能应随整包回收，不得被物理删除"
-        );
-        assert!(!pkg_dir_exists("up-cmd"), "整包应搬离 bundles_root");
-        let list = crate::features::marketplace::recycle_bin::RecycleBin::new()
-            .list()
-            .unwrap();
-        assert_eq!(list.len(), 1, "回收清单应有且仅有一条");
-        assert_eq!(
-            list[0].kind,
-            crate::features::marketplace::recycle_bin::KIND_BUNDLE,
-            "组合包回收条目 kind 应为 bundle（skills/ 未被先删）"
-        );
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+            let recycled =
+                crate::platform::paths::pinvou3_home().join("marketplace/recycle-bin/up-cmd");
+            assert!(
+                recycled.join("mcp/manifest.json").is_file(),
+                "mcp/ 应完整保留在回收站"
+            );
+            assert!(
+                recycled.join("skills/up-cmd-skill/SKILL.md").is_file(),
+                "companion 技能应随整包回收，不得被物理删除"
+            );
+            assert!(!pkg_dir_exists("up-cmd"), "整包应搬离 bundles_root");
+            let list = crate::features::marketplace::recycle_bin::RecycleBin::new()
+                .list()
+                .unwrap();
+            assert_eq!(list.len(), 1, "回收清单应有且仅有一条");
+            assert_eq!(
+                list[0].kind,
+                crate::features::marketplace::recycle_bin::KIND_BUNDLE,
+                "组合包回收条目 kind 应为 bundle（skills/ 未被先删）"
+            );
+        });
     }
 }
