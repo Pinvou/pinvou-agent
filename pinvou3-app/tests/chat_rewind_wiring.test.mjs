@@ -103,6 +103,25 @@ assert.match(
   '无快照边界不得呈现回退范围选择项',
 );
 
+// 确认键预览门控（评审 r4 M2 / r6 minor 1 pin）：默认勾选的破坏性恢复必须
+// 在代价可见后才可执行——预览未决（未加载/加载中/失败）时禁用确认键。
+// 回滚该门控（okDisabled 恒 false）必须让本 pin 变红。
+assert.match(
+  rewindChip,
+  /const previewUndecided = filesWillRewind[\s\S]{0,300}?!previewState \|\| previewState\.loading \|\| previewState\.error/,
+  '预览未决（未加载/加载中/失败）必须计入 previewUndecided',
+);
+assert.match(
+  rewindChip,
+  /okDisabled=\{previewUndecided\}/,
+  '确认键必须接入 okDisabled={previewUndecided}（预览未决时禁用）',
+);
+assert.match(
+  rewindChip,
+  /disabled=\{busy \|\| okDisabled\}/,
+  '弹窗壳的确认键禁用条件必须包含 okDisabled',
+);
+
 // ── code 车道：共享模块复用 + 弹窗维持原样 ────────────────────────────
 assert.match(codexView, /from '\.\.\/conversation\/useRewindController\.js'/, 'CodexAcpView 必须复用共享编排 hook');
 assert.match(codexView, /from '\.\.\/conversation\/RewindChip\.jsx'/, 'CodexAcpView 必须改用共享回退组件');
