@@ -20,35 +20,46 @@ import {
   SCHEDULED_TASK_LIST_TOOL,
   SCHEDULED_TASK_READ_TOOL,
   SCHEDULED_TASK_UPDATE_TOOL,
-  parseScheduledTaskToolOutput,
   scheduledTaskCreateSummary,
   scheduledTaskDeleteSummary,
   scheduledTaskListSummary,
-  scheduledTaskPromptExcerpt,
   scheduledTaskUpdateSummary,
 } from '../src/features/tools/scheduled-task-tool-logic.js';
+import {
+  parseScheduledTaskToolOutput,
+  scheduledTaskPromptExcerpt,
+} from '../src/features/tools/scheduled-task-card-logic.js';
 
 const read = rel => readFileSync(new URL(`../src/${rel}`, import.meta.url), 'utf8');
 
 // Round-8 minor 14: the mismatch and updatedName rows are pinned by
-// testid at the renderer source (deleting either div left the suite
+// testid at the card source (deleting either div left the suite
 // green), the card uses the localized copy, and the surrogate back-off is
-// pinned by execution.
-const rendererSource = readFileSync(
-  new URL('../src/features/tools/tool-renderers.jsx', import.meta.url),
+// pinned by execution. The card source is the lazy scheduled-task chunk's
+// module (features/tools/scheduled-task-card.jsx); the startup entry only
+// routes to it (pinned in the renderer wiring test below).
+const cardSource = readFileSync(
+  new URL('../src/features/tools/scheduled-task-card.jsx', import.meta.url),
   'utf8',
 );
-assert.match(rendererSource, /data-testid="scheduled-task-mismatch-note"/, 'the mismatch row renders');
+assert.match(cardSource, /data-testid="scheduled-task-mismatch-note"/, 'the mismatch row renders');
 // Round-15 REQUIRED-5: the production call site parses THROUGH the unwrap —
 // deleting unwrapMcpTextEnvelope from this call re-dead-cards the feature
 // while every composed-in-test fixture stays green.
 assert.match(
-  rendererSource,
+  cardSource,
   /parseScheduledTaskToolOutput\(unwrapMcpTextEnvelope\(out\)\)/,
   'the production call must unwrap the MCP envelope before parsing',
 );
-assert.match(rendererSource, /data-testid="scheduled-task-updated-name"/, 'the updatedName row renders');
-assert.match(rendererSource, /\{copy\.mismatchNote\}/, 'the card uses the localized copy, not the server note');
+// A parse miss must keep the old fall-through behavior (structural drift
+// renders the default raw output view, not a broken or empty card).
+assert.match(
+  cardSource,
+  /if \(!parsed\) return fallback;/,
+  'a parse miss must render the caller-provided raw-output fallback',
+);
+assert.match(cardSource, /data-testid="scheduled-task-updated-name"/, 'the updatedName row renders');
+assert.match(cardSource, /\{copy\.mismatchNote\}/, 'the card uses the localized copy, not the server note');
 const clippedSurrogate = scheduledTaskPromptExcerpt({ prompt: '\u{1F600}'.repeat(200) });
 assert.ok(!clippedSurrogate.includes('\uFFFD'), 'no replacement char at the clip boundary');
 
@@ -157,18 +168,22 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     'toolSummary must route the delete tool through the logic module',
   );
   const renderers = read('features/tools/tool-renderers.jsx');
-  assert.match(renderers, /ScheduledTaskToolCard/, 'the result card must be defined');
-  assert.match(renderers, /data-testid="scheduled-task-tool-card"/, 'the card must be testable');
+  assert.match(renderers, /SCHEDULED_TASK_TOOL_OPS = \{[\s\S]*SCHEDULED_TASK_CREATE_TOOL[\s\S]*SCHEDULED_TASK_UPDATE_TOOL[\s\S]*SCHEDULED_TASK_DELETE_TOOL/,
+    'create/update/delete must route to the result card');
+  // Startup-budget lazy route: the card and its parser live in the lazy
+  // scheduled-task chunk (the vite.config lazyChunkContracts
+  // 'scheduledTaskCard' entry pins the module to exactly one non-entry
+  // chunk), and the entry routes done items through it.
   assert.match(
     renderers,
-    /SCHEDULED_TASK_TOOL_OPS = \{[\s\S]*SCHEDULED_TASK_CREATE_TOOL[\s\S]*SCHEDULED_TASK_UPDATE_TOOL[\s\S]*SCHEDULED_TASK_DELETE_TOOL/,
-    'create/update/delete must route to the result card',
+    /import\('\.\/scheduled-task-card\.jsx'\)/,
+    'the renderer must route done items through the lazy card chunk',
   );
-  assert.match(
-    renderers,
-    /import \{[\s\S]*parseScheduledTaskToolOutput[\s\S]*\} from '\.\/scheduled-task-tool-logic\.js'/,
-    'the renderer must import the shared parser (no literal drift)',
-  );
+  const cardModule = read('features/tools/scheduled-task-card.jsx');
+  assert.match(cardModule, /ScheduledTaskToolCard/, 'the result card must be defined');
+  assert.match(cardModule, /data-testid="scheduled-task-tool-card"/, 'the card must be testable');
+  const cardLogic = read('features/tools/scheduled-task-card-logic.js');
+  assert.match(cardLogic, /export const parseScheduledTaskToolOutput/, 'the parser must live in the lazy card logic module');
   // The L1 write tools must never join the quiet-tool set (execution
   // visibility is mandatory).
   const quietList = common.slice(

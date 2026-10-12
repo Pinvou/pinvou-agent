@@ -23,8 +23,8 @@ const vite = await createServer({
   server: { middlewareMode: true, watch: null },
   optimizeDeps: { noDiscovery: true },
 });
-const { ScheduledTaskToolCard } = await vite.ssrLoadModule('/src/features/tools/tool-renderers.jsx');
-const { parseScheduledTaskToolOutput } = await vite.ssrLoadModule('/src/features/tools/scheduled-task-tool-logic.js');
+const { ScheduledTaskToolCard } = await vite.ssrLoadModule('/src/features/tools/scheduled-task-card.jsx');
+const { parseScheduledTaskToolOutput } = await vite.ssrLoadModule('/src/features/tools/scheduled-task-card-logic.js');
 const { unwrapMcpTextEnvelope } = await vite.ssrLoadModule('/src/features/tools/tool-common.jsx');
 
 after(async () => {
