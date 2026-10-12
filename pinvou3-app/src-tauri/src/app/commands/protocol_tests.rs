@@ -380,7 +380,6 @@ command_protocol!(
         "web_access_status",
         "web_access_rotate",
         "web_access_relay_settings",
-        "web_access_set_relay",
         "web_access_bridge_ready",
         "web_access_rpc_begin",
         "web_access_rpc_respond",

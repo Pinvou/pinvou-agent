@@ -2165,23 +2165,6 @@ mod tests {
         assert!(!is_secure_text("AXButton", ""));
     }
 
-    #[test]
-    #[ignore = "live probe: needs Accessibility TCC grant and a real focused UI element"]
-    fn live_focused_element_returns_element_with_role() {
-        if !accessibility_granted() {
-            return;
-        }
-        let mut backend = MacosComputerUseBackend::new();
-        let focused = backend
-            .focused_element()
-            .expect("focused_element must not fail on a granted desktop");
-        let info = focused.expect("a real desktop session always has a focused element");
-        assert!(
-            !info.role.is_empty(),
-            "focused element role must not be empty"
-        );
-    }
-
     /// Review finding: a synthetic move while one of this backend's own
     /// buttons is held must use the matching Dragged event type, otherwise
     /// apps treat the down → move → up sequence as a plain click.

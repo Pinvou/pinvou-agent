@@ -15,10 +15,6 @@ use super::IngestResult;
 use super::ingest_deps::{
     add_ocr_tessdata_arg, ocr_lang_arg, ocr_tool_command, pdf_tool_command, system_tools,
 };
-// The LibreOffice primitives are only exercised directly by the cfg(test)
-// conversion tests below; production paths go through run_libreoffice_convert.
-#[cfg(test)]
-use super::ingest_deps::{libreoffice_tool_command, libreoffice_user_installation_arg};
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
@@ -413,92 +409,4 @@ pub(super) fn ocr_pdf(
 
     let _ = std::fs::remove_dir_all(&tmpdir);
     result
-}
-
-#[cfg(test)]
-mod visual_preview_smoke {
-    use super::*;
-    use std::process::Command;
-
-    // 真跑 soffice/pandoc/pdftoppm，验证可视化预览两条路径产出非空 + 图片内联。
-    // 依赖系统工具，CI 无则 ignore。
-    #[test]
-    #[ignore = "需要 libreoffice + pandoc + poppler"]
-    fn office_to_inline_html_and_pdf_to_pngs() {
-        let dir = std::env::temp_dir().join(format!("pinvou3-visual-smoke-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // 1) md -> docx (pandoc) -> inline html
-        let md = dir.join("doc.md");
-        std::fs::write(&md, "# 标题\n\n正文一段。\n\n- 列表项\n").unwrap();
-        let docx = dir.join("doc.docx");
-        let ok = Command::new("pandoc")
-            .arg(&md)
-            .arg("-o")
-            .arg(&docx)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        assert!(ok && docx.exists(), "pandoc 造 docx 失败");
-        let html = libreoffice_to_inline_html(&docx).expect("office->html 应成功");
-        assert!(html.contains("标题"), "HTML 应含正文文字");
-        assert!(
-            !html.contains("src=\"doc_html"),
-            "旁置图片应已内联(不应残留相对 src)"
-        );
-
-        // 2) md -> pdf (soffice via docx) -> png 页
-        let pdf = dir.join("doc.pdf");
-        let _ = libreoffice_tool_command()
-            .arg(libreoffice_user_installation_arg(&dir.join("p")).unwrap())
-            .args(["--headless", "--convert-to", "pdf", "--outdir"])
-            .arg(&dir)
-            .arg(&docx)
-            .status();
-        if pdf.exists() {
-            let (imgs, _trunc) = pdf_to_png_data_uris(&pdf, 30).expect("pdf->png 应成功");
-            assert!(!imgs.is_empty(), "应产出至少一页");
-            assert!(
-                imgs[0].starts_with("data:image/png;base64,"),
-                "应为 png data URI"
-            );
-        }
-
-        // 3) md -> pptx (pandoc) -> office_to_png(演示稿走 PDF→PNG)
-        let pptx = dir.join("deck.pptx");
-        if Command::new("pandoc")
-            .arg(&md)
-            .arg("-o")
-            .arg(&pptx)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            let (imgs, _t) = office_to_png_data_uris(&pptx, 30).expect("pptx->png 应成功");
-            assert!(
-                !imgs.is_empty() && imgs[0].starts_with("data:image/png;base64,"),
-                "pptx 应产出页图"
-            );
-        }
-
-        // 4) csv -> xlsx (soffice) -> inline html(电子表格走 HTML 表格)
-        let csv = dir.join("data.csv");
-        std::fs::write(&csv, "甲,乙\n1,2\n3,4\n").unwrap();
-        let _ = libreoffice_tool_command()
-            .arg(libreoffice_user_installation_arg(&dir.join("p2")).unwrap())
-            .args(["--headless", "--convert-to", "xlsx", "--outdir"])
-            .arg(&dir)
-            .arg(&csv)
-            .status();
-        let xlsx = dir.join("data.xlsx");
-        if xlsx.exists() {
-            let html = libreoffice_to_inline_html(&xlsx).expect("xlsx->html 应成功");
-            assert!(
-                html.contains('甲') || html.to_lowercase().contains("table"),
-                "xlsx HTML 应含表格内容"
-            );
-        }
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

@@ -566,7 +566,7 @@ pub use types::{
 pub use crate::features::marketplace::scope::save_disabled_bundles;
 pub use crate::features::marketplace::scope::{
     load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
+    remove_bundle_from_disabled_scopes_exact, save_disabled_bundles_for, save_hidden_bundles_for,
     sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh, unavailable_bundles_for,
 };
 
@@ -6105,7 +6105,7 @@ mod tests {
             )
             .unwrap();
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather").unwrap();
+            remove_bundle_from_disabled_scopes_exact("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]

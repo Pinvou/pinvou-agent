@@ -178,8 +178,6 @@ pub(super) fn remove_config() -> Result<(), String> {
 // 设置页填写的域名/IP 规范化为「WebSocket 地址 + 页面基址」一对后持久化；
 // 生效优先级：运行时 env 覆盖 > PINVOU_REMOTE_* env > 本设置 > 内置默认。
 
-const RELAY_DEFAULT_BASE_PATH: &str = "/pinvou3/remote";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelaySettings {
     pub relay_url: String,
@@ -212,58 +210,6 @@ pub(super) fn validate_relay_settings(settings: &RelaySettings) -> Result<(), St
         return Err("relay address does not normalize to a valid http(s) base".to_string());
     }
     Ok(())
-}
-
-/// 把用户填写的 Relay 地址规范化。接受裸域名/IP（默认按 TLS 处理成 wss/https）、
-/// `ws(s)://`、`http(s)://` 前缀以及可选自定义路径；无 TLS 证书的环境需要显式
-/// 写 `ws://` 或 `http://` 前缀，不做静默降级。
-pub(super) fn normalize_relay_address(input: &str) -> Result<RelaySettings, String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err("relay address is empty".to_string());
-    }
-    if trimmed.chars().any(char::is_whitespace) {
-        return Err("relay address must not contain whitespace".to_string());
-    }
-    if trimmed.len() > 1_024 {
-        return Err("relay address is too long".to_string());
-    }
-    let (ws_scheme, http_scheme, rest) = if let Some(rest) = trimmed.strip_prefix("wss://") {
-        ("wss", "https", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
-        ("ws", "http", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("https://") {
-        ("wss", "https", rest)
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        ("ws", "http", rest)
-    } else if trimmed.contains("://") {
-        return Err("relay address only supports ws/wss/http/https".to_string());
-    } else {
-        ("wss", "https", trimmed)
-    };
-    if rest.contains('?') || rest.contains('#') || rest.contains('@') {
-        return Err("relay address must not contain userinfo, query or fragment".to_string());
-    }
-    let (host, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], rest[index..].trim_end_matches('/')),
-        None => (rest, ""),
-    };
-    if host.is_empty() {
-        return Err("relay address is missing a host".to_string());
-    }
-    // 路径规则：不填 → 内置 /pinvou3/remote；填了 → 尊重自定义（容忍粘贴完整
-    // ws 地址时结尾多出的 /ws，避免「复制现有 relay_url 再保存」变成 /ws/ws）。
-    let base_path = if path.is_empty() {
-        RELAY_DEFAULT_BASE_PATH.to_string()
-    } else {
-        path.strip_suffix("/ws").unwrap_or(path).to_string()
-    };
-    let settings = RelaySettings {
-        relay_url: format!("{ws_scheme}://{host}{base_path}/ws"),
-        public_base_url: format!("{http_scheme}://{host}{base_path}"),
-    };
-    validate_relay_settings(&settings)?;
-    Ok(settings)
 }
 
 /// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可

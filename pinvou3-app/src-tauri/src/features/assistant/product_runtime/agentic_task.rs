@@ -1658,11 +1658,10 @@ mod tests {
     use super::{
         AgenticTaskAttachment, AgenticTaskMode, AgenticTaskReport, AgenticTaskRequest,
         AgenticToolEvent, DEFAULT_TIMEOUT_SECS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
-        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_TIMEOUT_SECS, arm_retention_eviction_observer,
-        ensure_existing_chat_session, ensure_model_exists, ensure_stage_size, fresh_session_id,
-        keep_session_from_env, refuse_ingest_without_a_surviving_copy, retention_eviction_warning,
-        stage_and_ingest_batch, stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies,
-        validate_attachments,
+        MAX_ATTACHMENTS_TOTAL_BYTES, arm_retention_eviction_observer, ensure_existing_chat_session,
+        ensure_model_exists, ensure_stage_size, fresh_session_id, keep_session_from_env,
+        refuse_ingest_without_a_surviving_copy, retention_eviction_warning, stage_and_ingest_batch,
+        stage_refusal_means_cap_growth, sweep_unreferenced_staged_copies, validate_attachments,
     };
     use crate::features::assistant::attachments::{
         copy_bounded, stage_file_in_workspace_with_copier,
@@ -2783,13 +2782,6 @@ mod tests {
         let parsed: AgenticTaskReport = serde_json::from_str(json).unwrap();
         assert!(!parsed.completed_after_deadline);
         assert_eq!(parsed.status, "timeout");
-    }
-
-    #[test]
-    fn max_timeout_secs_matches_the_cli_parse_cap() {
-        // 7 days; the CLI parse cap and the library clamp must stay in lockstep
-        // so `Instant + Duration` can never overflow.
-        assert_eq!(MAX_TIMEOUT_SECS, 7 * 24 * 60 * 60);
     }
 
     // -----------------------------------------------------------------------

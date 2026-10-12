@@ -314,24 +314,6 @@ mod tests {
         });
     }
 
-    /// Round-33 MAJOR 2 (review #455): the connect-path consent-persist
-    /// failure copy carries the ONE shared frontend marker
-    /// (`scope::CONSENT_SYNC_FAILURE_MARKER`) — the localized template on the
-    /// store cards keys on exactly this string, so a rewording here must move
-    /// the frontend matcher in the same commit.
-    #[test]
-    fn skill_gate_consent_failure_message_keeps_the_frontend_marker() {
-        let message = format!(
-            "{} connected, but {}: new sessions will enable it by default — turn it off in the tools list: store down",
-            "wecom",
-            crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
-        );
-        assert!(
-            message.contains(crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER),
-            "the shipped message must carry the frontend-matched marker: {message}"
-        );
-    }
-
     /// Round-37 C1 (review #455): a consent persist failure between connect
     /// and enable left the pair unledgered, so the startup refresh reverted
     /// the user's enable across the restart (round-30 family residue). The

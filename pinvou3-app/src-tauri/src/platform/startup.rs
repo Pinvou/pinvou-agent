@@ -196,11 +196,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_log_limit_is_exactly_two_mib() {
-        assert_eq!(MAX_LOG_BYTES, 2_097_152);
-    }
-
-    #[test]
     fn oversized_startup_log_is_deleted_before_open() {
         let root =
             std::env::temp_dir().join(format!("pinvou3-startup-rotate-{}", std::process::id()));

@@ -284,13 +284,6 @@ impl EvalModelSnapshots {
     fn forget_session(&self, session_id: &str) {
         self.session_models.lock().remove(session_id);
     }
-
-    // Test-only: no benchmark-hooks or production caller consumes a pinned
-    // saved-model selection outside the snapshot-map tests.
-    #[cfg(test)]
-    fn discard(&self, selection: &EvalModelSelection) {
-        self.saved_models.lock().remove(selection.token());
-    }
 }
 
 #[derive(Clone, Default)]
@@ -631,20 +624,6 @@ where
     )
     .await?;
     Ok(Some(aux_id))
-}
-
-#[cfg(test)]
-fn delete_then_forget<D, G>(delete: D, forget: G) -> Result<()>
-where
-    D: FnOnce() -> Result<()>,
-    G: FnOnce(),
-{
-    let delete_result = delete();
-    if delete_result.is_err() {
-        return delete_result;
-    }
-    forget();
-    delete_result
 }
 
 async fn quiesce_engine_before_reclaim<C, S, SFut, F, Fut, T>(
@@ -4428,14 +4407,14 @@ mod scheduled_model_tests {
         TranscriptOperation, TurnIdentity, bounded_join_while_holding_turn_gate,
         bounded_shutdown_sends, cancel_turn_with_gates, default_model_for_new_session_from,
         delete_chat_session_with_aux_cascade, delete_chat_session_with_gate,
-        delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
-        entry_is_fresh, evict_if_idle_with_gates, forward_edit_resend_with_reminder,
-        forward_forced_turn_restrict, generation_matches, identity_for_active_model,
-        identity_for_saved_model, merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
-        rebind_evict_with_gates, rebind_evictable, reset_aux_session_delete_with_gate,
-        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
-        resolve_spawn_model, retry_shutdown_sends, scheduled_profile_after_turn_gate,
-        should_still_reap_after_snapshot, turn_restrict_tools, user_display_message,
+        delete_scheduled_run_with_gate, dispatch_turn_bound_cancel, entry_is_fresh,
+        evict_if_idle_with_gates, forward_edit_resend_with_reminder, forward_forced_turn_restrict,
+        generation_matches, identity_for_active_model, identity_for_saved_model,
+        merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim, rebind_evict_with_gates,
+        rebind_evictable, reset_aux_session_delete_with_gate, resolve_eval_model_selection_from,
+        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
+        retry_shutdown_sends, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -4444,7 +4423,7 @@ mod scheduled_model_tests {
     use crate::platform::prefs::{ImageCapabilityOverride, ModelPreset, SavedModel};
     use crate::platform::test_support::EnvRestore;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
 
     // `EnvRestore` (snapshot + Drop-restore of a set of env vars; the SAFETY
@@ -5560,20 +5539,6 @@ mod scheduled_model_tests {
     }
 
     #[test]
-    fn discarded_eval_snapshot_releases_private_saved_model() {
-        let snapshots = EvalModelSnapshots::default();
-        let selection = snapshots.pin(
-            model("judge", "judge-wire"),
-            super::ModelIdentity::new("openai", "judge-wire"),
-        );
-        assert_eq!(snapshots.saved_models.lock().len(), 1);
-
-        snapshots.discard(&selection);
-
-        assert!(snapshots.saved_models.lock().is_empty());
-    }
-
-    #[test]
     fn suite_snapshot_derives_unique_case_selections_from_one_model() {
         let snapshots = EvalModelSnapshots::default();
         let suite = snapshots.pin_suite(
@@ -6266,23 +6231,6 @@ mod scheduled_model_tests {
             *order.lock().unwrap(),
             vec!["cancel", "abort", "joined", "persist"]
         );
-    }
-
-    #[test]
-    fn chat_delete_failure_preserves_runtime_and_error() {
-        let forget_count = Arc::new(AtomicUsize::new(0));
-        let observed_count = forget_count.clone();
-
-        let error = delete_then_forget(
-            || Err(anyhow::anyhow!("sentinel delete failure")),
-            move || {
-                forget_count.fetch_add(1, Ordering::SeqCst);
-            },
-        )
-        .expect_err("injected deletion must fail");
-
-        assert_eq!(observed_count.load(Ordering::SeqCst), 0);
-        assert_eq!(error.to_string(), "sentinel delete failure");
     }
 
     #[tokio::test]
