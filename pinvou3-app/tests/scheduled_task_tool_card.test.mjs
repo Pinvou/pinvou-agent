@@ -39,6 +39,14 @@ const rendererSource = readFileSync(
   'utf8',
 );
 assert.match(rendererSource, /data-testid="scheduled-task-mismatch-note"/, 'the mismatch row renders');
+// Round-15 REQUIRED-5: the production call site parses THROUGH the unwrap —
+// deleting unwrapMcpTextEnvelope from this call re-dead-cards the feature
+// while every composed-in-test fixture stays green.
+assert.match(
+  rendererSource,
+  /parseScheduledTaskToolOutput\(unwrapMcpTextEnvelope\(out\)\)/,
+  'the production call must unwrap the MCP envelope before parsing',
+);
 assert.match(rendererSource, /data-testid="scheduled-task-updated-name"/, 'the updatedName row renders');
 assert.match(rendererSource, /\{copy\.mismatchNote\}/, 'the card uses the localized copy, not the server note');
 const clippedSurrogate = scheduledTaskPromptExcerpt({ prompt: '\u{1F600}'.repeat(200) });

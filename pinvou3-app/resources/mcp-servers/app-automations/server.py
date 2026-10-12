@@ -692,8 +692,15 @@ def read_scheduled_task(automations_dir, task_id):
         return None, id_error
     path = os.path.join(automations_dir, "automations", "%s.json" % task_id)
     try:
+        # Round-15 REQUIRED-3: the store read is gated like the marker
+        # reader — lstat without following the final component (a planted
+        # FIFO must not block the single-threaded stdio server forever) and
+        # a byte cap (a sparse oversize record is refused, not slurped).
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_MARKER_BYTES:
+            return None, "not found: no scheduled task with id %s" % task_id
         with open(path, "r", encoding="utf-8") as handle:
-            record = json.load(handle)
+            record = json.loads(handle.read(MAX_RESULT_MARKER_BYTES + 1))
     except (OSError, ValueError, RecursionError):
         # Deliberately no raw exception text: OSError messages embed absolute
         # local paths, which must not leak into tool responses.
@@ -1204,8 +1211,12 @@ def list_scheduled_tasks(automations_dir, limit=DEFAULT_LIST_LIMIT):
             continue
         path = os.path.join(tasks_dir, name)
         try:
+            # Round-15 REQUIRED-3: same gated read as the single-record path.
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_MARKER_BYTES:
+                continue
             with open(path, "r", encoding="utf-8") as handle:
-                record = json.load(handle)
+                record = json.loads(handle.read(MAX_RESULT_MARKER_BYTES + 1))
         except (OSError, ValueError, RecursionError):
             continue
         if not isinstance(record, dict):
