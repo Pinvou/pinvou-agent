@@ -168,14 +168,10 @@ function scheduledTaskInputFromDraft(draft) { return pinvouSharedtauriScheduled(
 
 async function loadScheduledTasks() { return pinvouSharedtauriScheduled().loadScheduledTasks(); }
 
-async function readScheduledTask(id) { return pinvouSharedtauriScheduled().readScheduledTask(id); }
-
   // 按 run.id upsert 单个任务的运行到侧边栏快捷列表。不裁剪条数(侧边栏显示所有
   // 现存定时运行,后端 retention 已按 automation 限制终态运行上限);传入窗口有限
   // (如任务详情页只拉了前 N 条)时不会误删其余任务或本任务的更早记录。
 function mergeScheduledTaskRecentRuns(task, runs) { return pinvouSharedtauriScheduled().mergeScheduledTaskRecentRuns(task, runs); }
-
-async function loadScheduledTaskRuns(id, limit) { return pinvouSharedtauriScheduled().loadScheduledTaskRuns(id, limit); }
 
   // 侧边栏"定时任务记录"一次读取所有保留的运行。后端只做一次 reconcile 和
   // Session 元数据扫描，避免任务数增长后形成 N 次命令调用与重复完整会话读取。
@@ -292,9 +288,7 @@ async function startScheduledTaskChat() { return pinvouSharedtauriScheduled().st
       scheduledTaskInputFromDraft,
       autoCreateScheduledTaskDraft,
       loadScheduledTasks,
-      readScheduledTask,
       mergeScheduledTaskRecentRuns,
-      loadScheduledTaskRuns,
       loadScheduledTaskRecentRuns,
       refreshScheduledTaskData,
       refreshScheduledRunShortcutUntilLinked,

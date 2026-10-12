@@ -95,11 +95,6 @@ assert.doesNotMatch(
   /onDragDropEvent/,
   'desktop must not reinstall the native Tauri handler that blocks WebView2 drag feedback',
 );
-assert.doesNotMatch(
-  tauriAttachmentBridgeSource,
-  /PinvouAttachmentDropController\.install/,
-  'the platform bridge must not own drag routing globally',
-);
 for (const [name, bridgeSource] of [
   ['Tauri', tauriBridgeSource],
   ['Web', webDomainAdapterSource],

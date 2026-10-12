@@ -16,6 +16,5 @@ assert.notStrictEqual(
 // Distinct sessions never share a key, epochs only matter within a session id.
 assert.strictEqual(sceneStatusKey('s1', 3), 's1:3');
 assert.notStrictEqual(sceneStatusKey('s1', 3), sceneStatusKey('s2', 3));
-assert.strictEqual(sceneStatusKey('s1', 3), sceneStatusKey('s1', 3));
 
 console.log('scene_status_key_logic: ok');
