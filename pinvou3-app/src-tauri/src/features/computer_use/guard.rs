@@ -213,9 +213,11 @@ pub(crate) const FOLD_CHUNK_CHARS: usize = 4096;
 /// marks that follow it — a span of at most two characters, or three for the
 /// algorithmic Hangul L+V+T jamo — so eight raw characters cover every
 /// composition Unicode can perform, with room to spare. The count is over
-/// characters the fold keeps: the pair is adjacent in the folded stream, so
-/// any run of invisible characters between them folds away and must not
-/// consume the tail budget (see the seam-window doc on the walker).
+/// characters the fold keeps, carried across chunk boundaries: the pair is
+/// adjacent in the fold-kept stream, so any run of invisible characters
+/// between them folds away and must not consume the tail budget — and
+/// neither may a chunk whose only kept character is the mark itself
+/// displace the starter (see the seam-window doc on the walker).
 pub(crate) const FOLD_COMPOSITION_OVERLAP_CHARS: usize = 8;
 
 /// Whether `c` is invisible to the user and therefore must not separate two
@@ -787,9 +789,15 @@ pub(crate) fn matches_t3_denylist_folded(folded: &str) -> bool {
 /// to fold-relevant characters keeps the window faithful: the fold's first
 /// step drops exactly the selected-out characters, so the seam is still the
 /// fold of the contiguous raw region and cannot fabricate a match the
-/// whole-string fold would not show. A chunk that folds to nothing (pure
-/// invisible) must not evict the tail — the starter may sit one chunk before
-/// the mark with only invisible characters between.
+/// whole-string fold would not show. The tail is the last overlap
+/// characters of the fold-kept STREAM, not of the last chunk: the pair is
+/// adjacent in the kept stream, so an all-invisible chunk must not evict
+/// the starter — and neither may a chunk whose only kept character is the
+/// mark itself, or the boundary after it re-folds the mark with the term's
+/// continuation but not the starter (ｺ + an invisible run ending at a
+/// boundary + ﾞ | ミ箱 folds whole-string ゴミ箱, per-chunk
+/// コ | ﾞ | ﾞミ箱, and no single window holds the pair together with the
+/// continuation).
 ///
 /// A term starting inside the re-fed visible tail spans at most the tail
 /// plus [`T3_MATCH_WINDOW_CHARS`] folded characters — the same bound the
@@ -842,14 +850,28 @@ pub(crate) fn for_each_folded_window(raw: &str, mut observe: impl FnMut(&str) ->
             .filter(|c| !is_invisible_for_matching(*c))
             .collect();
         if !visible.is_empty() {
-            raw_tail = visible
-                .chars()
-                .rev()
-                .take(FOLD_COMPOSITION_OVERLAP_CHARS)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
+            // The tail is the last [`FOLD_COMPOSITION_OVERLAP_CHARS`]
+            // fold-kept characters of the STREAM, not of this chunk. The
+            // pair is adjacent in the kept stream, so a chunk whose only
+            // kept character is the mark itself must not displace the
+            // starter: the boundary after such a chunk re-folds
+            // `mark | continuation`, and a per-chunk tail would re-fold the
+            // term without its starter (ｺ + an invisible run ending at a
+            // boundary + ﾞ | ミ箱 — whole-string ゴミ箱, per-chunk
+            // コ | ﾞ | ﾞミ箱, no window holds the pair together with the
+            // continuation). Appending keeps every kept character that is
+            // still within the overlap budget, wherever its chunk sat.
+            let mut kept = String::with_capacity(raw_tail.len() + visible.len());
+            kept.push_str(&raw_tail);
+            kept.push_str(&visible);
+            let count = kept.chars().count();
+            raw_tail = if count > FOLD_COMPOSITION_OVERLAP_CHARS {
+                kept.chars()
+                    .skip(count - FOLD_COMPOSITION_OVERLAP_CHARS)
+                    .collect()
+            } else {
+                kept
+            };
         }
     }
 }
@@ -2169,6 +2191,150 @@ mod tests {
                  them, so the display-name fallback would disagree: {term:?}"
             );
         }
+    }
+
+    /// The streaming walker must agree with the whole-string fold on every
+    /// label — no missed term, no fabricated one.
+    ///
+    /// The windows are only sound as a system. The carry window finds terms
+    /// that straddle a boundary textually; the seam window re-composes the
+    /// composition pair the per-chunk folds split; and the fold-kept tail
+    /// must survive EVERY boundary between the starter and the term's end.
+    /// The mark's own chunk is the trap: its only fold-kept character is the
+    /// mark, so a per-chunk tail replaces the starter with the mark and
+    /// `ｺ | invisibles | ﾞ | ミ箱` screens Clear while the whole-string fold
+    /// composes ゴミ箱 — the shape that closed the round-11 finding (and the
+    /// reason the tail is carried in the kept stream, not rebuilt per chunk).
+    ///
+    /// This walks a deterministic sweep of boundary-relative layouts — term
+    /// forms split at every alignment around a chunk edge, composable pairs
+    /// across the gap sizes that place the mark at each chunk position, and
+    /// an atom mix biased to the chunk size — and asserts each label's
+    /// windowed verdict equals `matches_t3_denylist` on the whole string.
+    #[test]
+    fn for_each_folded_window_agrees_with_the_whole_string_fold() {
+        let chunk = FOLD_CHUNK_CHARS;
+        let mut divergences: Vec<String> = Vec::new();
+        let mut check = |label: String, ctx: String| {
+            let windowed = for_each_folded_window(&label, matches_t3_denylist_folded);
+            let whole = matches_t3_denylist(&label);
+            if windowed != whole {
+                divergences.push(format!(
+                    "{ctx}: whole={whole} windowed={windowed} chars={}",
+                    label.chars().count()
+                ));
+            }
+        };
+
+        // Term forms split at every alignment around a chunk edge, over
+        // visible and invisible leading padding.
+        let mut term_forms: Vec<String> = ["unsubscribe", "delete", "purchase"]
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        term_forms.push(
+            "purchase"
+                .chars()
+                .map(|c| char::from_u32(0xFEE0 + c as u32).unwrap_or(c))
+                .collect(),
+        );
+        term_forms.push("ﾌｫｰﾏｯﾄ".to_string());
+        term_forms.push("ｺﾞミ箱".to_string());
+        term_forms.push("ｺ\u{3099}ミ箱".to_string());
+        for term in &term_forms {
+            let tlen = term.chars().count();
+            for start in (chunk - tlen - 3)..=(chunk + 3) {
+                for (pad, kind) in [('a', "visible"), ('\u{200B}', "invisible")] {
+                    let label: String = std::iter::repeat(pad)
+                        .take(start)
+                        .chain(term.chars())
+                        .chain(std::iter::once('a'))
+                        .collect();
+                    check(label, format!("term {term:?} start={start} pad={kind}"));
+                }
+            }
+        }
+
+        // Composable pairs across the gap sizes that put the mark at each
+        // interesting position of its chunk — first kept, last kept, only
+        // kept — with the term's continuation in the following chunk.
+        for &(starter, mark) in &[("ｺ", "ﾞ"), ("コ", "\u{3099}"), ("か", "\u{3099}")] {
+            for gap in [
+                chunk - 1,
+                chunk,
+                chunk + 1,
+                2 * chunk - 2,
+                2 * chunk - 1,
+                2 * chunk,
+            ] {
+                for shift in [0usize, 1, 7, 8] {
+                    let mut label = String::new();
+                    label.push_str(&"a".repeat(chunk - 1 - shift));
+                    label.push_str(starter);
+                    label.push_str(&"\u{200B}".repeat(gap));
+                    label.push_str(mark);
+                    label.push_str("ミ箱");
+                    check(
+                        label,
+                        format!("pair {starter}{mark} gap={gap} shift={shift}"),
+                    );
+                }
+            }
+        }
+
+        // An atom mix biased around the chunk size, so boundaries land
+        // inside the interesting shapes most of the time.
+        let atoms: &[&str] = &[
+            "a",
+            "_",
+            "開",
+            "0",
+            " ",
+            "\u{200B}",
+            "\u{00AD}",
+            "\u{FEFF}",
+            "ｺ",
+            "ﾞ",
+            "\u{3099}",
+            "ミ",
+            "箱",
+            "ゴミ箱",
+            "unsubscribe",
+            "ｺﾞミ箱",
+            "ﾌｫｰﾏｯﾄ",
+            "top-up",
+            "İ",
+            "\u{FDFA}",
+            "ー",
+            "一",
+            "ﬀ",
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as usize
+        };
+        for _ in 0..600 {
+            let len = match next() % 3 {
+                0 => 1 + next() % 200,
+                1 => chunk - 40 + next() % 80,
+                _ => chunk + next() % (2 * chunk),
+            };
+            let mut label = String::new();
+            for _ in 0..len {
+                label.push_str(atoms[next() % atoms.len()]);
+            }
+            check(label, format!("random seed case len={len}"));
+        }
+
+        assert!(
+            divergences.is_empty(),
+            "{} walker/whole-string divergences:\n{}",
+            divergences.len(),
+            divergences.join("\n")
+        );
     }
 
     /// The fold must see through the substitution families that were

@@ -793,6 +793,30 @@ mod tests {
     }
 
     #[test]
+    fn screening_hit_composes_when_the_mark_closes_its_own_chunk() {
+        // The invisible run ends AT a chunk boundary and the voiced mark is
+        // the only fold-kept character of its chunk, so the mark itself
+        // becomes the tail — the round-10 no-evict guard does not fire (the
+        // chunk is not empty), and the term's continuation sits in the NEXT
+        // chunk. The boundary after the mark re-folds `mark | ミ箱`, so the
+        // tail must still hold the starter from two chunks back: whole-string
+        // fold composes ゴミ箱 while a per-chunk tail folds
+        // コ | ﾞ | ﾞミ箱 and no window ever holds the pair together with the
+        // continuation.
+        for shift in [0usize, 1, 7] {
+            let mut raw = "a".repeat(FOLD_CHUNK_CHARS - 1 - shift);
+            raw.push('ｺ');
+            raw.push_str(&"\u{200B}".repeat(FOLD_CHUNK_CHARS - 1 + shift));
+            raw.push('\u{FF9E}');
+            raw.push_str("ミ箱");
+            assert!(
+                screening_hit(&raw),
+                "ｺ closing the previous chunk with ﾞ closing its own must compose (shift {shift})"
+            );
+        }
+    }
+
+    #[test]
     fn screening_hit_sees_through_invisible_and_confusable_characters() {
         // Every one of these rendered identically to the user and screened
         // Clear under the previous plain `to_lowercase().contains()` match.
