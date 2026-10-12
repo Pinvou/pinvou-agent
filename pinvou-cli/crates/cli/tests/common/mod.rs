@@ -213,6 +213,35 @@ impl Drop for HomeGuard {
     }
 }
 
+/// RAII restore for tests that change the process working directory: the
+/// previous directory is captured at construction and `Drop` puts it back on
+/// every exit path, including a failing assertion — a manual restore line
+/// after the call under test is skipped by a panicking assert and leaves the
+/// fixture directory as the cwd of every later test in the binary.
+/// Best-effort: a failing restore is ignored so `Drop` cannot raise on top of
+/// an assertion failure. Must be constructed while [`env_lock`] is held (the
+/// cwd is process-global, like the environment).
+pub struct RestoreCwd(PathBuf);
+
+impl RestoreCwd {
+    /// Captures the process's current working directory.
+    pub fn new() -> Self {
+        Self(std::env::current_dir().expect("read the current directory"))
+    }
+}
+
+impl Default for RestoreCwd {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for RestoreCwd {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
 /// Creates one empty chat session through `SessionStore` (the same standalone
 /// boot constructor the CLI uses — `SessionStore::boot()` in most families,
 /// `open_store` in the artifacts family) and returns its id.

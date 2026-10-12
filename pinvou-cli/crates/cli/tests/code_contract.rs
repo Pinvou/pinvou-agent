@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::{
-    EnvGuard, HomeGuard, Isolation, command_error, env_lock, execute_error, run, run_json,
-    usage_error,
+    EnvGuard, HomeGuard, Isolation, command_error, env_lock, execute_error, parsed_debug, run,
+    run_json, usage_error,
 };
 use pinvou_cli::{ExitCode, OutputMode, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
@@ -70,54 +70,65 @@ fn yes_gate_error(arguments: &[&str]) {
     );
 }
 
+/// Creates one chat session directly through `SessionStore::boot` (no
+/// session-agents binding) and returns its id — the plain-chat fixture and
+/// the ACP-sentinel-model fixture (whose sidecar record is deliberately
+/// never written).
+fn create_chat_session(model: &str, cwd: &Path) -> String {
+    let store = SessionStore::boot().unwrap();
+    store
+        .create_new(model.to_owned(), None, cwd.to_path_buf())
+        .unwrap()
+        .metadata
+        .id
+}
+
 /// Creates one chat session and binds it as a native code session (the same
 /// feature-layer calls the GUI `create_codex_acp_session` command makes for
 /// the "pinvou" backend) with an optional bound project directory. Temporary
 /// sessions get their private execution directory created, mirroring the
 /// GUI's `ensure_codex_workspace_root`.
 fn create_code_session_fixture(project: Option<&Path>) -> String {
-    let store = SessionStore::boot().expect("boot session store");
-    let session = store
-        .create_new("test-model".to_owned(), None, std::env::temp_dir())
-        .expect("create session");
+    let id = create_chat_session("test-model", &std::env::temp_dir());
     let agents = SessionAgentStore::load_or_empty();
     match project {
         Some(project) => agents
             .bind_code_native_session(
-                &session.metadata.id,
+                &id,
                 CodexWorkspaceKind::Project,
                 Some(project.to_path_buf()),
             )
             .expect("bind project code session"),
         None => {
             agents
-                .bind_code_native_session(&session.metadata.id, CodexWorkspaceKind::Temporary, None)
+                .bind_code_native_session(&id, CodexWorkspaceKind::Temporary, None)
                 .expect("bind temporary code session");
-            let workspace = store.session_roots(&session.metadata.id).unwrap().execution;
+            let workspace = SessionStore::boot()
+                .unwrap()
+                .session_roots(&id)
+                .unwrap()
+                .execution;
             std::fs::create_dir_all(workspace).expect("create temporary workspace");
         }
     }
-    session.metadata.id
+    id
 }
 
 /// Creates one chat session bound to the codex ACP backend with a project
 /// workspace (the same `set_acp_workspace` call the GUI session creation
 /// makes for external agents).
 fn create_acp_session_fixture(project: &Path) -> String {
-    let store = SessionStore::boot().expect("boot session store");
-    let session = store
-        .create_new("Codex (ACP)".to_owned(), None, project.to_path_buf())
-        .expect("create session");
+    let id = create_chat_session("Codex (ACP)", project);
     let agents = SessionAgentStore::load_or_empty();
     agents
         .set_acp_workspace(
-            &session.metadata.id,
+            &id,
             pinvou3_lib::features::codex_acp::AgentBackend::CodexAcp,
             CodexWorkspaceKind::Project,
             Some(project.to_path_buf()),
         )
         .expect("bind acp workspace");
-    session.metadata.id
+    id
 }
 
 /// Seeds a two-turn transcript by editing the persisted `SavedSession` JSON
@@ -136,11 +147,6 @@ fn seed_two_turn_transcript(id: &str) {
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
 
-/// Reads repository state back with a *fixture-owned* git invocation, pinned
-/// away from any ambient configuration. Assertions about what the CLI did to a
-/// repository must not be decided by the same configuration the CLI honours,
-/// otherwise a test that writes a global gitconfig could observe its own
-/// filters instead of the stored objects.
 /// Builds the shared fixture-owned git invocation: run in `root`, pinned away
 /// from any ambient configuration with the same isolation as the production
 /// `git_command` (a developer's global/system config — aliases, hooks,
@@ -521,9 +527,7 @@ fn every_code_subcommand_parses() {
         vec!["pinvou", "code", "respond", "s-1", "req-1", "deny"],
     ];
     for arguments in &valid {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
-        let debug = format!("{:?}", parsed.command());
+        let debug = parsed_debug(arguments);
         assert!(debug.starts_with("Code("), "{arguments:?} -> {debug}");
     }
 
@@ -900,13 +904,7 @@ fn code_sessions_list_zero_state_and_filters_code_sessions() {
 
     // A plain chat session and an archived code session are filtered out; the
     // freshly bound code session is listed with its agent + workspace.
-    let store = SessionStore::boot().unwrap();
-    let _plain = store
-        .create_new("plain".to_owned(), None, std::env::temp_dir())
-        .unwrap()
-        .metadata
-        .id;
-    drop(store);
+    let _plain = create_chat_session("plain", &std::env::temp_dir());
     let code_id = create_code_session_fixture(None);
     run_json(&["pinvou", "sessions", "archive", &code_id]);
     let value = run_json(&["pinvou", "code", "sessions", "list"]);
@@ -1138,13 +1136,7 @@ fn sidecar_lost_acp_session_is_listed_and_readable() {
     std::fs::create_dir_all(&project).unwrap();
     // A plain chat session whose model name is the ACP sentinel: no
     // session-agents.json record is ever written for it.
-    let store = SessionStore::boot().unwrap();
-    let id = store
-        .create_new("Codex (ACP)".to_owned(), None, project.clone())
-        .unwrap()
-        .metadata
-        .id;
-    drop(store);
+    let id = create_chat_session("Codex (ACP)", &project);
 
     // list shows it with the degraded workspace and the derived agent.
     let value = run_json(&["pinvou", "code", "sessions", "list"]);
@@ -1174,13 +1166,7 @@ fn sidecar_lost_acp_session_is_listed_and_readable() {
 fn sessions_info_and_timeline_refuse_plain_chat_sessions() {
     let _env_guard = common::env_lock();
     let _home = sandbox_home("info-timeline-gate");
-    let store = SessionStore::boot().unwrap();
-    let plain = store
-        .create_new("plain".to_owned(), None, std::env::temp_dir())
-        .unwrap()
-        .metadata
-        .id;
-    drop(store);
+    let plain = create_chat_session("plain", &std::env::temp_dir());
     for action in ["info", "timeline"] {
         let error = run(&["pinvou", "code", "sessions", action, &plain]).unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Failed, "{action}: {error}");
@@ -2127,13 +2113,7 @@ fn workspace_requires_a_code_session() {
     let _env_guard = common::env_lock();
     let _home = sandbox_home("workspace-gate");
     // A plain (non-code) session is refused.
-    let store = SessionStore::boot().unwrap();
-    let plain = store
-        .create_new("plain".to_owned(), None, std::env::temp_dir())
-        .unwrap()
-        .metadata
-        .id;
-    drop(store);
+    let plain = create_chat_session("plain", &std::env::temp_dir());
     let error = run(&["pinvou", "code", "workspace", "branches", &plain]).unwrap_err();
     assert!(
         error.to_string().contains("code_session_not_found"),

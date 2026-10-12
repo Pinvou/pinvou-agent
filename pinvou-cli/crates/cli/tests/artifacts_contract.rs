@@ -41,11 +41,10 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::ExitCode;
 use pinvou3_lib::features::sessions::SessionStore;
 
 use common::{
-    HomeGuard, Isolation, create_session_fixture, env_lock, expect_failed, run, run_json,
+    HomeGuard, Isolation, create_session_fixture, env_lock, expect_failed, run, run_json, run_ok,
 };
 
 /// The GUI artifact-editor save cap (`MAX_EDITABLE_MARKDOWN_BYTES`) that the
@@ -157,9 +156,10 @@ fn artifacts_list_read_write_happy_paths_pin_the_json_contract() {
     assert_eq!(value["session_id"], id);
     assert_eq!(value["path"], report.display().to_string());
     assert_eq!(value["content"], "# Report\n\nfirst version\n");
-    let outcome = run(&["pinvou", "artifacts", "read", &id, "report.md"]).expect("human read");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert_eq!(outcome.stdout, "# Report\n\nfirst version\n");
+    assert_eq!(
+        run_ok(&["pinvou", "artifacts", "read", &id, "report.md"]),
+        "# Report\n\nfirst version\n"
+    );
 
     // write --file overwrites the existing workspace artifact in place and
     // reports the byte count; a follow-up read observes the new content.

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 // PermissionsExt imports live inside the #[cfg(unix)] tests that need them
 // (755, 1289, 1345, 1503): a module-level import compiles on unix even when
 // none of those tests is included, which is how this became an unused name.
-use common::{EnvGuard, Isolation, run, run_json};
+use common::{EnvGuard, Isolation, run, run_json, usage_error};
 use pinvou_cli::{ExitCode, parse_args};
 
 /// The connectors sandbox: the shared file-secrets preset
@@ -96,22 +96,17 @@ struct VendorCliGuard {
 
 impl VendorCliGuard {
     fn new() -> Self {
-        Self::new_at_path(common::scratch_dir("pinvou-cli-connectors-empty-path"))
+        Self::new_at(common::scratch_dir("pinvou-cli-connectors-empty-path"))
     }
 
     /// Points `PATH` at a caller-provided directory — the fake-vendor-CLI
-    /// tests stage scripted stand-ins there (unix only). Isolates `HOME` and
-    /// the npm prefix envs exactly like `new()`: a dev machine's
+    /// tests stage scripted stand-ins there (unix only). Vendor-CLI
+    /// resolution also consults the npm global prefixes outside PATH, so
+    /// `HOME` is pointed at a throwaway directory and the npm prefix envs
+    /// are cleared alongside `PATH`: a dev machine's
     /// `~/.npm-global/bin/dws` or `$NPM_CONFIG_PREFIX/bin/tmeet` must not
     /// bypass the staged fake.
-    fn new_at(bin: PathBuf) -> Self {
-        Self::new_at_path(bin)
-    }
-
-    /// Vendor-CLI resolution also consults the npm global prefixes outside
-    /// PATH, so `HOME` is pointed at a throwaway directory and the npm
-    /// prefix envs are cleared alongside `PATH`.
-    fn new_at_path(empty_bin: PathBuf) -> Self {
+    fn new_at(empty_bin: PathBuf) -> Self {
         let empty_home = common::scratch_dir("pinvou-cli-connectors-empty-home");
         let env = EnvGuard::set_values(&[
             ("PATH", Some(empty_bin.clone().into_os_string())),
@@ -276,8 +271,8 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
         ],
     ];
     for arguments in &invalid {
-        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        // The common helper asserts the exit-2 usage class for every case.
+        usage_error(arguments);
     }
 
     // connect --timeout must be a positive integer when present: a missing,
@@ -292,21 +287,16 @@ fn every_connectors_subcommand_parses_and_invalid_usage_exits_two() {
             "--timeout",
             bad,
         ];
-        let error = parse_args(arguments.clone()).expect_err(&format!(
-            "connect feishu --timeout {bad:?} must be rejected"
-        ));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        usage_error(&arguments);
     }
 
     // The unknown-connector usage error must name the valid connector set.
     for subcommand in ["status", "enable", "logout", "connect"] {
-        let error = parse_args(vec!["pinvou", "connectors", subcommand, "bogus"])
-            .expect_err("unknown connector must be rejected");
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{subcommand}");
+        let message = usage_error(&["pinvou", "connectors", subcommand, "bogus"]);
         for id in ["feishu", "wecom", "dingtalk", "tmeet"] {
             assert!(
-                error.to_string().contains(id),
-                "usage error for {subcommand} must name {id}: {error}"
+                message.contains(id),
+                "usage error for {subcommand} must name {id}: {message}"
             );
         }
     }
@@ -1637,7 +1627,6 @@ fn logout_with_a_failing_version_probe_errors_without_touching_the_store() {
 #[test]
 #[cfg(unix)]
 fn status_finds_a_gui_installed_npm_prefix_cli() {
-    use std::os::unix::fs::PermissionsExt as _;
     let _env = common::env_lock();
     let _home = HomeGuard::new("npm-prefix");
     // The GUI's tmeet install applies the user npm prefix, so a GUI-installed
@@ -1645,13 +1634,12 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     // must find it there exactly like the GUI's connector_cli_program.
     let prefix = fake_bin_dir("npm-prefix");
     std::fs::create_dir_all(prefix.join("bin")).unwrap();
-    let script = prefix.join("bin").join("tmeet");
-    std::fs::write(
-        &script,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"1.0.18\"; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then echo \"Logged in as someone@example.com\"; exit 0; fi\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_fake_cli(
+        &prefix.join("bin"),
+        "tmeet",
+        "1.0.18",
+        "if [ \"$1\" = \"auth\" ]; then echo \"Logged in as someone@example.com\"; exit 0; fi\n",
+    );
     // Panic-safe restore: without the guard a failing assert would leak the
     // fixture prefix into the remaining tests in this process.
     let _prefix =

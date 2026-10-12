@@ -10,10 +10,7 @@ fn a_flag_in_the_family_position_names_itself_instead_of_bare_usage() {
     // `pinvou --output json sessions list` misplaces a GLOBAL flag; the
     // refusal must say so (round-27 review: the bare usage line gives no
     // hint which token is wrong).
-    let error = parse_args(["pinvou", "--instal", "sessions", "list"])
-        .expect_err("an unknown flag in the family position must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    let message = error.to_string();
+    let message = usage_error(&["pinvou", "--instal", "sessions", "list"]);
     assert!(
         message.contains("unknown family --instal"),
         "the offending token must be named: {message}"
@@ -49,10 +46,7 @@ fn a_bare_trailing_output_names_the_missing_value() {
     // family parser's "unknown benchmark command", which names nothing the
     // user can fix; the trailing position is unambiguously an incomplete
     // global pair, so it answers with the missing-value error.
-    let error = parse_args(["pinvou", "benchmark", "list", "--output"])
-        .expect_err("a valueless trailing --output must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    let message = error.to_string();
+    let message = usage_error(&["pinvou", "benchmark", "list", "--output"]);
     assert!(
         message.contains("--output requires human or json"),
         "the missing mode value must be named: {message}"
@@ -192,7 +186,7 @@ fn output_flag_still_applies_to_families() {
 /// human-formatted script's output without any signal.
 #[test]
 fn conflicting_global_output_modes_are_a_usage_error() {
-    let error = parse_args([
+    let message = usage_error(&[
         "pinvou",
         "--output",
         "human",
@@ -200,10 +194,8 @@ fn conflicting_global_output_modes_are_a_usage_error() {
         "json",
         "benchmark",
         "list",
-    ])
-    .expect_err("conflicting --output modes must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("conflicting"), "{error}");
+    ]);
+    assert!(message.contains("conflicting"), "{message}");
     // Identical repeats stay legal.
     let parsed = parse_args([
         "pinvou",

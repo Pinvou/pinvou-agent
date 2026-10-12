@@ -15,11 +15,14 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, parse_args};
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
 use pinvou3_lib::features::sessions::SessionStore;
 
-use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, scratch_dir};
+use common::{
+    HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, expect_failed,
+    parsed_debug, run, run_json, scratch_dir, usage_error,
+};
 
 /// `~/.pinvou3/projects/projects.json` — the single projects store file.
 impl HomeGuard {
@@ -177,14 +180,12 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "move", "s-1", "--yes"],
     ];
     for arguments in &valid {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
         // The Projects command tree is dispatched exclusively through the
         // Projects variant; assert family + subcommand through the derived
         // Debug form (the types are not nameable from integration tests).
         // Every Projects variant is the subcommand token's capitalization, so
         // the expected Debug token is derived from the argv itself.
-        let debug = format!("{:?}", parsed.command());
+        let debug = parsed_debug(arguments);
         let mut chars = arguments[2].chars();
         let variant: String = chars
             .next()
@@ -247,8 +248,7 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "projects", "move", "s-1", "prj-1", "--yes"],
     ];
     for arguments in &invalid {
-        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        usage_error(arguments);
     }
 }
 
@@ -375,20 +375,16 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
     assert_eq!(value["name"], "Beta", "name must be untouched by --root");
 
     // Unknown ids are clean host failures.
-    let error = run(&["pinvou", "projects", "update", "prj-missing", "--name", "X"])
-        .expect_err("updating an unknown project must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "projects", "update", "prj-missing", "--name", "X"]);
     assert!(
         error.to_string().contains("project not found"),
         "an unknown project must be named in the failure"
     );
 
     // delete without --yes is refused before any store access.
-    let error =
-        run(&["pinvou", "projects", "delete", &id]).expect_err("delete without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "projects", "delete", &id]);
     assert!(
-        error.to_string().contains("--yes"),
+        message.contains("--yes"),
         "the refusal must point at the --yes gate"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
@@ -412,9 +408,7 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
         value["projects"].as_array().unwrap().is_empty(),
         "the deleted project must be gone"
     );
-    let error = run(&["pinvou", "projects", "delete", &id, "--yes"])
-        .expect_err("deleting an unknown project must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "projects", "delete", &id, "--yes"]);
     assert!(
         error.to_string().contains("project not found"),
         "an unknown project must be named in the failure"
@@ -427,7 +421,7 @@ fn projects_root_validation_errors_are_clean_failures() {
     let _home = HomeGuard::new("projects", "root-validation", Isolation::ProductHome);
 
     // Relative roots are rejected by the feature's own validation.
-    let error = run(&[
+    let error = expect_failed(&[
         "pinvou",
         "projects",
         "create",
@@ -435,9 +429,7 @@ fn projects_root_validation_errors_are_clean_failures() {
         "Bad",
         "--root",
         "relative/path",
-    ])
-    .expect_err("a relative root must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(
         error.to_string().contains("must be absolute"),
         "the relative root must be named in the failure"
@@ -448,7 +440,7 @@ fn projects_root_validation_errors_are_clean_failures() {
     let parent = make_root_dir("nest-parent");
     let child = parent.join("child");
     std::fs::create_dir_all(&child).unwrap();
-    let error = run(&[
+    let error = expect_failed(&[
         "pinvou",
         "projects",
         "create",
@@ -458,9 +450,7 @@ fn projects_root_validation_errors_are_clean_failures() {
         parent.to_str().unwrap(),
         "--root",
         child.to_str().unwrap(),
-    ])
-    .expect_err("nested roots must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(
         error.to_string().contains("must not nest"),
         "the nested roots must be named in the failure"
@@ -504,9 +494,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     assert_eq!(value["projects"][0]["assigned_session_count"], 1);
 
     // An unknown session is a clean failure that writes nothing.
-    let error = run(&["pinvou", "projects", "move", "no-such-session", &project_id])
-        .expect_err("an unknown session must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "projects", "move", "no-such-session", &project_id]);
     assert!(
         error.to_string().contains("does not exist"),
         "the unknown session must be named in the failure"
@@ -518,9 +506,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     );
 
     // An unknown target project is a clean failure too.
-    let error = run(&["pinvou", "projects", "move", &session_id, "prj-missing"])
-        .expect_err("an unknown project must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "projects", "move", &session_id, "prj-missing"]);
     assert!(
         error.to_string().contains("project not found"),
         "an unknown project must be named in the failure"
@@ -528,11 +514,9 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
 
     // Session ids join onto store paths, so traversal attempts are usage
     // errors, never writes outside the sessions root.
-    let error = run(&["pinvou", "projects", "move", "../escape", &project_id])
-        .expect_err("a path-traversal session id must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "projects", "move", "../escape", &project_id]);
     assert!(
-        error.to_string().contains("valid session id"),
+        message.contains("valid session id"),
         "the traversal id must be rejected as a usage error"
     );
 
@@ -568,9 +552,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     // it is put into a project. --yes is supplied so this arm asserts the
     // resolution gate itself; the no-confirmation form is covered further
     // down, after the session is put into a project.
-    let error = run(&["pinvou", "projects", "move", &session_id, "--yes"])
-        .expect_err("an already-ungrouped session must not be pinned as explicitly ungrouped");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "projects", "move", &session_id, "--yes"]);
     assert!(
         error.to_string().contains("nothing to move it out of"),
         "{error}"
@@ -595,12 +577,10 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     // --yes it must be refused before any store access — the same
     // confirmation convention (and refusal copy) as projects delete /
     // sessions delete.
-    let error = run(&["pinvou", "projects", "move", &session_id])
-        .expect_err("an ungroup without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "projects", "move", &session_id]);
     assert!(
-        error.to_string().contains("--yes"),
-        "the refusal must point at the --yes gate: {error}"
+        message.contains("--yes"),
+        "the refusal must point at the --yes gate: {message}"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
     assert_eq!(
@@ -626,9 +606,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     // no longer resolves to a project, which is the state the explicit entry
     // itself created. --yes present: this asserts the resolution gate, not
     // the confirmation gate.
-    let error = run(&["pinvou", "projects", "move", &session_id, "--yes"])
-        .expect_err("a repeat ungroup must be refused, not reported as idempotent");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "projects", "move", &session_id, "--yes"]);
     assert!(
         error.to_string().contains("nothing to move it out of"),
         "{error}"
@@ -636,10 +614,8 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
 
     // Without --yes the refusal is the confirmation gate, and it fires
     // before the resolution gate can be reached at all.
-    let error = run(&["pinvou", "projects", "move", &session_id])
-        .expect_err("a repeat ungroup without --yes must hit the --yes gate");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("--yes"), "{error}");
+    let message = assert_usage(&["pinvou", "projects", "move", &session_id]);
+    assert!(message.contains("--yes"), "{message}");
 
     // The only documented way back is naming a project again.
     let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
@@ -654,10 +630,8 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
 
     // The ungroup asymmetry is disclosed on the move usage errors too. This one
     // is rejected at PARSE time, so it never reaches `run`'s execute step.
-    let error = parse_args(["pinvou", "projects", "move", &session_id, &project_id, "x"])
-        .expect_err("a trailing token is a usage error");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("cannot be reverted"), "{error}");
+    let message = usage_error(&["pinvou", "projects", "move", &session_id, &project_id, "x"]);
+    assert!(message.contains("cannot be reverted"), "{message}");
 }
 
 // ── rebind (the storage half of the GUI's rebind_workspace_root) ────────────
@@ -670,9 +644,7 @@ fn projects_rebind_parses_two_positionals_and_the_yes_flag() {
         vec!["pinvou", "projects", "rebind", "/tmp/a", "/tmp/b", "--yes"],
     ];
     for arguments in &valid {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
-        let debug = format!("{:?}", parsed.command());
+        let debug = parsed_debug(arguments);
         assert!(
             debug.starts_with("Projects(") && debug.contains("Rebind"),
             "{arguments:?} did not parse into Projects(Rebind): {debug}"
@@ -694,8 +666,7 @@ fn projects_rebind_parses_two_positionals_and_the_yes_flag() {
         vec!["pinvou", "projects", "rebind", "/tmp/a", "/tmp/b", "extra"],
     ];
     for arguments in &invalid {
-        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        usage_error(arguments);
     }
 }
 
@@ -1109,18 +1080,16 @@ fn projects_rebind_without_yes_is_refused_before_any_store_access() {
     let from_dir = make_root_dir("rebind-yes-from");
     let to_dir = make_root_dir("rebind-yes-to");
 
-    let error = run(&[
+    let message = assert_usage(&[
         "pinvou",
         "projects",
         "rebind",
         from_dir.to_str().unwrap(),
         to_dir.to_str().unwrap(),
-    ])
-    .expect_err("rebind without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    ]);
     assert!(
-        error.to_string().contains("--yes"),
-        "the refusal must point at the --yes gate: {error}"
+        message.contains("--yes"),
+        "the refusal must point at the --yes gate: {message}"
     );
     assert!(
         !home.store_file().exists(),
@@ -1145,18 +1114,16 @@ fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
     // One mirrored message covers empty, relative and filesystem-root `from`
     // — the same single rule the GUI command applies at its entry.
     for from in ["relative/dir", ""] {
-        let error = run(&[
+        let message = assert_usage(&[
             "pinvou",
             "projects",
             "rebind",
             from,
             to_dir.to_str().unwrap(),
-        ])
-        .expect_err("a shape-invalid from must be rejected");
-        assert_eq!(error.exit_code(), ExitCode::Usage, "from = {from:?}");
+        ]);
         assert!(
-            error.to_string().contains("absolute, non-root"),
-            "from = {from:?} must be named by the mirrored rule: {error}"
+            message.contains("absolute, non-root"),
+            "from = {from:?} must be named by the mirrored rule: {message}"
         );
     }
     // Filesystem root: the deepest ancestor of any absolute path (POSIX "/",
@@ -1170,29 +1137,25 @@ fn projects_rebind_rejects_relative_empty_and_root_from_as_usage() {
                 .map(|ancestor| ancestor.to_path_buf())
         })
         .expect("temp dir must have a root ancestor");
-    let error = run(&[
+    let message = assert_usage(&[
         "pinvou",
         "projects",
         "rebind",
         root.to_str().unwrap(),
         to_dir.to_str().unwrap(),
-    ])
-    .expect_err("a filesystem-root from must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("absolute, non-root"), "{error}");
+    ]);
+    assert!(message.contains("absolute, non-root"), "{message}");
 
     // And `to` as the filesystem root mirrors the GUI's other entry rule.
     let from_dir = make_root_dir("rebind-shape-from");
-    let error = run(&[
+    let message = assert_usage(&[
         "pinvou",
         "projects",
         "rebind",
         from_dir.to_str().unwrap(),
         root.to_str().unwrap(),
-    ])
-    .expect_err("a filesystem-root to must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("filesystem root"), "{error}");
+    ]);
+    assert!(message.contains("filesystem root"), "{message}");
 
     assert!(
         !home.store_file().exists(),
@@ -1508,7 +1471,7 @@ fn update_clear_roots_expresses_the_gui_empty_roots_form() {
 
     // The exclusive form is a usage error (raised at parse time), not a
     // silent overwrite.
-    let error = parse_args(vec![
+    usage_error(&[
         "pinvou",
         "projects",
         "update",
@@ -1516,9 +1479,7 @@ fn update_clear_roots_expresses_the_gui_empty_roots_form() {
         "--root",
         root_dir.to_str().unwrap(),
         "--clear-roots",
-    ])
-    .unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    ]);
 }
 
 /// Round-36 review minor (GUI `move_session_to_project` parity): aux ids
@@ -1530,10 +1491,7 @@ fn projects_move_refuses_aux_session_ids_like_the_gui() {
     let _home = HomeGuard::new("projects", "move-aux-refusal", Isolation::ProductHome);
     let aux_id = format!("aux-{}", create_session_fixture());
 
-    let parsed =
-        parse_args(["pinvou", "projects", "move", &aux_id, "--yes"]).expect("the move line parses");
-    let error = execute(parsed).expect_err("an aux id must be refused by move");
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let error = expect_failed(&["pinvou", "projects", "move", &aux_id, "--yes"]);
     assert!(
         error.to_string().contains("auxiliary conversations"),
         "{error}"

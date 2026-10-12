@@ -17,9 +17,17 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{ExitCode, OutputMode, parse_args};
 
-use common::{HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, unique_root};
+use common::{
+    HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, expect_failed,
+    parsed_debug, run, run_json, unique_root, usage_error,
+};
+
+/// A throwaway `PINVOU3_HOME` for one test.
+fn temp_home(label: &str) -> HomeGuard {
+    HomeGuard::new("personas", label, Isolation::ProductHome)
+}
 
 /// `~/.pinvou3/user/personas` — where user cards persist. An inherent method
 /// on the shared harness's `HomeGuard` (the `common` module is compiled into
@@ -49,7 +57,7 @@ fn equipped_sidecar(home: &HomeGuard, session: &str) -> PathBuf {
 #[test]
 fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "active-pool-fault", Isolation::ProductHome);
+    let home = temp_home("active-pool-fault");
     let session_id = create_session_fixture();
     // A sidecar whose card does not resolve (never existed).
     let sidecar_dir = home.sessions_root().join(&session_id);
@@ -125,7 +133,7 @@ fn create_user_persona(name: &str, body: &Path) -> String {
 #[test]
 fn personas_create_refuses_a_credential_location_body_file() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "create-credential-body", Isolation::ProductHome);
+    let home = temp_home("create-credential-body");
     let file = home.path().join(".aws").join("credentials");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
@@ -134,7 +142,7 @@ fn personas_create_refuses_a_credential_location_body_file() {
     )
     .unwrap();
 
-    let parsed = parse_args([
+    let error = expect_failed(&[
         "pinvou",
         "personas",
         "create",
@@ -142,10 +150,7 @@ fn personas_create_refuses_a_credential_location_body_file() {
         "Leaky",
         "--file",
         file.to_str().unwrap(),
-    ])
-    .expect("the create line parses");
-    let error = execute(parsed).expect_err("a credential-path body file must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    ]);
     assert!(error.to_string().contains("refusing body file"), "{error}");
 
     // And nothing was stored: the refused body must not become a card. The
@@ -194,12 +199,10 @@ fn every_personas_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "personas", "active", "s-1"],
     ];
     for arguments in &valid {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
         // The Personas command tree is dispatched exclusively through the
         // Personas variant; assert family + subcommand through the derived
         // Debug form (the types are not nameable from integration tests).
-        let debug = format!("{:?}", parsed.command());
+        let debug = parsed_debug(arguments);
         let variant = match arguments[2] {
             "list" => "List",
             "show" => "Show",
@@ -262,8 +265,7 @@ fn every_personas_subcommand_parses_and_invalid_usage_exits_two() {
         vec!["pinvou", "personas", "active", "s-1", "--extra"],
     ];
     for arguments in &invalid {
-        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        usage_error(arguments);
     }
 }
 
@@ -293,17 +295,15 @@ fn json_output_mode_flows_through_every_personas_subcommand() {
 #[test]
 fn personas_delete_without_yes_is_refused_before_any_state_change() {
     let _env_guard = env_lock();
-    let _home = HomeGuard::new("personas", "delete-yes-gate", Isolation::ProductHome);
+    let _home = temp_home("delete-yes-gate");
 
     // The refusal runs against an ISOLATED home (never the developer's real
     // one) and is pinned behaviorally: the visible catalog is byte-identical
     // across the refused run, which is the "no state change" the test name
     // claims.
     let before = run(&["pinvou", "personas", "list"]).expect("list before the refusal");
-    let error = run(&["pinvou", "personas", "delete", "user-some-card"])
-        .expect_err("delete without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("--yes"), "{error}");
+    let message = assert_usage(&["pinvou", "personas", "delete", "user-some-card"]);
+    assert!(message.contains("--yes"), "{message}");
     let after = run(&["pinvou", "personas", "list"]).expect("list after the refusal");
     assert_eq!(
         before.stdout, after.stdout,
@@ -319,7 +319,7 @@ fn personas_delete_without_yes_is_refused_before_any_state_change() {
 #[test]
 fn personas_list_prints_an_explicit_empty_line_in_human_mode() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "list-empty", Isolation::ProductHome);
+    let home = temp_home("list-empty");
     // The user-pool cache reloads on a directory-stamp change; an ABSENT
     // personas dir fails open to whatever the previous test in this process
     // cached (the same fail-open that protects a real user's cards from a
@@ -348,7 +348,7 @@ fn personas_list_prints_an_explicit_empty_line_in_human_mode() {
 #[test]
 fn personas_list_shows_builtin_catalog_and_source_filters() {
     let _env_guard = env_lock();
-    let _home = HomeGuard::new("personas", "list-catalog", Isolation::ProductHome);
+    let _home = temp_home("list-catalog");
 
     let outcome = run(&["pinvou", "personas", "list"]).expect("list must succeed");
     assert_eq!(outcome.exit_code, ExitCode::Success);
@@ -406,7 +406,7 @@ fn personas_list_shows_builtin_catalog_and_source_filters() {
 #[test]
 fn personas_create_show_update_delete_round_trip_persists_user_card() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "crud-round-trip", Isolation::ProductHome);
+    let home = temp_home("crud-round-trip");
     let body_path = write_body_file("crud", "# Expert\n\nmethodology body v1\n");
     let body = std::fs::read_to_string(&body_path).unwrap();
 
@@ -465,9 +465,7 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
     assert_eq!(value["name"], "卡牌制造专家");
     assert!(!value["body"].as_str().unwrap().is_empty());
     // Unknown ids are clean host failures.
-    let error = run(&["pinvou", "personas", "show", "user-missing"])
-        .expect_err("unknown persona must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "personas", "show", "user-missing"]);
     assert!(error.to_string().contains("unknown persona"), "{error}");
 
     // update --description overlays only that field.
@@ -487,26 +485,22 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
     assert_eq!(value["name"], "Contract Tester", "name must be untouched");
 
     // Builtin cards can never be updated or deleted ("只能编辑/删除自制卡").
-    let error = run(&[
+    let error = expect_failed(&[
         "pinvou",
         "personas",
         "update",
         "pinvou-card-creator",
         "--name",
         "X",
-    ])
-    .expect_err("builtin card must not be editable");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(error.to_string().contains("personas update"), "{error}");
-    let error = run(&[
+    let error = expect_failed(&[
         "pinvou",
         "personas",
         "delete",
         "pinvou-card-creator",
         "--yes",
-    ])
-    .expect_err("builtin card must not be deletable");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(error.to_string().contains("personas delete"), "{error}");
     // ...and the builtin catalog is untouched.
     assert!(
@@ -516,9 +510,7 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
     );
 
     // delete without --yes is refused and keeps the card.
-    let error =
-        run(&["pinvou", "personas", "delete", &id]).expect_err("delete without --yes must refuse");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_usage(&["pinvou", "personas", "delete", &id]);
     assert!(
         home.user_personas_dir()
             .join(format!("{id}.json"))
@@ -530,8 +522,7 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
     assert_eq!(value["id"], id);
     assert_eq!(value["action"], "deleted");
     assert!(!home.user_personas_dir().join(format!("{id}.json")).exists());
-    let error = run(&["pinvou", "personas", "show", &id]).expect_err("deleted card must be gone");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    expect_failed(&["pinvou", "personas", "show", &id]);
     let value = run_json(&["pinvou", "personas", "list", "--source", "user"]);
     assert!(
         !value["personas"]
@@ -547,7 +538,7 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
 #[test]
 fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "equip-round-trip", Isolation::ProductHome);
+    let home = temp_home("equip-round-trip");
     let session_id = create_session_fixture();
     let body_path = write_body_file("equip", "# Equip Expert\n\nbody\n");
 
@@ -605,36 +596,26 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     assert_eq!(columns[2], "user");
 
     // Equip with an unknown persona id fails cleanly.
-    let error = run(&["pinvou", "personas", "equip", &session_id, "user-missing"])
-        .expect_err("unknown persona must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "personas", "equip", &session_id, "user-missing"]);
     assert!(error.to_string().contains("unknown persona"), "{error}");
 
     // Session ids join onto the sidecar path, so traversal attempts are
     // usage errors, never writes outside the sessions root. Usage wins over
     // Failed: even with an unknown persona id, the malformed session id
     // reports the usage error.
-    let error = run(&["pinvou", "personas", "equip", "../escape", &persona_id])
-        .expect_err("path traversal session id must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    let error = run(&["pinvou", "personas", "equip", "../escape", "user-missing"])
-        .expect_err("path traversal session id must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    let error = run(&["pinvou", "personas", "active", "../escape"])
-        .expect_err("path traversal session id must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    assert_usage(&["pinvou", "personas", "equip", "../escape", &persona_id]);
+    assert_usage(&["pinvou", "personas", "equip", "../escape", "user-missing"]);
+    assert_usage(&["pinvou", "personas", "active", "../escape"]);
 
     // A well-formed but nonexistent session id is a failed lookup (exit 1),
     // and must not materialize a stray sessions/<id>/ directory.
-    let error = run(&[
+    let error = expect_failed(&[
         "pinvou",
         "personas",
         "equip",
         "no-such-session",
         &persona_id,
-    ])
-    .expect_err("unknown session must fail");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(error.to_string().contains("does not exist"), "{error}");
     assert!(!home.sessions_root().join("no-such-session").exists());
 
@@ -673,7 +654,7 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
 #[test]
 fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "delete-sidecar-sweep", Isolation::ProductHome);
+    let home = temp_home("delete-sidecar-sweep");
     let session_a = create_session_fixture();
     let session_b = create_session_fixture();
     let body_path = write_body_file("sweep", "# Sweep Expert\n\nbody\n");
@@ -737,11 +718,7 @@ fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
 #[test]
 fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new(
-        "personas",
-        "delete-sidecar-large-body",
-        Isolation::ProductHome,
-    );
+    let home = temp_home("delete-sidecar-large-body");
     let session_id = create_session_fixture();
     // 100 KiB: over the old 64 KiB sweep cap, far under the 4 MiB body cap.
     let big_body = format!("# Big Expert\n\n{}\n", "x".repeat(100 * 1024));
@@ -786,7 +763,7 @@ fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
 #[test]
 fn personas_list_and_active_rows_survive_control_characters_in_card_text() {
     let _env_guard = env_lock();
-    let _home = HomeGuard::new("personas", "row-control-chars", Isolation::ProductHome);
+    let _home = temp_home("row-control-chars");
     let session_id = create_session_fixture();
     let body_path = write_body_file("rows", "# Rows Expert\n\nbody\n");
     let hostile_name = "Alpha\tBeta\nGamma\x1b[31m";
@@ -850,7 +827,7 @@ fn personas_list_and_active_rows_survive_control_characters_in_card_text() {
 #[test]
 fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "orphan-sidecar", Isolation::ProductHome);
+    let home = temp_home("orphan-sidecar");
     let session_id = create_session_fixture();
     let body_path = write_body_file("orphan", "# Orphan Expert\n\nbody\n");
 
@@ -875,9 +852,7 @@ fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
         body_path.to_str().unwrap(),
     ]);
 
-    let error = run(&["pinvou", "personas", "active", &session_id])
-        .expect_err("an orphaned sidecar must not report as 'none'");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "personas", "active", &session_id]);
     assert!(error.to_string().contains(&persona_id), "{error}");
     assert!(
         error
@@ -906,7 +881,7 @@ fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
 #[test]
 fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "delete-sidecar-errors", Isolation::ProductHome);
+    let home = temp_home("delete-sidecar-errors");
     let session_id = create_session_fixture();
     let body_path = write_body_file("sweep-errors", "# Stuck Expert\n\nbody\n");
 
@@ -970,7 +945,7 @@ fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
 #[test]
 fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
     let _env_guard = env_lock();
-    let home = HomeGuard::new("personas", "stdin-over-cap", Isolation::ProductHome);
+    let home = temp_home("stdin-over-cap");
 
     // One byte past the cap, so the refusal is exactly the over-cap case and
     // an off-by-one in the cap cannot pass.
@@ -1014,12 +989,10 @@ fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
         ["pinvou", "personas", "show", "--source"],
         ["pinvou", "personas", "delete", "--yes"],
     ] {
-        let error = parse_args(arguments)
-            .expect_err("a flag-shaped persona id must be refused at parse time");
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        let message = usage_error(&arguments);
         assert!(
-            error.to_string().contains("flag-shaped"),
-            "the refusal must name the flag-shaped token: {error}"
+            message.contains("flag-shaped"),
+            "the refusal must name the flag-shaped token: {message}"
         );
     }
 }

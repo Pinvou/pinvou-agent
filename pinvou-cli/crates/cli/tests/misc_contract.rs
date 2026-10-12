@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{EnvGuard, HomeGuard, Isolation, run, run_json};
+use common::{EnvGuard, HomeGuard, Isolation, RestoreCwd, command_error, run, run_json};
 use pinvou_cli::{CliError, ExitCode, OutputMode, execute, parse_args};
 
 // Tests that mutate the process-global `PINVOU3_HOME` environment variable
@@ -222,12 +222,10 @@ fn files_ingest_resolves_a_relative_path_against_the_current_directory() {
     // The cwd is process-global; ENV_LOCK (held for this whole test) is the
     // same gate every execute-level test in this file uses, and the parse-only
     // tests that may run concurrently name absolute paths.
-    let previous = std::env::current_dir().unwrap();
+    let _restore_cwd = RestoreCwd::new();
     std::env::set_current_dir(&scoped.dir).unwrap();
-    let outcome = run(&["pinvou", "files", "ingest", "notes.md"]);
-    std::env::set_current_dir(&previous).unwrap();
-
-    let outcome = outcome.expect("a relative path must resolve against the cwd");
+    let outcome = run(&["pinvou", "files", "ingest", "notes.md"])
+        .expect("a relative path must resolve against the cwd");
     assert_eq!(outcome.exit_code, ExitCode::Success);
     assert!(
         outcome.stdout.contains("File: notes.md"),
@@ -976,10 +974,7 @@ fn voice_postprocess_refuses_credential_path_files() {
             &secret,
         ],
     ] {
-        let error = match parse_args(lane.clone()) {
-            Err(error) => error,
-            Ok(parsed) => execute(parsed).expect_err("credential file must be refused"),
-        };
+        let error = command_error(&lane);
         let rendered = error.to_string();
         assert!(
             rendered.contains("crosses the credential path component"),

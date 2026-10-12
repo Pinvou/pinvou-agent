@@ -11,11 +11,12 @@ mod common;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
+use pinvou_cli::{ExitCode, OutputMode, parse_args};
 use pinvou3_lib::features::sessions::SessionStore;
 
 use common::{
-    EnvGuard, HomeGuard, Isolation, create_session_fixture, env_lock, run, run_json, unique_root,
+    EnvGuard, HomeGuard, Isolation, create_session_fixture, env_lock, execute_error, expect_failed,
+    parsed_debug, run, run_json, run_ok, unique_root, usage_error,
 };
 
 /// Rewrites the persisted `SavedSession` JSON in place (the CLI reads
@@ -94,14 +95,12 @@ fn every_sessions_subcommand_parses_and_unknown_flags_exit_two() {
         vec!["pinvou", "sessions", "folder", "s-1"],
     ];
     for arguments in &valid {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
         // The Sessions command tree is dispatched exclusively through the
         // Sessions variant; the type is not nameable from integration tests,
         // so assert family + variant through the derived Debug form. Every
         // Sessions variant is the subcommand token's capitalization, so the
         // expected Debug token is derived from the argv itself.
-        let debug = format!("{:?}", parsed.command());
+        let debug = parsed_debug(arguments);
         let mut chars = arguments[2].chars();
         let variant: String = chars
             .next()
@@ -133,8 +132,7 @@ fn every_sessions_subcommand_parses_and_unknown_flags_exit_two() {
         vec!["pinvou", "sessions", "timeline", "s-1", "--full"],
     ];
     for arguments in &invalid {
-        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        usage_error(arguments);
     }
 }
 
@@ -164,9 +162,7 @@ fn every_artifacts_subcommand_parses_and_unknown_flags_exit_two() {
         ],
     ];
     for arguments in &valid {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
-        let debug = format!("{:?}", parsed.command());
+        let debug = parsed_debug(arguments);
         assert!(debug.starts_with("Artifacts("), "{arguments:?} -> {debug}");
     }
 
@@ -204,8 +200,7 @@ fn every_artifacts_subcommand_parses_and_unknown_flags_exit_two() {
         vec!["pinvou", "artifacts", "write", "s-1", "a.md", "--bogus"],
     ];
     for arguments in &invalid {
-        let error = parse_args(arguments.clone()).expect_err(&arguments.join(" "));
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        usage_error(arguments);
     }
 }
 
@@ -214,8 +209,7 @@ fn sessions_delete_without_yes_is_a_usage_error() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("sessions", "delete-needs-yes", Isolation::ProductHome);
     let id = create_session_fixture();
-    let parsed = parse_args(["pinvou", "sessions", "delete", &id]).unwrap();
-    let error = execute(parsed).expect_err("delete without --yes must refuse");
+    let error = execute_error(&["pinvou", "sessions", "delete", &id]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("--yes"));
     // The session must still exist.
@@ -239,16 +233,12 @@ fn rename_trailing_garbage_after_output_json_is_refused_and_leaves_the_store_unc
 
     // The pair followed by more title words must be refused at PARSE time
     // (a usage error, exit 2), before any store access.
-    let error = parse_args([
+    let message = usage_error(&[
         "pinvou", "sessions", "rename", &id, "see", "--output", "json", "now",
-    ])
-    .expect_err("a global flag pair inside the title must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    ]);
     assert!(
-        error
-            .to_string()
-            .contains("cannot accept a title containing"),
-        "the refusal must name the title-pair rule: {error}"
+        message.contains("cannot accept a title containing"),
+        "the refusal must name the title-pair rule: {message}"
     );
 
     // Store unchanged: the persisted title survives the refused rename.
@@ -271,13 +261,12 @@ fn rename_trailing_garbage_after_output_json_is_refused_and_leaves_the_store_unc
 fn sessions_list_on_empty_store_returns_empty_output() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("sessions", "list-empty", Isolation::ProductHome);
-    let outcome = run(&["pinvou", "sessions", "list"]).expect("list must succeed");
-    assert_eq!(outcome.exit_code, ExitCode::Success);
-    assert_eq!(outcome.stdout, "");
+    assert_eq!(run_ok(&["pinvou", "sessions", "list"]), "");
 
-    let parsed = parse_args(["pinvou", "--output", "json", "sessions", "list"]).unwrap();
-    let outcome = execute(parsed).expect("json list must succeed");
-    assert_eq!(outcome.stdout, r#"{"sessions":[]}"#);
+    assert_eq!(
+        run_ok(&["pinvou", "--output", "json", "sessions", "list"]),
+        r#"{"sessions":[]}"#
+    );
 }
 
 /// Stored titles are verbatim and legitimately contain control characters
@@ -292,19 +281,16 @@ fn sessions_list_collapses_control_characters_in_human_titles() {
     let raw_title = "line1\nline2\tcol\x07end";
     run_json(&["pinvou", "sessions", "rename", &id, raw_title]);
 
-    let human = run(&["pinvou", "sessions", "list"]).expect("human list must succeed");
-    assert_eq!(human.exit_code, ExitCode::Success);
+    let human = run_ok(&["pinvou", "sessions", "list"]);
     // The row is one line: the title's embedded newline must not split it.
-    assert_eq!(human.stdout.lines().count(), 1);
+    assert_eq!(human.lines().count(), 1);
     assert!(
-        !human.stdout.contains('\x07'),
-        "the bell control character must be collapsed: {:?}",
-        human.stdout
+        !human.contains('\x07'),
+        "the bell control character must be collapsed: {human:?}"
     );
     assert!(
-        human.stdout.contains("line1 line2 col end"),
-        "control characters collapse to spaces: {:?}",
-        human.stdout
+        human.contains("line1 line2 col end"),
+        "control characters collapse to spaces: {human:?}"
     );
     assert!(
         home.sessions_root().join(format!("{id}.json")).is_file(),
@@ -427,9 +413,7 @@ fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
 
     // show keeps the strict load: the parse error surfaces (exit 1) through
     // the same load_session context as before, and the record is untouched.
-    let error = run(&["pinvou", "sessions", "show", &id])
-        .expect_err("a corrupt record must still refuse show");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "sessions", "show", &id]);
     let message = error.to_string();
     assert!(
         message.contains(&format!("sessions show({id})"))
@@ -456,9 +440,7 @@ fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
 
     // Unknown ids keep the existing gate: exit 1 with the load-based
     // message, never a "deleted" answer.
-    let error = run(&["pinvou", "sessions", "delete", "missing-session", "--yes"])
-        .expect_err("an unknown id must still refuse the delete");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "sessions", "delete", "missing-session", "--yes"]);
     assert!(
         error
             .to_string()
@@ -484,14 +466,9 @@ fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table(
     let agents_path = home.path().join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 
-    let outcome = run(&["pinvou", "sessions", "delete", &id, "--yes"]);
+    let error = execute_error(&["pinvou", "sessions", "delete", &id, "--yes"]);
     assert!(
-        outcome.is_err(),
-        "the corrupt index must refuse the record cleanup"
-    );
-    let error = format!("{}", outcome.unwrap_err());
-    assert!(
-        error.contains("session-agents.json"),
+        error.to_string().contains("session-agents.json"),
         "the refusal must name the store: {error}"
     );
     assert_eq!(
@@ -638,16 +615,14 @@ fn sessions_show_limits_and_exports_transcript() {
     // An existing destination is refused, not overwritten: the transcript
     // store itself is plain files, so a silent overwrite could destroy a
     // stored session with exit 0.
-    let error = run(&[
+    let error = expect_failed(&[
         "pinvou",
         "sessions",
         "export",
         &id,
         "--output",
         destination.to_str().unwrap(),
-    ])
-    .unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
     assert!(
         error.to_string().contains("refusing to overwrite"),
         "{error}"
@@ -657,8 +632,7 @@ fn sessions_show_limits_and_exports_transcript() {
     std::fs::remove_file(&destination).unwrap();
 
     // exporting an unknown session fails at host level (exit 1)
-    let error = run(&["pinvou", "sessions", "export", "missing-session"]).unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    expect_failed(&["pinvou", "sessions", "export", "missing-session"]);
 }
 
 #[test]
@@ -1252,9 +1226,7 @@ fn artifacts_write_rejects_non_markdown_suffix() {
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("notes.txt"), "plain").unwrap();
 
-    let error = run(&["pinvou", "artifacts", "write", &id, "notes.txt", "--stdin"])
-        .expect_err("non-markdown artifact must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "artifacts", "write", &id, "notes.txt", "--stdin"]);
     assert!(
         error
             .to_string()
@@ -1275,18 +1247,13 @@ fn artifacts_read_rejects_escape_outside_the_session() {
 
     // A session id is required to exist and the resolved path must stay
     // inside sessions_root/<id>/{artifacts,workspace}.
-    let error = run(&["pinvou", "artifacts", "read", &id, "../../etc/passwd"])
-        .expect_err("path escape must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    expect_failed(&["pinvou", "artifacts", "read", &id, "../../etc/passwd"]);
 
-    let error = run(&["pinvou", "artifacts", "read", &id, "artifacts/missing.md"])
-        .expect_err("missing artifact must be rejected");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "artifacts", "read", &id, "artifacts/missing.md"]);
     assert!(error.to_string().starts_with("artifact_not_found"));
 
     // Session ids are restricted to [A-Za-z0-9_-] before any path join.
-    let error = run(&["pinvou", "artifacts", "read", "../escape", "a.md"])
-        .expect_err("invalid session id must be a usage error");
+    let error = execute_error(&["pinvou", "artifacts", "read", "../escape", "a.md"]);
     assert_eq!(error.exit_code(), ExitCode::Usage);
 }
 
@@ -1311,9 +1278,7 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     std::fs::write(workspace_dir.join("environment.md"), "# notes\n").unwrap();
 
     for relative in [".ssh/id_rsa", ".env"] {
-        let error = run(&["pinvou", "artifacts", "read", &id, relative])
-            .expect_err("a credential component must be refused");
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{relative}: {error}");
+        let error = expect_failed(&["pinvou", "artifacts", "read", &id, relative]);
         assert!(
             error
                 .to_string()
@@ -1323,9 +1288,7 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     }
     // Writes take the same refusal, and before the markdown-suffix check: the
     // file is untouched.
-    let error = run(&["pinvou", "artifacts", "write", &id, ".env", "--stdin"])
-        .expect_err("writing a credential component must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    expect_failed(&["pinvou", "artifacts", "write", &id, ".env", "--stdin"]);
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".env")).unwrap(),
         "TOKEN=secret\n"
@@ -1398,16 +1361,14 @@ fn artifacts_read_reaches_scheduled_run_workspace_artifacts() {
 
     // Writing back stays refused: the deliverable lives outside
     // sessions_root, exactly like the GUI's write confinement.
-    let error = run(&[
+    expect_failed(&[
         "pinvou",
         "artifacts",
         "write",
         session_id,
         "artifacts/weekly.md",
         "--stdin",
-    ])
-    .expect_err("scheduled-run artifact write must stay refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    ]);
 }
 
 #[test]
@@ -1447,8 +1408,7 @@ fn relative_pinvou3_home_is_rejected_before_any_store_access() {
     // create directories under the (relative) root before the refusal, so
     // clean up afterwards (best-effort: a leftover temp directory is
     // harmless, the restored environment is not).
-    let error = run(&["pinvou", "sessions", "folder", "abc"]).expect_err("relative home refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "sessions", "folder", "abc"]);
     assert!(error.to_string().contains("absolute"));
     let _ = std::fs::remove_dir_all(&relative);
 }
@@ -1464,12 +1424,10 @@ fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
         ["pinvou", "sessions", "delete", "--yes"],
         ["pinvou", "sessions", "show", "--last"],
     ] {
-        let error = parse_args(arguments)
-            .expect_err("a flag-shaped session id must be refused at parse time");
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        let message = usage_error(&arguments);
         assert!(
-            error.to_string().contains("flag-shaped"),
-            "the refusal must name the flag-shaped token: {error}"
+            message.contains("flag-shaped"),
+            "the refusal must name the flag-shaped token: {message}"
         );
     }
 }
@@ -1491,9 +1449,7 @@ fn metadata_lanes_refuse_aux_session_ids_like_the_gui() {
         vec!["pinvou", "sessions", "restore", &aux_id],
         vec!["pinvou", "sessions", "rename", &aux_id, "new", "title"],
     ] {
-        let parsed = parse_args(arguments.clone())
-            .unwrap_or_else(|error| panic!("{arguments:?} must parse: {error}"));
-        let error = execute(parsed).expect_err("an aux id must be refused by every metadata lane");
+        let error = execute_error(&arguments);
         assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
         assert!(
             error.to_string().contains("auxiliary conversations"),

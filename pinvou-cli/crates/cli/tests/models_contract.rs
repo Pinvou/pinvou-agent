@@ -880,6 +880,28 @@ fn read_settings() -> String {
     std::fs::read_to_string(home_settings_path()).unwrap_or_default()
 }
 
+/// The destructive-credential `--yes` gate shared by `models edit
+/// --clear-api-key` and `settings search set --clear`: without the flag the
+/// command is a usage error naming `--yes`, and it writes nothing.
+fn refused_clear_is_a_usage_error(arguments: &[&str]) {
+    let before = read_settings();
+    let (message, code) = run_err(arguments);
+    assert_eq!(
+        code,
+        ExitCode::Usage,
+        "the confirmation refusal is a usage error, like models remove: {message}"
+    );
+    assert!(
+        message.contains("--yes"),
+        "the refusal must name the flag: {message}"
+    );
+    assert_eq!(
+        read_settings(),
+        before,
+        "a refused clear must not write settings.json"
+    );
+}
+
 #[test]
 fn probe_local_refuses_non_loopback_urls_with_usage_error() {
     let _env = env_lock();
@@ -1291,22 +1313,7 @@ fn models_edit_clear_api_key_requires_yes() {
 
     // The bare form must refuse like `models remove`: a usage error whose
     // message names --yes, with nothing written.
-    let before = read_settings();
-    let (message, code) = run_err(&["pinvou", "models", "edit", "default", "--clear-api-key"]);
-    assert_eq!(
-        code,
-        ExitCode::Usage,
-        "the confirmation refusal is a usage error, like models remove: {message}"
-    );
-    assert!(
-        message.contains("--yes"),
-        "the refusal must name the flag: {message}"
-    );
-    assert_eq!(
-        read_settings(),
-        before,
-        "a refused clear must not write settings.json"
-    );
+    refused_clear_is_a_usage_error(&["pinvou", "models", "edit", "default", "--clear-api-key"]);
 
     // With --yes the same command proceeds. The fixture model is keyless
     // (no stored credential reference), so round-42 review's doctrine
@@ -1452,8 +1459,7 @@ fn settings_search_set_clear_requires_yes() {
     let _env = env_lock();
     let _home = sandbox_home("search-set-clear-yes");
 
-    let before = read_settings();
-    let (message, code) = run_err(&[
+    refused_clear_is_a_usage_error(&[
         "pinvou",
         "settings",
         "search",
@@ -1462,20 +1468,6 @@ fn settings_search_set_clear_requires_yes() {
         "tavily",
         "--clear",
     ]);
-    assert_eq!(
-        code,
-        ExitCode::Usage,
-        "the confirmation refusal is a usage error, like models remove: {message}"
-    );
-    assert!(
-        message.contains("--yes"),
-        "the refusal must name the flag: {message}"
-    );
-    assert_eq!(
-        read_settings(),
-        before,
-        "a refused clear must not write settings.json"
-    );
 }
 
 /// Human rows must not be forgeable. `models.rs` used to be the last family

@@ -15,32 +15,33 @@
 
 mod common;
 
+use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
+use benchmark_core::{BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId};
 use pinvou_cli::{
     BenchmarkAvailability, BenchmarkCommand, CliCommand, ExitCode, OutputMode, benchmark_registry,
-    execute, parse_args, render_list,
+    parse_args, render_list,
 };
 use std::path::PathBuf;
 
-use common::{HomeGuard, Isolation, env_lock};
+use common::{HomeGuard, Isolation, RestoreCwd, env_lock, execute_error, usage_error};
 
-/// RAII restore for tests that change the process cwd: a failing assert
-/// panics before a manual restore line runs, leaving the binary's cwd in the
-/// fixture dir for every later test in this target.
-struct RestoreCwd(std::path::PathBuf);
-
-impl Drop for RestoreCwd {
-    fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.0);
-    }
+/// The canonical manifest every store-backed score test writes through
+/// `RunStore`: the officially pinned level 1, split, and tool policy, with an
+/// arbitrary model identity (no assertion reads the identity back).
+fn gaia_manifest(run_id: &str) -> RunManifest {
+    RunManifest::new(
+        run_id,
+        GaiaAdapter::new().descriptor(),
+        Split::new(GAIA_SPLIT),
+        ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
+        ToolPolicyId::new("pinvou-gaia-public-web/v1"),
+        1,
+    )
+    .unwrap()
 }
 
 #[test]
 fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
-    use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
-    use benchmark_core::{
-        BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId,
-    };
-
     let _env_guard = env_lock();
     // The throwaway PINVOU3_HOME is a HomeGuard: its Drop restores the
     // variable and removes the tree on every exit path, so a failing
@@ -48,16 +49,7 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     // epilogue this replaces was exactly the cleanup a panic skipped).
     let home = HomeGuard::new("gaia", "manifest", Isolation::ProductHome);
     let root = home.path();
-    let adapter = GaiaAdapter::new();
-    let expected = RunManifest::new(
-        "gaia-manifest-probe",
-        adapter.descriptor(),
-        Split::new(GAIA_SPLIT),
-        ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
-        ToolPolicyId::new("pinvou-gaia-public-web/v1"),
-        1,
-    )
-    .unwrap();
+    let expected = gaia_manifest("gaia-manifest-probe");
     assert_eq!(GAIA_LEVEL, 1);
     // Round-47 review: the constant alone is only half the pin — the level
     // is an external contract documented in the gaia doc's dataset table. A
@@ -87,24 +79,14 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     ];
     for (index, (field, replacement)) in mutations.into_iter().enumerate() {
         let run_id = format!("gaia-manifest-{index}");
-        let manifest = RunManifest::new(
-            run_id.as_str(),
-            adapter.descriptor(),
-            Split::new(GAIA_SPLIT),
-            ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
-            ToolPolicyId::new("pinvou-gaia-public-web/v1"),
-            1,
-        )
-        .unwrap();
+        let manifest = gaia_manifest(&run_id);
         let store = RunStore::create(root, &manifest).unwrap();
         let mut stored = serde_json::to_value(&expected).unwrap();
         stored["run_id"] = serde_json::json!(run_id);
         stored[field] = replacement;
         std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
 
-        let parsed =
-            parse_args(["pinvou", "benchmark", "score", "gaia", "--run-id", &run_id]).unwrap();
-        let error = execute(parsed).expect_err("mutated manifest must be rejected before scoring");
+        let error = execute_error(&["pinvou", "benchmark", "score", "gaia", "--run-id", &run_id]);
         assert_eq!(error.to_string(), "gaia_run_manifest_mismatch", "{field}");
     }
 }
@@ -256,20 +238,17 @@ fn gaia_output_mode_remains_global_without_stealing_submission_destination() {
 fn gaia_fetch_from_non_repository_home_does_not_require_git_metadata() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("gaia", "non-repo-home", Isolation::ProductHome);
-    let previous_dir = std::env::current_dir().unwrap();
-    let _restore_cwd = RestoreCwd(previous_dir);
+    let _restore_cwd = RestoreCwd::new();
     std::env::set_current_dir(home.path()).unwrap();
 
-    let parsed = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "benchmark",
         "fetch",
         "gaia",
         "--source",
         "missing-snapshot",
-    ])
-    .unwrap();
-    let error = execute(parsed).unwrap_err();
+    ]);
     // Round-41 review: stronger than the old `!= "gaia_worktree_unavailable"`
     // one-liner — the round-38 regression this test guards made fetch demand
     // git metadata on a non-repository home before ever looking at the
@@ -293,16 +272,14 @@ fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     let source = home.path().join("arbitrary-source");
     std::fs::create_dir_all(&source).unwrap();
 
-    let parsed = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "benchmark",
         "verify",
         "gaia",
         "--source",
         source.to_str().unwrap(),
-    ])
-    .unwrap();
-    let error = execute(parsed).expect_err("incomplete raw snapshot must fail dataset validation");
+    ]);
     assert_eq!(error.to_string(), "gaia_verify_failed");
     assert!(!error.to_string().contains(source.to_str().unwrap()));
 }
@@ -381,8 +358,7 @@ fn gaia_parser_rejects_unpinned_or_noncomparable_modes() {
         ],
     ];
     for arguments in invalid {
-        let error = parse_args(arguments).expect_err("unsafe GAIA mode must be rejected");
-        assert_eq!(error.exit_code(), ExitCode::Usage);
+        usage_error(&arguments);
     }
 }
 
@@ -396,7 +372,7 @@ fn gaia_parser_rejects_unpinned_or_noncomparable_modes() {
 #[cfg(not(feature = "product-backend"))]
 #[test]
 fn gaia_run_requires_product_backend_without_exposing_error_chains() {
-    let parsed = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "benchmark",
         "run",
@@ -405,9 +381,7 @@ fn gaia_run_requires_product_backend_without_exposing_error_chains() {
         "validation",
         "--level",
         "1",
-    ])
-    .unwrap();
-    let error = execute(parsed).expect_err("feature-off run is unavailable");
+    ]);
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert_eq!(error.to_string(), "product_backend_not_enabled");
     assert!(!error.to_string().contains("Caused by"));
@@ -415,40 +389,23 @@ fn gaia_run_requires_product_backend_without_exposing_error_chains() {
 
 #[test]
 fn gaia_score_rejects_a_run_id_that_differs_from_the_stored_manifest() {
-    use adapter_gaia::{GAIA_SPLIT, GaiaAdapter};
-    use benchmark_core::{
-        BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId,
-    };
-
     let _env_guard = env_lock();
     let home = HomeGuard::new("gaia", "run-id-mismatch", Isolation::ProductHome);
     let root = home.path();
-    let adapter = GaiaAdapter::new();
-    let manifest = RunManifest::new(
-        "gaia-run-id-mismatch",
-        adapter.descriptor(),
-        Split::new(GAIA_SPLIT),
-        ModelIdentity::new("arbitrary-provider", "arbitrary-model").unwrap(),
-        ToolPolicyId::new("pinvou-gaia-public-web/v1"),
-        1,
-    )
-    .unwrap();
+    let manifest = gaia_manifest("gaia-run-id-mismatch");
     let store = RunStore::create(root, &manifest).unwrap();
     let mut stored = serde_json::to_value(&manifest).unwrap();
     stored["run_id"] = serde_json::json!("different-run-id");
     std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
 
-    let parsed = parse_args([
+    let error = execute_error(&[
         "pinvou",
         "benchmark",
         "score",
         "gaia",
         "--run-id",
         "gaia-run-id-mismatch",
-    ])
-    .unwrap();
-    let error = execute(parsed)
-        .expect_err("a stored manifest whose run_id differs from the request must be rejected");
+    ]);
     assert_eq!(error.to_string(), "gaia_run_manifest_mismatch");
 }
 
@@ -477,9 +434,7 @@ fn registry_dispatches_smoke_and_rejects_planned_benchmarks_consistently() {
         &CliCommand::Benchmark(BenchmarkCommand::RunSmoke)
     );
     for id in ["bfcl", "workbuddy"] {
-        let parsed = parse_args(["pinvou", "benchmark", "run", id])
-            .expect("planned benchmark has a stable command representation");
-        let error = execute(parsed).expect_err("planned benchmark cannot run");
+        let error = execute_error(&["pinvou", "benchmark", "run", id]);
         assert_eq!(error.exit_code(), ExitCode::Usage);
         assert_eq!(error.to_string(), "benchmark_not_available");
     }
@@ -609,9 +564,7 @@ fn unrecognized_output_value_falls_through_to_usage_error() {
     // stays in argv — so the token lands in the FAMILY position and the
     // round-27 flag-position hint names it and states the placement rule,
     // instead of the bare usage line.
-    let error = parse_args(["pinvou", "--output", "yaml", "benchmark", "list"]).unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    let message = error.to_string();
+    let message = usage_error(&["pinvou", "--output", "yaml", "benchmark", "list"]);
     assert!(message.contains("unknown family --output"), "{message}");
     assert!(
         message.contains("before the family or after the subcommand"),
@@ -640,10 +593,9 @@ fn output_without_value_points_at_destination() {
     // A valueless `--output` fails fast with a usage error that names the
     // flag for file submissions (the gaia `--output <file>` legacy alias
     // only fires when a value is present).
-    let error = parse_args(["pinvou", "--output"]).unwrap_err();
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = usage_error(&["pinvou", "--output"]);
     assert_eq!(
-        error.to_string(),
+        message,
         "--output requires human or json (subcommands that export to a file take \
          `--output PATH` instead — see their usage line)"
     );

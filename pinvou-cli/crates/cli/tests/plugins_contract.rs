@@ -24,7 +24,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{
-    EnvGuard, HomeGuard, Isolation, env_lock, run, run_err, run_json, run_ok, usage_error,
+    EnvGuard, HomeGuard, Isolation, assert_usage, env_lock, expect_failed, run, run_json, run_ok,
+    usage_error,
 };
 use pinvou_cli::{ExitCode, parse_args};
 
@@ -183,6 +184,22 @@ fn fixture_skill_dir(home: &Path) -> PathBuf {
     std::fs::write(dir.join("SKILL.md"), skill_md(FIXTURE_DIR_SKILL)).unwrap();
     std::fs::write(dir.join("docs").join("note.md"), "fixture note").unwrap();
     dir
+}
+
+/// Imports a directory fixture carrying NO frontmatter name (so the fallback
+/// id path runs) and returns the id the import payload reports — pinning the
+/// hot-refresh fact on the JSON side of the import lane along the way.
+fn import_unnamed_skill_dir(home: &Path, name: &str, body: &str) -> String {
+    let dir = home.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("SKILL.md"), body).unwrap();
+    let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
+    assert_eq!(
+        value["hot_refresh"],
+        serde_json::json!("not_broadcast"),
+        "the JSON import payload must carry the hot-refresh fact the human note states"
+    );
+    value["id"].as_str().expect("string id").to_owned()
 }
 
 /// Creates a zip skill-package fixture and returns its path.
@@ -547,22 +564,13 @@ fn import_directories_with_non_ascii_names_get_distinct_fallback_ids() {
 
     let mut ids = Vec::new();
     for name in ["技能一", "技能二"] {
-        let dir = home.path().join(name);
-        std::fs::create_dir_all(&dir).unwrap();
         // No frontmatter name: the fallback id must derive from the raw
         // directory name, so the bodies stay distinct too.
-        std::fs::write(
-            dir.join("SKILL.md"),
-            format!("body for {name} without a frontmatter name"),
-        )
-        .unwrap();
-        let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
-        ids.push(value["id"].as_str().expect("string id").to_owned());
-        assert_eq!(
-            value["hot_refresh"],
-            serde_json::json!("not_broadcast"),
-            "the JSON import payload must carry the hot-refresh fact the human note states"
-        );
+        ids.push(import_unnamed_skill_dir(
+            home.path(),
+            name,
+            &format!("body for {name} without a frontmatter name"),
+        ));
     }
     assert_ne!(ids[0], ids[1], "distinct names must yield distinct ids");
     assert!(
@@ -583,16 +591,11 @@ fn import_names_sanitizing_to_the_same_label_get_distinct_fallback_ids() {
 
     let mut ids = Vec::new();
     for name in ["技能", "技能\u{200B}"] {
-        let dir = home.path().join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("SKILL.md"), format!("body for {name}")).unwrap();
-        let value = run_json(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
-        ids.push(value["id"].as_str().expect("string id").to_owned());
-        assert_eq!(
-            value["hot_refresh"],
-            serde_json::json!("not_broadcast"),
-            "the JSON import payload must carry the hot-refresh fact the human note states"
-        );
+        ids.push(import_unnamed_skill_dir(
+            home.path(),
+            name,
+            &format!("body for {name}"),
+        ));
     }
     assert_ne!(
         ids[0], ids[1],
@@ -606,21 +609,20 @@ fn import_rejects_missing_path_and_unsupported_extension() {
     let home = HomeGuard::new("plugins", "import-errors", Isolation::ProductHome);
 
     let missing = home.path().join("nope.zip");
-    let (message, code) = run_err(&["pinvou", "plugins", "import", missing.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", missing.to_str().unwrap()]).to_string();
     assert!(message.contains("does not exist"), "message: {message}");
 
     let txt = home.path().join("file.txt");
     std::fs::write(&txt, "x").unwrap();
-    let (message, code) = run_err(&["pinvou", "plugins", "import", txt.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "plugins", "import", txt.to_str().unwrap()]);
     assert!(message.contains(".zip"), "message: {message}");
 
     // Directory without a root SKILL.md is rejected as a failed import.
     let bare = home.path().join("bare-dir");
     std::fs::create_dir_all(&bare).unwrap();
-    let (message, code) = run_err(&["pinvou", "plugins", "import", bare.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", bare.to_str().unwrap()]).to_string();
     assert!(message.contains("SKILL.md"), "message: {message}");
 }
 
@@ -653,8 +655,8 @@ fn import_rejects_oversize_markdown_file() {
 
     let oversized = home.path().join("oversize.md");
     write_sparse(&oversized, import_package_limit() + 1);
-    let (message, code) = run_err(&["pinvou", "plugins", "import", oversized.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", oversized.to_str().unwrap()]).to_string();
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
         "message: {message}"
@@ -676,8 +678,8 @@ fn import_rejects_directory_over_cumulative_limit() {
     // alone.
     write_sparse(&dir.join("a.bin"), import_package_limit() - 1024);
     write_sparse(&dir.join("b.bin"), 2048);
-    let (message, code) = run_err(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", dir.to_str().unwrap()]).to_string();
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
         "message: {message}"
@@ -708,8 +710,8 @@ fn import_directory_at_the_cap_fails_preflight_with_the_limit_message() {
         import_package_limit() - skill_md.len() as u64,
     );
 
-    let (message, code) = run_err(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", dir.to_str().unwrap()]).to_string();
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
         "the at-cap boundary must fail in pre-flight with the honest message: {message}"
@@ -772,8 +774,8 @@ fn assert_fifo_rejected(home: &Path, file_name: &str) {
         .status()
         .expect("run mkfifo");
     assert!(status.success(), "mkfifo failed");
-    let (message, code) = run_err(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", fifo.to_str().unwrap()]).to_string();
     assert!(message.contains("not a regular file"), "message: {message}");
 }
 
@@ -801,8 +803,8 @@ fn import_rejects_oversize_zip_package() {
 
     let oversized = home.path().join("oversize.zip");
     write_sparse(&oversized, import_package_limit() + 1);
-    let (message, code) = run_err(&["pinvou", "plugins", "import", oversized.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", oversized.to_str().unwrap()]).to_string();
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
         "message: {message}"
@@ -872,8 +874,8 @@ fn meta_updates_upload_package_and_rejects_preset() {
     );
 
     // Preset/embedded packages refuse display-meta overrides (GUI parity).
-    let (message, code) = run_err(&["pinvou", "plugins", "meta", "visualizer", "--name", "Nope"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "meta", "visualizer", "--name", "Nope"]).to_string();
     assert!(message.contains("visualizer"), "message: {message}");
 }
 
@@ -1077,8 +1079,7 @@ fn tools_install_uninstall_round_trip_is_hermetic_for_manifest_only_packages() {
     );
 
     // Destructive uninstall requires --yes (exit 2 before touching state).
-    let (message, code) = run_err(&["pinvou", "plugins", "tools", "uninstall", "qcc"]);
-    assert_eq!(code, ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "plugins", "tools", "uninstall", "qcc"]);
     assert!(message.contains("--yes"), "message: {message}");
 
     // qcc is a remote OAuth tool: the headless CLI never reaches the
@@ -1175,23 +1176,22 @@ fn oauth_login_guards_and_cancel_behaviour() {
     let _home = HomeGuard::new("plugins", "oauth-login", Isolation::ProductHome);
 
     // Tool without a remote OAuth declaration → the feature's own error.
-    let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "obsidian"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "tools", "oauth-login", "obsidian"]).to_string();
     assert!(
         message.contains("does not declare a remote MCP OAuth login"),
         "message: {message}"
     );
 
     // OAuth tool whose server is not in mcp.json yet (not installed).
-    let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message = expect_failed(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]).to_string();
     assert!(message.contains("mcp.json"), "message: {message}");
 
     // Installed OAuth tool: the interactive OAuth flow lives in the
     // foundation crate the CLI does not link — deterministic, documented
     // exit-1 instead of a half-working reimplementation.
     run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
-    let (message, code) = run_err(&[
+    let message = expect_failed(&[
         "pinvou",
         "plugins",
         "tools",
@@ -1199,8 +1199,8 @@ fn oauth_login_guards_and_cancel_behaviour() {
         "qcc",
         "--timeout",
         "5",
-    ]);
-    assert_eq!(code, ExitCode::Failed);
+    ])
+    .to_string();
     assert!(
         message.contains("oauth_login_unavailable_in_cli"),
         "message: {message}"
@@ -1255,7 +1255,7 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
     let _env = env_lock();
     let _home = HomeGuard::new("plugins", "tools-secret-unset-var", Isolation::ProductHome);
     let _amap = EnvGuard::remove(&["PINVOU_CLI_TEST_AMAP_KEY"]);
-    let (message, code) = run_err(&[
+    let message = expect_failed(&[
         "pinvou",
         "plugins",
         "tools",
@@ -1263,8 +1263,8 @@ fn tools_install_secret_failure_does_not_echo_the_pasted_value() {
         "weather",
         "--secret",
         "AMAP_KEY=PINVOU_CLI_TEST_AMAP_KEY",
-    ]);
-    assert_eq!(code, ExitCode::Failed, "{message}");
+    ])
+    .to_string();
     assert!(
         message.contains("config key AMAP_KEY") && message.contains("is not set"),
         "the refusal names the missing variable lane: {message}"
@@ -1295,8 +1295,7 @@ fn tools_install_with_secret_persists_credential() {
         "tools install output should confirm installed weather"
     );
 
-    let (message, code) = run_err(&["pinvou", "plugins", "tools", "install", "iwencai"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message = expect_failed(&["pinvou", "plugins", "tools", "install", "iwencai"]).to_string();
     assert!(
         message.contains("secret environment variable"),
         "message: {message}"
@@ -1343,8 +1342,8 @@ fn skills_preset_install_update_uninstall_round_trip() {
     let _home = HomeGuard::new("plugins", "skills-preset", Isolation::ProductHome);
 
     // Update guard: only installed preset skills can be updated.
-    let (message, code) = run_err(&["pinvou", "plugins", "skills", "update", "visualizer"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "skills", "update", "visualizer"]).to_string();
     assert!(
         message.contains("not an installed preset skill"),
         "message: {message}"
@@ -1366,14 +1365,13 @@ fn skills_preset_install_update_uninstall_round_trip() {
     assert_eq!(visualizer["user_uploaded"], serde_json::json!(false));
 
     // Unknown skill id → feature's own error (exit 1).
-    let (message, code) = run_err(&["pinvou", "plugins", "skills", "install", "no-such-skill"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "skills", "install", "no-such-skill"]).to_string();
     assert!(message.contains("no-such-skill"), "message: {message}");
 
     run_ok(&["pinvou", "plugins", "skills", "update", "visualizer"]);
 
-    let (message, code) = run_err(&["pinvou", "plugins", "skills", "uninstall", "visualizer"]);
-    assert_eq!(code, ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "plugins", "skills", "uninstall", "visualizer"]);
     assert!(message.contains("--yes"), "message: {message}");
 
     run_ok(&[
@@ -1416,15 +1414,15 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     assert!(std::fs::metadata(&dest).unwrap().len() > 0);
 
     // An existing destination is refused, not overwritten (exit 1).
-    let (message, code) = run_err(&[
+    let message = expect_failed(&[
         "pinvou",
         "plugins",
         "export",
         FIXTURE_DIR_SKILL,
         "--output",
         dest.to_str().unwrap(),
-    ]);
-    assert_eq!(code, ExitCode::Failed);
+    ])
+    .to_string();
     assert!(
         message.contains("refusing to overwrite"),
         "message: {message}"
@@ -1440,15 +1438,15 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     // io error.
     let blocker = home.path().join("blocker");
     std::fs::write(&blocker, b"not a directory").unwrap();
-    let (message, code) = run_err(&[
+    let message = expect_failed(&[
         "pinvou",
         "plugins",
         "export",
         FIXTURE_DIR_SKILL,
         "--output",
         blocker.join("out").join("fixture.zip").to_str().unwrap(),
-    ]);
-    assert_eq!(code, ExitCode::Failed);
+    ])
+    .to_string();
     assert!(message.contains("cannot create"), "message: {message}");
     assert!(
         !message.contains("refusing to overwrite"),
@@ -1456,13 +1454,11 @@ fn export_installed_package_writes_zip_and_preset_is_rejected() {
     );
 
     // Embedded preset packages refuse export (feature's own error, exit 1).
-    let (message, code) = run_err(&["pinvou", "plugins", "export", "pptx"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message = expect_failed(&["pinvou", "plugins", "export", "pptx"]).to_string();
     assert!(message.contains("pptx"), "message: {message}");
 
     // Unknown id → not installed.
-    let (message, code) = run_err(&["pinvou", "plugins", "export", "never-installed"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message = expect_failed(&["pinvou", "plugins", "export", "never-installed"]).to_string();
     assert!(message.contains("never-installed"), "message: {message}");
 }
 
@@ -1529,8 +1525,7 @@ fn recycle_round_trip_via_fixture() {
         FIXTURE_ZIP_SKILL,
         "--yes",
     ]);
-    let (message, code) = run_err(&["pinvou", "plugins", "recycle", "purge", FIXTURE_ZIP_SKILL]);
-    assert_eq!(code, ExitCode::Usage);
+    let message = assert_usage(&["pinvou", "plugins", "recycle", "purge", FIXTURE_ZIP_SKILL]);
     assert!(message.contains("--yes"), "message: {message}");
 
     run_ok(&[
@@ -1549,9 +1544,8 @@ fn recycle_round_trip_via_fixture() {
     );
 
     // Unknown ids surface the feature's own errors (exit 1).
-    let (_, code) = run_err(&["pinvou", "plugins", "recycle", "restore", "no-such-id"]);
-    assert_eq!(code, ExitCode::Failed);
-    let (_, code) = run_err(&[
+    expect_failed(&["pinvou", "plugins", "recycle", "restore", "no-such-id"]);
+    expect_failed(&[
         "pinvou",
         "plugins",
         "recycle",
@@ -1559,9 +1553,7 @@ fn recycle_round_trip_via_fixture() {
         "no-such-id",
         "--yes",
     ]);
-    assert_eq!(code, ExitCode::Failed);
-    let (_, code) = run_err(&["pinvou", "plugins", "recycle", "export", "no-such-id"]);
-    assert_eq!(code, ExitCode::Failed);
+    expect_failed(&["pinvou", "plugins", "recycle", "export", "no-such-id"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1671,9 +1663,7 @@ fn plugins_reject_a_flag_looking_id() {
     // <scope>` with the id forgotten); recording it into
     // disabled_bundles.json would disable nothing and confuse later reads.
     // Same guard as the connectors family's require_connector.
-    let error = parse_args(["pinvou", "plugins", "disable", "--scope", "all"].to_vec())
-        .expect_err("a flag-looking id must be a usage error");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    usage_error(&["pinvou", "plugins", "disable", "--scope", "all"]);
 }
 
 /// Seeds `marketplace/bundles.json` with one hand-written record so the
@@ -2072,8 +2062,7 @@ fn oauth_login_propagates_a_damaged_mcp_json() {
     run_ok(&["pinvou", "plugins", "tools", "install", "qcc"]);
     std::fs::write(home.path().join("bundle").join("mcp.json"), "{ nope").unwrap();
 
-    let (message, code) = run_err(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]);
-    assert_eq!(code, ExitCode::Failed);
+    let message = expect_failed(&["pinvou", "plugins", "tools", "oauth-login", "qcc"]).to_string();
     // Round-38 review: "mcp.json" alone cannot discriminate the strict
     // reader from the lenient fallback — the lenient reader's "mcp.json has
     // no server '…'" also contains it. Pin the strict reader's own marker.
@@ -2150,8 +2139,8 @@ fn import_charges_the_wrapped_skill_md_against_the_limit() {
         import_package_limit() - body.len() as u64,
     );
 
-    let (message, code) = run_err(&["pinvou", "plugins", "import", dir.to_str().unwrap()]);
-    assert_eq!(code, ExitCode::Failed);
+    let message =
+        expect_failed(&["pinvou", "plugins", "import", dir.to_str().unwrap()]).to_string();
     assert!(
         message.contains("exceeds the 200 MiB import limit"),
         "the injected frontmatter must be charged against the budget: {message}"
@@ -2214,8 +2203,7 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
     let _env = env_lock();
     let home = HomeGuard::new("plugins", "builtin-refusal", Isolation::ProductHome);
 
-    let (message, code) = run_err(&["pinvou", "plugins", "disable", "session-reader"]);
-    assert_eq!(code, ExitCode::Failed, "{message}");
+    let message = expect_failed(&["pinvou", "plugins", "disable", "session-reader"]).to_string();
     assert!(
         message.contains("cannot be disabled or hidden"),
         "the refusal must name the builtin rule: {message}"
@@ -2224,15 +2212,15 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
     // `--yes` on the uninstall clears the destructive-action gate so the
     // BUILTIN refusal is what fires (without it, the --yes usage error would
     // mask the rule; disable has no such gate).
-    let (message, code) = run_err(&[
+    let message = expect_failed(&[
         "pinvou",
         "plugins",
         "tools",
         "uninstall",
         "session-reader",
         "--yes",
-    ]);
-    assert_eq!(code, ExitCode::Failed, "{message}");
+    ])
+    .to_string();
     assert!(
         message.contains("cannot be"),
         "the uninstall refusal must name the builtin rule: {message}"

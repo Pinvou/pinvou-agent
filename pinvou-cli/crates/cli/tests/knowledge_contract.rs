@@ -47,13 +47,12 @@
 
 mod common;
 
-use pinvou_cli::ExitCode;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::{
     HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, execute_error,
-    parsed_debug, run_json, run_ok,
+    expect_failed, parsed_debug, run_json, run_ok,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -713,9 +712,8 @@ fn destructive_subcommands_require_yes_before_anything_else() {
         vec!["pinvou", "knowledge", "collections", "delete", "5"],
         vec!["pinvou", "knowledge", "documents", "remove", "9"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
-        assert!(error.to_string().contains("--yes"), "{arguments:?}");
+        let message = assert_usage(&arguments);
+        assert!(message.contains("--yes"), "{arguments:?}");
     }
 }
 
@@ -741,8 +739,7 @@ fn mount_surface_refuses_without_booting_the_session_store() {
         vec!["pinvou", "knowledge", "mount", "missing-session", "7"],
         vec!["pinvou", "knowledge", "unmount", "missing-session", "7"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         let message = error.to_string();
         assert!(
             message.contains("_requires_product_host"),
@@ -774,8 +771,7 @@ fn mount_family_refuses_honestly_as_product_host_bound() {
         vec!["pinvou", "knowledge", "mount", &session_id, "7"],
         vec!["pinvou", "knowledge", "unmount", &session_id, "42"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         let message = error.to_string();
         assert!(
             message.contains("_requires_product_host") && message.contains("process memory"),
@@ -790,8 +786,7 @@ fn mount_family_refuses_honestly_as_product_host_bound() {
 /// remote probe are real now and covered by the round-trip/opt-in tests.
 #[test]
 fn model_download_keeps_its_stable_unavailable_code() {
-    let error = execute_error(&["pinvou", "knowledge", "model", "download"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "model", "download"]);
     assert!(
         error
             .to_string()
@@ -860,7 +855,7 @@ fn collections_crud_round_trip_on_a_temp_home() {
     // with a CLI-side merge).
     assert_eq!(updated["id"], serde_json::json!(first_id));
 
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "collections",
@@ -869,7 +864,6 @@ fn collections_crud_round_trip_on_a_temp_home() {
         "--name",
         "ghost",
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("not found"), "{error}");
 
     run_ok(&[
@@ -938,8 +932,7 @@ fn documents_zero_state_and_remove_no_op() {
 
     // Unlike the GUI's silent no-op delete, removing an unknown document
     // refuses with exit 1 like every other unknown-id command in the CLI.
-    let error = execute_error(&["pinvou", "knowledge", "documents", "remove", "123", "--yes"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let error = expect_failed(&["pinvou", "knowledge", "documents", "remove", "123", "--yes"]);
     assert!(
         error.to_string().contains("knowledge_document_not_found"),
         "{error}"
@@ -955,8 +948,7 @@ fn documents_unknown_collection_id_is_refused_not_empty() {
     let _env_guard = env_lock();
     let _home = temp_home("documents-unknown-collection");
 
-    let error = execute_error(&["pinvou", "knowledge", "documents", "424242"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let error = expect_failed(&["pinvou", "knowledge", "documents", "424242"]);
     assert!(
         error.to_string().contains("collection 424242 not found"),
         "the refusal must name the id: {error}"
@@ -1038,8 +1030,7 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
     // gets the family's stable not-found code instead of another job's state.
     let named = run_json(&["pinvou", "knowledge", "index", "status", &job_id]);
     assert_eq!(named["jobId"], serde_json::json!(job_id));
-    let error = execute_error(&["pinvou", "knowledge", "index", "status", "other-job"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "index", "status", "other-job"]);
     assert!(
         error.to_string().contains("knowledge_index_job_not_found"),
         "{error}"
@@ -1060,8 +1051,7 @@ fn add_sources_indexes_a_text_file_and_waits_for_the_final_state() {
         vec!["pinvou", "knowledge", "index", "resume", &job_id],
         vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         let message = error.to_string();
         assert!(
             message.contains("knowledge_index_job_not_found"),
@@ -1094,7 +1084,7 @@ fn add_sources_refuses_to_race_a_running_job() {
         "Pinvou knowledge must not silently drop this source.",
     )
     .unwrap();
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "collections",
@@ -1102,7 +1092,6 @@ fn add_sources_refuses_to_race_a_running_job() {
         &id.to_string(),
         extra.to_str().unwrap(),
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     let message = error.to_string();
     assert!(
         message.contains("still running") && message.contains(&job_id),
@@ -1137,8 +1126,7 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
         vec!["pinvou", "knowledge", "index", "resume", "typo-job"],
         vec!["pinvou", "knowledge", "index", "retry", "typo-job", "1"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         let message = error.to_string();
         assert!(
             message.contains("active/latest") && message.contains(&job_id),
@@ -1166,8 +1154,7 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
             source_str.as_str(),
         ],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         assert!(
             error.to_string().contains("collection 999 not found"),
             "{arguments:?}: the unknown id must be named"
@@ -1182,8 +1169,7 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
         vec!["pinvou", "knowledge", "index", "resume", &job_id],
         vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         let message = error.to_string();
         assert!(
             message.contains("still running") && message.contains(&job_id),
@@ -1233,7 +1219,7 @@ fn add_sources_preflights_the_source_paths() {
         .status()
         .expect("run mkfifo");
     assert!(status.success(), "mkfifo failed");
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "collections",
@@ -1241,14 +1227,13 @@ fn add_sources_preflights_the_source_paths() {
         &id.to_string(),
         fifo.to_str().unwrap(),
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("not a regular file"),
         "the FIFO path must be named as the rejection cause: {error}"
     );
 
     let missing = home.path().join("missing.md");
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "collections",
@@ -1256,7 +1241,6 @@ fn add_sources_preflights_the_source_paths() {
         &id.to_string(),
         missing.to_str().unwrap(),
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("does not exist"),
         "the missing path must be named as the rejection cause: {error}"
@@ -1284,7 +1268,7 @@ fn add_sources_refuses_a_credential_path_source() {
     let key = ssh.join("id_rsa");
     std::fs::write(&key, "PRIVATE KEY").unwrap();
 
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "collections",
@@ -1292,7 +1276,6 @@ fn add_sources_refuses_a_credential_path_source() {
         &id.to_string(),
         key.to_str().unwrap(),
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(
         error.to_string().contains("refusing source path"),
         "the credential-path gate must name the refusal: {error}"
@@ -1310,8 +1293,7 @@ fn add_sources_refuses_a_credential_path_source() {
 fn index_failed_names_an_unknown_job() {
     let _env_guard = env_lock();
     let _home = temp_home("index-failed-unknown");
-    let error = execute_error(&["pinvou", "knowledge", "index", "failed", "missing-job"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "index", "failed", "missing-job"]);
     assert!(
         error.to_string().contains("knowledge_index_job_not_found"),
         "{error}"
@@ -1328,8 +1310,7 @@ fn index_failed_names_an_unknown_job() {
 fn index_cancel_names_an_unknown_job() {
     let _env_guard = env_lock();
     let _home = temp_home("index-cancel-unknown");
-    let error = execute_error(&["pinvou", "knowledge", "index", "cancel", "missing-job"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "index", "cancel", "missing-job"]);
     let message = error.to_string();
     assert!(
         message.contains("knowledge_index_job_not_found"),
@@ -1532,8 +1513,7 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
         vec!["pinvou", "knowledge", "index", "resume", &job_id],
         vec!["pinvou", "knowledge", "index", "retry", &job_id, "1"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         let message = error.to_string();
         assert!(
             message.contains("still running") && message.contains("another process"),
@@ -1555,7 +1535,7 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     let other_id = other["id"].as_i64().expect("other collection id");
     let second_source = home.path().join("second.txt");
     std::fs::write(&second_source, "must not be enqueued.").unwrap();
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "collections",
@@ -1563,7 +1543,6 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
         &other_id.to_string(),
         second_source.to_str().unwrap(),
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
     let message = error.to_string();
     assert!(
         message.contains("still running") && message.contains("NOT enqueued"),
@@ -1759,8 +1738,7 @@ fn index_retry_names_a_bad_item_id_instead_of_the_job() {
         .expect("the interrupted job is named")
         .to_owned();
 
-    let error = execute_error(&["pinvou", "knowledge", "index", "retry", &job_id, "999999"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "index", "retry", &job_id, "999999"]);
     let message = error.to_string();
     assert!(
         message.contains("knowledge_index_item_not_found"),
@@ -1885,8 +1863,7 @@ fn scan_start_persists_its_completion_marker() {
     // `scan cancel` refuses honestly: the only scan this process could
     // signal is always already over (`scan start` blocks), and an app-side
     // scan lives in the app's process.
-    let error = execute_error(&["pinvou", "knowledge", "scan", "cancel"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "scan", "cancel"]);
     let message = error.to_string();
     assert!(
         message.contains("knowledge_scan_cancel_requires_product_host"),
@@ -2213,8 +2190,7 @@ fn model_status_reports_disk_state_and_model_cancel_refuses_honestly() {
     // the desktop app's download orchestration and a CLI process never has
     // a download of its own in flight, so the old `{"cancelled":true}` was
     // a no-op reported as success.
-    let error = execute_error(&["pinvou", "knowledge", "model", "cancel"]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let error = expect_failed(&["pinvou", "knowledge", "model", "cancel"]);
     let message = error.to_string();
     assert!(
         message.contains("knowledge_model_cancel_requires_product_host")
@@ -2235,8 +2211,7 @@ fn remote_connections_answer_offline_without_configured_servers() {
         vec!["pinvou", "knowledge", "remote", "collections"],
         vec!["pinvou", "knowledge", "remote", "search", "papers", "query"],
     ] {
-        let error = execute_error(&arguments);
-        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        let error = expect_failed(&arguments);
         assert!(
             error
                 .to_string()
@@ -2276,14 +2251,13 @@ fn remote_probe_reports_a_dead_endpoint_as_a_failed_host_call() {
     let _home = temp_home("remote-probe-dead");
     // The TLS-pinned identity handshake is a real network call now; a dead
     // endpoint must surface as a failed command, not a crash.
-    let error = execute_error(&[
+    let error = expect_failed(&[
         "pinvou",
         "knowledge",
         "remote",
         "probe",
         "https://127.0.0.1:9",
     ]);
-    assert_eq!(error.exit_code(), ExitCode::Failed);
     assert!(error.to_string().contains("remote probe"), "{error}");
 }
 

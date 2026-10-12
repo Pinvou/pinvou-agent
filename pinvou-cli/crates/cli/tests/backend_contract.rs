@@ -73,9 +73,10 @@ fn parse_char_literal<'a>(text: &'a str, owner: &str) -> (char, &'a str) {
 }
 
 /// Renders a set as a stable, greppable U+ list for the failure messages.
-fn code_points(set: &BTreeSet<char>) -> String {
-    set.iter()
-        .map(|ch| format!("U+{:04X}", *ch as u32))
+fn code_points(chars: impl IntoIterator<Item = char>) -> String {
+    chars
+        .into_iter()
+        .map(|ch| format!("U+{:04X}", ch as u32))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -114,8 +115,8 @@ fn plugins_display_sanitizer_set_equals_the_app_set() {
     assert!(
         missing.is_empty() && extra.is_empty(),
         "plugins.rs display-hygiene set drifted from the app's set\n  app-only: {}\n  cli-only: {}",
-        code_points(&missing.into_iter().cloned().collect()),
-        code_points(&extra.into_iter().cloned().collect()),
+        code_points(missing.into_iter().copied()),
+        code_points(extra.into_iter().copied()),
     );
 }
 
@@ -142,7 +143,7 @@ fn row_sanitizer_set_is_a_strict_superset_of_the_app_set() {
     assert!(
         missing.is_empty(),
         "support.rs row-hygiene set lost app entries: {}",
-        code_points(&missing.into_iter().cloned().collect()),
+        code_points(missing.into_iter().copied()),
     );
     assert_ne!(
         rows, app,
