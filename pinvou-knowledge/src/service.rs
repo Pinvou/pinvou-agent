@@ -1564,6 +1564,18 @@ mod tests {
             "https://[::ffff:192.168.1.10]:3210"
         ));
         assert!(!is_private_share_endpoint("https://[::ffff:8.8.8.8]:3210"));
+        // Mapped boundary classes: link-local and tailnet literals stay
+        // private; a mapped loopback must keep the share gate's reject (only
+        // the join gate accepts loopback sources).
+        assert!(is_private_share_endpoint(
+            "https://[::ffff:169.254.1.5]:3210"
+        ));
+        assert!(is_private_share_endpoint(
+            "https://[::ffff:100.64.0.1]:3210"
+        ));
+        assert!(!is_private_share_endpoint(
+            "https://[::ffff:127.0.0.1]:3210"
+        ));
     }
 
     #[test]

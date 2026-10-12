@@ -88,5 +88,16 @@ mod tests {
             "::ffff:8.8.8.8".parse::<IpAddr>().unwrap(),
             true
         ));
+        // Mapped boundary classes: link-local and tailnet map to their v4
+        // sets under both flags; mapped loopback follows the flag exactly
+        // like plain loopback.
+        for address in ["::ffff:169.254.1.5", "::ffff:100.64.0.1"] {
+            let address: IpAddr = address.parse().unwrap();
+            assert!(is_private_network_ip(address, true), "{address}");
+            assert!(is_private_network_ip(address, false), "{address}");
+        }
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(is_private_network_ip(mapped_loopback, true));
+        assert!(!is_private_network_ip(mapped_loopback, false));
     }
 }
